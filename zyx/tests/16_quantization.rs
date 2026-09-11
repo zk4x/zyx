@@ -119,9 +119,10 @@ fn q4k_bf16_bcast_mul() -> Result<(), ZyxError> {
 
 #[test]
 fn q4k_repack_whole() -> Result<(), ZyxError> {
-    // 4 super-blocks = 32x32 weights. Full pipeline inline, byte-exact.
-    let (rows, cols) = (32i64, 32i64);
-    let n = 4usize;
+    // 16 super-blocks = 64x64 weights = 4 tiles = 1 page. Full pipeline
+    // inline, byte-exact, strided per-page planes like `repack_q4k`.
+    let (rows, cols) = (64i64, 64i64);
+    let n = (rows * cols / 256) as usize;
     let mut raw = vec![0u8; n * 144];
     for b in 0..n {
         for i in 0..144 {
@@ -149,20 +150,29 @@ fn q4k_repack_whole() -> Result<(), ZyxError> {
     }
     let mat = Tensor::cat(&segs, 1)?.reshape([rows, cols])?;
     let flat = mat.cast(DType::U16).tilize()?.reshape([rows * cols])?;
-    let l4 = rows * cols / 4;
-    let planes = flat.split([l4, l4, l4, l4], 0)?;
-    let packed = &planes[0] + (&planes[1] << 4u16) + (&planes[2] << 8u16) + (&planes[3] << 12u16);
+    // Strided per-page planes: page p word s holds tiles 4p+k slot s.
+    let ntiles_q = rows * cols / 1024;
+    assert_eq!(ntiles_q % 4, 0);
+    let pages_q = ntiles_q / 4;
+    let grouped = flat.reshape([pages_q, 4, 1024])?.permute([0, 2, 1])?;
+    let pp = grouped.split([1i64, 1i64, 1i64, 1i64], 2)?;
+    let l4q = rows * cols / 4;
+    let q0 = pp[0].reshape([l4q])?;
+    let q1 = pp[1].reshape([l4q])?;
+    let q2 = pp[2].reshape([l4q])?;
+    let q3 = pp[3].reshape([l4q])?;
+    let packed = &q0 + (&q1 << 4u16) + (&q2 << 8u16) + (&q3 << 12u16);
     let pv: Vec<u16> = packed.to_vec()?;
     assert_eq!(pv.len(), (rows * cols / 4) as usize);
 
-    // Invert: planes -> tilized flat -> untilize -> row-major nibbles.
+    // Invert: packed word 1024p+s -> tiles 4p+k slot s -> untilize.
     let l = (rows * cols) as usize;
     let mut til = vec![0u16; l];
     for (i, &w) in pv.iter().enumerate() {
-        til[i] = w & 15;
-        til[l / 4 + i] = (w >> 4) & 15;
-        til[l / 2 + i] = (w >> 8) & 15;
-        til[3 * l / 4 + i] = (w >> 12) & 15;
+        let (p, s) = (i / 1024, i % 1024);
+        for k in 0..4 {
+            til[(p * 4 + k) * 1024 + s] = (w >> (4 * k)) & 15;
+        }
     }
     let nib: Vec<u16> = Tensor::from_vec(til, [rows, cols])?.untilize(rows, cols)?.to_vec()?;
     for b in 0..n {
@@ -205,8 +215,8 @@ fn q4k_repack_whole() -> Result<(), ZyxError> {
     let sv: Vec<zyx::bf16> = (d.reshape([nn, 1])? * sc_t).reshape([nn * 8])?.to_vec()?;
     let mv: Vec<zyx::bf16> = (dmin.reshape([nn, 1])? * m_t).reshape([nn * 8])?.to_vec()?;
     assert_eq!(sv.len(), n * 8);
-    let mut rsc = [[0u8; 8]; 4];
-    let mut rm = [[0u8; 8]; 4];
+    let mut rsc = vec![[0u8; 8]; n];
+    let mut rm = vec![[0u8; 8]; n];
     for b in 0..n {
         for j in 0..8 {
             rsc[b][j] = sv[b * 8 + j].to_f32().round() as u8;

@@ -722,6 +722,29 @@ pub struct TTDevice {
     programs: Slab<DeviceProgramId, TTProgram>,
 }
 
+/// Kernel sections delimited by barriers: reader (head -> 1st barrier),
+/// compute (1st -> 2nd), writer (2nd -> end).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TtSection {
+    Reader,
+    Compute,
+    Writer,
+}
+
+impl TtSection {
+    /// Step to the next section at a barrier. Panics past the writer:
+    /// kernels have exactly 3 sections (2 barriers).
+    fn advance(&mut self) {
+        *self = match self {
+            TtSection::Reader => TtSection::Compute,
+            TtSection::Compute => TtSection::Writer,
+            TtSection::Writer => {
+                panic!("tenstorrent kernels have exactly 3 sections (2 barriers)")
+            }
+        };
+    }
+}
+
 impl TTDevice {
     pub fn deinitialize(&mut self) {}
 
@@ -737,7 +760,7 @@ impl TTDevice {
         self.device_info.compute
     }
 
-    #[allow(unused_must_use)]
+#[allow(unused_must_use)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         // Build CB maps and dtypes from the kernel.
         //
@@ -750,7 +773,6 @@ impl TTDevice {
         let mut output_dtypes: Vec<DType> = Vec::new();
         {
             let mut max_cb = 0u32;
-            let mut section = 0u32;
             let mut scan = kernel.head;
             let mut steps_scan = 0usize;
             while !scan.is_null() {
@@ -759,15 +781,16 @@ impl TTDevice {
                     panic!("compile did not finish in 10000 steps");
                 }
                 match &kernel.ops[scan].op {
-                    Op::Barrier => section += 1,
                     Op::Param { dtype, kind: ParamKind::Global, .. } => input_dtypes.push(*dtype),
                     Op::Param { dtype, kind: ParamKind::GlobalMut, .. } => output_dtypes.push(*dtype),
                     Op::Load { src, .. } => {
                         if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*src].op {
-                            // Reader loads and writer loads register; compute
-                            // loads use CBs already registered by whoever
-                            // fills/drains them.
-                            if section != 1 && !cb_map.contains_key(src) {
+                            // CBs register on first touch in any section,
+                            // head order. Compute-local scratch CBs
+                            // (loop-carried values, never filled/drained
+                            // by reader/writer) register on their compute
+                            // touch.
+                            if !cb_map.contains_key(src) {
                                 cb_map.insert(*src, max_cb);
                                 max_cb += 1;
                             }
@@ -776,12 +799,13 @@ impl TTDevice {
                     Op::Store { dst, .. } => {
                         match &kernel.ops[*dst].op {
                             Op::Storage { scope: MemScope::Circular, .. } => {
-                                if section != 1 && !cb_map.contains_key(dst) {
+                                // First touch in any section registers (see
+                                // Load arm); compute/writer stores to
+                                // already-registered CBs are no-ops here.
+                                if !cb_map.contains_key(dst) {
                                     cb_map.insert(*dst, max_cb);
                                     max_cb += 1;
                                 }
-                                // compute/writer CB stores need no registration:
-                                // the loads register CBs.
                             }
                             Op::Storage { scope, .. } => {
                                 todo!("store into non-CB storage scope {scope:?}")
@@ -833,11 +857,11 @@ impl TTDevice {
             }
             map
         };
-        // Stores per section (0 = reader, 1 = compute, 2 = writer).
+        // Stores per section (reader, compute, writer).
         let mut section_stores: [Vec<OpId>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut gws_lens: Vec<OpId> = Vec::new();
         {
-            let mut section = 0usize;
+            let mut section = TtSection::Reader;
             let mut scan = kernel.head;
             let mut steps = 0usize;
             while !scan.is_null() {
@@ -846,8 +870,8 @@ impl TTDevice {
                     panic!("tt section scan did not finish in 10000 steps");
                 }
                 match kernel.ops[scan].op {
-                    Op::Barrier => section += 1,
-                    Op::Store { .. } => section_stores[section].push(scan),
+                    Op::Barrier => section.advance(),
+                    Op::Store { .. } => section_stores[section as usize].push(scan),
                     Op::Range { kind: RangeKind::Group(len), .. } => gws_lens.push(len),
                     _ => {}
                 }

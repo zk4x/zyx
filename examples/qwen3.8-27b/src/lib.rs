@@ -1070,7 +1070,8 @@ pub fn embed_kernel(_vocab: i64, dim: i64, seq: i64) -> Kernel {
 }
 
 /// Tenstorrent Q4_K dequant (single core): out [T, 1024] F32 from
-/// plane-interleaved packed U16 [L/4] + full-tile BF16 scales/mins.
+/// strided per-page plane-interleaved packed U16 [L/4] (u16[1024p+s]
+/// nibble k = tile 4p+k slot s) + full-tile BF16 scales/mins.
 ///
 /// F32-out is forced: U16->F32 typecast and F32 SFPU need 32-bit DST mode,
 /// which the backend enables only with an F32 output; fused F32-compute
@@ -1078,12 +1079,14 @@ pub fn embed_kernel(_vocab: i64, dim: i64, seq: i64) -> Kernel {
 /// cast is a standalone kernel later.
 ///
 /// Structure (official single-core streaming): outer loop over input pages
-/// (1024 u16 = 4 output tiles); inner loop over 4 tiles. The u16 page is
-/// loaded twice per outer iteration into DST slots that persist across
-/// the inner loop (nested loops inherit DST state); inner iterations
-/// consume one full scale/min tile each (wait/pop 1:1). Nibble extraction
-/// is float (`n = x - trunc(x/16)*16`, bit-exact in F32 for 16-bit inputs).
-/// 4 params: packed, scales, mins, out.
+/// (1024 u16 = 4 output tiles); inner loop over the 4 planes with the
+/// scaled page carried through a compute-local 1-tile CB (gemm-`acc`
+/// style: seed once per page, pop/push per plane, drain the leftover).
+/// The u16 page is loaded once per outer iteration (one pop per pushed
+/// page — anything else over-consumes the CB); each plane consumes one
+/// full scale/min tile (wait/pop 1:1). Nibble extraction is float on the
+/// carried value (`n = cv - 16*trunc(cv/16)`, carry `trunc(cv/16)`),
+/// bit-exact in F32 for 16-bit inputs. 4 params: packed, scales, mins, out.
 pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
     const TDIM: u16 = 32;
     const TILE_ELEMS: i64 = 1024;
@@ -1098,6 +1101,7 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
     let cu16 = kernel.storage(DType::U16, MemScope::Circular, TILE_ELEMS);
     let csc = kernel.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
     let cmn = kernel.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
+    let ccur = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
     let cout = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
 
     let _g = kernel.group_range(0, 1);
@@ -1123,22 +1127,27 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
     });
     kernel.barrier();
 
-    // Compute: per page convert u16 twice (both copies stay live for the
-    // inner loop); per tile float-extract the nibble (bit-exact in F32),
-    // mad with scales/mins, pack. The INT shift/mask path is dead: tt-metal
+    // Compute: per page convert u16 once, seed the carry CB, then loop the
+    // 4 planes: cv holds x/16^k, nibble = cv - 16*trunc(cv/16), carry
+    // trunc(cv/16) back (all bit-exact in F32 for 16-bit inputs). The drain
+    // pop keeps the 1-tile carry CB empty across pages. Exactly one u16 pop
+    // per pushed page: a second pop over-consumes the CB, reads the next
+    // FIFO entry as garbage, and stalls the core on an empty CB once the
+    // unmatched pops run out. The INT shift/mask path is dead: tt-metal
     // 0.72 bitwise_and.h does not compile for blackhole (read-only headers).
     let c063 = kernel.const_val(0.0625f32);
     let c16 = kernel.const_val(16.0f32);
     kernel.loop_over(cpages, |kernel, _pi| {
         let u1 = kernel.load_tile(cu16, c0, TDIM, TDIM, TDIM as u32);
         let f1 = kernel.cast(u1, DType::F32);
-        let u2 = kernel.load_tile(cu16, c0, TDIM, TDIM, TDIM as u32);
-        let f2 = kernel.cast(u2, DType::F32);
+        kernel.store_tile(ccur, f1, c0, TDIM, TDIM, TDIM as u32);
         kernel.loop_over(c4, |kernel, _ki| {
-            let t = kernel.mul(f2, c063);
+            let cv = kernel.load_tile(ccur, c0, TDIM, TDIM, TDIM as u32);
+            let t = kernel.mul(cv, c063);
             let t = kernel.trunc(t);
-            let t = kernel.mul(t, c16);
-            let n = kernel.sub(f1, t);
+            let t16 = kernel.mul(t, c16);
+            let n = kernel.sub(cv, t16);
+            kernel.store_tile(ccur, t, c0, TDIM, TDIM, TDIM as u32);
             let s = kernel.load_tile(csc, c0, TDIM, TDIM, TDIM as u32);
             let sf = kernel.cast(s, DType::F32);
             let m1 = kernel.mul(n, sf);
@@ -1147,6 +1156,7 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
             let v = kernel.add(m1, gf);
             kernel.store_tile(cout, v, c0, TDIM, TDIM, TDIM as u32);
         });
+        let _drain = kernel.load_tile(ccur, c0, TDIM, TDIM, TDIM as u32);
     });
     kernel.barrier();
 
@@ -1171,9 +1181,10 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
 ///
 /// Input `raw` is [N, 144] U8 with N = rows*cols/256. Returns
 /// (packed, scales, mins):
-/// - packed: [rows*cols/4] U16, tile-ordered weights plane-interleaved:
-///   u16[i] nibble p = tile-ordered weight p*(rows*cols/4)+i. The device
-///   kernel extracts plane p straight into output tile p, no shuffle.
+/// - packed: [rows*cols/4] U16, strided per-page plane-interleaved:
+///   page p holds 1024 words, u16[1024p+s] nibble k = tile 4p+k slot s.
+///   The device kernel loads one page per outer iteration and extracts
+///   plane k straight into output tile 4p+k, no shuffle.
 /// - scales/mins: [num_tiles, 32] BF16, tile-major; slot i holds row-in-tile
 ///   i's true sub-block scale (d*sc) / min (dmin*m). BF16 (not F16): TT-native
 ///   with F32 range, so a large d can never saturate the sidecar; the 8-bit
@@ -1226,13 +1237,25 @@ pub fn repack_q4k(
     }
     // [N, 256], group g at cols 64g..64g+64, reshapes straight to [rows, cols].
     let mat = Tensor::cat(&segs, 1)?.reshape([rows, cols])?;
-    // Tile order first (device consumes tilized), then plane-split over the
-    // tilized linear order so each plane IS an output tile's weights.
+    // Tile order first (device consumes tilized), then regroup into pages of
+    // 4 tiles: u16[1024p+s] nibble k = tile 4p+k slot s. One packed page
+    // feeds one outer device iteration (4 output tiles), hence ntiles % 4.
     let l = rows * cols;
     let flat = mat.cast(DType::U16).tilize()?.reshape([l])?;
+    let ntiles_p = l / 1024;
+    debug_assert!(
+        ntiles_p % 4 == 0,
+        "repack_q4k needs ntiles % 4 == 0, got {ntiles_p}"
+    );
+    let pages_p = ntiles_p / 4;
+    let grouped = flat.reshape([pages_p, 4, 1024])?.permute([0, 2, 1])?;
+    let pplanes = grouped.split([1i64, 1i64, 1i64, 1i64], 2)?;
     let l4 = l / 4;
-    let planes = flat.split([l4, l4, l4, l4], 0)?;
-    let packed = &planes[0] + (&planes[1] << 4u16) + (&planes[2] << 8u16) + (&planes[3] << 12u16);
+    let p0 = pplanes[0].reshape([l4])?;
+    let p1 = pplanes[1].reshape([l4])?;
+    let p2 = pplanes[2].reshape([l4])?;
+    let p3 = pplanes[3].reshape([l4])?;
+    let packed = &p0 + (&p1 << 4u16) + (&p2 << 8u16) + (&p3 << 12u16);
 
     // 6-bit scales/mins per get_scale_min_k4, then true scale = d*sc.
     let slanes = s.split(

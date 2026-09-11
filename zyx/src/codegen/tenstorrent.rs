@@ -1,91 +1,85 @@
-// Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
-
 use crate::{
-    DType, Map, Set,
-    dtype::Constant,
-    error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
+    DType, Map,
+    error::BackendError,
+    kernel::{IDX_T, Kernel, MMADType, MemLayout, MemScope, Op, OpId, RangeKind},
 };
-use std::fmt::Write;
 
-/// Bit pattern for `fill_tile_bitcast` in the kernel's DST data format.
-/// 16-bit formats (bf16, f16) pack the value into both halves of each 32-bit
-/// DST register, mirroring how the SFPU packs two 16-bit elements per register.
-fn tt_fill_bits(val: Constant) -> u32 {
-    match val {
-        Constant::BF16(b) | Constant::F16(b) => {
-            let v = u16::from_le_bytes(b) as u32;
-            (v << 16) | v
-        }
-        Constant::F32(b) => u32::from_le_bytes(b),
-        Constant::U8(v) => u32::from(v),
-        Constant::I8(v) => v as u32,
-        Constant::U16(v) => u32::from(v),
-        Constant::I16(v) => v as u32,
-        Constant::U32(v) => v,
-        Constant::I32(v) => v as u32,
-        other => todo!("fill_tile_bitcast for {other}"),
+use nanoserde::{DeBin, SerBin};
+
+use crate::slab::SlabId;
+
+/// Circular buffer ID for Tenstorrent codegen v2.
+///
+/// This is a unique identifier for each circular buffer in the compiled
+/// Tenstorrent program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub struct CBId(pub(crate) u32);
+
+impl CBId {
+    /// NULL
+    pub const NULL: Self = Self(u32::MAX);
+
+    /// Check if this CBId is null.
+    pub const fn is_null(self) -> bool {
+        self.0 == u32::MAX
     }
 }
 
-/// DRAM buffer page size in bytes. Must match `PAGE_SIZE` in
-/// `backend/tt_runtime.cpp` (`alloc_buf`): every DRAM `TensorAccessor`
-/// and its page/offset arithmetic must stride by the buffer page size,
-/// not by the access dtype's tile size — otherwise every tile past
-/// tile 0 misaddresses (page 0 offset 0 is the only correct one).
-const TT_DRAM_PAGE_BYTES: u32 = 4096;
-
-/// TT Metalium `tt::DataFormat` constant for a zyx dtype, as used by
-/// `typecast_tile`'s template parameters. Only dtypes supported by the
-/// tenstorrent tile path are valid.
-fn tt_dtype_format(dt: DType) -> u32 {
-    match dt {
-        DType::F32 => 0, // Float32
-        // tt-metal 0.72 SFPU typecast has no plain-Float16 kernel; zyx F16
-        // casts must use Float16_b (see typecast.h supported list).
-        DType::F16 => 5, // Float16_b
-        DType::BF16 => 5, // Float16_b
-        DType::U16 => 9, // UInt16 (typecast.h sanctions Float32 <-> UInt16)
-        DType::U32 => 24, // UInt32
-        DType::I32 => 8, // Int32
-        other => unreachable!("unsupported dtype {other:?} for tenstorrent tile op"),
+impl std::fmt::Display for CBId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
     }
 }
 
-/// Init call required before using `uop`'s tile op, if any.
-fn tt_unary_init(uop: UOp) -> Option<&'static str> {
-    match uop {
-        UOp::Neg => Some("negative_tile_init();"),
-        UOp::Not => todo!("logical not tile"),
-        UOp::BitNot => Some("bitwise_not_tile_init();"),
-        UOp::Exp => Some("exp_tile_init();"),
-        UOp::Exp2 => Some("exp2_tile_init();"),
-        UOp::Ln => unreachable!("should've been changed to log2"),
-        UOp::Log2 => Some("log_tile_init();"),
-        UOp::Reciprocal => Some("recip_tile_init();"),
-        UOp::Sqrt => Some("sqrt_tile_init();"),
-        UOp::Sin => Some("sin_tile_init();"),
-        UOp::Cos => Some("cos_tile_init();"),
-        UOp::Floor | UOp::Trunc => Some("rounding_op_tile_init();"),
-        UOp::Abs => Some("abs_tile_init();"),
+impl From<usize> for CBId {
+    fn from(value: usize) -> Self {
+        CBId(value as u32)
     }
 }
 
-/// Init call required before using `bop`'s tile op, if any.
-fn tt_binary_init(bop: BOp) -> Option<&'static str> {
-    match bop {
-        BOp::Add => Some("add_binary_tile_init();"),
-        BOp::Sub => Some("sub_binary_tile_init();"),
-        BOp::Mul => Some("mul_binary_tile_init();"),
-        BOp::Div => Some("div_binary_tile_init();"),
-        BOp::BitShiftRight => Some("binary_shift_tile_init();"),
-        // HW and-op is unary-with-immediate; the init still lives here
-        // since the IR op is binary.
-        BOp::BitAnd => Some("bitwise_and_tile_init();"),
-        // Unsupported binary ops are todo!() in the tile pass anyway
-        _ => None,
+impl From<CBId> for usize {
+    fn from(value: CBId) -> usize {
+        value.0 as usize
     }
+}
+
+impl SlabId for CBId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+/// Kernel sections delimited by barriers: reader (head -> 1st barrier),
+/// compute (1st -> 2nd), writer (2nd -> end).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TtSection {
+    Reader,
+    Compute,
+    Writer,
+}
+
+impl TtSection {
+    /// Step to the next section at a barrier. Panics past the writer:
+    /// kernels have exactly 3 sections (2 barriers).
+    fn advance(&mut self) {
+        *self = match self {
+            TtSection::Reader => TtSection::Compute,
+            TtSection::Compute => TtSection::Writer,
+            TtSection::Writer => {
+                panic!("tenstorrent kernels have exactly 3 sections (2 barriers)")
+            }
+        };
+    }
+}
+
+enum TTKernel {
+    Reader { src: String, params: Vec<CBId> },
+    Compute { src: String, params: Vec<CBId> },
+    Writer { src: String, params: Vec<CBId> },
+    None,
 }
 
 impl Kernel {
@@ -115,2141 +109,301 @@ impl Kernel {
     /// `(reader_source, compute_source, writer_source)` as C++ strings ready
     /// for the tt-metal JIT compiler.
     #[allow(unused_must_use)]
-    pub(crate) fn generate_tenstorrent(
-        &self,
-        debug_asm: bool,
-        cb_map: &Map<OpId, u32>,
-        reader_params: &[u32],
-        compute_params: &[u32],
-        writer_params: &[u32],
-    ) -> Result<(String, String, String), BackendError> {
-        // f64 is not supported by the tenstorrent tile path. Reject it up front
-        // so downstream codegen never has to reason about f64 tiles.
-        {
-            let mut scan = self.head;
-            let mut steps_scan = 0usize;
-            while !scan.is_null() {
-                steps_scan += 1;
-                if steps_scan > 10_000 {
-                    panic!("tt_binary_init did not finish in 10000 steps");
-                }
-                if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = &self.ops[scan].op {
-                    if self.dtype(*src) == DType::F64 {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: "tenstorrent has no f64 compute units -- f64 is unsupported, use f32 or bf16".into(),
-                        });
-                    }
-                }
-                scan = self.next_op(scan);
+    pub(crate) fn generate_tenstorrent(&self) -> Result<(TTKernel, TTKernel, TTKernel), BackendError> {
+        // One CBId per Circular storage, shared by all three sections:
+        // a CB filled by one section and consumed by another must address
+        // the same CB everywhere. Collected head order over the whole
+        // kernel so ids are stable regardless of section.
+        let mut cb_map: Map<OpId, CBId> = Map::default();
+        let mut next_cb = CBId::ZERO;
+        let mut scan = self.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
             }
+            if let Op::Storage { scope: MemScope::Circular, .. } = self.ops[scan].op {
+                if !cb_map.contains_key(&scan) {
+                    cb_map.insert(scan, next_cb);
+                    next_cb.inc();
+                }
+            }
+            scan = self.next_op(scan);
         }
-        // CB sync balance check. A push/wait/pop mismatch deadlocks the
-        // tensix cores and wedges the board (only an external reset
-        // recovers), so refuse to emit sources unless every CB balances.
-        // Sections split at barriers (exactly 2: reader | compute |
-        // writer). Const-trip loops expand; anything else countable
-        // panics instead of risking a hang. Evaluates to the DST slot
-        // limit for the compute section (docs: 16 sixteen-bit tiles,
-        // 8 thirty-two-bit).
-        let compute_slot_limit: usize = {
-            struct Bal {
-                cb: u32,
-                depth_bytes: i64,
-                is_f32: bool,
-                reader_store: bool,
-                compute_load: bool,
-                writer_load: bool,
-                compute_store_bytes: i64,
-                writer_bytes: i64,
-            }
-            let mut bals: Vec<Bal> = Vec::new();
-            for (&storage, &cb) in cb_map.iter() {
-                let Op::Storage { dtype, len, .. } = self.ops[storage].op else {
-                    panic!("tenstorrent cb_map entry {storage} is not a storage op");
-                };
-                if cb >= 32 {
-                    panic!("tenstorrent CB{cb} out of range, hardware has CB0-CB31");
-                }
-                if bals.iter().any(|b: &Bal| b.cb == cb) {
-                    panic!("tenstorrent CB{cb} assigned to two storages, sharing is unsupported");
-                }
-                let elem = dtype.bit_size() as i64 / 8;
-                let bytes = len * elem;
-                if bytes % 2048 != 0 {
-                    panic!("tenstorrent CB{cb} holds {bytes} bytes, not whole 2048B pages");
-                }
-                if bytes > 32768 {
-                    panic!("tenstorrent CB{cb} needs {bytes} bytes, single-core L1 budget is 32768");
-                }
-                bals.push(Bal {
-                    cb,
-                    depth_bytes: bytes,
-                    is_f32: dtype == DType::F32,
-                    reader_store: false,
-                    compute_load: false,
-                    writer_load: false,
-                    compute_store_bytes: 0,
-                    writer_bytes: 0,
-                });
-            }
-            let mut matmul_seen = false;
-            let mut compute_out_cbs: Vec<u32> = Vec::new();
-            let mut section = 0u32;
-            let mut trips: Vec<i64> = Vec::new();
-            let mut scan = self.head;
-            let mut steps = 0usize;
-            while !scan.is_null() {
-                steps += 1;
-                if steps > 10_000 {
-                    panic!("tenstorrent CB balance scan did not finish in 10000 steps");
-                }
-                match self.ops[scan].op {
-                    Op::Barrier => section += 1,
-                    Op::Loop { len } => {
-                        let Op::Const(c) = self.ops[len].op else {
-                            panic!("tenstorrent CB balance needs a const loop trip count, op {scan} is dynamic");
-                        };
-                        trips.push(c.as_dim().expect("tenstorrent loop trip count must be a concrete dim"));
-                    }
-                    Op::EndLoop => {
-                        trips.pop().expect("tenstorrent EndLoop without Loop");
-                    }
-                    Op::Store { dst, src, layout, .. } => {
-                        let trip: i64 = trips.iter().product();
-                        if let MemLayout::Tile { x, y, .. } = layout {
-                            if x != 32 || y != 32 {
-                                panic!("tenstorrent supports only 32x32 tiles, op {scan} is {x}x{y}");
-                            }
-                        }
-                        if section == 0 {
-                            let Some(&cb) = cb_map.get(&dst) else {
-                                panic!("tenstorrent reader stores must target circular buffers, op {scan} targets {dst}");
-                            };
-                            bals.iter_mut()
-                                .find(|b| b.cb == cb)
-                                .expect("tenstorrent op hit a CB missing from cb_map")
-                                .reader_store = true;
-                        } else if section == 1 {
-                            let MemLayout::Tile { x, y, .. } = layout else {
-                                panic!("tenstorrent compute stores must be tiles, op {scan} is {layout:?}");
-                            };
-                            let Some(&cb) = cb_map.get(&dst) else {
-                                panic!("tenstorrent compute stores must target circular buffers, op {scan} targets {dst}");
-                            };
-                            // Bytes pushed = the CB's tile bytes (dst storage
-                            // dtype), not src's: a MatmulTile is typed by
-                            // its inputs (F16) but packs F32 into an F32 CB
-                            // under 32-bit DST. F32 tiles are 4096B, F16 2048B.
-                            let elem = if let Op::Storage { dtype, .. } = self.ops[dst].op {
-                                dtype.bit_size() as i64 / 8
-                            } else {
-                                unreachable!("tenstorrent compute store dst is not a storage op");
-                            };
-                            bals.iter_mut()
-                                .find(|b| b.cb == cb)
-                                .expect("tenstorrent op hit a CB missing from cb_map")
-                                .compute_store_bytes += trip * x as i64 * y as i64 * elem;
-                            if !compute_out_cbs.contains(&cb) {
-                                compute_out_cbs.push(cb);
-                            }
-                        } else if section == 2 {
-                            if let Op::Load { src: cb_src, .. } = self.ops[src].op {
-                                if let Some(&cb) = cb_map.get(&cb_src) {
-                                    let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = self.ops[dst].op else {
-                                        panic!("tenstorrent writer store dst must be GlobalMut");
-                                    };
-                                    let elem = dtype.bit_size() as i64 / 8;
-                                    let bytes = match layout {
-                                        MemLayout::Scalar => elem,
-                                        MemLayout::Tile { x, y, .. } => x as i64 * y as i64 * elem,
-                                        _ => panic!("tenstorrent CB balance: unsupported writer layout {layout:?}"),
-                                    };
-                                    let bal = bals
-                                        .iter_mut()
-                                        .find(|b| b.cb == cb)
-                                        .expect("tenstorrent op hit a CB missing from cb_map");
-                                    bal.writer_load = true;
-                                    bal.writer_bytes += trip * bytes;
-                                }
-                            }
-                        } else {
-                            panic!("tenstorrent kernels have exactly 3 sections (2 barriers), found section {section}");
-                        }
-                    }
-                    Op::Load { src, layout: MemLayout::Tile { x, y, .. }, .. } => {
-                        if x != 32 || y != 32 {
-                            panic!("tenstorrent supports only 32x32 tiles, op {scan} is {x}x{y}");
-                        }
-                        if section == 1 {
-                            if let Some(&cb) = cb_map.get(&src) {
-                                bals.iter_mut()
-                                    .find(|b| b.cb == cb)
-                                    .expect("tenstorrent op hit a CB missing from cb_map")
-                                    .compute_load = true;
-                            }
-                        }
-                    }
-                    Op::MatmulTile { .. } => {
-                        if section == 1 {
-                            matmul_seen = true;
-                        }
-                    }
-                    _ => {}
-                }
-                scan = self.next_op(scan);
-            }
-            if section != 2 {
-                panic!("tenstorrent kernels need exactly 2 barriers (3 sections), found {section}");
-            }
-            // Codegen emits one mm_init triple from the section's output
-            // CB, so every matmul in the kernel must pack into the same
-            // one. Compute-local scratch CBs (accumulators: stored
-            // in-compute, never read by the writer) don't count.
-            if matmul_seen {
-                let outs: Vec<u32> = compute_out_cbs
-                    .iter()
-                    .copied()
-                    .filter(|cb| bals.iter().any(|b| b.cb == *cb && b.writer_load))
-                    .collect();
-                if outs.len() != 1 {
-                    panic!("tenstorrent matmul kernels need exactly one writer-read output CB, found {outs:?}");
-                }
-            }
-            for b in &bals {
-                // Every CB filled by the reader must be consumed downstream,
-                // by compute, by the writer directly (movement kernels), or both.
-                if b.reader_store && !b.compute_load && !b.writer_load {
-                    panic!("tenstorrent CB{} imbalance: reader stores but nothing loads (depth {} bytes)", b.cb, b.depth_bytes);
-                }
-                if b.compute_store_bytes != 0 && !b.compute_load && !b.writer_load {
-                    panic!("tenstorrent CB{} imbalance: compute stores but nothing loads", b.cb);
-                }
-                // Compute-local scratch (accumulators: stored in-compute,
-                // consumed in-compute, never read by the writer) is exempt
-                // from push/consume byte equality; its balance is
-                // per-iteration streaming push/pop, not total bytes.
-                let scratch = b.compute_store_bytes != 0 && !b.writer_load;
-                if !scratch && b.compute_store_bytes != 0 && b.compute_store_bytes != b.writer_bytes {
-                    panic!(
-                        "tenstorrent CB{} imbalance: compute pushes {} bytes but writer consumes {} bytes",
-                        b.cb, b.compute_store_bytes, b.writer_bytes
-                    );
-                }
-            }
-            // DST capacity (docs: 16 sixteen-bit tiles, 8 thirty-two-bit).
-            if bals.iter().any(|b| b.is_f32) { 8 } else { 16 }
-        };
-        // Scratch CBs (accumulators): stored in the compute section, never
-        // read by the writer. They are IR fiction for loop-carried values
-        // (storage-channel LCSSA) — codegen emits no traffic for them in
-        // any section (see reader/compute Store arms, body_cbs). Their DST
-        // content is packed via the chain slot (see scratch_chains/Store).
-        let scratch_cbs: Set<u32> = {
-            let mut stored_in_compute: Set<u32> = Set::default();
-            let mut read_by_writer: Set<u32> = Set::default();
-            let mut section = 0u32;
-            let mut scan = self.head;
-            let mut steps = 0usize;
-            while !scan.is_null() {
-                steps += 1;
-                if steps > 10_000 {
-                    panic!("tt scratch scan did not finish in 10000 steps");
-                }
-                match self.ops[scan].op {
-                    Op::Barrier => section += 1,
-                    Op::Store { dst, .. } => {
-                        if section == 1 {
-                            if let Some(&cb) = cb_map.get(&dst) {
-                                stored_in_compute.insert(cb);
-                            }
-                        }
-                    }
-                    Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
-                        if section == 2 {
-                            if let Some(&cb) = cb_map.get(&src) {
-                                read_by_writer.insert(cb);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                scan = self.next_op(scan);
-            }
-            stored_in_compute.difference(&read_by_writer).copied().collect()
-        };
-        // Per-section runtime-arg position of a param ordinal: the section's args are
-        // exactly its needed params (head order; GlobalMut already trails Global +
-        // Variable because GlobalMut occupies the tail of the head-order param list),
-        // followed by gidx0/gidx1 at len(params) + axis.
-        let reader_pos: Map<u32, u32> = reader_params.iter().enumerate().map(|(i, &p)| (p, i as u32)).collect();
-        let compute_pos: Map<u32, u32> = compute_params.iter().enumerate().map(|(i, &p)| (p, i as u32)).collect();
-        let writer_pos: Map<u32, u32> = writer_params.iter().enumerate().map(|(i, &p)| (p, i as u32)).collect();
-        // Generate reader kernel source
-        let mut reader = String::new();
-        writeln!(reader, "#include <cstdint>");
-        writeln!(reader, "#include \"api/dataflow/dataflow_api.h\"");
-        writeln!(reader, "#include \"api/dataflow/noc.h\"");
-        writeln!(reader, "#include \"api/dataflow/circular_buffer.h\"");
-        writeln!(reader, "#include \"api/tensor/noc_traits.h\"");
-        writeln!(reader, "#include \"api/debug/device_print.h\"");
-        writeln!(reader, "void kernel_main() {{");
-        let mut indent = String::from("  ");
-
-        let mut op_id = self.head;
-        {
-            // Chain accessor CTA offsets the documented way: first
-            // TensorAccessorArgs<0>, each later one at the previous
-            // accessor's next_compile_time_args_offset().
-            let mut prev_reader_accessor: Option<String> = None;
-            // Head-order param ordinal: Global + Variable interleaved, GlobalMut after.
-            let mut param_idx = 0u32;
-            let mut loop_depth = 0u32;
-            // CBs this section fills, with depth in tiles (from storage
-            // len): push the full depth at the end, not the whole cb_map.
-            let mut filled_cbs: Vec<(u32, i64)> = Vec::new();
-            // CBs fully pushed per tile store (flat tile path below): the
-            // end-of-reader push must skip these or pushes double up.
-            let mut per_tile_pushed: Vec<u32> = Vec::new();
-            let mut steps_op_id = 0usize;
-            while !op_id.is_null() {
-                steps_op_id += 1;
-                if steps_op_id > 10_000 {
-                    panic!("tt_binary_init did not finish in 10000 steps");
-                }
-                match self.ops[op_id].op {
-                    Op::Param { kind: ParamKind::Global, .. } => {
-                        if reader_params.contains(&param_idx) {
-                            let arg = reader_pos[&param_idx];
-                            writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({arg});");
-                            // Chained CTA offsets (documented pattern).
-                            let cta = match &prev_reader_accessor {
-                                None => String::from("0"),
-                                Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
-                            };
-                            // DRAM stride: buffer page size, never the dtype tile size.
-                            let page_size = TT_DRAM_PAGE_BYTES;
-                            writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
-                            writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {page_size});");
-                            prev_reader_accessor = Some(format!("args{op_id}"));
-                        }
-                        param_idx += 1;
-                    }
-                    Op::Param { dtype, kind: ParamKind::Variable, .. } => {
-                        if reader_params.contains(&param_idx) {
-                            // Scalar runtime arg (I64 values must fit u32; larger
-                            // values are unsupported on this path).
-                            let arg = reader_pos[&param_idx];
-                            writeln!(
-                                reader,
-                                "{indent}{} r{op_id} = ({})get_arg_val<uint32_t>({arg});",
-                                dtype.c_type(),
-                                dtype.c_type()
-                            );
-                        }
-                        param_idx += 1;
-                    }
-                    Op::Param { kind: ParamKind::GlobalMut, .. } => {
-                        if reader_params.contains(&param_idx) {
-                            let arg = reader_pos[&param_idx];
-                            writeln!(reader, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({arg});");
-                            let cta = match &prev_reader_accessor {
-                                None => String::from("0"),
-                                Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
-                            };
-                            // DRAM stride: buffer page size, never the dtype tile size.
-                            let page_size = TT_DRAM_PAGE_BYTES;
-                            writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
-                            writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {page_size});");
-                            prev_reader_accessor = Some(format!("args{op_id}"));
-                        }
-                        param_idx += 1;
-                    }
-                    Op::Storage { dtype: _, scope: MemScope::Circular, .. } => {
-                        if let Some(cb_id) = cb_map.get(&op_id) {
-                            writeln!(reader, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
-                        }
-                    }
-                    Op::Storage { scope: MemScope::Local, .. } => unreachable!(),
-                    Op::Storage { scope: MemScope::Register, .. } => todo!(),
-                    Op::Load { .. } => {}
-                    Op::Store { dst, src, index: st_idx, layout: st_layout } => {
-                        let Op::Load { src: ld_src, index: ld_idx, layout: ld_layout } = self.ops[src].op else {
-                            panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
-                        };
-                        let Op::Param { kind: ParamKind::Global, .. } = self.ops[ld_src].op else {
-                            unreachable!()
-                        };
-                        let Op::Storage { dtype, scope: MemScope::Circular, .. } = self.ops[dst].op else {
-                            unreachable!()
-                        };
-
-                        // Must match the accessor's stride above (buffer pages).
-                        let page_size = TT_DRAM_PAGE_BYTES;
-                        let elem_size = dtype.bit_size() as u32 / 8;
-                        if let Some(cb_id) = cb_map.get(&dst) {
-                            if !filled_cbs.iter().any(|(id, _)| *id == *cb_id) {
-                                if let Op::Storage { dtype, len, .. } = self.ops[dst].op {
-                                    // Depth in whole 2048B pages (dtype-aware:
-                                    // a 1024-elem F32 CB is 2 pages).
-                                    filled_cbs.push((*cb_id, len * (dtype.bit_size() as i64 / 8) / 2048));
-                                }
-                            }
-                            match (ld_layout, st_layout) {
-                                (MemLayout::Scalar, MemLayout::Scalar) => {
-                                    if loop_depth == 0 {
-                                        writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
-                                        writeln!(reader, "{indent}uint32_t rbase{cb_id} = cb{cb_id}.get_write_ptr();");
-                                        writeln!(reader, "{indent}DEVICE_PRINT(\"rbase{cb_id}={{}}\\n\", rbase{cb_id});");
-                                    }
-                                    // Old dataflow API with raw L1 addresses
-                                    // (mirrors TT's own readers): the Noc-class
-                                    // CB-endpoint forms misaddress sub-tile
-                                    // offsets (bit9 := bit5 substitution).
-                                    writeln!(
-                                        reader,
-                                        "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{page_size}), (uint32_t)((r{ld_idx}*{elem_size})%{page_size}));"
-                                    );
-                                    writeln!(
-                                        reader,
-                                        "{indent}noc_async_read(rnoc{op_id}, rbase{cb_id} + (uint32_t)(r{st_idx}*{elem_size}), {elem_size});"
-                                    );
-                                }
-                                (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
-                                    // Scratch CBs (accumulators) are IR fiction:
-                                    // no DRAM traffic is emitted for them.
-                                    if !scratch_cbs.contains(cb_id) {
-                                    // Whole-tile DRAM -> CB transfer (tile-layout
-                                    // DRAM): a single sequential NOC read.
-                                    // Streaming protocol (matches tt-metal's own
-                                    // readers): reserve, read, barrier, push PER
-                                    // TILE, straight-line and in-loop alike.
-                                    // Back-to-back reserve_back(1) calls do
-                                    // NOT advance the write pointer, so batching
-                                    // reserves overwrites the same page (last
-                                    // tile wins, later pages stay empty).
-                                    let tile_bytes = x as u32 * y as u32 * elem_size;
-                                    writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
-                                    writeln!(
-                                        reader,
-                                        "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{page_size}), (uint32_t)((r{ld_idx}*{elem_size})%{page_size}));"
-                                    );
-                                    writeln!(
-                                        reader,
-                                        "{indent}noc_async_read(rnoc{op_id}, cb{cb_id}.get_write_ptr(), {tile_bytes});"
-                                    );
-                                    writeln!(reader, "{indent}noc_async_read_barrier();");
-                                    writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
-                                    if !per_tile_pushed.contains(cb_id) {
-                                        per_tile_pushed.push(*cb_id);
-                                    }
-                                    }
-                                }
-                                _ => todo!(),
-                            }
-                        }
-                    }
-                    Op::Binary { x, y, bop } => {
-                        let dt = self.dtype(op_id);
-                        let _ = match bop {
-                            BOp::Add => writeln!(reader, "{indent}{} r{op_id} = r{x} + r{y};", dt.c_type()),
-                            BOp::Sub => writeln!(reader, "{indent}{} r{op_id} = r{x} - r{y};", dt.c_type()),
-                            BOp::Mul => writeln!(reader, "{indent}{} r{op_id} = r{x} * r{y};", dt.c_type()),
-                            BOp::Div => writeln!(reader, "{indent}{} r{op_id} = r{x} / r{y};", dt.c_type()),
-                            BOp::Mod => writeln!(reader, "{indent}{} r{op_id} = r{x} % r{y};", dt.c_type()),
-                            BOp::Max => writeln!(reader, "{indent}{} r{op_id} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
-                            BOp::BitShiftLeft => writeln!(reader, "{indent}{} r{op_id} = r{x} << r{y};", dt.c_type()),
-                            BOp::Cmplt => writeln!(reader, "{indent}{} r{op_id} = r{x} < r{y};", dt.c_type()),
-                            _ => unreachable!("{bop:?}"),
-                        };
-                    }
-                    Op::Mad { x, y, z } => {
-                        let dt = self.dtype(op_id);
-                        writeln!(reader, "{indent}{} r{op_id} = r{x} * r{y} + r{z};", dt.c_type());
-                    }
-                    Op::Loop { len } => {
-                        // No hoisted reserves: every tile store reserves its
-                        // own page per execution (straight-line or per loop
-                        // iteration). A hoisted reserve would pin a page on
-                        // 1-page CBs and stall the first iteration forever.
-                        writeln!(reader, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
-                        indent += "  ";
-                        loop_depth += 1;
-                    }
-                    Op::EndLoop => {
-                        indent.pop();
-                        indent.pop();
-                        writeln!(reader, "{indent}}}");
-                        loop_depth -= 1;
-                    }
-                    Op::Const(val) => {
-                        writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
-                    }
-                    Op::Range { axis, kind: RangeKind::Group(_), .. } => {
-                        writeln!(
-                            reader,
-                            "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});",
-                            reader_params.len() + axis as usize
-                        );
-                        writeln!(reader, "{indent}DEVICE_PRINT(\"r{op_id}=gidx{axis}={{}}\\n\", r{op_id});");
-                    }
-                    Op::Barrier => {
-                        break;
-                    }
-                    Op::Cast { x, dtype } => {
-                        writeln!(reader, "{indent}{} r{op_id} = ({})r{x};", dtype.c_type(), dtype.c_type());
-                    }
-                    Op::Bitcast { .. } => todo!("tenstorrent: bitcast not implemented"),
-                    Op::Range { kind: RangeKind::Local(_), .. } => {
-                        unreachable!(
-                            "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
-                        )
-                    }
-                    ref op => todo!("{op:?}"),
-                }
-                op_id = self.next_op(op_id);
-            }
-            writeln!(reader, "{indent}noc_async_read_barrier();");
-            for &(cb_id, depth) in &filled_cbs {
-                if per_tile_pushed.contains(&cb_id) {
-                    continue;
-                }
-                // Scratch CBs get no traffic: pushing phantom pages would
-                // corrupt the (unused) CB's pointers for no reason.
-                if scratch_cbs.contains(&cb_id) {
-                    continue;
-                }
-                writeln!(reader, "{indent}cb{cb_id}.push_back({depth});");
-            }
-            writeln!(reader, "}}");
-        }
-        op_id = self.next_op(op_id);
-
-        if debug_asm {
-            println!("[tenstorrent] reader:\n{reader}");
+        if !scan.is_null() {
+            panic!("tenstorrent2 cb_map scan did not finish in 10000 steps");
         }
 
-        // Generate compute kernel source
-        let mut compute = String::new();
-        writeln!(compute, "#include <cstdint>");
-        writeln!(compute, "#include \"api/compute/common.h\"");
-        writeln!(compute, "#include \"api/compute/compute_kernel_api.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_binary_sfpu.h\"");
-        writeln!(compute, "#include \"api/compute/tile_move_copy.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_unary/eltwise_unary.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_unary/trigonometry.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_unary/exp.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_unary/recip.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_unary/sqrt.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_unary/rounding.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_unary/negative.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_unary/bitwise_not.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_unary/typecast.h\"");
-        // bitwise_and.h does not compile for blackhole in tt-metal 0.72
-        // (ambiguous sfpi overload, read-only headers): include it, like
-        // binary_shift.h, only when the kernel actually emits those calls.
-        // Pre-scan (the init scan below runs after the includes).
-        let (mut uses_shift, mut uses_and) = (false, false);
-        {
-            let mut pre = self.head;
-            let mut steps = 0usize;
-            while !pre.is_null() {
-                steps += 1;
-                if steps > 100_000 {
-                    panic!("tenstorrent shift/and pre-scan did not finish");
-                }
-                if let Op::Binary { bop, .. } = self.ops[pre].op {
-                    uses_shift |= bop == BOp::BitShiftRight;
-                    uses_and |= bop == BOp::BitAnd;
-                }
-                pre = self.next_op(pre);
-            }
-        }
-        if uses_shift {
-            writeln!(compute, "#include \"api/compute/binary_shift.h\"");
-        }
-        if uses_and {
-            writeln!(compute, "#include \"api/compute/eltwise_unary/bitwise_and.h\"");
-        }
-        writeln!(compute, "#include \"api/compute/eltwise_unary/fill.h\"");
-        writeln!(compute, "#include \"api/compute/matmul.h\"");
-        // Packer output-format reconfig (fp32_accuracy doc): without it
-        // the packer treats DST as 16-bit even under fp32_dest_acc_en.
-        writeln!(compute, "#include \"api/compute/reconfig_data_format.h\"");
-        writeln!(compute, "#include \"api/dataflow/circular_buffer.h\"");
-        writeln!(compute, "#include \"api/debug/device_print.h\"");
-        writeln!(compute, "void kernel_main() {{");
-        let mut indent = String::from("  ");
-        {
-            let mut cb_ids: Vec<u32> = cb_map.values().copied().collect();
-            for cb_id in cb_map.values() {
-                if !cb_ids.contains(cb_id) {
-                    cb_ids.push(*cb_id);
-                }
-            }
-            cb_ids.sort();
-            for cb_id in &cb_ids {
-                writeln!(compute, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
-            }
+        let reader = TTKernel::Reader { src: String::new(), params: Vec::new() };
+        let compute = TTKernel::Reader { src: String::new(), params: Vec::new() };
+        let writer = TTKernel::Reader { src: String::new(), params: Vec::new() };
 
-            let mut unary_inits: Set<&'static str> = Set::default();
-            let mut binary_inits: Set<&'static str> = Set::default();
-            let mut typecast_inits: Set<(u32, u32)> = Set::default();
-            // (in0_cb, in1_cb) pairs used by MatmulTile ops; mm_init needs
-            // them plus the section's output CB (for packer config).
-            let mut mm_inits: Vec<(u32, u32)> = Vec::new();
-            let mut mm_out_cb: Option<u32> = None;
-            let mut has_fill = false;
-            let (_dtypes, rcs) = self.compute_dtypes_and_rcs();
-            let mut dst_slots: Map<OpId, Vec<u32>> = Map::default();
-            let mut consumer_count: Map<OpId, u32> = Map::default();
-            let mut next_slot = 0u32;
-            let mut output_stores: Vec<(u32, u32)> = Vec::new();
+        Ok((reader, compute, writer))
+    }
 
-            // Emit scalar deps of compute stores in kernel order
-            let compute_stores: Vec<OpId> = {
-                let mut stores = Vec::new();
-                let mut scan = op_id;
-                let mut steps_scan = 0usize;
-                while !scan.is_null() {
-                    steps_scan += 1;
-                    if steps_scan > 10_000 {
-                        panic!("tt_binary_init did not finish in 10000 steps");
+    /// All ops needed by the stores inside the given section, in IR order,
+    /// with their dtypes and section-local refcounts.
+    ///
+    /// The list holds the section's stores, the transitive closure of
+    /// their data dependencies, and the structural ops (loops, branches,
+    /// ranges, barriers) lexically inside the section. `dtypes`/`rcs`
+    /// mirror [`Kernel::compute_dtypes_and_rcs`] restricted to this set:
+    /// refcounts only count uses inside the section.
+    fn get_needed_ops(&self, tt_section: TtSection) -> (Vec<OpId>, Map<OpId, (DType, MemLayout)>, Map<OpId, u32>) {
+        // Phase 1: stores and structural ops lexically inside the section.
+        let mut section = TtSection::Reader;
+        let mut stores: Vec<OpId> = Vec::new();
+        let mut structural: Map<OpId, ()> = Map::default();
+        let mut scan = self.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            match &self.ops[scan].op {
+                Op::Barrier => {
+                    if section == tt_section {
+                        structural.insert(scan, ());
                     }
-                    if let Op::Barrier = self.ops[scan].op {
-                        break;
-                    }
-                    if let Op::Store { .. } = self.ops[scan].op {
+                    section.advance();
+                }
+                Op::Store { .. } => {
+                    if section == tt_section {
                         stores.push(scan);
                     }
-                    scan = self.next_op(scan);
                 }
-                stores
-            };
-            let compute_deps = {
-                let mut deps = Set::default();
-                let mut stack: Vec<OpId> = compute_stores.iter().copied().collect();
-                while let Some(id) = stack.pop() {
-                    if !deps.insert(id) {
-                        continue;
+                Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Range { .. } => {
+                    if section == tt_section {
+                        structural.insert(scan, ());
                     }
-                    stack.extend(self.ops[id].op.parameters());
                 }
-                deps
-            };
-            {
-                let mut scan = self.head;
-                let mut param_idx = 0u32;
-                let mut steps_scan = 0usize;
-                while scan != op_id {
-                    steps_scan += 1;
-                    if steps_scan > 10_000 {
-                        panic!("tt_codegen did not finish in 10000 steps");
-                    }
-                    if compute_deps.contains(&scan) {
-                        match &self.ops[scan].op {
-                            Op::Range { kind: RangeKind::Local(_), .. } => unreachable!(
-                                "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
-                            ),
-                            Op::Range { axis, kind: RangeKind::Group(_), .. } => {
-                                writeln!(
-                                    compute,
-                                    "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});",
-                                    compute_params.len() + *axis as usize
-                                );
-                            }
-                            Op::Param { dtype, kind: ParamKind::Variable, .. } => {
-                                if compute_params.contains(&param_idx) {
-                                    let arg = compute_pos[&param_idx];
-                                    writeln!(
-                                        compute,
-                                        "{indent}{} r{scan} = ({})get_arg_val<uint32_t>({arg});",
-                                        dtype.c_type(),
-                                        dtype.c_type()
-                                    );
-                                }
-                            }
-                            Op::Const(val) => {
-                                writeln!(compute, "{indent}{} r{scan} = {};", val.dtype().c_type(), val.c_code());
-                            }
-                            Op::Binary { x, y, bop } => {
-                                let dt = self.dtype(scan);
-                                let _ = match bop {
-                                    BOp::Add => writeln!(compute, "{indent}{} r{scan} = r{x} + r{y};", dt.c_type()),
-                                    BOp::Sub => writeln!(compute, "{indent}{} r{scan} = r{x} - r{y};", dt.c_type()),
-                                    BOp::Mul => writeln!(compute, "{indent}{} r{scan} = r{x} * r{y};", dt.c_type()),
-                                    BOp::Div => writeln!(compute, "{indent}{} r{scan} = r{x} / r{y};", dt.c_type()),
-                                    BOp::Mod => writeln!(compute, "{indent}{} r{scan} = r{x} % r{y};", dt.c_type()),
-                                    BOp::BitShiftLeft => writeln!(compute, "{indent}{} r{scan} = r{x} << r{y};", dt.c_type()),
-                                    BOp::Cmplt => writeln!(compute, "{indent}{} r{scan} = r{x} < r{y};", dt.c_type()),
-                                    _ => unreachable!("{bop:?}"),
-                                };
-                            }
-                            Op::Cast { x, dtype } => {
-                                writeln!(compute, "{indent}{} r{scan} = r{x};", dtype.c_type());
-                            }
-                            Op::Bitcast { .. } => todo!("tenstorrent: bitcast not implemented"),
-                            _ => {}
-                        }
-                    }
-                    if matches!(&self.ops[scan].op, Op::Param { .. }) {
-                        param_idx += 1;
-                    }
-                    scan = self.next_op(scan);
-                }
+                _ => {}
             }
-
-            // Scratch chains (CB -> chain): folded tails stored to
-            // compute-local scratch CBs, filled at the end of the fold
-            // walk below. A later load-and-pack of that CB is a DST round
-            // trip: the store packs the chain slot directly (see Store).
-            let mut scratch_chains: Map<u32, usize> = Map::default();
-            // Fold pure K-accumulation add chains onto matmul DST accumulation:
-            // add(acc, matmul) with a zero seed and a single final CB store
-            // becomes repeated matmul_tiles into one shared DST slot (the
-            // reference demo accumulates in DST across K exactly this way).
-            // Anything else keeps its add — and trips the mixed-init rule
-            // below instead of wedging the board.
-            let mut folded_adds: Set<OpId> = Set::default();
-            let mut folded_seeds: Set<OpId> = Set::default();
-            let mut matmul_chain: Map<OpId, usize> = Map::default();
-            // CBs stored in the compute section: accumulation scratch
-            // lives here (reader-fed inputs never do).
-            let mut compute_stored_cbs: Set<u32> = Set::default();
-            for &st in &compute_stores {
-                if let Op::Store { dst, .. } = self.ops[st].op {
-                    if let Some(&cb) = cb_map.get(&dst) {
-                        compute_stored_cbs.insert(cb);
-                    }
-                }
-            }
-            // CBs read by the writer section (past the compute-closing
-            // barrier, scanning from the compute head): program output,
-            // never fold scratch — folding a writer-read CB would silently
-            // drop real output traffic.
-            let mut writer_loaded_cbs: Set<u32> = Set::default();
-            {
-                let mut wscan = op_id;
-                let mut barriers = 0u32;
-                let mut wsteps = 0usize;
-                while !wscan.is_null() {
-                    wsteps += 1;
-                    if wsteps > 10_000 {
-                        panic!("tt fold writer scan did not finish in 10000 steps");
-                    }
-                    match self.ops[wscan].op {
-                        Op::Barrier => barriers += 1,
-                        Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
-                            if barriers >= 1 {
-                                if let Some(&cb) = cb_map.get(&src) {
-                                    writer_loaded_cbs.insert(cb);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    wscan = self.next_op(wscan);
-                }
-            }
-            {
-                let is_zero = |c: &Constant| {
-                    matches!(c, Constant::BF16(b) if b == &[0, 0])
-                        || matches!(c, Constant::F16(b) if b == &[0, 0])
-                        || matches!(c, Constant::F32(b) if b == &[0, 0, 0, 0])
-                };
-                let mut consumers: Map<OpId, Vec<OpId>> = Map::default();
-                let mut sec = op_id;
-                let mut sec_steps = 0usize;
-                while !sec.is_null() {
-                    sec_steps += 1;
-                    if sec_steps > 10_000 {
-                        panic!("tenstorrent fold scan did not finish in 10000 steps");
-                    }
-                    if matches!(self.ops[sec].op, Op::Barrier) {
-                        break;
-                    }
-                    //eprintln!("TEMP sec {sec}: {:?}", self.ops[sec].op); // TEMP debug
-                    for p in self.ops[sec].op.parameters() {
-                        consumers.entry(p).or_default().push(sec);
-                    }
-                    sec = self.next_op(sec);
-                }
-                let sole_user = |v: OpId, who: OpId| matches!(consumers.get(&v), Some(users) if users.as_slice() == [who]);
-                let mut open: Map<OpId, usize> = Map::default();
-                let mut members: Vec<Vec<OpId>> = Vec::new();
-                let mut chain_seeds: Vec<OpId> = Vec::new();
-                let mut chain_mats: Vec<Vec<OpId>> = Vec::new();
-                let mut walk = op_id;
-                let mut walk_steps = 0usize;
-                while !walk.is_null() {
-                    walk_steps += 1;
-                    if walk_steps > 10_000 {
-                        panic!("tenstorrent fold scan did not finish in 10000 steps");
-                    }
-                    if matches!(self.ops[walk].op, Op::Barrier) {
-                        break;
-                    }
-                    if let Op::Binary { x, y, bop } = self.ops[walk].op {
-                        if bop == BOp::Add {
-                            //eprintln!("TEMP fold cand {walk}"); // TEMP debug
-                            let x_is_mm = matches!(self.ops[x].op, Op::MatmulTile { .. });
-                            let y_is_mm = matches!(self.ops[y].op, Op::MatmulTile { .. });
-                            // Sum of two matmuls: add(m0, m1). Constant
-                            // folding already removes zero seeds, so this is
-                            // the shape K-accumulation actually takes.
-                            if x_is_mm
-                                && y_is_mm
-                                && rcs.get(&x).copied().unwrap_or(0) == 1
-                                && rcs.get(&y).copied().unwrap_or(0) == 1
-                                && sole_user(x, walk)
-                                && sole_user(y, walk)
-                                && rcs.get(&walk).copied().unwrap_or(0) == 1
-                            {
-                                //eprintln!("TEMP fold sum-ok {walk}"); // TEMP debug
-                                let c = members.len();
-                                members.push(vec![walk]);
-                                chain_seeds.push(OpId::NULL);
-                                chain_mats.push(vec![x, y]);
-                                folded_adds.insert(walk);
-                                matmul_chain.insert(x, c);
-                                matmul_chain.insert(y, c);
-                                open.insert(walk, c);
-                            } else {
-                                // Accumulator chain: add(acc, m) where acc is
-                                // a zero seed or a previously folded add.
-                                let (m, a) = if matches!(self.ops[x].op, Op::MatmulTile { .. }) {
-                                    (x, y)
-                                } else if matches!(self.ops[y].op, Op::MatmulTile { .. }) {
-                                    (y, x)
-                                } else {
-                                    (OpId::NULL, OpId::NULL)
-                                };
-                                if !m.is_null()
-                                    && rcs.get(&m).copied().unwrap_or(0) == 1
-                                    && sole_user(m, walk)
-                                    && rcs.get(&walk).copied().unwrap_or(0) == 1
-                                {
-                                    //eprintln!("TEMP fold struct-ok {walk} m={m} a={a}"); // TEMP debug
-                                    if let Some(&c) = open.get(&a) {
-                                        folded_adds.insert(walk);
-                                        matmul_chain.insert(m, c);
-                                        members[c].push(walk);
-                                        chain_mats[c].push(m);
-                                        open.remove(&a);
-                                        open.insert(walk, c);
-                                    } else if let Op::Const(k) = &self.ops[a].op {
-                                        if is_zero(k) && rcs.get(&a).copied().unwrap_or(0) == 1 && sole_user(a, walk) {
-                                            let c = members.len();
-                                            members.push(vec![walk]);
-                                            chain_seeds.push(a);
-                                            chain_mats.push(vec![m]);
-                                            folded_adds.insert(walk);
-                                            folded_seeds.insert(a);
-                                            matmul_chain.insert(m, c);
-                                            open.insert(walk, c);
-                                        }
-                                    } else if let Op::Load { src: s, layout: MemLayout::Tile { .. }, .. } =
-                                        &self.ops[a].op
-                                    {
-                                        // Scratch-accumulator seed: the acc value
-                                        // lives in a compute-local CB (stored
-                                        // in-compute, never read by the
-                                        // writer). Folds like a zero seed; the
-                                        // acc CB traffic stays (correct, and a
-                                        // later pass may suppress it for perf).
-                                        if let Some(&seed_cb) = cb_map.get(s)
-                                            && compute_stored_cbs.contains(&seed_cb)
-                                            && !writer_loaded_cbs.contains(&seed_cb)
-                                            && rcs.get(&a).copied().unwrap_or(0) == 1
-                                            && sole_user(a, walk)
-                                        {
-                                            let c = members.len();
-                                            members.push(vec![walk]);
-                                            chain_seeds.push(a);
-                                            chain_mats.push(vec![m]);
-                                            folded_adds.insert(walk);
-                                            matmul_chain.insert(m, c);
-                                            open.insert(walk, c);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    walk = self.next_op(walk);
-                }
-                // Roll back chains whose tail does not feed exactly one CB store.
-                for (tail, c) in open.iter() {
-                    //eprintln!("TEMP fold tail {tail} chain {c}"); // TEMP debug
-                    let ok = matches!(consumers.get(tail), Some(users) if users.len() == 1)
-                        && matches!(self.ops[consumers[tail][0]].op, Op::Store { dst, .. } if cb_map.contains_key(&dst));
-                    if !ok {
-                        for &add in &members[*c] {
-                            folded_adds.remove(&add);
-                        }
-                        folded_seeds.remove(&chain_seeds[*c]);
-                        for &m in &chain_mats[*c] {
-                            matmul_chain.remove(&m);
-                        }
-                    }
-                }
-                // Scratch chains: folded tails stored to compute-local
-                // scratch CBs (stored in-compute, never read by the
-                // writer). Only live (still-folded) tails map.
-                for (tail, c) in open.iter() {
-                    if !folded_adds.contains(tail) {
-                        continue;
-                    }
-                    if let Some(users) = consumers.get(tail) {
-                        if users.len() == 1 {
-                            if let Op::Store { dst, .. } = self.ops[users[0]].op {
-                                if let Some(&cb) = cb_map.get(&dst) {
-                                    if compute_stored_cbs.contains(&cb)
-                                        && !writer_loaded_cbs.contains(&cb)
-                                    {
-                                        scratch_chains.insert(cb, *c);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // Loads consumed only by MatmulTile ops need no copy_tile:
-            // matmul reads CBs directly (like the reference demo), and a
-            // copy under mm_init's unpacker config stalls UNPACK.
-            let mut matmul_only_loads: Set<OpId> = Set::default();
-            {
-                let mut sec = op_id;
-                let mut sec_steps = 0usize;
-                while !sec.is_null() {
-                    sec_steps += 1;
-                    if sec_steps > 10_000 {
-                        panic!("tenstorrent load-use scan did not finish in 10000 steps");
-                    }
-                    if matches!(self.ops[sec].op, Op::Barrier) {
-                        break;
-                    }
-                    if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = self.ops[sec].op {
-                        if cb_map.contains_key(&src) {
-                            let mut uses = Vec::new();
-                            let mut s2 = op_id;
-                            loop {
-                                if s2.is_null() || matches!(self.ops[s2].op, Op::Barrier) {
-                                    break;
-                                }
-                                if self.ops[s2].op.parameters().any(|p| p == sec) {
-                                    uses.push(s2);
-                                }
-                                s2 = self.next_op(s2);
-                            }
-                            if !uses.is_empty() && uses.iter().all(|&u| matches!(self.ops[u].op, Op::MatmulTile { .. })) {
-                                matmul_only_loads.insert(sec);
-                            }
-                        }
-                    }
-                    sec = self.next_op(sec);
-                }
-            }
-            // Loads consumed only by folded (unemitted) adds need no
-            // copy_tile either: nothing reads them (the add folded onto
-            // DST accumulation). Skipped like folded seeds (no slots,
-            // nothing looks them up). CB wait/pop still applies (IR-driven).
-            let mut folded_only_loads: Set<OpId> = Set::default();
-            // Scratch round-trip loads: from a folded scratch chain's CB,
-            // consumed only by packs to writer-read CBs. Emit nothing; the
-            // store packs the chain slot directly (see Store).
-            let mut roundtrip_loads: Set<OpId> = Set::default();
-            {
-                let mut sec = op_id;
-                let mut sec_steps = 0usize;
-                while !sec.is_null() {
-                    sec_steps += 1;
-                    if sec_steps > 10_000 {
-                        panic!("tenstorrent folded-use scan did not finish in 10000 steps");
-                    }
-                    if matches!(self.ops[sec].op, Op::Barrier) {
-                        break;
-                    }
-                    if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = self.ops[sec].op {
-                        if cb_map.contains_key(&src) {
-                            let mut uses = Vec::new();
-                            let mut s2 = op_id;
-                            loop {
-                                if s2.is_null() || matches!(self.ops[s2].op, Op::Barrier) {
-                                    break;
-                                }
-                                if self.ops[s2].op.parameters().any(|p| p == sec) {
-                                    uses.push(s2);
-                                }
-                                s2 = self.next_op(s2);
-                            }
-                            if !uses.is_empty() && uses.iter().all(|&u| folded_adds.contains(&u)) {
-                                folded_only_loads.insert(sec);
-                            } else if let Some(&lcb) = cb_map.get(&src) {
-                                if scratch_chains.contains_key(&lcb)
-                                    && !uses.is_empty()
-                                    && uses.iter().all(|&u| {
-                                        matches!(self.ops[u].op, Op::Store { dst, .. } if cb_map
-                                            .get(&dst)
-                                            .is_some_and(|wcb| writer_loaded_cbs.contains(wcb)))
-                                    })
-                                {
-                                    roundtrip_loads.insert(sec);
-                                }
-                            }
-                        }
-                    }
-                    sec = self.next_op(sec);
-                }
-            }
-
-            // First pass: collect init headers from ops
-            let mut scan = op_id;
-            let mut steps_scan = 0usize;
-            while !scan.is_null() {
-                steps_scan += 1;
-                if steps_scan > 10_000 {
-                    panic!("tt_binary_init did not finish in 10000 steps");
-                }
-                match self.ops[scan].op {
-                    Op::Cast { x, .. } => {
-                        if matches!(self.ops[x].op, Op::Const(_)) {
-                            has_fill = true;
-                        } else {
-                            // Any computed tile input (load, binary, ...) with
-                            // a real format change needs its typecast init.
-                            // NOTE: `scan` is the Cast itself; the outer
-                            // `op_id` cursor is stale here.
-                            let in_fmt = tt_dtype_format(self.dtype(x));
-                            let out_fmt = tt_dtype_format(self.dtype(scan));
-                            if in_fmt != out_fmt {
-                                typecast_inits.insert((in_fmt, out_fmt));
-                            }
-                        }
-                    }
-                    Op::Unary { x, uop } => {
-                        if matches!(self.ops[x].op, Op::Const(_)) {
-                            has_fill = true;
-                        }
-                        if let Some(init) = tt_unary_init(uop) {
-                            unary_inits.insert(init);
-                        }
-                    }
-                    Op::Binary { x, y, bop } => {
-                        // Folded K-accumulation adds emit nothing (DST
-                        // accumulation), so they contribute no init or fill.
-                        if !folded_adds.contains(&scan) {
-                            if matches!(self.ops[x].op, Op::Const(_)) || matches!(self.ops[y].op, Op::Const(_)) {
-                                has_fill = true;
-                            }
-                            if let Some(init) = tt_binary_init(bop) {
-                                binary_inits.insert(init);
-                            }
-                        }
-                    }
-                    Op::Store { dst, src, .. } => {
-                        if matches!(self.ops[src].op, Op::Const(_)) {
-                            has_fill = true;
-                        }
-                        // The section's output CB is the LAST circular
-                        // store: scratch accumulators are stored first
-                        // (inside inner loops), the packed output last.
-                        // (Single-store kernels: identical to first-wins.)
-                        if let Op::Storage { scope: MemScope::Circular, .. } = self.ops[dst].op {
-                            if let Some(&cb_id) = cb_map.get(&dst) {
-                                mm_out_cb = Some(cb_id);
-                            }
-                        }
-                    }
-                    Op::MatmulTile { x, y } => {
-                        let Op::Load { src: cb_a, layout: MemLayout::Tile { .. }, .. } = self.ops[x].op else {
-                            panic!("tenstorrent matmul_tile x must be a tile load from a circular buffer")
-                        };
-                        let Op::Load { src: cb_b, layout: MemLayout::Tile { .. }, .. } = self.ops[y].op else {
-                            panic!("tenstorrent matmul_tile y must be a tile load from a circular buffer")
-                        };
-                        let (Some(&cb_a_id), Some(&cb_b_id)) = (cb_map.get(&cb_a), cb_map.get(&cb_b)) else {
-                            panic!("tenstorrent matmul_tile inputs must be circular buffers")
-                        };
-                        if !mm_inits.contains(&(cb_a_id, cb_b_id)) {
-                            mm_inits.push((cb_a_id, cb_b_id));
-                        }
-                    }
-                    Op::Const(_) => has_fill = true,
-                    Op::Barrier => break,
-                    _ => {}
-                }
-                scan = self.next_op(scan);
-            }
-
-            // Mixed matmul + SFPU inits wedge the board: mm_init owns the
-            // unpacker config, and any *_tile_init emitted after it reprograms
-            // the unpacker for SFPU ops, stalling UNPACK at launch (only an
-            // external reset recovers). Refuse to emit the wedging order;
-            // mixed kernels need init interleaving, which codegen does not
-            // implement yet.
-            if !mm_inits.is_empty() && (!binary_inits.is_empty() || !unary_inits.is_empty() || !typecast_inits.is_empty()) {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "tenstorrent mixed matmul + SFPU tile inits wedge UNPACK (mm_init unpacker config is clobbered by *_tile_init); init interleaving is unimplemented".into(),
-                });
-            }
-
-            // compute_kernel_hw_startup first: the header requires it
-            // before any other compute API call (inits included).
-            // TEMP DIAG no-FPU stub: replace matmul compute with
-            // a cb0->out copy (14_t-shaped: init_sfpu + copy + pack) to
-            // read out reader data as the FPU sees it. Revert after.
-            const TEMP_STUB_NO_FPU: bool = false;
-            const EMIT_HW_STARTUP: bool = false;
-            if !mm_inits.is_empty() && !TEMP_STUB_NO_FPU {
-                let out_cb = mm_out_cb.expect("tenstorrent matmul kernel needs a tile store to a circular buffer");
-                // One-time HW setup (like the official matmul example):
-                // all matmuls in the kernel must share this triple.
-                let (first_a, first_b) = mm_inits[0];
-                if EMIT_HW_STARTUP {
-                    writeln!(compute, "{indent}compute_kernel_hw_startup({first_a}, {first_b}, {out_cb});");
-                }
-                for (cb_a, cb_b) in &mm_inits {
-                    writeln!(compute, "{indent}mm_init({cb_a}, {cb_b}, {out_cb});");
-                }
-            }
-            let input_ids: Vec<u32> = cb_map.values().copied().collect();
-            let output_ids: Vec<u32> = cb_map.values().copied().collect();
-            // init_sfpu(icb, ocb) programs the unpacker for the input CB
-            // and the packer for the OUTPUT CB. The output is the first
-            // tile store's CB, not cb_map[0]: packing under a wrong ocb
-            // (e.g. an F32 input CB while packing F16) silently produces
-            // garbage. Falls back to the old shape when nothing is stored.
-            let mut sfpu_out: Option<u32> = None;
-            {
-                let mut sscan = op_id;
-                let mut ssteps = 0usize;
-                while !sscan.is_null() {
-                    ssteps += 1;
-                    if ssteps > 10_000 {
-                        panic!("tt sfpu out scan did not finish in 10000 steps");
-                    }
-                    match self.ops[sscan].op {
-                        Op::Barrier => break,
-                        Op::Store { dst, layout: MemLayout::Tile { .. }, .. } => {
-                            if let Some(&cb_id) = cb_map.get(&dst) {
-                                sfpu_out = Some(cb_id);
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    sscan = self.next_op(sscan);
-                }
-            }
-            // init_sfpu programs the unpacker for its CBs; mm_init owns the
-            // unpacker in matmul kernels, so emitting both clobbers the
-            // matmul config and stalls UNPACK (wedges the board).
-            // Non-matmul kernels keep init_sfpu as their only unpack config.
-            if mm_inits.is_empty() && !input_ids.is_empty() && !output_ids.is_empty() {
-                // Find the input CB by scanning the compute section for the
-                // first Op::Load whose source maps to a CB.  Using
-                // input_ids[0] (HashMap iteration order) is non-deterministic
-                // and can pick the wrong CB.
-                let mut in0 = input_ids[0];
-                let mut scan_in = op_id;
-                while !scan_in.is_null() {
-                    if let Op::Load { src, .. } = self.ops[scan_in].op {
-                        if let Some(&cb) = cb_map.get(&src) {
-                            in0 = cb;
-                            break;
-                        }
-                    }
-                    scan_in = self.next_op(scan_in);
-                }
-                let out0 = sfpu_out.unwrap_or(output_ids[0]);
-                writeln!(compute, "{indent}init_sfpu({in0}, {out0});");
-            }
-            if has_fill {
-                writeln!(compute, "{indent}fill_tile_init();");
-            }
-            for init in unary_inits {
-                writeln!(compute, "{indent}{init}");
-            }
-            for init in binary_inits {
-                writeln!(compute, "{indent}{init}");
-            }
-            // All op inits up front, before any loop or data movement
-            // (CUDA-backend style): per-iteration init reprograms live
-            // SFPU/packer state and breaks 32-bit DST kernels.
-            for (in_fmt, out_fmt) in &typecast_inits {
-                writeln!(compute, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
-            }
-
-            // Streaming sections contain loops: per-iteration wait/pop/
-            // pack/push handshaking replaces the upfront full-depth wait
-            // and the end-of-section drain.
-            let compute_has_loop = {
-                let mut fscan = op_id;
-                let mut fsteps = 0usize;
-                let mut found = false;
-                while !fscan.is_null() {
-                    fsteps += 1;
-                    if fsteps > 10_000 {
-                        panic!("tt compute loop scan did not finish in 10000 steps");
-                    }
-                    match self.ops[fscan].op {
-                        Op::Barrier => break,
-                        Op::Loop { .. } => {
-                            found = true;
-                            break;
-                        }
-                        _ => {}
-                    }
-                    fscan = self.next_op(fscan);
-                }
-                found
-            };
-            // Per-loop-nest input CBs (innermost last): pushed at Loop,
-            // popped at the matching EndLoop, one page per iteration.
-            let mut loop_cbs: Vec<Vec<u32>> = Vec::new();
-            // Per-loop-nest packed output CBs (innermost last): recorded
-            // at Store, announced at the matching EndLoop after release.
-            let mut loop_pushes: Vec<Vec<u32>> = Vec::new();
-            // Which loop levels own the FPU acquire (outermost only):
-            // inner loops run under the outer acquire so DST accumulation
-            // survives across their iterations (official matmul structure).
-            let mut acquire_stack: Vec<bool> = Vec::new();
-            // CBs popped inside loops: skipped by the end-of-section drain.
-            let mut loop_popped: Set<u32> = Set::default();
-            let mut loop_depth = 0u32;
-            // Tile CBs loaded DIRECTLY in the loop body after `start`
-            // (stops at the matching EndLoop AND at nested Loops): one
-            // streaming page per iteration. Direct-only: a nested loop
-            // hands its own CBs (waits/pops at its own EndLoop); letting
-            // the outer loop wait/pop them too over-pops and deadlocks.
-            let body_cbs = |start: OpId| -> Vec<u32> {
-                let mut cbs = Vec::new();
-                let mut bscan = self.next_op(start);
-                let mut bsteps = 0usize;
-                let mut bdepth = 0u32;
-                while !bscan.is_null() {
-                    bsteps += 1;
-                    if bsteps > 10_000 {
-                        panic!("tt compute loop body scan did not finish in 10000 steps");
-                    }
-                    match self.ops[bscan].op {
-                        Op::Loop { .. } => bdepth += 1,
-                        Op::EndLoop => {
-                            if bdepth == 0 {
-                                break;
-                            }
-                            bdepth -= 1;
-                        }
-                        Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
-                            if bdepth == 0 {
-                                if let Some(&cb_id) = cb_map.get(&src) {
-                                    // Scratch CBs get no wait/pop: codegen
-                                    // emits no traffic for them anywhere.
-                                    if !cbs.contains(&cb_id) && !scratch_cbs.contains(&cb_id) {
-                                        cbs.push(cb_id);
-                                    }
-                                }
-                            }
-                        }
-                        Op::Barrier => break,
-                        _ => {}
-                    }
-                    bscan = self.next_op(bscan);
-                }
-                cbs
-            };
-
-            // Input CBs with their depth in tiles (from storage len).
-            // Straight-line sections wait/pop the full depth: the reader
-            // pushes everything up front. Streaming (looped) sections use
-            // per-iteration handshaking instead (see Loop below).
-            let mut load_input_cbs: Vec<(u32, i64)> = Vec::new();
-            let mut pre_scan = op_id;
-            let mut steps_pre_scan = 0usize;
-            while !pre_scan.is_null() {
-                steps_pre_scan += 1;
-                if steps_pre_scan > 10_000 {
-                    panic!("tt_binary_init did not finish in 10000 steps");
-                }
-                match self.ops[pre_scan].op {
-                    Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
-                        if let Some(&cb_id) = cb_map.get(&src) {
-                            if !load_input_cbs.iter().any(|(id, _)| *id == cb_id) {
-                                // Depth in whole 2048B pages (dtype-aware).
-                                let depth = if let Op::Storage { dtype, len, .. } = self.ops[src].op {
-                                    len * (dtype.bit_size() as i64 / 8) / 2048
-                                } else {
-                                    1
-                                };
-                                load_input_cbs.push((cb_id, depth));
-                            }
-                        }
-                    }
-                    Op::Barrier => break,
-                    _ => {}
-                }
-                pre_scan = self.next_op(pre_scan);
-            }
-            for &(cb_id, depth) in &load_input_cbs {
-                // Streaming sections handshake per iteration (see Loop);
-                // an upfront full-depth wait would deadlock the stream.
-                if !compute_has_loop {
-                    writeln!(compute, "{indent}cb{cb_id}.wait_front({depth});");
-                }
-            }
-            // TEMP DIAG no-FPU stub (see TEMP_STUB_NO_FPU): wait inputs,
-            // fill a constant tile, pack it out, drain inputs. Exercises
-            // the full CB/dataflow protocol with zero FPU involvement.
-            let mut stubbed = false;
-            if TEMP_STUB_NO_FPU && !mm_inits.is_empty() {
-                stubbed = true;
-                let out_cb = mm_out_cb.expect("tenstorrent stub needs the matmul output CB");
-                writeln!(compute, "{indent}init_sfpu(0, {out_cb});");
-                writeln!(compute, "{indent}tile_regs_acquire();");
-                // TEMP DIAG pop-semantics probe (W-full tree): pop one from
-                // each input CB BEFORE copying tile 0. W1 => pops advance;
-                // W0 => pops don't advance; zeros => pops empty/corrupt.
-                for &(loaded_cb, _depth) in &load_input_cbs {
-                    writeln!(compute, "{indent}cb{loaded_cb}.pop_front(1);");
-                }
-                writeln!(compute, "{indent}copy_tile(0, 1, 0);");
-                writeln!(compute, "{indent}tile_regs_commit();");
-                writeln!(compute, "{indent}tile_regs_wait();");
-                writeln!(compute, "{indent}cb{out_cb}.reserve_back(1);");
-                writeln!(compute, "{indent}pack_tile(0, {out_cb});");
-                for &(loaded_cb, depth) in &load_input_cbs {
-                    // TEMP DIAG pop probe: a pre-copy pop already consumed
-                    // one page above; drain only the remainder here.
-                    writeln!(compute, "{indent}cb{loaded_cb}.pop_front({});", depth - 1);
-                }
-                writeln!(compute, "{indent}tile_regs_release();");
-                writeln!(compute, "{indent}cb{out_cb}.push_back(1);");
-                while !op_id.is_null() {
-                    if matches!(self.ops[op_id].op, Op::Barrier) {
-                        break;
-                    }
-                    op_id = self.next_op(op_id);
-                }
-            } else if !compute_has_loop {
-                // Straight-line sections acquire the FPU once; streaming
-                // sections acquire per iteration (see Loop).
-                writeln!(compute, "{indent}tile_regs_acquire();");
-            }
-
-            // Materialize constants used as tile operands (defined outside the
-            // compute range) into DST slots before the tile op loop runs
-            {
-                // Loop trip counts are plain integer consts, not tile
-                // fills: declare them as scalars after the scan (the
-                // materialize closure below borrows the source string).
-                let mut trip_lens: Vec<OpId> = Vec::new();
-                let mut materialize_const = |target: OpId| {
-                    if dst_slots.contains_key(&target) {
-                        return;
-                    }
-                    let Op::Const(val) = self.ops[target].op else {
-                        return;
-                    };
-                    let n = rcs.get(&target).copied().unwrap_or(1).max(1) as usize;
-                    let mut slots = Vec::with_capacity(n);
-                    for _ in 0..n {
-                        let slot = next_slot;
-                        next_slot += 1;
-                        slots.push(slot);
-                        writeln!(compute, "{indent}fill_tile_bitcast({slot}, {});", tt_fill_bits(val));
-                    }
-                    dst_slots.insert(target, slots);
-                };
-                let mut scan = op_id;
-                let mut steps_scan = 0usize;
-                while !scan.is_null() {
-                    steps_scan += 1;
-                    if steps_scan > 10_000 {
-                        panic!("tt_binary_init did not finish in 10000 steps");
-                    }
-                    match self.ops[scan].op {
-                        Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Store { src: x, .. } => materialize_const(x),
-                        Op::Binary { x, y, .. } => {
-                            materialize_const(x);
-                            materialize_const(y);
-                        }
-                        // Loop trip counts are plain integer consts, not
-                        // tile fills: declare them as scalars after the scan.
-                        Op::Loop { len } => {
-                            if !trip_lens.contains(&len) {
-                                trip_lens.push(len);
-                            }
-                        }
-                        Op::Barrier => break,
-                        _ => {}
-                    }
-                    scan = self.next_op(scan);
-                }
-                for len in trip_lens {
-                    if let Op::Const(val) = self.ops[len].op {
-                        let trip = val.as_dim().expect("tenstorrent loop trip count must be a concrete dim");
-                        writeln!(compute, "{indent}uint32_t r{len} = {trip};");
-                    }
-                }
-            }
-
-            let mut steps_op_id = 0usize;
-            let mut chain_slots: Map<usize, u32> = Map::default();
-            // TEMP DIAG single-matmul probe (see below).
-            let mut chain_done: Map<usize, usize> = Map::default();
-            // Tiles popped per CB (none interleaved anymore; the
-            // epilogue drains everything once at the end).
-            let popped: Map<u32, i64> = Map::default();
-            while !op_id.is_null() {
-                steps_op_id += 1;
-                if steps_op_id > 10_000 {
-                    panic!("tt_binary_init did not finish in 10000 steps");
-                }
-                match self.ops[op_id].op {
-                    Op::Load { src, index: _, layout: MemLayout::Tile { .. } } => {
-                        if self.dtype(src) == DType::F64 {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: "tenstorrent has no f64 compute units -- f64 is unsupported, use f32 or bf16".into(),
-                            });
-                        }
-                        // Loads consumed only by matmuls need no copy_tile:
-                        // matmul reads CBs directly. Loads consumed only by
-                        // folded adds need none either (nothing reads them),
-                        // nor do scratch round-trip loads (the store packs
-                        // the chain slot directly). Skipped like folded
-                        // seeds (no slots, nothing looks them up).
-                        if !matmul_only_loads.contains(&op_id)
-                            && !folded_only_loads.contains(&op_id)
-                            && !roundtrip_loads.contains(&op_id)
-                        {
-                            if let Some(&cb_id) = cb_map.get(&src) {
-                                let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
-                                let mut slots = Vec::with_capacity(n);
-                                for _ in 0..n {
-                                    let slot = next_slot;
-                                    next_slot += 1;
-                                    slots.push(slot);
-                                    // copy_tile needs its unpack+datacopy init
-                                    // first (canonical examples init per tile
-                                    // inside the loop); without it the DST
-                                    // fills with garbage.
-                                    writeln!(compute, "{indent}copy_tile_init({cb_id});");
-                                    writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
-                                }
-                                dst_slots.insert(op_id, slots);
-                            }
-                        }
-                    }
-                    Op::Const(val) => {
-                        // Folded zero seeds emit nothing; their add is folded
-                        // into DST accumulation.
-                        if !folded_seeds.contains(&op_id) {
-                            let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
-                            let mut slots = Vec::with_capacity(n);
-                            for _ in 0..n {
-                                let slot = next_slot;
-                                next_slot += 1;
-                                slots.push(slot);
-                                writeln!(compute, "{indent}fill_tile_bitcast({slot}, {});", tt_fill_bits(val));
-                            }
-                            dst_slots.insert(op_id, slots);
-                        }
-                    }
-                    Op::Cast { x, dtype } if matches!(dtype, DType::BF16 | DType::F16 | DType::F32 | DType::U32) => {
-                        let idx = consumer_count.entry(x).or_insert(0);
-                        let slot = dst_slots[&x][*idx as usize];
-                        *idx += 1;
-                        let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
-                        dst_slots.insert(op_id, vec![slot; n]);
-                        let in_fmt = tt_dtype_format(self.dtype(x));
-                        let out_fmt = tt_dtype_format(dtype);
-                        if in_fmt != out_fmt {
-                            // Init is hoisted pre-loop (see above); only the
-                            // op itself is emitted here.
-                            writeln!(compute, "{indent}typecast_tile<{in_fmt}, {out_fmt}>({slot});");
-                        }
-                    }
-                    Op::Unary { x, uop } => {
-                        let idx = consumer_count.entry(x).or_insert(0);
-                        let slot = dst_slots[&x][*idx as usize];
-                        *idx += 1;
-                        let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
-                        dst_slots.insert(op_id, vec![slot; n]);
-                        match uop {
-                            UOp::Neg => writeln!(compute, "{indent}negative_tile({slot});"),
-                            UOp::Not => todo!("logical not tile"),
-                            UOp::BitNot => writeln!(compute, "{indent}bitwise_not_tile({slot});"),
-                            UOp::Exp => writeln!(compute, "{indent}exp_tile({slot});"),
-                            UOp::Exp2 => writeln!(compute, "{indent}exp2_tile({slot});"),
-                            UOp::Ln => unreachable!("should've been changed to log2"),
-                            UOp::Log2 => writeln!(compute, "{indent}log_tile({slot});"),
-                            UOp::Reciprocal => writeln!(compute, "{indent}recip_tile({slot});"),
-                            UOp::Sqrt => writeln!(compute, "{indent}sqrt_tile({slot});"),
-                            UOp::Sin => writeln!(compute, "{indent}sin_tile({slot});"),
-                            UOp::Cos => writeln!(compute, "{indent}cos_tile({slot});"),
-                            UOp::Floor => writeln!(compute, "{indent}floor_tile({slot});"),
-                            UOp::Trunc => writeln!(compute, "{indent}trunc_tile({slot});"),
-                            UOp::Abs => writeln!(compute, "{indent}abs_tile({slot});"),
-                        };
-                    }
-                    Op::Binary { x, y, bop } => {
-                        if folded_adds.contains(&op_id) {
-                            // Folded K-accumulation: the matmul already
-                            // accumulated into the shared DST slot; only
-                            // alias it, emit nothing.
-                            let m = if matches!(self.ops[x].op, Op::MatmulTile { .. }) {
-                                x
-                            } else {
-                                y
-                            };
-                            let acc = dst_slots[&m][0];
-                            let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
-                            dst_slots.insert(op_id, vec![acc; n]);
-                        } else {
-                            let x_idx = consumer_count.entry(x).or_insert(0);
-                            let slot_x = dst_slots[&x][*x_idx as usize];
-                            *x_idx += 1;
-                            let y_idx = consumer_count.entry(y).or_insert(0);
-                            let slot_y = dst_slots[&y][*y_idx as usize];
-                            *y_idx += 1;
-                            let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
-                            dst_slots.insert(op_id, vec![slot_x; n]);
-                            match bop {
-                                BOp::Add => writeln!(compute, "{indent}add_binary_tile({slot_x}, {slot_y}, {slot_x});"),
-                                BOp::Sub => writeln!(compute, "{indent}sub_binary_tile({slot_x}, {slot_y}, {slot_x});"),
-                                BOp::Mul => writeln!(compute, "{indent}mul_binary_tile({slot_x}, {slot_y}, {slot_x});"),
-                                BOp::Div => writeln!(compute, "{indent}div_binary_tile({slot_x}, {slot_y}, {slot_x});"),
-                                BOp::Pow => todo!(),
-                                BOp::Mod => todo!(),
-                                BOp::Cmplt => todo!(),
-                                BOp::Cmpgt => todo!(),
-                                BOp::Max => todo!(),
-                                BOp::Or => todo!(),
-                                BOp::And => todo!(),
-                                BOp::BitXor => todo!(),
-                                BOp::BitOr => todo!(),
-                                BOp::BitAnd => {
-                                    // HW and-op is unary-with-immediate: y must
-                                    // be an int constant mask.
-                                    let Op::Const(c) = self.ops[y].op else {
-                                        todo!("tenstorrent non-const BitAnd mask");
-                                    };
-                                    use crate::dtype::Constant;
-                                    let mask = match c {
-                                        Constant::U8(v) => u32::from(v),
-                                        Constant::U16(v) => u32::from(v),
-                                        Constant::U32(v) => v,
-                                        Constant::I8(v) => v as u32,
-                                        Constant::I16(v) => v as u32,
-                                        Constant::I32(v) => v as u32,
-                                        _ => todo!("tenstorrent BitAnd non-int mask"),
-                                    };
-                                    writeln!(compute, "{indent}bitwise_and_tile({slot_x}, {mask});")
-                                }
-                                BOp::BitShiftLeft => todo!(),
-                                BOp::BitShiftRight => {
-                                    // Integer shifts, templated on the data
-                                    // format (Int32/UInt32/UInt16 per the
-                                    // LLK docs). Writes a FRESH slot (unlike
-                                    // every other binary op): the shifted
-                                    // source routinely stays live for later
-                                    // iterations (e.g. one u16 page feeding
-                                    // four plane extractions), and aliasing
-                                    // slot_x would destroy it.
-                                    let fmt = match self.dtype(x) {
-                                        DType::U32 => "DataFormat::UInt32",
-                                        DType::I32 => "DataFormat::Int32",
-                                        DType::U16 => "DataFormat::UInt16",
-                                        dt => todo!("tenstorrent shift on {dt:?}"),
-                                    };
-                                    let w = next_slot;
-                                    next_slot += 1;
-                                    dst_slots.insert(op_id, vec![w; n]);
-                                    writeln!(
-                                        compute,
-                                        "{indent}binary_right_shift_tile<{fmt}>({slot_x}, {slot_y}, {w});"
-                                    )
-                                }
-                                BOp::NotEq => todo!(),
-                                BOp::Eq => todo!(),
-                                BOp::Cmpge => todo!(),
-                            };
-                        }
-                    }
-                    Op::MatmulTile { x, y } => {
-                        let Op::Load { src: cb_a, index: idx_a, layout: MemLayout::Tile { .. } } = self.ops[x].op else {
-                            panic!("tenstorrent matmul_tile x must be a tile load from a circular buffer")
-                        };
-                        let Op::Load { src: cb_b, index: idx_b, layout: MemLayout::Tile { .. } } = self.ops[y].op else {
-                            panic!("tenstorrent matmul_tile y must be a tile load from a circular buffer")
-                        };
-                        // CB tile indices must be static: pops between FPU
-                        // consumptions defeat subsequent matmuls (the next
-                        // call adds nothing), so every matmul addresses its
-                        // tiles explicitly and draining happens once in the
-                        // epilogue. A dynamic index is a loud failure.
-                        let tile_a = match self.ops[idx_a].op {
-                            Op::Const(c) => c.as_dim().expect("tenstorrent matmul CB tile index has a concrete dim") as u32,
-                            ref op => todo!("tenstorrent matmul CB tile index must be const, got {op:?}"),
-                        };
-                        let tile_b = match self.ops[idx_b].op {
-                            Op::Const(c) => c.as_dim().expect("tenstorrent matmul CB tile index has a concrete dim") as u32,
-                            ref op => todo!("tenstorrent matmul CB tile index must be const, got {op:?}"),
-                        };
-                        let (Some(&cb_a_id), Some(&cb_b_id)) = (cb_map.get(&cb_a), cb_map.get(&cb_b)) else {
-                            panic!("tenstorrent matmul_tile inputs must be circular buffers")
-                        };
-                        let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
-                        // Folded K-accumulation shares one DST slot across
-                        // the chain (matmul_tiles accumulates into DST);
-                        // unfolded matmuls keep a fresh slot each.
-                        // TEMP DIAG single-matmul probe: emit only the first
-                        // matmul per chain (skip the rest, consuming nothing).
-                        const TEMP_SINGLE_MATMUL: bool = false;
-                        let chain = matmul_chain.get(&op_id).copied();
-                        let done = chain.map(|c| chain_done.get(&c).copied().unwrap_or(0)).unwrap_or(0);
-                        if let Some(c) = chain {
-                            chain_done.insert(c, done + 1);
-                        }
-                        if TEMP_SINGLE_MATMUL && done > 0 {
-                            let acc = chain_slots[&chain.expect("tenstorrent chain slot missing")];
-                            dst_slots.insert(op_id, vec![acc; n]);
-                        } else {
-                            let slot = if let Some(c) = chain {
-                                if let Some(&s) = chain_slots.get(&c) {
-                                    s
-                                } else {
-                                    let s = next_slot;
-                                    next_slot += 1;
-                                    chain_slots.insert(c, s);
-                                    s
-                                }
-                            } else {
-                                let s = next_slot;
-                                next_slot += 1;
-                                s
-                            };
-                            dst_slots.insert(op_id, vec![slot; n]);
-                            // matmul_tiles accumulates into DST, which
-                            // tile_regs_acquire() zeroes up front: each call
-                            // computes slot = previous + A@B. Pure K-loop
-                            // accumulation is folded onto DST by codegen (see
-                            // folded_adds); only non-foldable adds are emitted.
-                            writeln!(compute, "{indent}matmul_tiles({cb_a_id}, {cb_b_id}, {tile_a}, {tile_b}, {slot});");
-                            // No pops between chain matmuls: popping before a
-                            // later FPU consumption defeats it (adds nothing);
-                            // the epilogue drains everything once at the end.
-                            // (Upfront wait_front(depth) already guarantees all
-                            // tiles are present.)
-                        }
-                    }
-                    Op::Store { dst, src, index: _, layout: MemLayout::Tile { .. } } => {
-                        if let Some(&cb_id) = cb_map.get(&dst) {
-                            // Scratch CBs (accumulators) are IR fiction: no
-                            // pack/push traffic is emitted for them. The DST
-                            // sum stays live for the chain-slot pack below.
-                            if !scratch_cbs.contains(&cb_id) {
-                            // Scratch round trip (see roundtrip_loads): the
-                            // load emitted nothing, so pack the chain's DST
-                            // slot directly instead of a copy slot.
-                            let slot = if roundtrip_loads.contains(&src) {
-                                if let Op::Load { src: lsrc, .. } = self.ops[src].op {
-                                    let lcb = cb_map
-                                        .get(&lsrc)
-                                        .expect("roundtrip load outside CBs");
-                                    let c = scratch_chains
-                                        .get(lcb)
-                                        .expect("roundtrip load outside a scratch chain");
-                                    *chain_slots.get(c).expect("scratch chain without a slot")
-                                } else {
-                                    unreachable!("roundtrip non-load");
-                                }
-                            } else {
-                                let idx = consumer_count.entry(src).or_insert(0);
-                                let sl = dst_slots.get(&src).expect("dst slot must exist")[*idx as usize];
-                                *idx += 1;
-                                sl
-                            };
-                            if loop_depth > 0 {
-                                // Streaming: commit, pack and push one page
-                                // per iteration. Order is contractual
-                                // (fp32_accuracy doc): commit -> reserve ->
-                                // wait -> reconfig -> pack.
-                                writeln!(compute, "{indent}tile_regs_commit();");
-                                writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
-                                writeln!(compute, "{indent}tile_regs_wait();");
-                                writeln!(compute, "{indent}pack_reconfig_data_format({cb_id});");
-                                writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
-                                // Tail order is contractual (TT doc): release,
-                                // then push, then pop. Push/pop emit at
-                                // EndLoop; record the push here.
-                                loop_pushes
-                                    .last_mut()
-                                    .expect("tenstorrent streaming store outside loop body")
-                                    .push(cb_id);
-                            } else {
-                                output_stores.push((slot, cb_id));
-                            }
-                            }
-                        }
-                    }
-                    Op::Barrier => break,
-                    Op::Loop { len } => {
-                        writeln!(compute, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
-                        indent += "  ";
-                        // Streaming protocol: wait for one page of every
-                        // tile CB loaded in this body, then acquire the FPU
-                        // for the iteration. Only the outermost loop
-                        // acquires; nested loops inherit it so DST state
-                        // (e.g. matmul accumulation) persists across them.
-                        let mine = loop_depth == 0;
-                        loop_depth += 1;
-                        let cbs = body_cbs(op_id);
-                        for cb_id in &cbs {
-                            writeln!(compute, "{indent}cb{cb_id}.wait_front(1);");
-                        }
-                        if mine {
-                            writeln!(compute, "{indent}tile_regs_acquire();");
-                        }
-                        acquire_stack.push(mine);
-                        loop_cbs.push(cbs);
-                        loop_pushes.push(Vec::new());
-                    }
-                    Op::EndLoop => {
-                        // Tail order is contractual (TT doc): release the
-                        // FPU, announce packed pages, then pop inputs.
-                        // Only the acquiring level releases.
-                        if acquire_stack.pop().expect("tenstorrent EndLoop without Loop") {
-                            writeln!(compute, "{indent}tile_regs_release();");
-                        }
-                        if let Some(pushes) = loop_pushes.pop() {
-                            for cb_id in &pushes {
-                                writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
-                            }
-                        }
-                        if let Some(cbs) = loop_cbs.pop() {
-                            for cb_id in &cbs {
-                                writeln!(compute, "{indent}cb{cb_id}.pop_front(1);");
-                                loop_popped.insert(*cb_id);
-                            }
-                        }
-                        indent.pop();
-                        indent.pop();
-                        writeln!(compute, "{indent}}}");
-                        loop_depth -= 1;
-                    }
-                    ref op => todo!("{op:?}"),
-                }
-                op_id = self.next_op(op_id);
-            }
-            // TEMP DIAG stub emits its own epilogue; skip the shared one.
-            // Streaming sections handshake per iteration; the shared
-            // commit/wait/drain/release below is straight-line only.
-            if !stubbed && !compute_has_loop {
-                writeln!(compute, "{indent}tile_regs_commit();");
-            }
-            for &(_, cb_id) in &output_stores {
-                writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
-            }
-            if !stubbed && !compute_has_loop {
-                writeln!(compute, "{indent}tile_regs_wait();");
-            }
-            for &(slot, cb_id) in &output_stores {
-                writeln!(compute, "{indent}pack_reconfig_data_format({cb_id});");
-                writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
-            }
-            if !stubbed && !compute_has_loop {
-                for &(loaded_cb, depth) in &load_input_cbs {
-                    if loop_popped.contains(&loaded_cb) {
-                        continue;
-                    }
-                    let rem = depth - popped.get(&loaded_cb).copied().unwrap_or(0);
-                    if rem > 0 {
-                        writeln!(compute, "{indent}cb{loaded_cb}.pop_front({rem});");
-                    }
-                }
-                writeln!(compute, "{indent}tile_regs_release();");
-            }
-            for &(_, cb_id) in &output_stores {
-                writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
-            }
-            if (next_slot as usize) > compute_slot_limit {
-                panic!("tenstorrent compute uses {} DST slots, hardware holds {}", next_slot, compute_slot_limit);
-            }
-            writeln!(compute, "}}");
-            // compute_kernel_hw_startup must precede every other compute
-            // API init (header docs: MMIO races and undefined behavior
-            // otherwise -- wedges the board). init_sfpu must never co-occur
-            // with mm_init (it clobbers mm_init's unpacker config and stalls
-            // UNPACK). The startup call takes no template args: our pinned
-            // tt-metal (v0.72.0) declares it plain (icb0, icb1, ocb); the
-            // <SrcOrder::Reverse> form in the latest docs does not exist
-            // here. Verify on the emitted source so no future edit can
-            // silently reintroduce the hang.
-            if compute.contains("mm_init(") && compute.contains("init_sfpu(") {
-                panic!("tenstorrent init_sfpu clobbers mm_init unpacker config, they are mutually exclusive");
-            }
-            // A copy_tile under mm_init's unpacker config stalls UNPACK and
-            // wedges the board (only an external reset recovers). Matmuls
-            // read CBs directly, so no emitted matmul kernel may contain a
-            // copy. Fail the compile instead of shipping the hang.
-            if compute.contains("mm_init(") && compute.contains("copy_tile(") {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "tenstorrent copy_tile under mm_init unpacker config stalls UNPACK; matmul inputs must be read from CBs directly".into(),
-                });
-            }
-            if let Some(start) = compute.find("compute_kernel_hw_startup") {
-                if compute[start..].starts_with("compute_kernel_hw_startup<") {
-                    panic!("tenstorrent compute_kernel_hw_startup takes no template args on tt-metal v0.72.0");
-                }
-                let _before = &compute[..start];
-                if _before.contains("init_sfpu(") || _before.contains("_init(") {
-                    panic!("tenstorrent compute_kernel_hw_startup must be the first compute API call, an init precedes it");
-                }
+            scan = self.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("get_needed_ops did not finish in 10000 steps");
+        }
+        // Phase 2: transitive data-dependency closure over the stores.
+        let mut needed: Map<OpId, ()> = Map::default();
+        let mut stack: Vec<OpId> = Vec::new();
+        for &store in &stores {
+            needed.insert(store, ());
+            if let Op::Store { dst, src, index, .. } = self.ops[store].op {
+                stack.push(dst);
+                stack.push(src);
+                stack.push(index);
+            } else {
+                unreachable!("get_needed_ops collected a non-store");
             }
         }
-
-        if debug_asm {
-            println!("[tenstorrent] compute:\n{compute}");
-        }
-
-        // Generate writer kernel source
-        let mut writer = String::new();
-        op_id = self.next_op(op_id);
-
-        // Page size must match the dtype tile size (F32=4096, F16/BF16=2048)
-        // because TensorAccessor uses it for noc_addr page/offset arithmetic.
-        writeln!(writer, "#include <cstdint>");
-        writeln!(writer, "#include \"api/dataflow/dataflow_api.h\"");
-        writeln!(writer, "#include \"api/dataflow/noc.h\"");
-        writeln!(writer, "#include \"api/dataflow/circular_buffer.h\"");
-        writeln!(writer, "#include \"api/tensor/noc_traits.h\"");
-        writeln!(writer, "#include \"api/debug/dprint.h\"");
-        writeln!(writer, "void kernel_main() {{");
-
-        for cb_id in cb_map.values() {
-            writeln!(writer, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
-        }
-
-        // Emit accessors only for the GlobalMut params this section needs.
-        let mut prev_writer_accessor: Option<String> = None;
-        {
-            let mut param_idx = 0u32;
-            let mut scan = self.head;
-            let mut steps_scan = 0usize;
-            while !scan.is_null() {
-                steps_scan += 1;
-                if steps_scan > 10_000 {
-                    panic!("tt_binary_init did not finish in 10000 steps");
-                }
-                if let Op::Param { kind: ParamKind::GlobalMut, .. } = self.ops[scan].op {
-                    if writer_params.contains(&param_idx) {
-                        let arg = writer_pos[&param_idx];
-                        writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({arg});");
-                        let cta = match &prev_writer_accessor {
-                            None => String::from("0"),
-                            Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
-                        };
-                        writeln!(writer, "{indent}auto args_out{scan} = TensorAccessorArgs<{cta}>({arg});");
-                        // DRAM stride: buffer page size, never the dtype tile size.
-                        let page_size = TT_DRAM_PAGE_BYTES;
-                        writeln!(writer, "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {page_size});");
-                        prev_writer_accessor = Some(format!("args_out{scan}"));
-                    }
-                }
-                if matches!(self.ops[scan].op, Op::Param { .. }) {
-                    param_idx += 1;
-                }
-                scan = self.next_op(scan);
+        for _ in 0..10_000 {
+            let Some(id) = stack.pop() else { break };
+            if id.is_null() || needed.contains_key(&id) {
+                continue;
             }
-        }
-
-        // CBs the writer section reads (any depth): wait/push/pop these at
-        // loop boundaries. Collected here because cb_map now spans sections.
-        let mut writer_loop_cbs: Vec<u32> = Vec::new();
-        {
-            let mut scan = op_id;
-            let mut steps_scan = 0usize;
-            while !scan.is_null() {
-                steps_scan += 1;
-                if steps_scan > 10_000 {
-                    panic!("tt_binary_init did not finish in 10000 steps");
+            needed.insert(id, ());
+            match self.ops[id].op {
+                Op::Const(_) | Op::Storage { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => {}
+                Op::Param { shape, .. } => {
+                    stack.push(shape);
                 }
-                match self.ops[scan].op {
-                    Op::Store { src, .. } => {
-                        if let Op::Load { src: cb_src, .. } = self.ops[src].op {
-                            if let Some(&cb_id) = cb_map.get(&cb_src) {
-                                if !writer_loop_cbs.contains(&cb_id) {
-                                    writer_loop_cbs.push(cb_id);
-                                }
-                            }
-                        }
-                    }
-                    Op::Barrier => break,
-                    _ => {}
+                Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => {
+                    stack.push(x);
                 }
-                scan = self.next_op(scan);
-            }
-            writer_loop_cbs.sort();
-        }
-
-        // Gather transitive deps of all writer stores and emit them in kernel order
-        {
-            let writer_stores: Vec<OpId> = {
-                let mut stores = Vec::new();
-                let mut scan = op_id;
-                let mut steps_scan = 0usize;
-                while !scan.is_null() {
-                    steps_scan += 1;
-                    if steps_scan > 10_000 {
-                        panic!("tt_binary_init did not finish in 10000 steps");
-                    }
-                    if let Op::Barrier = self.ops[scan].op {
-                        break;
-                    }
-                    if let Op::Store { .. } = self.ops[scan].op {
-                        stores.push(scan);
-                    }
-                    scan = self.next_op(scan);
+                Op::Binary { x, y, .. } => {
+                    stack.push(x);
+                    stack.push(y);
                 }
-                stores
-            };
-            let writer_deps = {
-                let mut deps = Set::default();
-                let mut stack: Vec<OpId> = writer_stores.iter().copied().collect();
-                // Loop headers reference their trip-count consts, which are
-                // not store deps; without seeding, `r{len}` is never emitted.
-                let mut lscan = op_id;
-                let mut lsteps = 0usize;
-                while !lscan.is_null() {
-                    lsteps += 1;
-                    if lsteps > 10_000 {
-                        panic!("tt_codegen writer loop seed did not finish in 10000 steps");
-                    }
-                    if let Op::Barrier = self.ops[lscan].op {
-                        break;
-                    }
-                    if let Op::Loop { len } = self.ops[lscan].op {
+                Op::Stack { ref ops } => {
+                    stack.extend(ops.iter().copied());
+                }
+                Op::Store { dst, src, index, .. } => {
+                    stack.push(dst);
+                    stack.push(src);
+                    stack.push(index);
+                }
+                Op::Load { src, index, .. } => {
+                    stack.push(src);
+                    stack.push(index);
+                }
+                Op::Range { kind, .. } => match kind {
+                    RangeKind::Group(len) | RangeKind::Warp(len) => {
                         stack.push(len);
                     }
-                    lscan = self.next_op(lscan);
+                    RangeKind::Local(_) => {}
+                },
+                Op::Loop { len } => {
+                    stack.push(len);
                 }
-                while let Some(id) = stack.pop() {
-                    if !deps.insert(id) {
-                        continue;
-                    }
-                    stack.extend(self.ops[id].op.parameters());
-                }
-                deps
-            };
-
-            let mut scan = self.head;
-            let mut param_idx = 0u32;
-            let mut steps_scan = 0usize;
-            while scan != op_id {
-                steps_scan += 1;
-                if steps_scan > 10_000 {
-                    panic!("tt_codegen did not finish in 10000 steps");
-                }
-                if writer_deps.contains(&scan) {
-                    match &self.ops[scan].op {
-                        Op::Range { axis, kind: RangeKind::Group(_), .. } => {
-                            writeln!(
-                                writer,
-                                "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});",
-                                writer_params.len() + *axis as usize
-                            );
-                        }
-                        Op::Param { dtype, kind: ParamKind::Variable, .. } => {
-                            if writer_params.contains(&param_idx) {
-                                let arg = writer_pos[&param_idx];
-                                writeln!(
-                                    writer,
-                                    "{indent}{} r{scan} = ({})get_arg_val<uint32_t>({arg});",
-                                    dtype.c_type(),
-                                    dtype.c_type()
-                                );
-                            }
-                        }
-                        Op::Const(val) => {
-                            writeln!(writer, "{indent}{} r{scan} = {};", val.dtype().c_type(), val.c_code());
-                        }
-                        Op::Binary { x, y, bop } => {
-                            let dt = self.dtype(scan);
-                            let _ = match bop {
-                                BOp::Add => writeln!(writer, "{indent}{} r{scan} = r{x} + r{y};", dt.c_type()),
-                                BOp::Sub => writeln!(writer, "{indent}{} r{scan} = r{x} - r{y};", dt.c_type()),
-                                BOp::Mul => writeln!(writer, "{indent}{} r{scan} = r{x} * r{y};", dt.c_type()),
-                                BOp::Div => writeln!(writer, "{indent}{} r{scan} = r{x} / r{y};", dt.c_type()),
-                                BOp::Mod => writeln!(writer, "{indent}{} r{scan} = r{x} % r{y};", dt.c_type()),
-                                BOp::Max => writeln!(writer, "{indent}{} r{scan} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
-                                BOp::BitShiftLeft => writeln!(writer, "{indent}{} r{scan} = r{x} << r{y};", dt.c_type()),
-                                BOp::Cmplt => writeln!(writer, "{indent}{} r{scan} = r{x} < r{y};", dt.c_type()),
-                                _ => unreachable!("{bop:?}"),
-                            };
-                        }
-                        Op::Mad { x, y, z } => {
-                            let dt = self.dtype(scan);
-                            writeln!(writer, "{indent}{} r{scan} = r{x} * r{y} + r{z};", dt.c_type());
-                        }
-                        Op::Cast { x, dtype } => {
-                            writeln!(writer, "{indent}{} r{scan} = r{x};", dtype.c_type());
-                        }
-                        Op::Bitcast { .. } => todo!("tenstorrent: bitcast not implemented"),
-                        _ => {}
-                    }
-                }
-                if matches!(&self.ops[scan].op, Op::Param { .. }) {
-                    param_idx += 1;
-                }
-                scan = self.next_op(scan);
-            }
-        }
-
-        let mut loop_depth = 0u32;
-        // CBs popped inside loops (tile streaming): skipped by the
-        // EndLoop exit-pop, which serves straight-line sections only.
-        let mut loop_popped: Set<u32> = Set::default();
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("tt_binary_init did not finish in 10000 steps");
-            }
-            match self.ops[op_id].op {
-                Op::Store { dst, src, index: st_idx, layout } => {
-                    if let Op::Load { src: cb_src, index: ld_idx, layout: ld_layout } = self.ops[src].op {
-                        if let Some(&cb_id) = cb_map.get(&cb_src) {
-                            let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = self.ops[dst].op else {
-                                panic!("tt writer store dst must be a GlobalMut Param, got {:?}", self.ops[dst].op)
-                            };
-                            // Must match the accessor's stride above (buffer pages).
-                            let page_size = TT_DRAM_PAGE_BYTES;
-                            let elem_size = dtype.bit_size() as u32 / 8;
-                            match (ld_layout, layout) {
-                                (MemLayout::Scalar, MemLayout::Scalar) => {
-                                    if loop_depth == 0 {
-                                        writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
-                                        writeln!(writer, "{indent}uint32_t wbase{cb_id} = cb{cb_id}.get_read_ptr();");
-                                    }
-                                    // Old dataflow API with raw L1 addresses (mirrors TT's own
-                                    // writers): the Noc-class READ_PTR-selector source path
-                                    // misaddresses CB offsets with bit9 != bit5.
-                                    writeln!(
-                                        writer,
-                                        "{indent}uint64_t wnoc{dst} = p_out{dst}.get_noc_addr((uint32_t)((r{st_idx}*{elem_size})/{page_size}), (uint32_t)((r{st_idx}*{elem_size})%{page_size}));"
-                                    );
-                                    writeln!(
-                                        writer,
-                                        "{indent}noc_async_write(wbase{cb_id} + (uint32_t)(r{ld_idx}*{elem_size}), wnoc{dst}, {elem_size});"
-                                    );
-                                    if loop_depth == 0 {
-                                        writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
-                                    }
-                                }
-                                (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
-                                    // Whole-tile CB -> DRAM transfer (tile-layout
-                                    // DRAM): a single sequential NOC write.
-                                    let tile_bytes = x as u32 * y as u32 * elem_size;
-                                    writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
-                                    writeln!(
-                                        writer,
-                                        "{indent}uint64_t wnoc{dst} = p_out{dst}.get_noc_addr((uint32_t)((r{st_idx}*{elem_size})/{page_size}), (uint32_t)((r{st_idx}*{elem_size})%{page_size}));"
-                                    );
-                                    writeln!(
-                                        writer,
-                                        "{indent}noc_async_write(cb{cb_id}.get_read_ptr(), wnoc{dst}, {tile_bytes});"
-                                    );
-                                    writeln!(writer, "{indent}noc_async_write_barrier();");
-                                    writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
-                                    if loop_depth > 0 {
-                                        loop_popped.insert(cb_id);
-                                    }
-                                }
-                                _ => todo!("add support for non-scalar stores back to DRAM"),
-                            }
-                        }
-                    }
-                }
-                Op::Load { .. } => {}
-                Op::Const(val) => {
-                    writeln!(writer, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
-                }
-                Op::Range { axis, kind: RangeKind::Group(_), .. } => {
-                    writeln!(
-                        writer,
-                        "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});",
-                        writer_params.len() + axis as usize
-                    );
-                }
-                Op::Cast { x, dtype } => {
-                    writeln!(writer, "{indent}{} r{op_id} = r{x};", dtype.c_type());
-                }
-                Op::Bitcast { .. } => todo!("tenstorrent: bitcast not implemented"),
-                Op::Binary { x, y, bop } => {
-                    let dt = self.dtype(op_id);
-                    let _ = match bop {
-                        BOp::Add => writeln!(writer, "{indent}{} r{op_id} = r{x} + r{y};", dt.c_type()),
-                        BOp::Sub => writeln!(writer, "{indent}{} r{op_id} = r{x} - r{y};", dt.c_type()),
-                        BOp::Mul => writeln!(writer, "{indent}{} r{op_id} = r{x} * r{y};", dt.c_type()),
-                        BOp::Div => writeln!(writer, "{indent}{} r{op_id} = r{x} / r{y};", dt.c_type()),
-                        BOp::Mod => writeln!(writer, "{indent}{} r{op_id} = r{x} % r{y};", dt.c_type()),
-                        BOp::Max => writeln!(writer, "{indent}{} r{op_id} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
-                        BOp::BitShiftLeft => writeln!(writer, "{indent}{} r{op_id} = r{x} << r{y};", dt.c_type()),
-                        BOp::Cmplt => writeln!(writer, "{indent}{} r{op_id} = r{x} < r{y};", dt.c_type()),
-                        _ => unreachable!("{bop:?}"),
-                    };
+                Op::If { condition } => {
+                    stack.push(condition);
                 }
                 Op::Mad { x, y, z } => {
-                    let dt = self.dtype(op_id);
-                    writeln!(writer, "{indent}{} r{op_id} = r{x} * r{y} + r{z};", dt.c_type());
+                    stack.push(x);
+                    stack.push(y);
+                    stack.push(z);
                 }
-                Op::Loop { len } => {
-                    if loop_depth == 0 {
-                        for cb_id in &writer_loop_cbs {
-                            writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
-                            writeln!(writer, "{indent}uint32_t wbase{cb_id} = cb{cb_id}.get_read_ptr();");
+                Op::Index { vec, .. } => {
+                    stack.push(vec);
+                }
+                Op::Wmma { a, b, c, .. } => {
+                    stack.push(a);
+                    stack.push(b);
+                    stack.push(c);
+                }
+                Op::ReduceTile { x, .. } => {
+                    stack.push(x);
+                }
+                Op::MatmulTile { x, y } => {
+                    stack.push(x);
+                    stack.push(y);
+                }
+                Op::TransposeTile { x } => {
+                    stack.push(x);
+                }
+                Op::Asm { ref ops, .. } => {
+                    stack.extend(ops.iter().copied());
+                }
+                Op::Move { x, .. } => {
+                    stack.push(x);
+                }
+                Op::Reduce { x, reduce_axis, .. } => {
+                    stack.push(x);
+                    stack.push(reduce_axis);
+                }
+            }
+        }
+        if !stack.is_empty() {
+            panic!("get_needed_ops closure did not finish in 10000 steps");
+        }
+        // Phase 3: emit in IR order with dtypes and section-local refcounts.
+        let mut list: Vec<OpId> = Vec::new();
+        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::default();
+        let mut rcs: Map<OpId, u32> = Map::default();
+        let mut op_id = self.head;
+        for _ in 0..10_000 {
+            if op_id.is_null() {
+                break;
+            }
+            if needed.contains_key(&op_id) || structural.contains_key(&op_id) {
+                list.push(op_id);
+                match self.ops[op_id].op {
+                    Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
+                        unreachable!()
+                    }
+                    Op::Const(x) => {
+                        dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
+                    }
+                    Op::Param { dtype, .. } => {
+                        dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                    }
+                    Op::Storage { dtype, .. } => {
+                        dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                    }
+                    Op::Load { src, index, layout } => {
+                        dtypes.insert(op_id, (dtypes[&src].0, layout));
+                        *rcs.entry(index).or_insert(0) += 1;
+                    }
+                    Op::Store { dst, src: x, index, layout } => {
+                        debug_assert_eq!(dtypes[&x].1, layout);
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(dst).or_insert(0) += 1;
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(index).or_insert(0) += 1;
+                    }
+                    Op::Cast { x, dtype } => {
+                        dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::Bitcast { x, dtype } => {
+                        dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::Unary { x, .. } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::Binary { x, y, bop } => {
+                        let dtype = if bop.returns_bool() {
+                            (DType::Bool, dtypes[&x].1)
+                        } else {
+                            dtypes[&x]
+                        };
+                        dtypes.insert(op_id, dtype);
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(y).or_insert(0) += 1;
+                    }
+                    Op::Asm { ref ops, .. } => {
+                        let dtype = dtypes[&ops[0]];
+                        dtypes.insert(op_id, dtype);
+                        for &x in ops.iter() {
+                            *rcs.entry(x).or_insert(0) += 1;
                         }
                     }
-                    writeln!(writer, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
-                    indent += "  ";
-                    loop_depth += 1;
-                }
-                Op::EndLoop => {
-                    indent.pop();
-                    indent.pop();
-                    writeln!(writer, "{indent}}}");
-                    if loop_depth == 1 {
-                        writeln!(writer, "{indent}noc_async_write_barrier();");
-                        for cb_id in &writer_loop_cbs {
-                            // Tile streaming pops per iteration (see the
-                            // tile Store above); popping again here would
-                            // over-pop and stall. Scalar sections still
-                            // drain here.
-                            if loop_popped.contains(cb_id) {
-                                continue;
-                            }
-                            writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
+                    Op::Stack { ref ops } => {
+                        let dtype = dtypes[&ops[0]];
+                        dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
+                        for &x in ops.iter() {
+                            *rcs.entry(x).or_insert(0) += 1;
                         }
                     }
-                    loop_depth -= 1;
+                    Op::Index { vec, idx: _ } => {
+                        let dtype = dtypes[&vec];
+                        dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
+                        *rcs.entry(vec).or_insert(0) += 1;
+                    }
+                    Op::Wmma { dims: _, layout: _, dtype, a, b, c } => {
+                        let out_dtype = match dtype {
+                            MMADType::f16_f16_f16_f32 => DType::F32,
+                            MMADType::f16_f16_f16_f16 => DType::F16,
+                            MMADType::s8_s8_s32_s32
+                            | MMADType::s4_s4_s32_s32
+                            | MMADType::b1_b1_s32_xor_popc
+                            | MMADType::b1_b1_s32_and_popc => DType::I32,
+                        };
+                        dtypes.insert(op_id, (out_dtype, MemLayout::Vector(4)));
+                        *rcs.entry(a).or_insert(0) += 1;
+                        *rcs.entry(b).or_insert(0) += 1;
+                        *rcs.entry(c).or_insert(0) += 1;
+                    }
+                    Op::MatmulTile { x, y } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(y).or_insert(0) += 1;
+                    }
+                    Op::TransposeTile { x } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::Mad { x, y, z } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(y).or_insert(0) += 1;
+                        *rcs.entry(z).or_insert(0) += 1;
+                    }
+                    Op::Range { kind, .. } => {
+                        if let RangeKind::Group(len) = kind {
+                            *rcs.entry(len).or_insert(0) += 1;
+                        }
+                        if let RangeKind::Warp(local_id) = kind {
+                            *rcs.entry(local_id).or_insert(0) += 1;
+                        }
+                        dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
+                    }
+                    Op::Loop { len, .. } => {
+                        *rcs.entry(len).or_insert(0) += 1;
+                        dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
+                    }
+                    Op::If { condition } => {
+                        *rcs.entry(condition).or_insert(0) += 1;
+                    }
+                    Op::Barrier | Op::EndIf | Op::EndLoop => {}
                 }
-                Op::Barrier => break,
-                ref op => todo!("{op:?}"),
             }
             op_id = self.next_op(op_id);
         }
-        writeln!(writer, "}}");
-
-        if debug_asm {
-            println!("[tenstorrent] writer:\n{writer}");
+        if !op_id.is_null() {
+            panic!("get_needed_ops did not finish in 10000 steps");
         }
-
-        Ok((reader, compute, writer))
+        (list, dtypes, rcs)
     }
 }

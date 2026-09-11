@@ -42,14 +42,15 @@ fn repack_q4k_roundtrip() -> Result<(), ZyxError> {
     // Spot check: tilized slot 0 is weight (0,0) = super-block 0, qs byte 0 low.
     assert_eq!(pv[0] & 15, u16::from(raw[16] & 15));
 
-    // Full qs round-trip: planes -> tilized flat -> untilize -> row-major.
+    // Full qs round-trip: packed words -> strided pages -> tilized flat
+    // (word 1024p+s = tiles 4p+k slot s) -> untilize -> row-major.
     let l = (rows * cols) as usize;
     let mut til = vec![0u16; l];
     for (i, &w) in pv.iter().enumerate() {
-        til[i] = w & 15;
-        til[l / 4 + i] = (w >> 4) & 15;
-        til[l / 2 + i] = (w >> 8) & 15;
-        til[3 * l / 4 + i] = (w >> 12) & 15;
+        let (p, s) = (i / 1024, i % 1024);
+        for k in 0..4 {
+            til[(p * 4 + k) * 1024 + s] = (w >> (4 * k)) & 15;
+        }
     }
     let nib: Vec<u16> = Tensor::from_vec(til, [rows, cols])?.untilize(rows, cols)?.to_vec()?;
     for b in 0..n {
