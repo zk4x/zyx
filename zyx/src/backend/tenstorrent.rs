@@ -745,9 +745,7 @@ impl TTDevice {
         // point); the backend consumes the returned tables. What stays
         // here is launch-side assembly: the group-grid walk, the runtime
         // CB config, and the program compile call.
-        let tt = kernel.generate_tenstorrent()?;
-        let input_dtypes = tt.input_dtypes;
-        let output_dtypes = tt.output_dtypes;
+        let compiler = kernel.generate_tenstorrent()?;
 
         // Per-section params (0 = reader, 1 = compute, 2 = writer): the
         // ordinals of the params each section's stores depend on, in
@@ -760,27 +758,32 @@ impl TTDevice {
         // Global|Variable-then-GlobalMut layout; see
         // `Kernel::generate_tenstorrent` and `tt_runtime.cpp`
         // `section_rt_args` for the consumption side.
-        let [reader_params, compute_params, writer_params] = tt.section_params;
-        let n_params = tt.param_ordinal_of.len() as u32;
+        let n_params = compiler.param_ordinal_of.len() as u32;
         // Group grid via the shared helper (same as CUDA/OpenCL/wgpu/HIP):
         // axis-ordered, full dim expressions, const lengths validated
         // against the device max. Param-backed lengths resolve at launch
         // from the Variable arg.
         let gws = gws_from_kernel(kernel, &self.device_info.max_global_work_dims)?;
 
-        let TTKernel::Reader { src: reader, .. } = tt.reader else {
+        let TTKernel::Reader { src: reader, ordinals: reader_params, .. } = compiler.reader else {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "tenstorrent2 reader kernel missing".into(),
             });
         };
-        let TTKernel::Compute { src: compute, .. } = tt.compute else {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "tenstorrent2 compute emission not implemented".into(),
-            });
+        // A missing compute kernel is valid: pure copy kernels move data
+        // without computing. Only a wrong variant in its slot is an error.
+        let (compute, compute_params) = match compiler.compute {
+            TTKernel::Compute { src, ordinals, .. } => (src, ordinals),
+            TTKernel::None => (String::new(), Vec::new()),
+            TTKernel::Reader { .. } | TTKernel::Writer { .. } => {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2 compute slot holds a non-compute kernel".into(),
+                });
+            }
         };
-        let TTKernel::Writer { src: writer, .. } = tt.writer else {
+        let TTKernel::Writer { src: writer, ordinals: writer_params, .. } = compiler.writer else {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "tenstorrent2 writer emission not implemented".into(),
@@ -798,9 +801,13 @@ impl TTDevice {
         // kernels run in 16-bit DST, which is what typecast.h sanctions.
         // Fused mixed-format SFPU kernels are off the supported path
         // (mode-unaware typecast addressing), so they are not emitted.
-        let fp32_dest_acc_en = output_dtypes.iter().any(|dt| *dt == DType::F32);
+        let fp32_dest_acc_en = compiler.output_dtypes.iter().any(|dt| *dt == DType::F32);
 
-        let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes, gws });
+        let prog_id = self.programs.push(TTProgram {
+            input_dtypes: compiler.input_dtypes,
+            output_dtypes: compiler.output_dtypes,
+            gws,
+        });
 
         {
             let mut rt_guard = self.runtime.lock().unwrap();
@@ -809,7 +816,7 @@ impl TTDevice {
                 &reader,
                 &compute,
                 &writer,
-                &tt.cb_config,
+                &compiler.cb_config,
                 n_params,
                 &reader_params,
                 &compute_params,

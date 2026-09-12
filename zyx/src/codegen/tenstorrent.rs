@@ -1,5 +1,5 @@
 use crate::{
-    DType, Map,
+    DType, Map, Set,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, IDX_T, Kernel, MMADType, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind},
 };
@@ -127,122 +127,56 @@ impl TtSection {
 pub(crate) enum TTKernel {
     Reader {
         src: String,
-        params: Vec<OpId>,
+        /// Global head-order ordinals: this section's runtime args.
+        ordinals: Vec<u32>,
     },
     Compute {
         src: String,
         params: Vec<OpId>,
+        /// Global head-order ordinals: this section's runtime args.
+        ordinals: Vec<u32>,
         dst_slots: Map<OpId, Vec<DstId>>,
         next_slot: DstId,
-        /// Scratch CBs (stored in compute, never loaded by the writer):
-        /// no DRAM traffic is emitted for them in any section.
-        scratch_cbs: Map<CBId, ()>,
     },
     Writer {
         src: String,
-        params: Vec<OpId>,
+        /// Global head-order ordinals: this section's runtime args.
+        ordinals: Vec<u32>,
     },
     None,
-}
-
-/// Output of [`Kernel::generate_tenstorrent`]: the three section kernels
-/// plus every kernel-derived table the backend needs.
-///
-/// CB ids and section params are calculated here and only here; the
-/// backend consumes these tables without re-deriving them.
-pub(crate) struct TtCompile {
-    /// Emitted reader source with its section params.
-    pub(crate) reader: TTKernel,
-    /// Compute kernel (codegen not yet implemented: empty source, no params).
-    pub(crate) compute: TTKernel,
-    /// Emitted writer source with its section params.
-    pub(crate) writer: TTKernel,
-    /// Runtime CB config in id order: (id, tt format, tile bytes).
-    /// Format and tile bytes follow the CB storage dtype; an
-    /// unmappable dtype is a compilation error, never a silent default.
-    pub(crate) cb_config: Vec<(u32, u32, u32)>,
-    /// Per-section param ordinals (global head order): each section's
-    /// runtime args.
-    pub(crate) section_params: [Vec<u32>; 3],
-    /// Global head-order ordinal of every param (all kinds).
-    pub(crate) param_ordinal_of: Map<OpId, u32>,
-    /// Global params in head order (kernel inputs).
-    pub(crate) input_dtypes: Vec<DType>,
-    /// GlobalMut params in head order (kernel outputs).
-    pub(crate) output_dtypes: Vec<DType>,
 }
 
 impl Kernel {
     /// Generate TT Metalium reader, compute, and writer kernels from zyx IR.
     ///
-    /// Single calculation point for CB ids and section params: builds one
-    /// [`Compiler`] (shared cb_map plus per-section op lists), runs the
-    /// section/CB/balance checks, then generates each section from its
-    /// closed op list. The hardware CB limit comes from the kernel's bound
-    /// device.
-    ///
-    /// # Returns
-    /// The section kernels plus the kernel-derived tables the backend
-    /// needs, or a compilation error if any check fails.
+    /// Common phase first (section op lists, param lists, CB allocation),
+    /// then one small emitter per section. Returns the [`Compiler`] with
+    /// everything the backend needs: the section sources (each
+    /// [`TTKernel`] carrying its param ordinals), the runtime CB config,
+    /// and the input/output dtypes.
     #[allow(unused_must_use)]
-    pub(crate) fn generate_tenstorrent(&self) -> Result<TtCompile, BackendError> {
+    pub(crate) fn generate_tenstorrent(&self) -> Result<Compiler, BackendError> {
         let mut compiler = Compiler::new(self);
         compiler.check_sections(self)?;
-        compiler.check_cb_count()?;
-        compiler.check_cb_validity(self)?;
-        compiler.check_balance(self)?;
-        compiler.generate_reader(self)?;
-        compiler.generate_writer(self)?;
-
+        let reader_data = self.get_needed_ops(TtSection::Reader);
+        let compute_data = self.get_needed_ops(TtSection::Compute);
+        let writer_data = self.get_needed_ops(TtSection::Writer);
+        let [reader_params, compute_params, writer_params] =
+            compiler.section_param_lists(self, &reader_data, &compute_data, &writer_data);
         // Per-section param ordinals (global head order): each section's
         // params are in IR order, so the ordinals ascend already.
-        let section_params = [&compiler.reader, &compiler.compute, &compiler.writer].map(|kernel| {
-            let params = match kernel {
-                TTKernel::Reader { params, .. } => params,
-                TTKernel::Compute { params, .. } => params,
-                TTKernel::Writer { params, .. } => params,
-                TTKernel::None => unreachable!("tenstorrent2 section kernel missing after generation"),
-            };
+        let [reader_ord, _compute_ord, writer_ord] = [&reader_params, &compute_params, &writer_params].map(|params| {
             let ordinals: Vec<u32> = params.iter().map(|p| compiler.param_ordinal_of[p]).collect();
-            debug_assert!(
-                ordinals.windows(2).all(|w| w[0] < w[1]),
-                "tenstorrent2 section params not in head order"
-            );
+            debug_assert!(ordinals.windows(2).all(|w| w[0] < w[1]), "tenstorrent2 section params not in head order");
             ordinals
         });
-        // Runtime CB config in id order. Format and tile bytes follow the
-        // CB storage dtype; anything else is a compilation error.
-        let mut cb_ops: Vec<(CBId, OpId)> = compiler.cb_map.iter().map(|(&op, &cb)| (cb, op)).collect();
-        cb_ops.sort_by_key(|&(cb, _)| cb);
-        let mut cb_config: Vec<(u32, u32, u32)> = Vec::with_capacity(cb_ops.len());
-        for (cb, op) in cb_ops {
-            let Op::Storage { dtype, .. } = &self.ops[op].op else {
-                unreachable!("tenstorrent2: cb_map entry {op} passed check_cb_validity but is not a storage op")
-            };
-            let (fmt, tb) = match dtype {
-                DType::F32 => (0, 4096),
-                DType::F16 => (1, 2048),
-                DType::BF16 => (2, 2048),
-                DType::U16 => (3, 2048),
-                dt => {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: CB dtype {dt:?} has no tt format").into(),
-                    });
-                }
-            };
-            cb_config.push((cb.0, fmt, tb));
-        }
-        Ok(TtCompile {
-            reader: compiler.reader,
-            compute: compiler.compute,
-            writer: compiler.writer,
-            cb_config,
-            section_params,
-            param_ordinal_of: compiler.param_ordinal_of,
-            input_dtypes: compiler.input_dtypes,
-            output_dtypes: compiler.output_dtypes,
-        })
+        compiler.allocate_cbs(self)?;
+
+        compiler.check_balance(self)?;
+        compiler.generate_reader(self, &reader_data, &reader_params, &reader_ord)?;
+        compiler.generate_writer(self, &writer_data, &writer_params, &writer_ord)?;
+
+        Ok(compiler)
     }
 
     /// All ops needed by the stores inside the given section, in IR order,
@@ -260,7 +194,7 @@ impl Kernel {
         let mut section = TtSection::Reader;
         let mut stores: Vec<OpId> = Vec::new();
         let mut starters: Vec<OpId> = Vec::new();
-        let mut structural: Map<OpId, ()> = Map::default();
+        let mut structural: Set<OpId> = Set::default();
         let mut scan = self.head;
         for _ in 0..10_000 {
             if scan.is_null() {
@@ -271,7 +205,7 @@ impl Kernel {
             match self.ops[scan].op {
                 Op::Barrier => {
                     if section == tt_section {
-                        structural.insert(scan, ());
+                        structural.insert(scan);
                     }
                     section.advance();
                 }
@@ -279,18 +213,18 @@ impl Kernel {
                     stores.push(scan);
                 }
                 Op::Loop { len } if section == tt_section => {
-                    structural.insert(scan, ());
+                    structural.insert(scan);
                     starters.push(len);
                 }
                 Op::Range { kind, .. } if section == tt_section => {
-                    structural.insert(scan, ());
+                    structural.insert(scan);
                     match kind {
                         RangeKind::Group(len) | RangeKind::Warp(len) => starters.push(len),
                         RangeKind::Local(_) => {}
                     }
                 }
                 Op::EndLoop | Op::If { .. } | Op::EndIf if section == tt_section => {
-                    structural.insert(scan, ());
+                    structural.insert(scan);
                 }
                 _ => {}
             }
@@ -300,10 +234,10 @@ impl Kernel {
             panic!("get_needed_ops did not finish in 10000 steps");
         }
         // Phase 2: transitive data-dependency closure over the stores.
-        let mut needed: Map<OpId, ()> = Map::default();
+        let mut needed: Set<OpId> = Set::default();
         let mut stack: Vec<OpId> = starters;
         for &store in &stores {
-            needed.insert(store, ());
+            needed.insert(store);
             if let Op::Store { dst, src, index, .. } = self.ops[store].op {
                 stack.push(dst);
                 stack.push(src);
@@ -314,10 +248,10 @@ impl Kernel {
         }
         for _ in 0..10_000 {
             let Some(id) = stack.pop() else { break };
-            if id.is_null() || needed.contains_key(&id) {
+            if id.is_null() || needed.contains(&id) {
                 continue;
             }
-            needed.insert(id, ());
+            needed.insert(id);
             match self.ops[id].op {
                 Op::Const(_) | Op::Storage { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => {}
                 Op::Param { shape, .. } => {
@@ -401,7 +335,7 @@ impl Kernel {
             if op_id.is_null() {
                 break;
             }
-            if needed.contains_key(&op_id) || structural.contains_key(&op_id) {
+            if needed.contains(&op_id) || structural.contains(&op_id) {
                 ops.push(op_id);
                 match self.ops[op_id].op {
                     Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
@@ -541,40 +475,40 @@ struct SectionData {
 ///
 /// All state lives here (ptx.rs pattern); shared op emission is a method
 /// on this struct so reader/compute/writer cannot diverge.
-struct Compiler {
-    /// Hardware circular buffer limit (DeviceInfo::num_circular_buffers).
-    num_circular_buffers: u32,
+/// [`Kernel::generate_tenstorrent`] returns this struct to the backend,
+/// which reads the section kernels, the CB config, and the dtypes off it.
+pub(crate) struct Compiler {
     /// One CBId per Circular storage, shared by all three sections.
     cb_map: Map<OpId, CBId>,
-    /// Next free CBId after the map build.
-    next_cb: CBId,
+    /// Runtime CB config in id order: (id, tt format, tile bytes).
+    /// Format and tile bytes follow the CB storage dtype; an
+    /// unmappable dtype is a compilation error, never a silent default.
+    pub(crate) cb_config: Vec<(u32, u32, u32)>,
     /// Global head-order ordinal of every param (all kinds).
-    param_ordinal_of: Map<OpId, u32>,
+    pub(crate) param_ordinal_of: Map<OpId, u32>,
     /// Global params in head order (kernel inputs).
-    input_dtypes: Vec<DType>,
+    pub(crate) input_dtypes: Vec<DType>,
     /// GlobalMut params in head order (kernel outputs).
-    output_dtypes: Vec<DType>,
+    pub(crate) output_dtypes: Vec<DType>,
     /// Generated section kernels (filled by generation).
-    reader: TTKernel,
-    compute: TTKernel,
-    writer: TTKernel,
+    pub(crate) reader: TTKernel,
+    /// Generated section kernels (filled by generation).
+    pub(crate) compute: TTKernel,
+    /// Generated section kernels (filled by generation).
+    pub(crate) writer: TTKernel,
+    /// Scratch CBs (stored in compute, never loaded by the writer):
+    /// no DRAM traffic is emitted for them in any section.
+    scratch_cbs: Set<CBId>,
     /// Param op → runtime arg position within the current section.
     arg_pos: Map<OpId, u32>,
-    /// Current C++ indent level.
-    indent: String,
 }
 
 impl Compiler {
-    /// Build compiler state from a kernel: the shared cb_map, the param
-    /// ordinals and input/output dtypes, plus one closed op list per
-    /// section.
+    /// Build compiler state from a kernel: the param ordinals and
+    /// input/output dtypes. The CB map is filled by [`Compiler::allocate_cbs`].
     fn new(kernel: &Kernel) -> Self {
-        let num_circular_buffers = kernel.device_info().num_circular_buffers;
-        // - CB ids: first touch in any section registers, in kernel order.
-        // - Param ordinals (all kinds, head order) and Global/GlobalMut
-        //   dtypes: same single walk.
-        let mut cb_map: Map<OpId, CBId> = Map::default();
-        let mut next_cb = CBId::ZERO;
+        // Param ordinals (all kinds, head order) and Global/GlobalMut
+        // dtypes: one walk.
         let mut param_ordinal_of: Map<OpId, u32> = Map::default();
         let mut next_param = 0u32;
         let mut input_dtypes: Vec<DType> = Vec::new();
@@ -593,46 +527,159 @@ impl Compiler {
                     ParamKind::Variable => {}
                 }
             }
-            if let Op::Load { src, .. } = &kernel.ops[scan].op {
-                if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*src].op {
-                    if !cb_map.contains_key(src) {
-                        cb_map.insert(*src, next_cb);
-                        next_cb.inc();
-                    }
-                }
-            }
-            if let Op::Store { dst, .. } = &kernel.ops[scan].op {
-                if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*dst].op {
-                    if !cb_map.contains_key(dst) {
-                        cb_map.insert(*dst, next_cb);
-                        next_cb.inc();
-                    }
-                }
-            }
             scan = kernel.next_op(scan);
         }
         if !scan.is_null() {
-            panic!("tenstorrent2 cb_map scan did not finish in 10000 steps");
+            panic!("tenstorrent2 compiler scan did not finish in 10000 steps");
         }
         Self {
-            num_circular_buffers,
-            cb_map,
-            next_cb,
+            cb_map: Map::default(),
+            cb_config: Vec::new(),
             param_ordinal_of,
             input_dtypes,
             output_dtypes,
             reader: TTKernel::None,
-            compute: TTKernel::Compute {
-                src: String::new(),
-                params: Vec::new(),
-                dst_slots: Map::default(),
-                next_slot: DstId::ZERO,
-                scratch_cbs: Map::default(),
-            },
+            compute: TTKernel::None,
             writer: TTKernel::None,
+            scratch_cbs: Set::default(),
             arg_pos: Map::default(),
-            indent: String::from("  "),
         }
+    }
+
+    /// Per-section param lists in IR order: each section kernel's
+    /// runtime args. The single point that decides what params each
+    /// kernel gets.
+    fn section_param_lists(
+        &self,
+        kernel: &Kernel,
+        reader: &SectionData,
+        compute: &SectionData,
+        writer: &SectionData,
+    ) -> [Vec<OpId>; 3] {
+        [reader, compute, writer].map(|data| {
+            data.ops.iter().copied().filter(|op| matches!(kernel.ops[*op].op, Op::Param { .. })).collect::<Vec<OpId>>()
+        })
+    }
+
+    /// Full CB allocation resolution into `self.cb_map` (storing the
+    /// runtime config in `self.cb_config`): first-touch ids, page/L1
+    /// validity, hardware count fit. The single point that assigns CB
+    /// ids; anything unmappable is a compilation error.
+    fn allocate_cbs(&mut self, kernel: &Kernel) -> Result<(), BackendError> {
+        // Single walk: first-touch CB ids plus scratch classification.
+        // Scratch (stored in compute, never read by the writer) is read
+        // lexically here: cross-section tile flow goes through CBs, so a
+        // section's closure stores/loads are exactly its lexical
+        // stores/loads. Registration order is load-then-store per op,
+        // same as before.
+        let mut next_cb = CBId::ZERO;
+        let mut section = TtSection::Reader;
+        let mut stored_in_compute: Set<CBId> = Set::default();
+        let mut read_by_writer: Set<CBId> = Set::default();
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            match kernel.ops[scan].op {
+                Op::Barrier => section.advance(),
+                Op::Load { ref src, .. } => {
+                    if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*src].op {
+                        if !self.cb_map.contains_key(src) {
+                            self.cb_map.insert(*src, next_cb);
+                            next_cb.inc();
+                        }
+                        if section == TtSection::Writer {
+                            read_by_writer.insert(self.cb_map[src]);
+                        }
+                    }
+                }
+                Op::Store { ref dst, .. } => {
+                    if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*dst].op {
+                        if !self.cb_map.contains_key(dst) {
+                            self.cb_map.insert(*dst, next_cb);
+                            next_cb.inc();
+                        }
+                        if section == TtSection::Compute {
+                            stored_in_compute.insert(self.cb_map[dst]);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            scan = kernel.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("tenstorrent2 cb allocation scan did not finish in 10000 steps");
+        }
+        let mut scratch_cbs: Set<CBId> = Set::default();
+        for &cb in stored_in_compute.iter() {
+            if !read_by_writer.contains(&cb) {
+                scratch_cbs.insert(cb);
+            }
+        }
+        self.scratch_cbs = scratch_cbs;
+        // Hardware CB count fit.
+        let num_circular_buffers = kernel.device_info().num_circular_buffers;
+        if self.cb_map.len() > num_circular_buffers as usize {
+            return Err(BackendError {
+                status: ErrorStatus::TooManyCircularBuffers,
+                context: format!(
+                    "tenstorrent2: kernel needs {} circular buffers, device holds {num_circular_buffers}",
+                    self.cb_map.len()
+                )
+                .into(),
+            });
+        }
+        // Every mapped CB holds whole 2048B pages within the
+        // single-core L1 budget.
+        for (&storage, &cb) in self.cb_map.iter() {
+            let Op::Storage { dtype, len, .. } = kernel.ops[storage].op else {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: cb_map entry {storage} is not a storage op").into(),
+                });
+            };
+            let elem = dtype.bit_size() as i64 / 8;
+            let bytes = len * elem;
+            if bytes % 2048 != 0 {
+                return Err(BackendError {
+                    status: ErrorStatus::InvalidCircularBuffer,
+                    context: format!("tenstorrent2: CB{cb} holds {bytes} bytes, not whole 2048B pages").into(),
+                });
+            }
+            if bytes > 32768 {
+                return Err(BackendError {
+                    status: ErrorStatus::InvalidCircularBuffer,
+                    context: format!("tenstorrent2: CB{cb} needs {bytes} bytes, single-core L1 budget is 32768").into(),
+                });
+            }
+        }
+        // Runtime config in id order. Format and tile bytes follow the
+        // CB storage dtype; anything else is a compilation error.
+        let mut cb_ops: Vec<(CBId, OpId)> = self.cb_map.iter().map(|(&op, &cb)| (cb, op)).collect();
+        cb_ops.sort_by_key(|&(cb, _)| cb);
+        let mut cb_config: Vec<(u32, u32, u32)> = Vec::with_capacity(cb_ops.len());
+        for (cb, op) in cb_ops {
+            let Op::Storage { dtype, .. } = &kernel.ops[op].op else {
+                unreachable!("tenstorrent2: cb_map entry {op} passed validity but is not a storage op")
+            };
+            let (fmt, tb) = match dtype {
+                DType::F32 => (0, 4096),
+                DType::F16 => (1, 2048),
+                DType::BF16 => (2, 2048),
+                DType::U16 => (3, 2048),
+                dt => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: CB dtype {dt:?} has no tt format").into(),
+                    });
+                }
+            };
+            cb_config.push((cb.0, fmt, tb));
+        }
+        self.cb_config = cb_config;
+        Ok(())
     }
 
     /// Exactly 2 barriers delimiting reader/compute/writer, else a
@@ -661,50 +708,6 @@ impl Compiler {
         Ok(())
     }
 
-    /// Shared cb_map fits the hardware CB count, else a compilation error.
-    fn check_cb_count(&self) -> Result<(), BackendError> {
-        if self.cb_map.len() > self.num_circular_buffers as usize {
-            return Err(BackendError {
-                status: ErrorStatus::TooManyCircularBuffers,
-                context: format!(
-                    "tenstorrent2: kernel needs {} circular buffers, device holds {}",
-                    self.cb_map.len(),
-                    self.num_circular_buffers
-                )
-                .into(),
-            });
-        }
-        Ok(())
-    }
-
-    /// Every mapped CB holds whole 2048B pages within the single-core
-    /// L1 budget, else a compilation error.
-    fn check_cb_validity(&self, kernel: &Kernel) -> Result<(), BackendError> {
-        for (&storage, &cb) in self.cb_map.iter() {
-            let Op::Storage { dtype, len, .. } = kernel.ops[storage].op else {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("tenstorrent2: cb_map entry {storage} is not a storage op").into(),
-                });
-            };
-            let elem = dtype.bit_size() as i64 / 8;
-            let bytes = len * elem;
-            if bytes % 2048 != 0 {
-                return Err(BackendError {
-                    status: ErrorStatus::InvalidCircularBuffer,
-                    context: format!("tenstorrent2: CB{cb} holds {bytes} bytes, not whole 2048B pages").into(),
-                });
-            }
-            if bytes > 32768 {
-                return Err(BackendError {
-                    status: ErrorStatus::InvalidCircularBuffer,
-                    context: format!("tenstorrent2: CB{cb} needs {bytes} bytes, single-core L1 budget is 32768").into(),
-                });
-            }
-        }
-        Ok(())
-    }
-
     /// Simplified push/pop balance: per CB, trip-weighted tile pushes
     /// equal trip-weighted tile pops, else a compilation error. One rule
     /// covers streaming (reader pushes == compute/writer pops) and
@@ -719,8 +722,8 @@ impl Compiler {
             if scan.is_null() {
                 break;
             }
-            match &kernel.ops[scan].op {
-                Op::Loop { len } => {
+            match kernel.ops[scan].op {
+                Op::Loop { ref len } => {
                     let Op::Const(c) = kernel.ops[*len].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
@@ -732,13 +735,13 @@ impl Compiler {
                 Op::EndLoop => {
                     trips.pop().expect("tenstorrent2 EndLoop without Loop");
                 }
-                Op::Store { dst, layout: MemLayout::Tile { .. }, .. } => {
+                Op::Store { ref dst, layout: MemLayout::Tile { .. }, .. } => {
                     if let Some(&cb) = self.cb_map.get(dst) {
                         let trip: i64 = trips.iter().product();
                         *pushes.entry(cb).or_insert(0) += trip;
                     }
                 }
-                Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
+                Op::Load { ref src, layout: MemLayout::Tile { .. }, .. } => {
                     if let Some(&cb) = self.cb_map.get(src) {
                         let trip: i64 = trips.iter().product();
                         *pops.entry(cb).or_insert(0) += trip;
@@ -769,50 +772,20 @@ impl Compiler {
 
     /// Generate the reader (dataflow movement) kernel from the reader op list.
     #[allow(unused_must_use)]
-    fn generate_reader(&mut self, kernel: &Kernel) -> Result<(), BackendError> {
-        let SectionData { ops, .. } = kernel.get_needed_ops(TtSection::Reader);
-        // Scratch CBs live on the compute kernel but gate reader traffic:
-        // stored in compute, never loaded by the writer.
-        let compute_data = kernel.get_needed_ops(TtSection::Compute);
-        let writer_data = kernel.get_needed_ops(TtSection::Writer);
-        let mut stored_in_compute: Map<CBId, ()> = Map::default();
-        for &op_id in &compute_data.ops {
-            if let Op::Store { dst, .. } = kernel.ops[op_id].op {
-                if let Some(&cb) = self.cb_map.get(&dst) {
-                    stored_in_compute.insert(cb, ());
-                }
-            }
-        }
-        let mut read_by_writer: Map<CBId, ()> = Map::default();
-        for &op_id in &writer_data.ops {
-            if let Op::Load { src, .. } = kernel.ops[op_id].op {
-                if let Some(&cb) = self.cb_map.get(&src) {
-                    read_by_writer.insert(cb, ());
-                }
-            }
-        }
-        let mut scratch_cbs: Map<CBId, ()> = Map::default();
-        for (&cb, _) in stored_in_compute.iter() {
-            if !read_by_writer.contains_key(&cb) {
-                scratch_cbs.insert(cb, ());
-            }
-        }
-        let TTKernel::Compute { scratch_cbs: target, .. } = &mut self.compute else {
-            unreachable!("tenstorrent2 compute state missing");
-        };
-        *target = scratch_cbs;
+    fn generate_reader(
+        &mut self,
+        kernel: &Kernel,
+        reader_data: &SectionData,
+        params: &[OpId],
+        ordinals: &[u32],
+    ) -> Result<(), BackendError> {
+        let ops = &reader_data.ops;
         // Section params in list order become this section's runtime args.
-        let mut params: Vec<OpId> = Vec::new();
-        for &op_id in &ops {
-            if matches!(kernel.ops[op_id].op, Op::Param { .. }) {
-                params.push(op_id);
-            }
-        }
         self.arg_pos = Map::default();
         for (i, &p) in params.iter().enumerate() {
             self.arg_pos.insert(p, i as u32);
         }
-        self.indent = String::from("  ");
+        let mut indent = String::from("  ");
         let mut prev_accessor: Option<String> = None;
         let mut src = String::new();
         writeln!(src, "#include <cstdint>");
@@ -827,53 +800,37 @@ impl Compiler {
         let mut cbs: Vec<CBId> = self.cb_map.iter().map(|(_, &cb)| cb).collect();
         cbs.sort();
         for cb in cbs {
-            writeln!(src, "{}CircularBuffer cb{cb}(tt::CBIndex::c_{cb});", self.indent);
+            writeln!(src, "{indent}CircularBuffer cb{cb}(tt::CBIndex::c_{cb});");
         }
         let n = ops.len();
         for i in 0..n {
             let op_id = ops[i];
-            match &kernel.ops[op_id].op {
+            match kernel.ops[op_id].op {
                 Op::Param { dtype, kind, .. } => match kind {
                     ParamKind::Global => {
                         let arg = self.arg_pos.get(&op_id).copied().expect("tenstorrent2 reader param missing from section args");
-                        writeln!(src, "{}uint32_t src{} = get_arg_val<uint32_t>({});", self.indent, op_id, arg);
+                        writeln!(src, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({arg});");
                         let cta = match &prev_accessor {
                             None => String::from("0"),
                             Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                         };
-                        writeln!(src, "{}auto args{} = TensorAccessorArgs<{}>({});", self.indent, op_id, cta, arg);
-                        writeln!(
-                            src,
-                            "{}auto p{} = TensorAccessor(args{}, src{}, {});",
-                            self.indent, op_id, op_id, op_id, TT_DRAM_PAGE_BYTES
-                        );
+                        writeln!(src, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
+                        writeln!(src, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {TT_DRAM_PAGE_BYTES});");
                         prev_accessor = Some(format!("args{op_id}"));
                     }
                     ParamKind::Variable => {
                         let arg = self.arg_pos.get(&op_id).copied().expect("tenstorrent2 reader param missing from section args");
-                        writeln!(
-                            src,
-                            "{}{} r{} = ({})get_arg_val<uint32_t>({});",
-                            self.indent,
-                            dtype.c_type(),
-                            op_id,
-                            dtype.c_type(),
-                            arg
-                        );
+                        writeln!(src, "{indent}{} r{op_id} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
                     }
                     ParamKind::GlobalMut => {
                         let arg = self.arg_pos.get(&op_id).copied().expect("tenstorrent2 reader param missing from section args");
-                        writeln!(src, "{}uint32_t dst{} = get_arg_val<uint32_t>({});", self.indent, op_id, arg);
+                        writeln!(src, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({arg});");
                         let cta = match &prev_accessor {
                             None => String::from("0"),
                             Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                         };
-                        writeln!(src, "{}auto args{} = TensorAccessorArgs<{}>({});", self.indent, op_id, cta, arg);
-                        writeln!(
-                            src,
-                            "{}auto p{} = TensorAccessor(args{}, dst{}, {});",
-                            self.indent, op_id, op_id, op_id, TT_DRAM_PAGE_BYTES
-                        );
+                        writeln!(src, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
+                        writeln!(src, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {TT_DRAM_PAGE_BYTES});");
                         prev_accessor = Some(format!("args{op_id}"));
                     }
                 },
@@ -892,7 +849,7 @@ impl Compiler {
                     // Handled at the consuming store (global to local with
                     // no ops in between, as below).
                 }
-                Op::Store { dst, src: store_src, layout: st_layout, .. } => {
+                Op::Store { ref dst, src: ref store_src, layout: st_layout, .. } => {
                     let Op::Load { src: ld_src, index: ld_idx, layout: ld_layout } = kernel.ops[*store_src].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
@@ -911,46 +868,40 @@ impl Compiler {
                     let Some(&cb) = self.cb_map.get(dst) else {
                         unreachable!("tenstorrent2 reader store targets unmapped CB");
                     };
-                    let is_scratch =
-                        matches!(&self.compute, TTKernel::Compute { scratch_cbs, .. } if scratch_cbs.contains_key(&cb));
+                    let is_scratch = self.scratch_cbs.contains(&cb);
                     if !is_scratch {
                         match (ld_layout, st_layout) {
                             (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
                                 let elem_size = dtype.bit_size() as u32 / 8;
                                 let tile_bytes = x as u32 * y as u32 * elem_size;
                                 let page_size = TT_DRAM_PAGE_BYTES;
-                                writeln!(src, "{}cb{}.reserve_back(1);", self.indent, cb);
+                                writeln!(src, "{indent}cb{cb}.reserve_back(1);");
                                 writeln!(
                                     src,
-                                    "{}uint64_t rnoc{} = p{}.get_noc_addr((uint32_t)((r{}*{})/{}), (uint32_t)((r{}*{})%{}));",
-                                    self.indent, op_id, ld_src, ld_idx, elem_size, page_size, ld_idx, elem_size, page_size
+                                    "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{page_size}), (uint32_t)((r{ld_idx}*{elem_size})%{page_size}));"
                                 );
-                                writeln!(
-                                    src,
-                                    "{}noc_async_read(rnoc{}, cb{}.get_write_ptr(), {});",
-                                    self.indent, op_id, cb, tile_bytes
-                                );
-                                writeln!(src, "{}noc_async_read_barrier();", self.indent);
-                                writeln!(src, "{}cb{}.push_back(1);", self.indent, cb);
+                                writeln!(src, "{indent}noc_async_read(rnoc{op_id}, cb{cb}.get_write_ptr(), {tile_bytes});");
+                                writeln!(src, "{indent}noc_async_read_barrier();");
+                                writeln!(src, "{indent}cb{cb}.push_back(1);");
                             }
                             _ => todo!("tenstorrent2 reader only supports tile stores"),
                         }
                     }
                 }
                 Op::Loop { len } => {
-                    writeln!(src, "{}for (uint32_t r{} = 0; r{} < r{}; r{}++) {{", self.indent, op_id, op_id, len, op_id);
-                    self.indent.push_str("  ");
+                    writeln!(src, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
+                    indent.push_str("  ");
                 }
                 Op::EndLoop => {
-                    self.indent.pop();
-                    self.indent.pop();
-                    writeln!(src, "{}}}", self.indent);
+                    indent.pop();
+                    indent.pop();
+                    writeln!(src, "{indent}}}");
                 }
                 Op::Barrier => {}
                 Op::Range { axis, kind, .. } => match kind {
                     RangeKind::Group(_) => {
-                        let arg = self.arg_pos.len() as u32 + *axis;
-                        writeln!(src, "{}uint32_t r{} = get_arg_val<uint32_t>({});", self.indent, op_id, arg);
+                        let arg = self.arg_pos.len() as u32 + axis;
+                        writeln!(src, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({arg});");
                     }
                     RangeKind::Local(_) => {
                         unreachable!(
@@ -960,7 +911,7 @@ impl Compiler {
                     RangeKind::Warp(_) => todo!("tenstorrent2 reader warp range"),
                 },
                 Op::Const(_) | Op::Binary { .. } | Op::Mad { .. } | Op::Cast { .. } => {
-                    let s = self.emit_scalar_op(kernel, op_id)?;
+                    let s = self.emit_scalar_op(kernel, op_id, &indent)?;
                     src.push_str(&s);
                 }
                 Op::Unary { .. }
@@ -978,33 +929,33 @@ impl Compiler {
                 | Op::Reduce { .. } => todo!("tenstorrent2 reader op"),
             }
         }
-        writeln!(src, "{}noc_async_read_barrier();", self.indent);
+        writeln!(src, "{indent}noc_async_read_barrier();");
         writeln!(src, "}}");
-        self.reader = TTKernel::Reader { src, params };
+        self.reader = TTKernel::Reader { src, ordinals: ordinals.to_vec() };
         Ok(())
     }
 
     /// Generate the writer (dataflow drain) kernel from the writer op list.
     #[allow(unused_must_use)]
-    fn generate_writer(&mut self, kernel: &Kernel) -> Result<(), BackendError> {
-        let SectionData { ops, .. } = kernel.get_needed_ops(TtSection::Writer);
+    fn generate_writer(
+        &mut self,
+        kernel: &Kernel,
+        writer_data: &SectionData,
+        params: &[OpId],
+        ordinals: &[u32],
+    ) -> Result<(), BackendError> {
+        let ops = &writer_data.ops;
         // Section params in list order become this section's runtime args.
-        let mut params: Vec<OpId> = Vec::new();
-        for &op_id in &ops {
-            if matches!(kernel.ops[op_id].op, Op::Param { .. }) {
-                params.push(op_id);
-            }
-        }
         self.arg_pos = Map::default();
         for (i, &p) in params.iter().enumerate() {
             self.arg_pos.insert(p, i as u32);
         }
-        self.indent = String::from("  ");
+        let mut indent = String::from("  ");
         let mut prev_accessor: Option<String> = None;
         // CBs read (drained) by this section: waited upfront at loop
         // boundaries (see Loop arm).
         let mut writer_loop_cbs: Vec<CBId> = Vec::new();
-        for &op_id in &ops {
+        for &op_id in ops {
             if let Op::Store { src, .. } = kernel.ops[op_id].op {
                 if let Op::Load { src: cb_src, .. } = kernel.ops[src].op {
                     if let Some(&cb) = self.cb_map.get(&cb_src) {
@@ -1027,32 +978,28 @@ impl Compiler {
         let mut cbs: Vec<CBId> = self.cb_map.iter().map(|(_, &cb)| cb).collect();
         cbs.sort();
         for cb in cbs {
-            writeln!(src, "{}CircularBuffer cb{cb}(tt::CBIndex::c_{cb});", self.indent);
+            writeln!(src, "{indent}CircularBuffer cb{cb}(tt::CBIndex::c_{cb});");
         }
         // Accessors only for the GlobalMut params this section writes.
-        for &op_id in &ops {
+        for &op_id in ops {
             if let Op::Param { kind: ParamKind::GlobalMut, .. } = kernel.ops[op_id].op {
                 let arg = self.arg_pos.get(&op_id).copied().expect("tenstorrent2 writer param missing from section args");
-                writeln!(src, "{}uint32_t out{} = get_arg_val<uint32_t>({});", self.indent, op_id, arg);
+                writeln!(src, "{indent}uint32_t out{op_id} = get_arg_val<uint32_t>({arg});");
                 let cta = match &prev_accessor {
                     None => String::from("0"),
                     Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                 };
-                writeln!(src, "{}auto args_out{} = TensorAccessorArgs<{}>({});", self.indent, op_id, cta, arg);
-                writeln!(
-                    src,
-                    "{}auto p_out{} = TensorAccessor(args_out{}, out{}, {});",
-                    self.indent, op_id, op_id, op_id, TT_DRAM_PAGE_BYTES
-                );
+                writeln!(src, "{indent}auto args_out{op_id} = TensorAccessorArgs<{cta}>({arg});");
+                writeln!(src, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {TT_DRAM_PAGE_BYTES});");
                 prev_accessor = Some(format!("args_out{op_id}"));
             }
         }
         let mut loop_depth = 0u32;
-        let mut loop_popped: Map<CBId, ()> = Map::default();
+        let mut loop_popped: Set<CBId> = Set::default();
         let n = ops.len();
         for i in 0..n {
             let op_id = ops[i];
-            match &kernel.ops[op_id].op {
+            match kernel.ops[op_id].op {
                 Op::Param { kind: ParamKind::GlobalMut, .. } => {
                     // Accessor emitted up front (see above).
                 }
@@ -1063,12 +1010,9 @@ impl Compiler {
                     };
                     writeln!(
                         src,
-                        "{}{} r{} = ({})get_arg_val<uint32_t>({});",
-                        self.indent,
+                        "{indent}{} r{op_id} = ({})get_arg_val<uint32_t>({arg});",
                         dtype.c_type(),
-                        op_id,
-                        dtype.c_type(),
-                        arg
+                        dtype.c_type()
                     );
                 }
                 Op::Storage { scope: MemScope::Circular, .. } => {
@@ -1085,7 +1029,7 @@ impl Compiler {
                 Op::Load { .. } => {
                     // Consumed at the draining store below.
                 }
-                Op::Store { dst, src: store_src, index: st_idx, layout: st_layout } => {
+                Op::Store { ref dst, src: ref store_src, index: st_idx, layout: st_layout } => {
                     let Op::Load { src: cb_src, index: _ld_idx, layout: ld_layout } = kernel.ops[*store_src].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
@@ -1109,21 +1053,16 @@ impl Compiler {
                             let elem_size = dtype.bit_size() as u32 / 8;
                             let tile_bytes = x as u32 * y as u32 * elem_size;
                             let page_size = TT_DRAM_PAGE_BYTES;
-                            writeln!(src, "{}cb{}.wait_front(1);", self.indent, cb);
+                            writeln!(src, "{indent}cb{cb}.wait_front(1);");
                             writeln!(
                                 src,
-                                "{}uint64_t wnoc{} = p_out{}.get_noc_addr((uint32_t)((r{}*{})/{}), (uint32_t)((r{}*{})%{}));",
-                                self.indent, op_id, dst, st_idx, elem_size, page_size, st_idx, elem_size, page_size
+                                "{indent}uint64_t wnoc{op_id} = p_out{dst}.get_noc_addr((uint32_t)((r{st_idx}*{elem_size})/{page_size}), (uint32_t)((r{st_idx}*{elem_size})%{page_size}));"
                             );
-                            writeln!(
-                                src,
-                                "{}noc_async_write(cb{}.get_read_ptr(), wnoc{}, {});",
-                                self.indent, cb, op_id, tile_bytes
-                            );
-                            writeln!(src, "{}noc_async_write_barrier();", self.indent);
-                            writeln!(src, "{}cb{}.pop_front(1);", self.indent, cb);
+                            writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr(), wnoc{op_id}, {tile_bytes});");
+                            writeln!(src, "{indent}noc_async_write_barrier();");
+                            writeln!(src, "{indent}cb{cb}.pop_front(1);");
                             if loop_depth > 0 {
-                                loop_popped.insert(cb, ());
+                                loop_popped.insert(cb);
                             }
                         }
                         _ => todo!("tenstorrent2 writer only supports tile stores"),
@@ -1132,28 +1071,28 @@ impl Compiler {
                 Op::Loop { len } => {
                     if loop_depth == 0 {
                         for cb in &writer_loop_cbs {
-                            writeln!(src, "{}cb{}.wait_front(1);", self.indent, cb);
-                            writeln!(src, "{}uint32_t wbase{} = cb{}.get_read_ptr();", self.indent, cb, cb);
+                            writeln!(src, "{indent}cb{cb}.wait_front(1);");
+                            writeln!(src, "{indent}uint32_t wbase{cb} = cb{cb}.get_read_ptr();");
                         }
                     }
-                    writeln!(src, "{}for (uint32_t r{} = 0; r{} < r{}; r{}++) {{", self.indent, op_id, op_id, len, op_id);
-                    self.indent.push_str("  ");
+                    writeln!(src, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
+                    indent.push_str("  ");
                     loop_depth += 1;
                 }
                 Op::EndLoop => {
-                    self.indent.pop();
-                    self.indent.pop();
-                    writeln!(src, "{}}}", self.indent);
+                    indent.pop();
+                    indent.pop();
+                    writeln!(src, "{indent}}}");
                     if loop_depth == 1 {
-                        writeln!(src, "{}noc_async_write_barrier();", self.indent);
+                        writeln!(src, "{indent}noc_async_write_barrier();");
                         for cb in &writer_loop_cbs {
                             // Tile streaming pops per iteration (see the
                             // tile Store above); popping again here would
                             // over-pop and stall.
-                            if loop_popped.contains_key(cb) {
+                            if loop_popped.contains(cb) {
                                 continue;
                             }
-                            writeln!(src, "{}cb{}.pop_front(1);", self.indent, cb);
+                            writeln!(src, "{indent}cb{cb}.pop_front(1);");
                         }
                     }
                     loop_depth -= 1;
@@ -1161,8 +1100,8 @@ impl Compiler {
                 Op::Barrier => {}
                 Op::Range { axis, kind, .. } => match kind {
                     RangeKind::Group(_) => {
-                        let arg = self.arg_pos.len() as u32 + *axis;
-                        writeln!(src, "{}uint32_t r{} = get_arg_val<uint32_t>({});", self.indent, op_id, arg);
+                        let arg = self.arg_pos.len() as u32 + axis;
+                        writeln!(src, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({arg});");
                     }
                     RangeKind::Local(_) => {
                         unreachable!(
@@ -1172,7 +1111,7 @@ impl Compiler {
                     RangeKind::Warp(_) => todo!("tenstorrent2 writer warp range"),
                 },
                 Op::Const(_) | Op::Binary { .. } | Op::Mad { .. } | Op::Cast { .. } => {
-                    let s = self.emit_scalar_op(kernel, op_id)?;
+                    let s = self.emit_scalar_op(kernel, op_id, &indent)?;
                     src.push_str(&s);
                 }
                 Op::Param { .. } => {
@@ -1194,49 +1133,49 @@ impl Compiler {
             }
         }
         writeln!(src, "}}");
-        self.writer = TTKernel::Writer { src, params };
+        self.writer = TTKernel::Writer { src, ordinals: ordinals.to_vec() };
         Ok(())
     }
 
     /// Shared scalar ALU emission across all sections: identical text
     /// everywhere, no section argument.
     #[allow(unused_must_use)]
-    fn emit_scalar_op(&self, kernel: &Kernel, op_id: OpId) -> Result<String, BackendError> {
+    fn emit_scalar_op(&self, kernel: &Kernel, op_id: OpId, indent: &str) -> Result<String, BackendError> {
         let mut out = String::new();
         match &kernel.ops[op_id].op {
             Op::Const(val) => {
-                writeln!(out, "{}{} r{} = {};", self.indent, val.dtype().c_type(), op_id, val.c_code());
+                writeln!(out, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
             }
             Op::Binary { x, y, bop } => {
                 let dt = kernel.dtype(op_id);
                 let _ = match bop {
-                    BOp::Add => writeln!(out, "{}{} r{} = r{} + r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::Sub => writeln!(out, "{}{} r{} = r{} - r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::Mul => writeln!(out, "{}{} r{} = r{} * r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::Div => writeln!(out, "{}{} r{} = r{} / r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::Mod => writeln!(out, "{}{} r{} = r{} % r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::Max => writeln!(out, "{}{} r{} = r{} > r{} ? r{} : r{};", self.indent, dt.c_type(), op_id, x, y, x, y),
-                    BOp::Cmplt => writeln!(out, "{}{} r{} = r{} < r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::Cmpgt => writeln!(out, "{}{} r{} = r{} > r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::Cmpge => writeln!(out, "{}{} r{} = r{} >= r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::Eq => writeln!(out, "{}{} r{} = r{} == r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::NotEq => writeln!(out, "{}{} r{} = r{} != r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::And => writeln!(out, "{}{} r{} = r{} && r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::Or => writeln!(out, "{}{} r{} = r{} || r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::BitXor => writeln!(out, "{}{} r{} = r{} ^ r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::BitOr => writeln!(out, "{}{} r{} = r{} | r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::BitAnd => writeln!(out, "{}{} r{} = r{} & r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::BitShiftLeft => writeln!(out, "{}{} r{} = r{} << r{};", self.indent, dt.c_type(), op_id, x, y),
-                    BOp::BitShiftRight => writeln!(out, "{}{} r{} = r{} >> r{};", self.indent, dt.c_type(), op_id, x, y),
+                    BOp::Add => writeln!(out, "{indent}{} r{op_id} = r{x} + r{y};", dt.c_type()),
+                    BOp::Sub => writeln!(out, "{indent}{} r{op_id} = r{x} - r{y};", dt.c_type()),
+                    BOp::Mul => writeln!(out, "{indent}{} r{op_id} = r{x} * r{y};", dt.c_type()),
+                    BOp::Div => writeln!(out, "{indent}{} r{op_id} = r{x} / r{y};", dt.c_type()),
+                    BOp::Mod => writeln!(out, "{indent}{} r{op_id} = r{x} % r{y};", dt.c_type()),
+                    BOp::Max => writeln!(out, "{indent}{} r{op_id} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
+                    BOp::Cmplt => writeln!(out, "{indent}{} r{op_id} = r{x} < r{y};", dt.c_type()),
+                    BOp::Cmpgt => writeln!(out, "{indent}{} r{op_id} = r{x} > r{y};", dt.c_type()),
+                    BOp::Cmpge => writeln!(out, "{indent}{} r{op_id} = r{x} >= r{y};", dt.c_type()),
+                    BOp::Eq => writeln!(out, "{indent}{} r{op_id} = r{x} == r{y};", dt.c_type()),
+                    BOp::NotEq => writeln!(out, "{indent}{} r{op_id} = r{x} != r{y};", dt.c_type()),
+                    BOp::And => writeln!(out, "{indent}{} r{op_id} = r{x} && r{y};", dt.c_type()),
+                    BOp::Or => writeln!(out, "{indent}{} r{op_id} = r{x} || r{y};", dt.c_type()),
+                    BOp::BitXor => writeln!(out, "{indent}{} r{op_id} = r{x} ^ r{y};", dt.c_type()),
+                    BOp::BitOr => writeln!(out, "{indent}{} r{op_id} = r{x} | r{y};", dt.c_type()),
+                    BOp::BitAnd => writeln!(out, "{indent}{} r{op_id} = r{x} & r{y};", dt.c_type()),
+                    BOp::BitShiftLeft => writeln!(out, "{indent}{} r{op_id} = r{x} << r{y};", dt.c_type()),
+                    BOp::BitShiftRight => writeln!(out, "{indent}{} r{op_id} = r{x} >> r{y};", dt.c_type()),
                     BOp::Pow => todo!("tenstorrent2 scalar pow"),
                 };
             }
             Op::Mad { x, y, z } => {
                 let dt = kernel.dtype(op_id);
-                writeln!(out, "{}{} r{} = r{} * r{} + r{};", self.indent, dt.c_type(), op_id, x, y, z);
+                writeln!(out, "{indent}{} r{op_id} = r{x} * r{y} + r{z};", dt.c_type());
             }
             Op::Cast { x, dtype } => {
-                writeln!(out, "{}{} r{} = ({})r{};", self.indent, dtype.c_type(), op_id, dtype.c_type(), x);
+                writeln!(out, "{indent}{} r{op_id} = ({})r{x};", dtype.c_type(), dtype.c_type());
             }
             Op::Param { .. }
             | Op::Storage { .. }
