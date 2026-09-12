@@ -1090,7 +1090,10 @@ pub fn embed_kernel(_vocab: i64, dim: i64, seq: i64) -> Kernel {
 pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
     const TDIM: u16 = 32;
     const TILE_ELEMS: i64 = 1024;
-    debug_assert!(ntiles % 4 == 0, "dequant_q4k_tt needs ntiles % 4 == 0, got {ntiles}");
+    debug_assert!(
+        ntiles % 4 == 0,
+        "dequant_q4k_tt needs ntiles % 4 == 0, got {ntiles}"
+    );
     let pages = ntiles / 4;
     let mut kernel = Kernel::new(Dev::TT(0));
     let packed = kernel.param(DType::U16);

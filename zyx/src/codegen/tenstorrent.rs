@@ -1143,6 +1143,9 @@ impl Compiler {
         writeln!(src, "#include <cstdint>");
         writeln!(src, "#include \"api/compute/tile_move_copy.h\"");
         writeln!(src, "#include \"api/compute/matmul.h\"");
+        // Packer output-format reconfig (fp32_accuracy doc): without it
+        // the packer treats DST as 16-bit even under fp32_dest_acc_en.
+        writeln!(src, "#include \"api/compute/reconfig_data_format.h\"");
         writeln!(src, "#include \"hostdevcommon/kernel_structs.h\"");
         writeln!(src, "using std::uint32_t;");
         writeln!(src, "void kernel_main() {{");
@@ -1243,6 +1246,7 @@ impl Compiler {
                                 }
                             }
                             writeln!(src, "{indent}cb_reserve_back(cb{cb}, 1);");
+                            writeln!(src, "{indent}pack_reconfig_data_format(cb{cb});");
                             writeln!(src, "{indent}pack_tile({slot}, cb{cb});");
                             writeln!(src, "{indent}cb_push_back(cb{cb}, 1);");
                         }
@@ -1283,16 +1287,19 @@ impl Compiler {
                     for cb in cbv {
                         writeln!(src, "{indent}cb_pop_front(cb{cb}, 1);");
                     }
-                    if k_loops.contains(&loop_id) {
-                        writeln!(src, "{indent}tile_regs_commit();");
-                        writeln!(src, "{indent}tile_regs_wait();");
-                    }
                     if acquire_loops.contains(&loop_id) {
                         writeln!(src, "{indent}tile_regs_release();");
                     }
                     indent.pop();
                     indent.pop();
                     writeln!(src, "{indent}}}");
+                    // Commit once per accumulation, after the K loop closes:
+                    // committing per iteration (before the brace) stalls the
+                    // FPU sync protocol mid-accumulation (board wedge).
+                    if k_loops.contains(&loop_id) {
+                        writeln!(src, "{indent}tile_regs_commit();");
+                        writeln!(src, "{indent}tile_regs_wait();");
+                    }
                 }
                 Op::Barrier => {}
                 Op::Range { axis, kind, .. } => match kind {
