@@ -215,9 +215,8 @@ impl Kernel {
             // a guard so the op matches only inside the target section.
             match self.ops[scan].op {
                 Op::Barrier => {
-                    if section == tt_section {
-                        structural.insert(scan);
-                    }
+                    // Delimiters only: barriers advance the section scan
+                    // but never join any section's op list.
                     section.advance();
                 }
                 Op::Store { .. } if section == tt_section => {
@@ -348,6 +347,10 @@ impl Kernel {
             }
             if needed.contains(&op_id) || structural.contains(&op_id) {
                 ops.push(op_id);
+                // Every listed op carries a section refcount, even when
+                // nothing consumes it (zero uses). A missing entry
+                // downstream is a phase-3 bug, never a default.
+                rcs.entry(op_id).or_insert(0);
                 match self.ops[op_id].op {
                     Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                         unreachable!()
@@ -510,64 +513,6 @@ pub(crate) struct Compiler {
     /// Scratch CBs (stored in compute, never loaded by the writer):
     /// no DRAM traffic is emitted for them in any section.
     scratch_cbs: Set<CBId>,
-}
-
-/// House register discipline (c/cuda/opencl/ptx): physical `r{reg}`
-/// slots stamped with the value's refcount. A use at the defining loop
-/// level decrements; zero frees the slot for reuse. Reuse is allowed
-/// only across block boundaries (deeper or exited-outer level): same
-/// block reuse would redeclare `r{reg}` in one C scope (hard error).
-/// Bare numbers (DST slot indices, CB ids) carry no declaration and
-/// reuse freely. Scalars and DST slots share one namespace (their
-/// (dtype, layout) pairs never collide); CBs and accessors keep
-/// storage/op names.
-fn new_reg(
-    op_id: OpId,
-    reg_map: &mut Map<OpId, usize>,
-    registers: &mut Vec<((DType, MemLayout), u32, u8)>,
-    dtype: (DType, MemLayout),
-    rc: u32,
-    current_loop_level: u8,
-) -> usize {
-    for (i, (dt, nrc, loop_level)) in registers.iter_mut().enumerate() {
-        if *nrc == 0 && *dt == dtype && current_loop_level != *loop_level {
-            reg_map.insert(op_id, i);
-            *nrc = rc;
-            *loop_level = current_loop_level;
-            return i;
-        }
-    }
-    let i = registers.len();
-    registers.push((dtype, rc, current_loop_level));
-    reg_map.insert(op_id, i);
-    i
-}
-
-/// House use-site resolution (TT adaptation: consts inline as literals
-/// via the kernel IR itself, no precomputed tables). Call exactly once
-/// per operand per op (a second call would decrement twice); bind the
-/// returned name and interpolate it repeatedly. Unknown names are a
-/// compilation error, never a silent zero.
-fn get_var(
-    kernel: &Kernel,
-    op_id: OpId,
-    reg_map: &Map<OpId, usize>,
-    registers: &mut [((DType, MemLayout), u32, u8)],
-    loop_level: u8,
-) -> Result<String, BackendError> {
-    if let Op::Const(c) = &kernel.ops[op_id].op {
-        return Ok(format!("{}", c.c_code()));
-    }
-    if let Some(&reg) = reg_map.get(&op_id) {
-        if registers[reg].2 == loop_level {
-            registers[reg].1 -= 1;
-        }
-        return Ok(format!("r{reg}"));
-    }
-    Err(BackendError {
-        status: ErrorStatus::KernelCompilation,
-        context: format!("tenstorrent2: scalar {op_id} not found in constants or registers").into(),
-    })
 }
 
 impl Compiler {
@@ -957,8 +902,8 @@ impl Compiler {
                         }
                     }
                 }
-                Op::Loop { len } => {
-                    writeln!(src, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
+                Op::Loop { .. } => {
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &reader_data, &mut src)?;
                     indent.push_str("  ");
                     loop_level += 1;
                 }
@@ -969,23 +914,14 @@ impl Compiler {
                     writeln!(src, "{indent}}}");
                 }
                 Op::Barrier => {}
-                Op::Range { axis, kind, .. } => match kind {
-                    RangeKind::Group(_) => {
-                        let arg = arg_pos.len() as u32 + axis;
-                        writeln!(src, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({arg});");
-                    }
-                    RangeKind::Local(_) => {
-                        unreachable!(
-                            "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
-                        )
-                    }
-                    RangeKind::Warp(_) => todo!("tenstorrent2 reader warp range"),
-                },
+                Op::Range { .. } => {
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &reader_data, &mut src)?;
+                }
                 Op::Const(_) => {
                     // Inlined as literals at uses; no declaration emitted.
                 }
                 Op::Binary { .. } | Op::Mad { .. } | Op::Cast { .. } => {
-                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &mut src)?;
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &reader_data, &mut src)?;
                 }
                 Op::Unary { .. }
                 | Op::Bitcast { .. }
@@ -1026,8 +962,26 @@ impl Compiler {
         params: &[OpId],
         ordinals: &[u32],
     ) -> Result<(), BackendError> {
+        // Section params in list order become this section's runtime args.
+        let mut arg_pos: Map<OpId, u32> = Map::default();
+        for (i, &p) in params.iter().enumerate() {
+            arg_pos.insert(p, i as u32);
+        }
         let mut indent = String::from("  ");
         let mut src = String::new();
+        writeln!(src, "#include <cstdint>");
+        writeln!(src, "#include \"api/compute/common.h\"");
+        writeln!(src, "#include \"api/compute/compute_kernel_api.h\"");
+        writeln!(src, "#include \"api/dataflow/circular_buffer.h\"");
+        writeln!(src, "#include \"api/debug/device_print.h\"");
+        writeln!(src, "void kernel_main() {{");
+        // Every shared CB is declared (matches reader/writer); the section
+        // only consumes the ones it reads.
+        let mut cbs: Vec<CBId> = self.cb_map.iter().map(|(_, &cb)| cb).collect();
+        cbs.sort();
+        for cb in cbs {
+            writeln!(src, "{indent}CircularBuffer cb{cb}(tt::CBIndex::c_{cb});");
+        }
 
         let mut vars: Vec<VarSlot> = Vec::new();
         let mut var_map: Map<OpId, u32> = Map::default();
@@ -1035,33 +989,58 @@ impl Compiler {
         let mut loop_level: u8 = 0;
         for &op_id in &compute_data.ops {
             match kernel.ops[op_id].op {
-                Op::Param { .. } => todo!(),
+                Op::Param { dtype, kind, .. } => match kind {
+                    ParamKind::Variable => {
+                        let arg = arg_pos.get(&op_id).copied().expect("tenstorrent2 compute param missing from section args");
+                        writeln!(src, "{indent}{} r{op_id} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
+                    }
+                    ParamKind::Global | ParamKind::GlobalMut => {
+                        return Err(BackendError {
+                            status: ErrorStatus::ComputeAccessesDram,
+                            context: format!("tenstorrent2: compute touches DRAM through param {op_id}").into(),
+                        });
+                    }
+                },
                 Op::Const(_) => {
                     // Inlined as literals at uses; no declaration emitted.
                 }
                 Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
-                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &mut src)?;
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &compute_data, &mut src)?;
                 }
-                Op::Stack { ref ops } => todo!(),
-                Op::Storage { dtype, scope, len } => todo!(),
-                Op::Store { dst, src, index, layout } => todo!(),
-                Op::Load { src, index, layout } => todo!(),
-                Op::Range { axis, kind } => todo!(),
-                Op::Loop { len } => {
+                Op::Stack { .. } => todo!(),
+                Op::Storage { scope: MemScope::Circular, .. } => {
+                    // Declared up front for every shared CB (see driver).
+                }
+                Op::Storage { scope: MemScope::Local, .. } => {
+                    unreachable!(
+                        "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
+                    )
+                }
+                Op::Storage { .. } => {
+                    todo!("tenstorrent2 compute storage scope")
+                }
+                Op::Store { .. } => todo!("tenstorrent2 compute store"),
+                Op::Load { .. } => todo!("tenstorrent2 compute load"),
+                Op::Range { .. } => {
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &compute_data, &mut src)?;
+                }
+                Op::Loop { .. } => {
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &compute_data, &mut src)?;
+                    indent.push_str("  ");
                     loop_level += 1;
-                    indent += "  ";
                 }
                 Op::EndLoop => {
                     loop_level -= 1;
                     indent.pop();
                     indent.pop();
+                    writeln!(src, "{indent}}}");
                 }
-                Op::If { condition } => todo!(),
+                Op::If { .. } => todo!(),
                 Op::EndIf => todo!(),
-                Op::Index { vec, idx } => todo!(),
-                Op::MatmulTile { x, y } => todo!(),
-                Op::TransposeTile { x } => todo!(),
-                Op::ReduceTile { x, rop, kind } => todo!(),
+                Op::Index { .. } => todo!(),
+                Op::MatmulTile { .. } => todo!(),
+                Op::TransposeTile { .. } => todo!(),
+                Op::ReduceTile { .. } => todo!(),
                 Op::Asm { .. } => todo!(),
                 Op::Barrier => unreachable!("should've been filtered by kernel sections decomposition"),
                 Op::Move { .. } | Op::Reduce { .. } => unreachable!("should've been lowered by linearize"),
@@ -1069,7 +1048,8 @@ impl Compiler {
             }
         }
 
-        self.compute = TTKernel::Compute { src, params: todo!(), ordinals: todo!() };
+        writeln!(src, "}}");
+        self.compute = TTKernel::Compute { src, params: params.to_vec(), ordinals: ordinals.to_vec() };
 
         Ok(())
     }
@@ -1204,14 +1184,14 @@ impl Compiler {
                         _ => todo!("tenstorrent2 writer only supports tile stores"),
                     }
                 }
-                Op::Loop { len } => {
+                Op::Loop { .. } => {
                     if loop_level == 0 {
                         for cb in &writer_loop_cbs {
                             writeln!(src, "{indent}cb{cb}.wait_front(1);");
                             writeln!(src, "{indent}uint32_t wbase{cb} = cb{cb}.get_read_ptr();");
                         }
                     }
-                    writeln!(src, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &writer_data, &mut src)?;
                     indent.push_str("  ");
                     loop_level += 1;
                 }
@@ -1234,23 +1214,14 @@ impl Compiler {
                     loop_level -= 1;
                 }
                 Op::Barrier => {}
-                Op::Range { axis, kind, .. } => match kind {
-                    RangeKind::Group(_) => {
-                        let arg = arg_pos.len() as u32 + axis;
-                        writeln!(src, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({arg});");
-                    }
-                    RangeKind::Local(_) => {
-                        unreachable!(
-                            "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
-                        )
-                    }
-                    RangeKind::Warp(_) => todo!("tenstorrent2 writer warp range"),
-                },
+                Op::Range { .. } => {
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &writer_data, &mut src)?;
+                }
                 Op::Const(_) => {
                     // Inlined as literals at uses; no declaration emitted.
                 }
                 Op::Binary { .. } | Op::Mad { .. } | Op::Cast { .. } => {
-                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &mut src)?;
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &writer_data, &mut src)?;
                 }
                 Op::Param { .. } => {
                     todo!("tenstorrent2 writer Global param")
@@ -1277,7 +1248,7 @@ impl Compiler {
 
     /// Shared basic-op emission across all sections: identical text
     /// everywhere, no section argument. Handles cast, bitcast, unary,
-    /// binary, and mad. House register discipline (c/cuda/opencl/ptx):
+    /// binary, mad, and loop headers. House register discipline (c/cuda/opencl/ptx):
     /// values live in `r{reg}` slots stamped with their section
     /// refcount; CBs and accessors keep storage/op names (ptx Storage
     /// precedent: storage-derived names are not registers). Loads,
@@ -1291,65 +1262,79 @@ impl Compiler {
         var_map: &mut Map<OpId, u32>,
         vars: &mut Vec<VarSlot>,
         loop_level: u8,
+        arg_pos: &Map<OpId, u32>,
+        data: &SectionData,
         src: &mut String,
     ) -> Result<(), BackendError> {
+        /// Standard allocation into `vars`: reuse a dead slot with
+        /// matching dtype/layout from another block, else push a new
+        /// one. Returns the `r{reg}` index and records `op_id`.
+        fn new_var(
+            op_id: OpId,
+            var_map: &mut Map<OpId, u32>,
+            vars: &mut Vec<VarSlot>,
+            dtype: DType,
+            layout: MemLayout,
+            rcs: &Map<OpId, u32>,
+            loop_level: u8,
+        ) -> u32 {
+            let rc: u32 = rcs[&op_id];
+            for (i, s) in vars.iter_mut().enumerate() {
+                if s.rc == 0 && s.dtype == dtype && s.layout == layout && s.loop_level != loop_level {
+                    s.dtype = dtype;
+                    s.layout = layout;
+                    s.rc = rc;
+                    s.loop_level = loop_level;
+                    var_map.insert(op_id, i as u32);
+                    return i as u32;
+                }
+            }
+            let r = vars.len() as u32;
+            vars.push(VarSlot { dtype, layout, rc, loop_level });
+            var_map.insert(op_id, r);
+            r
+        }
+        /// Shared operand resolution: constants inline as literals,
+        /// loop/param/vars names resolve through `var_map` with the
+        /// house use-site rule (same-level use decrements, deeper
+        /// uses stay live). Anything else is a compilation error.
+        fn get_var(
+            kernel: &Kernel,
+            id: OpId,
+            var_map: &Map<OpId, u32>,
+            vars: &mut [VarSlot],
+            loop_level: u8,
+        ) -> Result<String, BackendError> {
+            if let Op::Const(c) = &kernel.ops[id].op {
+                return Ok(format!("{}", c.c_code()));
+            }
+            if let Some(&r) = var_map.get(&id) {
+                let s = &mut vars[r as usize];
+                if s.loop_level == loop_level {
+                    debug_assert!(s.rc > 0);
+                    s.rc -= 1;
+                }
+                return Ok(format!("r{r}"));
+            }
+            Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tenstorrent2: operand {id} not found in constants or registers").into(),
+            })
+        }
         match &kernel.ops[op_id].op {
             Op::Const(_) => unreachable!("tenstorrent2 consts inline as literals at their uses"),
             Op::Binary { x, y, bop } => {
-                let dt = kernel.dtype(op_id);
-                let x = if let Op::Const(c) = &kernel.ops[*x].op {
-                    format!("{}", c.c_code())
-                } else if let Some(&r) = var_map.get(x) {
-                    let s = &mut vars[r as usize];
-                    if s.loop_level == loop_level {
-                        debug_assert!(s.rc > 0);
-                        s.rc -= 1;
-                    }
-                    format!("r{r}")
-                } else {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: scalar {x} not found in constants or registers").into(),
-                    });
-                };
-                let y = if let Op::Const(c) = &kernel.ops[*y].op {
-                    format!("{}", c.c_code())
-                } else if let Some(&r) = var_map.get(y) {
-                    let s = &mut vars[r as usize];
-                    if s.loop_level == loop_level {
-                        debug_assert!(s.rc > 0);
-                        s.rc -= 1;
-                    }
-                    format!("r{r}")
-                } else {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: scalar {y} not found in constants or registers").into(),
-                    });
-                };
-                let mut found: Option<u32> = None;
-                for (i, s) in vars.iter_mut().enumerate() {
-                    if s.rc == 0 && s.dtype == dt && s.layout == MemLayout::Scalar && s.loop_level != loop_level {
-                        s.dtype = dt;
-                        s.layout = MemLayout::Scalar;
-                        s.rc = 1;
-                        s.loop_level = loop_level;
-                        found = Some(i as u32);
-                        break;
-                    }
+                let dt = data.dtypes[&op_id].0;
+                let rlay = data.dtypes[&op_id].1;
+                let xlay = data.dtypes[x].1;
+                let ylay = data.dtypes[y].1;
+                if !matches!(xlay, MemLayout::Scalar) || !matches!(ylay, MemLayout::Scalar) || !matches!(rlay, MemLayout::Scalar)
+                {
+                    todo!("tenstorrent2 binary over non-scalar layout");
                 }
-                let reg = match found {
-                    Some(r) => {
-                        var_map.insert(op_id, r);
-                        r
-                    }
-                    None => {
-                        let r = vars.len() as u32;
-                        vars.push(VarSlot { dtype: dt, layout: MemLayout::Scalar, rc: 1, loop_level });
-                        var_map.insert(op_id, r);
-                        r
-                    }
-                };
+                let x = get_var(kernel, *x, var_map, vars, loop_level)?;
+                let y = get_var(kernel, *y, var_map, vars, loop_level)?;
+                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, loop_level);
                 let _ = match bop {
                     BOp::Add => writeln!(src, "{indent}{} r{reg} = {x} + {y};", dt.c_type()),
                     BOp::Sub => writeln!(src, "{indent}{} r{reg} = {x} - {y};", dt.c_type()),
@@ -1373,125 +1358,64 @@ impl Compiler {
                 };
             }
             Op::Mad { x, y, z } => {
-                let dt = kernel.dtype(op_id);
-                let x = if let Op::Const(c) = &kernel.ops[*x].op {
-                    format!("{}", c.c_code())
-                } else if let Some(&r) = var_map.get(x) {
-                    let s = &mut vars[r as usize];
-                    if s.loop_level == loop_level {
-                        debug_assert!(s.rc > 0);
-                        s.rc -= 1;
-                    }
-                    format!("r{r}")
-                } else {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: scalar {x} not found in constants or registers").into(),
-                    });
-                };
-                let y = if let Op::Const(c) = &kernel.ops[*y].op {
-                    format!("{}", c.c_code())
-                } else if let Some(&r) = var_map.get(y) {
-                    let s = &mut vars[r as usize];
-                    if s.loop_level == loop_level {
-                        debug_assert!(s.rc > 0);
-                        s.rc -= 1;
-                    }
-                    format!("r{r}")
-                } else {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: scalar {y} not found in constants or registers").into(),
-                    });
-                };
-                let z = if let Op::Const(c) = &kernel.ops[*z].op {
-                    format!("{}", c.c_code())
-                } else if let Some(&r) = var_map.get(z) {
-                    let s = &mut vars[r as usize];
-                    if s.loop_level == loop_level {
-                        debug_assert!(s.rc > 0);
-                        s.rc -= 1;
-                    }
-                    format!("r{r}")
-                } else {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: scalar {z} not found in constants or registers").into(),
-                    });
-                };
-                let mut found: Option<u32> = None;
-                for (i, s) in vars.iter_mut().enumerate() {
-                    if s.rc == 0 && s.dtype == dt && s.layout == MemLayout::Scalar && s.loop_level != loop_level {
-                        s.dtype = dt;
-                        s.layout = MemLayout::Scalar;
-                        s.rc = 1;
-                        s.loop_level = loop_level;
-                        found = Some(i as u32);
-                        break;
-                    }
+                let dt = data.dtypes[&op_id].0;
+                let rlay = data.dtypes[&op_id].1;
+                let xlay = data.dtypes[x].1;
+                let ylay = data.dtypes[y].1;
+                let zlay = data.dtypes[z].1;
+                if !matches!(xlay, MemLayout::Scalar)
+                    || !matches!(ylay, MemLayout::Scalar)
+                    || !matches!(zlay, MemLayout::Scalar)
+                    || !matches!(rlay, MemLayout::Scalar)
+                {
+                    todo!("tenstorrent2 mad over non-scalar layout");
                 }
-                let reg = match found {
-                    Some(r) => {
-                        var_map.insert(op_id, r);
-                        r
-                    }
-                    None => {
-                        let r = vars.len() as u32;
-                        vars.push(VarSlot { dtype: dt, layout: MemLayout::Scalar, rc: 1, loop_level });
-                        var_map.insert(op_id, r);
-                        r
-                    }
-                };
+                let x = get_var(kernel, *x, var_map, vars, loop_level)?;
+                let y = get_var(kernel, *y, var_map, vars, loop_level)?;
+                let z = get_var(kernel, *z, var_map, vars, loop_level)?;
+                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, loop_level);
                 writeln!(src, "{indent}{} r{reg} = {x} * {y} + {z};", dt.c_type());
             }
             Op::Cast { x, dtype } => {
-                let dt: DType = *dtype;
-                let x = if let Op::Const(c) = &kernel.ops[*x].op {
-                    format!("{}", c.c_code())
-                } else if let Some(&r) = var_map.get(x) {
-                    let s = &mut vars[r as usize];
-                    if s.loop_level == loop_level {
-                        debug_assert!(s.rc > 0);
-                        s.rc -= 1;
-                    }
-                    format!("r{r}")
-                } else {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: scalar {x} not found in constants or registers").into(),
-                    });
-                };
-                let mut found: Option<u32> = None;
-                for (i, s) in vars.iter_mut().enumerate() {
-                    if s.rc == 0 && s.dtype == dt && s.layout == MemLayout::Scalar && s.loop_level != loop_level {
-                        s.dtype = dt;
-                        s.layout = MemLayout::Scalar;
-                        s.rc = 1;
-                        s.loop_level = loop_level;
-                        found = Some(i as u32);
-                        break;
-                    }
+                let dt = data.dtypes[&op_id].0;
+                let rlay = data.dtypes[&op_id].1;
+                debug_assert_eq!(dt, *dtype);
+                let xlay = data.dtypes[x].1;
+                if !matches!(xlay, MemLayout::Scalar) || !matches!(rlay, MemLayout::Scalar) {
+                    todo!("tenstorrent2 cast over non-scalar layout");
                 }
-                let reg = match found {
-                    Some(r) => {
-                        var_map.insert(op_id, r);
-                        r
-                    }
-                    None => {
-                        let r = vars.len() as u32;
-                        vars.push(VarSlot { dtype: dt, layout: MemLayout::Scalar, rc: 1, loop_level });
-                        var_map.insert(op_id, r);
-                        r
-                    }
-                };
+                let x = get_var(kernel, *x, var_map, vars, loop_level)?;
+                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, loop_level);
                 writeln!(src, "{indent}{} r{reg} = ({}){x};", dtype.c_type(), dtype.c_type());
             }
+            Op::Loop { len } => {
+                let bound = get_var(kernel, *len, var_map, vars, loop_level)?;
+                let dt = data.dtypes[&op_id].0;
+                let rlay = data.dtypes[&op_id].1;
+                debug_assert!(matches!(rlay, MemLayout::Scalar));
+                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, loop_level);
+                writeln!(src, "{indent}for (uint32_t r{reg} = 0; r{reg} < {bound}; r{reg}++) {{");
+            }
+            Op::Range { axis, kind } => match kind {
+                RangeKind::Group(_) => {
+                    let arg = arg_pos.len() as u32 + *axis;
+                    let dt = data.dtypes[&op_id].0;
+                    let rlay = data.dtypes[&op_id].1;
+                    debug_assert!(matches!(rlay, MemLayout::Scalar));
+                    let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, loop_level);
+                    writeln!(src, "{indent}uint32_t r{reg} = get_arg_val<uint32_t>({arg});");
+                }
+                RangeKind::Local(_) => {
+                    unreachable!(
+                        "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
+                    )
+                }
+                RangeKind::Warp(_) => todo!("tenstorrent2 range warp"),
+            },
             Op::Param { .. }
             | Op::Storage { .. }
             | Op::Load { .. }
             | Op::Store { .. }
-            | Op::Range { .. }
-            | Op::Loop { .. }
             | Op::EndLoop
             | Op::If { .. }
             | Op::EndIf
