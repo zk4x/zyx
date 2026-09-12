@@ -145,22 +145,48 @@ pub(crate) enum TTKernel {
     None,
 }
 
+/// Output of [`Kernel::generate_tenstorrent`]: the three section kernels
+/// plus every kernel-derived table the backend needs.
+///
+/// CB ids and section params are calculated here and only here; the
+/// backend consumes these tables without re-deriving them.
+pub(crate) struct TtCompile {
+    /// Emitted reader source with its section params.
+    pub(crate) reader: TTKernel,
+    /// Compute kernel (codegen not yet implemented: empty source, no params).
+    pub(crate) compute: TTKernel,
+    /// Emitted writer source with its section params.
+    pub(crate) writer: TTKernel,
+    /// Runtime CB config in id order: (id, tt format, tile bytes).
+    /// Format and tile bytes follow the CB storage dtype; an
+    /// unmappable dtype is a compilation error, never a silent default.
+    pub(crate) cb_config: Vec<(u32, u32, u32)>,
+    /// Per-section param ordinals (global head order): each section's
+    /// runtime args.
+    pub(crate) section_params: [Vec<u32>; 3],
+    /// Global head-order ordinal of every param (all kinds).
+    pub(crate) param_ordinal_of: Map<OpId, u32>,
+    /// Global params in head order (kernel inputs).
+    pub(crate) input_dtypes: Vec<DType>,
+    /// GlobalMut params in head order (kernel outputs).
+    pub(crate) output_dtypes: Vec<DType>,
+}
+
 impl Kernel {
     /// Generate TT Metalium reader, compute, and writer kernels from zyx IR.
     ///
-    /// Builds one [`Compiler`] (shared cb_map plus per-section op lists),
-    /// runs the section/CB/balance checks, then generates each section
-    /// from its closed op list.
-    ///
-    /// # Parameters
-    /// - `num_circular_buffers` — hardware CB limit
-    ///   (DeviceInfo::num_circular_buffers).
+    /// Single calculation point for CB ids and section params: builds one
+    /// [`Compiler`] (shared cb_map plus per-section op lists), runs the
+    /// section/CB/balance checks, then generates each section from its
+    /// closed op list. The hardware CB limit comes from the kernel's bound
+    /// device.
     ///
     /// # Returns
-    /// The three section kernels, or a compilation error if any check fails.
+    /// The section kernels plus the kernel-derived tables the backend
+    /// needs, or a compilation error if any check fails.
     #[allow(unused_must_use)]
-    pub(crate) fn generate_tenstorrent(&self, num_circular_buffers: u32) -> Result<(TTKernel, TTKernel, TTKernel), BackendError> {
-        let mut compiler = Compiler::new(self, num_circular_buffers);
+    pub(crate) fn generate_tenstorrent(&self) -> Result<TtCompile, BackendError> {
+        let mut compiler = Compiler::new(self);
         compiler.check_sections(self)?;
         compiler.check_cb_count()?;
         compiler.check_cb_validity(self)?;
@@ -168,7 +194,55 @@ impl Kernel {
         compiler.generate_reader(self)?;
         compiler.generate_writer(self)?;
 
-        Ok((compiler.reader, compiler.compute, compiler.writer))
+        // Per-section param ordinals (global head order): each section's
+        // params are in IR order, so the ordinals ascend already.
+        let section_params = [&compiler.reader, &compiler.compute, &compiler.writer].map(|kernel| {
+            let params = match kernel {
+                TTKernel::Reader { params, .. } => params,
+                TTKernel::Compute { params, .. } => params,
+                TTKernel::Writer { params, .. } => params,
+                TTKernel::None => unreachable!("tenstorrent2 section kernel missing after generation"),
+            };
+            let ordinals: Vec<u32> = params.iter().map(|p| compiler.param_ordinal_of[p]).collect();
+            debug_assert!(
+                ordinals.windows(2).all(|w| w[0] < w[1]),
+                "tenstorrent2 section params not in head order"
+            );
+            ordinals
+        });
+        // Runtime CB config in id order. Format and tile bytes follow the
+        // CB storage dtype; anything else is a compilation error.
+        let mut cb_ops: Vec<(CBId, OpId)> = compiler.cb_map.iter().map(|(&op, &cb)| (cb, op)).collect();
+        cb_ops.sort_by_key(|&(cb, _)| cb);
+        let mut cb_config: Vec<(u32, u32, u32)> = Vec::with_capacity(cb_ops.len());
+        for (cb, op) in cb_ops {
+            let Op::Storage { dtype, .. } = &self.ops[op].op else {
+                unreachable!("tenstorrent2: cb_map entry {op} passed check_cb_validity but is not a storage op")
+            };
+            let (fmt, tb) = match dtype {
+                DType::F32 => (0, 4096),
+                DType::F16 => (1, 2048),
+                DType::BF16 => (2, 2048),
+                DType::U16 => (3, 2048),
+                dt => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: CB dtype {dt:?} has no tt format").into(),
+                    });
+                }
+            };
+            cb_config.push((cb.0, fmt, tb));
+        }
+        Ok(TtCompile {
+            reader: compiler.reader,
+            compute: compiler.compute,
+            writer: compiler.writer,
+            cb_config,
+            section_params,
+            param_ordinal_of: compiler.param_ordinal_of,
+            input_dtypes: compiler.input_dtypes,
+            output_dtypes: compiler.output_dtypes,
+        })
     }
 
     /// All ops needed by the stores inside the given section, in IR order,
@@ -474,6 +548,12 @@ struct Compiler {
     cb_map: Map<OpId, CBId>,
     /// Next free CBId after the map build.
     next_cb: CBId,
+    /// Global head-order ordinal of every param (all kinds).
+    param_ordinal_of: Map<OpId, u32>,
+    /// Global params in head order (kernel inputs).
+    input_dtypes: Vec<DType>,
+    /// GlobalMut params in head order (kernel outputs).
+    output_dtypes: Vec<DType>,
     /// Generated section kernels (filled by generation).
     reader: TTKernel,
     compute: TTKernel,
@@ -485,18 +565,33 @@ struct Compiler {
 }
 
 impl Compiler {
-    /// Build compiler state from a kernel: the shared cb_map plus one
-    /// closed op list per section.
-    fn new(kernel: &Kernel, num_circular_buffers: u32) -> Self {
-        // First touch in any section registers, in kernel order (mirrors
-        // the backend's cb_map exactly: the runtime CB config and the
-        // generated code must agree on every id).
+    /// Build compiler state from a kernel: the shared cb_map, the param
+    /// ordinals and input/output dtypes, plus one closed op list per
+    /// section.
+    fn new(kernel: &Kernel) -> Self {
+        let num_circular_buffers = kernel.device_info().num_circular_buffers;
+        // - CB ids: first touch in any section registers, in kernel order.
+        // - Param ordinals (all kinds, head order) and Global/GlobalMut
+        //   dtypes: same single walk.
         let mut cb_map: Map<OpId, CBId> = Map::default();
         let mut next_cb = CBId::ZERO;
+        let mut param_ordinal_of: Map<OpId, u32> = Map::default();
+        let mut next_param = 0u32;
+        let mut input_dtypes: Vec<DType> = Vec::new();
+        let mut output_dtypes: Vec<DType> = Vec::new();
         let mut scan = kernel.head;
         for _ in 0..10_000 {
             if scan.is_null() {
                 break;
+            }
+            if let Op::Param { dtype, kind, .. } = &kernel.ops[scan].op {
+                param_ordinal_of.insert(scan, next_param);
+                next_param += 1;
+                match kind {
+                    ParamKind::Global => input_dtypes.push(*dtype),
+                    ParamKind::GlobalMut => output_dtypes.push(*dtype),
+                    ParamKind::Variable => {}
+                }
             }
             if let Op::Load { src, .. } = &kernel.ops[scan].op {
                 if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*src].op {
@@ -523,6 +618,9 @@ impl Compiler {
             num_circular_buffers,
             cb_map,
             next_cb,
+            param_ordinal_of,
+            input_dtypes,
+            output_dtypes,
             reader: TTKernel::None,
             compute: TTKernel::Compute {
                 src: String::new(),

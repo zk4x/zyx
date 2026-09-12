@@ -15,13 +15,12 @@
 // giving 120 cores total. A single-core launch uses `gidx0 = 0,
 // gidx1 = 0` (also written `{0, 0}` in CoreCoord notation).
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, Kernel, LaunchArg, MemoryPool, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, Kernel, LaunchArg, MemoryPool, PoolBufferId, PoolId, gws_from_kernel};
 use crate::{
-    DType, Map, Set,
+    DType,
     backend::DTypeCapability,
     codegen::tenstorrent::TTKernel,
     error::{BackendError, ErrorStatus},
-    kernel::{MemScope, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
     slab::Slab,
 };
@@ -724,29 +723,6 @@ pub struct TTDevice {
     programs: Slab<DeviceProgramId, TTProgram>,
 }
 
-/// Kernel sections delimited by barriers: reader (head -> 1st barrier),
-/// compute (1st -> 2nd), writer (2nd -> end).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum TtSection {
-    Reader,
-    Compute,
-    Writer,
-}
-
-impl TtSection {
-    /// Step to the next section at a barrier. Panics past the writer:
-    /// kernels have exactly 3 sections (2 barriers).
-    fn advance(&mut self) {
-        *self = match self {
-            TtSection::Reader => TtSection::Compute,
-            TtSection::Compute => TtSection::Writer,
-            TtSection::Writer => {
-                panic!("tenstorrent kernels have exactly 3 sections (2 barriers)")
-            }
-        };
-    }
-}
-
 impl TTDevice {
     pub fn deinitialize(&mut self) {}
 
@@ -764,122 +740,15 @@ impl TTDevice {
 
     #[allow(unused_must_use)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        // Build CB maps and dtypes from the kernel.
-        //
-        // Sections are delimited by Barriers: reader (head -> 1st barrier),
-        // compute (1st -> 2nd), writer (2nd -> end). Circular storages are
-        // plain rw L1 SRAM with ONE id each: a CB touched by any section is
-        // registered once, in head order, and every section uses that id.
-        let mut cb_map: Map<OpId, u32> = Map::default();
-        let mut input_dtypes: Vec<DType> = Vec::new();
-        let mut output_dtypes: Vec<DType> = Vec::new();
-        {
-            let mut max_cb = 0u32;
-            let mut scan = kernel.head;
-            let mut steps_scan = 0usize;
-            while !scan.is_null() {
-                steps_scan += 1;
-                if steps_scan > 10_000 {
-                    panic!("compile did not finish in 10000 steps");
-                }
-                match &kernel.ops[scan].op {
-                    Op::Param { dtype, kind: ParamKind::Global, .. } => input_dtypes.push(*dtype),
-                    Op::Param { dtype, kind: ParamKind::GlobalMut, .. } => output_dtypes.push(*dtype),
-                    Op::Load { src, .. } => {
-                        if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*src].op {
-                            // CBs register on first touch in any section,
-                            // head order. Compute-local scratch CBs
-                            // (loop-carried values, never filled/drained
-                            // by reader/writer) register on their compute
-                            // touch.
-                            if !cb_map.contains_key(src) {
-                                cb_map.insert(*src, max_cb);
-                                max_cb += 1;
-                            }
-                        }
-                    }
-                    Op::Store { dst, .. } => {
-                        match &kernel.ops[*dst].op {
-                            Op::Storage { scope: MemScope::Circular, .. } => {
-                                // First touch in any section registers (see
-                                // Load arm); compute/writer stores to
-                                // already-registered CBs are no-ops here.
-                                if !cb_map.contains_key(dst) {
-                                    cb_map.insert(*dst, max_cb);
-                                    max_cb += 1;
-                                }
-                            }
-                            Op::Storage { scope, .. } => {
-                                todo!("store into non-CB storage scope {scope:?}")
-                            }
-                            _ => {}
-                        }
-                    }
-                    _ => {}
-                }
-                scan = kernel.next_op(scan);
-            }
-        }
+        // CB ids, section params, param ordinals, and input/output dtypes
+        // are calculated only in `Kernel::generate_tenstorrent` (single
+        // point); the backend consumes the returned tables. What stays
+        // here is launch-side assembly: the group-grid walk, the runtime
+        // CB config, and the program compile call.
+        let tt = kernel.generate_tenstorrent()?;
+        let input_dtypes = tt.input_dtypes;
+        let output_dtypes = tt.output_dtypes;
 
-        // ---- Per-section param requirements ----
-        // Sections are delimited by Barriers: reader (head -> 1st barrier),
-        // compute (1st -> 2nd), writer (2nd -> end). Each section needs the
-        // params in the transitive closure of its stores' scalar deps.
-        let n_params = {
-            let mut n = 0u32;
-            let mut scan = kernel.head;
-            let mut steps = 0usize;
-            while !scan.is_null() {
-                steps += 1;
-                if steps > 10_000 {
-                    panic!("tt param scan did not finish in 10000 steps");
-                }
-                if matches!(kernel.ops[scan].op, Op::Param { .. }) {
-                    n += 1;
-                }
-                scan = kernel.next_op(scan);
-            }
-            n
-        };
-        let param_ordinal_of: Map<OpId, u32> = {
-            let mut map = Map::default();
-            let mut idx = 0u32;
-            let mut scan = kernel.head;
-            let mut steps = 0usize;
-            while !scan.is_null() {
-                steps += 1;
-                if steps > 10_000 {
-                    panic!("tt param ordinal scan did not finish in 10000 steps");
-                }
-                if matches!(kernel.ops[scan].op, Op::Param { .. }) {
-                    map.insert(scan, idx);
-                    idx += 1;
-                }
-                scan = kernel.next_op(scan);
-            }
-            map
-        };
-        // Stores per section (reader, compute, writer).
-        let mut section_stores: [Vec<OpId>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        let mut gws_lens: Vec<OpId> = Vec::new();
-        {
-            let mut section = TtSection::Reader;
-            let mut scan = kernel.head;
-            let mut steps = 0usize;
-            while !scan.is_null() {
-                steps += 1;
-                if steps > 10_000 {
-                    panic!("tt section scan did not finish in 10000 steps");
-                }
-                match kernel.ops[scan].op {
-                    Op::Barrier => section.advance(),
-                    Op::Store { .. } => section_stores[section as usize].push(scan),
-                    Op::Range { kind: RangeKind::Group(len), .. } => gws_lens.push(len),
-                    _ => {}
-                }
-                scan = kernel.next_op(scan);
-            }
-        }
         // Per-section params (0 = reader, 1 = compute, 2 = writer): the
         // ordinals of the params each section's stores depend on, in
         // ascending head order. These lists define the sections' runtime
@@ -891,54 +760,27 @@ impl TTDevice {
         // Global|Variable-then-GlobalMut layout; see
         // `Kernel::generate_tenstorrent` and `tt_runtime.cpp`
         // `section_rt_args` for the consumption side.
-        let per_section_params: Vec<Vec<u32>> = section_stores
-            .iter()
-            .map(|stores| {
-                let mut deps: Set<OpId> = Set::default();
-                let mut stack: Vec<OpId> = stores.iter().copied().collect();
-                while let Some(id) = stack.pop() {
-                    if !deps.insert(id) {
-                        continue;
-                    }
-                    stack.extend(kernel.ops[id].op.parameters());
-                }
-                let mut params: Vec<u32> = deps
-                    .iter()
-                    .filter(|id| matches!(kernel.ops[**id].op, Op::Param { .. }))
-                    .filter_map(|id| param_ordinal_of.get(id).copied())
-                    .collect();
-                params.sort_unstable();
-                params
-            })
-            .collect();
-        let [reader_params, compute_params, writer_params] = per_section_params.try_into().expect("3 sections");
+        let [reader_params, compute_params, writer_params] = tt.section_params;
+        let n_params = tt.param_ordinal_of.len() as u32;
+        // Group grid via the shared helper (same as CUDA/OpenCL/wgpu/HIP):
+        // axis-ordered, full dim expressions, const lengths validated
+        // against the device max. Param-backed lengths resolve at launch
+        // from the Variable arg.
+        let gws = gws_from_kernel(kernel, &self.device_info.max_global_work_dims)?;
 
-        // Group-range lengths in axis order -> GwsDim (Const resolved now,
-        // Param resolved at launch from the Variable arg).
-        let gws: Vec<GwsDim> = gws_lens
-            .iter()
-            .map(|&len| match &kernel.ops[len].op {
-                Op::Const(c) => GwsDim::Const(c.as_dim().expect("gws const length has a concrete dim")),
-                Op::Param { kind: ParamKind::Variable, .. } => GwsDim::Param(param_ordinal_of[&len] as usize),
-                op => todo!("tenstorrent gws: group length must be Const or Param Variable, got {op:?}"),
-            })
-            .collect();
-
-        let num_circular_buffers = self.device_info.num_circular_buffers;
-        let (reader_k, compute_k, writer_k) = kernel.generate_tenstorrent(num_circular_buffers)?;
-        let TTKernel::Reader { src: reader, .. } = reader_k else {
+        let TTKernel::Reader { src: reader, .. } = tt.reader else {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "tenstorrent2 reader kernel missing".into(),
             });
         };
-        let TTKernel::Compute { src: compute, .. } = compute_k else {
+        let TTKernel::Compute { src: compute, .. } = tt.compute else {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "tenstorrent2 compute emission not implemented".into(),
             });
         };
-        let TTKernel::Writer { src: writer, .. } = writer_k else {
+        let TTKernel::Writer { src: writer, .. } = tt.writer else {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "tenstorrent2 writer emission not implemented".into(),
@@ -961,51 +803,13 @@ impl TTDevice {
         let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes, gws });
 
         {
-            let mut cb_config = Vec::with_capacity(cb_map.len());
-            let dtype_to_tt_fmt = |dt: DType| -> u32 {
-                match dt {
-                    DType::F32 => 0,
-                    DType::F16 => 1,
-                    DType::BF16 => 2,
-                    DType::U16 => 3,
-                    _ => 0,
-                }
-            };
-            let tile_bytes_of = |dt: DType| -> u32 {
-                let te = 1024u64;
-                (match dt {
-                    DType::F32 => 4 * te,
-                    DType::F16 | DType::BF16 | DType::U16 => 2 * te,
-                    _ => 4 * te,
-                }) as u32
-            };
-
-            let mut cb_ids: Vec<u32> = cb_map.values().copied().collect();
-            cb_ids.sort();
-            for cb_id in &cb_ids {
-                // Find the local define for this CB to get its dtype
-                let local_op = cb_map.iter().find(|(_, v)| *v == cb_id).map(|(op, _)| *op);
-                let dt = local_op
-                    .and_then(|op| {
-                        if let Op::Storage { dtype, .. } = &kernel.ops[op].op {
-                            Some(*dtype)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
-                let fmt = dtype_to_tt_fmt(dt);
-                let tb = tile_bytes_of(dt);
-                cb_config.push((*cb_id, fmt, tb));
-            }
-
             let mut rt_guard = self.runtime.lock().unwrap();
             rt_guard.compile_program(
                 prog_id.0,
                 &reader,
                 &compute,
                 &writer,
-                &cb_config,
+                &tt.cb_config,
                 n_params,
                 &reader_params,
                 &compute_params,
@@ -1106,19 +910,15 @@ impl TTDevice {
             });
         }
         for (axis, g) in prog.gws.iter().enumerate() {
-            grid_dims[axis] = match g {
-                GwsDim::Const(dim) => u32::try_from(*dim).map_err(|_| BackendError {
-                    status: ErrorStatus::KernelLaunch,
-                    context: format!("gws axis {axis} const dim {dim} does not fit u32").into(),
-                })?,
-                GwsDim::Param(ordinal) => {
-                    vars.iter().find(|(o, _)| *o == *ordinal as u32).map(|(_, v)| *v).ok_or_else(|| BackendError {
-                        status: ErrorStatus::KernelLaunch,
-                        context: format!("gws axis {axis} param {ordinal} has no Variable launch arg").into(),
-                    })?
-                }
-                g => todo!("tenstorrent gws: unhandled GwsDim variant {g:?}"),
-            };
+            // Variable ordinals index the launch args (head order), which
+            // always carry a Variable value at a Variable param's position.
+            let dim = g.eval(&mut |ordinal| {
+                vars.iter().find(|(o, _)| *o == ordinal as u32).map(|(_, v)| Dim::from(*v)).expect("gws param ordinal has no Variable launch arg")
+            });
+            grid_dims[axis] = u32::try_from(dim).map_err(|_| BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("gws axis {axis} dim {dim} does not fit u32").into(),
+            })?;
         }
         let mut rt_guard = rt.lock().unwrap();
         rt_guard.run(program_id.0, &src_indices, &dst_indices, grid_dims, &vars)?;
