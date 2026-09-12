@@ -1073,6 +1073,17 @@ impl Compiler {
                 let (Some(&cb_a), Some(&cb_b)) = (self.cb_map.get(&a_src), self.cb_map.get(&b_src)) else {
                     unreachable!("tenstorrent2 MatmulTile input targets unmapped CB");
                 };
+                // Unpacker inputs must be trafficked: a scratch CB is never
+                // pushed, so waiting on it hangs the core (deadlock, not an
+                // error). An MM consuming an accumulator needs a real
+                // intermediate push (the bmm c_24 pattern), which GEMM-only
+                // lowering does not emit.
+                if self.scratch_cbs.contains(&cb_a) || self.scratch_cbs.contains(&cb_b) {
+                    return Err(BackendError {
+                        status: ErrorStatus::CircularBufferImbalance,
+                        context: format!("tenstorrent2: matmul {mm} reads scratch CB{cb_a}/CB{cb_b} with no traffic").into(),
+                    });
+                }
                 let triple = (cb_a, cb_b, dest_cb);
                 if !triples.contains(&triple) {
                     triples.push(triple);
@@ -1144,6 +1155,12 @@ impl Compiler {
         // One mm_init per distinct triple (unpacker + packer config).
         for (a, b, o) in &triples {
             writeln!(src, "{indent}mm_init(cb{a}, cb{b}, cb{o});");
+        }
+        // Function-scope accumulation acquires once up front (pairs with
+        // the end-of-function release below; every other scope acquires
+        // at its loop entry in the walk).
+        if acquire_top {
+            writeln!(src, "{indent}tile_regs_acquire();");
         }
         let mut enclosing: Vec<OpId> = Vec::new();
         let mut loop_loads: Vec<Set<CBId>> = Vec::new();
