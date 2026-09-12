@@ -19,6 +19,7 @@ use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, Kernel
 use crate::{
     DType, Map, Set,
     backend::DTypeCapability,
+    codegen::tenstorrent::TTKernel,
     error::{BackendError, ErrorStatus},
     kernel::{MemScope, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
@@ -923,8 +924,31 @@ impl TTDevice {
             })
             .collect();
 
-        let (reader, compute, writer) =
-            kernel.generate_tenstorrent(debug_asm, &cb_map, &reader_params, &compute_params, &writer_params)?;
+        let num_circular_buffers = self.device_info.num_circular_buffers;
+        let (reader_k, compute_k, writer_k) = kernel.generate_tenstorrent(num_circular_buffers)?;
+        let TTKernel::Reader { src: reader, .. } = reader_k else {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2 reader kernel missing".into(),
+            });
+        };
+        let TTKernel::Compute { src: compute, .. } = compute_k else {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2 compute emission not implemented".into(),
+            });
+        };
+        let TTKernel::Writer { src: writer, .. } = writer_k else {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2 writer emission not implemented".into(),
+            });
+        };
+        if debug_asm {
+            eprintln!("[tenstorrent2] reader:\n{reader}");
+            eprintln!("[tenstorrent2] compute:\n{compute}");
+            eprintln!("[tenstorrent2] writer:\n{writer}");
+        }
 
         // DST geometry follows output dtypes: 32-bit DST iff any output
         // is F32. Split-kernel decomposition (ttnn-style): F32 compute

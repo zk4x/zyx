@@ -6,4 +6,4 @@ mod opencl;
 mod ptx;
 pub mod spirv;
 #[cfg(feature = "tenstorrent")]
-mod tenstorrent;
+pub(crate) mod tenstorrent;

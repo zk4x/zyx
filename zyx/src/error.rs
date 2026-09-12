@@ -186,4 +186,7 @@ pub enum ErrorStatus {
     TooManyCircularBuffers,
     /// Circular buffer push/pop imbalance (a deadlock on hardware)
     CircularBufferImbalance,
+    /// Circular buffer shape invalid for hardware (not whole pages,
+    /// exceeds per-CB L1 budget)
+    InvalidCircularBuffer,
 }
