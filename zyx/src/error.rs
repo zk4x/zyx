@@ -189,4 +189,7 @@ pub enum ErrorStatus {
     /// Circular buffer shape invalid for hardware (not whole pages,
     /// exceeds per-CB L1 budget)
     InvalidCircularBuffer,
+    /// Compute core accessed DRAM (Tenstorrent compute cores can only
+    /// touch CBs/L1 and args, never DRAM globals)
+    ComputeAccessesDram,
 }
