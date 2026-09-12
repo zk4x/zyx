@@ -125,7 +125,10 @@ impl TtSection {
 }
 
 pub(crate) enum TTKernel {
-    Reader { src: String, params: Vec<OpId> },
+    Reader {
+        src: String,
+        params: Vec<OpId>,
+    },
     Compute {
         src: String,
         params: Vec<OpId>,
@@ -135,7 +138,10 @@ pub(crate) enum TTKernel {
         /// no DRAM traffic is emitted for them in any section.
         scratch_cbs: Map<CBId, ()>,
     },
-    Writer { src: String, params: Vec<OpId> },
+    Writer {
+        src: String,
+        params: Vec<OpId>,
+    },
     None,
 }
 
@@ -313,7 +319,7 @@ impl Kernel {
             panic!("get_needed_ops closure did not finish in 10000 steps");
         }
         // Phase 3: emit in IR order with dtypes and section-local refcounts.
-        let mut list: Vec<OpId> = Vec::new();
+        let mut ops: Vec<OpId> = Vec::new();
         let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::default();
         let mut rcs: Map<OpId, u32> = Map::default();
         let mut op_id = self.head;
@@ -322,7 +328,7 @@ impl Kernel {
                 break;
             }
             if needed.contains_key(&op_id) || structural.contains_key(&op_id) {
-                list.push(op_id);
+                ops.push(op_id);
                 match self.ops[op_id].op {
                     Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                         unreachable!()
@@ -441,7 +447,7 @@ impl Kernel {
         if !op_id.is_null() {
             panic!("get_needed_ops did not finish in 10000 steps");
         }
-        SectionData { ops: list, dtypes, rcs }
+        SectionData { ops, dtypes, rcs }
     }
 }
 
@@ -482,6 +488,9 @@ impl Compiler {
     /// Build compiler state from a kernel: the shared cb_map plus one
     /// closed op list per section.
     fn new(kernel: &Kernel, num_circular_buffers: u32) -> Self {
+        // First touch in any section registers, in kernel order (mirrors
+        // the backend's cb_map exactly: the runtime CB config and the
+        // generated code must agree on every id).
         let mut cb_map: Map<OpId, CBId> = Map::default();
         let mut next_cb = CBId::ZERO;
         let mut scan = kernel.head;
@@ -489,10 +498,20 @@ impl Compiler {
             if scan.is_null() {
                 break;
             }
-            if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[scan].op {
-                if !cb_map.contains_key(&scan) {
-                    cb_map.insert(scan, next_cb);
-                    next_cb.inc();
+            if let Op::Load { src, .. } = &kernel.ops[scan].op {
+                if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*src].op {
+                    if !cb_map.contains_key(src) {
+                        cb_map.insert(*src, next_cb);
+                        next_cb.inc();
+                    }
+                }
+            }
+            if let Op::Store { dst, .. } = &kernel.ops[scan].op {
+                if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*dst].op {
+                    if !cb_map.contains_key(dst) {
+                        cb_map.insert(*dst, next_cb);
+                        next_cb.inc();
+                    }
                 }
             }
             scan = kernel.next_op(scan);
@@ -640,8 +659,10 @@ impl Compiler {
             if pushed != popped {
                 return Err(BackendError {
                     status: ErrorStatus::CircularBufferImbalance,
-                    context: format!("tenstorrent2: CB{cb} imbalance: {pushed} pushed but {popped} popped (storage op {storage})")
-                        .into(),
+                    context: format!(
+                        "tenstorrent2: CB{cb} imbalance: {pushed} pushed but {popped} popped (storage op {storage})"
+                    )
+                    .into(),
                 });
             }
         }
@@ -723,7 +744,11 @@ impl Compiler {
                             Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                         };
                         writeln!(src, "{}auto args{} = TensorAccessorArgs<{}>({});", self.indent, op_id, cta, arg);
-                        writeln!(src, "{}auto p{} = TensorAccessor(args{}, src{}, {});", self.indent, op_id, op_id, op_id, TT_DRAM_PAGE_BYTES);
+                        writeln!(
+                            src,
+                            "{}auto p{} = TensorAccessor(args{}, src{}, {});",
+                            self.indent, op_id, op_id, op_id, TT_DRAM_PAGE_BYTES
+                        );
                         prev_accessor = Some(format!("args{op_id}"));
                     }
                     ParamKind::Variable => {
@@ -746,7 +771,11 @@ impl Compiler {
                             Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                         };
                         writeln!(src, "{}auto args{} = TensorAccessorArgs<{}>({});", self.indent, op_id, cta, arg);
-                        writeln!(src, "{}auto p{} = TensorAccessor(args{}, dst{}, {});", self.indent, op_id, op_id, op_id, TT_DRAM_PAGE_BYTES);
+                        writeln!(
+                            src,
+                            "{}auto p{} = TensorAccessor(args{}, dst{}, {});",
+                            self.indent, op_id, op_id, op_id, TT_DRAM_PAGE_BYTES
+                        );
                         prev_accessor = Some(format!("args{op_id}"));
                     }
                 },
@@ -754,7 +783,9 @@ impl Compiler {
                     // Declared up front for every shared CB (see driver).
                 }
                 Op::Storage { scope: MemScope::Local, .. } => {
-                    unreachable!("tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass")
+                    unreachable!(
+                        "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
+                    )
                 }
                 Op::Storage { .. } => {
                     todo!("tenstorrent2 reader storage scope")
@@ -767,7 +798,10 @@ impl Compiler {
                     let Op::Load { src: ld_src, index: ld_idx, layout: ld_layout } = kernel.ops[*store_src].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: reader supports only global to local stores, op {op_id} has ops in between").into(),
+                            context: format!(
+                                "tenstorrent2: reader supports only global to local stores, op {op_id} has ops in between"
+                            )
+                            .into(),
                         });
                     };
                     let Op::Param { kind: ParamKind::Global, .. } = kernel.ops[ld_src].op else {
@@ -779,7 +813,8 @@ impl Compiler {
                     let Some(&cb) = self.cb_map.get(dst) else {
                         unreachable!("tenstorrent2 reader store targets unmapped CB");
                     };
-                    let is_scratch = matches!(&self.compute, TTKernel::Compute { scratch_cbs, .. } if scratch_cbs.contains_key(&cb));
+                    let is_scratch =
+                        matches!(&self.compute, TTKernel::Compute { scratch_cbs, .. } if scratch_cbs.contains_key(&cb));
                     if !is_scratch {
                         match (ld_layout, st_layout) {
                             (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
@@ -792,7 +827,11 @@ impl Compiler {
                                     "{}uint64_t rnoc{} = p{}.get_noc_addr((uint32_t)((r{}*{})/{}), (uint32_t)((r{}*{})%{}));",
                                     self.indent, op_id, ld_src, ld_idx, elem_size, page_size, ld_idx, elem_size, page_size
                                 );
-                                writeln!(src, "{}noc_async_read(rnoc{}, cb{}.get_write_ptr(), {});", self.indent, op_id, cb, tile_bytes);
+                                writeln!(
+                                    src,
+                                    "{}noc_async_read(rnoc{}, cb{}.get_write_ptr(), {});",
+                                    self.indent, op_id, cb, tile_bytes
+                                );
                                 writeln!(src, "{}noc_async_read_barrier();", self.indent);
                                 writeln!(src, "{}cb{}.push_back(1);", self.indent, cb);
                             }
@@ -801,7 +840,7 @@ impl Compiler {
                     }
                 }
                 Op::Loop { len } => {
-                    writeln!(src, "{}for (uint32_t r{} = 0; r{} < r{}; r{}++) {{{{", self.indent, op_id, op_id, len, op_id);
+                    writeln!(src, "{}for (uint32_t r{} = 0; r{} < r{}; r{}++) {{", self.indent, op_id, op_id, len, op_id);
                     self.indent.push_str("  ");
                 }
                 Op::EndLoop => {
@@ -816,7 +855,9 @@ impl Compiler {
                         writeln!(src, "{}uint32_t r{} = get_arg_val<uint32_t>({});", self.indent, op_id, arg);
                     }
                     RangeKind::Local(_) => {
-                        unreachable!("tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass")
+                        unreachable!(
+                            "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
+                        )
                     }
                     RangeKind::Warp(_) => todo!("tenstorrent2 reader warp range"),
                 },
@@ -900,7 +941,11 @@ impl Compiler {
                     Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                 };
                 writeln!(src, "{}auto args_out{} = TensorAccessorArgs<{}>({});", self.indent, op_id, cta, arg);
-                writeln!(src, "{}auto p_out{} = TensorAccessor(args_out{}, out{}, {});", self.indent, op_id, op_id, op_id, TT_DRAM_PAGE_BYTES);
+                writeln!(
+                    src,
+                    "{}auto p_out{} = TensorAccessor(args_out{}, out{}, {});",
+                    self.indent, op_id, op_id, op_id, TT_DRAM_PAGE_BYTES
+                );
                 prev_accessor = Some(format!("args_out{op_id}"));
             }
         }
@@ -932,7 +977,9 @@ impl Compiler {
                     // Declared up front for every shared CB (see driver).
                 }
                 Op::Storage { scope: MemScope::Local, .. } => {
-                    unreachable!("tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass")
+                    unreachable!(
+                        "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
+                    )
                 }
                 Op::Storage { .. } => {
                     todo!("tenstorrent2 writer storage scope")
@@ -944,7 +991,10 @@ impl Compiler {
                     let Op::Load { src: cb_src, index: _ld_idx, layout: ld_layout } = kernel.ops[*store_src].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: writer supports only CB to DRAM stores, op {op_id} has ops in between").into(),
+                            context: format!(
+                                "tenstorrent2: writer supports only CB to DRAM stores, op {op_id} has ops in between"
+                            )
+                            .into(),
                         });
                     };
                     let Some(&cb) = self.cb_map.get(&cb_src) else {
@@ -967,7 +1017,11 @@ impl Compiler {
                                 "{}uint64_t wnoc{} = p_out{}.get_noc_addr((uint32_t)((r{}*{})/{}), (uint32_t)((r{}*{})%{}));",
                                 self.indent, op_id, dst, st_idx, elem_size, page_size, st_idx, elem_size, page_size
                             );
-                            writeln!(src, "{}noc_async_write(cb{}.get_read_ptr(), wnoc{}, {});", self.indent, cb, op_id, tile_bytes);
+                            writeln!(
+                                src,
+                                "{}noc_async_write(cb{}.get_read_ptr(), wnoc{}, {});",
+                                self.indent, cb, op_id, tile_bytes
+                            );
                             writeln!(src, "{}noc_async_write_barrier();", self.indent);
                             writeln!(src, "{}cb{}.pop_front(1);", self.indent, cb);
                             if loop_depth > 0 {
@@ -984,7 +1038,7 @@ impl Compiler {
                             writeln!(src, "{}uint32_t wbase{} = cb{}.get_read_ptr();", self.indent, cb, cb);
                         }
                     }
-                    writeln!(src, "{}for (uint32_t r{} = 0; r{} < r{}; r{}++) {{{{", self.indent, op_id, op_id, len, op_id);
+                    writeln!(src, "{}for (uint32_t r{} = 0; r{} < r{}; r{}++) {{", self.indent, op_id, op_id, len, op_id);
                     self.indent.push_str("  ");
                     loop_depth += 1;
                 }
@@ -1013,7 +1067,9 @@ impl Compiler {
                         writeln!(src, "{}uint32_t r{} = get_arg_val<uint32_t>({});", self.indent, op_id, arg);
                     }
                     RangeKind::Local(_) => {
-                        unreachable!("tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass")
+                        unreachable!(
+                            "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
+                        )
                     }
                     RangeKind::Warp(_) => todo!("tenstorrent2 writer warp range"),
                 },

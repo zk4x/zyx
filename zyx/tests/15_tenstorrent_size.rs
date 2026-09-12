@@ -4,6 +4,8 @@
 //! TEMP DIAG size probe: 14_tenstorrent passes with 2-page buffers; lm_head
 //! fails reading a 9-page buffer. Same kernel shape, 9 tiles per buffer.
 
+#![cfg(feature = "tenstorrent")]
+
 use zyx::kernel::{Dev, Kernel, MemScope};
 use zyx::{DType, Tensor, ZyxError};
 

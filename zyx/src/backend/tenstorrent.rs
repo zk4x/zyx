@@ -762,7 +762,7 @@ impl TTDevice {
         self.device_info.compute
     }
 
-#[allow(unused_must_use)]
+    #[allow(unused_must_use)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         // Build CB maps and dtypes from the kernel.
         //
