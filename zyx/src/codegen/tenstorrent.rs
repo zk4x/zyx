@@ -101,6 +101,18 @@ impl SlabId for DstId {
     }
 }
 
+/// One value slot per section kernel: scalar bound arithmetic, loop
+/// bounds, and vector values all live in `r{reg}` slots stamped with
+/// their refcount. Tiled values are DST slots instead (layout tiled
+/// implies DST) — there is no separate slot struct for them.
+#[derive(Clone, Copy, Debug)]
+struct VarSlot {
+    dtype: DType,
+    layout: MemLayout,
+    rc: u32,
+    loop_level: u8,
+}
+
 /// Kernel sections delimited by barriers: reader (head -> 1st barrier),
 /// compute (1st -> 2nd), writer (2nd -> end).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -500,6 +512,64 @@ pub(crate) struct Compiler {
     scratch_cbs: Set<CBId>,
 }
 
+/// House register discipline (c/cuda/opencl/ptx): physical `r{reg}`
+/// slots stamped with the value's refcount. A use at the defining loop
+/// level decrements; zero frees the slot for reuse. Reuse is allowed
+/// only across block boundaries (deeper or exited-outer level): same
+/// block reuse would redeclare `r{reg}` in one C scope (hard error).
+/// Bare numbers (DST slot indices, CB ids) carry no declaration and
+/// reuse freely. Scalars and DST slots share one namespace (their
+/// (dtype, layout) pairs never collide); CBs and accessors keep
+/// storage/op names.
+fn new_reg(
+    op_id: OpId,
+    reg_map: &mut Map<OpId, usize>,
+    registers: &mut Vec<((DType, MemLayout), u32, u8)>,
+    dtype: (DType, MemLayout),
+    rc: u32,
+    current_loop_level: u8,
+) -> usize {
+    for (i, (dt, nrc, loop_level)) in registers.iter_mut().enumerate() {
+        if *nrc == 0 && *dt == dtype && current_loop_level != *loop_level {
+            reg_map.insert(op_id, i);
+            *nrc = rc;
+            *loop_level = current_loop_level;
+            return i;
+        }
+    }
+    let i = registers.len();
+    registers.push((dtype, rc, current_loop_level));
+    reg_map.insert(op_id, i);
+    i
+}
+
+/// House use-site resolution (TT adaptation: consts inline as literals
+/// via the kernel IR itself, no precomputed tables). Call exactly once
+/// per operand per op (a second call would decrement twice); bind the
+/// returned name and interpolate it repeatedly. Unknown names are a
+/// compilation error, never a silent zero.
+fn get_var(
+    kernel: &Kernel,
+    op_id: OpId,
+    reg_map: &Map<OpId, usize>,
+    registers: &mut [((DType, MemLayout), u32, u8)],
+    loop_level: u8,
+) -> Result<String, BackendError> {
+    if let Op::Const(c) = &kernel.ops[op_id].op {
+        return Ok(format!("{}", c.c_code()));
+    }
+    if let Some(&reg) = reg_map.get(&op_id) {
+        if registers[reg].2 == loop_level {
+            registers[reg].1 -= 1;
+        }
+        return Ok(format!("r{reg}"));
+    }
+    Err(BackendError {
+        status: ErrorStatus::KernelCompilation,
+        context: format!("tenstorrent2: scalar {op_id} not found in constants or registers").into(),
+    })
+}
+
 impl Compiler {
     /// Build compiler state from a kernel: the param ordinals and
     /// input/output dtypes. The CB map is filled by [`Compiler::allocate_cbs`].
@@ -784,6 +854,9 @@ impl Compiler {
         let mut indent = String::from("  ");
         let mut prev_accessor: Option<String> = None;
         let mut src = String::new();
+        let mut var_map: Map<OpId, u32> = Map::default();
+        let mut vars: Vec<VarSlot> = Vec::new();
+        let mut loop_level: u8 = 0;
         writeln!(src, "#include <cstdint>");
         writeln!(src, "#include \"api/dataflow/dataflow_api.h\"");
         writeln!(src, "#include \"api/dataflow/noc.h\"");
@@ -887,8 +960,10 @@ impl Compiler {
                 Op::Loop { len } => {
                     writeln!(src, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
                     indent.push_str("  ");
+                    loop_level += 1;
                 }
                 Op::EndLoop => {
+                    loop_level -= 1;
                     indent.pop();
                     indent.pop();
                     writeln!(src, "{indent}}}");
@@ -906,9 +981,11 @@ impl Compiler {
                     }
                     RangeKind::Warp(_) => todo!("tenstorrent2 reader warp range"),
                 },
-                Op::Const(_) | Op::Binary { .. } | Op::Mad { .. } | Op::Cast { .. } => {
-                    let s = self.emit_scalar_op(kernel, op_id, &indent)?;
-                    src.push_str(&s);
+                Op::Const(_) => {
+                    // Inlined as literals at uses; no declaration emitted.
+                }
+                Op::Binary { .. } | Op::Mad { .. } | Op::Cast { .. } => {
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &mut src)?;
                 }
                 Op::Unary { .. }
                 | Op::Bitcast { .. }
@@ -949,408 +1026,51 @@ impl Compiler {
         params: &[OpId],
         ordinals: &[u32],
     ) -> Result<(), BackendError> {
-        let ops = &compute_data.ops;
-        // Section params in list order become this section's runtime args.
-        let mut arg_pos: Map<OpId, u32> = Map::default();
-        for (i, &p) in params.iter().enumerate() {
-            arg_pos.insert(p, i as u32);
-        }
-        // Pack analysis, all driver locals: per real output store (a
-        // store to a non-scratch CB) its DST slot (pack order) and its
-        // matmuls; the crossed Adds are fiction the hardware folds.
-        let mut pack_slot: Map<OpId, u32> = Map::default();
-        let mut mm_slot: Map<OpId, u32> = Map::default();
-        let mut pack_mms: Map<OpId, Vec<OpId>> = Map::default();
-        let mut fiction_adds: Set<OpId> = Set::default();
-        let mut triples: Vec<(CBId, CBId, CBId)> = Vec::new();
-        let mut wide_dst = false;
-        for &op_id in ops {
-            let Op::Store { dst, src, .. } = kernel.ops[op_id].op else {
-                continue;
-            };
-            if !matches!(kernel.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }) {
-                continue;
-            }
-            // (non-Circular dests error in the main walk below)
-            let Some(&dest_cb) = self.cb_map.get(&dst) else {
-                unreachable!("tenstorrent2 compute store targets unmapped CB");
-            };
-            if self.scratch_cbs.contains(&dest_cb) {
-                continue;
-            }
-            // Real output tile: chase the src cone through fiction Adds.
-            // Loads sever the cone (CBs are the section boundary), so a
-            // scratch reload splices in the in-section store to that CB
-            // (the loop-carried chain, and the proof the adds are
-            // fiction); a direct MatmulTile packs fresh DST content.
-            let slot = pack_slot.len() as u32;
-            let mut mms: Vec<OpId> = Vec::new();
-            let mut acc_seen: Option<OpId> = None;
-            let mut stack = vec![src];
-            let mut seen: Set<OpId> = Set::default();
-            while let Some(id) = stack.pop() {
-                if !seen.insert(id) {
-                    continue;
-                }
-                match kernel.ops[id].op {
-                    Op::Binary { x, y, bop: BOp::Add } if compute_data.dtypes[&id].1 != MemLayout::Scalar => {
-                        fiction_adds.insert(id);
-                        stack.push(x);
-                        stack.push(y);
-                    }
-                    Op::Load { src: ld_src, .. } => {
-                        if self.cb_map.get(&ld_src).is_some_and(|&cb| self.scratch_cbs.contains(&cb)) {
-                            if acc_seen.replace(ld_src).is_some_and(|prev| prev != ld_src) {
-                                todo!("tenstorrent2 pack of two accumulators");
-                            }
-                            let mut found = false;
-                            for &store in ops {
-                                if let Op::Store { dst: st_dst, src: st_src, .. } = kernel.ops[store].op {
-                                    if st_dst == ld_src {
-                                        stack.push(st_src);
-                                        found = true;
-                                    }
-                                }
-                            }
-                            if !found {
-                                todo!("tenstorrent2 compute accumulator never stored in-section");
-                            }
-                        } else {
-                            todo!("tenstorrent2 compute pack of non-accumulator tile");
-                        }
-                    }
-                    Op::MatmulTile { .. } => {
-                        mms.push(id);
-                    }
-                    Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => {}
-                    Op::Binary { .. }
-                    | Op::Mad { .. }
-                    | Op::Cast { .. }
-                    | Op::Unary { .. }
-                    | Op::Bitcast { .. }
-                    | Op::Stack { .. }
-                    | Op::Index { .. }
-                    | Op::TransposeTile { .. }
-                    | Op::ReduceTile { .. }
-                    | Op::Asm { .. }
-                    | Op::Move { .. }
-                    | Op::Reduce { .. } => todo!("tenstorrent2 compute real epilogue op in pack cone"),
-                    Op::Wmma { .. } => {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: "tenstorrent2: Wmma is a tensor-core op, not emittable here".into(),
-                        });
-                    }
-                    Op::Store { .. }
-                    | Op::Range { .. }
-                    | Op::Loop { .. }
-                    | Op::EndLoop
-                    | Op::If { .. }
-                    | Op::EndIf
-                    | Op::Barrier => unreachable!("tenstorrent2 compute pack cone holds a non-value op"),
-                }
-            }
-            if mms.is_empty() {
-                todo!("tenstorrent2 compute pack store with no MatmulTile in its cone");
-            }
-            for &mm in &mms {
-                if let Some(&prev) = mm_slot.get(&mm) {
-                    if prev != slot {
-                        todo!("tenstorrent2 MatmulTile output fanned out to two packs");
-                    }
-                } else {
-                    mm_slot.insert(mm, slot);
-                }
-                let Op::MatmulTile { x, y } = kernel.ops[mm].op else {
-                    unreachable!("tenstorrent2 mm list holds a non-matmul");
-                };
-                let Op::Load { src: a_src, .. } = kernel.ops[x].op else {
-                    todo!("tenstorrent2 MatmulTile x not loaded from a CB");
-                };
-                let Op::Load { src: b_src, .. } = kernel.ops[y].op else {
-                    todo!("tenstorrent2 MatmulTile y not loaded from a CB");
-                };
-                let (Some(&cb_a), Some(&cb_b)) = (self.cb_map.get(&a_src), self.cb_map.get(&b_src)) else {
-                    unreachable!("tenstorrent2 MatmulTile input targets unmapped CB");
-                };
-                // Unpacker inputs must be trafficked: a scratch CB is never
-                // pushed, so waiting on it hangs the core (deadlock, not an
-                // error). An MM consuming an accumulator needs a real
-                // intermediate push (the bmm c_24 pattern), which GEMM-only
-                // lowering does not emit.
-                if self.scratch_cbs.contains(&cb_a) || self.scratch_cbs.contains(&cb_b) {
-                    return Err(BackendError {
-                        status: ErrorStatus::CircularBufferImbalance,
-                        context: format!("tenstorrent2: matmul {mm} reads scratch CB{cb_a}/CB{cb_b} with no traffic").into(),
-                    });
-                }
-                let triple = (cb_a, cb_b, dest_cb);
-                if !triples.contains(&triple) {
-                    triples.push(triple);
-                }
-            }
-            pack_mms.insert(op_id, mms);
-            pack_slot.insert(op_id, slot);
-            if matches!(kernel.ops[dst].op, Op::Storage { dtype: DType::F32, .. }) {
-                wide_dst = true;
-            }
-        }
-        // DST width: 8 F32 slots or 16 F16 slots; more packs do not fit.
-        let dst_slots = if wide_dst { 8u32 } else { 16u32 };
-        if pack_slot.len() as u32 > dst_slots {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("tenstorrent2: compute section packs {} outputs, DST holds {dst_slots}", pack_slot.len()).into(),
-            });
-        }
-        // Loop structure (one walk): K-loops directly contain a
-        // MatmulTile (commit/wait after the full accumulation); every
-        // loop's parent (ancestry for the scope guard); every MM's K;
-        // every pack store's scope. Acquire/release pair with the pack
-        // scope (one output tile's lifetime), never the K loop: acquiring
-        // per K iteration would zero the DST mid-accumulation.
-        let mut k_loops: Set<OpId> = Set::default();
-        let mut loop_parent: Map<OpId, Option<OpId>> = Map::default();
-        let mut mm_k: Map<OpId, OpId> = Map::default();
-        let mut pack_scope: Map<OpId, Option<OpId>> = Map::default();
-        let mut loop_stack: Vec<OpId> = Vec::new();
-        for &op_id in ops {
-            match kernel.ops[op_id].op {
-                Op::Loop { .. } => {
-                    loop_parent.insert(op_id, loop_stack.last().copied());
-                    loop_stack.push(op_id);
-                }
-                Op::EndLoop => {
-                    loop_stack.pop().expect("tenstorrent2 compute EndLoop without Loop");
-                }
-                Op::MatmulTile { .. } => {
-                    let Some(&k) = loop_stack.last() else {
-                        todo!("tenstorrent2 loopless MatmulTile");
-                    };
-                    k_loops.insert(k);
-                    mm_k.insert(op_id, k);
-                }
-                Op::Store { .. } if pack_slot.contains_key(&op_id) => {
-                    pack_scope.insert(op_id, loop_stack.last().copied());
-                }
-                _ => {}
-            }
-        }
-        let acquire_top = pack_scope.values().any(|s| s.is_none());
-        let acquire_loops: Set<OpId> = pack_scope.values().filter_map(|&s| s).collect();
         let mut indent = String::from("  ");
         let mut src = String::new();
-        writeln!(src, "#include <cstdint>");
-        writeln!(src, "#include \"api/compute/tile_move_copy.h\"");
-        writeln!(src, "#include \"api/compute/matmul.h\"");
-        // Packer output-format reconfig (fp32_accuracy doc): without it
-        // the packer treats DST as 16-bit even under fp32_dest_acc_en.
-        writeln!(src, "#include \"api/compute/reconfig_data_format.h\"");
-        writeln!(src, "#include \"hostdevcommon/kernel_structs.h\"");
-        writeln!(src, "using std::uint32_t;");
-        writeln!(src, "void kernel_main() {{");
-        // Shared CB aliases: every traffic call below names cb{N}.
-        let mut cbs: Vec<CBId> = self.cb_map.iter().map(|(_, &cb)| cb).collect();
-        cbs.sort();
-        for cb in cbs {
-            writeln!(src, "{indent}constexpr uint32_t cb{cb} = {cb};");
-        }
-        // One mm_init per distinct triple (unpacker + packer config).
-        for (a, b, o) in &triples {
-            writeln!(src, "{indent}mm_init(cb{a}, cb{b}, cb{o});");
-        }
-        // Function-scope accumulation acquires once up front (pairs with
-        // the end-of-function release below; every other scope acquires
-        // at its loop entry in the walk).
-        if acquire_top {
-            writeln!(src, "{indent}tile_regs_acquire();");
-        }
-        let mut enclosing: Vec<OpId> = Vec::new();
-        let mut loop_loads: Vec<Set<CBId>> = Vec::new();
-        let n = ops.len();
-        for i in 0..n {
-            let op_id = ops[i];
+
+        let mut vars: Vec<VarSlot> = Vec::new();
+        let mut var_map: Map<OpId, u32> = Map::default();
+
+        let mut loop_level: u8 = 0;
+        for &op_id in &compute_data.ops {
             match kernel.ops[op_id].op {
-                Op::Param { dtype, kind, .. } => match kind {
-                    ParamKind::Variable => {
-                        let arg = arg_pos.get(&op_id).copied().expect("tenstorrent2 compute param missing from section args");
-                        writeln!(src, "{indent}{} r{op_id} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
-                    }
-                    ParamKind::Global | ParamKind::GlobalMut => {
-                        return Err(BackendError {
-                            status: ErrorStatus::ComputeAccessesDram,
-                            context: format!("tenstorrent2: compute core cannot access DRAM param {op_id}").into(),
-                        });
-                    }
-                },
-                Op::Storage { scope: MemScope::Circular, .. } => {
-                    // Aliased up front for every shared CB (see driver).
+                Op::Param { .. } => todo!(),
+                Op::Const(_) => {
+                    // Inlined as literals at uses; no declaration emitted.
                 }
-                Op::Storage { scope: MemScope::Local, .. } => {
-                    unreachable!(
-                        "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
-                    )
+                Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &mut src)?;
                 }
-                Op::Storage { .. } => {
-                    todo!("tenstorrent2 compute storage scope")
-                }
-                Op::Load { src: ld_src, .. } => {
-                    if let Some(&cb) = self.cb_map.get(&ld_src) {
-                        if self.scratch_cbs.contains(&cb) {
-                            // Accumulator lives in DST, nothing to wait on.
-                        } else {
-                            writeln!(src, "{indent}cb_wait_front(cb{cb}, 1);");
-                            let Some(top) = loop_loads.last_mut() else {
-                                todo!("tenstorrent2 compute loopless CB load");
-                            };
-                            top.insert(cb);
-                        }
-                    } else if matches!(kernel.ops[ld_src].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
-                        return Err(BackendError {
-                            status: ErrorStatus::ComputeAccessesDram,
-                            context: format!("tenstorrent2: compute core cannot load DRAM param {ld_src}").into(),
-                        });
-                    } else {
-                        todo!("tenstorrent2 compute scalar load");
-                    }
-                }
-                Op::Store { dst: st_dst, .. } => {
-                    if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[st_dst].op {
-                        let Some(&cb) = self.cb_map.get(&st_dst) else {
-                            unreachable!("tenstorrent2 compute store targets unmapped CB");
-                        };
-                        if self.scratch_cbs.contains(&cb) {
-                            // Fiction writeback into the DST slot, emits nothing.
-                        } else {
-                            let Some(&slot) = pack_slot.get(&op_id) else {
-                                unreachable!("tenstorrent2 compute pack store missed by pack analysis");
-                            };
-                            if enclosing.iter().any(|l| k_loops.contains(l)) {
-                                todo!("tenstorrent2 compute pack inside the K loop");
-                            }
-                            // Every feeding MM must execute inside the
-                            // acquire scope (function scope holds all).
-                            let scope = pack_scope[&op_id];
-                            if scope.is_some() {
-                                for &mm in &pack_mms[&op_id] {
-                                    let mut k = mm_k[&mm];
-                                    loop {
-                                        if Some(k) == scope {
-                                            break;
-                                        }
-                                        let Some(parent) = loop_parent[&k] else {
-                                            todo!("tenstorrent2 compute MM outside pack scope");
-                                        };
-                                        k = parent;
-                                    }
-                                }
-                            }
-                            writeln!(src, "{indent}cb_reserve_back(cb{cb}, 1);");
-                            writeln!(src, "{indent}pack_reconfig_data_format(cb{cb});");
-                            writeln!(src, "{indent}pack_tile({slot}, cb{cb});");
-                            writeln!(src, "{indent}cb_push_back(cb{cb}, 1);");
-                        }
-                    } else if matches!(kernel.ops[st_dst].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
-                        return Err(BackendError {
-                            status: ErrorStatus::ComputeAccessesDram,
-                            context: format!("tenstorrent2: compute core cannot store DRAM param {st_dst}").into(),
-                        });
-                    } else if matches!(kernel.ops[st_dst].op, Op::Storage { scope: MemScope::Local, .. }) {
-                        unreachable!(
-                            "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
-                        )
-                    } else {
-                        todo!("tenstorrent2 compute storage scope")
-                    }
-                }
-                Op::MatmulTile { .. } => {
-                    let Some(&slot) = mm_slot.get(&op_id) else {
-                        todo!("tenstorrent2 dangling MatmulTile with no pack store");
-                    };
-                    let s = self.emit_tiled_op(kernel, op_id, &indent, slot)?;
-                    src.push_str(&s);
-                }
+                Op::Stack { ref ops } => todo!(),
+                Op::Storage { dtype, scope, len } => todo!(),
+                Op::Store { dst, src, index, layout } => todo!(),
+                Op::Load { src, index, layout } => todo!(),
+                Op::Range { axis, kind } => todo!(),
                 Op::Loop { len } => {
-                    writeln!(src, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
-                    indent.push_str("  ");
-                    enclosing.push(op_id);
-                    loop_loads.push(Set::default());
-                    if acquire_loops.contains(&op_id) {
-                        writeln!(src, "{indent}tile_regs_acquire();");
-                    }
+                    loop_level += 1;
+                    indent += "  ";
                 }
                 Op::EndLoop => {
-                    let loads = loop_loads.pop().expect("tenstorrent2 compute EndLoop without Loop");
-                    let loop_id = enclosing.pop().expect("tenstorrent2 compute EndLoop without Loop");
-                    let mut cbv: Vec<CBId> = loads.into_iter().collect();
-                    cbv.sort();
-                    for cb in cbv {
-                        writeln!(src, "{indent}cb_pop_front(cb{cb}, 1);");
-                    }
-                    if acquire_loops.contains(&loop_id) {
-                        writeln!(src, "{indent}tile_regs_release();");
-                    }
+                    loop_level -= 1;
                     indent.pop();
                     indent.pop();
-                    writeln!(src, "{indent}}}");
-                    // Commit once per accumulation, after the K loop closes:
-                    // committing per iteration (before the brace) stalls the
-                    // FPU sync protocol mid-accumulation (board wedge).
-                    if k_loops.contains(&loop_id) {
-                        writeln!(src, "{indent}tile_regs_commit();");
-                        writeln!(src, "{indent}tile_regs_wait();");
-                    }
                 }
-                Op::Barrier => {}
-                Op::Range { axis, kind, .. } => match kind {
-                    RangeKind::Group(_) => {
-                        let arg = arg_pos.len() as u32 + axis;
-                        writeln!(src, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({arg});");
-                    }
-                    RangeKind::Local(_) => {
-                        unreachable!(
-                            "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
-                        )
-                    }
-                    RangeKind::Warp(_) => todo!("tenstorrent2 compute warp range"),
-                },
-                Op::Const(_)
-                | Op::Binary { .. }
-                | Op::Mad { .. }
-                | Op::Cast { .. }
-                | Op::Unary { .. }
-                | Op::Bitcast { .. }
-                | Op::Stack { .. }
-                | Op::Index { .. }
-                | Op::Asm { .. } => {
-                    if fiction_adds.contains(&op_id) {
-                        // Folded into the DST slot by matmul_tiles, emits nothing.
-                    } else if compute_data.dtypes[&op_id].1 == MemLayout::Scalar {
-                        let s = self.emit_scalar_op(kernel, op_id, &indent)?;
-                        src.push_str(&s);
-                    } else {
-                        todo!("tenstorrent2 compute tiled ALU unimplemented");
-                    }
-                }
-                Op::TransposeTile { .. } => todo!("tenstorrent2 compute TransposeTile unimplemented"),
-                Op::Wmma { .. } => {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: "tenstorrent2: Wmma is a tensor-core op, not emittable here".into(),
-                    });
-                }
-                Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
-                    unreachable!("tenstorrent2 compute closed over a removed op")
-                }
-                Op::If { .. } | Op::EndIf => todo!("tenstorrent2 compute branch"),
+                Op::If { condition } => todo!(),
+                Op::EndIf => todo!(),
+                Op::Index { vec, idx } => todo!(),
+                Op::MatmulTile { x, y } => todo!(),
+                Op::TransposeTile { x } => todo!(),
+                Op::ReduceTile { x, rop, kind } => todo!(),
+                Op::Asm { .. } => todo!(),
+                Op::Barrier => unreachable!("should've been filtered by kernel sections decomposition"),
+                Op::Move { .. } | Op::Reduce { .. } => unreachable!("should've been lowered by linearize"),
+                Op::Wmma { .. } => unreachable!("tt does not support wmma, use Op::MatmulTile instead"),
             }
         }
-        // Function-scope accumulation releases after the walk.
-        if acquire_top {
-            writeln!(src, "{indent}tile_regs_release();");
-        }
-        writeln!(src, "}}");
-        self.compute = TTKernel::Compute { src, params: params.to_vec(), ordinals: ordinals.to_vec() };
+
+        self.compute = TTKernel::Compute { src, params: todo!(), ordinals: todo!() };
+
         Ok(())
     }
 
@@ -1387,6 +1107,9 @@ impl Compiler {
         }
         writer_loop_cbs.sort();
         let mut src = String::new();
+        let mut var_map: Map<OpId, u32> = Map::default();
+        let mut vars: Vec<VarSlot> = Vec::new();
+        let mut loop_level: u8 = 0;
         writeln!(src, "#include <cstdint>");
         writeln!(src, "#include \"api/dataflow/dataflow_api.h\"");
         writeln!(src, "#include \"api/dataflow/noc.h\"");
@@ -1413,7 +1136,6 @@ impl Compiler {
                 prev_accessor = Some(format!("args_out{op_id}"));
             }
         }
-        let mut loop_depth = 0u32;
         let mut loop_popped: Set<CBId> = Set::default();
         let n = ops.len();
         for i in 0..n {
@@ -1475,7 +1197,7 @@ impl Compiler {
                             writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr(), wnoc{op_id}, {tile_bytes});");
                             writeln!(src, "{indent}noc_async_write_barrier();");
                             writeln!(src, "{indent}cb{cb}.pop_front(1);");
-                            if loop_depth > 0 {
+                            if loop_level > 0 {
                                 loop_popped.insert(cb);
                             }
                         }
@@ -1483,7 +1205,7 @@ impl Compiler {
                     }
                 }
                 Op::Loop { len } => {
-                    if loop_depth == 0 {
+                    if loop_level == 0 {
                         for cb in &writer_loop_cbs {
                             writeln!(src, "{indent}cb{cb}.wait_front(1);");
                             writeln!(src, "{indent}uint32_t wbase{cb} = cb{cb}.get_read_ptr();");
@@ -1491,13 +1213,13 @@ impl Compiler {
                     }
                     writeln!(src, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
                     indent.push_str("  ");
-                    loop_depth += 1;
+                    loop_level += 1;
                 }
                 Op::EndLoop => {
                     indent.pop();
                     indent.pop();
                     writeln!(src, "{indent}}}");
-                    if loop_depth == 1 {
+                    if loop_level == 1 {
                         writeln!(src, "{indent}noc_async_write_barrier();");
                         for cb in &writer_loop_cbs {
                             // Tile streaming pops per iteration (see the
@@ -1509,7 +1231,7 @@ impl Compiler {
                             writeln!(src, "{indent}cb{cb}.pop_front(1);");
                         }
                     }
-                    loop_depth -= 1;
+                    loop_level -= 1;
                 }
                 Op::Barrier => {}
                 Op::Range { axis, kind, .. } => match kind {
@@ -1524,9 +1246,11 @@ impl Compiler {
                     }
                     RangeKind::Warp(_) => todo!("tenstorrent2 writer warp range"),
                 },
-                Op::Const(_) | Op::Binary { .. } | Op::Mad { .. } | Op::Cast { .. } => {
-                    let s = self.emit_scalar_op(kernel, op_id, &indent)?;
-                    src.push_str(&s);
+                Op::Const(_) => {
+                    // Inlined as literals at uses; no declaration emitted.
+                }
+                Op::Binary { .. } | Op::Mad { .. } | Op::Cast { .. } => {
+                    self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &mut src)?;
                 }
                 Op::Param { .. } => {
                     todo!("tenstorrent2 writer Global param")
@@ -1551,45 +1275,216 @@ impl Compiler {
         Ok(())
     }
 
-    /// Shared scalar ALU emission across all sections: identical text
-    /// everywhere, no section argument.
+    /// Shared basic-op emission across all sections: identical text
+    /// everywhere, no section argument. Handles cast, bitcast, unary,
+    /// binary, and mad. House register discipline (c/cuda/opencl/ptx):
+    /// values live in `r{reg}` slots stamped with their section
+    /// refcount; CBs and accessors keep storage/op names (ptx Storage
+    /// precedent: storage-derived names are not registers). Loads,
+    /// stores, and tile ops stay in each section generator.
     #[allow(unused_must_use)]
-    fn emit_scalar_op(&self, kernel: &Kernel, op_id: OpId, indent: &str) -> Result<String, BackendError> {
-        let mut out = String::new();
+    fn emit_op(
+        &self,
+        kernel: &Kernel,
+        op_id: OpId,
+        indent: &str,
+        var_map: &mut Map<OpId, u32>,
+        vars: &mut Vec<VarSlot>,
+        loop_level: u8,
+        src: &mut String,
+    ) -> Result<(), BackendError> {
         match &kernel.ops[op_id].op {
-            Op::Const(val) => {
-                writeln!(out, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
-            }
+            Op::Const(_) => unreachable!("tenstorrent2 consts inline as literals at their uses"),
             Op::Binary { x, y, bop } => {
                 let dt = kernel.dtype(op_id);
+                let x = if let Op::Const(c) = &kernel.ops[*x].op {
+                    format!("{}", c.c_code())
+                } else if let Some(&r) = var_map.get(x) {
+                    let s = &mut vars[r as usize];
+                    if s.loop_level == loop_level {
+                        debug_assert!(s.rc > 0);
+                        s.rc -= 1;
+                    }
+                    format!("r{r}")
+                } else {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: scalar {x} not found in constants or registers").into(),
+                    });
+                };
+                let y = if let Op::Const(c) = &kernel.ops[*y].op {
+                    format!("{}", c.c_code())
+                } else if let Some(&r) = var_map.get(y) {
+                    let s = &mut vars[r as usize];
+                    if s.loop_level == loop_level {
+                        debug_assert!(s.rc > 0);
+                        s.rc -= 1;
+                    }
+                    format!("r{r}")
+                } else {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: scalar {y} not found in constants or registers").into(),
+                    });
+                };
+                let mut found: Option<u32> = None;
+                for (i, s) in vars.iter_mut().enumerate() {
+                    if s.rc == 0 && s.dtype == dt && s.layout == MemLayout::Scalar && s.loop_level != loop_level {
+                        s.dtype = dt;
+                        s.layout = MemLayout::Scalar;
+                        s.rc = 1;
+                        s.loop_level = loop_level;
+                        found = Some(i as u32);
+                        break;
+                    }
+                }
+                let reg = match found {
+                    Some(r) => {
+                        var_map.insert(op_id, r);
+                        r
+                    }
+                    None => {
+                        let r = vars.len() as u32;
+                        vars.push(VarSlot { dtype: dt, layout: MemLayout::Scalar, rc: 1, loop_level });
+                        var_map.insert(op_id, r);
+                        r
+                    }
+                };
                 let _ = match bop {
-                    BOp::Add => writeln!(out, "{indent}{} r{op_id} = r{x} + r{y};", dt.c_type()),
-                    BOp::Sub => writeln!(out, "{indent}{} r{op_id} = r{x} - r{y};", dt.c_type()),
-                    BOp::Mul => writeln!(out, "{indent}{} r{op_id} = r{x} * r{y};", dt.c_type()),
-                    BOp::Div => writeln!(out, "{indent}{} r{op_id} = r{x} / r{y};", dt.c_type()),
-                    BOp::Mod => writeln!(out, "{indent}{} r{op_id} = r{x} % r{y};", dt.c_type()),
-                    BOp::Max => writeln!(out, "{indent}{} r{op_id} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
-                    BOp::Cmplt => writeln!(out, "{indent}{} r{op_id} = r{x} < r{y};", dt.c_type()),
-                    BOp::Cmpgt => writeln!(out, "{indent}{} r{op_id} = r{x} > r{y};", dt.c_type()),
-                    BOp::Cmpge => writeln!(out, "{indent}{} r{op_id} = r{x} >= r{y};", dt.c_type()),
-                    BOp::Eq => writeln!(out, "{indent}{} r{op_id} = r{x} == r{y};", dt.c_type()),
-                    BOp::NotEq => writeln!(out, "{indent}{} r{op_id} = r{x} != r{y};", dt.c_type()),
-                    BOp::And => writeln!(out, "{indent}{} r{op_id} = r{x} && r{y};", dt.c_type()),
-                    BOp::Or => writeln!(out, "{indent}{} r{op_id} = r{x} || r{y};", dt.c_type()),
-                    BOp::BitXor => writeln!(out, "{indent}{} r{op_id} = r{x} ^ r{y};", dt.c_type()),
-                    BOp::BitOr => writeln!(out, "{indent}{} r{op_id} = r{x} | r{y};", dt.c_type()),
-                    BOp::BitAnd => writeln!(out, "{indent}{} r{op_id} = r{x} & r{y};", dt.c_type()),
-                    BOp::BitShiftLeft => writeln!(out, "{indent}{} r{op_id} = r{x} << r{y};", dt.c_type()),
-                    BOp::BitShiftRight => writeln!(out, "{indent}{} r{op_id} = r{x} >> r{y};", dt.c_type()),
+                    BOp::Add => writeln!(src, "{indent}{} r{reg} = {x} + {y};", dt.c_type()),
+                    BOp::Sub => writeln!(src, "{indent}{} r{reg} = {x} - {y};", dt.c_type()),
+                    BOp::Mul => writeln!(src, "{indent}{} r{reg} = {x} * {y};", dt.c_type()),
+                    BOp::Div => writeln!(src, "{indent}{} r{reg} = {x} / {y};", dt.c_type()),
+                    BOp::Mod => writeln!(src, "{indent}{} r{reg} = {x} % {y};", dt.c_type()),
+                    BOp::Max => writeln!(src, "{indent}{} r{reg} = {x} > {y} ? {x} : {y};", dt.c_type()),
+                    BOp::Cmplt => writeln!(src, "{indent}{} r{reg} = {x} < {y};", dt.c_type()),
+                    BOp::Cmpgt => writeln!(src, "{indent}{} r{reg} = {x} > {y};", dt.c_type()),
+                    BOp::Cmpge => writeln!(src, "{indent}{} r{reg} = {x} >= {y};", dt.c_type()),
+                    BOp::Eq => writeln!(src, "{indent}{} r{reg} = {x} == {y};", dt.c_type()),
+                    BOp::NotEq => writeln!(src, "{indent}{} r{reg} = {x} != {y};", dt.c_type()),
+                    BOp::And => writeln!(src, "{indent}{} r{reg} = {x} && {y};", dt.c_type()),
+                    BOp::Or => writeln!(src, "{indent}{} r{reg} = {x} || {y};", dt.c_type()),
+                    BOp::BitXor => writeln!(src, "{indent}{} r{reg} = {x} ^ {y};", dt.c_type()),
+                    BOp::BitOr => writeln!(src, "{indent}{} r{reg} = {x} | {y};", dt.c_type()),
+                    BOp::BitAnd => writeln!(src, "{indent}{} r{reg} = {x} & {y};", dt.c_type()),
+                    BOp::BitShiftLeft => writeln!(src, "{indent}{} r{reg} = {x} << {y};", dt.c_type()),
+                    BOp::BitShiftRight => writeln!(src, "{indent}{} r{reg} = {x} >> {y};", dt.c_type()),
                     BOp::Pow => todo!("tenstorrent2 scalar pow"),
                 };
             }
             Op::Mad { x, y, z } => {
                 let dt = kernel.dtype(op_id);
-                writeln!(out, "{indent}{} r{op_id} = r{x} * r{y} + r{z};", dt.c_type());
+                let x = if let Op::Const(c) = &kernel.ops[*x].op {
+                    format!("{}", c.c_code())
+                } else if let Some(&r) = var_map.get(x) {
+                    let s = &mut vars[r as usize];
+                    if s.loop_level == loop_level {
+                        debug_assert!(s.rc > 0);
+                        s.rc -= 1;
+                    }
+                    format!("r{r}")
+                } else {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: scalar {x} not found in constants or registers").into(),
+                    });
+                };
+                let y = if let Op::Const(c) = &kernel.ops[*y].op {
+                    format!("{}", c.c_code())
+                } else if let Some(&r) = var_map.get(y) {
+                    let s = &mut vars[r as usize];
+                    if s.loop_level == loop_level {
+                        debug_assert!(s.rc > 0);
+                        s.rc -= 1;
+                    }
+                    format!("r{r}")
+                } else {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: scalar {y} not found in constants or registers").into(),
+                    });
+                };
+                let z = if let Op::Const(c) = &kernel.ops[*z].op {
+                    format!("{}", c.c_code())
+                } else if let Some(&r) = var_map.get(z) {
+                    let s = &mut vars[r as usize];
+                    if s.loop_level == loop_level {
+                        debug_assert!(s.rc > 0);
+                        s.rc -= 1;
+                    }
+                    format!("r{r}")
+                } else {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: scalar {z} not found in constants or registers").into(),
+                    });
+                };
+                let mut found: Option<u32> = None;
+                for (i, s) in vars.iter_mut().enumerate() {
+                    if s.rc == 0 && s.dtype == dt && s.layout == MemLayout::Scalar && s.loop_level != loop_level {
+                        s.dtype = dt;
+                        s.layout = MemLayout::Scalar;
+                        s.rc = 1;
+                        s.loop_level = loop_level;
+                        found = Some(i as u32);
+                        break;
+                    }
+                }
+                let reg = match found {
+                    Some(r) => {
+                        var_map.insert(op_id, r);
+                        r
+                    }
+                    None => {
+                        let r = vars.len() as u32;
+                        vars.push(VarSlot { dtype: dt, layout: MemLayout::Scalar, rc: 1, loop_level });
+                        var_map.insert(op_id, r);
+                        r
+                    }
+                };
+                writeln!(src, "{indent}{} r{reg} = {x} * {y} + {z};", dt.c_type());
             }
             Op::Cast { x, dtype } => {
-                writeln!(out, "{indent}{} r{op_id} = ({})r{x};", dtype.c_type(), dtype.c_type());
+                let dt: DType = *dtype;
+                let x = if let Op::Const(c) = &kernel.ops[*x].op {
+                    format!("{}", c.c_code())
+                } else if let Some(&r) = var_map.get(x) {
+                    let s = &mut vars[r as usize];
+                    if s.loop_level == loop_level {
+                        debug_assert!(s.rc > 0);
+                        s.rc -= 1;
+                    }
+                    format!("r{r}")
+                } else {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: scalar {x} not found in constants or registers").into(),
+                    });
+                };
+                let mut found: Option<u32> = None;
+                for (i, s) in vars.iter_mut().enumerate() {
+                    if s.rc == 0 && s.dtype == dt && s.layout == MemLayout::Scalar && s.loop_level != loop_level {
+                        s.dtype = dt;
+                        s.layout = MemLayout::Scalar;
+                        s.rc = 1;
+                        s.loop_level = loop_level;
+                        found = Some(i as u32);
+                        break;
+                    }
+                }
+                let reg = match found {
+                    Some(r) => {
+                        var_map.insert(op_id, r);
+                        r
+                    }
+                    None => {
+                        let r = vars.len() as u32;
+                        vars.push(VarSlot { dtype: dt, layout: MemLayout::Scalar, rc: 1, loop_level });
+                        var_map.insert(op_id, r);
+                        r
+                    }
+                };
+                writeln!(src, "{indent}{} r{reg} = ({}){x};", dtype.c_type(), dtype.c_type());
             }
             Op::Param { .. }
             | Op::Storage { .. }
@@ -1613,66 +1508,6 @@ impl Compiler {
             | Op::Move { .. }
             | Op::Reduce { .. } => todo!("tenstorrent2 scalar op"),
         }
-        Ok(out)
-    }
-
-    /// Tiled compute emission (compute only): one tiled op to its C++
-    /// text, given its DST slot. CB ids, slot assignment, traffic (CB
-    /// handshake, pack/unpack), inits, and loop scaffolding live in
-    /// `generate_compute`, not here.
-    #[allow(unused_must_use)]
-    fn emit_tiled_op(&self, kernel: &Kernel, op_id: OpId, indent: &str, slot: u32) -> Result<String, BackendError> {
-        let mut out = String::new();
-        match kernel.ops[op_id].op {
-            Op::MatmulTile { x, y } => {
-                let Op::Load { src: a_src, .. } = kernel.ops[x].op else {
-                    todo!("tenstorrent2 MatmulTile x not loaded from a CB");
-                };
-                let Op::Load { src: b_src, .. } = kernel.ops[y].op else {
-                    todo!("tenstorrent2 MatmulTile y not loaded from a CB");
-                };
-                let Some(&cb_a) = self.cb_map.get(&a_src) else {
-                    unreachable!("tenstorrent2 MatmulTile input targets unmapped CB");
-                };
-                let Some(&cb_b) = self.cb_map.get(&b_src) else {
-                    unreachable!("tenstorrent2 MatmulTile input targets unmapped CB");
-                };
-                writeln!(out, "{indent}matmul_tiles(cb{cb_a}, cb{cb_b}, {slot}, 0, 0);");
-            }
-            Op::TransposeTile { .. } => {
-                todo!("tenstorrent2 TransposeTile emission unimplemented");
-            }
-            Op::ReduceTile { .. } => {
-                todo!("tenstorrent2 ReduceTile emission unimplemented");
-            }
-            Op::Wmma { .. } => {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "tenstorrent2: Wmma is a tensor-core op, not emittable here".into(),
-                });
-            }
-            Op::Const(_) => unreachable!("tenstorrent2 emit_tiled_op called with Const"),
-            Op::Param { .. } => unreachable!("tenstorrent2 emit_tiled_op called with Param"),
-            Op::Cast { .. } => todo!("tenstorrent2 tiled ALU emission unimplemented"),
-            Op::Bitcast { .. } => todo!("tenstorrent2 tiled ALU emission unimplemented"),
-            Op::Unary { .. } => todo!("tenstorrent2 tiled ALU emission unimplemented"),
-            Op::Binary { .. } => todo!("tenstorrent2 tiled ALU emission unimplemented"),
-            Op::Stack { .. } => todo!("tenstorrent2 tiled emission unimplemented"),
-            Op::Storage { .. } => unreachable!("tenstorrent2 emit_tiled_op called with Storage"),
-            Op::Store { .. } => unreachable!("tenstorrent2 emit_tiled_op called with Store"),
-            Op::Load { .. } => unreachable!("tenstorrent2 emit_tiled_op called with Load"),
-            Op::Range { .. } => unreachable!("tenstorrent2 emit_tiled_op called with Range"),
-            Op::Loop { .. } => unreachable!("tenstorrent2 emit_tiled_op called with Loop"),
-            Op::EndLoop => unreachable!("tenstorrent2 emit_tiled_op called with EndLoop"),
-            Op::If { .. } => unreachable!("tenstorrent2 emit_tiled_op called with If"),
-            Op::EndIf => unreachable!("tenstorrent2 emit_tiled_op called with EndIf"),
-            Op::Mad { .. } => todo!("tenstorrent2 tiled ALU emission unimplemented"),
-            Op::Index { .. } => todo!("tenstorrent2 tiled emission unimplemented"),
-            Op::Barrier => unreachable!("tenstorrent2 emit_tiled_op called with Barrier"),
-            Op::Asm { .. } => todo!("tenstorrent2 tiled emission unimplemented"),
-            Op::Move { .. } => todo!("tenstorrent2 tiled emission unimplemented"),
-            Op::Reduce { .. } => todo!("tenstorrent2 tiled emission unimplemented"),
-        }
-        Ok(out)
+        Ok(())
     }
 }
