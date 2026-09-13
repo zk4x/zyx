@@ -1542,10 +1542,46 @@ impl Compiler {
         // Anchor for the hoisted tile-op inits: the common method
         // prepends them here, ahead of all loops, after the walk.
         let init_anchor = em.src.len();
-        // Per-loop output pushes (recorded at stores, emitted at EndLoop)
-        // and outermost-only acquire flags, mirroring the proven v1 tail.
+        // Pack-scope acquire: loop-depths of non-scratch tile stores
+        // (Ifs don't count: acquiring at the enclosing loop still
+        // dominates a pack inside a branch). Acquire/release pairs with
+        // the pack scope — one output tile's live range — never the
+        // outermost loop (Mt>1 breaks hoisting). Multiple depths would
+        // nest acquires (illegal DST): loud halt.
+        let mut pack_depths: Set<u32> = Set::default();
+        {
+            let mut depth: u32 = 0;
+            for &op_id in &compute_data.ops {
+                match kernel.ops[op_id].op {
+                    Op::Loop { .. } => depth += 1,
+                    Op::EndLoop => depth -= 1,
+                    Op::Store { ref dst, layout: MemLayout::Tile { .. }, .. } => {
+                        if let Some(&cb) = self.cb_map.get(dst) {
+                            if !self.scratch_cbs.contains(&cb) {
+                                pack_depths.insert(depth);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if pack_depths.len() > 1 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: packs at multiple loop depths would nest DST acquires".into(),
+            });
+        }
+        // Degenerate pack scope (pack with no enclosing loop): acquire
+        // up front, release before the close.
+        if pack_depths.contains(&0) {
+            writeln!(em.src, "{indent}tile_regs_acquire();");
+        }
+        // Per-loop output pushes (recorded at stores, emitted at EndLoop),
+        // mirroring the proven v1 tail.
         let mut loop_pushes: Vec<Vec<CBId>> = Vec::new();
-        let mut acquire_stack: Vec<bool> = Vec::new();
+        // Loops-only depth (Ifs share scope_level but never own DST).
+        let mut loop_depth: u32 = 0;
         // Closed-matmul state (empty on sfpu kernels): validated fold
         // binaries (binary -> acc storage, matmul), matmul input CB
         // pairs, matmul-fed CBs (popped inline, never blanket), one DST
@@ -1908,25 +1944,29 @@ impl Compiler {
                     em.indent.push_str("  ");
                     indent = em.indent.clone();
                     em.scope_level += 1;
+                    loop_depth += 1;
                     if outermost {
-                        // Matmul kernels acquire only: waits fire inline
-                        // at each fold store (per inner iteration), never
-                        // hoisted to the outer loop (wait-deadlock guard).
+                        // Streaming handshake waits stay outermost (sfpu
+                        // path only; mm waits fire inline at each fold).
                         if !is_mm {
                             for &cb in &compute_input_cbs {
                                 writeln!(em.src, "{indent}cb{cb}.wait_front(1);");
                             }
                         }
+                    }
+                    // Acquire pairs with the pack scope, not the
+                    // outermost loop.
+                    if pack_depths.contains(&loop_depth) {
                         writeln!(em.src, "{indent}tile_regs_acquire();");
                     }
-                    acquire_stack.push(outermost);
                     loop_pushes.push(Vec::new());
                 }
                 Op::EndLoop => {
                     // v1 tail order: release, then push, then pop.
-                    if acquire_stack.pop().expect("tenstorrent2 EndLoop without Loop") {
+                    if pack_depths.contains(&loop_depth) {
                         writeln!(em.src, "{indent}tile_regs_release();");
                     }
+                    loop_depth -= 1;
                     if let Some(pushes) = loop_pushes.pop() {
                         for cb_id in &pushes {
                             writeln!(em.src, "{indent}cb{cb_id}.push_back(1);");
@@ -2061,6 +2101,10 @@ impl Compiler {
         // Hoisted tile-op inits land at the anchor, ahead of all loops.
         em.prepend_compute_inits(init_anchor);
 
+        // Degenerate pack scope: release the up-front acquire.
+        if pack_depths.contains(&0) {
+            writeln!(em.src, "  tile_regs_release();");
+        }
         writeln!(em.src, "}}");
         self.compute = TTKernel::Compute { src: em.src, ordinals: ordinals.to_vec() };
 
