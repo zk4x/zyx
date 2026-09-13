@@ -167,7 +167,6 @@ impl Kernel {
     #[allow(unused_must_use)]
     pub(crate) fn generate_tenstorrent(&self) -> Result<Compiler, BackendError> {
         let mut compiler = Compiler::new(self);
-        compiler.check_sections(self)?;
         let reader_data = self.get_needed_ops(TtSection::Reader);
         let compute_data = self.get_needed_ops(TtSection::Compute);
         let writer_data = self.get_needed_ops(TtSection::Writer);
@@ -182,7 +181,7 @@ impl Kernel {
         });
         compiler.allocate_cbs(self)?;
 
-        compiler.check_balance(self)?;
+        compiler.check_ir_tt(self)?;
         compiler.generate_reader(self, &reader_data, &reader_params, &reader_ord)?;
         compiler.generate_compute(self, &compute_data, &compute_params, &compute_ord)?;
         compiler.generate_writer(self, &writer_data, &writer_params, &writer_ord)?;
@@ -693,6 +692,114 @@ impl Compiler {
         Ok(())
     }
 
+    /// Single IR validity gate for the TT path: section count, reader /
+    /// writer store shapes, loop and group-index lengths, then CB
+    /// push/pop balance. Everything here reads the input IR; nothing
+    /// inspects emitted C++ text.
+    fn check_ir_tt(&self, kernel: &Kernel) -> Result<(), BackendError> {
+        self.check_sections(kernel)?;
+        let mut section = TtSection::Reader;
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            match kernel.ops[scan].op {
+                Op::Barrier => section.advance(),
+                Op::Loop { len } => {
+                    let Some(dim) = kernel.resolve_const(len).and_then(|c| c.as_dim()) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: loop trip count op {len} is not resolvable").into(),
+                        });
+                    };
+                    debug_assert!(dim >= 0, "tenstorrent2: negative loop length");
+                    if dim < 0 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: loop length {dim} is negative").into(),
+                        });
+                    }
+                }
+                Op::Range { kind, .. } => match kind {
+                    RangeKind::Group(len) | RangeKind::Warp(len) => {
+                        let Some(dim) = kernel.resolve_const(len).and_then(|c| c.as_dim()) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: group index length op {len} is not resolvable").into(),
+                            });
+                        };
+                        debug_assert!(dim >= 0, "tenstorrent2: negative group length");
+                        if dim < 0 {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: group length {dim} is negative").into(),
+                            });
+                        }
+                    }
+                    RangeKind::Local(_) => {}
+                },
+                Op::Store { dst, src, layout: MemLayout::Tile { .. }, .. } => match section {
+                    TtSection::Reader => {
+                        let Op::Load { src: ld_src, layout: MemLayout::Tile { .. }, .. } = kernel.ops[src].op else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: reader supports only global to CB tile stores, op {scan} has ops in between"
+                                )
+                                .into(),
+                            });
+                        };
+                        if !matches!(kernel.ops[ld_src].op, Op::Param { kind: ParamKind::Global, .. }) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reader tile load op {scan} is not from a Global param").into(),
+                            });
+                        }
+                        if !matches!(kernel.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reader tile store op {scan} does not target a Circular CB")
+                                    .into(),
+                            });
+                        }
+                    }
+                    TtSection::Writer => {
+                        let Op::Load { src: cb_src, layout: MemLayout::Tile { .. }, .. } = kernel.ops[src].op else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: writer supports only CB to DRAM tile stores, op {scan} has ops in between"
+                                )
+                                .into(),
+                            });
+                        };
+                        if !self.cb_map.contains_key(&cb_src) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: writer tile load op {scan} targets unmapped CB").into(),
+                            });
+                        }
+                        if !matches!(kernel.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: writer tile store op {scan} dst must be a GlobalMut param")
+                                    .into(),
+                            });
+                        }
+                    }
+                    TtSection::Compute => {}
+                },
+                _ => {}
+            }
+            scan = kernel.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("tenstorrent2 ir check scan did not finish in 10000 steps");
+        }
+        self.check_balance(kernel)
+    }
+
     /// Exactly 2 barriers delimiting reader/compute/writer, else a
     /// compilation error.
     fn check_sections(&self, kernel: &Kernel) -> Result<(), BackendError> {
@@ -735,13 +842,13 @@ impl Compiler {
             }
             match kernel.ops[scan].op {
                 Op::Loop { ref len } => {
-                    let Op::Const(c) = kernel.ops[*len].op else {
+                    let Some(dim) = kernel.resolve_const(*len).and_then(|c| c.as_dim()) else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: loop trip count op {len} is not const").into(),
+                            context: format!("tenstorrent2: loop trip count op {len} is not resolvable").into(),
                         });
                     };
-                    trips.push(c.as_dim().expect("tenstorrent2 loop trip count must be a concrete dim"));
+                    trips.push(dim);
                 }
                 Op::EndLoop => {
                     trips.pop().expect("tenstorrent2 EndLoop without Loop");
@@ -889,10 +996,29 @@ impl Compiler {
                                 let elem_size = dtype.bit_size() as u32 / 8;
                                 let tile_bytes = x as u32 * y as u32 * elem_size;
                                 let page_size = TT_DRAM_PAGE_BYTES;
+                                // Index resolves through the section register map:
+                                // consts inline, Variable params keep r{op_id},
+                                // every other value must already sit in var_map.
+                                let idx = if let Op::Const(c) = &kernel.ops[ld_idx].op {
+                                    format!("{}", c.c_code())
+                                } else if matches!(kernel.ops[ld_idx].op, Op::Param { kind: ParamKind::Variable, .. }) {
+                                    format!("r{ld_idx}")
+                                } else if let Some(&r) = var_map.get(&ld_idx) {
+                                    if vars[r as usize].loop_level == loop_level {
+                                        debug_assert!(vars[r as usize].rc > 0);
+                                        vars[r as usize].rc -= 1;
+                                    }
+                                    format!("r{r}")
+                                } else {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: reader index {ld_idx} not in registers").into(),
+                                    });
+                                };
                                 writeln!(src, "{indent}cb{cb}.reserve_back(1);");
                                 writeln!(
                                     src,
-                                    "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{page_size}), (uint32_t)((r{ld_idx}*{elem_size})%{page_size}));"
+                                    "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{page_size}), (uint32_t)(({idx}*{elem_size})%{page_size}));"
                                 );
                                 writeln!(src, "{indent}noc_async_read(rnoc{op_id}, cb{cb}.get_write_ptr(), {tile_bytes});");
                                 writeln!(src, "{indent}noc_async_read_barrier();");
@@ -972,6 +1098,8 @@ impl Compiler {
         writeln!(src, "#include <cstdint>");
         writeln!(src, "#include \"api/compute/common.h\"");
         writeln!(src, "#include \"api/compute/compute_kernel_api.h\"");
+        writeln!(src, "#include \"api/compute/tile_move_copy.h\"");
+        writeln!(src, "#include \"api/compute/reconfig_data_format.h\"");
         writeln!(src, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(src, "#include \"api/debug/device_print.h\"");
         writeln!(src, "void kernel_main() {{");
@@ -982,9 +1110,24 @@ impl Compiler {
         for cb in cbs {
             writeln!(src, "{indent}CircularBuffer cb{cb}(tt::CBIndex::c_{cb});");
         }
+        // Input CBs in first-touch order: waited per iteration at the
+        // outermost loop (official streaming handshake).
+        let mut compute_input_cbs: Vec<CBId> = Vec::new();
+        for &op_id in &compute_data.ops {
+            if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = kernel.ops[op_id].op {
+                if let Some(&cb) = self.cb_map.get(&src) {
+                    if !compute_input_cbs.contains(&cb) {
+                        compute_input_cbs.push(cb);
+                    }
+                }
+            }
+        }
 
         let mut vars: Vec<VarSlot> = Vec::new();
         let mut var_map: Map<OpId, u32> = Map::default();
+        // Tile load op -> DST slot (copy path only).
+        let mut load_slot: Map<OpId, u32> = Map::default();
+        let mut next_slot: u32 = 0;
 
         let mut loop_level: u8 = 0;
         for &op_id in &compute_data.ops {
@@ -1019,15 +1162,103 @@ impl Compiler {
                 Op::Storage { .. } => {
                     todo!("tenstorrent2 compute storage scope")
                 }
-                Op::Store { .. } => todo!("tenstorrent2 compute store"),
-                Op::Load { .. } => todo!("tenstorrent2 compute load"),
+                Op::Store { ref dst, src: ref store_src, layout: st_layout, .. } => {
+                    let Op::Load { src: cb_src, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*store_src].op
+                    else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!(
+                                "tenstorrent2: compute supports only direct CB copy stores, op {op_id} has ops in between"
+                            )
+                            .into(),
+                        });
+                    };
+                    let Some(&in_cb) = self.cb_map.get(&cb_src) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: compute copy load targets unmapped CB, op {op_id}").into(),
+                        });
+                    };
+                    let Some(&out_cb) = self.cb_map.get(dst) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: compute copy store targets unmapped CB, op {op_id}").into(),
+                        });
+                    };
+                    if !matches!(st_layout, MemLayout::Tile { .. }) {
+                        todo!("tenstorrent2 compute only supports tile stores");
+                    }
+                    if self.scratch_cbs.contains(&out_cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: compute copy targets scratch CB, op {op_id}").into(),
+                        });
+                    }
+                    let Some(&slot) = load_slot.get(store_src) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: compute copy store reads unloaded tile, op {op_id}").into(),
+                        });
+                    };
+                    if loop_level == 0 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!(
+                                "tenstorrent2: compute streaming copy requires a loop, op {op_id} sits outside one"
+                            )
+                            .into(),
+                        });
+                    }
+                    let _ = in_cb;
+                    // Official per-iteration order: commit -> reserve ->
+                    // wait -> reconfig -> pack, then push, pop, release.
+                    writeln!(src, "{indent}tile_regs_commit();");
+                    writeln!(src, "{indent}cb{out_cb}.reserve_back(1);");
+                    writeln!(src, "{indent}tile_regs_wait();");
+                    writeln!(src, "{indent}pack_reconfig_data_format({out_cb});");
+                    writeln!(src, "{indent}pack_tile({slot}, {out_cb});");
+                    writeln!(src, "{indent}cb{out_cb}.push_back(1);");
+                    for &cb in &compute_input_cbs {
+                        writeln!(src, "{indent}cb{cb}.pop_front(1);");
+                    }
+                    writeln!(src, "{indent}tile_regs_release();");
+                }
+                Op::Load { src: ref load_src, layout, .. } => {
+                    if !matches!(layout, MemLayout::Tile { .. }) {
+                        todo!("tenstorrent2 compute only supports tile loads");
+                    }
+                    let Some(&cb) = self.cb_map.get(load_src) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: compute load targets unmapped CB, op {op_id}").into(),
+                        });
+                    };
+                    if self.scratch_cbs.contains(&cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: compute copy reads scratch CB, op {op_id}").into(),
+                        });
+                    }
+                    let slot = next_slot;
+                    next_slot += 1;
+                    load_slot.insert(op_id, slot);
+                    writeln!(src, "{indent}copy_tile_init({cb});");
+                    writeln!(src, "{indent}copy_tile({cb}, 0, {slot});");
+                }
                 Op::Range { .. } => {
                     self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &compute_data, &mut src)?;
                 }
                 Op::Loop { .. } => {
+                    let outermost = loop_level == 0;
                     self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &compute_data, &mut src)?;
                     indent.push_str("  ");
                     loop_level += 1;
+                    if outermost {
+                        for &cb in &compute_input_cbs {
+                            writeln!(src, "{indent}cb{cb}.wait_front(1);");
+                        }
+                        writeln!(src, "{indent}tile_regs_acquire();");
+                    }
                 }
                 Op::EndLoop => {
                     loop_level -= 1;
@@ -1071,21 +1302,6 @@ impl Compiler {
         }
         let mut indent = String::from("  ");
         let mut prev_accessor: Option<String> = None;
-        // CBs read (drained) by this section: waited upfront at loop
-        // boundaries (see Loop arm).
-        let mut writer_loop_cbs: Vec<CBId> = Vec::new();
-        for &op_id in ops {
-            if let Op::Store { src, .. } = kernel.ops[op_id].op {
-                if let Op::Load { src: cb_src, .. } = kernel.ops[src].op {
-                    if let Some(&cb) = self.cb_map.get(&cb_src) {
-                        if !writer_loop_cbs.contains(&cb) {
-                            writer_loop_cbs.push(cb);
-                        }
-                    }
-                }
-            }
-        }
-        writer_loop_cbs.sort();
         let mut src = String::new();
         let mut var_map: Map<OpId, u32> = Map::default();
         let mut vars: Vec<VarSlot> = Vec::new();
@@ -1116,7 +1332,6 @@ impl Compiler {
                 prev_accessor = Some(format!("args_out{op_id}"));
             }
         }
-        let mut loop_popped: Set<CBId> = Set::default();
         let n = ops.len();
         for i in 0..n {
             let op_id = ops[i];
@@ -1169,28 +1384,38 @@ impl Compiler {
                             let elem_size = dtype.bit_size() as u32 / 8;
                             let tile_bytes = x as u32 * y as u32 * elem_size;
                             let page_size = TT_DRAM_PAGE_BYTES;
+                            // Same register discipline as the reader: consts
+                            // inline, Variable params keep r{op_id}, every
+                            // other value must already sit in var_map.
+                            let idx = if let Op::Const(c) = &kernel.ops[st_idx].op {
+                                format!("{}", c.c_code())
+                            } else if matches!(kernel.ops[st_idx].op, Op::Param { kind: ParamKind::Variable, .. }) {
+                                format!("r{st_idx}")
+                            } else if let Some(&r) = var_map.get(&st_idx) {
+                                if vars[r as usize].loop_level == loop_level {
+                                    debug_assert!(vars[r as usize].rc > 0);
+                                    vars[r as usize].rc -= 1;
+                                }
+                                format!("r{r}")
+                            } else {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: writer index {st_idx} not in registers").into(),
+                                });
+                            };
                             writeln!(src, "{indent}cb{cb}.wait_front(1);");
                             writeln!(
                                 src,
-                                "{indent}uint64_t wnoc{op_id} = p_out{dst}.get_noc_addr((uint32_t)((r{st_idx}*{elem_size})/{page_size}), (uint32_t)((r{st_idx}*{elem_size})%{page_size}));"
+                                "{indent}uint64_t wnoc{op_id} = p_out{dst}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{page_size}), (uint32_t)(({idx}*{elem_size})%{page_size}));"
                             );
                             writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr(), wnoc{op_id}, {tile_bytes});");
                             writeln!(src, "{indent}noc_async_write_barrier();");
                             writeln!(src, "{indent}cb{cb}.pop_front(1);");
-                            if loop_level > 0 {
-                                loop_popped.insert(cb);
-                            }
                         }
                         _ => todo!("tenstorrent2 writer only supports tile stores"),
                     }
                 }
                 Op::Loop { .. } => {
-                    if loop_level == 0 {
-                        for cb in &writer_loop_cbs {
-                            writeln!(src, "{indent}cb{cb}.wait_front(1);");
-                            writeln!(src, "{indent}uint32_t wbase{cb} = cb{cb}.get_read_ptr();");
-                        }
-                    }
                     self.emit_op(kernel, op_id, &indent, &mut var_map, &mut vars, loop_level, &arg_pos, &writer_data, &mut src)?;
                     indent.push_str("  ");
                     loop_level += 1;
@@ -1199,18 +1424,6 @@ impl Compiler {
                     indent.pop();
                     indent.pop();
                     writeln!(src, "{indent}}}");
-                    if loop_level == 1 {
-                        writeln!(src, "{indent}noc_async_write_barrier();");
-                        for cb in &writer_loop_cbs {
-                            // Tile streaming pops per iteration (see the
-                            // tile Store above); popping again here would
-                            // over-pop and stall.
-                            if loop_popped.contains(cb) {
-                                continue;
-                            }
-                            writeln!(src, "{indent}cb{cb}.pop_front(1);");
-                        }
-                    }
                     loop_level -= 1;
                 }
                 Op::Barrier => {}
