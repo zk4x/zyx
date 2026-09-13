@@ -493,13 +493,59 @@ enum Phase {
     Reduce,
 }
 
+/// DST register-file lock state, tracked per section emitter. Math and
+/// pack dispatch to separate per-thread queues, so source-line order
+/// between a MATH block and a PACK block is not execution order — the
+/// lock state machine is what enforces the real ordering.
+///
+/// Transitions (each asserts on entry):
+///   Unlocked --acquire--> MathLock --commit--> Unlocked
+///   Unlocked --wait-->    PackLock  --release--> Unlocked
+/// From `MathLock` only `commit`; from `PackLock` only `release`. The
+/// illegal `MathLock -> PackLock` (commit-before-wait) and
+/// `PackLock -> MathLock` (wait-before-commit) transitions have no arm,
+/// so they panic at the call site instead of emitting a broken kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TileRegsState {
+    /// No engine holds the DST file.
+    Unlocked,
+    /// MATH holds it (`tile_regs_acquire` taken, not yet committed).
+    MathLock,
+    /// PACK holds it (`tile_regs_wait` taken, not yet released).
+    PackLock,
+}
+
+impl TileRegsState {
+    /// `tile_regs_acquire`. Only valid from `Unlocked`; asserts it.
+    fn acquire(&mut self) {
+        assert!(matches!(self, TileRegsState::Unlocked), "tenstorrent2: tile_regs_acquire from {:?}, must be Unlocked", self);
+        *self = TileRegsState::MathLock;
+    }
+
+    /// `tile_regs_commit`. Only valid from `MathLock`; asserts it.
+    fn commit(&mut self) {
+        assert!(matches!(self, TileRegsState::MathLock), "tenstorrent2: tile_regs_commit from {:?}, must be MathLock", self);
+        *self = TileRegsState::Unlocked;
+    }
+
+    /// `tile_regs_wait`. Only valid from `Unlocked`; asserts it.
+    fn wait(&mut self) {
+        assert!(matches!(self, TileRegsState::Unlocked), "tenstorrent2: tile_regs_wait from {:?}, must be Unlocked", self);
+        *self = TileRegsState::PackLock;
+    }
+
+    /// `tile_regs_release`. Only valid from `PackLock`; asserts it.
+    fn release(&mut self) {
+        assert!(matches!(self, TileRegsState::PackLock), "tenstorrent2: tile_regs_release from {:?}, must be PackLock", self);
+        *self = TileRegsState::Unlocked;
+    }
+}
+
 fn op_phase(op: &Op) -> Option<Phase> {
     match op {
         Op::MatmulTile { .. } => Some(Phase::Matmul),
         Op::ReduceTile { .. } => Some(Phase::Reduce),
-        Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
-            Some(Phase::Sfpu)
-        }
+        Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => Some(Phase::Sfpu),
         _ => None,
     }
 }
@@ -542,6 +588,11 @@ struct OpEmitter<'a> {
     binary_inits: Set<BOp>,
     /// Tile cast format pairs seen, for the hoisted init block.
     typecast_inits: Vec<(u32, u32)>,
+    /// DST register-file lock state (math/pack). Reader and writer never
+    /// touch registers, so this is only meaningful in the compute
+    /// emitter; it starts `Unlocked` and is driven by the four
+    /// [`TileRegsState`] methods.
+    tile_regs: TileRegsState,
 }
 
 impl<'a> OpEmitter<'a> {
@@ -560,6 +611,7 @@ impl<'a> OpEmitter<'a> {
             unary_inits: Set::default(),
             binary_inits: Set::default(),
             typecast_inits: Vec::new(),
+            tile_regs: TileRegsState::Unlocked,
         }
     }
 
@@ -842,8 +894,7 @@ impl Compiler {
                 Op::Barrier => section.advance(),
                 Op::MatmulTile { x, y, acc } if section == TtSection::Compute => {
                     for &v in &[x, y] {
-                        let Op::Load { src: lsrc, layout: MemLayout::Tile { x: w, y: h, .. }, .. } = kernel.ops[v].op
-                        else {
+                        let Op::Load { src: lsrc, layout: MemLayout::Tile { x: w, y: h, .. }, .. } = kernel.ops[v].op else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
                                 context: format!("tenstorrent2: matmul side op {v} is no CB tile load").into(),
@@ -874,9 +925,7 @@ impl Compiler {
                             });
                         };
                     }
-                    let Op::Load { src: lacc, layout: MemLayout::Tile { x: w, y: h, .. }, .. } =
-                        kernel.ops[acc].op
-                    else {
+                    let Op::Load { src: lacc, layout: MemLayout::Tile { x: w, y: h, .. }, .. } = kernel.ops[acc].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: format!("tenstorrent2: matmul acc op {acc} is no acc tile load").into(),
@@ -951,23 +1000,16 @@ impl Compiler {
                             });
                         }
                     } else {
-                        let Op::Load { src: lsrc, layout: MemLayout::Tile { .. }, .. } = kernel.ops[src].op
-                        else {
+                        let Op::Load { src: lsrc, layout: MemLayout::Tile { .. }, .. } = kernel.ops[src].op else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: compute pack store op {scan} reads no acc tile"
-                                )
-                                .into(),
+                                context: format!("tenstorrent2: compute pack store op {scan} reads no acc tile").into(),
                             });
                         };
                         if !chained.contains(&lsrc) {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: compute pack store op {scan} packs an empty acc chain"
-                                )
-                                .into(),
+                                context: format!("tenstorrent2: compute pack store op {scan} packs an empty acc chain").into(),
                             });
                         }
                     }
@@ -981,9 +1023,7 @@ impl Compiler {
                     }
                     // Role (matmul input vs acc) is checked at consumers.
                 }
-                Op::Unary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Mad { .. }
-                    if section == TtSection::Compute =>
-                {
+                Op::Unary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Mad { .. } if section == TtSection::Compute => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: format!("tenstorrent2: sfpu and matmul cannot share a kernel (op {scan})").into(),
@@ -1288,7 +1328,10 @@ impl Compiler {
                             Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                         };
                         writeln!(em.src, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
-                        writeln!(em.src, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {TT_DRAM_PAGE_BYTES});");
+                        writeln!(
+                            em.src,
+                            "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {TT_DRAM_PAGE_BYTES});"
+                        );
                         prev_accessor = Some(format!("args{op_id}"));
                     }
                     ParamKind::Variable => {
@@ -1296,7 +1339,12 @@ impl Compiler {
                         // Slot-named like every other register (p{op_id} is
                         // for pointers; r is for registers).
                         let slot = em.vars.len() as u32;
-                        writeln!(em.src, "{indent}{} r{slot} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
+                        writeln!(
+                            em.src,
+                            "{indent}{} r{slot} = ({})get_arg_val<uint32_t>({arg});",
+                            dtype.c_type(),
+                            dtype.c_type()
+                        );
                         em.vars.push(VarSlot {
                             dtype,
                             layout: MemLayout::Scalar,
@@ -1313,7 +1361,10 @@ impl Compiler {
                             Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                         };
                         writeln!(em.src, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
-                        writeln!(em.src, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {TT_DRAM_PAGE_BYTES});");
+                        writeln!(
+                            em.src,
+                            "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {TT_DRAM_PAGE_BYTES});"
+                        );
                         prev_accessor = Some(format!("args{op_id}"));
                     }
                 },
@@ -1412,10 +1463,7 @@ impl Compiler {
                     } else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2: if condition op {condition} not in registers"
-                            )
-                            .into(),
+                            context: format!("tenstorrent2: if condition op {condition} not in registers").into(),
                         });
                     };
                     writeln!(em.src, "{indent}if ({cond}) {{");
@@ -1539,10 +1587,7 @@ impl Compiler {
         // already rejected anything beyond folds + one pack per output):
         // lazy tags, no copies, mm_init up front. Anything else keeps
         // the streaming sfpu path below, byte-identical.
-        let is_mm = compute_data
-            .ops
-            .iter()
-            .any(|&op_id| matches!(kernel.ops[op_id].op, Op::MatmulTile { .. }));
+        let is_mm = compute_data.ops.iter().any(|&op_id| matches!(kernel.ops[op_id].op, Op::MatmulTile { .. }));
         // Phase set: which engine configs the kernel uses. Matmul mixes
         // with nothing yet (no designed transition out of mm_init
         // programming); Reduce+Sfpu is the softmax shape (per-op init,
@@ -1569,11 +1614,16 @@ impl Compiler {
             let mut triple = None;
             for &op_id in &compute_data.ops {
                 if let Op::ReduceTile { x, scaler, acc, .. } = kernel.ops[op_id].op {
-                    let Op::Load { src: lx, .. } = kernel.ops[x].op else { continue };
-                    let Op::Load { src: ls, .. } = kernel.ops[scaler].op else { continue };
-                    let Op::Load { src: la, .. } = kernel.ops[acc].op else { continue };
-                    let (Some(&a), Some(&b), Some(&c)) =
-                        (self.cb_map.get(&lx), self.cb_map.get(&ls), self.cb_map.get(&la))
+                    let Op::Load { src: lx, .. } = kernel.ops[x].op else {
+                        continue;
+                    };
+                    let Op::Load { src: ls, .. } = kernel.ops[scaler].op else {
+                        continue;
+                    };
+                    let Op::Load { src: la, .. } = kernel.ops[acc].op else {
+                        continue;
+                    };
+                    let (Some(&a), Some(&b), Some(&c)) = (self.cb_map.get(&lx), self.cb_map.get(&ls), self.cb_map.get(&la))
                     else {
                         continue;
                     };
@@ -1636,6 +1686,7 @@ impl Compiler {
         // Degenerate pack scope (pack with no enclosing loop): acquire
         // up front, release before the close.
         if pack_depths.contains(&0) {
+            em.tile_regs.acquire();
             writeln!(em.src, "{indent}tile_regs_acquire();");
         }
         // Per-loop output pushes (recorded at stores, emitted at EndLoop),
@@ -1662,7 +1713,12 @@ impl Compiler {
                         // Slot-named like every other register (p{op_id} is
                         // for pointers; r is for registers).
                         let slot = em.vars.len() as u32;
-                        writeln!(em.src, "{indent}{} r{slot} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
+                        writeln!(
+                            em.src,
+                            "{indent}{} r{slot} = ({})get_arg_val<uint32_t>({arg});",
+                            dtype.c_type(),
+                            dtype.c_type()
+                        );
                         em.vars.push(VarSlot {
                             dtype,
                             layout: MemLayout::Scalar,
@@ -1682,34 +1738,17 @@ impl Compiler {
                     // Inlined as literals at uses; no declaration emitted.
                 }
                 Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
-                    if is_mm {
-                        // Closed matmul compute holds loads, matmul_tiles,
-                        // stores, loops only: accumulation threads
-                        // explicitly through the tile op's acc operand.
-                        // Any ALU sharing the kernel is a loud halt
-                        // (mm_init plus SFPU inits hung the board in v1).
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2: sfpu and matmul cannot share a kernel (op {op_id})"
-                            )
-                            .into(),
-                        });
-                    }
                     em.emit_op(op_id, &compute_data)?;
                 }
                 Op::Stack { .. } => todo!(),
-                Op::Storage { scope: MemScope::Circular, .. } => {
-                    // Declared up front for every shared CB (see driver).
-                }
-                Op::Storage { scope: MemScope::Local, .. } => {
-                    unreachable!(
+                Op::Storage { scope, .. } => match scope {
+                    MemScope::Global => todo!(),
+                    MemScope::Local => unreachable!(
                         "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
-                    )
-                }
-                Op::Storage { .. } => {
-                    todo!("tenstorrent2 compute storage scope")
-                }
+                    ),
+                    MemScope::Register => todo!(),
+                    MemScope::Circular => todo!(),
+                },
                 Op::Store { ref dst, src: ref store_src, layout: st_layout, .. } if is_mm => {
                     // Closed-matmul stores. Scratch stores are validated
                     // acc-threading matmuls: wait/matmul/pop traffic only,
@@ -1720,10 +1759,7 @@ impl Compiler {
                     if !matches!(st_layout, MemLayout::Tile { .. }) {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2 compute only supports tile stores, op {op_id}"
-                            )
-                            .into(),
+                            context: format!("tenstorrent2 compute only supports tile stores, op {op_id}").into(),
                         });
                     }
                     let Some(&out_cb) = self.cb_map.get(dst) else {
@@ -1735,10 +1771,7 @@ impl Compiler {
                     if em.scope_level == 0 {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2: matmul traffic requires a loop, op {op_id} sits outside one"
-                            )
-                            .into(),
+                            context: format!("tenstorrent2: matmul traffic requires a loop, op {op_id} sits outside one").into(),
                         });
                     }
                     if self.scratch_cbs.contains(&out_cb) {
@@ -1772,35 +1805,27 @@ impl Compiler {
                         writeln!(em.src, "{indent}cb{cb_a}.pop_front(1);");
                         writeln!(em.src, "{indent}cb{cb_b}.pop_front(1);");
                     } else {
-                        let Op::Load { src: lsrc, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*store_src].op
-                        else {
+                        let Op::Load { src: lsrc, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*store_src].op else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: compute pack store op {op_id} reads no acc tile"
-                                )
-                                .into(),
+                                context: format!("tenstorrent2: compute pack store op {op_id} reads no acc tile").into(),
                             });
                         };
                         let Some(&slot) = chain_slot.get(&lsrc) else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: compute pack store op {op_id} packs an empty acc chain"
-                                )
-                                .into(),
+                                context: format!("tenstorrent2: compute pack store op {op_id} packs an empty acc chain").into(),
                             });
                         };
                         // Last circular store wins (v1 mm_out_cb rule).
                         mm_out = Some(out_cb);
+                        em.tile_regs.commit();
                         writeln!(em.src, "{indent}tile_regs_commit();");
                         writeln!(em.src, "{indent}cb{out_cb}.reserve_back(1);");
+                        em.tile_regs.wait();
                         writeln!(em.src, "{indent}tile_regs_wait();");
                         writeln!(em.src, "{indent}pack_tile({slot}, {out_cb});");
-                        loop_pushes
-                            .last_mut()
-                            .expect("tenstorrent2 pack store outside loop body")
-                            .push(out_cb);
+                        loop_pushes.last_mut().expect("tenstorrent2 pack store outside loop body").push(out_cb);
                     }
                 }
                 Op::Store { ref dst, src: ref store_src, layout: st_layout, .. } => {
@@ -1811,19 +1836,13 @@ impl Compiler {
                     let Some(&slot) = em.var_map.get(store_src) else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2: compute store reads a tile with no DST slot, op {op_id}"
-                            )
-                            .into(),
+                            context: format!("tenstorrent2: compute store reads a tile with no DST slot, op {op_id}").into(),
                         });
                     };
                     if !matches!(em.vars[slot as usize].layout, MemLayout::Tile { .. }) {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2: compute store reads a non-tiled value, op {op_id}"
-                            )
-                            .into(),
+                            context: format!("tenstorrent2: compute store reads a non-tiled value, op {op_id}").into(),
                         });
                     }
                     let Some(&out_cb) = self.cb_map.get(dst) else {
@@ -1844,24 +1863,21 @@ impl Compiler {
                     if em.scope_level == 0 {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2: compute streaming copy requires a loop, op {op_id} sits outside one"
-                            )
-                            .into(),
+                            context: format!("tenstorrent2: compute streaming copy requires a loop, op {op_id} sits outside one")
+                                .into(),
                         });
                     }
                     // Pack order: commit -> reserve -> wait -> reconfig ->
                     // pack. Push/pop/release emit at EndLoop (v1 tail:
                     // release -> push -> pop); record the push here.
+                    em.tile_regs.commit();
                     writeln!(em.src, "{indent}tile_regs_commit();");
                     writeln!(em.src, "{indent}cb{out_cb}.reserve_back(1);");
+                    em.tile_regs.wait();
                     writeln!(em.src, "{indent}tile_regs_wait();");
                     writeln!(em.src, "{indent}pack_reconfig_data_format({out_cb});");
                     writeln!(em.src, "{indent}pack_tile({slot}, {out_cb});");
-                    loop_pushes
-                        .last_mut()
-                        .expect("tenstorrent2 streaming store outside loop body")
-                        .push(out_cb);
+                    loop_pushes.last_mut().expect("tenstorrent2 streaming store outside loop body").push(out_cb);
                 }
                 Op::Load { src: ref load_src, layout, .. } if is_mm => {
                     // Resolve-only: matmul inputs resolve to CB ids at the
@@ -1949,10 +1965,7 @@ impl Compiler {
                     if is_mm {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2: op {op_id} is outside the closed matmul shape"
-                            )
-                            .into(),
+                            context: format!("tenstorrent2: op {op_id} is outside the closed matmul shape").into(),
                         });
                     }
                     em.emit_op(op_id, &compute_data)?;
@@ -1976,6 +1989,7 @@ impl Compiler {
                     // Acquire pairs with the pack scope, not the
                     // outermost loop.
                     if pack_depths.contains(&loop_depth) {
+                        em.tile_regs.acquire();
                         writeln!(em.src, "{indent}tile_regs_acquire();");
                     }
                     loop_pushes.push(Vec::new());
@@ -1983,6 +1997,7 @@ impl Compiler {
                 Op::EndLoop => {
                     // v1 tail order: release, then push, then pop.
                     if pack_depths.contains(&loop_depth) {
+                        em.tile_regs.release();
                         writeln!(em.src, "{indent}tile_regs_release();");
                     }
                     loop_depth -= 1;
@@ -2018,10 +2033,7 @@ impl Compiler {
                     } else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2: if condition op {condition} not in registers"
-                            )
-                            .into(),
+                            context: format!("tenstorrent2: if condition op {condition} not in registers").into(),
                         });
                     };
                     writeln!(em.src, "{indent}if ({cond}) {{");
@@ -2085,8 +2097,7 @@ impl Compiler {
                             context: format!("tenstorrent2: matmul side op {y} reads scratch").into(),
                         });
                     }
-                    let Op::Load { src: lacc, layout: MemLayout::Tile { x: w, y: h, .. }, .. } = kernel.ops[acc].op
-                    else {
+                    let Op::Load { src: lacc, layout: MemLayout::Tile { x: w, y: h, .. }, .. } = kernel.ops[acc].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: format!("tenstorrent2: matmul acc op {acc} is no acc tile load").into(),
@@ -2128,10 +2139,7 @@ impl Compiler {
                     if is_mm {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2: sfpu and matmul cannot share a kernel (op {op_id})"
-                            )
-                            .into(),
+                            context: format!("tenstorrent2: sfpu and matmul cannot share a kernel (op {op_id})").into(),
                         });
                     }
                     // Closed reduce shape: x is a tile load from a live
@@ -2139,9 +2147,7 @@ impl Compiler {
                     // emits reduce traffic into a fresh DST slot; the
                     // consuming acc store packs it (result tile carries
                     // values in its first row).
-                    let Op::Load { src: lx, layout: xlay @ MemLayout::Tile { x: wx, y: hx, .. }, .. } =
-                        kernel.ops[x].op
-                    else {
+                    let Op::Load { src: lx, layout: xlay @ MemLayout::Tile { x: wx, y: hx, .. }, .. } = kernel.ops[x].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: format!("tenstorrent2: reduce side op {x} is no CB tile load").into(),
@@ -2183,8 +2189,7 @@ impl Compiler {
                             context: format!("tenstorrent2: reduce input and acc share CB{cb_in}").into(),
                         });
                     }
-                    let Op::Load { src: ls, layout: MemLayout::Tile { .. }, .. } = kernel.ops[scaler].op
-                    else {
+                    let Op::Load { src: ls, layout: MemLayout::Tile { .. }, .. } = kernel.ops[scaler].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: format!("tenstorrent2: reduce scaler op {scaler} is no scaler tile load").into(),
@@ -2214,10 +2219,7 @@ impl Compiler {
                         _ => {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: reduce op {rop:?}/{kind:?} unsupported, op {op_id}"
-                                )
-                                .into(),
+                                context: format!("tenstorrent2: reduce op {rop:?}/{kind:?} unsupported, op {op_id}").into(),
                             });
                         }
                     };
@@ -2265,6 +2267,7 @@ impl Compiler {
 
         // Degenerate pack scope: release the up-front acquire.
         if pack_depths.contains(&0) {
+            em.tile_regs.release();
             writeln!(em.src, "  tile_regs_release();");
         }
         writeln!(em.src, "}}");
@@ -2314,7 +2317,10 @@ impl Compiler {
                     Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                 };
                 writeln!(em.src, "{indent}auto args_out{op_id} = TensorAccessorArgs<{cta}>({arg});");
-                writeln!(em.src, "{indent}auto p_out{op_id} = TensorAccessor(args_out{op_id}, out{op_id}, {TT_DRAM_PAGE_BYTES});");
+                writeln!(
+                    em.src,
+                    "{indent}auto p_out{op_id} = TensorAccessor(args_out{op_id}, out{op_id}, {TT_DRAM_PAGE_BYTES});"
+                );
                 prev_accessor = Some(format!("args_out{op_id}"));
             }
         }
@@ -2433,10 +2439,7 @@ impl Compiler {
                     } else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: format!(
-                                "tenstorrent2: if condition op {condition} not in registers"
-                            )
-                            .into(),
+                            context: format!("tenstorrent2: if condition op {condition} not in registers").into(),
                         });
                     };
                     writeln!(em.src, "{indent}if ({cond}) {{");
