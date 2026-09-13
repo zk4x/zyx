@@ -527,7 +527,7 @@ impl Op {
                 MoveOp::Narrow { start, len, .. } => vec![x, *start, *len],
             },
             Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
-            Op::ReduceTile { x, scaler, acc, .. } => vec![*x, *scaler, *acc],
+            Op::ReduceTile { x, acc, .. } => vec![*x, *acc],
             &Op::Store { dst, src, index, .. } => {
                 // Pre-linearize stores carry a NULL index (whole-view write).
                 if index.is_null() {
@@ -574,7 +574,7 @@ impl Op {
                 MoveOp::Narrow { start, len, .. } => vec![x, start, len],
             },
             Op::Reduce { x, reduce_axis, .. } => vec![x, reduce_axis],
-            Op::ReduceTile { x, scaler, acc, .. } => vec![x, scaler, acc],
+            Op::ReduceTile { x, acc, .. } => vec![x, acc],
             Op::Store { dst, src: x, index, .. } => {
                 // Pre-linearize stores carry a NULL index (whole-view write).
                 if index.is_null() { vec![dst, x] } else { vec![dst, x, index] }

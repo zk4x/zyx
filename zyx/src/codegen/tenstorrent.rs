@@ -185,6 +185,8 @@ impl Kernel {
         compiler.generate_compute(self, &compute_data, &compute_params, &compute_ord)?;
         compiler.generate_writer(self, &writer_data, &writer_params, &writer_ord)?;
 
+        panic!();
+
         Ok(compiler)
     }
 
@@ -481,18 +483,6 @@ impl Kernel {
     }
 }
 
-/// Engine-config phase of a compute op: which unit's programming is
-/// live while it executes. Phase transitions need bracketing
-/// (uninit/reconfig); single-phase kernels never transition. Bodies
-/// grow with the first fused kernel that fires them (moreh_softmax
-/// precedent for Reduce<->Sfpu, fused-bmm for Matmul<->Sfpu).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Phase {
-    Sfpu,
-    Matmul,
-    Reduce,
-}
-
 /// DST register-file lock state, tracked per section emitter. Math and
 /// pack dispatch to separate per-thread queues, so source-line order
 /// between a MATH block and a PACK block is not execution order — the
@@ -541,15 +531,6 @@ impl TileRegsState {
     }
 }
 
-fn op_phase(op: &Op) -> Option<Phase> {
-    match op {
-        Op::MatmulTile { .. } => Some(Phase::Matmul),
-        Op::ReduceTile { .. } => Some(Phase::Reduce),
-        Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => Some(Phase::Sfpu),
-        _ => None,
-    }
-}
-
 /// Closed op list for one section: the section's ops in IR order with
 /// their dtypes and section-local refcounts.
 struct SectionData {
@@ -577,8 +558,7 @@ struct OpEmitter<'a> {
     scope_level: u8,
     /// Section params in list order become this section's runtime args.
     arg_pos: Map<OpId, u32>,
-    /// Unified register file: scalars and DST slots alike, told apart
-    /// by the `MemLayout` on each entry.
+    /// Scalars map
     var_map: Map<OpId, u32>,
     /// One entry per emitted value, in emission order.
     vars: Vec<VarSlot>,
@@ -1583,127 +1563,19 @@ impl Compiler {
                 }
             }
         }
-        // Matmul kernels take the closed path (check_matmul_closed
-        // already rejected anything beyond folds + one pack per output):
-        // lazy tags, no copies, mm_init up front. Anything else keeps
-        // the streaming sfpu path below, byte-identical.
-        let is_mm = compute_data.ops.iter().any(|&op_id| matches!(kernel.ops[op_id].op, Op::MatmulTile { .. }));
-        // Phase set: which engine configs the kernel uses. Matmul mixes
-        // with nothing yet (no designed transition out of mm_init
-        // programming); Reduce+Sfpu is the softmax shape (per-op init,
-        // in-arm uninit). Anything else is a loud halt, never a silent
-        // config clash (v1 hang precedent).
-        let mut phases: Set<Phase> = Set::default();
-        for &op_id in &compute_data.ops {
-            if let Some(p) = op_phase(&kernel.ops[op_id].op) {
-                phases.insert(p);
-            }
-        }
-        if phases.contains(&Phase::Matmul) && phases.len() > 1 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "tenstorrent2: matmul shares its kernel (no designed phase transition)".into(),
-            });
-        }
-        // Reduce-only kernels start up like the reference (reduce_w):
-        // compute_kernel_hw_startup programs unpack for TWO CBs (input
-        // on SrcA, scaler on SrcB). init_sfpu programs one (datacopy);
-        // the scaler format stays unconfigured and the unpacker stalls
-        // reading it — a silent hang no traffic check can catch.
-        let reduce_triple: Option<(CBId, CBId, CBId)> = if phases.len() == 1 && phases.contains(&Phase::Reduce) {
-            let mut triple = None;
-            for &op_id in &compute_data.ops {
-                if let Op::ReduceTile { x, scaler, acc, .. } = kernel.ops[op_id].op {
-                    let Op::Load { src: lx, .. } = kernel.ops[x].op else {
-                        continue;
-                    };
-                    let Op::Load { src: ls, .. } = kernel.ops[scaler].op else {
-                        continue;
-                    };
-                    let Op::Load { src: la, .. } = kernel.ops[acc].op else {
-                        continue;
-                    };
-                    let (Some(&a), Some(&b), Some(&c)) = (self.cb_map.get(&lx), self.cb_map.get(&ls), self.cb_map.get(&la))
-                    else {
-                        continue;
-                    };
-                    triple = Some((a, b, c));
-                    break;
-                }
-            }
-            triple
-        } else {
-            None
-        };
-        // Unpacker init (v1-proven): the only unpack config on non-matmul
-        // kernels. First compute tile-Load CB in, first tile-Store CB out.
-        // Empty compute sections (pure movement) emit nothing. Matmul
-        // kernels get mm_init at the anchor after the walk instead
-        // (triples are complete only then); init_sfpu coexistence is
-        // rejected by the IR check. Reduce-only kernels take the
-        // reference startup (two-CB unpack: input + scaler), never
-        // init_sfpu (single-CB: scaler format unconfigured = stall).
-        if !is_mm {
-            if let Some((cb_in, cb_sc, cb_acc)) = reduce_triple {
-                writeln!(em.src, "{indent}compute_kernel_hw_startup({cb_in}, {cb_sc}, {cb_acc});");
-            } else if let (Some(&in0), Some(out0)) = (compute_input_cbs.first(), compute_out_cb) {
-                writeln!(em.src, "{indent}init_sfpu({in0}, {out0});");
-            }
-        }
+
+        // Tiles in registers, ref count
+        let tiles: [u16; 16] = [0; 16];
+        let binary_inits: Set<UOp> = Set::default();
+        let typecast_inits: Set<BOp> = Set::default();
+
         // Anchor for the hoisted tile-op inits: the common method
         // prepends them here, ahead of all loops, after the walk.
         let init_anchor = em.src.len();
-        // Pack-scope acquire: loop-depths of non-scratch tile stores
-        // (Ifs don't count: acquiring at the enclosing loop still
-        // dominates a pack inside a branch). Acquire/release pairs with
-        // the pack scope — one output tile's live range — never the
-        // outermost loop (Mt>1 breaks hoisting). Multiple depths would
-        // nest acquires (illegal DST): loud halt.
-        let mut pack_depths: Set<u32> = Set::default();
-        {
-            let mut depth: u32 = 0;
-            for &op_id in &compute_data.ops {
-                match kernel.ops[op_id].op {
-                    Op::Loop { .. } => depth += 1,
-                    Op::EndLoop => depth -= 1,
-                    Op::Store { ref dst, layout: MemLayout::Tile { .. }, .. } => {
-                        if let Some(&cb) = self.cb_map.get(dst) {
-                            if !self.scratch_cbs.contains(&cb) {
-                                pack_depths.insert(depth);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if pack_depths.len() > 1 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "tenstorrent2: packs at multiple loop depths would nest DST acquires".into(),
-            });
-        }
-        // Degenerate pack scope (pack with no enclosing loop): acquire
-        // up front, release before the close.
-        if pack_depths.contains(&0) {
-            em.tile_regs.acquire();
-            writeln!(em.src, "{indent}tile_regs_acquire();");
-        }
+
         // Per-loop output pushes (recorded at stores, emitted at EndLoop),
         // mirroring the proven v1 tail.
         let mut loop_pushes: Vec<Vec<CBId>> = Vec::new();
-        // Loops-only depth (Ifs share scope_level but never own DST).
-        let mut loop_depth: u32 = 0;
-        // Closed-matmul state (empty on sfpu kernels): acc-threading
-        // matmul tags (matmul op -> input CB pair, acc storage),
-        // matmul-fed CBs (popped inline, never blanket), one DST slot
-        // per acc chain, distinct mm_init input pairs, and the pack
-        // target (last circular store, v1 mm_out_cb rule).
-        let mut matmul_tags: Map<OpId, (CBId, CBId, OpId)> = Map::default();
-        let mut fold_cbs: Set<CBId> = Set::default();
-        let mut chain_slot: Map<OpId, u32> = Map::default();
-        let mut mm_pairs: Vec<(CBId, CBId)> = Vec::new();
-        let mut mm_out: Option<CBId> = None;
 
         for &op_id in &compute_data.ops {
             match kernel.ops[op_id].op {
@@ -1749,85 +1621,6 @@ impl Compiler {
                     MemScope::Register => todo!(),
                     MemScope::Circular => todo!(),
                 },
-                Op::Store { ref dst, src: ref store_src, layout: st_layout, .. } if is_mm => {
-                    // Closed-matmul stores. Scratch stores are validated
-                    // acc-threading matmuls: wait/matmul/pop traffic only,
-                    // DST accumulation for free. Pack stores drain the acc
-                    // chain head: commit/wait/reserve/pack, push at
-                    // EndLoop. No pack_reconfig: mm_init programmed the
-                    // packer (official mm.cpp carries none either).
-                    if !matches!(st_layout, MemLayout::Tile { .. }) {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2 compute only supports tile stores, op {op_id}").into(),
-                        });
-                    }
-                    let Some(&out_cb) = self.cb_map.get(dst) else {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: compute store targets unmapped CB, op {op_id}").into(),
-                        });
-                    };
-                    if em.scope_level == 0 {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: matmul traffic requires a loop, op {op_id} sits outside one").into(),
-                        });
-                    }
-                    if self.scratch_cbs.contains(&out_cb) {
-                        let Some(&(cb_a, cb_b, acc_storage)) = matmul_tags.get(store_src) else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: compute scratch store op {op_id} is not a validated acc-threading matmul"
-                                )
-                                .into(),
-                            });
-                        };
-                        if *dst != acc_storage {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: acc-threading store op {op_id} stores a different acc than it threads"
-                                )
-                                .into(),
-                            });
-                        }
-                        let Some(&slot) = chain_slot.get(&acc_storage) else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: acc-threading store op {op_id} has no acc chain slot").into(),
-                            });
-                        };
-                        writeln!(em.src, "{indent}cb{cb_a}.wait_front(1);");
-                        writeln!(em.src, "{indent}cb{cb_b}.wait_front(1);");
-                        writeln!(em.src, "{indent}matmul_tiles({cb_a}, {cb_b}, 0, 0, {slot});");
-                        writeln!(em.src, "{indent}cb{cb_a}.pop_front(1);");
-                        writeln!(em.src, "{indent}cb{cb_b}.pop_front(1);");
-                    } else {
-                        let Op::Load { src: lsrc, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*store_src].op else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: compute pack store op {op_id} reads no acc tile").into(),
-                            });
-                        };
-                        let Some(&slot) = chain_slot.get(&lsrc) else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: compute pack store op {op_id} packs an empty acc chain").into(),
-                            });
-                        };
-                        // Last circular store wins (v1 mm_out_cb rule).
-                        mm_out = Some(out_cb);
-                        em.tile_regs.commit();
-                        writeln!(em.src, "{indent}tile_regs_commit();");
-                        writeln!(em.src, "{indent}cb{out_cb}.reserve_back(1);");
-                        em.tile_regs.wait();
-                        writeln!(em.src, "{indent}tile_regs_wait();");
-                        writeln!(em.src, "{indent}pack_tile({slot}, {out_cb});");
-                        loop_pushes.last_mut().expect("tenstorrent2 pack store outside loop body").push(out_cb);
-                    }
-                }
                 Op::Store { ref dst, src: ref store_src, layout: st_layout, .. } => {
                     // Stored tile values flow through DST slots: every
                     // tiled value ever emitted sits in the unified
@@ -1878,25 +1671,6 @@ impl Compiler {
                     writeln!(em.src, "{indent}pack_reconfig_data_format({out_cb});");
                     writeln!(em.src, "{indent}pack_tile({slot}, {out_cb});");
                     loop_pushes.last_mut().expect("tenstorrent2 streaming store outside loop body").push(out_cb);
-                }
-                Op::Load { src: ref load_src, layout, .. } if is_mm => {
-                    // Resolve-only: matmul inputs resolve to CB ids at the
-                    // consuming fold, acc loads to the chain slot at the
-                    // pack store. No copy_tile under mm_init (a copy there
-                    // stalls UNPACK: wedge guard).
-                    if !matches!(layout, MemLayout::Tile { .. }) {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2 compute only supports tile loads, op {op_id}").into(),
-                        });
-                    }
-                    if !self.cb_map.contains_key(load_src) {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: compute load targets unmapped CB, op {op_id}").into(),
-                        });
-                    }
-                    // Emit nothing.
                 }
                 Op::Load { src: ref load_src, layout, .. } => {
                     // Reduce inputs resolve to CB ids at the consuming
@@ -1962,12 +1736,6 @@ impl Compiler {
                     }
                 }
                 Op::Range { .. } => {
-                    if is_mm {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: op {op_id} is outside the closed matmul shape").into(),
-                        });
-                    }
                     em.emit_op(op_id, &compute_data)?;
                 }
                 Op::Loop { .. } => {
@@ -1976,43 +1744,16 @@ impl Compiler {
                     em.indent.push_str("  ");
                     indent = em.indent.clone();
                     em.scope_level += 1;
-                    loop_depth += 1;
-                    if outermost {
-                        // Streaming handshake waits stay outermost (sfpu
-                        // path only; mm waits fire inline at each fold).
-                        if !is_mm {
-                            for &cb in &compute_input_cbs {
-                                writeln!(em.src, "{indent}cb{cb}.wait_front(1);");
-                            }
-                        }
-                    }
-                    // Acquire pairs with the pack scope, not the
-                    // outermost loop.
-                    if pack_depths.contains(&loop_depth) {
-                        em.tile_regs.acquire();
-                        writeln!(em.src, "{indent}tile_regs_acquire();");
-                    }
                     loop_pushes.push(Vec::new());
                 }
                 Op::EndLoop => {
                     // v1 tail order: release, then push, then pop.
-                    if pack_depths.contains(&loop_depth) {
-                        em.tile_regs.release();
-                        writeln!(em.src, "{indent}tile_regs_release();");
-                    }
-                    loop_depth -= 1;
                     if let Some(pushes) = loop_pushes.pop() {
                         for cb_id in &pushes {
                             writeln!(em.src, "{indent}cb{cb_id}.push_back(1);");
                         }
                     }
                     for &cb in &compute_input_cbs {
-                        // Fold inputs pop inline at their fold store (per
-                        // inner iteration); scratch accs never pop.
-                        // Blanket pops stay for the sfpu path only.
-                        if is_mm && (fold_cbs.contains(&cb) || self.scratch_cbs.contains(&cb)) {
-                            continue;
-                        }
                         writeln!(em.src, "{indent}cb{cb}.pop_front(1);");
                     }
                     em.scope_level -= 1;
@@ -2050,12 +1791,6 @@ impl Compiler {
                 }
                 Op::Index { .. } => todo!(),
                 Op::MatmulTile { x, y, acc } => {
-                    if !is_mm {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: matmul outside mm kernel, op {op_id}").into(),
-                        });
-                    }
                     // Both sides are tile loads from live (non-scratch)
                     // CBs, acc a tile load from the scratch acc CB;
                     // anything else is outside the closed shape. The op
@@ -2121,27 +1856,9 @@ impl Compiler {
                             context: format!("tenstorrent2: matmul acc op {acc} reads non-scratch").into(),
                         });
                     }
-                    fold_cbs.insert(cb_a);
-                    fold_cbs.insert(cb_b);
-                    matmul_tags.insert(op_id, (cb_a, cb_b, lacc));
-                    // One static DST slot per acc chain, reused across
-                    // trips (nested DST inherit, gemm precedent).
-                    let slot = chain_slot.len() as u32;
-                    debug_assert!(slot < 16, "tenstorrent DST holds 16 slots");
-                    chain_slot.entry(lacc).or_insert(slot);
-                    let pair = (cb_a, cb_b);
-                    if !mm_pairs.contains(&pair) {
-                        mm_pairs.push(pair);
-                    }
                 }
                 Op::TransposeTile { .. } => todo!(),
                 Op::ReduceTile { x, scaler, acc, rop, kind } => {
-                    if is_mm {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: sfpu and matmul cannot share a kernel (op {op_id})").into(),
-                        });
-                    }
                     // Closed reduce shape: x is a tile load from a live
                     // input CB, acc a tile load from the acc CB. The op
                     // emits reduce traffic into a fresh DST slot; the
@@ -2245,31 +1962,9 @@ impl Compiler {
                 Op::Wmma { .. } => unreachable!("tt does not support wmma, use Op::MatmulTile instead"),
             }
         }
-        // mm_init programs unpack+math+pack in one call (the only init
-        // on matmul kernels): one per distinct input pair plus the pack
-        // target, at the anchor ahead of all loops. Triples are complete
-        // only after the walk, hence the deferred insert.
-        if is_mm {
-            let Some(out) = mm_out else {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "tenstorrent2: matmul kernel packs nowhere".into(),
-                });
-            };
-            let mut init = String::new();
-            for &(in0, in1) in &mm_pairs {
-                writeln!(init, "  mm_init({in0}, {in1}, {out});");
-            }
-            em.src.insert_str(init_anchor, &init);
-        }
         // Hoisted tile-op inits land at the anchor, ahead of all loops.
         em.prepend_compute_inits(init_anchor);
 
-        // Degenerate pack scope: release the up-front acquire.
-        if pack_depths.contains(&0) {
-            em.tile_regs.release();
-            writeln!(em.src, "  tile_regs_release();");
-        }
         writeln!(em.src, "}}");
         self.compute = TTKernel::Compute { src: em.src, ordinals: ordinals.to_vec() };
 
@@ -2507,8 +2202,6 @@ impl OpEmitter<'_> {
         let var_map = &mut self.var_map;
         let vars = &mut self.vars;
         let unary_inits = &mut self.unary_inits;
-        let binary_inits = &mut self.binary_inits;
-        let typecast_inits = &mut self.typecast_inits;
         /// Standard allocation into `vars`: reuse a dead slot with
         /// matching dtype/layout from another block, else push a new
         /// one. Returns the `r{reg}` index and records `op_id`.
@@ -2570,36 +2263,6 @@ impl OpEmitter<'_> {
                 context: format!("tenstorrent2: operand {id} not found in constants or registers").into(),
             })
         }
-        /// Numeric twin of `get_var` for tile ops: the DST slot id of a
-        /// tiled value. Anything else (scalars, missing entries) is a
-        /// compilation error — tile calls take slot ids.
-        fn tile_id(id: OpId, var_map: &Map<OpId, u32>, vars: &[VarSlot]) -> Result<u32, BackendError> {
-            if let Some(&r) = var_map.get(&id) {
-                if matches!(vars[r as usize].layout, MemLayout::Tile { .. }) {
-                    return Ok(r);
-                }
-            }
-            Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("tenstorrent2: operand {id} is not a tiled DST value").into(),
-            })
-        }
-        /// TT `DataFormat` constant for a zyx dtype on the tile path.
-        /// tt-metal 0.72 has no plain-Float16 SFPU kernel, so zyx F16
-        /// rides Float16_b (see typecast.h supported list).
-        fn tt_fmt(dt: DType) -> Result<u32, BackendError> {
-            match dt {
-                DType::F32 => Ok(0),
-                DType::F16 | DType::BF16 => Ok(5),
-                DType::U16 => Ok(9),
-                DType::U32 => Ok(24),
-                DType::I32 => Ok(8),
-                dt => Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("tenstorrent2: dtype {dt:?} has no tt tile format").into(),
-                }),
-            }
-        }
         match &kernel.ops[op_id].op {
             Op::Const(_) => unreachable!("tenstorrent2 consts inline as literals at their uses"),
             Op::Binary { x, y, bop } => {
@@ -2607,20 +2270,6 @@ impl OpEmitter<'_> {
                 let rlay = data.dtypes[&op_id].1;
                 let xlay = data.dtypes[x].1;
                 let ylay = data.dtypes[y].1;
-                if matches!(rlay, MemLayout::Tile { .. }) {
-                    // Tiled ALU: both operands alias DST slots, the result
-                    // folds onto the lhs slot (v1 precedent). The init
-                    // hoists pre-loop through the init sets.
-                    let sx = tile_id(*x, var_map, vars)?;
-                    let sy = tile_id(*y, var_map, vars)?;
-                    var_map.insert(op_id, sx);
-                    binary_inits.insert(*bop);
-                    match bop {
-                        BOp::Mul => writeln!(src, "{indent}mul_binary_tile({sx}, {sy}, {sx});"),
-                        _ => todo!("tenstorrent2 tiled binary op"),
-                    };
-                    return Ok(());
-                }
                 if !matches!(xlay, MemLayout::Scalar) || !matches!(ylay, MemLayout::Scalar) {
                     todo!("tenstorrent2 binary over non-scalar layout");
                 }
@@ -2672,24 +2321,6 @@ impl OpEmitter<'_> {
                 let dt = data.dtypes[&op_id].0;
                 let rlay = data.dtypes[&op_id].1;
                 debug_assert_eq!(dt, *dtype);
-                if matches!(rlay, MemLayout::Tile { .. }) {
-                    // Standalone tile cast (split-A shape): any slotted
-                    // tile in, same DST slot out (v1 aliasing). The
-                    // slotted-operand check is the validity proof; fused
-                    // mixed-format math never reaches a slot. The init
-                    // hoists pre-loop through the init sets.
-                    let sx = tile_id(*x, var_map, vars)?;
-                    var_map.insert(op_id, sx);
-                    let in_fmt = tt_fmt(kernel.dtype(*x))?;
-                    let out_fmt = tt_fmt(*dtype)?;
-                    if in_fmt != out_fmt {
-                        if !typecast_inits.contains(&(in_fmt, out_fmt)) {
-                            typecast_inits.push((in_fmt, out_fmt));
-                        }
-                        writeln!(src, "{indent}typecast_tile<{in_fmt}, {out_fmt}>({sx});");
-                    }
-                    return Ok(());
-                }
                 let xlay = data.dtypes[x].1;
                 if !matches!(xlay, MemLayout::Scalar) {
                     todo!("tenstorrent2 cast over non-scalar layout");
@@ -2749,5 +2380,22 @@ impl OpEmitter<'_> {
             | Op::Reduce { .. } => todo!("tenstorrent2 scalar op"),
         }
         Ok(())
+    }
+}
+
+/// TT `DataFormat` constant for a zyx dtype on the tile path.
+/// tt-metal 0.72 has no plain-Float16 SFPU kernel, so zyx F16
+/// rides Float16_b (see typecast.h supported list).
+fn tt_fmt(dt: DType) -> Result<u32, BackendError> {
+    match dt {
+        DType::F32 => Ok(0),
+        DType::F16 | DType::BF16 => Ok(5),
+        DType::U16 => Ok(9),
+        DType::U32 => Ok(24),
+        DType::I32 => Ok(8),
+        dt => Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("tenstorrent2: dtype {dt:?} has no tt tile format").into(),
+        }),
     }
 }

@@ -2235,9 +2235,7 @@ impl Kernel {
         let zero = self.const_idx(0u32);
         let mut new_strides = Vec::with_capacity(new_shape.len());
         let mut new_mask: Option<Vec<(OpId, OpId)>> = view.mask.clone();
-        for (axis, ((&old_d, &old_s), &new_d)) in
-            view.shape.iter().zip(view.strides.iter()).zip(new_shape.iter()).enumerate()
-        {
+        for (axis, ((&old_d, &old_s), &new_d)) in view.shape.iter().zip(view.strides.iter()).zip(new_shape.iter()).enumerate() {
             if new_d == old_d {
                 new_strides.push(old_s);
                 continue;

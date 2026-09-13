@@ -492,7 +492,8 @@ pub fn gemm_tt(r: i64, k: i64, n: i64) -> Kernel {
             kernel.loop_over(ckt, |kernel, _kti| {
                 let va = kernel.load_tile(ca, c0, TDIM, TDIM, TDIM as u32);
                 let vb = kernel.load_tile(cb_, c0, TDIM, TDIM, TDIM as u32);
-                let m = kernel.matmul_tile(va, vb);
+                let vc = kernel.load_tile(acc, c0, TDIM, TDIM, TDIM as u32);
+                let m = kernel.matmul_tile(va, vb, vc);
                 kernel.store_tile(acc, m, c0, TDIM, TDIM, TDIM as u32);
             });
             let f = kernel.load_tile(acc, c0, TDIM, TDIM, TDIM as u32);

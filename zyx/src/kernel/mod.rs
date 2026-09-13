@@ -98,8 +98,8 @@ pub(crate) use crate::backend::DeviceId;
 use crate::backend::DeviceInfo;
 pub use crate::tensor::Dev;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
-pub(crate) use ops::{MoveOp, Op, OpNode, RangeKind, UOp};
 pub use ops::{BOp, MMADType, MMADims, MMALayout, OpId, ParamKind, TileReduceKind};
+pub(crate) use ops::{MoveOp, Op, OpNode, RangeKind, UOp};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
