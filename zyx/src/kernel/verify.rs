@@ -167,7 +167,7 @@ impl Kernel {
         let mut dtypes: Map<OpId, DType> = Map::default();
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Store { dst, src: x, index, .. } => {
+                Op::Store { dst, src: x, index, layout, .. } => {
                     if !params.contains_key(&dst) && !storages.contains_key(&dst) {
                         println!("store={op_id} is trying to store to undefined variable");
                         self.debug();
@@ -175,6 +175,16 @@ impl Kernel {
                     }
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
+                    // A store's declared layout must match its src value's
+                    // layout: store_tile carries a Tile layout and its src
+                    // must be a tile value (a scalar const_val stored as a
+                    // tile is a builder misuse, not a valid store).
+                    debug_assert_eq!(
+                        self.layout(x),
+                        layout,
+                        "store={op_id} layout {layout:?} does not match src {x} layout {:?}",
+                        self.layout(x)
+                    );
                     // Pre-linearize stores have a NULL index (whole-view write).
                     if !index.is_null() {
                         debug_assert_eq!(dtypes[&index], IDX_T, "store index must be {IDX_T}");

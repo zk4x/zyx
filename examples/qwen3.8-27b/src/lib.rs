@@ -448,12 +448,10 @@ pub fn gemm_tt(r: i64, k: i64, n: i64) -> Kernel {
     let mut kernel = Kernel::new(Dev::TT(0));
     let a = kernel.param(DType::F16);
     let b = kernel.param(DType::F16);
-    let zero = kernel.param(DType::F32);
     let out = kernel.param_mut(DType::F32);
 
     let ca = kernel.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
     let cb_ = kernel.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
-    let acc = kernel.storage(DType::F32, MemScope::Circular, 2 * TILE_ELEMS);
     let cout = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
 
     let _g = kernel.group_range(0, 1);
@@ -472,8 +470,6 @@ pub fn gemm_tt(r: i64, k: i64, n: i64) -> Kernel {
     // by the pack-scope acquire, which zeroes DST for free.
     kernel.loop_over(cmt, |kernel, mti| {
         kernel.loop_over(cnt, |kernel, nti| {
-            let z = kernel.load_tile(zero, c0, TDIM, TDIM, TDIM as u32);
-            kernel.store_tile(acc, z, c0, TDIM, TDIM, TDIM as u32);
             kernel.loop_over(ckt, |kernel, kti| {
                 let mk = kernel.mad(mti, ckt, kti);
                 let abase = kernel.mad(mk, c1024, c0);
@@ -488,15 +484,15 @@ pub fn gemm_tt(r: i64, k: i64, n: i64) -> Kernel {
     });
     kernel.barrier();
 
-    // Compute: per output tile row and tile, fold Kt products into acc,
-    // pack out.
     kernel.loop_over(cmt, |kernel, _mti| {
         kernel.loop_over(cnt, |kernel, _nti| {
+            // in tenstorrent, acquire zeros registers for us. It's a hack, it's bad,
+            // we need to probably make it explicit instead
+            let acc = kernel.storage(DType::F32, MemScope::Register, TILE_ELEMS);
             kernel.loop_over(ckt, |kernel, _kti| {
                 let va = kernel.load_tile(ca, c0, TDIM, TDIM, TDIM as u32);
                 let vb = kernel.load_tile(cb_, c0, TDIM, TDIM, TDIM as u32);
-                let vc = kernel.load_tile(acc, c0, TDIM, TDIM, TDIM as u32);
-                let m = kernel.matmul_tile(va, vb, vc);
+                let m = kernel.matmul_tile(va, vb);
                 kernel.store_tile(acc, m, c0, TDIM, TDIM, TDIM as u32);
             });
             let f = kernel.load_tile(acc, c0, TDIM, TDIM, TDIM as u32);

@@ -268,8 +268,6 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
 
     let cin = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
     let csc = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
-    // Two pages: the running partial stays valid while the next one reserves.
-    let cacc = k.storage(DType::F16, MemScope::Circular, 2 * TILE_ELEMS);
     let cout = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
 
     let _g = k.group_range(0, 1);
@@ -278,12 +276,7 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     let c1024 = k.const_idx(TILE_ELEMS);
     let zero = k.const_idx(0);
 
-    // Reader: min seed to acc (own 1-trip loop so trip multisets match),
-    // then stream WT input tiles + scaler tiles.
-    k.loop_over(cone, |k, _ki| {
-        let tm = k.load_tile(m, zero, TDIM, TDIM, TDIM as u32);
-        k.store_tile(cacc, tm, zero, TDIM, TDIM, TDIM as u32);
-    });
+    // Reader: stream WT input tiles + scaler tiles.
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
         let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
@@ -295,6 +288,10 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
 
     // Compute: per tile reduce rows, fold running max directly into acc
     // (TT reference shape: reduce_tile accumulates into the acc CB, no temp).
+    // Register-scoped acc: load/store are SSA threading, no CB traffic.
+    let cacc = k.storage(DType::F16, MemScope::Register, TILE_ELEMS);
+    let tm = k.load_tile(m, zero, TDIM, TDIM, TDIM as u32);
+    k.store_tile(cacc, tm, zero, TDIM, TDIM, TDIM as u32);
     k.loop_over(cwt, |k, _ki| {
         let va = k.load_tile(cin, zero, TDIM, TDIM, TDIM as u32);
         let vs = k.load_tile(csc, zero, TDIM, TDIM, TDIM as u32);
