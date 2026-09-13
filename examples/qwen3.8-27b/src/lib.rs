@@ -153,6 +153,50 @@ pub fn pad_move_tt(s: i64, m: i64, d: i64) -> Kernel {
     kernel
 }
 
+/// Multi-core move: same pure movement as `pad_move_tt`, sharded over a
+/// 1D core grid (one group axis, `ncores` rows). Each core streams a
+/// contiguous shard of `ntiles / ncores` tiles: its shard base comes from
+/// the core coordinate (the group-range var, a trailing runtime arg),
+/// `base = gidx * shard`, then `tile = base + t` per iteration. No
+/// inter-core traffic: every core reads/writes only its own DRAM tiles.
+pub fn pad_move_mc(ntiles: i64, ncores: i64) -> Kernel {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    debug_assert!(ntiles % ncores == 0);
+    let shard = ntiles / ncores;
+    let mut kernel = Kernel::new(Dev::TT(0));
+    let data = kernel.param(DType::F32);
+    let out = kernel.param_mut(DType::F32);
+
+    let cdata = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+
+    let g = kernel.group_range(0, ncores);
+    let cshard = kernel.const_idx(shard);
+    let tile_elems = kernel.const_idx(TILE_ELEMS);
+    let zero = kernel.const_idx(0);
+    // Shard base, recomputed per section from this core's coordinate.
+    let base = kernel.mad(g, cshard, zero);
+
+    kernel.loop_over(cshard, |kernel, t| {
+        let ti = kernel.add(base, t);
+        let tbase = kernel.mad(ti, tile_elems, zero);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+    });
+    kernel.barrier();
+    kernel.barrier();
+
+    kernel.loop_over(cshard, |kernel, t| {
+        let ti = kernel.add(base, t);
+        let tbase = kernel.mad(ti, tile_elems, zero);
+        let v = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+    });
+
+    kernel.verify();
+    kernel
+}
+
 /// Bring-up diagnostic: F32 copy in compute (copy_tile + pack, no cast,
 /// no binary op). Passes iff copy/pack are correct; isolates the F32->F16
 /// typecast as the suspect when values come back wrong.

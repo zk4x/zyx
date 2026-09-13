@@ -6,7 +6,7 @@
 //! (s=S=6, m=M_PAD=16, d=VAL_DIM=6144) for normed.
 
 use qwen3_8_27b::{
-    pad_cast_tt, pad_copy_tt, pad_kernel, pad_mul_tt, HIDDEN, M_PAD, S, VAL_DIM,
+    pad_cast_tt, pad_copy_tt, pad_kernel, pad_move_mc, pad_mul_tt, HIDDEN, M_PAD, S, VAL_DIM,
 };
 use zyx::kernel::Dev;
 use zyx::{Tensor, ZyxError};
@@ -270,6 +270,52 @@ fn pad_move_tt_run() -> Result<(), ZyxError> {
         }
     }
     eprintln!("move bad: {bad} / {}", v.len());
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Multi-core move: same 160 F32 tiles as above, sharded over 4 cores
+/// (40 contiguous tiles each, shard from the core coordinate). Passes iff
+/// per-core runtime args, shard math, and the 4-core launch are all
+/// correct; any core reading another's tiles (or none) shows up as bad.
+#[test]
+fn pad_move_tt_mc_run() -> Result<(), ZyxError> {
+    let dev = Dev::TT(0);
+    let goldens = Tensor::load("/home/x/Dev/rust/zyx/examples/data/qwen3_pad_input.safetensors")?;
+    let input: Vec<f32> = goldens["input"].to_vec()?;
+    let mut padded = vec![0.0f32; (M_PAD * HIDDEN) as usize];
+    for r in 0..S as usize {
+        padded[r * HIDDEN as usize..(r + 1) * HIDDEN as usize]
+            .copy_from_slice(&input[r * HIDDEN as usize..(r + 1) * HIDDEN as usize]);
+    }
+    let data_t = Tensor::tilize(&Tensor::from_vec(padded.clone(), [M_PAD, HIDDEN])?)?.to(dev)?;
+
+    const TILES: i64 = 160;
+    const CORES: i64 = 4;
+    let kk = pad_move_mc(TILES, CORES);
+    let k = kk.compile()?;
+    // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
+    // compile so generated sources (ZYX_DEBUG=16) can be compared against
+    // the official tt-metal kernels before anything executes on the board.
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        return Ok(());
+    }
+    let out = k.forward(&[&data_t], vec![[TILES * 1024]])?;
+    out[0].sync()?;
+    let moved: Vec<f32> = out[0].to_vec()?;
+    let til = Tensor::from_vec(moved, [32, HIDDEN])?;
+    let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
+    let v: Vec<f32> = back.to_vec()?;
+    let mut bad = 0;
+    for (i, (&a, &b)) in v.iter().zip(padded.iter()).enumerate() {
+        if (a - b).abs() > 1e-6 {
+            if bad < 10 {
+                eprintln!("move_mc[{i}] = {a}, expected {b}");
+            }
+            bad += 1;
+        }
+    }
+    eprintln!("move_mc bad: {bad} / {}", v.len());
     assert_eq!(bad, 0);
     Ok(())
 }

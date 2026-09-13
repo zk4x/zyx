@@ -313,3 +313,16 @@ auto p_out1 = TensorAccessor(args_out1, out1, 2048);
 - `If`/`EndIf` emit in all three sections (`if (cond) {`, condition = prior boolean scalar, const-inline or register). `loop_level` renamed `scope_level` (ifs and loops share it); acquire/push/pop stay paired with loops only. `Warp` is `unreachable!` (gpu-only). `Index`/`Stack` stay `todo!()`. Closed-mm check rejects `If` in mm compute. No kernel uses `If` yet: arms are compile-verified only.
 - Pack-scope acquire replaces outermost acquire: pre-scan collects loop-depths of non-scratch tile stores; acquire/release fire iff the loop depth is a pack depth; multiple depths are a loud `Err` (nested acquires illegal DST); depth-0 packs acquire up front / release at close. Emission byte-identical on all existing kernels (every pack sits at depth 1 = outermost).
 - `gemm_tt` generalized to Mt rows (mt/nt/kt, A indexed `mti*Kt + kti`, writer tile-row-major). `gemm_qkv_tt_mt2` (r=64, 16 golden + 48 zero rows) green first launch: `max_err 0.00817`, zero-rows 0 across rows 16..63 — per-output-tile acquire proven (the old code would have acquired once for all 640 tiles). Mt=1 re-verified green on the generalized builder. Counts: cb1/cb2 102400 pushes/pops, cb3 640.
+
+## 2026-09-13 — v2 multi-core: grid query, bounds, 4-core pad green
+
+- First multi-core launch green: `pad_move_tt_mc_run` (160 F32 tiles over 4 cores, 40 contiguous each) `bad: 0 / 81920`, clean `Finish`. All 7 pad tests pass (no single-core regression).
+- Grid is queried, not hardcoded: C++ `grid` command (`MeshDevice::compute_with_storage_grid_size`), Rust feeds it into `max_global_work_dims` = [rows, cols]. This board reports 10x11 (2x harvested — hardcoding the unharvested 13 would have launched dead cores). Const over-grid fails at compile (existing `gws_from_kernel` max check); dynamic sizes fail at launch (`TTProgram.max_grid`). `check_ir_tt` allows unresolvable (Variable/symbolic) group lengths; bounds live in the gws/launch path.
+- Shard model: `group_range` var reads the trailing per-core coord arg (`arg_pos.len() + axis`, already the emitted shape); shard math (`base = gidx * shard`) is normal builder ops. No builder migration for single-core (`group_range(0, 1)` untouched); no inter-core traffic (per-core L1 CBs + own DRAM tiles by construction).
+- Backend doc comment corrected (was 10x12/120 cores).
+
+## Why we need our own driver (running list)
+
+1. Inter-core traffic does not work on Blackhole (driver, not hardware). All multi-core kernels must be embarrassingly parallel — no core-to-core communication.
+2. The JIT programs `pack_src` rigidly from the CB format (F16 CB → F16b src under fp32, no override) and the SFPU typecast op is mode-unaware (no `DST_ACCUM_MODE` term) — the stack, not the silicon, forbids fused mixed-format kernels.
+3. `are_packers_configured_correctly` is blind to Read_32b/Dstacc/strides/relu/threshold/L1acc; the 2-arg `pack_reconfig_data_format` silently skips src-only changes; the runtime DST toggle RMWs only Read_32b, leaving formats stale. Asserts that can't see the state they claim to check.

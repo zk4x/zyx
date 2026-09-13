@@ -1065,20 +1065,23 @@ impl Compiler {
                     }
                 }
                 Op::Range { kind, .. } => match kind {
-                    RangeKind::Group(len) | RangeKind::Warp(len) => {
-                        let Some(dim) = kernel.resolve_const(len).and_then(|c| c.as_dim()) else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: group index length op {len} is not resolvable").into(),
-                            });
-                        };
-                        debug_assert!(dim >= 0, "tenstorrent2: negative group length");
-                        if dim < 0 {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: group length {dim} is negative").into(),
-                            });
+                    RangeKind::Group(len) => {
+                        // Grid axes may be dynamic (Variable/symbolic): the
+                        // const bounds check lives in gws_from_kernel and
+                        // the launch path. Only resolvable lengths are
+                        // checked here.
+                        if let Some(dim) = kernel.resolve_const(len).and_then(|c| c.as_dim()) {
+                            debug_assert!(dim >= 0, "tenstorrent2: negative group length");
+                            if dim < 0 {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: group length {dim} is negative").into(),
+                                });
+                            }
                         }
+                    }
+                    RangeKind::Warp(_) => {
+                        unreachable!("tenstorrent has no warps; warp ranges are gpu-only")
                     }
                     RangeKind::Local(_) => {}
                 },

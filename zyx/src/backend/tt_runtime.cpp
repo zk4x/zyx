@@ -263,6 +263,25 @@ int main() {
       }
     }
 
+    // ---- grid ----
+    // Logical tensix compute grid (CoreCoord x = columns, y = rows).
+    // Harvest-aware: the driver reports the real grid, so bounds checks
+    // host-side never go stale.
+    else if (cmd == "grid") {
+      if (!mesh_device.get()) {
+        cout << R"({"status":"error","msg":"not initialized"})" << endl;
+        continue;
+      }
+      try {
+        CoreCoord g = mesh_device->compute_with_storage_grid_size();
+        cout << R"({"status":"ok","rows":")" << g.y << R"(","cols":")" << g.x
+             << R"("})" << endl;
+      } catch (const exception &e) {
+        cerr << "grid error: " << e.what() << endl;
+        cout << R"({"status":"error","msg":")" << e.what() << R"("})" << endl;
+      }
+    }
+
     // ---- alloc_buf ----
     else if (cmd == "alloc_buf") {
       if (!mesh_device.get()) {

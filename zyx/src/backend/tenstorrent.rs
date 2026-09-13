@@ -11,9 +11,13 @@
 //   - gidx0 → core row (y)
 //   - gidx1 → core column (x)
 //
-// For Blackhole P100a the worker grid is 10×12 (rows × columns),
-// giving 120 cores total. A single-core launch uses `gidx0 = 0,
-// gidx1 = 0` (also written `{0, 0}` in CoreCoord notation).
+// For Blackhole P100a the logical worker grid is 10 rows × 13 columns
+// (x ∈ 0..13, y ∈ 0..10), giving 130 cores total (140 physical workers
+// minus the 10-core dispatch column; harvested boards shrink x).
+// Source: tt-metal `core_descriptors/blackhole_140_arch.yaml` (range
+// end [12, 9], sized (end-start)+1 in `core_descriptor.cpp`). A
+// single-core launch uses `gidx0 = 0, gidx1 = 0` (also written `{0, 0}`
+// in CoreCoord notation).
 
 use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, Kernel, LaunchArg, MemoryPool, PoolBufferId, PoolId, gws_from_kernel};
 use crate::{
@@ -166,6 +170,14 @@ pub(super) fn initialize_device(
     // Spawn the runtime eagerly — both pool and device need it
     let runtime = Arc::new(Mutex::new(RuntimeProcess::new(&runtime_path.to_string_lossy(), &cache_dir.to_string_lossy())?));
 
+    // Real tensix grid (harvest-aware) bounds every group axis: const
+    // grid sizes fail at compile (via gws_from_kernel), dynamic ones at
+    // launch. max_global_work_dims IS the grid for TT.
+    let (grid_rows, grid_cols) = runtime.lock().unwrap().grid()?;
+    if debug_dev {
+        println!("[tenstorrent] tensix grid {grid_rows} rows x {grid_cols} cols");
+    }
+
     let pool_id = memory_pools.len();
     let pool =
         MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(dram_bytes as i64) });
@@ -177,7 +189,9 @@ pub(super) fn initialize_device(
         dev_id: u32::try_from(dev_id).unwrap(),
         device_info: Arc::new(DeviceInfo {
             compute: 200_000_000_000_000, // ~200 TFLOPS BF16
-            max_global_work_dims: vec![Dim::from(u32::MAX); 3],
+            // Grid axes only (gidx0 row, gidx1 col); TT launches at most
+            // 2 group axes, and the launch path rejects more.
+            max_global_work_dims: vec![Dim::from(grid_rows), Dim::from(grid_cols)],
             max_local_threads: 1024,
             max_local_work_dims: vec![1, 1024, 1],
             preferred_vector_size: 32,
@@ -517,6 +531,34 @@ impl RuntimeProcess {
         })
     }
 
+    /// Logical tensix compute grid (rows, cols), harvest-aware, reported
+    /// by the driver. Feeds `max_global_work_dims`, so const grid axes
+    /// are bounds-checked at compile and dynamic ones at launch.
+    fn grid(&mut self) -> Result<(u32, u32), BackendError> {
+        self.send(r#"{"cmd":"grid"}"#)?;
+        let resp = self.recv_with_timeout(self.timeout_ms)?;
+        if resp.contains("\"error\"") {
+            let msg = extract_json_str(&resp, "msg").unwrap();
+            return Err(BackendError {
+                status: ErrorStatus::Initialization,
+                context: format!("grid error: {msg}").into(),
+            });
+        }
+        let parse = |key: &str| {
+            extract_json_str(&resp, key)
+                .ok_or_else(|| BackendError {
+                    status: ErrorStatus::Initialization,
+                    context: format!("grid: no {key} in response").into(),
+                })?
+                .parse::<u32>()
+                .map_err(|_| BackendError {
+                    status: ErrorStatus::Initialization,
+                    context: format!("grid: invalid {key}").into(),
+                })
+        };
+        Ok((parse("rows")?, parse("cols")?))
+    }
+
     fn alloc_buf(&mut self, size: u64, tile_bytes: u64) -> Result<u32, BackendError> {
         let cmd = format!(r#"{{"cmd":"alloc_buf","size":{size},"tile_bytes":{tile_bytes}}}"#);
         self.send(&cmd)?;
@@ -707,6 +749,9 @@ struct TTProgram {
     /// Group-range lengths in axis order (gws): Const resolved at compile,
     /// Param(ordinal) resolved from the launch args.
     gws: Vec<GwsDim>,
+    /// Tensix grid rows/cols (from DeviceInfo at compile): launch-resolved
+    /// grid dims (dynamic sizes) are bounds-checked against this.
+    max_grid: [u32; 2],
 }
 
 // ---------------------------------------------------------------------------
@@ -803,10 +848,24 @@ impl TTDevice {
         // (mode-unaware typecast addressing), so they are not emitted.
         let fp32_dest_acc_en = compiler.output_dtypes.iter().any(|dt| *dt == DType::F32);
 
+        // Snapshot the grid for the launch-time bounds check (dynamic
+        // sizes only; const sizes already failed at compile above).
+        let mg = &self.device_info.max_global_work_dims;
+        let max_grid = [
+            u32::try_from(mg[0]).map_err(|_| BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent grid rows do not fit u32".into(),
+            })?,
+            u32::try_from(mg[1]).map_err(|_| BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent grid cols do not fit u32".into(),
+            })?,
+        ];
         let prog_id = self.programs.push(TTProgram {
             input_dtypes: compiler.input_dtypes,
             output_dtypes: compiler.output_dtypes,
             gws,
+            max_grid,
         });
 
         {
@@ -926,6 +985,17 @@ impl TTDevice {
                 status: ErrorStatus::KernelLaunch,
                 context: format!("gws axis {axis} dim {dim} does not fit u32").into(),
             })?;
+            // Dynamic sizes skip the compile check: bound them here.
+            if grid_dims[axis] > prog.max_grid[axis] {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelLaunch,
+                    context: format!(
+                        "tenstorrent grid axis {axis} size {} exceeds device grid {}",
+                        grid_dims[axis], prog.max_grid[axis]
+                    )
+                    .into(),
+                });
+            }
         }
         let mut rt_guard = rt.lock().unwrap();
         rt_guard.run(program_id.0, &src_indices, &dst_indices, grid_dims, &vars)?;
