@@ -188,6 +188,12 @@ fn pad_passthrough_tt_run() -> Result<(), ZyxError> {
     let kk2 = pad_cast_tt(S, M_PAD, HIDDEN);
     let k1 = kk1.compile()?;
     let k2 = kk2.compile()?;
+    // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
+    // compile so generated sources (ZYX_DEBUG=16) can be compared against
+    // the official tt-metal kernels before anything executes on the board.
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        return Ok(());
+    }
     const TILES: i64 = 160;
     let mid = k1.forward(&[&data_t], vec![[TILES * 1024]])?;
     let out = k2.forward(&[&mid[0]], vec![[TILES * 1024]])?;
