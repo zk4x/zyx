@@ -197,14 +197,17 @@ impl Kernel {
                         stack.pop();
                     }
                 }
-                Op::ReduceTile { x, .. } => {
+                Op::ReduceTile { x, scaler, acc, .. } => {
                     check(op_id, x, &stack);
-                    dtypes.insert(op_id, dtypes[&x]);
+                    check(op_id, scaler, &stack);
+                    check(op_id, acc, &stack);
+                    dtypes.insert(op_id, dtypes[&acc]);
                 }
-                Op::MatmulTile { x, y } => {
+                Op::MatmulTile { x, y, acc } => {
                     check(op_id, x, &stack);
                     check(op_id, y, &stack);
-                    dtypes.insert(op_id, dtypes[&x]);
+                    check(op_id, acc, &stack);
+                    dtypes.insert(op_id, dtypes[&acc]);
                 }
                 Op::TransposeTile { x } => {
                     check(op_id, x, &stack);

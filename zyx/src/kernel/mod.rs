@@ -98,8 +98,8 @@ pub(crate) use crate::backend::DeviceId;
 use crate::backend::DeviceInfo;
 pub use crate::tensor::Dev;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
-pub(crate) use ops::{BOp, MoveOp, Op, OpNode, RangeKind, UOp};
-pub use ops::{MMADType, MMADims, MMALayout, OpId, ParamKind};
+pub(crate) use ops::{MoveOp, Op, OpNode, RangeKind, UOp};
+pub use ops::{BOp, MMADType, MMADims, MMALayout, OpId, ParamKind, TileReduceKind};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
@@ -409,10 +409,11 @@ impl Kernel {
                     *rcs.entry(b).or_insert(0) += 1;
                     *rcs.entry(c).or_insert(0) += 1;
                 }
-                Op::MatmulTile { x, y } => {
-                    dtypes.insert(op_id, dtypes[&x]);
+                Op::MatmulTile { x, y, acc } => {
+                    dtypes.insert(op_id, dtypes[&acc]);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
+                    *rcs.entry(acc).or_insert(0) += 1;
                 }
                 Op::TransposeTile { x } => {
                     dtypes.insert(op_id, dtypes[&x]);
@@ -477,7 +478,7 @@ impl Kernel {
                     MMADims::m8n8k32 => return MemLayout::Vector(2),
                     MMADims::m8n8k128 => return MemLayout::Vector(2),
                 },
-                Op::MatmulTile { x, .. } => op_id = x,
+                Op::MatmulTile { acc, .. } => op_id = acc,
                 Op::TransposeTile { x } => op_id = x,
                 Op::Stack { ref ops } => {
                     return MemLayout::Vector(ops.len().try_into().unwrap());
@@ -486,7 +487,7 @@ impl Kernel {
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Move { x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
-                Op::ReduceTile { x, .. } => op_id = x,
+                Op::ReduceTile { acc, .. } => op_id = acc,
                 Op::EndLoop | Op::Loop { .. } => return MemLayout::Scalar,
                 Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
             }
@@ -522,7 +523,7 @@ impl Kernel {
                     | MMADType::b1_b1_s32_xor_popc
                     | MMADType::b1_b1_s32_and_popc => return DType::I32,
                 },
-                Op::MatmulTile { x, .. } => op_id = x,
+                Op::MatmulTile { acc, .. } => op_id = acc,
                 Op::TransposeTile { x } => op_id = x,
                 Op::Stack { ref ops } => op_id = ops[0],
                 Op::Asm { ref ops, .. } => op_id = ops[0],
@@ -530,7 +531,7 @@ impl Kernel {
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Move { x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
-                Op::ReduceTile { x, .. } => op_id = x,
+                Op::ReduceTile { acc, .. } => op_id = acc,
                 Op::EndLoop | Op::Loop { .. } => return IDX_T,
                 Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
             }

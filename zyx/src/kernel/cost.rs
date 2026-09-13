@@ -138,14 +138,17 @@ impl Kernel {
                     Op::Range { .. } | Op::Loop { .. } => {
                         dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
                     }
-                    Op::ReduceTile { x, .. } => {
-                        dtypes.insert(op_id, dtypes[&x]);
+                    Op::ReduceTile { x, scaler, acc, .. } => {
+                        dtypes.insert(op_id, dtypes[&acc]);
                         *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(scaler).or_insert(0) += 1;
+                        *rcs.entry(acc).or_insert(0) += 1;
                     }
-                    Op::MatmulTile { x, y } => {
-                        dtypes.insert(op_id, dtypes[&x]);
+                    Op::MatmulTile { x, y, acc } => {
+                        dtypes.insert(op_id, dtypes[&acc]);
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(y).or_insert(0) += 1;
+                        *rcs.entry(acc).or_insert(0) += 1;
                     }
                     Op::TransposeTile { x } => {
                         dtypes.insert(op_id, dtypes[&x]);

@@ -54,7 +54,7 @@ impl Kernel {
                 Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
-                Op::MatmulTile { x, y } => loop_dep[&x].max(loop_dep[&y]),
+                Op::MatmulTile { x, y, acc } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&acc]),
                 Op::TransposeTile { x } => loop_dep[&x],
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::If { .. } | Op::Loop { .. } => {
@@ -112,8 +112,8 @@ impl Kernel {
                 Op::Move { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
-                Op::ReduceTile { x, .. } => loop_dep[x],
-                Op::MatmulTile { x, y } => loop_dep[x].max(loop_dep[y]),
+                Op::ReduceTile { x, scaler, acc, .. } => loop_dep[x].max(loop_dep[scaler]).max(loop_dep[acc]),
+                Op::MatmulTile { x, y, acc } => loop_dep[x].max(loop_dep[y]).max(loop_dep[acc]),
                 Op::TransposeTile { x } => loop_dep[x],
                 Op::Asm { ops, .. } => {
                     let mut max = 0;

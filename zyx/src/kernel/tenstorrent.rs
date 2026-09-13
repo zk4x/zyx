@@ -786,10 +786,19 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        // Add ReduceTile after the loop
+        // Add ReduceTile after the loop.
+        // WIP: proper seed-tile design pending (this function still ends in
+        // todo!() below); acc threads the accumulator through for now so
+        // the IR stays structurally valid until then.
         let reduce_tile = self.insert_after(
             endloop_id,
-            Op::ReduceTile { x: accumulator, rop: accumulation_bop, kind: crate::kernel::ops::TileReduceKind::Scalar },
+            Op::ReduceTile {
+                x: accumulator,
+                scaler: accumulator,
+                acc: accumulator,
+                rop: accumulation_bop,
+                kind: crate::kernel::ops::TileReduceKind::Scalar,
+            },
         );
 
         // Remap all uses of the accumulator after the loop to the ReduceTile result

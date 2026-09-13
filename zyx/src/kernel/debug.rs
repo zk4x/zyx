@@ -102,13 +102,15 @@ impl Display for Kernel {
                     )
                     .unwrap();
                 }
-                Op::ReduceTile { x, rop, .. } => {
-                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                Op::ReduceTile { x, scaler, acc, rop, .. } => {
+                    let dtype = dtypes.get(&acc).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
+                    let scaler = id_map[&scaler];
+                    let acc = id_map[&acc];
                     writeln!(
                         f,
-                        "{indent}r{out_id}: {dtype}{grey}: {dtype}{reset} = {red}reduce_tile_{}{reset} r{x}",
+                        "{indent}r{out_id}: {dtype}{grey}: {dtype}{reset} = {red}reduce_tile_{}{reset} r{x}, r{scaler}, r{acc}",
                         match rop {
                             BOp::Add => "sum",
                             BOp::Max => "max",
@@ -118,12 +120,13 @@ impl Display for Kernel {
                     )
                     .unwrap();
                 }
-                Op::MatmulTile { x, y } => {
-                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                Op::MatmulTile { x, y, acc } => {
+                    let dtype = dtypes.get(&acc).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
                     let y = id_map[&y];
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}matmul_tile{reset} r{x}, r{y}").unwrap();
+                    let acc = id_map[&acc];
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}matmul_tile{reset} r{x}, r{y}, r{acc}").unwrap();
                 }
                 Op::TransposeTile { x } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);

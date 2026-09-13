@@ -1909,7 +1909,11 @@ impl Runtime {
                         stack.push(*dst);
                         stack.push(*src);
                     }
-                    Op::ReduceTile { x, .. } => stack.push(*x),
+                    Op::ReduceTile { x, scaler, acc, .. } => {
+                        stack.push(*x);
+                        stack.push(*scaler);
+                        stack.push(*acc);
+                    }
                     Op::EndLoop
                     | Op::EndIf
                     | Op::Barrier

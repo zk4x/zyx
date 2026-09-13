@@ -134,15 +134,27 @@ pub enum Op {
         b: OpId,
         c: OpId,
     },
-    /// Hardware reduce_tile: collapses a 32x32 tile accumulator to a scalar.
+    /// Hardware reduce_tile: folds tile `x` into accumulator tile `acc`
+    /// with `rop` (TT: `reduce_tile` accumulates into the acc CB directly;
+    /// the result tile carries values in its first row). `scaler` is the
+    /// LLK-mandated scale tile (ones when unused, e.g. MAX): an explicit
+    /// operand so its CB traffic balances like everything else. Explicit
+    /// `acc` keeps the accumulation in SSA dataflow instead of a fold
+    /// marker.
     ReduceTile {
         x: OpId,
+        scaler: OpId,
+        acc: OpId,
         rop: BOp,
         kind: TileReduceKind,
     },
+    /// Hardware tile matmul: folds `x @ y` into accumulator tile `acc`
+    /// (TT: `matmul_tiles` accumulates into DST). Explicit `acc` keeps
+    /// the accumulation in SSA dataflow instead of a fold marker.
     MatmulTile {
         x: OpId,
         y: OpId,
+        acc: OpId,
     },
     TransposeTile {
         x: OpId,
@@ -165,10 +177,14 @@ pub enum Op {
     },
 }
 
+/// Which dimension a [`Op::ReduceTile`] collapses within each 32x32 tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum TileReduceKind {
+    /// One value per row (32 values, carried in the result tile's first row).
     Row,
+    /// One value per column (32 values, carried in the result tile's first row).
     Col,
+    /// Whole tile to a single scalar.
     Scalar,
 }
 
@@ -511,7 +527,7 @@ impl Op {
                 MoveOp::Narrow { start, len, .. } => vec![x, *start, *len],
             },
             Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
-            Op::ReduceTile { x, .. } => vec![*x],
+            Op::ReduceTile { x, scaler, acc, .. } => vec![*x, *scaler, *acc],
             &Op::Store { dst, src, index, .. } => {
                 // Pre-linearize stores carry a NULL index (whole-view write).
                 if index.is_null() {
@@ -531,7 +547,7 @@ impl Op {
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![*condition],
-            Op::MatmulTile { x, y } => vec![*x, *y],
+            Op::MatmulTile { x, y, acc } => vec![*x, *y, *acc],
             Op::TransposeTile { x } => vec![*x],
         }
         .into_iter()
@@ -558,7 +574,7 @@ impl Op {
                 MoveOp::Narrow { start, len, .. } => vec![x, start, len],
             },
             Op::Reduce { x, reduce_axis, .. } => vec![x, reduce_axis],
-            Op::ReduceTile { x, .. } => vec![x],
+            Op::ReduceTile { x, scaler, acc, .. } => vec![x, scaler, acc],
             Op::Store { dst, src: x, index, .. } => {
                 // Pre-linearize stores carry a NULL index (whole-view write).
                 if index.is_null() { vec![dst, x] } else { vec![dst, x, index] }
@@ -573,7 +589,7 @@ impl Op {
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![condition],
-            Op::MatmulTile { x, y } => vec![x, y],
+            Op::MatmulTile { x, y, acc } => vec![x, y, acc],
             Op::TransposeTile { x } => vec![x],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
         }

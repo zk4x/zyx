@@ -26,6 +26,7 @@ use crate::error::BackendError;
 use crate::graph::{ClassId, EClass, Node, NodeData};
 use crate::kernel::{
     BOp, DeviceId, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
+    ops::TileReduceKind,
 };
 use crate::runtime::{KernelId, Runtime, TensorData};
 use crate::shape::UAxis;
@@ -730,14 +731,24 @@ impl Kernel {
         self.push_back(Op::Wmma { dims, layout, dtype, a, b, c })
     }
 
-    /// Hardware tile matmul: multiplies two tiles into an accumulator tile.
-    pub fn matmul_tile(&mut self, x: OpId, y: OpId) -> OpId {
-        self.push_back(Op::MatmulTile { x, y })
+    /// Hardware tile matmul: folds `x @ y` into accumulator tile `acc`,
+    /// returning the new accumulator value (explicit SSA threading).
+    pub fn matmul_tile(&mut self, x: OpId, y: OpId, acc: OpId) -> OpId {
+        self.push_back(Op::MatmulTile { x, y, acc })
     }
 
     /// Hardware tile transpose.
     pub fn transpose_tile(&mut self, x: OpId) -> OpId {
         self.push_back(Op::TransposeTile { x })
+    }
+
+    /// Hardware tile reduce: folds tile `x` into accumulator tile `acc`
+    /// with `rop`, returning the new accumulator value (explicit SSA
+    /// threading). `scaler` is the LLK-mandated scale tile (ones when
+    /// unused). On TT (`reduce_tile`) the result tile carries the
+    /// values in its first row, rest zeros/unchanged.
+    pub fn reduce_tile(&mut self, x: OpId, scaler: OpId, acc: OpId, rop: BOp, kind: TileReduceKind) -> OpId {
+        self.push_back(Op::ReduceTile { x, scaler, acc, rop, kind })
     }
 
     /// Backend-specific assembly instruction applied to `ops`.
@@ -2008,7 +2019,10 @@ impl Kernel {
             let cos_tile = self.load_tile(cos.src, idx0, 32, 32, 32);
             let sin_tile = self.load_tile(sin.src, idx0, 32, 32, 32);
             let trans_tile = self.load_tile(trans.src, idx0, 32, 32, 32);
-            let rot = self.matmul_tile(x_tile, trans_tile);
+            // Pure (non-accumulating) matmul: seed the explicit acc with zeros.
+            let zero_acc_storage = self.zeros(x.dtype, 1024);
+            let zero_acc = self.load_tile(zero_acc_storage, idx0, 32, 32, 32);
+            let rot = self.matmul_tile(x_tile, trans_tile, zero_acc);
             let y1 = self.mul(x_tile, cos_tile);
             let y2 = self.mul(rot, sin_tile);
             let y = self.add(y1, y2);
