@@ -91,6 +91,169 @@ fn tenstorrent_nine_page_read() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// TEMP bisection rung 1: pure dataflow (no reduce). Reader streams 4
+/// tiles, compute copies cin->cacc, writer drains. Proves CBs/waits/
+/// pops/pushes before the reduce op is suspected.
+#[test]
+fn tenstorrent_copy_4tile_rung() -> Result<(), ZyxError> {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    const WT: i64 = 4;
+
+    let mut k = Kernel::new(Dev::TT(0));
+    let x = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+
+    let cin = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+    let cacc = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+
+    let _g = k.group_range(0, 1);
+    let cwt = k.const_idx(WT);
+    let c1024 = k.const_idx(TILE_ELEMS);
+    let zero = k.const_idx(0);
+
+    k.loop_over(cwt, |k, ki| {
+        let tbase = k.mad(ki, c1024, zero);
+        let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
+        k.store_tile(cin, tx, zero, TDIM, TDIM, TDIM as u32);
+    });
+    k.barrier();
+    k.loop_over(cwt, |k, _ki| {
+        let va = k.load_tile(cin, zero, TDIM, TDIM, TDIM as u32);
+        k.store_tile(cacc, va, zero, TDIM, TDIM, TDIM as u32);
+    });
+    k.barrier();
+    k.loop_over(cwt, |k, ki| {
+        let tbase = k.mad(ki, c1024, zero);
+        let v = k.load_tile(cacc, zero, TDIM, TDIM, TDIM as u32);
+        k.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let data: Vec<f32> = (0..32 * 128).map(|j| j as f32 * 0.015625).collect();
+    let x_t = Tensor::from_vec(data.clone(), [32, 128])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&x_t], vec![[32, 128]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 128)?.to_vec()?;
+    assert_eq!(z.len(), 4096);
+    let mut bad = 0;
+    for (p, (&v, &e)) in z.iter().zip(data.iter()).enumerate() {
+        if (v - e).abs() >= 3e-2 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {e}");
+            }
+            bad += 1;
+        }
+    }
+    println!("rung bad: {bad} / 4096");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// TEMP bisection rung 2: seed + self-loop acc traffic with plain
+/// copies (no reduce). Reader seeds acc, compute overwrites acc with
+/// input each iter, writer drains. If green, dataflow is fully
+/// exonerated and the hang is in the reduce config sequence.
+#[test]
+fn tenstorrent_acc_copy_rung() -> Result<(), ZyxError> {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    const WT: i64 = 4;
+
+    let mut k = Kernel::new(Dev::TT(0));
+    let x = k.param(DType::F16);
+    let m = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+
+    let cin = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+    let cacc = k.storage(DType::F16, MemScope::Circular, 2 * TILE_ELEMS);
+    let cout = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+
+    let _g = k.group_range(0, 1);
+    let cwt = k.const_idx(WT);
+    let c1024 = k.const_idx(TILE_ELEMS);
+    let zero = k.const_idx(0);
+
+    let tm = k.load_tile(m, zero, TDIM, TDIM, TDIM as u32);
+    k.store_tile(cacc, tm, zero, TDIM, TDIM, TDIM as u32);
+    k.loop_over(cwt, |k, ki| {
+        let tbase = k.mad(ki, c1024, zero);
+        let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
+        k.store_tile(cin, tx, zero, TDIM, TDIM, TDIM as u32);
+    });
+    k.barrier();
+    k.loop_over(cwt, |k, _ki| {
+        let va = k.load_tile(cin, zero, TDIM, TDIM, TDIM as u32);
+        k.store_tile(cout, va, zero, TDIM, TDIM, TDIM as u32);
+        let a = k.load_tile(cacc, zero, TDIM, TDIM, TDIM as u32);
+        k.store_tile(cacc, a, zero, TDIM, TDIM, TDIM as u32);
+    });
+    k.barrier();
+    k.loop_over(cwt, |k, ki| {
+        let tbase = k.mad(ki, c1024, zero);
+        let v = k.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
+        k.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+    });
+    let v = k.load_tile(cacc, zero, TDIM, TDIM, TDIM as u32);
+    let obase = k.mad(cwt, c1024, zero);
+    k.store_tile(out, v, obase, TDIM, TDIM, TDIM as u32);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // Acc round-trips the seed: expected = min tile everywhere.
+    let data: Vec<f32> = (0..32 * 128).map(|j| j as f32 * 0.015625).collect();
+    let to_tt = |v: Vec<f32>, rows: i64, cols: i64| -> Result<Tensor, ZyxError> {
+        Tensor::from_vec(v, [rows, cols])?.tilize()?.cast(DType::F16).to(Dev::TT(0))
+    };
+    let x_t = to_tt(data.clone(), 32, 128)?;
+    let m_t = to_tt(vec![-65504.0f32; 1024], 32, 32)?;
+    let out_bufs = compiled.forward(&[&x_t, &m_t], vec![[160, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(160, 32)?.to_vec()?;
+    assert_eq!(z.len(), 5120);
+    // Output tile t holds input tile t bitwise: untilized (R, C) in tile
+    // row tr = R/32, slot l = (R%32)*32+C maps to input (l/32, tr*32+l%32).
+    let mut bad = 0;
+    for r in 0..128 {
+        for c in 0..32 {
+            let tr = r / 32;
+            let l = (r % 32) * 32 + c;
+            let expected = ((l / 32) * 128 + tr * 32 + l % 32) as f32 * 0.015625;
+            let v = z[(r * 32 + c) as usize];
+            if (v - expected).abs() >= 3e-2 {
+                if bad < 10 {
+                    println!("z[{}] = {v}, expected {expected}", r * 32 + c);
+                }
+                bad += 1;
+            }
+        }
+    }
+    for l in 4096..5120 {
+        if (z[l] + 65504.0).abs() >= 1.0 {
+            if bad < 10 {
+                println!("z[{l}] = {}, expected -65504", z[l]);
+            }
+            bad += 1;
+        }
+    }
+    println!("rung2 bad: {bad} / 5120");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
 #[test]
 fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     const TDIM: u16 = 32;
@@ -107,15 +270,20 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     let csc = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
     // Two pages: the running partial stays valid while the next one reserves.
     let cacc = k.storage(DType::F16, MemScope::Circular, 2 * TILE_ELEMS);
+    let cout = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
 
     let _g = k.group_range(0, 1);
     let cwt = k.const_idx(WT);
+    let cone = k.const_idx(1);
     let c1024 = k.const_idx(TILE_ELEMS);
     let zero = k.const_idx(0);
 
-    // Reader: min seed to acc, then stream WT input tiles + scaler tiles.
-    let tm = k.load_tile(m, zero, TDIM, TDIM, TDIM as u32);
-    k.store_tile(cacc, tm, zero, TDIM, TDIM, TDIM as u32);
+    // Reader: min seed to acc (own 1-trip loop so trip multisets match),
+    // then stream WT input tiles + scaler tiles.
+    k.loop_over(cone, |k, _ki| {
+        let tm = k.load_tile(m, zero, TDIM, TDIM, TDIM as u32);
+        k.store_tile(cacc, tm, zero, TDIM, TDIM, TDIM as u32);
+    });
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
         let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
@@ -134,14 +302,26 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
         let f = k.reduce_tile(va, vs, a, BOp::Max, TileReduceKind::Row);
         k.store_tile(cacc, f, zero, TDIM, TDIM, TDIM as u32);
     });
+    // Epilogue: pack final acc to cout (writer never touches cacc, so no
+    // race for the seed: cout gets its only tile after all compute).
+    k.loop_over(cone, |k, _ki| {
+        let f = k.load_tile(cacc, zero, TDIM, TDIM, TDIM as u32);
+        k.store_tile(cout, f, zero, TDIM, TDIM, TDIM as u32);
+    });
     k.barrier();
 
-    // Writer: stream acc tile to DRAM.
-    let v = k.load_tile(cacc, zero, TDIM, TDIM, TDIM as u32);
-    k.store_tile(out, v, zero, TDIM, TDIM, TDIM as u32);
+    // Writer: drain cout.
+    k.loop_over(cone, |k, _ki| {
+        let v = k.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
+        k.store_tile(out, v, zero, TDIM, TDIM, TDIM as u32);
+    });
 
     k.verify();
     let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
 
     // val(r, c) = r*0.5 + c*2^-7: exact in BF16, row max at c=127.
     let data: Vec<f32> = (0..32 * 128)
@@ -156,7 +336,7 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     let x_t = to_tt(data, 32, 128)?;
     let s_t = to_tt(vec![1.0f32; 1024], 32, 32)?;
     let m_t = to_tt(vec![-65504.0f32; 1024], 32, 32)?;
-    let out_bufs = compiled.forward(&[&x_t, &s_t, &m_t], vec![[TILE_ELEMS]])?;
+    let out_bufs = compiled.forward(&[&x_t, &s_t, &m_t], vec![[32, 32]])?;
 
     let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
     assert_eq!(z.len(), 1024);

@@ -5,6 +5,47 @@ Test: `examples/qwen3.8-27b/tests/pad.rs:157` `pad_passthrough_tt_run`.
 Builder: `examples/qwen3.8-27b/src/lib.rs:204` `pad_passthrough_tt`.
 Constraint: tt-metal 0.72 read-only. No tt-metal edits, no tt-metal recompile. Fixes belong in zyx. Test-only diagnostic prints are acceptable.
 
+## The five cores and the operations they run
+
+There are 5 cores. Reader and writer touch only DRAM and CBs. Compute (pack, math, unpack) touch only CBs and registers.
+
+| Core   | Role                                        | Touches registers? |
+|--------|---------------------------------------------|--------------------|
+| reader | DRAM → CB                                   | no                 |
+| pack   | CB → registers (layout mgmt)                | yes                |
+| math   | registers → registers (compute)             | yes                |
+| unpack | registers → CB (reverse of pack)            | yes                |
+| writer | CB → DRAM                                   | no                 |
+
+### Operations on CBs (all five cores use these)
+
+- `reserve` — reserve space in the CB for one tile.
+- `push` — tell compute/writer that the CB value is ready for reading.
+- `wait` — wait for the CB value to appear from a `push`.
+- `pop` — mark the value as read and no longer needed (frees the slot).
+
+### Operations on DST registers
+
+- By pack/unpack:
+  - `lock` = `tile_regs_wait` (PACK-side lock; waits for MATH to commit)
+  - `unlock` = `tile_regs_release` (PACK-side unlock)
+- By math core:
+  - `lock` = `tile_regs_acquire` (MATH-side lock)
+  - `unlock` = `tile_regs_commit` (MATH-side unlock)
+
+MATH and PACK dispatch to separate per-thread queues, so source-line order between a `MATH(...)` block and a `PACK(...)` block is *not* execution order.
+
+### Movement between CBs and registers
+
+- `copy_tile` — CB → registers
+- `pack_tile` — registers → CB
+
+### Movement between DRAM and CBs
+
+- `noc_async_read` — DRAM → CB (reader)
+- `noc_async_write` — CB → DRAM (writer)
+- plus the associated barriers (`noc_barrier`, `init_interfaces`, etc.)
+
 ## Builder shape (lib.rs:204-245)
 
 - `data = param(F32)`, `out = param_mut(F16)`.
@@ -327,6 +368,15 @@ auto p_out1 = TensorAccessor(args_out1, out1, 2048);
 - CUDA model mirrored: Variables are section runtime args (ordinal plumbing already existed), usable in any scalar position through the one register file; grid sizes resolve at launch (GwsDim) with bounds vs max.
 - Codegen plugs: `check_ir_tt` Loop arm allows unresolvable trips (negativity only when const); `check_balance` compares per-CB enclosing-trip multisets (const by value, dynamic by op identity) instead of trip products.
 - Two fixes from review: `Variable` section arms declared `r{id}` but never registered (later `get_var` failed) — and the declaration naming itself: CUDA keeps params as `p{id}` (pointer) with per-load registers, but TT declares Variables as locals, so they are slot-named `r{slot}` like every other register; the old `r{op_id}` special cases in reader/writer index resolution are deleted (unregistered Variables now fail loudly instead of mis-resolving).
+
+## 2026-09-13 — reduce bring-up: explicit acc + scaler, first hang
+
+- `Op::MatmulTile{x,y}` / `Op::ReduceTile{x}` gained explicit `acc` (SSA threading replaces fold-marker `add`/`max` + fold detection; ~200 lines of detector deleted). `ReduceTile` also gained explicit `scaler` (LLK-mandated ones tile for MAX): check_balance caught the implicit version (pushed-never-popped scaler CB = reader block = wedged board) before silicon did.
+- First `tenstorrent_row_max_reduce` launch hung in `run` (no response, board wedged). Traffic was balanced and CB-correspondent; suspects are init/config: our loop runs `init_sfpu` startup + per-iter `copy_tile`s + `reduce_init`, vs ref (`reduce_w_neg`) `compute_kernel_hw_startup` + bare `reduce_init`/`reduce_tile`/`reduce_uninit`.
+- Certain bug found in review: missing `reduce_uninit()` before the consuming pack (header: packer keeps reduce edge masks → incorrect packing). Added to the ReduceTile arm (phase bracketing, moreh_softmax precedent).
+- Reference findings: `mm_uninit` does not exist anywhere in tt-metal (matmul needs no teardown); fused SFPU+reduce (`moreh_softmax_w`) and SFPU+matmul (`bmm_large_block_zm_fused_bias_activation`) are standard, phased by uninit/reconfig — the coexistence ban stands in for missing phase transitions.
+- Process failure: launched without reading the ZYX_DEBUG=16 dump first; ZYX_TT_DUMP_ONLY is inert (nothing reads it) so every run was live. Next: real compile-only dump gate before any new-kernel launch.
+- Hang cause (prime suspect): `init_sfpu(icb, ocb)` programs unpack for ONE CB (datacopy, SrcA); the scaler tile arrives via SrcB whose format stays unconfigured → unpack stall on first `reduce_tile`. Reference calls `compute_kernel_hw_startup(input, scaler, acc)` (two-CB unpack). Fix: reduce-only kernels (`phases == {Reduce}`) emit the reference startup with the triple resolved from the first `ReduceTile` (input, scaler, acc); mixed Reduce+Sfpu keeps `init_sfpu` until softmax-fused designs it. `common.h` (already included) pulls the startup header.
 
 ## Why we need our own driver (running list)
 

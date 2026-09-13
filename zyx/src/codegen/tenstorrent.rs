@@ -481,6 +481,29 @@ impl Kernel {
     }
 }
 
+/// Engine-config phase of a compute op: which unit's programming is
+/// live while it executes. Phase transitions need bracketing
+/// (uninit/reconfig); single-phase kernels never transition. Bodies
+/// grow with the first fused kernel that fires them (moreh_softmax
+/// precedent for Reduce<->Sfpu, fused-bmm for Matmul<->Sfpu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Phase {
+    Sfpu,
+    Matmul,
+    Reduce,
+}
+
+fn op_phase(op: &Op) -> Option<Phase> {
+    match op {
+        Op::MatmulTile { .. } => Some(Phase::Matmul),
+        Op::ReduceTile { .. } => Some(Phase::Reduce),
+        Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
+            Some(Phase::Sfpu)
+        }
+        _ => None,
+    }
+}
+
 /// Closed op list for one section: the section's ops in IR order with
 /// their dtypes and section-local refcounts.
 struct SectionData {
@@ -1520,14 +1543,60 @@ impl Compiler {
             .ops
             .iter()
             .any(|&op_id| matches!(kernel.ops[op_id].op, Op::MatmulTile { .. }));
+        // Phase set: which engine configs the kernel uses. Matmul mixes
+        // with nothing yet (no designed transition out of mm_init
+        // programming); Reduce+Sfpu is the softmax shape (per-op init,
+        // in-arm uninit). Anything else is a loud halt, never a silent
+        // config clash (v1 hang precedent).
+        let mut phases: Set<Phase> = Set::default();
+        for &op_id in &compute_data.ops {
+            if let Some(p) = op_phase(&kernel.ops[op_id].op) {
+                phases.insert(p);
+            }
+        }
+        if phases.contains(&Phase::Matmul) && phases.len() > 1 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: matmul shares its kernel (no designed phase transition)".into(),
+            });
+        }
+        // Reduce-only kernels start up like the reference (reduce_w):
+        // compute_kernel_hw_startup programs unpack for TWO CBs (input
+        // on SrcA, scaler on SrcB). init_sfpu programs one (datacopy);
+        // the scaler format stays unconfigured and the unpacker stalls
+        // reading it — a silent hang no traffic check can catch.
+        let reduce_triple: Option<(CBId, CBId, CBId)> = if phases.len() == 1 && phases.contains(&Phase::Reduce) {
+            let mut triple = None;
+            for &op_id in &compute_data.ops {
+                if let Op::ReduceTile { x, scaler, acc, .. } = kernel.ops[op_id].op {
+                    let Op::Load { src: lx, .. } = kernel.ops[x].op else { continue };
+                    let Op::Load { src: ls, .. } = kernel.ops[scaler].op else { continue };
+                    let Op::Load { src: la, .. } = kernel.ops[acc].op else { continue };
+                    let (Some(&a), Some(&b), Some(&c)) =
+                        (self.cb_map.get(&lx), self.cb_map.get(&ls), self.cb_map.get(&la))
+                    else {
+                        continue;
+                    };
+                    triple = Some((a, b, c));
+                    break;
+                }
+            }
+            triple
+        } else {
+            None
+        };
         // Unpacker init (v1-proven): the only unpack config on non-matmul
         // kernels. First compute tile-Load CB in, first tile-Store CB out.
         // Empty compute sections (pure movement) emit nothing. Matmul
         // kernels get mm_init at the anchor after the walk instead
         // (triples are complete only then); init_sfpu coexistence is
-        // rejected by the IR check.
+        // rejected by the IR check. Reduce-only kernels take the
+        // reference startup (two-CB unpack: input + scaler), never
+        // init_sfpu (single-CB: scaler format unconfigured = stall).
         if !is_mm {
-            if let (Some(&in0), Some(out0)) = (compute_input_cbs.first(), compute_out_cb) {
+            if let Some((cb_in, cb_sc, cb_acc)) = reduce_triple {
+                writeln!(em.src, "{indent}compute_kernel_hw_startup({cb_in}, {cb_sc}, {cb_acc});");
+            } else if let (Some(&in0), Some(out0)) = (compute_input_cbs.first(), compute_out_cb) {
                 writeln!(em.src, "{indent}init_sfpu({in0}, {out0});");
             }
         }
@@ -1814,35 +1883,67 @@ impl Compiler {
                     // Emit nothing.
                 }
                 Op::Load { src: ref load_src, layout, .. } => {
-                    if !matches!(layout, MemLayout::Tile { .. }) {
-                        todo!("tenstorrent2 compute only supports tile loads");
+                    // Reduce inputs resolve to CB ids at the consuming
+                    // reduce (matmul-input precedent): no copy_tile — the
+                    // reference has none, and the extra unpack programming
+                    // is an unproven interaction. Loads feeding anything
+                    // else keep the copy.
+                    let mut reduce_only = false;
+                    for &consumer in &compute_data.ops {
+                        if kernel.ops[consumer].op.parameters().any(|p| p == op_id) {
+                            if matches!(kernel.ops[consumer].op, Op::ReduceTile { .. }) {
+                                reduce_only = true;
+                            } else {
+                                reduce_only = false;
+                                break;
+                            }
+                        }
                     }
-                    let Some(&cb) = self.cb_map.get(load_src) else {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: compute load targets unmapped CB, op {op_id}").into(),
+                    if reduce_only {
+                        if !matches!(layout, MemLayout::Tile { .. }) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2 compute only supports tile loads, op {op_id}").into(),
+                            });
+                        }
+                        if !self.cb_map.contains_key(load_src) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: compute load targets unmapped CB, op {op_id}").into(),
+                            });
+                        }
+                        // Emit nothing.
+                    } else {
+                        if !matches!(layout, MemLayout::Tile { .. }) {
+                            todo!("tenstorrent2 compute only supports tile loads");
+                        }
+                        let Some(&cb) = self.cb_map.get(load_src) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: compute load targets unmapped CB, op {op_id}").into(),
+                            });
+                        };
+                        if self.scratch_cbs.contains(&cb) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: compute copy reads scratch CB, op {op_id}").into(),
+                            });
+                        }
+                        // Unified register file: the vars index is the DST
+                        // slot id. Tiled entries never decrement, so one
+                        // static slot per use-site, reused across trips.
+                        let slot = em.vars.len() as u32;
+                        debug_assert!(slot < 16, "tenstorrent DST holds 16 slots");
+                        em.vars.push(VarSlot {
+                            dtype: compute_data.dtypes[&op_id].0,
+                            layout,
+                            rc: compute_data.rcs[&op_id],
+                            scope_level: em.scope_level,
                         });
-                    };
-                    if self.scratch_cbs.contains(&cb) {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: compute copy reads scratch CB, op {op_id}").into(),
-                        });
+                        em.var_map.insert(op_id, slot);
+                        writeln!(em.src, "{indent}copy_tile_init({cb});");
+                        writeln!(em.src, "{indent}copy_tile({cb}, 0, {slot});");
                     }
-                    // Unified register file: the vars index is the DST
-                    // slot id. Tiled entries never decrement, so one
-                    // static slot per use-site, reused across trips.
-                    let slot = em.vars.len() as u32;
-                    debug_assert!(slot < 16, "tenstorrent DST holds 16 slots");
-                    em.vars.push(VarSlot {
-                        dtype: compute_data.dtypes[&op_id].0,
-                        layout,
-                        rc: compute_data.rcs[&op_id],
-                        scope_level: em.scope_level,
-                    });
-                    em.var_map.insert(op_id, slot);
-                    writeln!(em.src, "{indent}copy_tile_init({cb});");
-                    writeln!(em.src, "{indent}copy_tile({cb}, 0, {slot});");
                 }
                 Op::Range { .. } => {
                     if is_mm {
@@ -2131,6 +2232,10 @@ impl Compiler {
                     em.var_map.insert(op_id, slot);
                     writeln!(em.src, "{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {cb_acc});");
                     writeln!(em.src, "{indent}reduce_tile<{op_name}, {dim_name}>({cb_in}, {cb_sc}, 0, 0, {slot});");
+                    // Phase bracketing (moreh_softmax precedent): clear the
+                    // reduce packer edge masks before the consuming store
+                    // packs with default state.
+                    writeln!(em.src, "{indent}reduce_uninit();");
                 }
                 Op::Asm { .. } => todo!(),
                 Op::Barrier => unreachable!("should've been filtered by kernel sections decomposition"),
