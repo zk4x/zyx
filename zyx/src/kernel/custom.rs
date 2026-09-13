@@ -17,6 +17,7 @@
 //! to their native instruction set and cache them for repeated use.
 
 use std::collections::BTreeSet;
+use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use std::sync::Arc;
 
 use crate::backend::{BufferId, DeviceInfo, LaunchArg, MemoryPool, ProgramId};
@@ -1181,7 +1182,7 @@ pub struct Acc {
 impl Kernel {
     /// View a global tensor in registers: `src` plus a fully symbolic
     /// iteration `shape`. Strides are derived row-major. Emits no IR.
-    pub fn view_global_register<const N: usize>(&mut self, src: OpId, shape: [impl IntoOp; N]) -> Partition {
+    pub fn partition<const N: usize>(&mut self, src: OpId, shape: [impl IntoOp; N]) -> Partition {
         let mut shape_ops = Vec::with_capacity(N);
         for d in shape {
             shape_ops.push(d.into_op(self));
@@ -1578,6 +1579,13 @@ impl IntoOp for bool {
     }
 }
 
+/// 32-bit integer scalars (normalized to index type, like `Dim`).
+impl IntoOp for i32 {
+    fn into_op(self, kernel: &mut Kernel) -> OpId {
+        kernel.const_idx(self)
+    }
+}
+
 macro_rules! impl_into_op_float {
     ($($t:ty),*) => {$(
         impl IntoOp for $t {
@@ -1630,7 +1638,7 @@ impl Kernel {
     /// staging is performed by [`Kernel::load_global_local`], one element
     /// per call. The rank `N` is carried by the returned
     /// [`LocalPartition<N>`].
-    pub fn view_global_local<const N: usize>(
+    pub fn partition_local<const N: usize>(
         &mut self,
         src: OpId,
         view_shape: [impl IntoOp; N],
@@ -1939,7 +1947,7 @@ impl Kernel {
     /// src = the smem storage. Emits no IR beyond the stride ops. Call it
     /// AFTER the staging loop + barrier, so the stride ops live in the same
     /// scope as their consumers (e.g. `mma`).
-    pub fn view_local_register<const N: usize>(&mut self, shared: &LocalPartition<N>) -> Partition {
+    pub fn partition_register<const N: usize>(&mut self, shared: &LocalPartition<N>) -> Partition {
         debug_assert!(N > 0, "view_local_register: rank must be non-zero");
         let mut strides = vec![self.const_idx(1u32); N];
         if N > 1 {
@@ -2126,3 +2134,430 @@ impl Kernel {
         }
     }
 }
+
+/// View over a tensor: source, iteration shape, strides, offset, and an
+/// optional validity mask.
+///
+/// The mask holds one `[lo, hi)` valid interval per axis in view coordinates;
+/// `None` means fully valid. Only [`Kernel::pad_view`] introduces invalid
+/// coords (padded regions); the other view ops preserve or transform the
+/// intervals. Intervals are authoritative only for coords within `[0, dim)` —
+/// consumers iterate within the shape. [`Kernel::load_view`] and
+/// [`Kernel::store_view`] build their predicates from these intervals; plain
+/// [`Kernel::index`] ignores them.
+pub struct View {
+    x: OpId,
+    shape: Vec<OpId>,
+    strides: Vec<OpId>,
+    offset: OpId,
+    mask: Option<Vec<(OpId, OpId)>>,
+}
+
+impl Kernel {
+    /// View `x` with the given iteration `shape`.
+    ///
+    /// Strides derive row-major from `shape`, offset is const 0. Emits the
+    /// stride/index const ops only; the view itself is a builder-side handle.
+    pub fn view(&mut self, x: OpId, shape: &[impl IntoOp]) -> View {
+        let shape_ops: Vec<OpId> = shape.iter().copied().map(|d| d.into_op(self)).collect();
+        debug_assert!(shape_ops.iter().all(|&d| !d.is_null()), "view: shape dims must be bound ops");
+        let mut strides = Vec::with_capacity(shape_ops.len());
+        for axis in 0..shape_ops.len() {
+            strides.push(self.row_major_stride(&shape_ops, axis));
+        }
+        let offset = self.const_idx(0u32);
+        View { x, shape: shape_ops, strides, offset, mask: None }
+    }
+
+    /// Add offset
+    pub fn offset_view(&mut self, view: &View, offset: impl IntoOp) -> View {
+        let offset = offset.into_op(self);
+        let offset = self.add(view.offset, offset);
+        View { x: view.x, shape: view.shape.clone(), strides: view.strides.clone(), offset, mask: view.mask.clone() }
+    }
+
+    /// Reshape a view: new row-major strides over `shape`, offset unchanged.
+    ///
+    /// The input must be contiguous with the same element count. Both are
+    /// enforced when they resolve to constants (fully concrete shapes); with
+    /// symbolic dims the caller guarantees them.
+    pub fn reshape_view(&mut self, view: &View, shape: &[impl IntoOp]) -> View {
+        assert!(view.mask.is_none(), "reshape_view: cannot reshape a masked (padded) view");
+        let new_shape: Vec<OpId> = shape.iter().copied().map(|d| d.into_op(self)).collect();
+        debug_assert!(new_shape.iter().all(|&d| !d.is_null()), "reshape_view: shape dims must be bound ops");
+        let old_dims: Option<Vec<Dim>> = view.shape.iter().map(|&d| self.resolve_const(d).and_then(Constant::as_dim)).collect();
+        let new_dims: Option<Vec<Dim>> = new_shape.iter().map(|&d| self.resolve_const(d).and_then(Constant::as_dim)).collect();
+        if let (Some(old), Some(new)) = (old_dims, new_dims) {
+            let old_total: Dim = old.iter().product();
+            let new_total: Dim = new.iter().product();
+            assert!(old_total == new_total, "reshape_view: element count mismatch {old_total} != {new_total}");
+            let strides: Option<Vec<Dim>> =
+                view.strides.iter().map(|&s| self.resolve_const(s).and_then(Constant::as_dim)).collect();
+            if let Some(strides) = strides {
+                for axis in 0..old.len() {
+                    let expected: Dim = old[axis + 1..].iter().product();
+                    assert!(
+                        strides[axis] == expected,
+                        "reshape_view: input is not contiguous (axis {axis} stride {} != row-major {expected})",
+                        strides[axis]
+                    );
+                }
+            }
+        }
+        let mut strides = Vec::with_capacity(new_shape.len());
+        for axis in 0..new_shape.len() {
+            strides.push(self.row_major_stride(&new_shape, axis));
+        }
+        View { x: view.x, shape: new_shape, strides, offset: view.offset, mask: view.mask.clone() }
+    }
+
+    /// Expand a view (broadcast): same rank; each axis either keeps its dim
+    /// (the same op, or a provably equal value) or grows a dim resolving to 1.
+    /// Grown axes get stride 0. Offset unchanged.
+    pub fn expand_view(&mut self, view: &View, shape: &[impl IntoOp]) -> View {
+        let new_shape: Vec<OpId> = shape.iter().copied().map(|d| d.into_op(self)).collect();
+        assert!(new_shape.len() == view.shape.len(), "expand_view: rank mismatch {} != {}", new_shape.len(), view.shape.len());
+        debug_assert!(new_shape.iter().all(|&d| !d.is_null()), "expand_view: shape dims must be bound ops");
+        let zero = self.const_idx(0u32);
+        let mut new_strides = Vec::with_capacity(new_shape.len());
+        let mut new_mask: Option<Vec<(OpId, OpId)>> = view.mask.clone();
+        for (axis, ((&old_d, &old_s), &new_d)) in
+            view.shape.iter().zip(view.strides.iter()).zip(new_shape.iter()).enumerate()
+        {
+            if new_d == old_d {
+                new_strides.push(old_s);
+                continue;
+            }
+            let old_dim = self.resolve_const(old_d).and_then(Constant::as_dim);
+            let new_dim = self.resolve_const(new_d).and_then(Constant::as_dim);
+            match (old_dim, new_dim) {
+                (Some(o), Some(n)) if o == n => new_strides.push(old_s),
+                (Some(1), _) => {
+                    new_strides.push(zero);
+                    // Every new coord reads the single base element (stride
+                    // 0), so the grown axis is fully valid iff coord 0 is.
+                    if let Some(mask) = new_mask.as_mut() {
+                        let (lo, hi) = mask[axis];
+                        let lo_ok = self.resolve_const(lo).and_then(Constant::as_dim).is_some_and(|l| l <= 0);
+                        let hi_ok = self.resolve_const(hi).and_then(Constant::as_dim).is_some_and(|h| h >= 1);
+                        assert!(
+                            lo_ok && hi_ok,
+                            "expand_view: cannot broadcast a masked axis whose base element is not provably valid"
+                        );
+                        mask[axis] = (zero, new_d);
+                    }
+                }
+                (Some(o), _) => panic!("expand_view: axis dim {o} is neither kept nor 1 (cannot broadcast)"),
+                (None, _) => panic!("expand_view: grown axis dim is symbolic and differs from the source op"),
+            }
+        }
+        View { x: view.x, shape: new_shape, strides: new_strides, offset: view.offset, mask: new_mask }
+    }
+
+    /// Permute view axes: reorders shape/strides by `axes`, offset unchanged.
+    pub fn permute_view(&mut self, view: &View, axes: &[UAxis]) -> View {
+        let rank = view.shape.len();
+        assert!(axes.len() == rank, "permute_view: axes len {} != rank {rank}", axes.len());
+        let mut seen = vec![false; rank];
+        for &a in axes {
+            assert!(a < rank, "permute_view: axis {a} out of range for rank {rank}");
+            assert!(!seen[a], "permute_view: duplicate axis {a}");
+            seen[a] = true;
+        }
+        let shape = axes.iter().map(|&a| view.shape[a]).collect();
+        let strides = axes.iter().map(|&a| view.strides[a]).collect();
+        let mask = view.mask.as_ref().map(|m| axes.iter().map(|&a| m[a]).collect());
+        View { x: view.x, shape, strides, offset: view.offset, mask }
+    }
+
+    /// Pad a view (torch `functional.pad` convention): `padding` holds
+    /// `(left, right)` pairs starting from the LAST axis backwards —
+    /// `[left_last, right_last, left_next, right_next, ...]`. Length must be
+    /// even with at most one pair per axis; leading axes without a pair stay
+    /// unchanged. Padded axes grow (`dim + left + right`, strides unchanged)
+    /// and the offset shifts back by `left * stride` per padded axis. Padded
+    /// regions lie outside the source; consumers mask them.
+    pub fn pad_view(&mut self, view: &View, padding: &[impl IntoOp]) -> View {
+        let rank = view.shape.len();
+        assert!(padding.len() % 2 == 0, "pad_view: padding len {} must be even (left/right pairs)", padding.len());
+        let pairs = padding.len() / 2;
+        assert!(pairs <= rank, "pad_view: {} pairs for rank {rank}", pairs);
+        let pads: Vec<OpId> = padding.iter().copied().map(|p| p.into_op(self)).collect();
+        let mut new_shape = view.shape.clone();
+        let mut offset = view.offset;
+        let mut mask = view.mask.clone();
+        for k in 0..pairs {
+            let axis = rank - 1 - k;
+            let left = pads[2 * k];
+            let right = pads[2 * k + 1];
+            let l = self.resolve_const(left).and_then(Constant::as_dim);
+            let r = self.resolve_const(right).and_then(Constant::as_dim);
+            if let (Some(l), Some(r)) = (l, r) {
+                assert!(l >= 0 && r >= 0, "pad_view: negative pad ({l}, {r}) on axis {axis}");
+            }
+            // All-zero pads change nothing: shape, offset, and mask stay as-is.
+            if l == Some(0) && r == Some(0) {
+                continue;
+            }
+            let grown = self.add(new_shape[axis], left);
+            new_shape[axis] = self.add(grown, right);
+            // Zero left pads leave the offset alone, keeping the IR tight.
+            if l != Some(0) {
+                let shift = self.mul(left, view.strides[axis]);
+                offset = self.sub(offset, shift);
+            }
+            // The padded axis is valid over the old data window shifted into
+            // the new coordinates; untouched axes keep full `[0, dim)` windows.
+            let m = mask.get_or_insert_with(|| {
+                let c0 = self.const_idx(0u32);
+                view.shape.iter().map(|&d| (c0, d)).collect()
+            });
+            if l != Some(0) {
+                let (lo, hi) = m[axis];
+                m[axis] = (self.add(lo, left), self.add(hi, left));
+            }
+        }
+        View { x: view.x, shape: new_shape, strides: view.strides.clone(), offset, mask }
+    }
+
+    /// Flat index into a view: `offset + Σ coord[i] * stride[i]`.
+    /// `coords` covers every axis exactly once, in axis order.
+    /// Private addressing primitive behind [`Kernel::load_view`] and
+    /// [`Kernel::store_view`]; ignores the view's mask.
+    fn index<const N: usize>(&mut self, view: &View, coords: [impl IntoOp; N]) -> OpId {
+        assert!(N == view.shape.len(), "index: {} coords for rank {}", N, view.shape.len());
+        let coords: [OpId; N] = coords.map(|c| c.into_op(self));
+        let mut idx = view.offset;
+        for (c, &s) in coords.into_iter().zip(view.strides.iter()) {
+            // Zero coords contribute nothing; skipping keeps the IR tight.
+            if self.resolve_const(c).and_then(Constant::as_dim) == Some(0) {
+                continue;
+            }
+            idx = self.mad(c, s, idx);
+        }
+        idx
+    }
+
+    /// Load one element through a view: clamp coords into their valid
+    /// windows, `index`, load, then predicate with the mask — masked-off
+    /// coords read the source dtype's zero. The clamp keeps the issued load
+    /// in-bounds (a `branchless_where` alone would not: the OOB load would
+    /// still execute). Unmasked views emit a plain load.
+    pub fn load_view<const N: usize>(&mut self, view: &View, coords: [impl IntoOp; N]) -> OpId {
+        let coords: [OpId; N] = coords.map(|c| c.into_op(self));
+        let Some(mask) = &view.mask else {
+            let idx = self.index(view, coords);
+            return self.load(view.x, idx);
+        };
+        // Clamp into `[lo, hi - 1]` per axis (`min` via negated `max`);
+        // the predicate below runs on the ORIGINAL coords.
+        let one = self.const_idx(1u32);
+        let mut clamped = coords;
+        for (cc, (lo, hi)) in clamped.iter_mut().zip(mask.iter().copied()) {
+            let a = self.max(*cc, lo);
+            let hi_m1 = self.sub(hi, one);
+            let na = self.neg(a);
+            let nhi = self.neg(hi_m1);
+            let m = self.max(na, nhi);
+            *cc = self.neg(m);
+        }
+        let idx = self.index(view, clamped);
+        let v = self.load(view.x, idx);
+        let mut pred: Option<OpId> = None;
+        for (c, (lo, hi)) in coords.into_iter().zip(mask.iter().copied()) {
+            let lo_t = self.cmpge(c, lo);
+            let hi_t = self.cmplt(c, hi);
+            let term = self.and(lo_t, hi_t);
+            pred = Some(match pred {
+                Some(p) => self.and(p, term),
+                None => term,
+            });
+        }
+        let pred = pred.expect("load_view: masked view with no axes");
+        let dtype = self.dtype(view.x);
+        let zero = self.push_back(Op::Const(dtype.zero_constant()));
+        self.branchless_where(pred, v, zero)
+    }
+
+    /// Store one element through a view: `index` the coords, then guard with
+    /// the mask — masked-off coords skip the store. Unmasked views emit a
+    /// plain store.
+    pub fn store_view<const N: usize>(&mut self, view: &View, x: impl IntoOp, coords: [impl IntoOp; N]) {
+        let x = x.into_op(self);
+        let coords: [OpId; N] = coords.map(|c| c.into_op(self));
+        let idx = self.index(view, coords);
+        let Some(mask) = &view.mask else {
+            self.store(view.x, x, idx);
+            return;
+        };
+        let mut pred: Option<OpId> = None;
+        for (c, (lo, hi)) in coords.into_iter().zip(mask.iter().copied()) {
+            let lo_t = self.cmpge(c, lo);
+            let hi_t = self.cmplt(c, hi);
+            let term = self.and(lo_t, hi_t);
+            pred = Some(match pred {
+                Some(p) => self.and(p, term),
+                None => term,
+            });
+        }
+        let pred = pred.expect("store_view: masked view with no axes");
+        self.if_(pred);
+        self.store(view.x, x, idx);
+        self.end_if();
+    }
+
+    /// Slice a view with index specs (`..`, `a..b`, `a..`, `..b`, `a..=b`,
+    /// `..=b` per axis): a single spec covers axis 0, a tuple covers the
+    /// leading axes (up to 4), the rest stay untouched. Each covered axis
+    /// becomes `len = end - start` with `offset += start * stride`, strides
+    /// unchanged. Bounds are checked when they resolve to constants (empty
+    /// slices rejected); symbolic bounds skip the checks.
+    pub fn slice_view(&mut self, view: &View, indices: impl IntoIndex) -> View {
+        let rank = view.shape.len();
+        let axes = indices.into_index(self, &view.shape);
+        assert!(!axes.is_empty(), "slice_view: no indices given");
+        assert!(axes.len() <= rank, "slice_view: {} indices for rank {rank}", axes.len());
+        let mut new_shape = view.shape.clone();
+        let mut offset = view.offset;
+        let mut mask = view.mask.clone();
+        for (axis, (start, end)) in axes.into_iter().enumerate() {
+            let s = self.resolve_const(start).and_then(Constant::as_dim);
+            let e = self.resolve_const(end).and_then(Constant::as_dim);
+            let d = self.resolve_const(view.shape[axis]).and_then(Constant::as_dim);
+            if let Some(s) = s {
+                assert!(s >= 0, "slice_view: negative start {s} on axis {axis}");
+            }
+            if let (Some(s), Some(e)) = (s, e) {
+                assert!(e > s, "slice_view: empty slice [{s}, {e}) on axis {axis}");
+            }
+            if let (Some(e), Some(d)) = (e, d) {
+                assert!(e <= d, "slice_view: end {e} past dim {d} on axis {axis}");
+            }
+            new_shape[axis] = self.sub(end, start);
+            // Zero starts leave offset and mask alone, keeping the IR tight.
+            if s != Some(0) {
+                let shift = self.mul(start, view.strides[axis]);
+                offset = self.add(offset, shift);
+                if let Some(m) = mask.as_mut() {
+                    let (lo, hi) = m[axis];
+                    m[axis] = (self.sub(lo, start), self.sub(hi, start));
+                }
+            }
+        }
+        View { x: view.x, shape: new_shape, strides: view.strides.clone(), offset, mask }
+    }
+}
+
+/// Per-axis slice spec for [`Kernel::slice_view`]: `..`, `a..b`, `a..`,
+/// `..b`, `a..=b`, `..=b`. Bounds accept anything [`IntoOp`] (bound ops,
+/// `i64`/`i32` consts); negative const bounds count from the end of the axis.
+pub trait IntoSliceAxis {
+    /// Bind to `(start, end-exclusive)` ops normalized against `dim`.
+    fn into_axis(self, kernel: &mut Kernel, dim: OpId) -> (OpId, OpId);
+
+    /// Normalize one bound: `None` is the axis edge (0 for start, `dim` for
+    /// end, plus 1 for inclusive ends); negative const bounds fold against
+    /// `dim`; everything else passes through untouched.
+    fn norm_bound(kernel: &mut Kernel, dim: OpId, bound: Option<OpId>, is_start: bool, inclusive: bool) -> OpId {
+        let Some(b) = bound else {
+            if is_start {
+                return kernel.const_idx(0u32);
+            }
+            if inclusive {
+                let one = kernel.const_idx(1u32);
+                return kernel.add(dim, one);
+            }
+            return dim;
+        };
+        let b = match kernel.resolve_const(b).and_then(Constant::as_dim) {
+            Some(v) if v < 0 => kernel.add(dim, b),
+            _ => b,
+        };
+        if !is_start && inclusive {
+            let one = kernel.const_idx(1u32);
+            kernel.add(b, one)
+        } else {
+            b
+        }
+    }
+}
+
+impl IntoSliceAxis for RangeFull {
+    fn into_axis(self, kernel: &mut Kernel, dim: OpId) -> (OpId, OpId) {
+        (Self::norm_bound(kernel, dim, None, true, false), Self::norm_bound(kernel, dim, None, false, false))
+    }
+}
+
+impl<T: IntoOp> IntoSliceAxis for Range<T> {
+    fn into_axis(self, kernel: &mut Kernel, dim: OpId) -> (OpId, OpId) {
+        let s = self.start.into_op(kernel);
+        let e = self.end.into_op(kernel);
+        (Self::norm_bound(kernel, dim, Some(s), true, false), Self::norm_bound(kernel, dim, Some(e), false, false))
+    }
+}
+
+impl<T: IntoOp> IntoSliceAxis for RangeFrom<T> {
+    fn into_axis(self, kernel: &mut Kernel, dim: OpId) -> (OpId, OpId) {
+        let s = self.start.into_op(kernel);
+        (Self::norm_bound(kernel, dim, Some(s), true, false), Self::norm_bound(kernel, dim, None, false, false))
+    }
+}
+
+impl<T: IntoOp> IntoSliceAxis for RangeTo<T> {
+    fn into_axis(self, kernel: &mut Kernel, dim: OpId) -> (OpId, OpId) {
+        let e = self.end.into_op(kernel);
+        (Self::norm_bound(kernel, dim, None, true, false), Self::norm_bound(kernel, dim, Some(e), false, false))
+    }
+}
+
+impl<T: IntoOp> IntoSliceAxis for RangeInclusive<T> {
+    fn into_axis(self, kernel: &mut Kernel, dim: OpId) -> (OpId, OpId) {
+        let (s, e) = self.into_inner();
+        let s = s.into_op(kernel);
+        let e = e.into_op(kernel);
+        (Self::norm_bound(kernel, dim, Some(s), true, false), Self::norm_bound(kernel, dim, Some(e), false, true))
+    }
+}
+
+impl<T: IntoOp> IntoSliceAxis for RangeToInclusive<T> {
+    fn into_axis(self, kernel: &mut Kernel, dim: OpId) -> (OpId, OpId) {
+        let e = self.end.into_op(kernel);
+        (Self::norm_bound(kernel, dim, None, true, false), Self::norm_bound(kernel, dim, Some(e), false, true))
+    }
+}
+
+/// Slice indices for [`Kernel::slice_view`]: a single axis spec (applies to
+/// axis 0) or a tuple of up to 4 specs (applies to the leading axes, the rest
+/// untouched).
+pub trait IntoIndex {
+    /// Normalize to one `(start, end-exclusive)` pair per covered axis.
+    fn into_index(self, kernel: &mut Kernel, dims: &[OpId]) -> Vec<(OpId, OpId)>;
+}
+
+impl<S: IntoSliceAxis> IntoIndex for S {
+    fn into_index(self, kernel: &mut Kernel, dims: &[OpId]) -> Vec<(OpId, OpId)> {
+        let dim = dims.first().copied().expect("slice_view: no axes to slice");
+        vec![self.into_axis(kernel, dim)]
+    }
+}
+
+macro_rules! impl_into_index_tuple {
+    ($($($t:ident),+);+) => {$(
+        impl<$($t: IntoSliceAxis),+> IntoIndex for ($($t,)+) {
+            fn into_index(self, kernel: &mut Kernel, dims: &[OpId]) -> Vec<(OpId, OpId)> {
+                #[allow(non_snake_case)]
+                let ($($t,)+) = self;
+                let mut i = 0;
+                let mut out = Vec::new();
+                $(
+                    let dim = dims.get(i).copied().expect("slice_view: more indices than axes");
+                    out.push($t.into_axis(kernel, dim));
+                    i += 1;
+                )+
+                let _ = i;
+                out
+            }
+        }
+    )+};
+}
+impl_into_index_tuple!(A; A, B; A, B, C; A, B, C, D);

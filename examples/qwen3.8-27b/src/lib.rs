@@ -440,9 +440,9 @@ pub fn gemm_kernel(r: i64, k: i64, n: i64) -> Kernel {
     kernel.warp(lidx);
 
     let [rr, kk, nn] = kernel.const_idxs([r, k, n]);
-    let ap = kernel.view_global_register(a, [rr, kk]);
-    let bp = kernel.view_global_register(b, [nn, kk]);
-    let cp = kernel.view_global_register(out, [rr, nn]);
+    let ap = kernel.partition(a, [rr, kk]);
+    let bp = kernel.partition(b, [nn, kk]);
+    let cp = kernel.partition(out, [rr, nn]);
 
     let [c_block, c8] = kernel.const_idxs([16, 8]);
     let r0 = kernel.mul(gidx, c_block);
@@ -457,7 +457,7 @@ pub fn gemm_kernel(r: i64, k: i64, n: i64) -> Kernel {
 }
 
 /// Fused Q4_K × Q8_1 GEMM. A is Q4_K (R/16, K/256) blocks; B is Q8_1
-/// (N/8, K/32) blocks. Uses `view_global_local` + `stage_global_local_fused`
+/// (N/8, K/32) blocks. Uses `partition_local` + `stage_global_local_fused`
 /// to dequantize during the stage (like `lm_head_cuda_local`).
 pub fn gemm_cuda_q4_k(r: i64, k: i64, n: i64) -> Kernel {
     assert!(r % 16 == 0 && n % 8 == 0 && k % 32 == 0);
@@ -480,14 +480,14 @@ pub fn gemm_cuda_q4_k(r: i64, k: i64, n: i64) -> Kernel {
     let [gidx, gidy] = kernel.group_ranges([glen_x, glen_y]);
     let lidx = kernel.local_range(0, 32);
     kernel.warp(lidx);
-    let cp = kernel.view_global_register(out, [rr, nn]);
+    let cp = kernel.partition(out, [rr, nn]);
     let r0 = kernel.mul(gidx, c16);
     let n0 = kernel.mul(gidy, c8);
     let acc = kernel.acc([c16, c8], DType::F32);
     let a_rblocks = kernel.div(rr, c16);
     let b_nblocks = kernel.div(nn, c8);
-    let a_shared = kernel.view_global_local(a_qs, [a_rblocks, kblocks, c4], [c16, c4, c4], c4, 1);
-    let b_shared = kernel.view_global_local(b_qs, [b_nblocks, kblocks, c4], [c8, c4, c4], c4, 1);
+    let a_shared = kernel.partition_local(a_qs, [a_rblocks, kblocks, c4], [16, 4, 4], 4, 1);
+    let b_shared = kernel.partition_local(b_qs, [b_nblocks, kblocks, c4], [8, 4, 4], 4, 1);
     kernel.loop_over(kblocks, |kernel, kb| {
         let a_scale_idx = kernel.mad(gidx, kblocks, kb);
         let a_scale = kernel.load(a_scales, a_scale_idx);
@@ -502,8 +502,8 @@ pub fn gemm_cuda_q4_k(r: i64, k: i64, n: i64) -> Kernel {
             kernel.dequant_q8_1(v, b_scale, b_sum)
         });
         kernel.barrier();
-        let ap = kernel.view_local_register(&a_shared);
-        let bp = kernel.view_local_register(&b_shared);
+        let ap = kernel.partition_register(&a_shared);
+        let bp = kernel.partition_register(&b_shared);
         kernel.mma(&acc, &ap, &bp);
         kernel.barrier();
     });
