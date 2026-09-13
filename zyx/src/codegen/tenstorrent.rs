@@ -530,6 +530,55 @@ impl<'a> OpEmitter<'a> {
             typecast_inits: Vec::new(),
         }
     }
+
+    /// Common pre-loop init emission for compute tile ops (v1-proven
+    /// hoist): one `*_init` per collected op kind, inserted at `pos` —
+    /// the anchor the caller records right after `init_sfpu`, ahead of
+    /// all loops. Per-iteration init reprograms live packer state. Copy
+    /// inits stay per-load (unpack config is per-CB, emitted at the
+    /// load). The walk inserts into the sets as it emits; this method
+    /// only formats. Always at function-scope indent: the anchor sits
+    /// at base indent by construction.
+    fn prepend_compute_inits(&mut self, pos: usize) {
+        let indent = "  ";
+        let mut inits = String::new();
+        for &uop in &self.unary_inits {
+            let init = match uop {
+                UOp::Neg => "negative_tile_init();",
+                UOp::BitNot => "bitwise_not_tile_init();",
+                UOp::Exp => "exp_tile_init();",
+                UOp::Exp2 => "exp2_tile_init();",
+                UOp::Log2 => "log_tile_init();",
+                UOp::Reciprocal => "recip_tile_init();",
+                UOp::Sqrt => "sqrt_tile_init();",
+                UOp::Sin => "sin_tile_init();",
+                UOp::Cos => "cos_tile_init();",
+                UOp::Floor | UOp::Trunc => "rounding_op_tile_init();",
+                UOp::Abs => "abs_tile_init();",
+                UOp::Not => todo!("tenstorrent tiled logical not"),
+                UOp::Ln => unreachable!("ln is lowered to log2 before codegen"),
+            };
+            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}{init}\n"));
+        }
+        for &bop in &self.binary_inits {
+            let init = match bop {
+                BOp::Add => Some("add_binary_tile_init();"),
+                BOp::Sub => Some("sub_binary_tile_init();"),
+                BOp::Mul => Some("mul_binary_tile_init();"),
+                BOp::Div => Some("div_binary_tile_init();"),
+                BOp::BitShiftRight => Some("binary_shift_tile_init();"),
+                BOp::BitAnd => Some("bitwise_and_tile_init();"),
+                _ => None,
+            };
+            if let Some(init) = init {
+                let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}{init}\n"));
+            }
+        }
+        for &(in_fmt, out_fmt) in &self.typecast_inits {
+            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();\n"));
+        }
+        self.src.insert_str(pos, &inits);
+    }
 }
 
 /// Tenstorrent v2 compiler: per-section code generation over closed op
@@ -741,12 +790,258 @@ impl Compiler {
         Ok(())
     }
 
+    /// Closed-matmul shape gate: compute holds exactly one accumulation
+    /// cone per output — acc-fold adds, acc loads/stores, one pack per
+    /// output. Matmul is fixed 32x32 F16xF16. Every violation is a loud
+    /// compilation error; SFPU coexistence especially so (see caller).
+    fn check_matmul_closed(&self, kernel: &Kernel) -> Result<(), BackendError> {
+        // Values stored to scratch in compute: fold candidates
+        // (value op -> dst storage op).
+        let mut scratch_vals: Map<OpId, OpId> = Map::default();
+        let mut section = TtSection::Reader;
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            match kernel.ops[scan].op {
+                Op::Barrier => section.advance(),
+                Op::Store { dst, src, .. } => {
+                    if section == TtSection::Compute {
+                        if let Some(&cb) = self.cb_map.get(&dst) {
+                            if self.scratch_cbs.contains(&cb) {
+                                scratch_vals.insert(src, dst);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            scan = kernel.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("tenstorrent2 matmul scratch scan did not finish in 10000 steps");
+        }
+        let mut folds: Set<OpId> = Set::default();
+        let mut chained: Set<OpId> = Set::default();
+        section = TtSection::Reader;
+        scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            match kernel.ops[scan].op {
+                Op::Barrier => section.advance(),
+                Op::MatmulTile { x, y } if section == TtSection::Compute => {
+                    for &v in &[x, y] {
+                        let Op::Load { src: lsrc, layout: MemLayout::Tile { x: w, y: h, .. }, .. } = kernel.ops[v].op
+                        else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul side op {v} is no CB tile load").into(),
+                            });
+                        };
+                        if w as u32 != 32 || h as u32 != 32 {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul is fixed 32x32, op {v} is {w}x{h}").into(),
+                            });
+                        }
+                        let Some(&cb) = self.cb_map.get(&lsrc) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul load op {v} targets unmapped CB").into(),
+                            });
+                        };
+                        if self.scratch_cbs.contains(&cb) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul side op {v} reads scratch").into(),
+                            });
+                        }
+                        let Op::Storage { dtype: DType::F16, .. } = kernel.ops[lsrc].op else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul inputs are F16, op {v} is not").into(),
+                            });
+                        };
+                    }
+                }
+                Op::MatmulTile { .. } => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: matmul lives in compute, op {scan} is elsewhere").into(),
+                    });
+                }
+                Op::Binary { x, y, bop } if section == TtSection::Compute => {
+                    if !matches!(bop, BOp::Add) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: sfpu and matmul cannot share a kernel (op {scan})").into(),
+                        });
+                    }
+                    // Fold sides: one acc load, one matmul, either order.
+                    let mut acc = None;
+                    let mut mm = None;
+                    for &v in &[x, y] {
+                        if matches!(kernel.ops[v].op, Op::MatmulTile { .. }) {
+                            mm = Some(v);
+                        } else if let Op::Load { src: lsrc, layout: MemLayout::Tile { .. }, .. } = kernel.ops[v].op {
+                            match self.cb_map.get(&lsrc) {
+                                Some(&cb) if self.scratch_cbs.contains(&cb) => acc = Some(lsrc),
+                                _ => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!(
+                                            "tenstorrent2: fold side op {v} is no acc tile load"
+                                        )
+                                        .into(),
+                                    });
+                                }
+                            }
+                        } else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: fold side op {v} is no acc/matmul tile").into(),
+                            });
+                        }
+                    }
+                    let (Some(s), Some(_)) = (acc, mm) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: fold adds acc and matmul only, op {scan} does not")
+                                .into(),
+                        });
+                    };
+                    match scratch_vals.get(&scan) {
+                        Some(&d) if d == s => {
+                            folds.insert(scan);
+                            chained.insert(s);
+                        }
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: fold result op {scan} is not stored to its acc"
+                                )
+                                .into(),
+                            });
+                        }
+                    }
+                }
+                Op::Store { dst, src, layout, .. } if section == TtSection::Compute => {
+                    if !matches!(layout, MemLayout::Tile { .. }) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2 compute only supports tile stores, op {scan}").into(),
+                        });
+                    }
+                    let Some(&cb) = self.cb_map.get(&dst) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: compute store op {scan} targets unmapped CB").into(),
+                        });
+                    };
+                    if self.scratch_cbs.contains(&cb) {
+                        if !folds.contains(&src) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: compute scratch store op {scan} is not a validated fold"
+                                )
+                                .into(),
+                            });
+                        }
+                    } else {
+                        let Op::Load { src: lsrc, layout: MemLayout::Tile { .. }, .. } = kernel.ops[src].op
+                        else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: compute pack store op {scan} reads no acc tile"
+                                )
+                                .into(),
+                            });
+                        };
+                        if !chained.contains(&lsrc) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: compute pack store op {scan} packs an empty acc chain"
+                                )
+                                .into(),
+                            });
+                        }
+                    }
+                }
+                Op::Load { layout, .. } if section == TtSection::Compute => {
+                    if !matches!(layout, MemLayout::Tile { .. }) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2 compute only supports tile loads, op {scan}").into(),
+                        });
+                    }
+                    // Role (matmul input vs acc) is checked at consumers.
+                }
+                Op::Unary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Mad { .. }
+                    if section == TtSection::Compute =>
+                {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: sfpu and matmul cannot share a kernel (op {scan})").into(),
+                    });
+                }
+                Op::Range { .. }
+                | Op::Stack { .. }
+                | Op::Index { .. }
+                | Op::If { .. }
+                | Op::EndIf
+                | Op::TransposeTile { .. }
+                | Op::ReduceTile { .. }
+                | Op::Asm { .. }
+                    if section == TtSection::Compute =>
+                {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: op {scan} is outside the closed matmul shape").into(),
+                    });
+                }
+                _ => {}
+            }
+            scan = kernel.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("tenstorrent2 matmul check scan did not finish in 10000 steps");
+        }
+        Ok(())
+    }
+
     /// Single IR validity gate for the TT path: section count, reader /
     /// writer store shapes, loop and group-index lengths, then CB
     /// push/pop balance. Everything here reads the input IR; nothing
     /// inspects emitted C++ text.
     fn check_ir_tt(&self, kernel: &Kernel) -> Result<(), BackendError> {
         self.check_sections(kernel)?;
+        // Closed-matmul shape first: with a MatmulTile in the kernel,
+        // compute holds exactly one accumulation cone per output. Any
+        // SFPU sharing the kernel is rejected here (loud error, never
+        // silent): mm_init plus SFPU inits in one kernel hung the board
+        // during v1 bring-up, so the combination never reaches codegen.
+        let mut is_mm = false;
+        let mut pre = kernel.head;
+        for _ in 0..10_000 {
+            if pre.is_null() {
+                break;
+            }
+            if matches!(kernel.ops[pre].op, Op::MatmulTile { .. }) {
+                is_mm = true;
+                break;
+            }
+            pre = kernel.next_op(pre);
+        }
+        if is_mm {
+            self.check_matmul_closed(kernel)?;
+        }
         let mut section = TtSection::Reader;
         let mut scan = kernel.head;
         for _ in 0..10_000 {
@@ -922,6 +1217,12 @@ impl Compiler {
             panic!("tenstorrent2 balance scan did not finish in 10000 steps");
         }
         for (&storage, &cb) in self.cb_map.iter() {
+            // Scratch accumulators (compute-stored, never writer-read)
+            // drain through DST, not CB traffic: exempt from push/pop
+            // equality (matmul acc seed + folds emit nothing).
+            if self.scratch_cbs.contains(&cb) {
+                continue;
+            }
             let pushed = pushes.get(&cb).copied().unwrap_or(0);
             let popped = pops.get(&cb).copied().unwrap_or(0);
             if pushed != popped {
@@ -935,61 +1236,6 @@ impl Compiler {
             }
         }
         Ok(())
-    }
-
-    /// Common pre-loop init emission for compute tile ops (v1-proven
-    /// hoist): one `*_init` per collected op kind, inserted at `pos` —
-    /// the anchor the caller records right after `init_sfpu`, ahead of
-    /// all loops. Per-iteration init reprograms live packer state. Copy
-    /// inits stay per-load (unpack config is per-CB, emitted at the
-    /// load). The walk inserts into the sets as it emits; this method
-    /// only formats.
-    fn prepend_compute_inits(
-        &self,
-        src: &mut String,
-        pos: usize,
-        indent: &str,
-        unary_inits: &Set<UOp>,
-        binary_inits: &Set<BOp>,
-        typecast_inits: &[(u32, u32)],
-    ) {
-        let mut inits = String::new();
-        for &uop in unary_inits {
-            let init = match uop {
-                UOp::Neg => "negative_tile_init();",
-                UOp::BitNot => "bitwise_not_tile_init();",
-                UOp::Exp => "exp_tile_init();",
-                UOp::Exp2 => "exp2_tile_init();",
-                UOp::Log2 => "log_tile_init();",
-                UOp::Reciprocal => "recip_tile_init();",
-                UOp::Sqrt => "sqrt_tile_init();",
-                UOp::Sin => "sin_tile_init();",
-                UOp::Cos => "cos_tile_init();",
-                UOp::Floor | UOp::Trunc => "rounding_op_tile_init();",
-                UOp::Abs => "abs_tile_init();",
-                UOp::Not => todo!("tenstorrent tiled logical not"),
-                UOp::Ln => unreachable!("ln is lowered to log2 before codegen"),
-            };
-            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}{init}\n"));
-        }
-        for &bop in binary_inits {
-            let init = match bop {
-                BOp::Add => Some("add_binary_tile_init();"),
-                BOp::Sub => Some("sub_binary_tile_init();"),
-                BOp::Mul => Some("mul_binary_tile_init();"),
-                BOp::Div => Some("div_binary_tile_init();"),
-                BOp::BitShiftRight => Some("binary_shift_tile_init();"),
-                BOp::BitAnd => Some("bitwise_and_tile_init();"),
-                _ => None,
-            };
-            if let Some(init) = init {
-                let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}{init}\n"));
-            }
-        }
-        for &(in_fmt, out_fmt) in typecast_inits {
-            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();\n"));
-        }
-        src.insert_str(pos, &inits);
     }
 
     /// Generate the reader (dataflow movement) kernel from the reader op list.
@@ -1249,11 +1495,24 @@ impl Compiler {
                 }
             }
         }
+        // Matmul kernels take the closed path (check_matmul_closed
+        // already rejected anything beyond folds + one pack per output):
+        // lazy tags, no copies, mm_init up front. Anything else keeps
+        // the streaming sfpu path below, byte-identical.
+        let is_mm = compute_data
+            .ops
+            .iter()
+            .any(|&op_id| matches!(kernel.ops[op_id].op, Op::MatmulTile { .. }));
         // Unpacker init (v1-proven): the only unpack config on non-matmul
         // kernels. First compute tile-Load CB in, first tile-Store CB out.
-        // Empty compute sections (pure movement) emit nothing.
-        if let (Some(&in0), Some(out0)) = (compute_input_cbs.first(), compute_out_cb) {
-            writeln!(em.src, "{indent}init_sfpu({in0}, {out0});");
+        // Empty compute sections (pure movement) emit nothing. Matmul
+        // kernels get mm_init at the anchor after the walk instead
+        // (triples are complete only then); init_sfpu coexistence is
+        // rejected by the IR check.
+        if !is_mm {
+            if let (Some(&in0), Some(out0)) = (compute_input_cbs.first(), compute_out_cb) {
+                writeln!(em.src, "{indent}init_sfpu({in0}, {out0});");
+            }
         }
         // Anchor for the hoisted tile-op inits: the common method
         // prepends them here, ahead of all loops, after the walk.
@@ -1262,6 +1521,17 @@ impl Compiler {
         // and outermost-only acquire flags, mirroring the proven v1 tail.
         let mut loop_pushes: Vec<Vec<CBId>> = Vec::new();
         let mut acquire_stack: Vec<bool> = Vec::new();
+        // Closed-matmul state (empty on sfpu kernels): validated fold
+        // binaries (binary -> acc storage, matmul), matmul input CB
+        // pairs, matmul-fed CBs (popped inline, never blanket), one DST
+        // slot per acc chain, distinct mm_init input pairs, and the pack
+        // target (last circular store, v1 mm_out_cb rule).
+        let mut folds: Map<OpId, (OpId, OpId)> = Map::default();
+        let mut matmul_tags: Map<OpId, (CBId, CBId)> = Map::default();
+        let mut fold_cbs: Set<CBId> = Set::default();
+        let mut chain_slot: Map<OpId, u32> = Map::default();
+        let mut mm_pairs: Vec<(CBId, CBId)> = Vec::new();
+        let mut mm_out: Option<CBId> = None;
 
         for &op_id in &compute_data.ops {
             match kernel.ops[op_id].op {
@@ -1281,7 +1551,98 @@ impl Compiler {
                     // Inlined as literals at uses; no declaration emitted.
                 }
                 Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
-                    em.emit_op(op_id, &compute_data)?;
+                    if is_mm {
+                        // Closed fold only: add(acc-load, matmul) records
+                        // the chain slot and emits nothing; the acc store
+                        // folds it onto DST accumulation. Everything else
+                        // is SFPU sharing the kernel: loud halt.
+                        let Op::Binary { x, y, bop } = kernel.ops[op_id].op else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: sfpu and matmul cannot share a kernel (op {op_id})"
+                                )
+                                .into(),
+                            });
+                        };
+                        if !matches!(bop, BOp::Add) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: sfpu and matmul cannot share a kernel (op {op_id})"
+                                )
+                                .into(),
+                            });
+                        }
+                        let mut acc = None;
+                        let mut mm = None;
+                        for &v in &[x, y] {
+                            if matmul_tags.contains_key(&v) {
+                                if mm.is_some() {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!(
+                                            "tenstorrent2: fold op {op_id} adds more than one matmul"
+                                        )
+                                        .into(),
+                                    });
+                                }
+                                mm = Some(v);
+                            } else if let Op::Load { src: lsrc, layout: MemLayout::Tile { .. }, .. } =
+                                kernel.ops[v].op
+                            {
+                                match self.cb_map.get(&lsrc) {
+                                    Some(&cb) if self.scratch_cbs.contains(&cb) => {
+                                        if acc.is_some() {
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!(
+                                                    "tenstorrent2: fold op {op_id} adds more than one acc"
+                                                )
+                                                .into(),
+                                            });
+                                        }
+                                        acc = Some(lsrc);
+                                    }
+                                    _ => {
+                                        return Err(BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!(
+                                                "tenstorrent2: fold side op {v} is no acc tile load"
+                                            )
+                                            .into(),
+                                        });
+                                    }
+                                }
+                            } else {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!(
+                                        "tenstorrent2: fold side op {v} is no acc/matmul tile"
+                                    )
+                                    .into(),
+                                });
+                            }
+                        }
+                        let (Some(storage), Some(m)) = (acc, mm) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: fold adds acc and matmul only, op {op_id} does not"
+                                )
+                                .into(),
+                            });
+                        };
+                        // One static DST slot per acc chain, reused across
+                        // trips (nested DST inherit, gemm precedent).
+                        let slot = chain_slot.len() as u32;
+                        debug_assert!(slot < 16, "tenstorrent DST holds 16 slots");
+                        chain_slot.entry(storage).or_insert(slot);
+                        folds.insert(op_id, (storage, m));
+                        // Emit nothing.
+                    } else {
+                        em.emit_op(op_id, &compute_data)?;
+                    }
                 }
                 Op::Stack { .. } => todo!(),
                 Op::Storage { scope: MemScope::Circular, .. } => {
@@ -1294,6 +1655,105 @@ impl Compiler {
                 }
                 Op::Storage { .. } => {
                     todo!("tenstorrent2 compute storage scope")
+                }
+                Op::Store { ref dst, src: ref store_src, layout: st_layout, .. } if is_mm => {
+                    // Closed-matmul stores. Scratch stores are validated
+                    // folds: wait/matmul/pop traffic only, the add rides
+                    // DST accumulation for free. Pack stores drain the acc
+                    // chain head: commit/wait/reserve/pack, push at
+                    // EndLoop. No pack_reconfig: mm_init programmed the
+                    // packer (official mm.cpp carries none either).
+                    if !matches!(st_layout, MemLayout::Tile { .. }) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!(
+                                "tenstorrent2 compute only supports tile stores, op {op_id}"
+                            )
+                            .into(),
+                        });
+                    }
+                    let Some(&out_cb) = self.cb_map.get(dst) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: compute store targets unmapped CB, op {op_id}").into(),
+                        });
+                    };
+                    if em.loop_level == 0 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!(
+                                "tenstorrent2: matmul traffic requires a loop, op {op_id} sits outside one"
+                            )
+                            .into(),
+                        });
+                    }
+                    if self.scratch_cbs.contains(&out_cb) {
+                        let Some(&(storage, m)) = folds.get(store_src) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: compute scratch store op {op_id} is not a validated fold"
+                                )
+                                .into(),
+                            });
+                        };
+                        if *dst != storage {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: fold op {op_id} stores a different acc than it loads"
+                                )
+                                .into(),
+                            });
+                        }
+                        let Some(&(cb_a, cb_b)) = matmul_tags.get(&m) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: fold op {op_id} references untagged matmul").into(),
+                            });
+                        };
+                        let Some(&slot) = chain_slot.get(&storage) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: fold op {op_id} has no acc chain slot").into(),
+                            });
+                        };
+                        writeln!(em.src, "{indent}cb{cb_a}.wait_front(1);");
+                        writeln!(em.src, "{indent}cb{cb_b}.wait_front(1);");
+                        writeln!(em.src, "{indent}matmul_tiles({cb_a}, {cb_b}, 0, 0, {slot});");
+                        writeln!(em.src, "{indent}cb{cb_a}.pop_front(1);");
+                        writeln!(em.src, "{indent}cb{cb_b}.pop_front(1);");
+                    } else {
+                        let Op::Load { src: lsrc, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*store_src].op
+                        else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: compute pack store op {op_id} reads no acc tile"
+                                )
+                                .into(),
+                            });
+                        };
+                        let Some(&slot) = chain_slot.get(&lsrc) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: compute pack store op {op_id} packs an empty acc chain"
+                                )
+                                .into(),
+                            });
+                        };
+                        // Last circular store wins (v1 mm_out_cb rule).
+                        mm_out = Some(out_cb);
+                        writeln!(em.src, "{indent}tile_regs_commit();");
+                        writeln!(em.src, "{indent}cb{out_cb}.reserve_back(1);");
+                        writeln!(em.src, "{indent}tile_regs_wait();");
+                        writeln!(em.src, "{indent}pack_tile({slot}, {out_cb});");
+                        loop_pushes
+                            .last_mut()
+                            .expect("tenstorrent2 pack store outside loop body")
+                            .push(out_cb);
+                    }
                 }
                 Op::Store { ref dst, src: ref store_src, layout: st_layout, .. } => {
                     // Stored tile values flow through DST slots: every
@@ -1355,6 +1815,25 @@ impl Compiler {
                         .expect("tenstorrent2 streaming store outside loop body")
                         .push(out_cb);
                 }
+                Op::Load { src: ref load_src, layout, .. } if is_mm => {
+                    // Resolve-only: matmul inputs resolve to CB ids at the
+                    // consuming fold, acc loads to the chain slot at the
+                    // pack store. No copy_tile under mm_init (a copy there
+                    // stalls UNPACK: wedge guard).
+                    if !matches!(layout, MemLayout::Tile { .. }) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2 compute only supports tile loads, op {op_id}").into(),
+                        });
+                    }
+                    if !self.cb_map.contains_key(load_src) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: compute load targets unmapped CB, op {op_id}").into(),
+                        });
+                    }
+                    // Emit nothing.
+                }
                 Op::Load { src: ref load_src, layout, .. } => {
                     if !matches!(layout, MemLayout::Tile { .. }) {
                         todo!("tenstorrent2 compute only supports tile loads");
@@ -1387,6 +1866,15 @@ impl Compiler {
                     writeln!(em.src, "{indent}copy_tile({cb}, 0, {slot});");
                 }
                 Op::Range { .. } => {
+                    if is_mm {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!(
+                                "tenstorrent2: op {op_id} is outside the closed matmul shape"
+                            )
+                            .into(),
+                        });
+                    }
                     em.emit_op(op_id, &compute_data)?;
                 }
                 Op::Loop { .. } => {
@@ -1396,8 +1884,13 @@ impl Compiler {
                     indent = em.indent.clone();
                     em.loop_level += 1;
                     if outermost {
-                        for &cb in &compute_input_cbs {
-                            writeln!(em.src, "{indent}cb{cb}.wait_front(1);");
+                        // Matmul kernels acquire only: waits fire inline
+                        // at each fold store (per inner iteration), never
+                        // hoisted to the outer loop (wait-deadlock guard).
+                        if !is_mm {
+                            for &cb in &compute_input_cbs {
+                                writeln!(em.src, "{indent}cb{cb}.wait_front(1);");
+                            }
                         }
                         writeln!(em.src, "{indent}tile_regs_acquire();");
                     }
@@ -1415,6 +1908,12 @@ impl Compiler {
                         }
                     }
                     for &cb in &compute_input_cbs {
+                        // Fold inputs pop inline at their fold store (per
+                        // inner iteration); scratch accs never pop.
+                        // Blanket pops stay for the sfpu path only.
+                        if is_mm && (fold_cbs.contains(&cb) || self.scratch_cbs.contains(&cb)) {
+                            continue;
+                        }
                         writeln!(em.src, "{indent}cb{cb}.pop_front(1);");
                     }
                     em.loop_level -= 1;
@@ -1426,7 +1925,61 @@ impl Compiler {
                 Op::If { .. } => todo!(),
                 Op::EndIf => todo!(),
                 Op::Index { .. } => todo!(),
-                Op::MatmulTile { .. } => todo!(),
+                Op::MatmulTile { x, y } => {
+                    if !is_mm {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul outside mm kernel, op {op_id}").into(),
+                        });
+                    }
+                    // Both sides are tile loads from live (non-scratch)
+                    // CBs; anything else is outside the closed shape. The
+                    // op emits nothing: the consuming fold store does the
+                    // wait/matmul/pop traffic (lazy, fewest locals).
+                    let Op::Load { src: la, layout: MemLayout::Tile { .. }, .. } = kernel.ops[x].op else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul side op {x} is no CB tile load").into(),
+                        });
+                    };
+                    let Some(&cb_a) = self.cb_map.get(&la) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul side op {x} targets unmapped CB").into(),
+                        });
+                    };
+                    if self.scratch_cbs.contains(&cb_a) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul side op {x} reads scratch").into(),
+                        });
+                    }
+                    let Op::Load { src: lb, layout: MemLayout::Tile { .. }, .. } = kernel.ops[y].op else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul side op {y} is no CB tile load").into(),
+                        });
+                    };
+                    let Some(&cb_b) = self.cb_map.get(&lb) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul side op {y} targets unmapped CB").into(),
+                        });
+                    };
+                    if self.scratch_cbs.contains(&cb_b) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul side op {y} reads scratch").into(),
+                        });
+                    }
+                    fold_cbs.insert(cb_a);
+                    fold_cbs.insert(cb_b);
+                    matmul_tags.insert(op_id, (cb_a, cb_b));
+                    let pair = (cb_a, cb_b);
+                    if !mm_pairs.contains(&pair) {
+                        mm_pairs.push(pair);
+                    }
+                }
                 Op::TransposeTile { .. } => todo!(),
                 Op::ReduceTile { .. } => todo!(),
                 Op::Asm { .. } => todo!(),
@@ -1435,8 +1988,25 @@ impl Compiler {
                 Op::Wmma { .. } => unreachable!("tt does not support wmma, use Op::MatmulTile instead"),
             }
         }
+        // mm_init programs unpack+math+pack in one call (the only init
+        // on matmul kernels): one per distinct input pair plus the pack
+        // target, at the anchor ahead of all loops. Triples are complete
+        // only after the walk, hence the deferred insert.
+        if is_mm {
+            let Some(out) = mm_out else {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2: matmul kernel packs nowhere".into(),
+                });
+            };
+            let mut init = String::new();
+            for &(in0, in1) in &mm_pairs {
+                writeln!(init, "  mm_init({in0}, {in1}, {out});");
+            }
+            em.src.insert_str(init_anchor, &init);
+        }
         // Hoisted tile-op inits land at the anchor, ahead of all loops.
-        self.prepend_compute_inits(&mut em.src, init_anchor, "  ", &em.unary_inits, &em.binary_inits, &em.typecast_inits);
+        em.prepend_compute_inits(init_anchor);
 
         writeln!(em.src, "}}");
         self.compute = TTKernel::Compute { src: em.src, params: params.to_vec(), ordinals: ordinals.to_vec() };
