@@ -1050,18 +1050,17 @@ impl Compiler {
             match kernel.ops[scan].op {
                 Op::Barrier => section.advance(),
                 Op::Loop { len } => {
-                    let Some(dim) = kernel.resolve_const(len).and_then(|c| c.as_dim()) else {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: loop trip count op {len} is not resolvable").into(),
-                        });
-                    };
-                    debug_assert!(dim >= 0, "tenstorrent2: negative loop length");
-                    if dim < 0 {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: loop length {dim} is negative").into(),
-                        });
+                    // Trip counts may be dynamic (Variable/symbolic): the
+                    // balance check compares trip structure, not values.
+                    // Only resolvable lengths are checked here.
+                    if let Some(dim) = kernel.resolve_const(len).and_then(|c| c.as_dim()) {
+                        debug_assert!(dim >= 0, "tenstorrent2: negative loop length");
+                        if dim < 0 {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: loop length {dim} is negative").into(),
+                            });
+                        }
                     }
                 }
                 Op::Range { kind, .. } => match kind {
@@ -1172,15 +1171,20 @@ impl Compiler {
         Ok(())
     }
 
-    /// Simplified push/pop balance: per CB, trip-weighted tile pushes
-    /// equal trip-weighted tile pops, else a compilation error. One rule
-    /// covers streaming (reader pushes == compute/writer pops) and
-    /// compute-local scratch (seed + per-iteration push/pop pairs drain
-    /// to zero) with no special cases.
+    /// Push/pop balance: per CB, the multiset of enclosing trip-lists on
+    /// pushes equals that on pops, else a compilation error. Comparing
+    /// structure (not values) keeps the check exact under symbolic trips:
+    /// same loop nests push and pop the same counts for any trip values.
+    /// Const trips compare by value, dynamic ones by op identity.
     fn check_balance(&self, kernel: &Kernel) -> Result<(), BackendError> {
-        let mut pushes: Map<CBId, i64> = Map::default();
-        let mut pops: Map<CBId, i64> = Map::default();
-        let mut trips: Vec<i64> = Vec::new();
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum TripKey {
+            Const(i64),
+            Sym(OpId),
+        }
+        let mut pushes: Map<CBId, Vec<Vec<TripKey>>> = Map::default();
+        let mut pops: Map<CBId, Vec<Vec<TripKey>>> = Map::default();
+        let mut trips: Vec<TripKey> = Vec::new();
         let mut scan = kernel.head;
         for _ in 0..10_000 {
             if scan.is_null() {
@@ -1188,27 +1192,22 @@ impl Compiler {
             }
             match kernel.ops[scan].op {
                 Op::Loop { ref len } => {
-                    let Some(dim) = kernel.resolve_const(*len).and_then(|c| c.as_dim()) else {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: loop trip count op {len} is not resolvable").into(),
-                        });
-                    };
-                    trips.push(dim);
+                    trips.push(match kernel.resolve_const(*len).and_then(|c| c.as_dim()) {
+                        Some(dim) => TripKey::Const(dim),
+                        None => TripKey::Sym(*len),
+                    });
                 }
                 Op::EndLoop => {
                     trips.pop().expect("tenstorrent2 EndLoop without Loop");
                 }
                 Op::Store { ref dst, layout: MemLayout::Tile { .. }, .. } => {
                     if let Some(&cb) = self.cb_map.get(dst) {
-                        let trip: i64 = trips.iter().product();
-                        *pushes.entry(cb).or_insert(0) += trip;
+                        pushes.entry(cb).or_default().push(trips.clone());
                     }
                 }
                 Op::Load { ref src, layout: MemLayout::Tile { .. }, .. } => {
                     if let Some(&cb) = self.cb_map.get(src) {
-                        let trip: i64 = trips.iter().product();
-                        *pops.entry(cb).or_insert(0) += trip;
+                        pops.entry(cb).or_default().push(trips.clone());
                     }
                 }
                 _ => {}
@@ -1225,13 +1224,17 @@ impl Compiler {
             if self.scratch_cbs.contains(&cb) {
                 continue;
             }
-            let pushed = pushes.get(&cb).copied().unwrap_or(0);
-            let popped = pops.get(&cb).copied().unwrap_or(0);
+            let mut pushed = pushes.get(&cb).cloned().unwrap_or_default();
+            let mut popped = pops.get(&cb).cloned().unwrap_or_default();
+            pushed.sort();
+            popped.sort();
             if pushed != popped {
                 return Err(BackendError {
                     status: ErrorStatus::CircularBufferImbalance,
                     context: format!(
-                        "tenstorrent2: CB{cb} imbalance: {pushed} pushed but {popped} popped (storage op {storage})"
+                        "tenstorrent2: CB{cb} imbalance: {} pushes but {} pops (storage op {storage})",
+                        pushed.len(),
+                        popped.len()
                     )
                     .into(),
                 });
@@ -1291,7 +1294,17 @@ impl Compiler {
                     }
                     ParamKind::Variable => {
                         let arg = em.arg_pos.get(&op_id).copied().expect("tenstorrent2 reader param missing from section args");
-                        writeln!(em.src, "{indent}{} r{op_id} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
+                        // Slot-named like every other register (p{op_id} is
+                        // for pointers; r is for registers).
+                        let slot = em.vars.len() as u32;
+                        writeln!(em.src, "{indent}{} r{slot} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
+                        em.vars.push(VarSlot {
+                            dtype,
+                            layout: MemLayout::Scalar,
+                            rc: reader_data.rcs[&op_id],
+                            scope_level: em.scope_level,
+                        });
+                        em.var_map.insert(op_id, slot);
                     }
                     ParamKind::GlobalMut => {
                         let arg = em.arg_pos.get(&op_id).copied().expect("tenstorrent2 reader param missing from section args");
@@ -1347,12 +1360,11 @@ impl Compiler {
                                 let tile_bytes = x as u32 * y as u32 * elem_size;
                                 let page_size = TT_DRAM_PAGE_BYTES;
                                 // Index resolves through the section register map:
-                                // consts inline, Variable params keep r{op_id},
-                                // every other value must already sit in var_map.
+                                // consts inline, every other value (including
+                                // Variable params, slot-named at declaration)
+                                // must already sit in var_map.
                                 let idx = if let Op::Const(c) = &kernel.ops[ld_idx].op {
                                     format!("{}", c.c_code())
-                                } else if matches!(kernel.ops[ld_idx].op, Op::Param { kind: ParamKind::Variable, .. }) {
-                                    format!("r{ld_idx}")
                                 } else if let Some(&r) = em.var_map.get(&ld_idx) {
                                     if em.vars[r as usize].scope_level == em.scope_level {
                                         debug_assert!(em.vars[r as usize].rc > 0);
@@ -1602,7 +1614,17 @@ impl Compiler {
                 Op::Param { dtype, kind, .. } => match kind {
                     ParamKind::Variable => {
                         let arg = em.arg_pos.get(&op_id).copied().expect("tenstorrent2 compute param missing from section args");
-                        writeln!(em.src, "{indent}{} r{op_id} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
+                        // Slot-named like every other register (p{op_id} is
+                        // for pointers; r is for registers).
+                        let slot = em.vars.len() as u32;
+                        writeln!(em.src, "{indent}{} r{slot} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
+                        em.vars.push(VarSlot {
+                            dtype,
+                            layout: MemLayout::Scalar,
+                            rc: compute_data.rcs[&op_id],
+                            scope_level: em.scope_level,
+                        });
+                        em.var_map.insert(op_id, slot);
                     }
                     ParamKind::Global | ParamKind::GlobalMut => {
                         return Err(BackendError {
@@ -2171,7 +2193,17 @@ impl Compiler {
                     let Op::Param { dtype, .. } = kernel.ops[op_id].op else {
                         unreachable!("tenstorrent2 param changed under us");
                     };
-                    writeln!(em.src, "{indent}{} r{op_id} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
+                    // Slot-named like every other register (p{op_id} is
+                    // for pointers; r is for registers).
+                    let slot = em.vars.len() as u32;
+                    writeln!(em.src, "{indent}{} r{slot} = ({})get_arg_val<uint32_t>({arg});", dtype.c_type(), dtype.c_type());
+                    em.vars.push(VarSlot {
+                        dtype,
+                        layout: MemLayout::Scalar,
+                        rc: writer_data.rcs[&op_id],
+                        scope_level: em.scope_level,
+                    });
+                    em.var_map.insert(op_id, slot);
                 }
                 Op::Storage { scope: MemScope::Circular, .. } => {
                     // Declared up front for every shared CB (see driver).
@@ -2212,12 +2244,11 @@ impl Compiler {
                             let tile_bytes = x as u32 * y as u32 * elem_size;
                             let page_size = TT_DRAM_PAGE_BYTES;
                             // Same register discipline as the reader: consts
-                            // inline, Variable params keep r{op_id}, every
-                            // other value must already sit in var_map.
+                            // inline, every other value (including Variable
+                            // params, slot-named at declaration) must
+                            // already sit in var_map.
                             let idx = if let Op::Const(c) = &kernel.ops[st_idx].op {
                                 format!("{}", c.c_code())
-                            } else if matches!(kernel.ops[st_idx].op, Op::Param { kind: ParamKind::Variable, .. }) {
-                                format!("r{st_idx}")
                             } else if let Some(&r) = em.var_map.get(&st_idx) {
                                 if em.vars[r as usize].scope_level == em.scope_level {
                                     debug_assert!(em.vars[r as usize].rc > 0);

@@ -153,6 +153,45 @@ pub fn pad_move_tt(s: i64, m: i64, d: i64) -> Kernel {
     kernel
 }
 
+/// Symbolic move: same pure movement as `pad_move_tt`, but the loop trip
+/// count is a Variable (a launch-time IDX_T value), proving symbolic loop
+/// bounds + index math on-board. The value arrives as a section runtime
+/// arg; the loop bound and tile indices resolve through it like any
+/// register. 3 params: data, ntiles, out.
+pub fn pad_move_sym() -> Kernel {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    let mut kernel = Kernel::new(Dev::TT(0));
+    let data = kernel.param(DType::F32);
+    // IDX_T (I64) launch-time tile count, between the Globals and the
+    // GlobalMut so head ordinals match launch arg order.
+    let ntiles = kernel.variable(DType::I64);
+    let out = kernel.param_mut(DType::F32);
+
+    let cdata = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+
+    let _g = kernel.group_range(0, 1);
+    let tile_elems = kernel.const_idx(TILE_ELEMS);
+    let zero = kernel.const_idx(0);
+
+    kernel.loop_over(ntiles, |kernel, t| {
+        let tbase = kernel.mad(t, tile_elems, zero);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+    });
+    kernel.barrier();
+    kernel.barrier();
+
+    kernel.loop_over(ntiles, |kernel, t| {
+        let tbase = kernel.mad(t, tile_elems, zero);
+        let v = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+    });
+
+    kernel.verify();
+    kernel
+}
+
 /// Multi-core move: same pure movement as `pad_move_tt`, sharded over a
 /// 1D core grid (one group axis, `ncores` rows). Each core streams a
 /// contiguous shard of `ntiles / ncores` tiles: its shard base comes from

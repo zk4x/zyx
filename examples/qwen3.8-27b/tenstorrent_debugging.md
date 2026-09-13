@@ -321,6 +321,13 @@ auto p_out1 = TensorAccessor(args_out1, out1, 2048);
 - Shard model: `group_range` var reads the trailing per-core coord arg (`arg_pos.len() + axis`, already the emitted shape); shard math (`base = gidx * shard`) is normal builder ops. No builder migration for single-core (`group_range(0, 1)` untouched); no inter-core traffic (per-core L1 CBs + own DRAM tiles by construction).
 - Backend doc comment corrected (was 10x12/120 cores).
 
+## 2026-09-13 — v2 symbolic dims: Variable trips green
+
+- `pad_move_tt_sym_run` green first launch: `bad: 0 / 81920` with the 160-trip loop bound as a launch-time Variable. Symbolic bounds + index math proven on-board; mc still green after the rework.
+- CUDA model mirrored: Variables are section runtime args (ordinal plumbing already existed), usable in any scalar position through the one register file; grid sizes resolve at launch (GwsDim) with bounds vs max.
+- Codegen plugs: `check_ir_tt` Loop arm allows unresolvable trips (negativity only when const); `check_balance` compares per-CB enclosing-trip multisets (const by value, dynamic by op identity) instead of trip products.
+- Two fixes from review: `Variable` section arms declared `r{id}` but never registered (later `get_var` failed) — and the declaration naming itself: CUDA keeps params as `p{id}` (pointer) with per-load registers, but TT declares Variables as locals, so they are slot-named `r{slot}` like every other register; the old `r{op_id}` special cases in reader/writer index resolution are deleted (unregistered Variables now fail loudly instead of mis-resolving).
+
 ## Why we need our own driver (running list)
 
 1. Inter-core traffic does not work on Blackhole (driver, not hardware). All multi-core kernels must be embarrassingly parallel — no core-to-core communication.
