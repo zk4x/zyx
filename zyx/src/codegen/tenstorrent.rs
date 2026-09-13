@@ -110,7 +110,7 @@ struct VarSlot {
     dtype: DType,
     layout: MemLayout,
     rc: u32,
-    loop_level: u8,
+    scope_level: u8,
 }
 
 /// Kernel sections delimited by barriers: reader (head -> 1st barrier),
@@ -144,7 +144,6 @@ pub(crate) enum TTKernel {
     },
     Compute {
         src: String,
-        params: Vec<OpId>,
         /// Global head-order ordinals: this section's runtime args.
         ordinals: Vec<u32>,
     },
@@ -495,8 +494,8 @@ struct OpEmitter<'a> {
     src: String,
     /// Current brace indent inside `kernel_main`.
     indent: String,
-    /// Loop nesting depth of the emission cursor.
-    loop_level: u8,
+    /// Brace scope depth of the emission cursor: loops and ifs alike.
+    scope_level: u8,
     /// Section params in list order become this section's runtime args.
     arg_pos: Map<OpId, u32>,
     /// Unified register file: scalars and DST slots alike, told apart
@@ -521,7 +520,7 @@ impl<'a> OpEmitter<'a> {
             kernel,
             src: String::new(),
             indent: String::from("  "),
-            loop_level: 0,
+            scope_level: 0,
             arg_pos: Map::default(),
             var_map: Map::default(),
             vars: Vec::new(),
@@ -1352,7 +1351,7 @@ impl Compiler {
                                 } else if matches!(kernel.ops[ld_idx].op, Op::Param { kind: ParamKind::Variable, .. }) {
                                     format!("r{ld_idx}")
                                 } else if let Some(&r) = em.var_map.get(&ld_idx) {
-                                    if em.vars[r as usize].loop_level == em.loop_level {
+                                    if em.vars[r as usize].scope_level == em.scope_level {
                                         debug_assert!(em.vars[r as usize].rc > 0);
                                         em.vars[r as usize].rc -= 1;
                                     }
@@ -1380,10 +1379,38 @@ impl Compiler {
                     em.emit_op(op_id, &reader_data)?;
                     em.indent.push_str("  ");
                     indent = em.indent.clone();
-                    em.loop_level += 1;
+                    em.scope_level += 1;
                 }
                 Op::EndLoop => {
-                    em.loop_level -= 1;
+                    em.scope_level -= 1;
+                    em.indent.pop();
+                    em.indent.pop();
+                    indent = em.indent.clone();
+                    writeln!(em.src, "{indent}}}");
+                }
+                Op::If { condition } => {
+                    // Condition is a prior boolean scalar: consts inline,
+                    // registers resolve through the section map.
+                    let cond = if let Op::Const(c) = &kernel.ops[condition].op {
+                        format!("{}", c.c_code())
+                    } else if let Some(&r) = em.var_map.get(&condition) {
+                        format!("r{r}")
+                    } else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!(
+                                "tenstorrent2: if condition op {condition} not in registers"
+                            )
+                            .into(),
+                        });
+                    };
+                    writeln!(em.src, "{indent}if ({cond}) {{");
+                    em.indent.push_str("  ");
+                    indent = em.indent.clone();
+                    em.scope_level += 1;
+                }
+                Op::EndIf => {
+                    em.scope_level -= 1;
                     em.indent.pop();
                     em.indent.pop();
                     indent = em.indent.clone();
@@ -1403,8 +1430,6 @@ impl Compiler {
                 | Op::Bitcast { .. }
                 | Op::Stack { .. }
                 | Op::Index { .. }
-                | Op::If { .. }
-                | Op::EndIf
                 | Op::Wmma { .. }
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
@@ -1678,7 +1703,7 @@ impl Compiler {
                             context: format!("tenstorrent2: compute store targets unmapped CB, op {op_id}").into(),
                         });
                     };
-                    if em.loop_level == 0 {
+                    if em.scope_level == 0 {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: format!(
@@ -1793,7 +1818,7 @@ impl Compiler {
                             context: format!("tenstorrent2: compute copy targets scratch CB, op {op_id}").into(),
                         });
                     }
-                    if em.loop_level == 0 {
+                    if em.scope_level == 0 {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: format!(
@@ -1859,7 +1884,7 @@ impl Compiler {
                         dtype: compute_data.dtypes[&op_id].0,
                         layout,
                         rc: compute_data.rcs[&op_id],
-                        loop_level: em.loop_level,
+                        scope_level: em.scope_level,
                     });
                     em.var_map.insert(op_id, slot);
                     writeln!(em.src, "{indent}copy_tile_init({cb});");
@@ -1878,11 +1903,11 @@ impl Compiler {
                     em.emit_op(op_id, &compute_data)?;
                 }
                 Op::Loop { .. } => {
-                    let outermost = em.loop_level == 0;
+                    let outermost = em.scope_level == 0;
                     em.emit_op(op_id, &compute_data)?;
                     em.indent.push_str("  ");
                     indent = em.indent.clone();
-                    em.loop_level += 1;
+                    em.scope_level += 1;
                     if outermost {
                         // Matmul kernels acquire only: waits fire inline
                         // at each fold store (per inner iteration), never
@@ -1916,14 +1941,42 @@ impl Compiler {
                         }
                         writeln!(em.src, "{indent}cb{cb}.pop_front(1);");
                     }
-                    em.loop_level -= 1;
+                    em.scope_level -= 1;
                     em.indent.pop();
                     em.indent.pop();
                     indent = em.indent.clone();
                     writeln!(em.src, "{indent}}}");
                 }
-                Op::If { .. } => todo!(),
-                Op::EndIf => todo!(),
+                Op::If { condition } => {
+                    // Plain brace scope: no acquire/push/pop interaction
+                    // (those pair with loops, never ifs). Condition is a
+                    // prior boolean scalar: consts inline, registers
+                    // resolve through the section map.
+                    let cond = if let Op::Const(c) = &kernel.ops[condition].op {
+                        format!("{}", c.c_code())
+                    } else if let Some(&r) = em.var_map.get(&condition) {
+                        format!("r{r}")
+                    } else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!(
+                                "tenstorrent2: if condition op {condition} not in registers"
+                            )
+                            .into(),
+                        });
+                    };
+                    writeln!(em.src, "{indent}if ({cond}) {{");
+                    em.indent.push_str("  ");
+                    indent = em.indent.clone();
+                    em.scope_level += 1;
+                }
+                Op::EndIf => {
+                    em.scope_level -= 1;
+                    em.indent.pop();
+                    em.indent.pop();
+                    indent = em.indent.clone();
+                    writeln!(em.src, "{indent}}}");
+                }
                 Op::Index { .. } => todo!(),
                 Op::MatmulTile { x, y } => {
                     if !is_mm {
@@ -2009,7 +2062,7 @@ impl Compiler {
         em.prepend_compute_inits(init_anchor);
 
         writeln!(em.src, "}}");
-        self.compute = TTKernel::Compute { src: em.src, params: params.to_vec(), ordinals: ordinals.to_vec() };
+        self.compute = TTKernel::Compute { src: em.src, ordinals: ordinals.to_vec() };
 
         Ok(())
     }
@@ -2119,7 +2172,7 @@ impl Compiler {
                             } else if matches!(kernel.ops[st_idx].op, Op::Param { kind: ParamKind::Variable, .. }) {
                                 format!("r{st_idx}")
                             } else if let Some(&r) = em.var_map.get(&st_idx) {
-                                if em.vars[r as usize].loop_level == em.loop_level {
+                                if em.vars[r as usize].scope_level == em.scope_level {
                                     debug_assert!(em.vars[r as usize].rc > 0);
                                     em.vars[r as usize].rc -= 1;
                                 }
@@ -2146,10 +2199,38 @@ impl Compiler {
                     em.emit_op(op_id, &writer_data)?;
                     em.indent.push_str("  ");
                     indent = em.indent.clone();
-                    em.loop_level += 1;
+                    em.scope_level += 1;
                 }
                 Op::EndLoop => {
-                    em.loop_level -= 1;
+                    em.scope_level -= 1;
+                    em.indent.pop();
+                    em.indent.pop();
+                    indent = em.indent.clone();
+                    writeln!(em.src, "{indent}}}");
+                }
+                Op::If { condition } => {
+                    // Condition is a prior boolean scalar: consts inline,
+                    // registers resolve through the section map.
+                    let cond = if let Op::Const(c) = &kernel.ops[condition].op {
+                        format!("{}", c.c_code())
+                    } else if let Some(&r) = em.var_map.get(&condition) {
+                        format!("r{r}")
+                    } else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!(
+                                "tenstorrent2: if condition op {condition} not in registers"
+                            )
+                            .into(),
+                        });
+                    };
+                    writeln!(em.src, "{indent}if ({cond}) {{");
+                    em.indent.push_str("  ");
+                    indent = em.indent.clone();
+                    em.scope_level += 1;
+                }
+                Op::EndIf => {
+                    em.scope_level -= 1;
                     em.indent.pop();
                     em.indent.pop();
                     indent = em.indent.clone();
@@ -2172,8 +2253,6 @@ impl Compiler {
                 | Op::Bitcast { .. }
                 | Op::Stack { .. }
                 | Op::Index { .. }
-                | Op::If { .. }
-                | Op::EndIf
                 | Op::Wmma { .. }
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
@@ -2204,7 +2283,7 @@ impl OpEmitter<'_> {
     fn emit_op(&mut self, op_id: OpId, data: &SectionData) -> Result<(), BackendError> {
         let kernel = self.kernel;
         let indent = self.indent.clone();
-        let loop_level = self.loop_level;
+        let scope_level = self.scope_level;
         let arg_pos = &self.arg_pos;
         let src = &mut self.src;
         let var_map = &mut self.var_map;
@@ -2222,21 +2301,21 @@ impl OpEmitter<'_> {
             dtype: DType,
             layout: MemLayout,
             rcs: &Map<OpId, u32>,
-            loop_level: u8,
+            scope_level: u8,
         ) -> u32 {
             let rc: u32 = rcs[&op_id];
             for (i, s) in vars.iter_mut().enumerate() {
-                if s.rc == 0 && s.dtype == dtype && s.layout == layout && s.loop_level != loop_level {
+                if s.rc == 0 && s.dtype == dtype && s.layout == layout && s.scope_level != scope_level {
                     s.dtype = dtype;
                     s.layout = layout;
                     s.rc = rc;
-                    s.loop_level = loop_level;
+                    s.scope_level = scope_level;
                     var_map.insert(op_id, i as u32);
                     return i as u32;
                 }
             }
             let r = vars.len() as u32;
-            vars.push(VarSlot { dtype, layout, rc, loop_level });
+            vars.push(VarSlot { dtype, layout, rc, scope_level });
             var_map.insert(op_id, r);
             r
         }
@@ -2252,7 +2331,7 @@ impl OpEmitter<'_> {
             id: OpId,
             var_map: &Map<OpId, u32>,
             vars: &mut [VarSlot],
-            loop_level: u8,
+            scope_level: u8,
         ) -> Result<String, BackendError> {
             if let Op::Const(c) = &kernel.ops[id].op {
                 return Ok(format!("{}", c.c_code()));
@@ -2262,7 +2341,7 @@ impl OpEmitter<'_> {
                 if matches!(s.layout, MemLayout::Tile { .. }) {
                     return Ok(format!("{r}"));
                 }
-                if s.loop_level == loop_level {
+                if s.scope_level == scope_level {
                     debug_assert!(s.rc > 0);
                     s.rc -= 1;
                 }
@@ -2327,9 +2406,9 @@ impl OpEmitter<'_> {
                 if !matches!(xlay, MemLayout::Scalar) || !matches!(ylay, MemLayout::Scalar) {
                     todo!("tenstorrent2 binary over non-scalar layout");
                 }
-                let x = get_var(kernel, *x, var_map, vars, loop_level)?;
-                let y = get_var(kernel, *y, var_map, vars, loop_level)?;
-                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, loop_level);
+                let x = get_var(kernel, *x, var_map, vars, scope_level)?;
+                let y = get_var(kernel, *y, var_map, vars, scope_level)?;
+                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, scope_level);
                 let _ = match bop {
                     BOp::Add => writeln!(src, "{indent}{} r{reg} = {x} + {y};", dt.c_type()),
                     BOp::Sub => writeln!(src, "{indent}{} r{reg} = {x} - {y};", dt.c_type()),
@@ -2365,10 +2444,10 @@ impl OpEmitter<'_> {
                 {
                     todo!("tenstorrent2 mad over non-scalar layout");
                 }
-                let x = get_var(kernel, *x, var_map, vars, loop_level)?;
-                let y = get_var(kernel, *y, var_map, vars, loop_level)?;
-                let z = get_var(kernel, *z, var_map, vars, loop_level)?;
-                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, loop_level);
+                let x = get_var(kernel, *x, var_map, vars, scope_level)?;
+                let y = get_var(kernel, *y, var_map, vars, scope_level)?;
+                let z = get_var(kernel, *z, var_map, vars, scope_level)?;
+                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, scope_level);
                 writeln!(src, "{indent}{} r{reg} = {x} * {y} + {z};", dt.c_type());
             }
             Op::Cast { x, dtype } => {
@@ -2397,16 +2476,16 @@ impl OpEmitter<'_> {
                 if !matches!(xlay, MemLayout::Scalar) {
                     todo!("tenstorrent2 cast over non-scalar layout");
                 }
-                let x = get_var(kernel, *x, var_map, vars, loop_level)?;
-                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, loop_level);
+                let x = get_var(kernel, *x, var_map, vars, scope_level)?;
+                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, scope_level);
                 writeln!(src, "{indent}{} r{reg} = ({}){x};", dtype.c_type(), dtype.c_type());
             }
             Op::Loop { len } => {
-                let bound = get_var(kernel, *len, var_map, vars, loop_level)?;
+                let bound = get_var(kernel, *len, var_map, vars, scope_level)?;
                 let dt = data.dtypes[&op_id].0;
                 let rlay = data.dtypes[&op_id].1;
                 debug_assert!(matches!(rlay, MemLayout::Scalar));
-                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, loop_level);
+                let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, scope_level);
                 writeln!(src, "{indent}for (uint32_t r{reg} = 0; r{reg} < {bound}; r{reg}++) {{");
             }
             Op::Range { axis, kind } => match kind {
@@ -2415,7 +2494,7 @@ impl OpEmitter<'_> {
                     let dt = data.dtypes[&op_id].0;
                     let rlay = data.dtypes[&op_id].1;
                     debug_assert!(matches!(rlay, MemLayout::Scalar));
-                    let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, loop_level);
+                    let reg = new_var(op_id, &mut *var_map, &mut *vars, dt, rlay, &data.rcs, scope_level);
                     writeln!(src, "{indent}uint32_t r{reg} = get_arg_val<uint32_t>({arg});");
                 }
                 RangeKind::Local(_) => {
@@ -2423,7 +2502,9 @@ impl OpEmitter<'_> {
                         "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
                     )
                 }
-                RangeKind::Warp(_) => todo!("tenstorrent2 range warp"),
+                RangeKind::Warp(_) => {
+                    unreachable!("tenstorrent has no warps; warp ranges are gpu-only")
+                }
             },
             Op::Unary { uop, .. } if matches!(data.dtypes[&op_id].1, MemLayout::Tile { .. }) => {
                 unary_inits.insert(*uop);
