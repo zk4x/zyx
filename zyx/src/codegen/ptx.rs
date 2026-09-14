@@ -208,10 +208,6 @@ impl Compiler {
                 status: ErrorStatus::KernelCompilation,
                 context: "PTX: UOp::Trunc must use cvt.rzi, not a separate instruction".into(),
             }),
-            UOp::Ln => Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "PTX: UOp::Ln should be converted to Log2 + mul by ln(2) before reaching PTX backend".into(),
-            }),
             UOp::Abs => Ok("abs"),
         }
     }

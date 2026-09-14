@@ -558,10 +558,14 @@ impl Kernel {
         self.stack(&outs)
     }
 
-    /// `ln(x)`
+    /// `ln(x) = log2(x) * ln(2)`
     pub fn ln(&mut self, x: impl IntoOp) -> OpId {
         let x = x.into_op(self);
-        self.unary(x, UOp::Ln)
+        let l = self.log2(x);
+        let dtype = self.dtype(x);
+        let ln2 = self.const_val(core::f32::consts::LN_2);
+        let ln2 = self.cast(ln2, dtype);
+        self.mul(l, ln2)
     }
 
     /// `log2(x)`

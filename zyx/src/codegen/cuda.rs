@@ -322,7 +322,6 @@ impl Kernel {
                                     UOp::Cos => writeln!(source, "{indent}r{reg}.{c} = cos({x}.{c});"),
                                     UOp::Floor => writeln!(source, "{indent}r{reg}.{c} = floor({x}.{c});"),
                                     UOp::Trunc => writeln!(source, "{indent}r{reg}.{c} = trunc({x}.{c});"),
-                                    UOp::Ln => writeln!(source, "{indent}r{reg}.{c} = log({x}.{c});"),
                                     UOp::Abs => writeln!(source, "{indent}r{reg}.{c} = fabsf({x}.{c});"),
                                 };
                             }
@@ -354,7 +353,6 @@ impl Kernel {
                             UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
                             UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
                             UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
-                            UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
                             UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabsf({x});"),
                         },
                         MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: Tile layout not supported for Unary".into() }),

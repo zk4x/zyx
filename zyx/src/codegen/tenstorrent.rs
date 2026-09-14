@@ -216,7 +216,6 @@ fn unary_init_name(uop: UOp) -> &'static str {
         UOp::Floor | UOp::Trunc => "rounding_op_tile_init();",
         UOp::Abs => "abs_tile_init();",
         UOp::Not => "logical_not_tile_init();",
-        UOp::Ln => unreachable!("ln is lowered to log2 before codegen"),
     }
 }
 
@@ -1529,7 +1528,6 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             UOp::Trunc => "trunc_tile",
             UOp::Abs => "abs_tile",
             UOp::Not => "logical_not_tile",
-            UOp::Ln => unreachable!("ln is lowered to log2 before codegen"),
         };
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: unary without MATH lock");

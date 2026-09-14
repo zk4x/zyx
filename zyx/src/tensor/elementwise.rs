@@ -221,8 +221,7 @@ impl Tensor {
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn ln(&self) -> Tensor {
-        let x = self.float_cast().unwrap();
-        Tensor { id: RT.lock().unary(x.id, UOp::Ln) }
+        self.log2() * core::f64::consts::LN_2
     }
 
     /// Compute logarithm with any base

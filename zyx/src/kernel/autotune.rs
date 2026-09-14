@@ -96,10 +96,8 @@ impl Kernel {
         let dev_info = self.device_info();
         if dev_info.has_native_exp2 {
             self.exp_to_exp2();
-            self.ln_to_log2();
         } else {
             self.exp2_to_exp();
-            self.log2_to_ln();
         }
         if dev_info.tenstorrent {
             self.opt_tenstorrent_tile();

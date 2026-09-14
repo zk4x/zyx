@@ -228,8 +228,6 @@ pub enum UOp {
     Exp,
     /// Exponential with base 2: 2^x
     Exp2,
-    /// Natural logarithm: ln(x)
-    Ln,
     /// Logarithm with base 2: log2(x)
     Log2,
     /// Reciprocal: 1/x

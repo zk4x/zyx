@@ -265,7 +265,6 @@ mod glsl {
     pub const Exp2: u32 = 29;
     pub const Log2: u32 = 30;
     pub const Exp: u32 = 27;
-    pub const Log: u32 = 28;
     pub const Sqrt: u32 = 31;
     pub const Pow: u32 = 26;
 }
@@ -1501,9 +1500,6 @@ impl Kernel {
                             }
                             UOp::Exp2 => {
                                 asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::Exp2, src_id]);
-                            }
-                            UOp::Ln => {
-                                asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::Log, src_id]);
                             }
                             UOp::Log2 => {
                                 asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::Log2, src_id]);

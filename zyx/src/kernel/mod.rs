@@ -799,7 +799,6 @@ impl Kernel {
                     UOp::BitNot => "bitnot",
                     UOp::Exp => "exp",
                     UOp::Exp2 => "exp2",
-                    UOp::Ln => "ln",
                     UOp::Log2 => "log2",
                     UOp::Reciprocal => "reciprocal",
                     UOp::Sqrt => "sqrt",

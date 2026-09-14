@@ -112,10 +112,6 @@ impl Runtime {
                         let g = self.push_binary_node(graph_id, grad, exp_x, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
-                    UOp::Ln => {
-                        let g = self.push_binary_node(graph_id, grad, x, BOp::Div);
-                        accum_grad(self, graph_id, &mut grads, x, g);
-                    }
                     UOp::Abs => {
                         let zero = self.push_const(graph_id, Constant::new(0u8));
                         let one = self.push_const(graph_id, Constant::new(1u8));
@@ -162,8 +158,10 @@ impl Runtime {
                         let y_mul = self.push_binary_node(graph_id, y, x_pow_ym1, BOp::Mul);
                         let gx = self.push_binary_node(graph_id, grad, y_mul, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, gx);
-                        let ln_x = self.push_node(graph_id, Node::Unary { x, uop: UOp::Ln }).1;
-                        let z_lnx = self.push_binary_node(graph_id, cid, ln_x, BOp::Mul);
+                        let log2_x = self.push_node(graph_id, Node::Unary { x, uop: UOp::Log2 }).1;
+                        let ln2_cid = self.push_const(graph_id, Constant::new(std::f64::consts::LN_2));
+                        let z_log2 = self.push_binary_node(graph_id, cid, log2_x, BOp::Mul);
+                        let z_lnx = self.push_binary_node(graph_id, z_log2, ln2_cid, BOp::Mul);
                         let gy = self.push_binary_node(graph_id, grad, z_lnx, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, y, gy);
                     }
