@@ -1463,13 +1463,25 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         x: TileId<DSTBF16>,
         uop: UOp,
     ) -> TileId<DSTBF16> {
+        // log2 passes its base scale (bits of 1/ln 2) explicitly, emitted
+        // here: the `name` match below evaluates eagerly, so Log2 can never
+        // be deferred to a later branch.
+        if uop == UOp::Log2 {
+            self.math_lock(src, indent);
+            debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: unary without MATH lock");
+            if self.transition(Programmed::Unary(uop)) {
+                writeln!(src, "{indent}{}", unary_init_name(uop));
+            }
+            writeln!(src, "{indent}log_with_base_tile({x}, 0x3fb8aa3b);");
+            self.tile_map.insert(op_id, x);
+            return x;
+        }
         let name = match uop {
             UOp::Neg => "negative_tile",
             UOp::BitNot => "bitwise_not_tile",
             UOp::Exp => "exp_tile",
             UOp::Exp2 => "exp2_tile",
-            // log2 carries its base scale below; plain log_tile is ln.
-            UOp::Log2 => unreachable!("log2 needs its base scale, emitted below"),
+            UOp::Log2 => unreachable!("tenstorrent2: log2 is emitted above"),
             UOp::Sin => "sin_tile",
             UOp::Cos => "cos_tile",
             UOp::Reciprocal => "recip_tile",
@@ -1484,12 +1496,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         if self.transition(Programmed::Unary(uop)) {
             writeln!(src, "{indent}{}", unary_init_name(uop));
         }
-        // log2 passes its base scale (bits of 1/ln 2) explicitly.
-        if uop == UOp::Log2 {
-            writeln!(src, "{indent}log_with_base_tile({x}, 0x3fb8aa3b);");
-        } else {
-            writeln!(src, "{indent}{name}({x});");
-        }
+        writeln!(src, "{indent}{name}({x});");
         self.tile_map.insert(op_id, x);
         x
     }
@@ -1579,7 +1586,13 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         let mut head = String::new();
         // Matmul-first kernels skip startup (0.72: `mm_init` owns the
         // long init); anything else starts up normally.
-        if !matches!(self.anchor, Programmed::Matmul(..)) {
+        if std::env::var("ZYX_TT_INIT_SFPU").is_ok() {
+            // EXPERIMENT ONLY: chain-exact setup — `init_sfpu` instead
+            // of startup. Decides whether multi-op episodes need it.
+            if let Some([in0, _, out]) = self.startup {
+                let _ = std::fmt::Write::write_fmt(&mut head, format_args!("{indent}init_sfpu({in0}, {out});\n"));
+            }
+        } else if !matches!(self.anchor, Programmed::Matmul(..)) {
             if let Some([in0, in1, out]) = self.startup {
                 let _ = std::fmt::Write::write_fmt(
                     &mut head,

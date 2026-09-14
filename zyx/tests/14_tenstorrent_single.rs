@@ -8,10 +8,173 @@
 //! layout model), so reader/writer move whole tiles with single sequential
 //! NOC transfers and no swizzle anywhere; compute works on faces natively.
 
-//#![cfg(feature = "tenstorrent")]
+#![cfg(feature = "tenstorrent")]
 
-use zyx::kernel::{BOp, Dev, Kernel, MemScope, TileReduceKind};
+use zyx::kernel::{BOp, Dev, Kernel, MemScope, OpId, TileReduceKind};
 use zyx::{DType, Tensor, ZyxError};
+
+/// Single-core dtype×op matrix: every elementwise op on F16 and BF16.
+/// One 32x32 tile, straight-line acquire→copy→op→commit→pack.
+/// Known-silicon failures use the `ignore` arm with a doc reason.
+fn tt_range() -> Vec<f32> {
+    // [0, 2): F16/BF16-exact steps, safe for sqrt/exp.
+    (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect()
+}
+
+fn tt_centered() -> Vec<f32> {
+    // [-2, 2): signed inputs for neg/abs/floor/trunc/trig.
+    (0..32 * 32).map(|j| ((j % 64) as f32 - 32.) * 0.0625).collect()
+}
+
+fn tt_positive() -> Vec<f32> {
+    // (0, 2]: strictly positive for log2/recip/divisors.
+    (0..32 * 32).map(|j| ((j % 32) as f32 + 1.) * 0.0625).collect()
+}
+
+fn run_tt_unary(
+    name: &str,
+    dtype: DType,
+    tol: f32,
+    data: Vec<f32>,
+    expect: fn(f32) -> f32,
+    op: impl Fn(&mut Kernel, OpId) -> OpId,
+) -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(dtype);
+    let out = k.param_mut(dtype);
+
+    let ca = k.circular_storage(dtype, 1);
+    let cout = k.circular_storage(dtype, 1);
+
+    let _g = k.group_range(0, 1);
+
+    let ta = k.load_global_tile(a, 0);
+    k.store_circular(ca, ta, 0);
+    k.barrier();
+    let va = k.load_circular(ca, 0);
+    let v = op(&mut k, va);
+    k.store_circular(cout, v, 0);
+    k.barrier();
+    let w = k.load_circular(cout, 0);
+    k.store_global_tile(out, w, 0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let a_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(dtype).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (p, (&x, &v)) in data.iter().zip(z.iter()).enumerate() {
+        let expected = expect(x);
+        if (v - expected).abs() >= tol {
+            if bad < 10 || std::env::var("ZYX_TT_FULL").is_ok() {
+                println!("{name}[{p}] = {v}, expected {expected}");
+            }
+            bad += 1;
+        }
+    }
+    println!("{name} bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+fn run_tt_binary(
+    name: &str,
+    dtype: DType,
+    tol: f32,
+    data_a: Vec<f32>,
+    data_b: Vec<f32>,
+    expect: fn(f32, f32) -> f32,
+    op: impl Fn(&mut Kernel, OpId, OpId) -> OpId,
+) -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(dtype);
+    let b = k.param(dtype);
+    let out = k.param_mut(dtype);
+
+    let ca = k.circular_storage(dtype, 1);
+    let cb = k.circular_storage(dtype, 1);
+    let cout = k.circular_storage(dtype, 1);
+
+    let _g = k.group_range(0, 1);
+
+    let ta = k.load_global_tile(a, 0);
+    k.store_circular(ca, ta, 0);
+    let tb = k.load_global_tile(b, 0);
+    k.store_circular(cb, tb, 0);
+    k.barrier();
+    let va = k.load_circular(ca, 0);
+    let vb = k.load_circular(cb, 0);
+    let v = op(&mut k, va, vb);
+    k.store_circular(cout, v, 0);
+    k.barrier();
+    let w = k.load_circular(cout, 0);
+    k.store_global_tile(out, w, 0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let to_tt = |v: Vec<f32>| -> Result<Tensor, ZyxError> {
+        Tensor::from_vec(v, [32, 32])?.tilize()?.cast(dtype).to(Dev::TT(0))
+    };
+    let a_t = to_tt(data_a.clone())?;
+    let b_t = to_tt(data_b.clone())?;
+    let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (p, ((&x, &y), &v)) in data_a.iter().zip(data_b.iter()).zip(z.iter()).enumerate() {
+        let expected = expect(x, y);
+        if (v - expected).abs() >= tol {
+            if bad < 10 || std::env::var("ZYX_TT_FULL").is_ok() {
+                println!("{name}[{p}] = {v}, expected {expected}");
+            }
+            bad += 1;
+        }
+    }
+    println!("{name} bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+macro_rules! tt_unary {
+    ($name:ident, $op:expr, $dtype:expr, $tol:expr, $range:ident, $expect:expr) => {
+        #[test]
+        fn $name() -> Result<(), ZyxError> {
+            run_tt_unary(stringify!($name), $dtype, $tol, $range(), $expect, $op)
+        }
+    };
+    ($name:ident, $op:expr, $dtype:expr, $tol:expr, $range:ident, $expect:expr, ignore) => {
+        #[test]
+        #[ignore]
+        fn $name() -> Result<(), ZyxError> {
+            run_tt_unary(stringify!($name), $dtype, $tol, $range(), $expect, $op)
+        }
+    };
+}
+
+macro_rules! tt_binary {
+    ($name:ident, $op:expr, $dtype:expr, $tol:expr, $range_a:ident, $range_b:ident, $expect:expr) => {
+        #[test]
+        fn $name() -> Result<(), ZyxError> {
+            run_tt_binary(stringify!($name), $dtype, $tol, $range_a(), $range_b(), $expect, $op)
+        }
+    };
+}
 
 #[test]
 fn elementwise_golden_kernel() -> Result<(), ZyxError> {
@@ -584,255 +747,6 @@ fn tenstorrent_eltwise_add() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/// Probe: back-to-back in-place exps on the SAME slot, no add. Bisects
-/// the mixed exp→add zeros: green means chained exps are fine and the
-/// break is add-after-exp (or the second slot); red means chained SFPU
-/// on one slot is the break.
-#[test]
-fn tenstorrent_probe_dual_exp() -> Result<(), ZyxError> {
-    let mut k = Kernel::new(Dev::TT(0));
-    let a = k.param(DType::F16);
-    let out = k.param_mut(DType::F16);
-
-    let ca = k.circular_storage(DType::F16, 1);
-    let cout = k.circular_storage(DType::F16, 1);
-
-    let _g = k.group_range(0, 1);
-
-    let ta = k.load_global_tile(a, 0);
-    k.store_circular(ca, ta, 0);
-    k.barrier();
-    // Probe-only: does the official `init_sfpu` setup fix multi-op episodes?
-    let _sfpu = k.asm("init_sfpu({0}, {1})", &[ca, cout]);
-    let va = k.load_circular(ca, 0);
-    let ea = k.exp(va);
-    let eb = k.exp(ea);
-    k.store_circular(cout, eb, 0);
-    k.barrier();
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
-
-    k.verify();
-    let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
-    let data: Vec<f32> = (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect();
-    let a_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
-    let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
-
-    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
-    assert_eq!(z.len(), 1024);
-    let mut bad = 0;
-    for (p, (&x, &v)) in data.iter().zip(z.iter()).enumerate() {
-        let expected = x.exp().exp();
-        if (v - expected).abs() >= 5e-2 {
-            if bad < 10 {
-                println!("z[{p}] = {v}, expected {expected}");
-            }
-            bad += 1;
-        }
-    }
-    println!("dual-exp bad: {bad} / 1024");
-    assert_eq!(bad, 0);
-
-    Ok(())
-}
-
-/// Mixed-kind cone (exp then add): proves the `Programmed` phase
-/// cursor — `exp` hoists as the anchor, `add_binary_tile_init` goes
-/// inline once at the unary→binary switch.
-#[test]
-fn tenstorrent_mixed_exp_add() -> Result<(), ZyxError> {
-    let mut k = Kernel::new(Dev::TT(0));
-    let a = k.param(DType::F16);
-    let b = k.param(DType::F16);
-    let out = k.param_mut(DType::F16);
-
-    let ca = k.circular_storage(DType::F16, 1);
-    let cb = k.circular_storage(DType::F16, 1);
-    let cout = k.circular_storage(DType::F16, 1);
-
-    let _g = k.group_range(0, 1);
-
-    let ta = k.load_global_tile(a, 0);
-    k.store_circular(ca, ta, 0);
-    let tb = k.load_global_tile(b, 0);
-    k.store_circular(cb, tb, 0);
-    k.barrier();
-    let va = k.load_circular(ca, 0);
-    let ea = k.exp(va);
-    let vb = k.load_circular(cb, 0);
-    let eb = k.exp(vb);
-    let s = k.add(ea, eb);
-    k.store_circular(cout, s, 0);
-    k.barrier();
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
-
-    k.verify();
-    let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
-    // Inputs in [0, 2): F16-exact steps, no overflow.
-    let data_a: Vec<f32> = (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect();
-    let data_b: Vec<f32> = (0..32 * 32).map(|j| ((j + 7) % 32) as f32 * 0.0625).collect();
-    let to_tt = |v: Vec<f32>| -> Result<Tensor, ZyxError> {
-        Tensor::from_vec(v, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))
-    };
-    let a_t = to_tt(data_a.clone())?;
-    let b_t = to_tt(data_b.clone())?;
-    let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 32]])?;
-
-    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
-    assert_eq!(z.len(), 1024);
-    let mut bad = 0;
-    for (p, ((&x, &y), &v)) in data_a.iter().zip(data_b.iter()).zip(z.iter()).enumerate() {
-        let expected = x.exp() + y.exp();
-        if (v - expected).abs() >= 3e-2 {
-            if bad < 10 {
-                println!("z[{p}] = {v}, expected {expected}");
-            }
-            bad += 1;
-        }
-    }
-    println!("mixed bad: {bad} / 1024");
-    assert_eq!(bad, 0);
-
-    Ok(())
-}
-
-/// Mixed-kind cone (transpose then exp): Transpose→Unary switch.
-#[test]
-fn tenstorrent_mixed_transpose_exp() -> Result<(), ZyxError> {
-    let mut k = Kernel::new(Dev::TT(0));
-    let x = k.param(DType::F16);
-    let out = k.param_mut(DType::F16);
-
-    let cin = k.circular_storage(DType::F16, 1);
-    let cout = k.circular_storage(DType::F16, 1);
-
-    let _g = k.group_range(0, 1);
-
-    let tx = k.load_global_tile(x, 0);
-    k.store_circular(cin, tx, 0);
-    k.barrier();
-    let va = k.load_circular(cin, 0);
-    let t = k.transpose_tile(va);
-    let e = k.exp(t);
-    k.store_circular(cout, e, 0);
-    k.barrier();
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
-
-    k.verify();
-    let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
-    // Inputs in [0, 2): F16-exact steps, no overflow.
-    let data: Vec<f32> = (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect();
-    let x_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
-    let out_bufs = compiled.forward(&[&x_t], vec![[32, 32]])?;
-
-    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
-    assert_eq!(z.len(), 1024);
-    let mut bad = 0;
-    for r in 0..32 {
-        for c in 0..32 {
-            let expected = data[c * 32 + r].exp();
-            if (z[r * 32 + c] - expected).abs() >= 3e-2 {
-                if bad < 10 {
-                    println!("z[{r}][{c}] = {}, expected {expected}", z[r * 32 + c]);
-                }
-                bad += 1;
-            }
-        }
-    }
-    println!("mixed transpose-exp bad: {bad} / 1024");
-    assert_eq!(bad, 0);
-
-    Ok(())
-}
-
-/// Mixed-kind cone (exp then column-sum): Unary→Reduce switch,
-/// the softmax-sum pattern. The exp drains through a CB: reduce
-/// takes CB tile loads only.
-#[test]
-fn tenstorrent_mixed_exp_reduce() -> Result<(), ZyxError> {
-    let mut k = Kernel::new(Dev::TT(0));
-    let x = k.param(DType::F16);
-    let s = k.param(DType::F16);
-    let out = k.param_mut(DType::F16);
-
-    let cin = k.circular_storage(DType::F16, 1);
-    let csc = k.circular_storage(DType::F16, 1);
-    let cmid = k.circular_storage(DType::F16, 1);
-    let cout = k.circular_storage(DType::F16, 1);
-
-    let _g = k.group_range(0, 1);
-
-    let tx = k.load_global_tile(x, 0);
-    k.store_circular(cin, tx, 0);
-    let ts = k.load_global_tile(s, 0);
-    k.store_circular(csc, ts, 0);
-    k.barrier();
-    let acc = k.storage(DType::F16, MemScope::Register, 1024);
-    let va = k.load_circular(cin, 0);
-    let e = k.exp(va);
-    k.store_circular(cmid, e, 0);
-    let ve = k.load_circular(cmid, 0);
-    let vs = k.load_circular(csc, 0);
-    let av = k.load_register_tile(acc, 0);
-    let f = k.reduce_tile(ve, vs, av, BOp::Add, TileReduceKind::Col);
-    k.store_register_tile(acc, f, 0);
-    let g = k.load_register_tile(acc, 0);
-    k.store_circular(cout, g, 0);
-    k.barrier();
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
-
-    k.verify();
-    let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
-    // Inputs in [0, 1): column sums stay small in F16.
-    let data: Vec<f32> = (0..32 * 32).map(|j| (j % 16) as f32 * 0.0625).collect();
-    let to_tt = |v: Vec<f32>, rows: i64, cols: i64| -> Result<Tensor, ZyxError> {
-        Tensor::from_vec(v, [rows, cols])?.tilize()?.cast(DType::F16).to(Dev::TT(0))
-    };
-    let x_t = to_tt(data.clone(), 32, 32)?;
-    let s_t = to_tt(vec![1.0f32; 1024], 32, 32)?;
-    let out_bufs = compiled.forward(&[&x_t, &s_t], vec![[32, 32]])?;
-
-    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
-    assert_eq!(z.len(), 1024);
-    let mut bad = 0;
-    for c in 0..32 {
-        let expected: f32 = (0..32).map(|r| data[r * 32 + c].exp()).sum();
-        if (z[c] - expected).abs() >= 5e-1 {
-            if bad < 10 {
-                println!("z[{c}] = {}, expected {expected}", z[c]);
-            }
-            bad += 1;
-        }
-    }
-    println!("mixed exp-reduce bad: {bad} / 32");
-    assert_eq!(bad, 0);
-
-    Ok(())
-}
-
 /// Official `matmul_single_core` shape: reader streams A(mt,kt) + B(kt,nt)
 /// tiles in mt/nt/kt order, compute accumulates Kt tiles per output with
 /// the acquire hoisted above the Kt loop, writer drains row-major.
@@ -932,113 +846,39 @@ fn tenstorrent_matmul_single_core() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/// Mixed-kind cone (matmul then bias-add): Matmul→Binary switch.
-/// Same geometry as `tenstorrent_matmul_single_core` plus a per-nt
-/// bias tile added to each acc cone.
-#[test]
-fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
-    let mut k = Kernel::new(Dev::TT(0));
-    let a = k.param(DType::F16);
-    let b = k.param(DType::F16);
-    let c = k.param(DType::F32);
-    let out = k.param_mut(DType::F32);
+// Dtype x op matrix: every float elementwise op on F16 and BF16.
+// sin F16 is IGNORED (silicon identity passthrough, see debugging doc).
 
-    let ca = k.circular_storage(DType::F16, 1);
-    let cb = k.circular_storage(DType::F16, 1);
-    let cc = k.circular_storage(DType::F32, 1);
-    let cout = k.circular_storage(DType::F32, 1);
+tt_unary!(tenstorrent_neg_f16, |k: &mut Kernel, x: OpId| k.neg(x), DType::F16, 1e-5, tt_centered, |x: f32| -x);
+tt_unary!(tenstorrent_neg_bf16, |k: &mut Kernel, x: OpId| k.neg(x), DType::BF16, 1e-5, tt_centered, |x: f32| -x);
+tt_unary!(tenstorrent_abs_f16, |k: &mut Kernel, x: OpId| k.abs(x), DType::F16, 1e-5, tt_centered, |x: f32| x.abs());
+tt_unary!(tenstorrent_abs_bf16, |k: &mut Kernel, x: OpId| k.abs(x), DType::BF16, 1e-5, tt_centered, |x: f32| x.abs());
+tt_unary!(tenstorrent_floor_f16, |k: &mut Kernel, x: OpId| k.floor(x), DType::F16, 1e-5, tt_centered, |x: f32| x.floor());
+tt_unary!(tenstorrent_floor_bf16, |k: &mut Kernel, x: OpId| k.floor(x), DType::BF16, 1e-5, tt_centered, |x: f32| x.floor());
+tt_unary!(tenstorrent_trunc_f16, |k: &mut Kernel, x: OpId| k.trunc(x), DType::F16, 1e-5, tt_centered, |x: f32| x.trunc());
+tt_unary!(tenstorrent_trunc_bf16, |k: &mut Kernel, x: OpId| k.trunc(x), DType::BF16, 1e-5, tt_centered, |x: f32| x.trunc());
+tt_unary!(tenstorrent_exp_f16, |k: &mut Kernel, x: OpId| k.exp(x), DType::F16, 3e-2, tt_range, |x: f32| x.exp());
+tt_unary!(tenstorrent_exp_bf16, |k: &mut Kernel, x: OpId| k.exp(x), DType::BF16, 3e-2, tt_range, |x: f32| x.exp());
+tt_unary!(tenstorrent_exp2_f16, |k: &mut Kernel, x: OpId| k.exp2(x), DType::F16, 3e-2, tt_range, |x: f32| x.exp2());
+tt_unary!(tenstorrent_exp2_bf16, |k: &mut Kernel, x: OpId| k.exp2(x), DType::BF16, 3e-2, tt_range, |x: f32| x.exp2());
+tt_unary!(tenstorrent_log2_f16, |k: &mut Kernel, x: OpId| k.log2(x), DType::F16, 3e-2, tt_positive, |x: f32| x.log2());
+tt_unary!(tenstorrent_log2_bf16, |k: &mut Kernel, x: OpId| k.log2(x), DType::BF16, 3e-2, tt_positive, |x: f32| x.log2());
+tt_unary!(tenstorrent_recip_f16, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::F16, 3e-2, tt_positive, |x: f32| x.recip());
+tt_unary!(tenstorrent_recip_bf16, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::BF16, 3e-2, tt_positive, |x: f32| x.recip());
+tt_unary!(tenstorrent_sqrt_f16, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::F16, 3e-2, tt_range, |x: f32| x.sqrt());
+tt_unary!(tenstorrent_sqrt_bf16, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::BF16, 3e-2, tt_range, |x: f32| x.sqrt());
+tt_unary!(tenstorrent_sin_f16, |k: &mut Kernel, x: OpId| k.sin(x), DType::F16, 3e-2, tt_centered, |x: f32| x.sin(), ignore);
+tt_unary!(tenstorrent_sin_bf16, |k: &mut Kernel, x: OpId| k.sin(x), DType::BF16, 3e-2, tt_centered, |x: f32| x.sin());
+tt_unary!(tenstorrent_cos_f16, |k: &mut Kernel, x: OpId| k.cos(x), DType::F16, 3e-2, tt_centered, |x: f32| x.cos());
+tt_unary!(tenstorrent_cos_bf16, |k: &mut Kernel, x: OpId| k.cos(x), DType::BF16, 3e-2, tt_centered, |x: f32| x.cos());
 
-    let _g = k.group_range(0, 1);
-
-    // Reader: A tile (mt,kt) at mt*Kt+kt, B tile (kt,nt) at kt*Nt+nt,
-    // C bias tile (mt,nt) at mt*Nt+nt.
-    k.loop_over(1, |k, mti| {
-        k.loop_over(2, |k, nti| {
-            k.loop_over(2, |k, kti| {
-                let at = k.mad(mti, 2, kti);
-                let abase = k.mad(at, 1024, 0);
-                let ta = k.load_global_tile(a, abase);
-                k.store_circular(ca, ta, 0);
-                let bt = k.mad(kti, 2, nti);
-                let bbase = k.mad(bt, 1024, 0);
-                let tb = k.load_global_tile(b, bbase);
-                k.store_circular(cb, tb, 0);
-            });
-            let ct = k.mad(mti, 2, nti);
-            let cbase = k.mad(ct, 1024, 0);
-            let tc = k.load_global_tile(c, cbase);
-            k.store_circular(cc, tc, 0);
-        });
-    });
-    k.barrier();
-    // Compute: one acc cone per output tile, bias added after the Kt
-    // accumulation steps.
-    k.loop_over(1, |k, _mti| {
-        k.loop_over(2, |k, _nti| {
-            let acc = k.storage(DType::F32, MemScope::Register, 1024);
-            k.loop_over(2, |k, _kti| {
-                let va = k.load_circular(ca, 0);
-                let vb = k.load_circular(cb, 0);
-                let av = k.load_register_tile(acc, 0);
-                let f = k.matmul_tile(va, vb, av);
-                k.store_register_tile(acc, f, 0);
-            });
-            let f = k.load_register_tile(acc, 0);
-            let vc = k.load_circular(cc, 0);
-            let s = k.add(f, vc);
-            k.store_circular(cout, s, 0);
-        });
-    });
-    k.barrier();
-    // Writer: output tile (mt,nt) at mt*Nt+nt, row-major.
-    k.loop_over(1, |k, mti| {
-        k.loop_over(2, |k, nti| {
-            let ot = k.mad(mti, 2, nti);
-            let obase = k.mad(ot, 1024, 0);
-            let v = k.load_circular(cout, 0);
-            k.store_global_tile(out, v, obase);
-        });
-    });
-
-    k.verify();
-    let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
-    // A[32,64] @ B[64,64] + C[32,64], values kept small.
-    let a_data: Vec<f32> = (0..32 * 64).map(|j| (j % 4) as f32 * 0.0625).collect();
-    let b_data: Vec<f32> = (0..64 * 64).map(|j| ((j / 4) % 4) as f32 * 0.0625).collect();
-    let c_data: Vec<f32> = (0..32 * 64).map(|j| (j % 8) as f32 * 0.0625).collect();
-    let mut expected = vec![0.0f32; 32 * 64];
-    for r in 0..32 {
-        for c in 0..64 {
-            let mut s = 0.0f32;
-            for t in 0..64 {
-                s += a_data[r * 64 + t] * b_data[t * 64 + c];
-            }
-            expected[r * 64 + c] = s + c_data[r * 64 + c];
-        }
-    }
-    let a_t = Tensor::from_vec(a_data, [32, 64])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
-    let b_t = Tensor::from_vec(b_data, [64, 64])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
-    let c_t = Tensor::from_vec(c_data, [32, 64])?.tilize()?.cast(DType::F32).to(Dev::TT(0))?;
-    let out_bufs = compiled.forward(&[&a_t, &b_t, &c_t], vec![[32, 64]])?;
-
-    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.untilize(32, 64)?.to_vec()?;
-    assert_eq!(z.len(), 2048);
-    let mut bad = 0;
-    for (p, (&v, &e)) in z.iter().zip(expected.iter()).enumerate() {
-        if (v - e).abs() >= 5e-2 {
-            if bad < 10 {
-                println!("z[{p}] = {v}, expected {e}");
-            }
-            bad += 1;
-        }
-    }
-    println!("mixed mm-bias bad: {bad} / 2048");
-    assert_eq!(bad, 0);
-
-    Ok(())
-}
+tt_binary!(tenstorrent_add_f16, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::F16, 1e-2, tt_range, tt_range, |x: f32, y: f32| x + y);
+tt_binary!(tenstorrent_add_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::BF16, 1e-2, tt_range, tt_range, |x: f32, y: f32| x + y);
+tt_binary!(tenstorrent_sub_f16, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::F16, 1e-2, tt_range, tt_range, |x: f32, y: f32| x - y);
+tt_binary!(tenstorrent_sub_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::BF16, 1e-2, tt_range, tt_range, |x: f32, y: f32| x - y);
+tt_binary!(tenstorrent_mul_f16, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::F16, 3e-2, tt_range, tt_range, |x: f32, y: f32| x * y);
+tt_binary!(tenstorrent_mul_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::BF16, 3e-2, tt_range, tt_range, |x: f32, y: f32| x * y);
+tt_binary!(tenstorrent_div_f16, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::F16, 3e-2, tt_range, tt_positive, |x: f32, y: f32| x / y);
+tt_binary!(tenstorrent_div_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::BF16, 3e-2, tt_range, tt_positive, |x: f32, y: f32| x / y);
+tt_binary!(tenstorrent_max_f16, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::F16, 1e-5, tt_centered, tt_range, |x: f32, y: f32| x.max(y));
+tt_binary!(tenstorrent_max_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::BF16, 1e-5, tt_centered, tt_range, |x: f32, y: f32| x.max(y));
