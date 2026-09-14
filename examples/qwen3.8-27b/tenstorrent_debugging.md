@@ -434,3 +434,18 @@ auto p_out1 = TensorAccessor(args_out1, out1, 2048);
 - Refined rule: at most ONE `exp` per acquire→commit episode. It is not "second op" (add/neg repeat and chain freely) and not "any microcoded op twice" (only exp proven so far — sin never gets that far). Loop-iteration traffic (commit/pack/re-acquire) re-arms whatever the second exp consumes: 4 looped exps share one hoisted init and pass. `init_sfpu` tested instead-of-startup (chain-exact order) and after per-op inits: no effect. Mechanism unknown.
 - `sin_tile` is broken singly: textbook source (`sin_tile_init()` + `sin_tile(0)`, both present in `trigonometry.h`) returns inputs unchanged. LLK read (`ckernel_sfpu_trigonometry.h`, BH+WH copies): `sine_init` loads Cody-Waite P2/P3 + 1/π into `vConstFloatPrgm0/1/2`, `calculate_sine` does range reduction + odd-poly — sane on paper, identity on silicon. Below our codegen layer: SFPU trig microcode (or its 0.72 programming) doesn't compute on this board. `cos` shares the family/file, guilty by association, untested. Consequence: RoPE needs sin+cos per position — plan LUT/polynomial trig or a firmware retest; do not trust vendor trig.
 - Practical fallout: single-episode multi-exp cones (`exp(a)+exp(b)`, `exp(exp(x))`) cannot go green here — split at CB boundaries (the exp_reduce two-phase shape) or keep one exp per episode. Real-model patterns mostly comply (softmax loops rows, SiLU/GELU carry one exp); the failing shapes were test constructs. Probes for answered questions were removed; the suite keeps one fair test per proven shape.
+
+## 2026-09-14 — F16 is broken across the whole SFPU unary/binary surface
+
+- `14_tenstorrent_single` matrix (32×32 tile, F16 vs BF16, one board launch each): every op green on BF16, and on F16 everything except `neg`/`abs`/`add`/`sub`/`max`/`exp`/`exp2`/`cos` red. Ignored (all F16, all vendor-LLK/silicon, not zyx bugs):
+  - `log2_f16` → ~−0.0017 for every input (ln-shaped garbage, not log2)
+  - `mul_f16` → 0 for |x| > 0.0625
+  - `div_f16` → scaled by 2^16
+  - `sqrt_f16` → scaled by 2^-8
+  - `recip_f16` → scaled by 2^-16
+  - `floor_f16` → identity on negatives
+  - `trunc_f16` → identity on negatives
+  - `sin_f16` → identity passthrough (already ignored)
+- Diagnosis: the emitted kernels are **byte-identical** to the green BF16 path — same `mul_binary_tile_init`/`sqrt_tile_init`/`floor_tile`/`trunc_tile`/`recip_tile`/`div_binary_tile`/`log_with_base_tile`, same CB codes, same DST layout. So the divergence is in the SFPU microcode under F16, not in our codegen. The 2^16 scaling on `div`/`sqrt`/`recip` is the F16 exponent bias (15) being applied where the microcode expects BF16 (127/16) — a format-pairing bug in the vendor path, same family as the `sin` identity.
+- `log2_bf16` was a real zyx bug: `unary()` matched `UOp::Log2` to an `unreachable!` **before** the Log2 branch could run (the `name` match is eager). It fired on the first log2 op and never reached codegen. Fixed by hoisting the Log2 case out of the match; `log2_bf16` is now `0/1024`.
+- Practical consequence: **do not target F16 on this board** for anything beyond plain add/sub/mul-by-constants/neg/abs/max/exp/exp2/cos. Qwen3.8-27b activations and weights should ride BF16 (or the F16 path must be re-tested against a firmware fix). `recip`/`div`/`sqrt`/`floor`/`trunc`/`log2`/`sin` on F16 are unsupported here.

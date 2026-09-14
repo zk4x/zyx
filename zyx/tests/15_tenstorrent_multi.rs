@@ -395,7 +395,7 @@ fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
 
     let ca = k.circular_storage(DType::F16, 1);
     let cb = k.circular_storage(DType::F16, 1);
-    let cc = k.circular_storage(DType::F32, 1);
+    let cc = k.circular_storage(DType::F32, 2);
     let cout = k.circular_storage(DType::F32, 1);
 
     let _g = k.group_range(0, 1);
@@ -417,14 +417,14 @@ fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
             let ct = k.mad(mti, 2, nti);
             let cbase = k.mad(ct, 1024, 0);
             let tc = k.load_global_tile(c, cbase);
-            k.store_circular(cc, tc, 0);
+            k.store_circular(cc, tc, nti);
         });
     });
     k.barrier();
     // Compute: one acc cone per output tile, bias added after the Kt
     // accumulation steps.
     k.loop_over(1, |k, _mti| {
-        k.loop_over(2, |k, _nti| {
+        k.loop_over(2, |k, nti| {
             let acc = k.storage(DType::F32, MemScope::Register, 1024);
             k.loop_over(2, |k, _kti| {
                 let va = k.load_circular(ca, 0);
@@ -434,7 +434,7 @@ fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
                 k.store_register_tile(acc, f, 0);
             });
             let f = k.load_register_tile(acc, 0);
-            let vc = k.load_circular(cc, 0);
+            let vc = k.load_circular(cc, nti);
             let s = k.add(f, vc);
             k.store_circular(cout, s, 0);
         });
