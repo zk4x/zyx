@@ -1139,22 +1139,14 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     next: TileId<DSTBF16>,
     /// Whole-file MATH/PACK lock state.
     state: TileState,
-    /// `mm_init` CB pairs seen, for the hoisted init block.
-    mm_inits: Vec<(CBId, CBId)>,
-    /// Reduce triples seen, for the hoisted `reduce_init` block.
-    /// The tile emits per use; `reduce_uninit` goes out once per
-    /// cone at the consuming pack (`math_unlock`).
-    reduce_inits: Vec<(BOp, TileReduceKind, CBId, CBId, TileId<DSTBF16>)>,
-    /// Transpose CB pairs seen, for the hoisted `transpose_wh_init`
-    /// block (0.72 has no split `transpose_init`; the `_wh` long init
-    /// owns the full programming like `mm_init` does).
-    transpose_inits: Vec<(CBId, CBId)>,
-    /// Phase-transition cursor: the init kind currently programmed
-    /// into unpacker/math.
+    /// Init kind currently programmed into unpacker/math. `Entry`
+    /// while only the anchor (below) has run, so its hoisted init is
+    /// still live; a switch away from it needs its init inline.
     cursor: Programmed<DSTBF16>,
-    /// First init kind used in the walk: hoists last, covering the
-    /// walk's first op so it needs no inline init.
-    first_programmed: Option<Programmed<DSTBF16>>,
+    /// First init kind used in the walk: hoists once at the anchor,
+    /// covering the walk's first op so it needs no inline init.
+    /// `Entry` while no init-needing op has run yet.
+    anchor: Programmed<DSTBF16>,
     /// A reduce cone is open: the next `pack` closes it with
     /// `reduce_uninit` before the commit.
     reduce_pending: bool,
@@ -1162,12 +1154,6 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     /// `compute_kernel_hw_startup`: recorded at compute entry by the
     /// generator, emitted with the hoisted inits at the anchor.
     startup: Option<[CBId; 3]>,
-    /// Tile unary ops seen, for the hoisted init block.
-    unary_inits: Set<UOp>,
-    /// Tile binary ops seen, for the hoisted init block.
-    binary_inits: Set<BOp>,
-    /// Tile cast format pairs seen, for the hoisted init block.
-    typecast_inits: Vec<(DType, DType)>,
     /// Copy CBs seen, for the hoisted `copy_tile_init` block.
     copy_inits: Set<CBId>,
 }
@@ -1181,15 +1167,9 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             tile_map: Map::default(),
             next: TileId::ZERO,
             state: TileState::Unlocked,
-            unary_inits: Set::default(),
-            binary_inits: Set::default(),
-            typecast_inits: Vec::new(),
             copy_inits: Set::default(),
-            mm_inits: Vec::new(),
-            reduce_inits: Vec::new(),
-            transpose_inits: Vec::new(),
             cursor: Programmed::Entry,
-            first_programmed: None,
+            anchor: Programmed::Entry,
             reduce_pending: false,
             startup: None,
         }
@@ -1202,65 +1182,29 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         self.startup = Some(triple);
     }
 
-    /// Phase-transition init cursor. Records `prog` in its seen-set
-    /// and returns true if the caller must emit its init inline.
-    /// `Entry` trusts the anchor exactly once (the first-used kind
-    /// hoists last, covering the walk's first op). After that every
-    /// kind switch inits inline — including first uses of later
-    /// kinds, whose hoisted twins are stale by then. Repeating the
-    /// programmed kind needs nothing; `Unknown` always inits.
-    /// `copy` stays out: per-CB source programming is orthogonal,
-    /// covered by `copy_inits` alone.
+    /// Phase-transition init cursor. Returns true if the caller must
+    /// emit its init inline: on every kind switch, and after an
+    /// `invalidate_program` (branch joins, reduce teardown). The
+    /// walk's first op records the anchor and trusts its hoisted init;
+    /// anchor repeats cost nothing while no switch happened yet, so
+    /// the cursor stays `Entry` iff a single kind appears.
+    /// `copy` stays out: per-CB source programming is orthogonal.
     fn transition(&mut self, prog: Programmed<DSTBF16>) -> bool {
-        if self.first_programmed.is_none() {
-            self.first_programmed = Some(prog);
+        if matches!(prog, Programmed::Entry | Programmed::Unknown) {
+            unreachable!("tenstorrent2: lifecycle state passed as init identity")
         }
-        let seen = match prog {
-            Programmed::Entry | Programmed::Unknown => {
-                unreachable!("tenstorrent2: lifecycle state passed as init identity")
-            }
-            Programmed::Unary(u) => !self.unary_inits.insert(u),
-            Programmed::Binary(b) => !self.binary_inits.insert(b),
-            Programmed::Typecast(a, b) => {
-                let p = (a, b);
-                let seen = self.typecast_inits.contains(&p);
-                if !seen {
-                    self.typecast_inits.push(p);
-                }
-                seen
-            }
-            Programmed::Matmul(a, b) => {
-                let p = (a, b);
-                let seen = self.mm_inits.contains(&p);
-                if !seen {
-                    self.mm_inits.push(p);
-                }
-                seen
-            }
-            Programmed::Reduce(rop, kind, cb_in, cb_sc, acc) => {
-                let params = (rop, kind, cb_in, cb_sc, acc);
-                let seen = self.reduce_inits.contains(&params);
-                if !seen {
-                    self.reduce_inits.push(params);
-                }
-                seen
-            }
-            Programmed::Transpose(a, b) => {
-                let p = (a, b);
-                let seen = self.transpose_inits.contains(&p);
-                if !seen {
-                    self.transpose_inits.push(p);
-                }
-                seen
-            }
-        };
-        let _ = seen;
         if self.cursor == prog {
             return false;
         }
-        let entry = self.cursor == Programmed::Entry;
+        if self.anchor == Programmed::Entry {
+            self.anchor = prog;
+            return false;
+        }
+        if prog == self.anchor && self.cursor == Programmed::Entry {
+            return false;
+        }
         self.cursor = prog;
-        !entry
+        true
     }
 
     /// Forget the programmed config: `if`-joins (branch may not have
@@ -1627,7 +1571,9 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     fn prepend_compute_inits(&self, src: &mut String, pos: usize) -> Result<(), BackendError> {
         let indent = "  ";
         let mut head = String::new();
-        if self.mm_inits.is_empty() {
+        // Matmul-first kernels skip startup (0.72: `mm_init` owns the
+        // long init); anything else starts up normally.
+        if !matches!(self.anchor, Programmed::Matmul(..)) {
             if let Some([in0, in1, out]) = self.startup {
                 let _ = std::fmt::Write::write_fmt(
                     &mut head,
@@ -1643,50 +1589,39 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         }
         // (identity, line): copy has no identity (orthogonal per-CB
         // programming, no cursor transitions).
-        let mut lines: Vec<(Option<Programmed<DSTBF16>>, String)> = Vec::new();
-        for &(cb_a, cb_b) in &self.mm_inits {
-            let out = self.startup.map(|[_, _, o]| o).expect("tenstorrent2: matmul kernel without startup triple");
-            lines.push((Some(Programmed::Matmul(cb_a, cb_b)), format!("{indent}mm_init({cb_a}, {cb_b}, {out});\n")));
-        }
-        for &cb in &self.copy_inits {
-            lines.push((None, format!("{indent}copy_tile_init({cb});\n")));
-        }
-        for &(cb_in, cb_out) in &self.transpose_inits {
-            lines.push((
-                Some(Programmed::Transpose(cb_in, cb_out)),
-                format!("{indent}transpose_wh_init({cb_in}, {cb_out});\n"),
-            ));
-        }
-        for &uop in &self.unary_inits {
-            lines.push((Some(Programmed::Unary(uop)), format!("{indent}{}\n", unary_init_name(uop))));
-        }
-        for &bop in &self.binary_inits {
-            if let Some(init) = binary_init_name(bop) {
-                lines.push((Some(Programmed::Binary(bop)), format!("{indent}{init}\n")));
-            }
-        }
-        for &(in_dt, out_dt) in &self.typecast_inits {
-            let in_fmt = tt_fmt(in_dt)?;
-            let out_fmt = tt_fmt(out_dt)?;
-            lines.push((
-                Some(Programmed::Typecast(in_dt, out_dt)),
-                format!("{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();\n"),
-            ));
-        }
-        for &(rop, kind, cb_in, cb_sc, acc) in &self.reduce_inits {
-            let op_name = reduce_pool_name(rop);
-            let dim_name = reduce_dim_name(kind);
-            lines.push((
-                Some(Programmed::Reduce(rop, kind, cb_in, cb_sc, acc)),
-                format!("{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});\n"),
-            ));
-        }
-        if let Some(first) = self.first_programmed {
-            lines.sort_by_key(|(p, _)| *p == Some(first));
-        }
         let mut inits = head;
-        for (_, line) in lines {
-            inits.push_str(&line);
+        for &cb in &self.copy_inits {
+            inits.push_str(&format!("{indent}copy_tile_init({cb});\n"));
+        }
+        // The anchor alone hoists; every kind switch inits inline at
+        // the switch (official sfpu_eltwise_chain shape).
+        match self.anchor {
+            Programmed::Entry | Programmed::Unknown => {}
+            Programmed::Unary(uop) => {
+                inits.push_str(&format!("{indent}{}\n", unary_init_name(uop)));
+            }
+            Programmed::Binary(bop) => {
+                if let Some(init) = binary_init_name(bop) {
+                    inits.push_str(&format!("{indent}{init}\n"));
+                }
+            }
+            Programmed::Typecast(in_dt, out_dt) => {
+                let in_fmt = tt_fmt(in_dt)?;
+                let out_fmt = tt_fmt(out_dt)?;
+                inits.push_str(&format!("{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();\n"));
+            }
+            Programmed::Matmul(cb_a, cb_b) => {
+                let out = self.startup.map(|[_, _, o]| o).expect("tenstorrent2: matmul kernel without startup triple");
+                inits.push_str(&format!("{indent}mm_init({cb_a}, {cb_b}, {out});\n"));
+            }
+            Programmed::Reduce(rop, kind, cb_in, cb_sc, acc) => {
+                let op_name = reduce_pool_name(rop);
+                let dim_name = reduce_dim_name(kind);
+                inits.push_str(&format!("{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});\n"));
+            }
+            Programmed::Transpose(cb_in, cb_out) => {
+                inits.push_str(&format!("{indent}transpose_wh_init({cb_in}, {cb_out});\n"));
+            }
         }
         src.insert_str(pos, &inits);
         Ok(())
