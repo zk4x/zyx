@@ -584,40 +584,33 @@ fn tenstorrent_eltwise_add() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/// Probe: dual in-place exp, pack both slots out, no add. Bisects the
-/// mixed exp→add zeros: green means both exps are fine and add-after-exp
-/// is the break; red means the second exp slot is the break.
+/// Probe: back-to-back in-place exps on the SAME slot, no add. Bisects
+/// the mixed exp→add zeros: green means chained exps are fine and the
+/// break is add-after-exp (or the second slot); red means chained SFPU
+/// on one slot is the break.
 #[test]
 fn tenstorrent_probe_dual_exp() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
-    let b = k.param(DType::F16);
-    let out_a = k.param_mut(DType::F16);
-    let out_b = k.param_mut(DType::F16);
+    let out = k.param_mut(DType::F16);
 
     let ca = k.circular_storage(DType::F16, 1);
-    let cb = k.circular_storage(DType::F16, 1);
-    let cout_a = k.circular_storage(DType::F16, 1);
-    let cout_b = k.circular_storage(DType::F16, 1);
+    let cout = k.circular_storage(DType::F16, 1);
 
     let _g = k.group_range(0, 1);
 
     let ta = k.load_global_tile(a, 0);
     k.store_circular(ca, ta, 0);
-    let tb = k.load_global_tile(b, 0);
-    k.store_circular(cb, tb, 0);
     k.barrier();
+    // Probe-only: does the official `init_sfpu` setup fix multi-op episodes?
+    let _sfpu = k.asm("init_sfpu({0}, {1})", &[ca, cout]);
     let va = k.load_circular(ca, 0);
     let ea = k.exp(va);
-    let vb = k.load_circular(cb, 0);
-    let eb = k.exp(vb);
-    k.store_circular(cout_a, ea, 0);
-    k.store_circular(cout_b, eb, 0);
+    let eb = k.exp(ea);
+    k.store_circular(cout, eb, 0);
     k.barrier();
-    let v = k.load_circular(cout_a, 0);
-    k.store_global_tile(out_a, v, 0);
-    let w = k.load_circular(cout_b, 0);
-    k.store_global_tile(out_b, w, 0);
+    let v = k.load_circular(cout, 0);
+    k.store_global_tile(out, v, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -626,44 +619,31 @@ fn tenstorrent_probe_dual_exp() -> Result<(), ZyxError> {
         return Ok(());
     }
 
-    let data_a: Vec<f32> = (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect();
-    let data_b: Vec<f32> = (0..32 * 32).map(|j| ((j + 7) % 32) as f32 * 0.0625).collect();
-    let to_tt = |v: Vec<f32>| -> Result<Tensor, ZyxError> {
-        Tensor::from_vec(v, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))
-    };
-    let a_t = to_tt(data_a.clone())?;
-    let b_t = to_tt(data_b.clone())?;
-    let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 32], [32, 32]])?;
+    let data: Vec<f32> = (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
 
-    let from_tt = |buf: &Tensor| -> Result<Vec<f32>, ZyxError> {
-        Ok(buf.to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?)
-    };
-    let za = from_tt(&out_bufs[0])?;
-    let zb = from_tt(&out_bufs[1])?;
-    assert_eq!(za.len(), 1024);
-    assert_eq!(zb.len(), 1024);
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
     let mut bad = 0;
-    for (p, ((&x, &y), (&va, &vb))) in
-        data_a.iter().zip(data_b.iter()).zip(za.iter().zip(zb.iter())).enumerate()
-    {
-        if (va - x.exp()).abs() >= 3e-2 {
+    for (p, (&x, &v)) in data.iter().zip(z.iter()).enumerate() {
+        let expected = x.exp().exp();
+        if (v - expected).abs() >= 5e-2 {
             if bad < 10 {
-                println!("za[{p}] = {va}, expected {}", x.exp());
-            }
-            bad += 1;
-        }
-        if (vb - y.exp()).abs() >= 3e-2 {
-            if bad < 10 {
-                println!("zb[{p}] = {vb}, expected {}", y.exp());
+                println!("z[{p}] = {v}, expected {expected}");
             }
             bad += 1;
         }
     }
-    println!("dual-exp bad: {bad} / 2048");
+    println!("dual-exp bad: {bad} / 1024");
     assert_eq!(bad, 0);
 
     Ok(())
 }
+
+/// Mixed-kind cone (exp then add): proves the `Programmed` phase
+/// cursor — `exp` hoists as the anchor, `add_binary_tile_init` goes
+/// inline once at the unary→binary switch.
 #[test]
 fn tenstorrent_mixed_exp_add() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));

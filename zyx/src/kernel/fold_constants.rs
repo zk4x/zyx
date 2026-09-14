@@ -505,6 +505,7 @@ impl Kernel {
                     | Op::Param { .. }
                     | Op::Storage { .. }
                     | Op::Wmma { .. }
+                    | Op::Asm { .. }
                     | Op::Barrier
                     | Op::If { .. }
                     | Op::EndIf

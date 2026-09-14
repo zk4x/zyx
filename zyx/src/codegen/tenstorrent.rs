@@ -395,6 +395,12 @@ impl Kernel {
                 Op::EndLoop | Op::If { .. } | Op::EndIf if section == tt_section => {
                     structural.insert(scan);
                 }
+                Op::Asm { ref ops, .. } if section == tt_section => {
+                    // Opaque side effect (e.g. `init_sfpu` setup): always
+                    // belongs to its lexical section, even with no users.
+                    structural.insert(scan);
+                    starters.extend(ops.iter().copied());
+                }
                 _ => {}
             }
             scan = self.next_op(scan);
@@ -1881,7 +1887,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 | Op::TransposeTile { .. }
                 | Op::Asm { .. }
                 | Op::Move { .. }
-                | Op::Reduce { .. } => todo!("tenstorrent2 reader op"),
+                | Op::Reduce { .. } => todo!("tenstorrent2 reader op {op_id}: {:?}", kernel.ops[op_id].op),
             }
         }
         self.noc.final_read_barrier(&mut src, &indent);
@@ -2325,7 +2331,37 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     let tile = self.tl.acc_tile(la, rc);
                     self.tl.reduce(&mut src, &indent, &mut self.cb, op_id, cb_in, cb_sc, tile, rop, kind, rc)?;
                 }
-                Op::Asm { .. } => todo!(),
+                Op::Asm { ref asm, ref ops } => {
+                    // Statement template (CUDA expression form generalized):
+                    // `{i}` substitutes the i-th operand — circular CBs
+                    // render as their CB index, materialized tiles as
+                    // their DST slot. Anything else is a loud error.
+                    let mut rendered: String = asm.as_str().into();
+                    for (i, &operand) in ops.iter().enumerate() {
+                        let var = match kernel.ops[operand].op {
+                            Op::Storage { scope: MemScope::Circular, .. } => {
+                                let Some(&cb) = self.cb.map.get(&operand) else {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: asm operand {operand} targets unmapped CB").into(),
+                                    });
+                                };
+                                format!("{cb}")
+                            }
+                            _ => {
+                                let Some(&slot) = self.tl.tile_map.get(&operand) else {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: asm operand {operand} is not a CB or live tile").into(),
+                                    });
+                                };
+                                format!("{slot}")
+                            }
+                        };
+                        rendered = rendered.replace(&format!("{{{i}}}"), &var);
+                    }
+                    writeln!(src, "{indent}{rendered};");
+                }
                 Op::Barrier => unreachable!("should've been filtered by kernel sections decomposition"),
                 Op::Move { .. } | Op::Reduce { .. } => unreachable!("should've been lowered by linearize"),
                 Op::Wmma { .. } => unreachable!("tt does not support wmma, use Op::MatmulTile instead"),

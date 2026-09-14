@@ -121,6 +121,10 @@ impl Kernel {
                     barrier[i] = true;
                 }
                 Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf => structural[i] = true,
+                // Opaque side effect (inline asm): program-ordered like a
+                // barrier for placement (never crosses one), but not a
+                // barrier itself.
+                Op::Asm { .. } => structural[i] = true,
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
                 _ => {}
@@ -408,6 +412,27 @@ impl Kernel {
                 continue;
             }
             for &j in &barrier_positions {
+                if i < j {
+                    edges.push((i, j));
+                    in_degree[j] += 1;
+                } else {
+                    edges.push((j, i));
+                    in_degree[i] += 1;
+                }
+            }
+        }
+
+        // Loads keep their original order with inline asm: asm is an
+        // opaque side effect (e.g. datapath setup must precede the
+        // first copy), so traffic must not float across it.
+        let asm_positions: Vec<usize> = (0..n)
+            .filter(|&i| matches!(self.at(rest[i]), Op::Asm { .. }))
+            .collect();
+        for i in 0..n {
+            if !load[i] {
+                continue;
+            }
+            for &j in &asm_positions {
                 if i < j {
                     edges.push((i, j));
                     in_degree[j] += 1;
