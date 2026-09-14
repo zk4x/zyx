@@ -328,6 +328,12 @@ impl Kernel {
         acc
     }
 
+    /// Define a `MemScope::Circular` storage of `ntiles` standard 32 x 32
+    /// tiles (`ntiles * 1024` elements).
+    pub fn circular_storage(&mut self, dtype: DType, ntiles: i64) -> OpId {
+        self.storage(dtype, MemScope::Circular, ntiles * 1024)
+    }
+
     /// Group (block) index.
     pub fn group_range(&mut self, axis: u32, len: impl IntoOp) -> OpId {
         let len = len.into_op(self);
@@ -378,6 +384,11 @@ impl Kernel {
         self.load_op(src, index, MemLayout::Tile { x, y, stride })
     }
 
+    /// Load a standard 32 x 32 circular tile from `src` at `index`.
+    pub fn load_circular(&mut self, src: OpId, index: impl IntoOp) -> OpId {
+        self.load_tile(src, index, 32, 32, 32)
+    }
+
     fn load_op(&mut self, src: OpId, index: OpId, layout: MemLayout) -> OpId {
         self.push_back(Op::Load { src, index, layout })
     }
@@ -398,6 +409,11 @@ impl Kernel {
     pub fn store_tile(&mut self, dst: OpId, x: OpId, index: impl IntoOp, x_size: u16, y_size: u16, stride: u32) {
         let index = index.into_op(self);
         self.store_op(dst, x, index, MemLayout::Tile { x: x_size, y: y_size, stride })
+    }
+
+    /// Store a standard 32 x 32 circular tile `x` to `dst` at `index`.
+    pub fn store_circular(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
+        self.store_tile(dst, x, index, 32, 32, 32)
     }
 
     fn store_op(&mut self, dst: OpId, x: OpId, index: OpId, layout: MemLayout) {

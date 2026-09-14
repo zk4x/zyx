@@ -25,9 +25,9 @@ fn elementwise_golden_kernel() -> Result<(), ZyxError> {
     let z = k.param_mut(DType::BF16);
 
     // Circular buffers (like shared memory tiling on CUDA)
-    let cx = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS as i64);
-    let cy = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS as i64);
-    let cz = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS as i64);
+    let cx = k.circular_storage(DType::BF16, 1);
+    let cy = k.circular_storage(DType::BF16, 1);
+    let cz = k.circular_storage(DType::BF16, 1);
 
     // One group range; every group index owns one tile. Length = n_tiles.
     let g = k.group_range(0, n_tiles);
@@ -38,23 +38,23 @@ fn elementwise_golden_kernel() -> Result<(), ZyxError> {
     let tbase = k.mad(g, tile_elems, zero);
 
     // ---- Reader part: whole-tile DRAM -> CB transfers ----
-    let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
-    k.store_tile(cx, tx, zero, TDIM, TDIM, TDIM as u32);
-    let ty = k.load_tile(y, tbase, TDIM, TDIM, TDIM as u32);
-    k.store_tile(cy, ty, zero, TDIM, TDIM, TDIM as u32);
+    let tx = k.load_circular(x, tbase);
+    k.store_circular(cx, tx, zero);
+    let ty = k.load_circular(y, tbase);
+    k.store_circular(cy, ty, zero);
     k.barrier();
 
     // ---- Compute part: z = x + sin(y), faces natively ----
-    let ta = k.load_tile(cx, zero, TDIM, TDIM, TDIM as u32);
-    let tb = k.load_tile(cy, zero, TDIM, TDIM, TDIM as u32);
+    let ta = k.load_circular(cx, zero);
+    let tb = k.load_circular(cy, zero);
     let ts = k.sin(tb);
     let tc = k.add(ta, ts);
-    k.store_tile(cz, tc, zero, TDIM, TDIM, TDIM as u32);
+    k.store_circular(cz, tc, zero);
 
     // ---- Writer part: whole-tile CB -> DRAM transfer ----
     k.barrier();
-    let v = k.load_tile(cz, zero, TDIM, TDIM, TDIM as u32);
-    k.store_tile(z, v, tbase, TDIM, TDIM, TDIM as u32);
+    let v = k.load_circular(cz, zero);
+    k.store_circular(z, v, tbase);
 
     k.verify();
     k.debug();
@@ -124,30 +124,30 @@ fn tenstorrent_nine_page_read() -> Result<(), ZyxError> {
     let n_tiles = k.variable(DType::I64);
     let z = k.param_mut(DType::BF16);
 
-    let cx = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS as i64);
-    let cy = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS as i64);
-    let cz = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS as i64);
+    let cx = k.circular_storage(DType::BF16, 1);
+    let cy = k.circular_storage(DType::BF16, 1);
+    let cz = k.circular_storage(DType::BF16, 1);
 
     let g = k.group_range(0, n_tiles);
     let tile_elems = k.const_idx(TILE_ELEMS);
     let zero = k.const_idx(0);
     let tbase = k.mad(g, tile_elems, zero);
 
-    let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
-    k.store_tile(cx, tx, zero, TDIM, TDIM, TDIM as u32);
-    let ty = k.load_tile(y, tbase, TDIM, TDIM, TDIM as u32);
-    k.store_tile(cy, ty, zero, TDIM, TDIM, TDIM as u32);
+    let tx = k.load_circular(x, tbase);
+    k.store_circular(cx, tx, zero);
+    let ty = k.load_circular(y, tbase);
+    k.store_circular(cy, ty, zero);
     k.barrier();
 
-    let ta = k.load_tile(cx, zero, TDIM, TDIM, TDIM as u32);
-    let tb = k.load_tile(cy, zero, TDIM, TDIM, TDIM as u32);
+    let ta = k.load_circular(cx, zero);
+    let tb = k.load_circular(cy, zero);
     let ts = k.sin(tb);
     let tc = k.add(ta, ts);
-    k.store_tile(cz, tc, zero, TDIM, TDIM, TDIM as u32);
+    k.store_circular(cz, tc, zero);
 
     k.barrier();
-    let v = k.load_tile(cz, zero, TDIM, TDIM, TDIM as u32);
-    k.store_tile(z, v, tbase, TDIM, TDIM, TDIM as u32);
+    let v = k.load_circular(cz, zero);
+    k.store_circular(z, v, tbase);
 
     k.verify();
     let compiled = k.compile()?;
@@ -203,7 +203,6 @@ fn tenstorrent_nine_page_read() -> Result<(), ZyxError> {
 /// pops/pushes before the reduce op is suspected.
 #[test]
 fn tenstorrent_copy_4tile_rung() -> Result<(), ZyxError> {
-    const TDIM: u16 = 32;
     const TILE_ELEMS: i64 = 1024;
     const WT: i64 = 4;
 
@@ -211,8 +210,8 @@ fn tenstorrent_copy_4tile_rung() -> Result<(), ZyxError> {
     let x = k.param(DType::F16);
     let out = k.param_mut(DType::F16);
 
-    let cin = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
-    let cacc = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+    let cin = k.circular_storage(DType::F16, 1);
+    let cacc = k.circular_storage(DType::F16, 1);
 
     let _g = k.group_range(0, 1);
     let cwt = k.const_idx(WT);
@@ -221,19 +220,19 @@ fn tenstorrent_copy_4tile_rung() -> Result<(), ZyxError> {
 
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
-        let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
-        k.store_tile(cin, tx, zero, TDIM, TDIM, TDIM as u32);
+        let tx = k.load_circular(x, tbase);
+        k.store_circular(cin, tx, zero);
     });
     k.barrier();
     k.loop_over(cwt, |k, _ki| {
-        let va = k.load_tile(cin, zero, TDIM, TDIM, TDIM as u32);
-        k.store_tile(cacc, va, zero, TDIM, TDIM, TDIM as u32);
+        let va = k.load_circular(cin, zero);
+        k.store_circular(cacc, va, zero);
     });
     k.barrier();
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
-        let v = k.load_tile(cacc, zero, TDIM, TDIM, TDIM as u32);
-        k.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = k.load_circular(cacc, zero);
+        k.store_circular(out, v, tbase);
     });
 
     k.verify();
@@ -270,7 +269,6 @@ fn tenstorrent_copy_4tile_rung() -> Result<(), ZyxError> {
 /// exonerated and the hang is in the reduce config sequence.
 #[test]
 fn tenstorrent_acc_copy_rung() -> Result<(), ZyxError> {
-    const TDIM: u16 = 32;
     const TILE_ELEMS: i64 = 1024;
     const WT: i64 = 4;
 
@@ -279,38 +277,38 @@ fn tenstorrent_acc_copy_rung() -> Result<(), ZyxError> {
     let m = k.param(DType::F16);
     let out = k.param_mut(DType::F16);
 
-    let cin = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
-    let cacc = k.storage(DType::F16, MemScope::Circular, 2 * TILE_ELEMS);
-    let cout = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+    let cin = k.circular_storage(DType::F16, 1);
+    let cacc = k.circular_storage(DType::F16, 2);
+    let cout = k.circular_storage(DType::F16, 1);
 
     let _g = k.group_range(0, 1);
     let cwt = k.const_idx(WT);
     let c1024 = k.const_idx(TILE_ELEMS);
     let zero = k.const_idx(0);
 
-    let tm = k.load_tile(m, zero, TDIM, TDIM, TDIM as u32);
-    k.store_tile(cacc, tm, zero, TDIM, TDIM, TDIM as u32);
+    let tm = k.load_circular(m, zero);
+    k.store_circular(cacc, tm, zero);
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
-        let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
-        k.store_tile(cin, tx, zero, TDIM, TDIM, TDIM as u32);
+        let tx = k.load_circular(x, tbase);
+        k.store_circular(cin, tx, zero);
     });
     k.barrier();
     k.loop_over(cwt, |k, _ki| {
-        let va = k.load_tile(cin, zero, TDIM, TDIM, TDIM as u32);
-        k.store_tile(cout, va, zero, TDIM, TDIM, TDIM as u32);
-        let a = k.load_tile(cacc, zero, TDIM, TDIM, TDIM as u32);
-        k.store_tile(cacc, a, zero, TDIM, TDIM, TDIM as u32);
+        let va = k.load_circular(cin, zero);
+        k.store_circular(cout, va, zero);
+        let a = k.load_circular(cacc, zero);
+        k.store_circular(cacc, a, zero);
     });
     k.barrier();
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
-        let v = k.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
-        k.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = k.load_circular(cout, zero);
+        k.store_circular(out, v, tbase);
     });
-    let v = k.load_tile(cacc, zero, TDIM, TDIM, TDIM as u32);
+    let v = k.load_circular(cacc, zero);
     let obase = k.mad(cwt, c1024, zero);
-    k.store_tile(out, v, obase, TDIM, TDIM, TDIM as u32);
+    k.store_circular(out, v, obase);
 
     k.verify();
     let compiled = k.compile()?;
@@ -367,7 +365,6 @@ fn tenstorrent_acc_copy_rung() -> Result<(), ZyxError> {
 /// correct; also exercises the 8-tile FP32 DST compiler path in-tree.
 #[test]
 fn tenstorrent_pad_move() -> Result<(), ZyxError> {
-    const TDIM: u16 = 32;
     const TILE_ELEMS: i64 = 1024;
     const WT: i64 = 4;
 
@@ -375,7 +372,7 @@ fn tenstorrent_pad_move() -> Result<(), ZyxError> {
     let x = k.param(DType::F32);
     let out = k.param_mut(DType::F32);
 
-    let cdata = k.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+    let cdata = k.circular_storage(DType::F32, 1);
 
     let _g = k.group_range(0, 1);
     let cwt = k.const_idx(WT);
@@ -384,15 +381,15 @@ fn tenstorrent_pad_move() -> Result<(), ZyxError> {
 
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
-        let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
-        k.store_tile(cdata, tx, zero, TDIM, TDIM, TDIM as u32);
+        let tx = k.load_circular(x, tbase);
+        k.store_circular(cdata, tx, zero);
     });
     k.barrier();
     k.barrier();
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
-        let v = k.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
-        k.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = k.load_circular(cdata, zero);
+        k.store_circular(out, v, tbase);
     });
 
     k.verify();
@@ -425,7 +422,6 @@ fn tenstorrent_pad_move() -> Result<(), ZyxError> {
 
 #[test]
 fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
-    const TDIM: u16 = 32;
     const TILE_ELEMS: i64 = 1024;
     const WT: i64 = 4;
 
@@ -434,9 +430,9 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     let s = k.param(DType::F16);
     let out = k.param_mut(DType::F16);
 
-    let cin = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
-    let csc = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
-    let cout = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+    let cin = k.circular_storage(DType::F16, 1);
+    let csc = k.circular_storage(DType::F16, 1);
+    let cout = k.circular_storage(DType::F16, 1);
 
     let _g = k.group_range(0, 1);
     let cwt = k.const_idx(WT);
@@ -447,10 +443,10 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     // Reader: stream WT input tiles + scaler tiles.
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
-        let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
-        k.store_tile(cin, tx, zero, TDIM, TDIM, TDIM as u32);
-        let ts = k.load_tile(s, zero, TDIM, TDIM, TDIM as u32);
-        k.store_tile(csc, ts, zero, TDIM, TDIM, TDIM as u32);
+        let tx = k.load_circular(x, tbase);
+        k.store_circular(cin, tx, zero);
+        let ts = k.load_circular(s, zero);
+        k.store_circular(csc, ts, zero);
     });
     k.barrier();
 
@@ -459,24 +455,24 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     // Register-scoped acc: load/store are SSA threading, no CB traffic.
     let cacc = k.storage(DType::F16, MemScope::Register, TILE_ELEMS);
     k.loop_over(cwt, |k, _ki| {
-        let va = k.load_tile(cin, zero, TDIM, TDIM, TDIM as u32);
-        let vs = k.load_tile(csc, zero, TDIM, TDIM, TDIM as u32);
-        let a = k.load_tile(cacc, zero, TDIM, TDIM, TDIM as u32);
+        let va = k.load_circular(cin, zero);
+        let vs = k.load_circular(csc, zero);
+        let a = k.load_circular(cacc, zero);
         let f = k.reduce_tile(va, vs, a, BOp::Max, TileReduceKind::Row);
-        k.store_tile(cacc, f, zero, TDIM, TDIM, TDIM as u32);
+        k.store_circular(cacc, f, zero);
     });
     // Epilogue: pack final acc to cout (writer never touches cacc, so no
     // race for the seed: cout gets its only tile after all compute).
     k.loop_over(cone, |k, _ki| {
-        let f = k.load_tile(cacc, zero, TDIM, TDIM, TDIM as u32);
-        k.store_tile(cout, f, zero, TDIM, TDIM, TDIM as u32);
+        let f = k.load_circular(cacc, zero);
+        k.store_circular(cout, f, zero);
     });
     k.barrier();
 
     // Writer: drain cout.
     k.loop_over(cone, |k, _ki| {
-        let v = k.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
-        k.store_tile(out, v, zero, TDIM, TDIM, TDIM as u32);
+        let v = k.load_circular(cout, zero);
+        k.store_circular(out, v, zero);
     });
 
     k.verify();
@@ -514,6 +510,70 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
         }
     }
     println!("reduce bad: {bad} / 32");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// Official `eltwise_sfpu` shape: compute runs per-tile
+/// wait/acquire/copy/exp/commit/wait/reserve/pack/pop/release/push,
+/// with startup + copy/op inits hoisted ahead of the loop.
+#[test]
+fn tenstorrent_eltwise_exp_sfpu() -> Result<(), ZyxError> {
+    const WT: i64 = 4;
+
+    let mut k = Kernel::new(Dev::TT(0));
+    let x = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+
+    let cin = k.circular_storage(DType::F16, 1);
+    let cout = k.circular_storage(DType::F16, 1);
+
+    let _g = k.group_range(0, 1);
+
+    k.loop_over(WT, |k, ki| {
+        let tbase = k.mad(ki, 1024, 0);
+        let tx = k.load_circular(x, tbase);
+        k.store_circular(cin, tx, 0);
+    });
+    k.barrier();
+    k.loop_over(WT, |k, _ki| {
+        let va = k.load_circular(cin, 0);
+        let ve = k.exp(va);
+        k.store_circular(cout, ve, 0);
+    });
+    k.barrier();
+    k.loop_over(WT, |k, ki| {
+        let tbase = k.mad(ki, 1024, 0);
+        let v = k.load_circular(cout, 0);
+        k.store_circular(out, v, tbase);
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // Exp inputs kept in [0, 2): F16-exact steps, no overflow.
+    let data: Vec<f32> = (0..32 * 128).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let x_t = Tensor::from_vec(data.clone(), [32, 128])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&x_t], vec![[32, 128]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 128)?.to_vec()?;
+    assert_eq!(z.len(), 4096);
+    let mut bad = 0;
+    for (p, (&v, &e)) in z.iter().zip(data.iter()).enumerate() {
+        let expected = e.exp();
+        if (v - expected).abs() >= 3e-2 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {expected}");
+            }
+            bad += 1;
+        }
+    }
+    println!("exp bad: {bad} / 4096");
     assert_eq!(bad, 0);
 
     Ok(())

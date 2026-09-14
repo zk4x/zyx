@@ -130,13 +130,21 @@ enum CBState {
 
 /// DST register-file lock state (MATH/PACK engines), one for ALL tiles.
 ///
-/// Transitions (each asserts on entry):
-///   Unlocked --math_lock-->   MathLock   --math_unlock--> Unlocked
-///   Unlocked --pack_lock-->   PackLock   --pack_unlock--> Unlocked
-/// From `MathLock` only `math_unlock`; from `PackLock` only
-/// `pack_unlock`. The illegal `MathLock -> PackLock` and
-/// `PackLock -> MathLock` transitions have no arm, so they panic at the
-/// call site instead of emitting a broken kernel.
+/// Transition matrix (rows old, cols new; Y allowed, X forbidden).
+/// No combined MATH+PACK state exists (the hardware allows holding
+/// both; the emitter stays simpler without it): a lock take from the
+/// other lock is a loud error, never an implicit release. Callers
+/// route through `Unlocked` themselves. Unlocking an unlocked file
+/// is a loud error too: every lock must pair. Re-taking a held lock
+/// emits nothing (lazy keep); the matrix covers emitted transitions
+/// only.
+///
+/// ```text
+///              math  pack  unlocked
+///   math         X     X       Y
+///   pack         X     X       Y
+///   unlocked     Y     Y       X
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TileState {
     /// No engine holds the DST file.
@@ -1065,7 +1073,7 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     /// The tile emits per use; `reduce_uninit` goes out once per
     /// cone at the consuming pack (`math_unlock`).
     reduce_inits: Vec<(&'static str, &'static str, CBId, CBId, TileId<DSTBF16>)>,
-    /// A reduce cone is open: the next `math_unlock` closes it with
+    /// A reduce cone is open: the next `pack` closes it with
     /// `reduce_uninit` before the commit.
     reduce_pending: bool,
     /// Compute-kernel startup triple `[in0, in1, out]` for
@@ -1119,43 +1127,40 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         id
     }
 
-    /// `tile_regs_acquire`: MATH takes the file. Lazy: accumulation
-    /// calls acquire on first use (which zeroes the file, so the acc
-    /// starts at zero with no seed traffic); later calls in the same
-    /// cone are no-ops that keep the content.
+    /// `tile_regs_acquire`: MATH takes the file. Lazy: the first take
+    /// acquires (which zeroes the file, so the acc starts at zero
+    /// with no seed traffic); later takes in the same cone keep the
+    /// content and emit nothing. Taking from `PackLock` is a loud
+    /// error (matrix X): the caller must release PACK first.
     fn math_lock(&mut self, src: &mut String, indent: &str) {
-        if self.state == TileState::Unlocked {
-            writeln!(src, "{indent}tile_regs_acquire();");
-            self.state.math_lock();
-        } else {
-            assert_eq!(self.state, TileState::MathLock, "tenstorrent2: math op with DST in {:?}", self.state);
-        }
-    }
-
-    /// `tile_regs_commit`: MATH releases the file. Lazy mirror of
-    /// `math_lock`: a no-op when nothing holds the file (streaming
-    /// copies never lock MATH). Safety is kept by `pack_lock`, which
-    /// asserts `Unlocked` right after on every pack path.
-    fn math_unlock(&mut self, src: &mut String, indent: &str) {
-        if self.state == TileState::Unlocked {
+        if self.state == TileState::MathLock {
             return;
         }
-        if self.reduce_pending {
-            writeln!(src, "{indent}reduce_uninit();");
-            self.reduce_pending = false;
-        }
+        assert_eq!(self.state, TileState::Unlocked, "tenstorrent2: math op with DST in {:?}, must be Unlocked", self.state);
+        writeln!(src, "{indent}tile_regs_acquire();");
+        self.state.math_lock();
+    }
+
+    /// `tile_regs_commit`: MATH releases the file. Unlocking an
+    /// unlocked file is a loud error: every lock must pair.
+    fn math_unlock(&mut self, src: &mut String, indent: &str) {
+        assert_eq!(self.state, TileState::MathLock, "tenstorrent2: math_unlock with DST in {:?}, every lock must pair", self.state);
         writeln!(src, "{indent}tile_regs_commit();");
         self.state.math_unlock();
     }
 
-    /// `tile_regs_wait`: PACK takes the file.
+    /// `tile_regs_wait`: PACK takes the file. Taking from `MathLock`
+    /// is a loud error (matrix X): the caller must commit MATH first.
     fn pack_lock(&mut self, src: &mut String, indent: &str) {
+        assert_eq!(self.state, TileState::Unlocked, "tenstorrent2: pack op with DST in {:?}, must be Unlocked", self.state);
         writeln!(src, "{indent}tile_regs_wait();");
         self.state.pack_lock();
     }
 
-    /// `tile_regs_release`: PACK releases the file.
+    /// `tile_regs_release`: PACK releases the file. Releasing without
+    /// the PACK lock is a loud error: every lock must pair.
     fn pack_unlock(&mut self, src: &mut String, indent: &str) {
+        assert_eq!(self.state, TileState::PackLock, "tenstorrent2: pack_unlock with DST in {:?}, every lock must pair", self.state);
         writeln!(src, "{indent}tile_regs_release();");
         self.state.pack_unlock();
     }
@@ -1189,9 +1194,10 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         self.tile_map.insert(op_id, acc);
     }
 
-    /// Streaming copy in: waits the CB, copies the tile into a fresh
-    /// DST slot, pops the CB. Records the load op in `tile_map`.
-    /// The `copy_tile_init` goes out hoisted (one per CB).
+    /// Streaming copy in: waits the CB, takes the MATH lock, copies
+    /// the tile into a fresh DST slot, pops the CB. Records the load
+    /// op in `tile_map`. The `copy_tile_init` goes out hoisted (one
+    /// per CB).
     fn copy(
         &mut self,
         src: &mut String,
@@ -1202,6 +1208,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         rc: u32,
     ) -> TileId<DSTBF16> {
         cb_em.wait_front(src, indent, cb);
+        self.math_lock(src, indent);
+        debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: copy without MATH lock");
         let slot = self.alloc(rc);
         self.copy_inits.insert(cb);
         writeln!(src, "{indent}copy_tile({cb}, 0, {slot});");
@@ -1210,9 +1218,16 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         slot
     }
 
-    /// Streaming pack out: reserves the CB, takes the PACK lock, packs
-    /// the slot, pushes the CB, releases the file.
+    /// Pack out: closes any open reduce cone, commits MATH, reserves
+    /// the CB, takes the PACK lock, packs the slot, pushes the CB,
+    /// releases the file. The whole drain sequences here, in emission
+    /// order: uninit, commit, reserve, wait, pack, push, release.
     fn pack(&mut self, src: &mut String, indent: &str, cb_em: &mut CBEmitter, slot: TileId<DSTBF16>, cb: CBId) {
+        if self.reduce_pending {
+            writeln!(src, "{indent}reduce_uninit();");
+            self.reduce_pending = false;
+        }
+        self.math_unlock(src, indent);
         cb_em.reserve_back(src, indent, cb);
         self.pack_lock(src, indent);
         debug_assert_eq!(self.state, TileState::PackLock, "tenstorrent2: pack without PACK lock");
@@ -1922,10 +1937,10 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                             });
                         }
                     } else {
-                        // Pack path: the src tile drains to a CB. The
-                        // commit is lazy (no-op for streaming copies
-                        // that never locked MATH); the pack lock asserts
-                        // the file is free right after.
+                        // Pack path: the src tile drains to a CB.
+                        // `pack` closes any open reduce cone, commits
+                        // MATH, then runs the reserve/wait/pack/push
+                        // /release drain.
                         let Some(&out_cb) = self.cb.map.get(dst) else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
@@ -1945,7 +1960,6 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                                 context: format!("tenstorrent2: compute store reads a tile with no DST slot, op {op_id}").into(),
                             });
                         };
-                        self.tl.math_unlock(&mut src, &indent);
                         self.tl.pack(&mut src, &indent, &mut self.cb, tile, out_cb);
                     }
                 }
