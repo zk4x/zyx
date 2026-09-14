@@ -869,10 +869,10 @@ impl NocEmitter {
 pub(crate) struct CBEmitter {
     /// One CBId per Circular storage, shared by all three sections.
     map: Map<OpId, CBId>,
-    /// Runtime CB config in id order: (id, tt format, tile bytes).
-    /// Format and tile bytes follow the CB storage dtype; an
-    /// unmappable dtype is a compilation error, never a silent default.
-    pub(crate) config: Vec<(u32, u32, u32)>,
+    /// Runtime CB config: (tt format, tile bytes) per CB. Format and
+    /// tile bytes follow the CB storage dtype; an unmappable dtype is
+    /// a compilation error, never a silent default.
+    pub(crate) config: Slab<CBId, (u32, u32)>,
     /// Runtime state per CB, in id order.
     states: Slab<CBId, CBState>,
 }
@@ -965,7 +965,7 @@ impl CBEmitter {
         // CB storage dtype; anything else is a compilation error.
         let mut cb_ops: Vec<(CBId, OpId)> = map.iter().map(|(&op, &cb)| (cb, op)).collect();
         cb_ops.sort_by_key(|&(cb, _)| cb);
-        let mut config: Vec<(u32, u32, u32)> = Vec::with_capacity(cb_ops.len());
+        let mut config: Slab<CBId, (u32, u32)> = Slab::new();
         for (cb, op) in cb_ops {
             let Op::Storage { dtype, .. } = &kernel.ops[op].op else {
                 unreachable!("tenstorrent2: cb_map entry {op} passed validity but is not a storage op")
@@ -982,7 +982,8 @@ impl CBEmitter {
                     });
                 }
             };
-            config.push((cb.0, fmt, tb));
+            let pushed = config.push((fmt, tb));
+            debug_assert_eq!(pushed, cb, "tenstorrent2: CB config out of sync with allocation");
         }
         Ok(Self { map, config, states })
     }
@@ -1067,7 +1068,7 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     next: TileId<DSTBF16>,
     /// Whole-file MATH/PACK lock state.
     state: TileState,
-    /// `matmul_init` CB pairs seen, for the hoisted init block.
+    /// `mm_init` CB pairs seen, for the hoisted init block.
     mm_inits: Vec<(CBId, CBId)>,
     /// Reduce triples seen, for the hoisted `reduce_init` block.
     /// The tile emits per use; `reduce_uninit` goes out once per
@@ -1169,8 +1170,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// `matmul_tiles` (input tile ids alias the acc slot: the op
     /// sources data from the CBs and accumulates into the one tile),
     /// then pops both CBs. Runs under the MATH lock (lazily acquired).
-    /// `matmul_init` goes out hoisted (one per CB pair). Records the
-    /// result op in `tile_map`.
+    /// `mm_init` goes out hoisted (one per CB pair, with the output
+    /// CB from the startup triple). Records the result op in `tile_map`.
     fn matmul(
         &mut self,
         src: &mut String,
@@ -1237,7 +1238,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         // Mode-native pack target needs no runtime reconfig (formats
         // per `tt_fmt`: Float16_b=5 in 16-bit DST, Float32=0 in
         // 32-bit DST); anything else keeps the override.
-        let cb_fmt = cb_em.config[usize::from(cb)].1;
+        let cb_fmt = cb_em.config[cb].0;
         let native_fmt = if DSTBF16 { 5 } else { 0 };
         if cb_fmt != native_fmt {
             writeln!(src, "{indent}pack_reconfig_data_format({cb});");
@@ -1421,21 +1422,34 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// — the anchor the caller records ahead of all loops. Startup
     /// comes first (the header requires it exactly once at the
     /// beginning, before any op init; no separate SFPU init exists);
-    /// FP32 mode enables 32-bit DST right after. Per-iteration init
-    /// reprograms live packer state. The walk inserts into the sets
-    /// as it emits; this method only formats into the section source.
-    /// Always at function-scope indent: the anchor sits at base
-    /// indent by construction.
+    /// FP32 mode enables 32-bit DST right after. Matmul kernels skip
+    /// startup: 0.72 `mm_init` owns the full UNPACK/MATH/PACK
+    /// programming (the installed example calls nothing else).
+    /// Per-iteration init reprograms live packer state. The walk inserts
+    /// into the sets as it emits; this method only formats into the
+    /// section source. Always at function-scope indent: the anchor sits
+    /// at base indent by construction.
     fn prepend_compute_inits(&self, src: &mut String, pos: usize) {
         let indent = "  ";
         let mut inits = String::new();
-        if let Some([in0, in1, out]) = self.startup {
-            let _ = std::fmt::Write::write_fmt(
-                &mut inits,
-                format_args!("{indent}compute_kernel_hw_startup({in0}, {in1}, {out});\n"),
-            );
+        if self.mm_inits.is_empty() {
+            if let Some([in0, in1, out]) = self.startup {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut inits,
+                    format_args!("{indent}compute_kernel_hw_startup({in0}, {in1}, {out});\n"),
+                );
+                if !DSTBF16 {
+                    let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}enable_fp32_dest_acc();\n"));
+                }
+            }
+        } else {
+            // Matmul kernels: mm_init instead of startup (0.72 API).
             if !DSTBF16 {
                 let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}enable_fp32_dest_acc();\n"));
+            }
+            let out = self.startup.map(|[_, _, o]| o).expect("tenstorrent2: matmul kernel without startup triple");
+            for &(cb_a, cb_b) in &self.mm_inits {
+                let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}mm_init({cb_a}, {cb_b}, {out});\n"));
             }
         }
         for &cb in &self.copy_inits {
@@ -1475,9 +1489,6 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         }
         for &(in_fmt, out_fmt) in &self.typecast_inits {
             let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();\n"));
-        }
-        for &(cb_a, cb_b) in &self.mm_inits {
-            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}matmul_init({cb_a}, {cb_b});\n"));
         }
         for &(op_name, dim_name, cb_in, cb_sc, acc) in &self.reduce_inits {
             let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});\n"));
@@ -1915,10 +1926,15 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 }
                 Op::Stack { .. } => todo!(),
                 Op::Storage { scope, .. } => match scope {
-                    MemScope::Circular | MemScope::Register => {
-                        // Circular CBs are declared up front; Register
-                        // accs thread through `tile_map`. Neither emits
-                        // traffic.
+                    MemScope::Circular => {
+                        // Circular CBs are declared up front; no traffic here.
+                    }
+                    MemScope::Register => {
+                        // Acc declaration takes the MATH lock (which
+                        // zeroes the file: the seed). Later takes in the
+                        // cone keep. Compute-only: other sections must
+                        // not emit MATH traffic.
+                        self.tl.math_lock(&mut src, &indent);
                     }
                     MemScope::Local => unreachable!(
                         "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
@@ -2137,6 +2153,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
 
         writeln!(src, "}}");
         self.cb.assert_settled("compute");
+        assert_eq!(self.tl.state, TileState::Unlocked, "tenstorrent2: compute ends with DST in {:?}, every lock must pair", self.tl.state);
         self.compute = TTKernel::Compute { src, ordinals: ordinals.to_vec() };
 
         Ok(())

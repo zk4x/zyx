@@ -386,6 +386,30 @@ impl Kernel {
 
     /// Load a standard 32 x 32 circular tile from `src` at `index`.
     pub fn load_circular(&mut self, src: OpId, index: impl IntoOp) -> OpId {
+        debug_assert!(
+            matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }),
+            "load_circular: src {src} is not a Circular storage"
+        );
+        self.load_tile(src, index, 32, 32, 32)
+    }
+
+    /// Load a standard 32 x 32 tile from a `MemScope::Register` acc
+    /// storage at `index` (SSA threading, no traffic).
+    pub fn load_register_tile(&mut self, src: OpId, index: impl IntoOp) -> OpId {
+        debug_assert!(
+            matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. }),
+            "load_register_tile: src {src} is not a Register storage"
+        );
+        self.load_tile(src, index, 32, 32, 32)
+    }
+
+    /// Load a standard 32 x 32 tile from a DRAM (`Global`/`GlobalMut`)
+    /// param at `index`.
+    pub fn load_global_tile(&mut self, src: OpId, index: impl IntoOp) -> OpId {
+        debug_assert!(
+            matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global, .. } | Op::Param { kind: ParamKind::GlobalMut, .. }),
+            "load_global_tile: src {src} is not a DRAM param"
+        );
         self.load_tile(src, index, 32, 32, 32)
     }
 
@@ -413,6 +437,30 @@ impl Kernel {
 
     /// Store a standard 32 x 32 circular tile `x` to `dst` at `index`.
     pub fn store_circular(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
+        debug_assert!(
+            matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
+            "store_circular: dst {dst} is not a Circular storage"
+        );
+        self.store_tile(dst, x, index, 32, 32, 32)
+    }
+
+    /// Store a standard 32 x 32 tile `x` to a `MemScope::Register` acc
+    /// storage at `index` (SSA threading, no traffic).
+    pub fn store_register_tile(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
+        debug_assert!(
+            matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. }),
+            "store_register_tile: dst {dst} is not a Register storage"
+        );
+        self.store_tile(dst, x, index, 32, 32, 32)
+    }
+
+    /// Store a standard 32 x 32 tile `x` to a DRAM (`GlobalMut`) param
+    /// at `index`.
+    pub fn store_global_tile(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
+        debug_assert!(
+            matches!(self.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. }),
+            "store_global_tile: dst {dst} is not a GlobalMut param"
+        );
         self.store_tile(dst, x, index, 32, 32, 32)
     }
 
