@@ -23,7 +23,7 @@ use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, Kernel
 use crate::{
     DType,
     backend::DTypeCapability,
-    codegen::tenstorrent::TTKernel,
+    codegen::tenstorrent::{TTCompiler, TTKernel},
     error::{BackendError, ErrorStatus},
     shape::Dim,
     slab::Slab,
@@ -791,6 +791,28 @@ impl TTDevice {
         // here is launch-side assembly: the group-grid walk, the runtime
         // CB config, and the program compile call.
         let compiler = kernel.generate_tenstorrent()?;
+        // DST mode is resolved by codegen; both variants expose the
+        // same tables.
+        let (param_len, reader_k, compute_k, writer_k, input_dtypes, output_dtypes, cb_config) = match &compiler {
+            TTCompiler::Bf16(c) => (
+                c.noc.param_ordinal_of.len(),
+                &c.reader,
+                &c.compute,
+                &c.writer,
+                &c.noc.input_dtypes,
+                &c.noc.output_dtypes,
+                &c.cb.config,
+            ),
+            TTCompiler::Fp32(c) => (
+                c.noc.param_ordinal_of.len(),
+                &c.reader,
+                &c.compute,
+                &c.writer,
+                &c.noc.input_dtypes,
+                &c.noc.output_dtypes,
+                &c.cb.config,
+            ),
+        };
 
         // Per-section params (0 = reader, 1 = compute, 2 = writer): the
         // ordinals of the params each section's stores depend on, in
@@ -803,14 +825,14 @@ impl TTDevice {
         // Global|Variable-then-GlobalMut layout; see
         // `Kernel::generate_tenstorrent` and `tt_runtime.cpp`
         // `section_rt_args` for the consumption side.
-        let n_params = compiler.param_ordinal_of.len() as u32;
+        let n_params = param_len as u32;
         // Group grid via the shared helper (same as CUDA/OpenCL/wgpu/HIP):
         // axis-ordered, full dim expressions, const lengths validated
         // against the device max. Param-backed lengths resolve at launch
         // from the Variable arg.
         let gws = gws_from_kernel(kernel, &self.device_info.max_global_work_dims)?;
 
-        let TTKernel::Reader { src: reader, ordinals: reader_params, .. } = compiler.reader else {
+        let TTKernel::Reader { src: reader, ordinals: reader_params, .. } = reader_k else {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "tenstorrent2 reader kernel missing".into(),
@@ -818,9 +840,11 @@ impl TTDevice {
         };
         // A missing compute kernel is valid: pure copy kernels move data
         // without computing. Only a wrong variant in its slot is an error.
-        let (compute, compute_params) = match compiler.compute {
+        let empty_src = String::new();
+        let empty_ord: Vec<u32> = Vec::new();
+        let (compute, compute_params) = match compute_k {
             TTKernel::Compute { src, ordinals, .. } => (src, ordinals),
-            TTKernel::None => (String::new(), Vec::new()),
+            TTKernel::None => (&empty_src, &empty_ord),
             TTKernel::Reader { .. } | TTKernel::Writer { .. } => {
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
@@ -828,7 +852,7 @@ impl TTDevice {
                 });
             }
         };
-        let TTKernel::Writer { src: writer, ordinals: writer_params, .. } = compiler.writer else {
+        let TTKernel::Writer { src: writer, ordinals: writer_params, .. } = writer_k else {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "tenstorrent2 writer emission not implemented".into(),
@@ -840,13 +864,11 @@ impl TTDevice {
             eprintln!("[tenstorrent2] writer:\n{writer}");
         }
 
-        // DST geometry follows output dtypes: 32-bit DST iff any output
-        // is F32. Split-kernel decomposition (ttnn-style): F32 compute
-        // kernels pack F32 (32-bit DST); standalone F32->F16 typecast
-        // kernels run in 16-bit DST, which is what typecast.h sanctions.
-        // Fused mixed-format SFPU kernels are off the supported path
-        // (mode-unaware typecast addressing), so they are not emitted.
-        let fp32_dest_acc_en = compiler.output_dtypes.iter().any(|dt| *dt == DType::F32);
+        // DST geometry follows the codegen variant: the Fp32 compiler
+        // ran iff compute unpacks an F32 tile into DST, which is
+        // exactly when 32-bit Dest mode is required (any F32 tile in
+        // DST, per the typecast header).
+        let fp32_dest_acc_en = matches!(compiler, TTCompiler::Fp32(_));
 
         // Snapshot the grid for the launch-time bounds check (dynamic
         // sizes only; const sizes already failed at compile above).
@@ -862,8 +884,8 @@ impl TTDevice {
             })?,
         ];
         let prog_id = self.programs.push(TTProgram {
-            input_dtypes: compiler.input_dtypes,
-            output_dtypes: compiler.output_dtypes,
+            input_dtypes: input_dtypes.clone(),
+            output_dtypes: output_dtypes.clone(),
             gws,
             max_grid,
         });
@@ -872,14 +894,14 @@ impl TTDevice {
             let mut rt_guard = self.runtime.lock().unwrap();
             rt_guard.compile_program(
                 prog_id.0,
-                &reader,
-                &compute,
-                &writer,
-                &compiler.cb_config,
+                reader,
+                compute,
+                writer,
+                cb_config,
                 n_params,
-                &reader_params,
-                &compute_params,
-                &writer_params,
+                reader_params,
+                compute_params,
+                writer_params,
                 fp32_dest_acc_en,
             )?;
         }

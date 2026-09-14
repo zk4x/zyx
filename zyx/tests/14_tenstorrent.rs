@@ -10,7 +10,7 @@
 
 #![cfg(feature = "tenstorrent")]
 
-use zyx::kernel::{Dev, Kernel, MemScope};
+use zyx::kernel::{BOp, Dev, Kernel, MemScope, TileReduceKind};
 use zyx::{DType, Tensor, ZyxError};
 
 #[test]
@@ -60,6 +60,10 @@ fn elementwise_golden_kernel() -> Result<(), ZyxError> {
     k.debug();
 
     let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
 
     // Face slot -> linear index within a tile.
     let lin = |s: usize| {
@@ -147,6 +151,10 @@ fn tenstorrent_nine_page_read() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
 
     let lin = |s: usize| {
         let (face, local) = (s / 256, s % 256);
@@ -348,6 +356,68 @@ fn tenstorrent_acc_copy_rung() -> Result<(), ZyxError> {
         }
     }
     println!("rung2 bad: {bad} / 5120");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// Pad-style move, mirroring `pad_move_tt`: F32 tiles, empty compute
+/// section (two barriers back-to-back). Reader streams WT tiles,
+/// writer drains them. Passes iff reader/writer/CB/DRAM paths are
+/// correct; also exercises the 8-tile FP32 DST compiler path in-tree.
+#[test]
+fn tenstorrent_pad_move() -> Result<(), ZyxError> {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    const WT: i64 = 4;
+
+    let mut k = Kernel::new(Dev::TT(0));
+    let x = k.param(DType::F32);
+    let out = k.param_mut(DType::F32);
+
+    let cdata = k.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+
+    let _g = k.group_range(0, 1);
+    let cwt = k.const_idx(WT);
+    let c1024 = k.const_idx(TILE_ELEMS);
+    let zero = k.const_idx(0);
+
+    k.loop_over(cwt, |k, ki| {
+        let tbase = k.mad(ki, c1024, zero);
+        let tx = k.load_tile(x, tbase, TDIM, TDIM, TDIM as u32);
+        k.store_tile(cdata, tx, zero, TDIM, TDIM, TDIM as u32);
+    });
+    k.barrier();
+    k.barrier();
+    k.loop_over(cwt, |k, ki| {
+        let tbase = k.mad(ki, c1024, zero);
+        let v = k.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
+        k.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let data: Vec<f32> = (0..32 * 128).map(|j| j as f32 * 0.015625).collect();
+    let x_t = Tensor::from_vec(data.clone(), [32, 128])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&x_t], vec![[32, 128]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.untilize(32, 128)?.to_vec()?;
+    assert_eq!(z.len(), 4096);
+    let mut bad = 0;
+    for (p, (&v, &e)) in z.iter().zip(data.iter()).enumerate() {
+        if (v - e).abs() > 1e-6 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {e}");
+            }
+            bad += 1;
+        }
+    }
+    println!("pad move bad: {bad} / 4096");
     assert_eq!(bad, 0);
 
     Ok(())
