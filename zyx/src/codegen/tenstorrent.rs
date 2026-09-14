@@ -1221,7 +1221,10 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// Pack out: closes any open reduce cone, commits MATH, reserves
     /// the CB, takes the PACK lock, packs the slot, pushes the CB,
     /// releases the file. The whole drain sequences here, in emission
-    /// order: uninit, commit, reserve, wait, pack, push, release.
+    /// order: uninit, commit, reserve, wait, [reconfig,] pack, push,
+    /// release. The packer reconfig goes out only for non-native pack
+    /// targets: the JIT programs the mode-native triple by
+    /// construction, so reprogramming it is redundant there.
     fn pack(&mut self, src: &mut String, indent: &str, cb_em: &mut CBEmitter, slot: TileId<DSTBF16>, cb: CBId) {
         if self.reduce_pending {
             writeln!(src, "{indent}reduce_uninit();");
@@ -1231,7 +1234,14 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         cb_em.reserve_back(src, indent, cb);
         self.pack_lock(src, indent);
         debug_assert_eq!(self.state, TileState::PackLock, "tenstorrent2: pack without PACK lock");
-        writeln!(src, "{indent}pack_reconfig_data_format({cb});");
+        // Mode-native pack target needs no runtime reconfig (formats
+        // per `tt_fmt`: Float16_b=5 in 16-bit DST, Float32=0 in
+        // 32-bit DST); anything else keeps the override.
+        let cb_fmt = cb_em.config[usize::from(cb)].1;
+        let native_fmt = if DSTBF16 { 5 } else { 0 };
+        if cb_fmt != native_fmt {
+            writeln!(src, "{indent}pack_reconfig_data_format({cb});");
+        }
         writeln!(src, "{indent}pack_tile({slot}, {cb});");
         cb_em.push_back(src, indent, cb);
         self.pack_unlock(src, indent);
