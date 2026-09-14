@@ -1059,12 +1059,15 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     next: TileId<DSTBF16>,
     /// Whole-file MATH/PACK lock state.
     state: TileState,
-    /// `matmul_init` emitted (lazy once, first matmul).
-    mm_init_done: bool,
-    /// Inside a `reduce_init`/`reduce_uninit` pair: set at init,
-    /// cleared at uninit, asserted by the tile. Catches a broken
-    /// triple if the sequence is ever edited.
-    reduce_init_done: bool,
+    /// `matmul_init` CB pairs seen, for the hoisted init block.
+    mm_inits: Vec<(CBId, CBId)>,
+    /// Reduce triples seen, for the hoisted `reduce_init` block.
+    /// The tile emits per use; `reduce_uninit` goes out once per
+    /// cone at the consuming pack (`math_unlock`).
+    reduce_inits: Vec<(&'static str, &'static str, CBId, CBId, TileId<DSTBF16>)>,
+    /// A reduce cone is open: the next `math_unlock` closes it with
+    /// `reduce_uninit` before the commit.
+    reduce_pending: bool,
     /// Compute-kernel startup triple `[in0, in1, out]` for
     /// `compute_kernel_hw_startup`: recorded at compute entry by the
     /// generator, emitted with the hoisted inits at the anchor.
@@ -1075,6 +1078,8 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     binary_inits: Set<BOp>,
     /// Tile cast format pairs seen, for the hoisted init block.
     typecast_inits: Vec<(u32, u32)>,
+    /// Copy CBs seen, for the hoisted `copy_tile_init` block.
+    copy_inits: Set<CBId>,
 }
 
 #[allow(unused_must_use)]
@@ -1089,8 +1094,10 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             unary_inits: Set::default(),
             binary_inits: Set::default(),
             typecast_inits: Vec::new(),
-            mm_init_done: false,
-            reduce_init_done: false,
+            copy_inits: Set::default(),
+            mm_inits: Vec::new(),
+            reduce_inits: Vec::new(),
+            reduce_pending: false,
             startup: None,
         }
     }
@@ -1133,6 +1140,10 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         if self.state == TileState::Unlocked {
             return;
         }
+        if self.reduce_pending {
+            writeln!(src, "{indent}reduce_uninit();");
+            self.reduce_pending = false;
+        }
         writeln!(src, "{indent}tile_regs_commit();");
         self.state.math_unlock();
     }
@@ -1153,8 +1164,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// `matmul_tiles` (input tile ids alias the acc slot: the op
     /// sources data from the CBs and accumulates into the one tile),
     /// then pops both CBs. Runs under the MATH lock (lazily acquired).
-    /// `matmul_init` goes out once, ahead of the first tile. Records
-    /// the result op in `tile_map`.
+    /// `matmul_init` goes out hoisted (one per CB pair). Records the
+    /// result op in `tile_map`.
     fn matmul(
         &mut self,
         src: &mut String,
@@ -1165,9 +1176,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         cb_b: CBId,
         acc: TileId<DSTBF16>,
     ) {
-        if !self.mm_init_done {
-            writeln!(src, "{indent}matmul_init({cb_a}, {cb_b});");
-            self.mm_init_done = true;
+        if !self.mm_inits.contains(&(cb_a, cb_b)) {
+            self.mm_inits.push((cb_a, cb_b));
         }
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: matmul without MATH lock");
@@ -1181,6 +1191,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
 
     /// Streaming copy in: waits the CB, copies the tile into a fresh
     /// DST slot, pops the CB. Records the load op in `tile_map`.
+    /// The `copy_tile_init` goes out hoisted (one per CB).
     fn copy(
         &mut self,
         src: &mut String,
@@ -1192,7 +1203,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     ) -> TileId<DSTBF16> {
         cb_em.wait_front(src, indent, cb);
         let slot = self.alloc(rc);
-        writeln!(src, "{indent}copy_tile_init({cb});");
+        self.copy_inits.insert(cb);
         writeln!(src, "{indent}copy_tile({cb}, 0, {slot});");
         cb_em.pop_front(src, indent, cb);
         self.tile_map.insert(op_id, slot);
@@ -1224,10 +1235,10 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         tile
     }
 
-    /// Fused reduce: waits input + scaler CBs, emits the
-    /// init/tile/uninit sequence into the acc slot, pops both CBs.
-    /// Runs under the MATH lock (lazily acquired). Records the result
-    /// op in `tile_map`.
+    /// Fused reduce: waits input + scaler CBs, emits the tile into
+    /// the acc slot, pops both CBs. The init goes out hoisted, the
+    /// uninit at the consuming pack. Runs under the MATH lock
+    /// (lazily acquired). Records the result op in `tile_map`.
     fn reduce(
         &mut self,
         src: &mut String,
@@ -1256,16 +1267,16 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             TileReduceKind::Col => "ReduceDim::REDUCE_COL",
             TileReduceKind::Scalar => "ReduceDim::REDUCE_SCALAR",
         };
+        let params = (op_name, dim_name, cb_in, cb_sc, acc);
+        if !self.reduce_inits.contains(&params) {
+            self.reduce_inits.push(params);
+        }
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: reduce without MATH lock");
         cb_em.wait_front(src, indent, cb_in);
         cb_em.wait_front(src, indent, cb_sc);
-        writeln!(src, "{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});");
-        self.reduce_init_done = true;
         writeln!(src, "{indent}reduce_tile<{op_name}, {dim_name}>({cb_in}, {cb_sc}, 0, 0, {acc});");
-        assert!(self.reduce_init_done, "tenstorrent2: reduce_tile without reduce_init");
-        writeln!(src, "{indent}reduce_uninit();");
-        self.reduce_init_done = false;
+        self.reduce_pending = true;
         cb_em.pop_front(src, indent, cb_in);
         cb_em.pop_front(src, indent, cb_sc);
         self.tile_map.insert(op_id, acc);
@@ -1380,16 +1391,16 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     }
 
     /// Common pre-loop init emission for compute tile ops (v1-proven
-    /// hoist): `compute_kernel_hw_startup` once, then one `*_init` per
-    /// collected op kind, inserted at `pos` — the anchor the caller
-    /// records ahead of all loops. Startup comes first (the header
-    /// requires it exactly once at the beginning, before any op
-    /// init); FP32 mode enables 32-bit DST right after. Per-iteration
-    /// init reprograms live packer state. Copy inits stay per-load
-    /// (unpack config is per-CB, emitted at the load). The walk inserts
-    /// into the sets as it emits; this method only formats into the
-    /// section source. Always at function-scope indent: the anchor sits
-    /// at base indent by construction.
+    /// hoist, official eltwise shape): `compute_kernel_hw_startup`
+    /// once, then one `*_init` per collected kind, inserted at `pos`
+    /// — the anchor the caller records ahead of all loops. Startup
+    /// comes first (the header requires it exactly once at the
+    /// beginning, before any op init; no separate SFPU init exists);
+    /// FP32 mode enables 32-bit DST right after. Per-iteration init
+    /// reprograms live packer state. The walk inserts into the sets
+    /// as it emits; this method only formats into the section source.
+    /// Always at function-scope indent: the anchor sits at base
+    /// indent by construction.
     fn prepend_compute_inits(&self, src: &mut String, pos: usize) {
         let indent = "  ";
         let mut inits = String::new();
@@ -1401,6 +1412,9 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             if !DSTBF16 {
                 let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}enable_fp32_dest_acc();\n"));
             }
+        }
+        for &cb in &self.copy_inits {
+            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}copy_tile_init({cb});\n"));
         }
         for &uop in &self.unary_inits {
             let init = match uop {
@@ -1436,6 +1450,12 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         }
         for &(in_fmt, out_fmt) in &self.typecast_inits {
             let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();\n"));
+        }
+        for &(cb_a, cb_b) in &self.mm_inits {
+            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}matmul_init({cb_a}, {cb_b});\n"));
+        }
+        for &(op_name, dim_name, cb_in, cb_sc, acc) in &self.reduce_inits {
+            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});\n"));
         }
         src.insert_str(pos, &inits);
     }

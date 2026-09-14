@@ -32,6 +32,7 @@ There are 5 cores. Reader and writer touch only DRAM and CBs. Compute (pack, mat
 - By math core:
   - `lock` = `tile_regs_acquire` (MATH-side lock)
   - `unlock` = `tile_regs_commit` (MATH-side unlock)
+  - `tile_regs_acquire` zeroes DST (confirmed 2026-09-14): fresh accumulation state on lock; re-acquire inside a loop resets the acc, so lazy acquire text must hoist out of accumulation loops.
 
 MATH and PACK dispatch to separate per-thread queues, so source-line order between a `MATH(...)` block and a `PACK(...)` block is *not* execution order.
 
