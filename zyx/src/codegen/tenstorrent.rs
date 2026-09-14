@@ -949,7 +949,7 @@ pub(crate) struct CBEmitter {
     /// Runtime CB config: (tt format, tile bytes) per CB. Format and
     /// tile bytes follow the CB storage dtype; an unmappable dtype is
     /// a compilation error, never a silent default.
-    pub(crate) config: Slab<CBId, (u32, u32)>,
+    pub(crate) config: Slab<CBId, (u32, u32, u32)>,
     /// Runtime state per CB, in id order.
     states: Slab<CBId, CBState>,
 }
@@ -1025,6 +1025,12 @@ impl CBEmitter {
             };
             let elem = dtype.bit_size() as i64 / 8;
             let bytes = len * elem;
+            if len % 1024 != 0 {
+                return Err(BackendError {
+                    status: ErrorStatus::InvalidCircularBuffer,
+                    context: format!("tenstorrent2: CB{cb} holds {len} elements, not whole 1024-element tiles").into(),
+                });
+            }
             if bytes % 2048 != 0 {
                 return Err(BackendError {
                     status: ErrorStatus::InvalidCircularBuffer,
@@ -1042,9 +1048,9 @@ impl CBEmitter {
         // CB storage dtype; anything else is a compilation error.
         let mut cb_ops: Vec<(CBId, OpId)> = map.iter().map(|(&op, &cb)| (cb, op)).collect();
         cb_ops.sort_by_key(|&(cb, _)| cb);
-        let mut config: Slab<CBId, (u32, u32)> = Slab::new();
+        let mut config: Slab<CBId, (u32, u32, u32)> = Slab::new();
         for (cb, op) in cb_ops {
-            let Op::Storage { dtype, .. } = &kernel.ops[op].op else {
+            let Op::Storage { dtype, len, .. } = &kernel.ops[op].op else {
                 unreachable!("tenstorrent2: cb_map entry {op} passed validity but is not a storage op")
             };
             let (fmt, tb) = match dtype {
@@ -1059,7 +1065,7 @@ impl CBEmitter {
                     });
                 }
             };
-            let pushed = config.push((fmt, tb));
+            let pushed = config.push((fmt, tb, (len / 1024) as u32));
             debug_assert_eq!(pushed, cb, "tenstorrent2: CB config out of sync with allocation");
         }
         Ok(Self { map, config, states })

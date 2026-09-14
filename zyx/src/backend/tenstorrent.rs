@@ -620,7 +620,7 @@ impl RuntimeProcess {
         reader_source: &str,
         compute_source: &str,
         writer_source: &str,
-        cb_config: &Slab<CBId, (u32, u32)>,
+        cb_config: &Slab<CBId, (u32, u32, u32)>,
         n_params: u32,
         reader_params: &[u32],
         compute_params: &[u32],
@@ -647,8 +647,8 @@ impl RuntimeProcess {
         for (i, p) in writer_params.iter().enumerate() {
             cmd.push_str(&format!(r#","wp{i}":{p}"#));
         }
-        for (i, (cb, (fmt, tb))) in cb_config.iter().enumerate() {
-            cmd.push_str(&format!(r#","cb_idx{i}":{cb},"cb_fmt{i}":{fmt},"cb_tb{i}":{tb}"#));
+        for (i, (cb, (fmt, tb, nt))) in cb_config.iter().enumerate() {
+            cmd.push_str(&format!(r#","cb_idx{i}":{cb},"cb_fmt{i}":{fmt},"cb_tb{i}":{tb},"cb_nt{i}":{nt}"#));
         }
         cmd.push('}');
         self.send(&cmd)?;

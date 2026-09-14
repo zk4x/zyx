@@ -203,6 +203,7 @@ struct ProgramConfig {
   vector<uint32_t> cb_indices;
   vector<uint32_t> cb_formats;
   vector<uint32_t> cb_tile_bytes;
+  vector<uint32_t> cb_num_tiles;
   // Total kernel param count (Global + Variable + GlobalMut, head order).
   uint32_t n_params = 0;
   // Head-order param ordinals each section needs as runtime args
@@ -410,10 +411,12 @@ int main() {
         vector<uint32_t> cb_indices(n_cbs);
         vector<uint32_t> cb_formats(n_cbs);
         vector<uint32_t> cb_tile_bytes(n_cbs);
+        vector<uint32_t> cb_num_tiles(n_cbs);
         for (uint32_t i = 0; i < n_cbs; i++) {
           cb_indices[i] = extract_u32(line, "cb_idx" + to_string(i));
           cb_formats[i] = extract_u32(line, "cb_fmt" + to_string(i));
           cb_tile_bytes[i] = extract_u32(line, "cb_tb" + to_string(i));
+          cb_num_tiles[i] = extract_u32(line, "cb_nt" + to_string(i));
         }
 
         uint32_t n_params = extract_u32(line, "n_params");
@@ -464,6 +467,7 @@ int main() {
         cfg.cb_indices = cb_indices;
         cfg.cb_formats = cb_formats;
         cfg.cb_tile_bytes = cb_tile_bytes;
+        cfg.cb_num_tiles = cb_num_tiles;
         cfg.fp32_dest_acc_en = extract_u32(line, "fp32_dest_acc");
         cfg.n_params = n_params;
         cfg.reader_params = reader_params;
@@ -612,9 +616,6 @@ int main() {
         vector<uint32_t> writer_compile_args =
             section_compile_args(cfg.writer_params);
 
-        // Circular buffers from cached config
-        constexpr uint32_t tiles_per_cb = 2;
-
         // Build CoreRangeSet covering all cores
         CoreCoord start_core{0, 0};
         CoreCoord end_core{gidx1_sz - 1, gidx0_sz - 1};
@@ -643,7 +644,7 @@ int main() {
           CreateCircularBuffer(
               program, all_cores,
               CircularBufferConfig(
-                  tiles_per_cb * cfg.cb_tile_bytes[i],
+                  cfg.cb_num_tiles[i] * cfg.cb_tile_bytes[i],
                   {{static_cast<CBIndex>(cfg.cb_indices[i]), df}})
                   .set_page_size(static_cast<CBIndex>(cfg.cb_indices[i]),
                                  cfg.cb_tile_bytes[i]));

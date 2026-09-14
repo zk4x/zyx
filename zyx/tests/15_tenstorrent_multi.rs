@@ -382,6 +382,72 @@ fn tenstorrent_mixed_exp_reduce() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// Probe: multi-tile CB capacity. First kernel with a circular
+/// storage of more than 1 tile: ca holds 4 tiles, the reader pushes
+/// all 4 before compute pops any. Compute doubles each tile
+/// (add(va, va)) — a real op, no matmul. Input [32,128] = 4 tiles,
+/// expected 2*x.
+#[test]
+fn tenstorrent_probe_multitile_double() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+
+    let ca = k.circular_storage(DType::F16, 4);
+    let cout = k.circular_storage(DType::F16, 1);
+
+    let _g = k.group_range(0, 1);
+
+    // Reader: tile i of [32,128] at i*1024, push all 4 into ca.
+    k.loop_over(4, |k, i| {
+        let base = k.mad(i, 1024, 0);
+        let ta = k.load_global_tile(a, base);
+        k.store_circular(ca, ta, 0);
+    });
+    k.barrier();
+    // Compute: pop each tile, double it, push to cout.
+    k.loop_over(4, |k, _i| {
+        let va = k.load_circular(ca, 0);
+        let s = k.add(va, va);
+        k.store_circular(cout, s, 0);
+    });
+    k.barrier();
+    // Writer: output tile i at i*1024.
+    k.loop_over(4, |k, i| {
+        let base = k.mad(i, 1024, 0);
+        let v = k.load_circular(cout, 0);
+        k.store_global_tile(out, v, base);
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let data: Vec<f32> = (0..32 * 128).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(data.clone(), [32, 128])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[32, 128]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 128)?.to_vec()?;
+    assert_eq!(z.len(), 4096);
+    let mut bad = 0;
+    for (p, (&x, &v)) in data.iter().zip(z.iter()).enumerate() {
+        let expected = x + x;
+        if (v - expected).abs() >= 3e-2 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {expected}");
+            }
+            bad += 1;
+        }
+    }
+    println!("multitile double bad: {bad} / 4096");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
 /// Mixed-kind cone (matmul then bias-add): Matmul→Binary switch.
 /// Same geometry as `tenstorrent_matmul_single_core` plus a per-nt
 /// bias tile added to each acc cone.
