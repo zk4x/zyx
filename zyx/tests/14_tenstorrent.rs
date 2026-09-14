@@ -8,7 +8,7 @@
 //! layout model), so reader/writer move whole tiles with single sequential
 //! NOC transfers and no swizzle anywhere; compute works on faces natively.
 
-#![cfg(feature = "tenstorrent")]
+//#![cfg(feature = "tenstorrent")]
 
 use zyx::kernel::{BOp, Dev, Kernel, MemScope, TileReduceKind};
 use zyx::{DType, Tensor, ZyxError};
@@ -432,7 +432,6 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let x = k.param(DType::F16);
     let s = k.param(DType::F16);
-    let m = k.param(DType::F16);
     let out = k.param_mut(DType::F16);
 
     let cin = k.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
@@ -459,8 +458,6 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     // (TT reference shape: reduce_tile accumulates into the acc CB, no temp).
     // Register-scoped acc: load/store are SSA threading, no CB traffic.
     let cacc = k.storage(DType::F16, MemScope::Register, TILE_ELEMS);
-    let tm = k.load_tile(m, zero, TDIM, TDIM, TDIM as u32);
-    k.store_tile(cacc, tm, zero, TDIM, TDIM, TDIM as u32);
     k.loop_over(cwt, |k, _ki| {
         let va = k.load_tile(cin, zero, TDIM, TDIM, TDIM as u32);
         let vs = k.load_tile(csc, zero, TDIM, TDIM, TDIM as u32);

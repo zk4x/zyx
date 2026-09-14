@@ -1494,7 +1494,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
             debug_assert!(ordinals.windows(2).all(|w| w[0] < w[1]), "tenstorrent2 section params not in head order");
             ordinals
         });
-        compiler.check_ir_tt(kernel)?;
+        compiler.check_sections(kernel)?;
         compiler.generate_reader(kernel, &reader_data, &reader_params, &reader_ord)?;
         compiler.generate_compute(kernel, &compute_data, &compute_params, &compute_ord)?;
         compiler.generate_writer(kernel, &writer_data, &writer_params, &writer_ord)?;
@@ -1531,319 +1531,6 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         })
     }
 
-    /// Closed-matmul shape gate: compute holds loads, acc-threading
-    /// matmul_tiles, acc stores, loops only — one accumulation cone per
-    /// output, one pack per output. Matmul is fixed 32x32 F16xF16.
-    /// Accumulation lives in DST tile registers (Register-scoped acc
-    /// storage threads the SSA value); CBs carry only inputs and packed
-    /// outputs. Every violation is a loud compilation error; SFPU
-    /// coexistence especially so (see caller).
-    fn check_matmul_closed(&self, kernel: &Kernel) -> Result<(), BackendError> {
-        // Acc-threading matmuls (matmul op -> acc storage op) and
-        // threaded acc storages (for the pack-store check below).
-        let mut mm_acc: Map<OpId, OpId> = Map::default();
-        let mut chained: Set<OpId> = Set::default();
-        let mut section = TtSection::Reader;
-        let mut scan = kernel.head;
-        for _ in 0..10_000 {
-            if scan.is_null() {
-                break;
-            }
-            match kernel.ops[scan].op {
-                Op::Barrier => section.advance(),
-                Op::MatmulTile { x, y, acc } if section == TtSection::Compute => {
-                    for &v in &[x, y] {
-                        let Op::Load { src: lsrc, layout: MemLayout::Tile { x: w, y: h, .. }, .. } = kernel.ops[v].op else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: matmul side op {v} is no CB tile load").into(),
-                            });
-                        };
-                        if w as u32 != 32 || h as u32 != 32 {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: matmul is fixed 32x32, op {v} is {w}x{h}").into(),
-                            });
-                        }
-                        let Some(&cb) = self.cb.map.get(&lsrc) else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: matmul load op {v} targets unmapped CB").into(),
-                            });
-                        };
-                        let Op::Storage { dtype: DType::F16, .. } = kernel.ops[lsrc].op else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: matmul inputs are F16, op {v} is not").into(),
-                            });
-                        };
-                        let _ = cb;
-                    }
-                    let Op::Load { src: lacc, layout: MemLayout::Tile { x: w, y: h, .. }, .. } = kernel.ops[acc].op else {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: matmul acc op {acc} is no acc tile load").into(),
-                        });
-                    };
-                    if w as u32 != 32 || h as u32 != 32 {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: matmul acc is fixed 32x32, op {acc} is {w}x{h}").into(),
-                        });
-                    }
-                    // Accumulation lives in DST registers: the acc load
-                    // must read a Register-scoped storage (never a CB).
-                    // Its load/store are SSA threading and emit nothing.
-                    let Op::Storage { scope: MemScope::Register, .. } = kernel.ops[lacc].op else {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: matmul acc op {acc} does not read a Register acc").into(),
-                        });
-                    };
-                    if self.cb.map.contains_key(&lacc) {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: matmul acc op {acc} reads a CB, must be Register").into(),
-                        });
-                    }
-                    mm_acc.insert(scan, lacc);
-                    chained.insert(lacc);
-                }
-                Op::MatmulTile { .. } => {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: matmul lives in compute, op {scan} is elsewhere").into(),
-                    });
-                }
-                Op::Binary { .. } if section == TtSection::Compute => {
-                    // Closed matmul compute holds loads, matmul_tiles,
-                    // stores, loops only (acc threads through the tile
-                    // op). Any ALU sharing the kernel is a loud halt.
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: sfpu and matmul cannot share a kernel (op {scan})").into(),
-                    });
-                }
-                Op::Store { dst, src, layout, .. } if section == TtSection::Compute => {
-                    if !matches!(layout, MemLayout::Tile { .. }) {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2 compute only supports tile stores, op {scan}").into(),
-                        });
-                    }
-                    if let Op::Storage { scope: MemScope::Register, .. } = kernel.ops[dst].op {
-                        // Acc-threading store: must store a validated
-                        // acc-threading matmul's acc, never another acc.
-                        let Some(&astorage) = mm_acc.get(&src) else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: compute acc store op {scan} is not a validated acc-threading matmul"
-                                )
-                                .into(),
-                            });
-                        };
-                        if dst != astorage {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: acc-threading store op {scan} stores a different acc than it threads"
-                                )
-                                .into(),
-                            });
-                        }
-                        continue;
-                    }
-                    let Some(&cb) = self.cb.map.get(&dst) else {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: compute store op {scan} targets unmapped CB").into(),
-                        });
-                    };
-                    let _ = cb;
-                    let Op::Load { src: lsrc, layout: MemLayout::Tile { .. }, .. } = kernel.ops[src].op else {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: compute pack store op {scan} reads no acc tile").into(),
-                        });
-                    };
-                    if !chained.contains(&lsrc) {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: compute pack store op {scan} packs an empty acc chain").into(),
-                        });
-                    }
-                }
-                Op::Load { layout, .. } if section == TtSection::Compute => {
-                    if !matches!(layout, MemLayout::Tile { .. }) {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2 compute only supports tile loads, op {scan}").into(),
-                        });
-                    }
-                    // Role (matmul input vs acc) is checked at consumers.
-                }
-                Op::Unary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Mad { .. } if section == TtSection::Compute => {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: sfpu and matmul cannot share a kernel (op {scan})").into(),
-                    });
-                }
-                Op::Range { .. }
-                | Op::Stack { .. }
-                | Op::Index { .. }
-                | Op::If { .. }
-                | Op::EndIf
-                | Op::TransposeTile { .. }
-                | Op::ReduceTile { .. }
-                | Op::Asm { .. }
-                    if section == TtSection::Compute =>
-                {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: op {scan} is outside the closed matmul shape").into(),
-                    });
-                }
-                _ => {}
-            }
-            scan = kernel.next_op(scan);
-        }
-        if !scan.is_null() {
-            panic!("tenstorrent2 matmul check scan did not finish in 10000 steps");
-        }
-        Ok(())
-    }
-
-    /// Single IR validity gate for the TT path: section count, reader /
-    /// writer store shapes, loop and group-index lengths, then CB
-    /// push/pop balance. Everything here reads the input IR; nothing
-    /// inspects emitted C++ text.
-    fn check_ir_tt(&self, kernel: &Kernel) -> Result<(), BackendError> {
-        self.check_sections(kernel)?;
-        // Closed-matmul shape first: with a MatmulTile in the kernel,
-        // compute holds exactly one accumulation cone per output. Any
-        // SFPU sharing the kernel is rejected here (loud error, never
-        // silent): mm_init plus SFPU inits in one kernel hung the board
-        // during v1 bring-up, so the combination never reaches codegen.
-        let mut is_mm = false;
-        let mut pre = kernel.head;
-        for _ in 0..10_000 {
-            if pre.is_null() {
-                break;
-            }
-            if matches!(kernel.ops[pre].op, Op::MatmulTile { .. }) {
-                is_mm = true;
-                break;
-            }
-            pre = kernel.next_op(pre);
-        }
-        if is_mm {
-            self.check_matmul_closed(kernel)?;
-        }
-        let mut section = TtSection::Reader;
-        let mut scan = kernel.head;
-        for _ in 0..10_000 {
-            if scan.is_null() {
-                break;
-            }
-            match kernel.ops[scan].op {
-                Op::Barrier => section.advance(),
-                Op::Loop { len } => {
-                    // Trip counts may be dynamic (Variable/symbolic): the
-                    // balance check compares trip structure, not values.
-                    // Only resolvable lengths are checked here.
-                    if let Some(dim) = kernel.resolve_const(len).and_then(|c| c.as_dim()) {
-                        debug_assert!(dim >= 0, "tenstorrent2: negative loop length");
-                        if dim < 0 {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: loop length {dim} is negative").into(),
-                            });
-                        }
-                    }
-                }
-                Op::Range { kind, .. } => match kind {
-                    RangeKind::Group(len) => {
-                        // Grid axes may be dynamic (Variable/symbolic): the
-                        // const bounds check lives in gws_from_kernel and
-                        // the launch path. Only resolvable lengths are
-                        // checked here.
-                        if let Some(dim) = kernel.resolve_const(len).and_then(|c| c.as_dim()) {
-                            debug_assert!(dim >= 0, "tenstorrent2: negative group length");
-                            if dim < 0 {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: format!("tenstorrent2: group length {dim} is negative").into(),
-                                });
-                            }
-                        }
-                    }
-                    RangeKind::Warp(_) => {
-                        unreachable!("tenstorrent has no warps; warp ranges are gpu-only")
-                    }
-                    RangeKind::Local(_) => {}
-                },
-                Op::Store { dst, src, layout: MemLayout::Tile { .. }, .. } => match section {
-                    TtSection::Reader => {
-                        let Op::Load { src: ld_src, layout: MemLayout::Tile { .. }, .. } = kernel.ops[src].op else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: reader supports only global to CB tile stores, op {scan} has ops in between"
-                                )
-                                .into(),
-                            });
-                        };
-                        if !matches!(kernel.ops[ld_src].op, Op::Param { kind: ParamKind::Global, .. }) {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: reader tile load op {scan} is not from a Global param").into(),
-                            });
-                        }
-                        if !matches!(kernel.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }) {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: reader tile store op {scan} does not target a Circular CB")
-                                    .into(),
-                            });
-                        }
-                    }
-                    TtSection::Writer => {
-                        let Op::Load { src: cb_src, layout: MemLayout::Tile { .. }, .. } = kernel.ops[src].op else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: writer supports only CB to DRAM tile stores, op {scan} has ops in between"
-                                )
-                                .into(),
-                            });
-                        };
-                        if !self.cb.map.contains_key(&cb_src) {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: writer tile load op {scan} targets unmapped CB").into(),
-                            });
-                        }
-                        if !matches!(kernel.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: writer tile store op {scan} dst must be a GlobalMut param")
-                                    .into(),
-                            });
-                        }
-                    }
-                    TtSection::Compute => {}
-                },
-                _ => {}
-            }
-            scan = kernel.next_op(scan);
-        }
-        if !scan.is_null() {
-            panic!("tenstorrent2 ir check scan did not finish in 10000 steps");
-        }
-        self.check_balance(kernel)
-    }
-
     /// Exactly 2 barriers delimiting reader/compute/writer, else a
     /// compilation error.
     fn check_sections(&self, kernel: &Kernel) -> Result<(), BackendError> {
@@ -1866,74 +1553,6 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 status: ErrorStatus::InvalidKernelSections,
                 context: format!("tenstorrent2: need exactly 2 barriers (3 sections), found {barriers}").into(),
             });
-        }
-        Ok(())
-    }
-
-    /// Push/pop balance: per CB, the multiset of enclosing trip-lists on
-    /// pushes equals that on pops, else a compilation error. Comparing
-    /// structure (not values) keeps the check exact under symbolic trips:
-    /// same loop nests push and pop the same counts for any trip values.
-    /// Const trips compare by value, dynamic ones by op identity.
-    fn check_balance(&self, kernel: &Kernel) -> Result<(), BackendError> {
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-        enum TripKey {
-            Const(i64),
-            Sym(OpId),
-        }
-        let mut pushes: Map<CBId, Vec<Vec<TripKey>>> = Map::default();
-        let mut pops: Map<CBId, Vec<Vec<TripKey>>> = Map::default();
-        let mut trips: Vec<TripKey> = Vec::new();
-        let mut scan = kernel.head;
-        for _ in 0..10_000 {
-            if scan.is_null() {
-                break;
-            }
-            match kernel.ops[scan].op {
-                Op::Loop { ref len } => {
-                    trips.push(match kernel.resolve_const(*len).and_then(|c| c.as_dim()) {
-                        Some(dim) => TripKey::Const(dim),
-                        None => TripKey::Sym(*len),
-                    });
-                }
-                Op::EndLoop => {
-                    trips.pop().expect("tenstorrent2 EndLoop without Loop");
-                }
-                Op::Store { ref dst, layout: MemLayout::Tile { .. }, .. } => {
-                    if let Some(&cb) = self.cb.map.get(dst) {
-                        pushes.entry(cb).or_default().push(trips.clone());
-                    }
-                }
-                Op::Load { ref src, layout: MemLayout::Tile { .. }, .. } => {
-                    if let Some(&cb) = self.cb.map.get(src) {
-                        pops.entry(cb).or_default().push(trips.clone());
-                    }
-                }
-                _ => {}
-            }
-            scan = kernel.next_op(scan);
-        }
-        if !scan.is_null() {
-            panic!("tenstorrent2 balance scan did not finish in 10000 steps");
-        }
-        for (&storage, &cb) in self.cb.map.iter() {
-            // Register accs never enter `cb.map`, so every mapped CB
-            // carries real traffic: no exemptions.
-            let mut pushed = pushes.get(&cb).cloned().unwrap_or_default();
-            let mut popped = pops.get(&cb).cloned().unwrap_or_default();
-            pushed.sort();
-            popped.sort();
-            if pushed != popped {
-                return Err(BackendError {
-                    status: ErrorStatus::CircularBufferImbalance,
-                    context: format!(
-                        "tenstorrent2: CB{cb} imbalance: {} pushes but {} pops (storage op {storage})",
-                        pushed.len(),
-                        popped.len()
-                    )
-                    .into(),
-                });
-            }
         }
         Ok(())
     }
@@ -2007,13 +1626,22 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         });
                     };
                     let Op::Param { kind: ParamKind::Global, .. } = kernel.ops[ld_src].op else {
-                        unreachable!("tenstorrent2 reader loads only from Global params");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: reader load op {op_id} is not from a Global param").into(),
+                        });
                     };
                     let Op::Storage { dtype, scope: MemScope::Circular, .. } = kernel.ops[*dst].op else {
-                        unreachable!("tenstorrent2 reader stores only target Circular CBs");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: reader store op {op_id} does not target a Circular CB").into(),
+                        });
                     };
                     let Some(&cb) = self.cb.map.get(dst) else {
-                        unreachable!("tenstorrent2 reader store targets unmapped CB");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: reader store op {op_id} targets unmapped CB").into(),
+                        });
                     };
                     match (ld_layout, st_layout) {
                         (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
@@ -2361,19 +1989,34 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     // Register acc. The fused op does the wait/op/pop
                     // traffic into the acc slot.
                     let Op::Load { src: la, layout: MemLayout::Tile { .. }, .. } = kernel.ops[x].op else {
-                        unreachable!("tenstorrent2: matmul side op {x} is no CB tile load");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul side op {x} is no CB tile load").into(),
+                        });
                     };
                     let Some(&cb_a) = self.cb.map.get(&la) else {
-                        unreachable!("tenstorrent2: matmul side op {x} targets unmapped CB");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul side op {x} targets unmapped CB").into(),
+                        });
                     };
                     let Op::Load { src: lb, layout: MemLayout::Tile { .. }, .. } = kernel.ops[y].op else {
-                        unreachable!("tenstorrent2: matmul side op {y} is no CB tile load");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul side op {y} is no CB tile load").into(),
+                        });
                     };
                     let Some(&cb_b) = self.cb.map.get(&lb) else {
-                        unreachable!("tenstorrent2: matmul side op {y} targets unmapped CB");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul side op {y} targets unmapped CB").into(),
+                        });
                     };
                     let Op::Load { src: lacc, .. } = kernel.ops[acc].op else {
-                        unreachable!("tenstorrent2: matmul acc op {acc} is no acc tile load");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: matmul acc op {acc} is no acc tile load").into(),
+                        });
                     };
                     let rc = compute_data.rcs[&op_id];
                     let tile = self.tl.acc_tile(lacc, rc);
@@ -2539,7 +2182,10 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         });
                     };
                     let Some(&cb) = self.cb.map.get(&cb_src) else {
-                        unreachable!("tenstorrent2 writer load targets unmapped CB");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: writer load op {op_id} targets unmapped CB").into(),
+                        });
                     };
                     let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = kernel.ops[*dst].op else {
                         return Err(BackendError {
