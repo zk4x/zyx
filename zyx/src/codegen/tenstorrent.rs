@@ -111,21 +111,181 @@ impl<const DSTBF16: bool> SlabId for TileId<DSTBF16> {
 
 /// Circular-buffer runtime state, one per CBId in the [`CBEmitter`] slab.
 ///
-/// The cycle is free (`Popped`) --reserve--> `Reserved` --push--> `Pushed`
-/// --wait--> `Waiting` --pop--> free (`Popped`). `Popped` doubles as the
-/// initial free state: the first transition on a fresh CB is always
-/// `reserve`. At every section end all CBs must be settled (`Popped` or
-/// `Pushed`); a `Reserved`/`Waiting` remainder is a leaked transaction.
+/// The cycle is free (`Popped`) --reserve(n)--> `Reserved` --push(n)-->
+/// `Pushed` --wait(m)--> `Waiting` --pop(m)--> free (`Popped`). The
+/// payloads carry the block transaction: `Reserved` tracks the block
+/// size `n` and how many tiles `filled` it so far; `Pushed` tracks
+/// `avail`, the tiles pushed minus tiles popped (the consumer-facing
+/// FIFO depth); `Waiting` tracks the waited count and how many of
+/// those tiles were consumed. `avail` persists across transactions
+/// within a section pass: `reserve` from `Pushed` carries the old
+/// `avail` forward, and a pop that drains the last waited tile wraps
+/// back to `Pushed` while tiles remain. `Popped` is exactly `avail
+/// == 0`.
+///
+/// At every section end all CBs must be settled (`Popped` or `Pushed`);
+/// a `Reserved`/`Waiting` remainder is a leaked transaction. The
+/// machine models ONE pass over the emitted text (loop bodies execute
+/// the same text at runtime); cross-section balance is a pre-pass
+/// check (see [`CBBatch`]), not a state-machine property.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CBState {
-    /// Free: no live transaction, `reserve` may be called.
+    /// Free: no live transaction, no unread tiles (`avail == 0`).
     Popped,
-    /// Space reserved, not yet pushed.
-    Reserved,
-    /// Live data, may be waited on.
-    Pushed,
-    /// Waited on, must be popped.
-    Waiting,
+    /// `reserve_back(n)` emitted; `filled` tiles of the block written.
+    /// `avail` = tiles still unread from earlier transactions.
+    Reserved { n: u32, filled: u32, avail: u32 },
+    /// Live data: `avail` tiles sit unconsumed at the front.
+    Pushed { avail: u32 },
+    /// `wait_front(m)` emitted; `filled` of the `m` waited tiles
+    /// consumed. `avail` = unconsumed tiles including the waited ones.
+    Waiting { waited: u32, filled: u32, avail: u32 },
+}
+
+/// Batched CB transaction assigned to one traffic op by the pre-pass
+/// (see [`CBEmitter::new`]). A traffic op (reader store, compute load
+/// or store, writer store) whose runtime tile count exceeds 1 moves
+/// its sync ops out of line: the open (`reserve_back`/`wait_front`)
+/// anchors before the enclosing hoist loop's `Loop` op, the close
+/// (`push_back`/`pop_front`) after its `EndLoop`, and the data
+/// movement addresses tile `index + counter` within the block.
+/// Transactions never span a barrier (barriers delimit sections) and
+/// the hoist loop's trip count is a compile-time constant.
+#[derive(Debug, Clone, Copy)]
+struct CBBatch {
+    /// The CB this transaction moves tiles on.
+    cb: CBId,
+    /// Tiles moved per pass over this op's movement text (= the hoist
+    /// loop trip count; the transaction text runs once per
+    /// enclosing-loop iteration). Feeds the state machine's fill
+    /// accounting and the produced/consumed totals.
+    per_op: u32,
+    /// The hoist loop: open before its `Loop` op, close after its
+    /// `EndLoop`. `None` never occurs: every batch is loop-hoisted
+    /// (straight-line multi-store runs degenerate to n = 1 and stay
+    /// on the legacy inline path).
+    hoist: OpId,
+}
+
+/// Open/close event anchored at an op: producers reserve/push,
+/// consumers wait/pop.
+#[derive(Debug, Clone, Copy)]
+enum CBEvent {
+    Produce { cb: CBId, n: u32 },
+    Consume { cb: CBId, n: u32 },
+}
+
+impl CBEvent {
+    /// The CB this event syncs, for deterministic event ordering.
+    fn cb(&self) -> CBId {
+        match *self {
+            CBEvent::Produce { cb, .. } | CBEvent::Consume { cb, .. } => cb,
+        }
+    }
+}
+
+/// True if the operand closure of `root` contains `target` (e.g. a
+/// hoist loop's counter variable appearing in a tile index).
+fn deps_contain(kernel: &Kernel, root: OpId, target: OpId) -> bool {
+    if root.is_null() {
+        return false;
+    }
+    let mut stack = vec![root];
+    for _ in 0..10_000 {
+        let Some(id) = stack.pop() else { return false };
+        if id == target {
+            return true;
+        }
+        stack.extend(kernel.ops[id].op.parameters());
+    }
+    panic!("deps_contain did not finish in 10000 steps");
+}
+
+/// One CB-movement op: the CB it moves tiles on, the tile-slot index
+/// operand, and the kind (produce = store-side traffic, consume =
+/// load-side traffic).
+#[derive(Debug, Clone, Copy)]
+enum TrafficKind {
+    /// store_circular: reader/compute stores. Reader slots run ahead
+    /// of the FIFO; compute slots pack sequentially.
+    Produce,
+    /// load_circular: compute copies and writer drains.
+    Consume,
+}
+
+/// True if every consumer of `load` is a fused tile op: the load
+/// drains at the consuming op (legacy 1-tile path), never at the
+/// load itself.
+fn fused_only_load(kernel: &Kernel, consumers: &Map<OpId, Vec<OpId>>, load: OpId) -> bool {
+    match consumers.get(&load) {
+        None => false,
+        Some(cs) => cs.iter().all(|&c| {
+            matches!(kernel.ops[c].op, Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. })
+        }),
+    }
+}
+
+/// Records one classified traffic op in the batching pre-pass: the
+/// traffic kind (for event construction), per-pass tile totals
+/// (product of all enclosing trips — symbolic trips are a loud
+/// error), and innermost-loop ownership for hoisting.
+fn record_traffic(
+    op: OpId,
+    cb: CBId,
+    index: OpId,
+    kind: TrafficKind,
+    stack: &mut [LoopFrame],
+    produced: &mut Map<CBId, u32>,
+    consumed: &mut Map<CBId, u32>,
+    traffic_kind: &mut Map<OpId, (OpId, TrafficKind)>,
+) -> Result<(), BackendError> {
+    // Per-pass tile count: the product of every enclosing loop's
+    // trip. Symbolic trips cannot bound the CB traffic — a loud
+    // error, never a guess.
+    let mut count: u32 = 1;
+    for f in stack.iter() {
+        let Some(t) = f.trip else {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!(
+                    "tenstorrent2: CB{cb} traffic inside a non-constant loop (op {op}); tile counts must be compile-time constants"
+                )
+                .into(),
+            });
+        };
+        count *= t;
+    }
+    match kind {
+        TrafficKind::Produce => *produced.get_mut(&cb).expect("CB totals pre-recorded") += count,
+        TrafficKind::Consume => *consumed.get_mut(&cb).expect("CB totals pre-recorded") += count,
+    }
+    traffic_kind.insert(op, (index, kind));
+    if let Some(f) = stack.last_mut() {
+        if f.traffic.insert(cb, op).is_some() {
+            f.dirty.insert(cb);
+        }
+    }
+    Ok(())
+}
+
+/// Loop body tracking for the batching pre-pass: direct traffic per
+/// CB, branch presence, and the constant trip count. A loop hoists a
+/// CB's transaction iff the body holds exactly one traffic op for
+/// that CB, no branch, and a constant trip > 1.
+struct LoopFrame {
+    /// The `Loop` op (open anchor; its counter is the block position).
+    op: OpId,
+    /// Compile-time trip count; `None` = symbolic (never hoisted, and
+    /// any CB traffic under it is a compilation error).
+    trip: Option<u32>,
+    /// A branch sits in the body: hoisting would emit sync ops for a
+    /// body that may not run.
+    if_seen: bool,
+    /// One traffic op per CB directly in the body (deeper loops own
+    /// their own traffic).
+    traffic: Map<CBId, OpId>,
+    /// CBs with more than one traffic op in the body: no hoist.
+    dirty: Set<CBId>,
 }
 
 /// DST register-file lock state (MATH/PACK engines), one for ALL tiles.
@@ -680,6 +840,12 @@ impl<'a> VarEmitter<'a> {
         Self { kernel, var_map: Map::default(), vars: Vec::new() }
     }
 
+    /// Register name of an already-declared value, no refcount
+    /// effect (housekeeping lookups such as hoist loop counters).
+    fn var_name(&self, op_id: OpId) -> Option<String> {
+        self.var_map.get(&op_id).map(|&r| format!("r{r}"))
+    }
+
     /// Shared index resolution: consts inline as literals, every other
     /// value (including Variable params, slot-named at declaration)
     /// must already sit in `var_map`. Same-level uses decrement the
@@ -874,18 +1040,29 @@ impl NocEmitter {
 
     /// `noc_async_read` of one tile plus its barrier: DRAM address
     /// `rnoc{op_id}` from accessor `p{ld_src}`, then read into the CB
-    /// write pointer.
-    fn async_read_tile(&self, src: &mut String, indent: &str, op_id: OpId, ld_src: OpId, idx: &str, elem_size: u32, tile_bytes: u32, cb: CBId) {
+    /// write pointer. `off` is the tile-slot offset within the
+    /// reserved block, in tile units ("0" = plain write pointer).
+    fn async_read_tile(&self, src: &mut String, indent: &str, op_id: OpId, ld_src: OpId, idx: &str, elem_size: u32, tile_bytes: u32, cb: CBId, off: &str) {
         writeln!(src, "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{TT_DRAM_PAGE_BYTES}), (uint32_t)(({idx}*{elem_size})%{TT_DRAM_PAGE_BYTES}));");
-        writeln!(src, "{indent}noc_async_read(rnoc{op_id}, cb{cb}.get_write_ptr(), {tile_bytes});");
+        if off == "0" {
+            writeln!(src, "{indent}noc_async_read(rnoc{op_id}, cb{cb}.get_write_ptr(), {tile_bytes});");
+        } else {
+            writeln!(src, "{indent}noc_async_read(rnoc{op_id}, cb{cb}.get_write_ptr() + {off}*{tile_bytes}, {tile_bytes});");
+        }
         writeln!(src, "{indent}noc_async_read_barrier();");
     }
 
     /// `noc_async_write` of one tile plus its barrier: CB read pointer
-    /// to DRAM address `wnoc{op_id}` in accessor `p_out{dst}`.
-    fn async_write_tile(&self, src: &mut String, indent: &str, op_id: OpId, dst: OpId, idx: &str, elem_size: u32, tile_bytes: u32, cb: CBId) {
+    /// to DRAM address `wnoc{op_id}` in accessor `p_out{dst}`. `off`
+    /// is the tile-slot offset within the waited block, in tile units
+    /// ("0" = plain read pointer).
+    fn async_write_tile(&self, src: &mut String, indent: &str, op_id: OpId, dst: OpId, idx: &str, elem_size: u32, tile_bytes: u32, cb: CBId, off: &str) {
         writeln!(src, "{indent}uint64_t wnoc{op_id} = p_out{dst}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{TT_DRAM_PAGE_BYTES}), (uint32_t)(({idx}*{elem_size})%{TT_DRAM_PAGE_BYTES}));");
-        writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr(), wnoc{op_id}, {tile_bytes});");
+        if off == "0" {
+            writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr(), wnoc{op_id}, {tile_bytes});");
+        } else {
+            writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr() + {off}*{tile_bytes}, wnoc{op_id}, {tile_bytes});");
+        }
         writeln!(src, "{indent}noc_async_write_barrier();");
     }
 
@@ -946,12 +1123,27 @@ impl NocEmitter {
 pub(crate) struct CBEmitter {
     /// One CBId per Circular storage, shared by all three sections.
     map: Map<OpId, CBId>,
-    /// Runtime CB config: (tt format, tile bytes) per CB. Format and
-    /// tile bytes follow the CB storage dtype; an unmappable dtype is
-    /// a compilation error, never a silent default.
+    /// Runtime CB config: (tt format, tile bytes, tile count) per CB.
+    /// Format and tile bytes follow the CB storage dtype; an
+    /// unmappable dtype is a compilation error, never a silent
+    /// default.
     pub(crate) config: Slab<CBId, (u32, u32, u32)>,
     /// Runtime state per CB, in id order.
     states: Slab<CBId, CBState>,
+    /// Batched transactions per traffic op (only ops with n > 1; the
+    /// rest take the legacy inline path). Built by the pre-pass below.
+    batches: Map<OpId, CBBatch>,
+    /// Open events (reserve/wait) anchored at an op: emitted before
+    /// the op's text. Hoisted transactions anchor at the hoist loop's
+    /// `Loop` op.
+    opens: Map<OpId, Vec<CBEvent>>,
+    /// Close events (push/pop) anchored at an op: emitted after the
+    /// op's text. Hoisted transactions anchor at the hoist loop's
+    /// `EndLoop` op.
+    closes: Map<OpId, Vec<CBEvent>>,
+    /// Tiles produced per pass per CB (sum of traffic-op runtime
+    /// counts). Every mapped CB has an entry.
+    produced: Map<CBId, u32>,
 }
 
 #[allow(unused_must_use)]
@@ -962,7 +1154,7 @@ impl CBEmitter {
     /// error. Every mapped CB registers in the state slab (free
     /// state), in id order so the slab index matches the [`CBId`].
     fn new(kernel: &Kernel) -> Result<Self, BackendError> {
-        // Single walk: first-touch CB ids. Registration order is
+        // One walk: first-touch CB ids. Registration order is
         // load-then-store per op, same as before.
         let mut map: Map<OpId, CBId> = Map::default();
         let mut states: Slab<CBId, CBState> = Slab::new();
@@ -1068,7 +1260,251 @@ impl CBEmitter {
             let pushed = config.push((fmt, tb, (len / 1024) as u32));
             debug_assert_eq!(pushed, cb, "tenstorrent2: CB config out of sync with allocation");
         }
-        Ok(Self { map, config, states })
+        // Batching pre-pass: one walk over the whole kernel. Groups CB
+        // traffic into block transactions (per [`CBBatch`]) hoisted
+        // over their innermost enclosing constant-trip loop, totals
+        // the per-pass production/consumption per CB, and asserts the
+        // cross-section balance. Consumers come first: a compute load
+        // fed only by fused tile ops drains at the consuming op
+        // (1-tile legacy path), never at the load itself.
+        let mut consumers: Map<OpId, Vec<OpId>> = Map::default();
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            for p in kernel.ops[scan].op.parameters() {
+                consumers.entry(p).or_default().push(scan);
+            }
+            scan = kernel.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("tenstorrent2 batching consumer scan did not finish in 10000 steps");
+        }
+        // Traffic op → (tile-slot index operand, kind).
+        let mut traffic_kind: Map<OpId, (OpId, TrafficKind)> = Map::default();
+        let mut batches: Map<OpId, CBBatch> = Map::default();
+        let mut produced: Map<CBId, u32> = Map::default();
+        let mut consumed: Map<CBId, u32> = Map::default();
+        for &cb in map.values() {
+            produced.insert(cb, 0);
+            consumed.insert(cb, 0);
+        }
+        let mut section = TtSection::Reader;
+        let mut stack: Vec<LoopFrame> = Vec::new();
+        // Loop op → its EndLoop op (close anchors for hoisted blocks).
+        let mut loop_end_of: Map<OpId, OpId> = Map::default();
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            match kernel.ops[scan].op {
+                Op::Barrier => {
+                    debug_assert!(stack.is_empty(), "tenstorrent2: loop crosses a section barrier");
+                    section.advance();
+                }
+                Op::Loop { len } => {
+                    let trip = match kernel.resolve_const(len).and_then(|c| c.as_dim()) {
+                        Some(d) if d >= 0 => Some(d as u32),
+                        Some(d) => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: negative loop trip count {d}, op {scan}").into(),
+                            });
+                        }
+                        None => None,
+                    };
+                    stack.push(LoopFrame { op: scan, trip, if_seen: false, traffic: Map::default(), dirty: Set::default() });
+                }
+                Op::If { .. } => {
+                    if let Some(f) = stack.last_mut() {
+                        f.if_seen = true;
+                    }
+                }
+                Op::EndLoop => {
+                    let f = stack.pop().expect("tenstorrent2: EndLoop without Loop");
+                    loop_end_of.insert(f.op, scan);
+                    for (&cb, &op) in f.traffic.iter() {
+                        if f.dirty.contains(&cb) {
+                            continue;
+                        }
+                        let Some(t) = f.trip else { continue };
+                        if t <= 1 {
+                            continue;
+                        }
+                        if t > config[cb].2 {
+                            // The CB cannot hold the whole block:
+                            // streaming. Keep the per-iteration
+                            // single-tile transaction (reserve(1) per
+                            // loop pass), which is always correct.
+                            continue;
+                        }
+                        let &(index, _) = &traffic_kind[&op];
+                        // Block slot = index + counter; the index must
+                        // tie to the counter or be plain 0 (producers
+                        // pack sequentially, so the same rule covers
+                        // both kinds).
+                        if !deps_contain(kernel, index, f.op)
+                            && !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0))
+                        {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: CB{cb} index op {index} is neither the hoist loop counter nor 0"
+                                )
+                                .into(),
+                            });
+                        }
+                        // Upgrade the provisional single-tile
+                        // transaction to the hoisted block.
+                        batches.insert(op, CBBatch { cb, per_op: t, hoist: f.op });
+                    }
+                }
+                Op::Store { ref dst, ref src, index, .. } => {
+                    // Classify the traffic op, if any. Deeper loops own
+                    // their own traffic: only the innermost frame sees
+                    // this op.
+                    let traffic = match section {
+                        TtSection::Reader | TtSection::Compute => {
+                            // Reader/compute stores into a Circular
+                            // storage; register accs and DRAM stores
+                            // carry no CB traffic.
+                            map.get(dst).map(|&cb| (TrafficKind::Produce, cb, index))
+                        }
+                        TtSection::Writer => {
+                            // Writer drain: the store's source load
+                            // names the CB and its tile slot.
+                            match kernel.ops[*src].op {
+                                Op::Load { src: cb_src, index, layout: MemLayout::Tile { .. }, .. } => {
+                                    map.get(&cb_src).map(|&cb| (TrafficKind::Consume, cb, index))
+                                }
+                                _ => None,
+                            }
+                        }
+                    };
+                    if let Some((kind, cb, index)) = traffic {
+                            record_traffic(scan, cb, index, kind, &mut stack, &mut produced, &mut consumed, &mut traffic_kind)?;
+                        // Provisional single-tile transaction: open and
+                        // close anchor at this op. A hoisting upgrade
+                        // may replace it at the loop's EndLoop.
+                        if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0)) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tenstorrent2: single-tile transaction on CB{cb} (op {scan}) needs slot index 0, got op {index}"
+                                )
+                                .into(),
+                            });
+                        }
+                        batches.insert(scan, CBBatch { cb, per_op: 1, hoist: scan });
+                    }
+                }
+                Op::Load { ref src, index, ref layout, .. } => {
+                    // Compute tile loads from a Circular storage. Deeper
+                    // loops own their own traffic: only the innermost
+                    // frame sees this op. No `continue` here: every arm
+                    // falls through to the walk advance.
+                    let mut traffic: Option<(TrafficKind, CBId, OpId)> = None;
+                    let mut fused_drain = false;
+                    if section == TtSection::Compute
+                        && matches!(layout, MemLayout::Tile { .. })
+                    {
+                        if let Some(&cb) = map.get(src) {
+                            if fused_only_load(kernel, &consumers, scan) {
+                                // Fused tile ops drain at a fixed slot
+                                // (0): any other index would be
+                                // silently dropped. The load still
+                                // counts as consumption (recorded
+                                // below); it stays on the fused op's
+                                // legacy 1-tile path, so no batch.
+                                if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0)) {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!(
+                                            "tenstorrent2: fused consumer of CB{cb} drains at slot 0; load index op {index} must be 0"
+                                        )
+                                        .into(),
+                                    });
+                                }
+                                fused_drain = true;
+                                traffic = Some((TrafficKind::Consume, cb, index));
+                            } else {
+                                traffic = Some((TrafficKind::Consume, cb, index));
+                            }
+                        }
+                    }
+                    if let Some((kind, cb, index)) = traffic {
+                        record_traffic(scan, cb, index, kind, &mut stack, &mut produced, &mut consumed, &mut traffic_kind)?;
+                        if !fused_drain {
+                            // Provisional single-tile transaction: open
+                            // and close anchor at this op. A hoisting
+                            // upgrade may replace it at the loop's
+                            // EndLoop.
+                            if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0)) {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!(
+                                        "tenstorrent2: single-tile transaction on CB{cb} (op {scan}) needs slot index 0, got op {index}"
+                                    )
+                                    .into(),
+                                });
+                            }
+                            batches.insert(scan, CBBatch { cb, per_op: 1, hoist: scan });
+                        }
+                    }
+                }
+                _ => {}
+            }
+            scan = kernel.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("tenstorrent2 batching pre-pass did not finish in 10000 steps");
+        }
+        // Anchor events from the final batches: single-tile
+        // transactions open and close at the traffic op itself;
+        // hoisted blocks open at the hoist loop's `Loop` op and close
+        // at its `EndLoop`. Sorted by CB for deterministic text.
+        let mut opens: Map<OpId, Vec<CBEvent>> = Map::default();
+        let mut closes: Map<OpId, Vec<CBEvent>> = Map::default();
+        let mut anchored: Vec<(OpId, OpId, CBEvent)> = Vec::new();
+        for (&op, &b) in batches.iter() {
+            let event = match traffic_kind[&op].1 {
+                TrafficKind::Produce => CBEvent::Produce { cb: b.cb, n: b.per_op },
+                TrafficKind::Consume => CBEvent::Consume { cb: b.cb, n: b.per_op },
+            };
+            if b.hoist == op {
+                anchored.push((op, op, event));
+            } else {
+                anchored.push((b.hoist, loop_end_of[&b.hoist], event));
+            }
+        }
+        anchored.sort_by_key(|&(open, close, ref e)| (open, close, e.cb()));
+        for (open, close, event) in anchored {
+            opens.entry(open).or_default().push(event);
+            closes.entry(close).or_default().push(event);
+        }
+        // Cross-section balance: every tile produced per pass is
+        // consumed per pass, per CB. This is the machine-checked
+        // producer/consumer correspondence.
+        for (&cb, &p) in produced.iter() {
+            let c = consumed[&cb];
+            if p != c {
+                let Op::Storage { len, .. } = kernel.ops[map.iter().find_map(|(&op, &cid)| (cid == cb).then_some(op)).expect("CB registered")].op
+                else {
+                    unreachable!("tenstorrent2: CB map entry is a storage op")
+                };
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!(
+                        "tenstorrent2: CB over {}-tile storage produces {p} but consumes {c} tiles per pass",
+                        len / 1024
+                    )
+                    .into(),
+                });
+            }
+        }
+        Ok(Self { map, config, states, batches, opens, closes, produced })
     }
 
     /// Reset every CB to `state` (section entry).
@@ -1089,7 +1525,7 @@ impl CBEmitter {
     fn assert_settled(&self, section: &str) {
         for id in self.states.ids() {
             assert!(
-                matches!(self.states[id], CBState::Popped | CBState::Pushed),
+                matches!(self.states[id], CBState::Popped | CBState::Pushed { .. }),
                 "tenstorrent2: {section} ends with CB{id} in {:?}, mid-transaction states must not escape a section",
                 self.states[id]
             );
@@ -1105,32 +1541,138 @@ impl CBEmitter {
         }
     }
 
-    /// `cb.reserve_back(1)`: only from the free state.
-    fn reserve_back(&mut self, src: &mut String, indent: &str, cb: CBId) {
-        assert_eq!(self.states[cb], CBState::Popped, "tenstorrent2: reserve_back on CB{cb} in {:?}, must be free", self.states[cb]);
-        writeln!(src, "{indent}cb{cb}.reserve_back(1);");
-        self.states[cb] = CBState::Reserved;
+    /// `cb.reserve_back(n)`: from the free state or stacked on unread
+    /// tiles (`Pushed` — the ring wraps, the reader runs ahead). The
+    /// block size was validated against the CB capacity by the
+    /// pre-pass.
+    fn reserve_back(&mut self, src: &mut String, indent: &str, cb: CBId, n: u32) {
+        let avail = match self.states[cb] {
+            CBState::Popped => 0,
+            CBState::Pushed { avail } => avail,
+            s => panic!("tenstorrent2: reserve_back on CB{cb} in {s:?}, must be free or pushed"),
+        };
+        writeln!(src, "{indent}cb{cb}.reserve_back({n});");
+        self.states[cb] = CBState::Reserved { n, filled: 0, avail };
     }
 
-    /// `cb.push_back(1)`: only from `Reserved`.
-    fn push_back(&mut self, src: &mut String, indent: &str, cb: CBId) {
-        assert_eq!(self.states[cb], CBState::Reserved, "tenstorrent2: push_back on CB{cb} in {:?}, must be Reserved", self.states[cb]);
-        writeln!(src, "{indent}cb{cb}.push_back(1);");
-        self.states[cb] = CBState::Pushed;
+    /// `cb.push_back(n)`: closes the open reservation; the block must
+    /// be fully filled (`record_move` accounted every tile).
+    fn push_back(&mut self, src: &mut String, indent: &str, cb: CBId, n: u32) {
+        match self.states[cb] {
+            CBState::Reserved { n: rn, filled, avail } if rn == n => {
+                assert_eq!(filled, n, "tenstorrent2: push_back on CB{cb} with {filled}/{n} tiles filled");
+                writeln!(src, "{indent}cb{cb}.push_back({n});");
+                self.states[cb] = CBState::Pushed { avail: avail + n };
+            }
+            s => panic!("tenstorrent2: push_back on CB{cb} in {s:?}, must be Reserved with matching block size"),
+        }
     }
 
-    /// `cb.wait_front(1)`: only on live data.
-    fn wait_front(&mut self, src: &mut String, indent: &str, cb: CBId) {
-        assert_eq!(self.states[cb], CBState::Pushed, "tenstorrent2: wait_front on CB{cb} in {:?}, must be Pushed", self.states[cb]);
-        writeln!(src, "{indent}cb{cb}.wait_front(1);");
-        self.states[cb] = CBState::Waiting;
+    /// `cb.wait_front(m)`: waits for at least `m` unread tiles; `m`
+    /// must be available (`avail >= m`).
+    fn wait_front(&mut self, src: &mut String, indent: &str, cb: CBId, m: u32) {
+        match self.states[cb] {
+            CBState::Pushed { avail } => {
+                assert!(m <= avail, "tenstorrent2: wait_front({m}) on CB{cb} with only {avail} tiles available");
+                writeln!(src, "{indent}cb{cb}.wait_front({m});");
+                self.states[cb] = CBState::Waiting { waited: m, filled: 0, avail };
+            }
+            s => panic!("tenstorrent2: wait_front on CB{cb} in {s:?}, must be Pushed"),
+        }
     }
 
-    /// `cb.pop_front(1)`: only after a wait.
-    fn pop_front(&mut self, src: &mut String, indent: &str, cb: CBId) {
-        assert_eq!(self.states[cb], CBState::Waiting, "tenstorrent2: pop_front on CB{cb} in {:?}, must be Waiting", self.states[cb]);
-        writeln!(src, "{indent}cb{cb}.pop_front(1);");
-        self.states[cb] = CBState::Popped;
+    /// `cb.pop_front(m)`: drains the waited block; tiles left over
+    /// wrap back to `Pushed` (`avail` minus the popped ones), an
+    /// empty front wraps to free.
+    fn pop_front(&mut self, src: &mut String, indent: &str, cb: CBId, m: u32) {
+        match self.states[cb] {
+            CBState::Waiting { waited, filled, avail } if waited == m => {
+                assert_eq!(filled, m, "tenstorrent2: pop_front on CB{cb} with {filled}/{m} tiles consumed");
+                writeln!(src, "{indent}cb{cb}.pop_front({m});");
+                let rest = avail - m;
+                self.states[cb] = if rest == 0 { CBState::Popped } else { CBState::Pushed { avail: rest } };
+            }
+            s => panic!("tenstorrent2: pop_front on CB{cb} in {s:?}, must be Waiting with matching block size"),
+        }
+    }
+
+    /// Accounts one data-movement text execution: fills the open
+    /// reservation (producer) or drains the waited block (consumer)
+    /// by `count` tiles. The pre-pass supplies the runtime count of
+    /// the movement text (hoist trip for hoisted ops, 1 otherwise).
+    fn record_move(&mut self, cb: CBId, count: u32) {
+        match &mut self.states[cb] {
+            CBState::Reserved { n, filled, .. } => {
+                *filled += count;
+                debug_assert!(*filled <= *n, "tenstorrent2: CB{cb} block overfill {}/{}", filled, n);
+            }
+            CBState::Waiting { waited, filled, .. } => {
+                *filled += count;
+                debug_assert!(*filled <= *waited, "tenstorrent2: CB{cb} block overdrain {}/{}", filled, waited);
+            }
+            s => panic!("tenstorrent2: record_move on CB{cb} in {s:?}, must be Reserved or Waiting"),
+        }
+    }
+
+    /// Emits the open events (reserve/wait) anchored at `op_id`,
+    /// before the op's text.
+    fn open_events(&mut self, src: &mut String, indent: &str, op_id: OpId) {
+        if let Some(events) = self.opens.get(&op_id).cloned() {
+            for event in events {
+                match event {
+                    CBEvent::Produce { cb, n } => self.reserve_back(src, indent, cb, n),
+                    CBEvent::Consume { cb, n } => self.wait_front(src, indent, cb, n),
+                }
+            }
+        }
+    }
+
+    /// Emits the close events (push/pop) anchored at `op_id`, after
+    /// the op's text.
+    fn close_events(&mut self, src: &mut String, indent: &str, op_id: OpId) {
+        if let Some(events) = self.closes.get(&op_id).cloned() {
+            for event in events {
+                match event {
+                    CBEvent::Produce { cb, n } => self.push_back(src, indent, cb, n),
+                    CBEvent::Consume { cb, n } => self.pop_front(src, indent, cb, n),
+                }
+            }
+        }
+    }
+
+    /// The batch assigned to a traffic op, if any.
+    fn batch(&self, op_id: OpId) -> Option<CBBatch> {
+        self.batches.get(&op_id).copied()
+    }
+
+    /// Tiles produced per pass for `cb` (entry `avail` for consuming
+    /// sections). The pre-pass records every mapped CB.
+    fn produced(&self, cb: CBId) -> u32 {
+        self.produced.get(&cb).copied().expect("tenstorrent2: pre-pass recorded totals for every CB")
+    }
+
+    /// Tile-slot address expression for a batched movement, in tile
+    /// units. Single-tile transactions sit at slot 0 (the pre-pass
+    /// rejects any other index). Hoisted blocks: the IR index if it is
+    /// tied to the hoist loop's counter (it spans the block by
+    /// itself), otherwise the counter alone (index is plain 0).
+    fn slot_offset(
+        &self,
+        kernel: &Kernel,
+        em: &mut VarEmitter,
+        data: &SectionData,
+        idx_op: OpId,
+        batch: CBBatch,
+        scope_level: u8,
+        who: &str,
+    ) -> Result<String, BackendError> {
+        if batch.per_op == 1 {
+            return Ok(String::from("0"));
+        }
+        if deps_contain(kernel, idx_op, batch.hoist) {
+            return em.resolve_idx(kernel, data, idx_op, scope_level, who);
+        }
+        Ok(em.var_name(batch.hoist).expect("tenstorrent2: hoist loop counter not in registers"))
     }
 }
 
@@ -1297,35 +1839,27 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         }
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: matmul without MATH lock");
-        cb_em.wait_front(src, indent, cb_a);
-        cb_em.wait_front(src, indent, cb_b);
+        cb_em.wait_front(src, indent, cb_a, 1);
+        cb_em.wait_front(src, indent, cb_b, 1);
         writeln!(src, "{indent}matmul_tiles({cb_a}, {cb_b}, {acc}, {acc}, {acc});");
-        cb_em.pop_front(src, indent, cb_a);
-        cb_em.pop_front(src, indent, cb_b);
+        cb_em.record_move(cb_a, 1);
+        cb_em.record_move(cb_b, 1);
+        cb_em.pop_front(src, indent, cb_a, 1);
+        cb_em.pop_front(src, indent, cb_b, 1);
         self.tile_map.insert(op_id, acc);
     }
 
-    /// Streaming copy in: waits the CB, takes the MATH lock, copies
-    /// the tile into a fresh DST slot, pops the CB. Records the load
-    /// op in `tile_map`. The `copy_tile_init` goes out hoisted (one
-    /// per CB).
-    fn copy(
-        &mut self,
-        src: &mut String,
-        indent: &str,
-        cb_em: &mut CBEmitter,
-        op_id: OpId,
-        cb: CBId,
-        rc: u32,
-        index: &str,
-    ) -> TileId<DSTBF16> {
-        cb_em.wait_front(src, indent, cb);
+    /// Streaming copy in: takes the MATH lock and copies the block
+    /// slot into a fresh DST slot. The wait/pop sync anchors at the
+    /// transaction's open/close events (see [`CBEmitter`]); `index`
+    /// is the tile slot within the waited block. Records the load op
+    /// in `tile_map`. The `copy_tile_init` goes out hoisted (one per
+    /// CB).
+    fn copy(&mut self, src: &mut String, indent: &str, op_id: OpId, cb: CBId, rc: u32, index: &str) -> TileId<DSTBF16> {
         self.math_lock(src, indent);
-        debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: copy without MATH lock");
-        let slot = self.alloc(rc);
+        debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: copy without MATH lock");        let slot = self.alloc(rc);
         self.copy_inits.insert(cb);
         writeln!(src, "{indent}copy_tile({cb}, {index}, {slot});");
-        cb_em.pop_front(src, indent, cb);
         self.tile_map.insert(op_id, slot);
         slot
     }
@@ -1337,7 +1871,15 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// release. The packer reconfig goes out only for non-native pack
     /// targets: the JIT programs the mode-native triple by
     /// construction, so reprogramming it is redundant there.
-    fn pack(&mut self, src: &mut String, indent: &str, cb_em: &mut CBEmitter, slot: TileId<DSTBF16>, cb: CBId) {
+    /// Pack out: closes any open reduce cone, commits MATH, takes
+    /// the PACK lock, packs the slot, releases the file. The whole
+    /// drain sequences here, in emission order: uninit, commit, wait,
+    /// [reconfig,] pack, release. The CB sync (reserve/push) anchors
+    /// at the transaction's open/close events (see [`CBEmitter`]).
+    /// The packer reconfig goes out only for non-native pack targets:
+    /// the JIT programs the mode-native triple by construction, so
+    /// reprogramming it is redundant there.
+    fn pack(&mut self, src: &mut String, indent: &str, cb_em: &CBEmitter, slot: TileId<DSTBF16>, cb: CBId) {
         if self.reduce_pending {
             writeln!(src, "{indent}reduce_uninit();");
             self.reduce_pending = false;
@@ -1346,7 +1888,6 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             self.cursor = Programmed::Unknown;
         }
         self.math_unlock(src, indent);
-        cb_em.reserve_back(src, indent, cb);
         self.pack_lock(src, indent);
         debug_assert_eq!(self.state, TileState::PackLock, "tenstorrent2: pack without PACK lock");
         // Mode-native pack target needs no runtime reconfig: the JIT
@@ -1360,7 +1901,6 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             writeln!(src, "{indent}pack_reconfig_data_format({cb});");
         }
         writeln!(src, "{indent}pack_tile({slot}, {cb});");
-        cb_em.push_back(src, indent, cb);
         self.pack_unlock(src, indent);
     }
 
@@ -1411,12 +1951,14 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         }
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: reduce without MATH lock");
-        cb_em.wait_front(src, indent, cb_in);
-        cb_em.wait_front(src, indent, cb_sc);
+        cb_em.wait_front(src, indent, cb_in, 1);
+        cb_em.wait_front(src, indent, cb_sc, 1);
         writeln!(src, "{indent}reduce_tile<{op_name}, {dim_name}>({cb_in}, {cb_sc}, 0, 0, {acc});");
         self.reduce_pending = true;
-        cb_em.pop_front(src, indent, cb_in);
-        cb_em.pop_front(src, indent, cb_sc);
+        cb_em.record_move(cb_in, 1);
+        cb_em.record_move(cb_sc, 1);
+        cb_em.pop_front(src, indent, cb_in, 1);
+        cb_em.pop_front(src, indent, cb_sc, 1);
         self.tile_map.insert(op_id, acc);
         let _ = rc;
         Ok(acc)
@@ -1548,7 +2090,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         out: CBId,
         rc: u32,
     ) -> TileId<DSTBF16> {
-        cb_em.wait_front(src, indent, cb);
+        cb_em.wait_front(src, indent, cb, 1);
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: transpose without MATH lock");
         let slot = self.alloc(rc);
@@ -1556,7 +2098,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             writeln!(src, "{indent}transpose_wh_init({cb}, {out});");
         }
         writeln!(src, "{indent}transpose_wh_tile({cb}, 0, {slot});");
-        cb_em.pop_front(src, indent, cb);
+        cb_em.record_move(cb, 1);
+        cb_em.pop_front(src, indent, cb, 1);
         self.tile_map.insert(op_id, slot);
         slot
     }
@@ -1808,6 +2351,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         let n = ops.len();
         for i in 0..n {
             let op_id = ops[i];
+            self.cb.open_events(&mut src, &indent, op_id);
             match kernel.ops[op_id].op {
                 Op::Param { dtype, kind, .. } => match kind {
                     ParamKind::Global => {
@@ -1835,7 +2379,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     // Handled at the consuming store (global to local with
                     // no ops in between, as below).
                 }
-                Op::Store { ref dst, src: ref store_src, layout: st_layout, .. } => {
+                Op::Store { ref dst, src: ref store_src, index: st_index, layout: st_layout } => {
                     let Op::Load { src: ld_src, index: ld_idx, layout: ld_layout } = kernel.ops[*store_src].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
@@ -1868,9 +2412,13 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                             let elem_size = dtype.bit_size() as u32 / 8;
                             let tile_bytes = x as u32 * y as u32 * elem_size;
                             let idx = em.resolve_idx(kernel, reader_data, ld_idx, scope_level, "reader")?;
-                            self.cb.reserve_back(&mut src, &indent, cb);
-                            self.noc.async_read_tile(&mut src, &indent, op_id, ld_src, &idx, elem_size, tile_bytes, cb);
-                            self.cb.push_back(&mut src, &indent, cb);
+                            let b = self.cb.batch(op_id).expect("tenstorrent2: pre-pass assigned a batch to every traffic op");
+                            // The sync ops anchor at the transaction's
+                            // open/close events; this text fills the
+                            // block at its slot.
+                            let off = self.cb.slot_offset(kernel, &mut em, reader_data, st_index, b, scope_level, "reader")?;
+                            self.cb.record_move(b.cb, b.per_op);
+                            self.noc.async_read_tile(&mut src, &indent, op_id, ld_src, &idx, elem_size, tile_bytes, cb, &off);
                         }
                         _ => todo!("tenstorrent2 reader only supports tile stores"),
                     }
@@ -1909,6 +2457,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 | Op::Move { .. }
                 | Op::Reduce { .. } => todo!("tenstorrent2 reader op {op_id}: {:?}", kernel.ops[op_id].op),
             }
+            self.cb.close_events(&mut src, &indent, op_id);
         }
         self.noc.final_read_barrier(&mut src, &indent);
         writeln!(src, "}}");
@@ -1994,7 +2543,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         }
         self.cb.reset_all(CBState::Popped);
         for cb in loaded_here.difference(&stored_here) {
-            self.cb.set(*cb, CBState::Pushed);
+            self.cb.set(*cb, CBState::Pushed { avail: self.cb.produced(*cb) });
         }
         // Startup triple `[in0, in1, out]`: single-input kernels repeat
         // in0 (the two-arg overload does the same). Kernels with no
@@ -2009,6 +2558,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         let init_anchor = src.len();
 
         for &op_id in &compute_data.ops {
+            self.cb.open_events(&mut src, &indent, op_id);
             match kernel.ops[op_id].op {
                 Op::Param { dtype, kind, .. } => match kind {
                     ParamKind::Variable => {
@@ -2161,7 +2711,12 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                                 context: format!("tenstorrent2: compute store reads a tile with no DST slot, op {op_id}").into(),
                             });
                         };
+                        let b = self.cb.batch(op_id).expect("tenstorrent2: pre-pass assigned a batch to every traffic op");
+                        // The sync ops anchor at the transaction's
+                        // open/close events; this text packs one tile
+                        // per execution sequentially.
                         self.tl.pack(&mut src, &indent, &mut self.cb, tile, out_cb);
+                        self.cb.record_move(b.cb, b.per_op);
                     }
                 }
                 Op::Load { src: ref load_src, layout, .. } => {
@@ -2199,11 +2754,16 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                             }
                         }
                          if !fused_only {
-                             let rc = compute_data.rcs[&op_id];
-                             let Op::Load { index: ld_idx, .. } = kernel.ops[op_id].op else { unreachable!() };
-                             let idx = em.resolve_idx(kernel, compute_data, ld_idx, scope_level, "compute")?;
-                             self.tl.copy(&mut src, &indent, &mut self.cb, op_id, cb, rc, &idx);
-                         }
+                              let rc = compute_data.rcs[&op_id];
+                              let Op::Load { index: ld_idx, .. } = kernel.ops[op_id].op else { unreachable!() };
+                              let b = self.cb.batch(op_id).expect("tenstorrent2: pre-pass assigned a batch to every traffic op");
+                              // The sync ops anchor at the transaction's
+                              // open/close events; this text copies its
+                              // block slot.
+                              let off = self.cb.slot_offset(kernel, &mut em, compute_data, ld_idx, b, scope_level, "compute")?;
+                              self.cb.record_move(b.cb, b.per_op);
+                              self.tl.copy(&mut src, &indent, op_id, cb, rc, &off);
+                          }
                     }
                 }
                 Op::Range { .. } => {
@@ -2388,6 +2948,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 Op::Move { .. } | Op::Reduce { .. } => unreachable!("should've been lowered by linearize"),
                 Op::Wmma { .. } => unreachable!("tt does not support wmma, use Op::MatmulTile instead"),
             }
+            self.cb.close_events(&mut src, &indent, op_id);
         }
         // Hoisted tile-op inits land at the anchor, ahead of all loops.
         self.tl.prepend_compute_inits(&mut src, init_anchor)?;
@@ -2438,7 +2999,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         }
         self.cb.reset_all(CBState::Popped);
         for cb in loaded_here {
-            self.cb.set(cb, CBState::Pushed);
+            self.cb.set(cb, CBState::Pushed { avail: self.cb.produced(cb) });
         }
         // Accessors only for the GlobalMut params this section writes.
         for &op_id in ops {
@@ -2449,6 +3010,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         let n = ops.len();
         for i in 0..n {
             let op_id = ops[i];
+            self.cb.open_events(&mut src, &indent, op_id);
             match kernel.ops[op_id].op {
                 Op::Param { kind: ParamKind::GlobalMut, .. } => {
                     // Accessor emitted up front (see above).
@@ -2474,7 +3036,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     // Consumed at the draining store below.
                 }
                 Op::Store { ref dst, src: ref store_src, index: st_idx, layout: st_layout } => {
-                    let Op::Load { src: cb_src, index: _ld_idx, layout: ld_layout } = kernel.ops[*store_src].op else {
+                    let Op::Load { src: cb_src, index: ld_idx, layout: ld_layout } = kernel.ops[*store_src].op else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: format!(
@@ -2500,9 +3062,13 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                             let elem_size = dtype.bit_size() as u32 / 8;
                             let tile_bytes = x as u32 * y as u32 * elem_size;
                             let idx = em.resolve_idx(kernel, writer_data, st_idx, scope_level, "writer")?;
-                            self.cb.wait_front(&mut src, &indent, cb);
-                            self.noc.async_write_tile(&mut src, &indent, op_id, *dst, &idx, elem_size, tile_bytes, cb);
-                            self.cb.pop_front(&mut src, &indent, cb);
+                            let b = self.cb.batch(op_id).expect("tenstorrent2: pre-pass assigned a batch to every traffic op");
+                            // The sync ops anchor at the transaction's
+                            // open/close events; this text drains the
+                            // block at its slot.
+                            let off = self.cb.slot_offset(kernel, &mut em, writer_data, ld_idx, b, scope_level, "writer")?;
+                            self.cb.record_move(b.cb, b.per_op);
+                            self.noc.async_write_tile(&mut src, &indent, op_id, *dst, &idx, elem_size, tile_bytes, cb, &off);
                         }
                         _ => todo!("tenstorrent2 writer only supports tile stores"),
                     }
@@ -2544,6 +3110,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 | Op::Move { .. }
                 | Op::Reduce { .. } => todo!("tenstorrent2 writer op"),
             }
+            self.cb.close_events(&mut src, &indent, op_id);
         }
         writeln!(src, "}}");
         self.cb.assert_settled("writer");

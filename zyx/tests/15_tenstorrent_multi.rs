@@ -382,11 +382,12 @@ fn tenstorrent_mixed_exp_reduce() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/// Probe: multi-tile CB capacity. First kernel with a circular
-/// storage of more than 1 tile: ca holds 4 tiles, the reader pushes
-/// all 4 before compute pops any. Compute doubles each tile
-/// (add(va, va)) — a real op, no matmul. Input [32,128] = 4 tiles,
-/// expected 2*x.
+/// Probe: multi-tile CB capacity + indexed access. ca holds 4 tiles,
+/// the reader pushes all 4 before compute pops any. cout holds 2
+/// tiles and is indexed: compute pushes at tile index j (nested 2x2
+/// loops, the mixed_matmul_bias cc pattern), the writer pops at index
+/// j. Compute doubles each tile (add(va, va)) — a real op, no
+/// matmul. Input [32,128] = 4 tiles, expected 2*x.
 #[test]
 fn tenstorrent_probe_multitile_double() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -394,7 +395,7 @@ fn tenstorrent_probe_multitile_double() -> Result<(), ZyxError> {
     let out = k.param_mut(DType::F16);
 
     let ca = k.circular_storage(DType::F16, 4);
-    let cout = k.circular_storage(DType::F16, 1);
+    let cout = k.circular_storage(DType::F16, 2);
 
     let _g = k.group_range(0, 1);
 
@@ -405,18 +406,23 @@ fn tenstorrent_probe_multitile_double() -> Result<(), ZyxError> {
         k.store_circular(ca, ta, 0);
     });
     k.barrier();
-    // Compute: pop each tile, double it, push to cout.
-    k.loop_over(4, |k, _i| {
-        let va = k.load_circular(ca, 0);
-        let s = k.add(va, va);
-        k.store_circular(cout, s, 0);
+    // Compute: pop each tile, double it, push to cout at index j.
+    k.loop_over(2, |k, _o| {
+        k.loop_over(2, |k, j| {
+            let va = k.load_circular(ca, 0);
+            let s = k.add(va, va);
+            k.store_circular(cout, s, j);
+        });
     });
     k.barrier();
-    // Writer: output tile i at i*1024.
-    k.loop_over(4, |k, i| {
-        let base = k.mad(i, 1024, 0);
-        let v = k.load_circular(cout, 0);
-        k.store_global_tile(out, v, base);
+    // Writer: output tile o*2+j at (o*2+j)*1024, pop cout at index j.
+    k.loop_over(2, |k, o| {
+        k.loop_over(2, |k, j| {
+            let ot = k.mad(o, 2, j);
+            let base = k.mad(ot, 1024, 0);
+            let v = k.load_circular(cout, j);
+            k.store_global_tile(out, v, base);
+        });
     });
 
     k.verify();
