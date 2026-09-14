@@ -181,6 +181,74 @@ impl TileState {
     }
 }
 
+/// Programmed unpacker/math config: the phase-transition cursor
+/// (third state machine, next to [`TileState`]/CB state). Header
+/// inits are "first-call or switch-from-another-op" reconfigurations,
+/// not one-time setup: repeating a kind needs nothing, switching
+/// back to a hoisted kind needs its re-init inline at the switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Programmed<const DSTBF16: bool> {
+    Unary(UOp),
+    Binary(BOp),
+    Typecast(DType, DType),
+    Matmul(CBId, CBId),
+    Reduce(BOp, TileReduceKind, CBId, CBId, TileId<DSTBF16>),
+    Transpose(CBId, CBId),
+}
+
+/// Hoisted init call for a tile unary op. Single table shared by the
+/// hoist and inline transition emission — add new ops here once.
+fn unary_init_name(uop: UOp) -> &'static str {
+    match uop {
+        UOp::Neg => "negative_tile_init();",
+        UOp::BitNot => "bitwise_not_tile_init();",
+        UOp::Exp => "exp_tile_init();",
+        UOp::Exp2 => "exp2_tile_init();",
+        UOp::Log2 => "log_tile_init();",
+        UOp::Reciprocal => "recip_tile_init();",
+        UOp::Sqrt => "sqrt_tile_init();",
+        UOp::Sin => "sin_tile_init();",
+        UOp::Cos => "cos_tile_init();",
+        UOp::Floor | UOp::Trunc => "rounding_op_tile_init();",
+        UOp::Abs => "abs_tile_init();",
+        UOp::Not => "logical_not_tile_init();",
+        UOp::Ln => unreachable!("ln is lowered to log2 before codegen"),
+    }
+}
+
+/// Hoisted init call for a tile binary op, if it needs one. Single
+/// table shared by the hoist and inline transition emission.
+fn binary_init_name(bop: BOp) -> Option<&'static str> {
+    match bop {
+        BOp::Add => Some("add_binary_tile_init();"),
+        BOp::Sub => Some("sub_binary_tile_init();"),
+        BOp::Mul => Some("mul_binary_tile_init();"),
+        BOp::Div => Some("div_binary_tile_init();"),
+        BOp::Max => Some("binary_max_tile_init();"),
+        BOp::BitShiftLeft | BOp::BitShiftRight => Some("binary_shift_tile_init();"),
+        _ => None,
+    }
+}
+
+/// LLK pool type for a tile reduce op. Callers validate support
+/// before transitioning; the fallback never fires on valid input.
+fn reduce_pool_name(rop: BOp) -> &'static str {
+    match rop {
+        BOp::Max => "PoolType::MAX",
+        BOp::Add => "PoolType::SUM",
+        _ => unreachable!("tenstorrent2: unsupported reduce rop reached codegen"),
+    }
+}
+
+/// LLK reduce dimension for a tile reduce kind.
+fn reduce_dim_name(kind: TileReduceKind) -> &'static str {
+    match kind {
+        TileReduceKind::Row => "ReduceDim::REDUCE_ROW",
+        TileReduceKind::Col => "ReduceDim::REDUCE_COL",
+        TileReduceKind::Scalar => "ReduceDim::REDUCE_SCALAR",
+    }
+}
+
 /// One value slot per section kernel: scalar bound arithmetic, loop
 /// bounds, and vector values all live in `r{reg}` slots stamped with
 /// their refcount. Tiled values are DST slots instead (layout tiled
@@ -1073,11 +1141,18 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     /// Reduce triples seen, for the hoisted `reduce_init` block.
     /// The tile emits per use; `reduce_uninit` goes out once per
     /// cone at the consuming pack (`math_unlock`).
-    reduce_inits: Vec<(&'static str, &'static str, CBId, CBId, TileId<DSTBF16>)>,
+    reduce_inits: Vec<(BOp, TileReduceKind, CBId, CBId, TileId<DSTBF16>)>,
     /// Transpose CB pairs seen, for the hoisted `transpose_wh_init`
     /// block (0.72 has no split `transpose_init`; the `_wh` long init
     /// owns the full programming like `mm_init` does).
     transpose_inits: Vec<(CBId, CBId)>,
+    /// Phase-transition cursor: the init kind currently programmed
+    /// into unpacker/math (`None` = unknown: entry, `if`-joins,
+    /// reduce teardown).
+    programmed: Option<Programmed<DSTBF16>>,
+    /// First init kind used in the walk: hoists last, covering the
+    /// walk's first op so it needs no inline init.
+    first_programmed: Option<Programmed<DSTBF16>>,
     /// A reduce cone is open: the next `pack` closes it with
     /// `reduce_uninit` before the commit.
     reduce_pending: bool,
@@ -1090,7 +1165,7 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     /// Tile binary ops seen, for the hoisted init block.
     binary_inits: Set<BOp>,
     /// Tile cast format pairs seen, for the hoisted init block.
-    typecast_inits: Vec<(u32, u32)>,
+    typecast_inits: Vec<(DType, DType)>,
     /// Copy CBs seen, for the hoisted `copy_tile_init` block.
     copy_inits: Set<CBId>,
 }
@@ -1111,6 +1186,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             mm_inits: Vec::new(),
             reduce_inits: Vec::new(),
             transpose_inits: Vec::new(),
+            programmed: None,
+            first_programmed: None,
             reduce_pending: false,
             startup: None,
         }
@@ -1121,6 +1198,67 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     fn set_startup(&mut self, triple: [CBId; 3]) {
         assert!(self.startup.is_none(), "tenstorrent2: compute startup triple set twice");
         self.startup = Some(triple);
+    }
+
+    /// Phase-transition init cursor. Records `prog` in its seen-set
+    /// and returns true if the caller must emit its init inline:
+    /// switching back to an already-hoisted kind needs the re-init
+    /// at the switch. First-seen kinds return false (the hoist covers
+    /// them — the first-used kind hoists last); repeating the
+    /// programmed kind needs nothing. `copy` stays out: per-CB source
+    /// programming is orthogonal, covered by `copy_inits` alone.
+    fn transition(&mut self, prog: Programmed<DSTBF16>) -> bool {
+        if self.first_programmed.is_none() {
+            self.first_programmed = Some(prog);
+        }
+        let seen = match prog {
+            Programmed::Unary(u) => !self.unary_inits.insert(u),
+            Programmed::Binary(b) => !self.binary_inits.insert(b),
+            Programmed::Typecast(a, b) => {
+                let p = (a, b);
+                let seen = self.typecast_inits.contains(&p);
+                if !seen {
+                    self.typecast_inits.push(p);
+                }
+                seen
+            }
+            Programmed::Matmul(a, b) => {
+                let p = (a, b);
+                let seen = self.mm_inits.contains(&p);
+                if !seen {
+                    self.mm_inits.push(p);
+                }
+                seen
+            }
+            Programmed::Reduce(rop, kind, cb_in, cb_sc, acc) => {
+                let params = (rop, kind, cb_in, cb_sc, acc);
+                let seen = self.reduce_inits.contains(&params);
+                if !seen {
+                    self.reduce_inits.push(params);
+                }
+                seen
+            }
+            Programmed::Transpose(a, b) => {
+                let p = (a, b);
+                let seen = self.transpose_inits.contains(&p);
+                if !seen {
+                    self.transpose_inits.push(p);
+                }
+                seen
+            }
+        };
+        if self.programmed == Some(prog) {
+            return false;
+        }
+        self.programmed = Some(prog);
+        seen
+    }
+
+    /// Forget the programmed config: `if`-joins (branch may not have
+    /// run) and reduce teardown (uninit returns the config to
+    /// neutral). The next init-needing op re-inits inline.
+    fn invalidate_program(&mut self) {
+        self.programmed = None;
     }
 
     /// Allocate one DST slot. Capacity is asserted by
@@ -1176,7 +1314,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// sources data from the CBs and accumulates into the one tile),
     /// then pops both CBs. Runs under the MATH lock (lazily acquired).
     /// `mm_init` goes out hoisted (one per CB pair, with the output
-    /// CB from the startup triple). Records the result op in `tile_map`.
+    /// CB from the startup triple) and inline on kind switches.
+    /// Records the result op in `tile_map`.
     fn matmul(
         &mut self,
         src: &mut String,
@@ -1185,10 +1324,11 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         op_id: OpId,
         cb_a: CBId,
         cb_b: CBId,
+        out: CBId,
         acc: TileId<DSTBF16>,
     ) {
-        if !self.mm_inits.contains(&(cb_a, cb_b)) {
-            self.mm_inits.push((cb_a, cb_b));
+        if self.transition(Programmed::Matmul(cb_a, cb_b)) {
+            writeln!(src, "{indent}mm_init({cb_a}, {cb_b}, {out});");
         }
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: matmul without MATH lock");
@@ -1235,6 +1375,9 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         if self.reduce_pending {
             writeln!(src, "{indent}reduce_uninit();");
             self.reduce_pending = false;
+            // Teardown returns the config to neutral: the next
+            // init-needing op re-inits inline.
+            self.programmed = None;
         }
         self.math_unlock(src, indent);
         cb_em.reserve_back(src, indent, cb);
@@ -1269,9 +1412,10 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     }
 
     /// Fused reduce: waits input + scaler CBs, emits the tile into
-    /// the acc slot, pops both CBs. The init goes out hoisted, the
-    /// uninit at the consuming pack. Runs under the MATH lock
-    /// (lazily acquired). Records the result op in `tile_map`.
+    /// the acc slot, pops both CBs. The init goes out hoisted and
+    /// inline on kind switches, the uninit at the consuming pack.
+    /// Runs under the MATH lock (lazily acquired). Records the
+    /// result op in `tile_map`.
     fn reduce(
         &mut self,
         src: &mut String,
@@ -1295,14 +1439,9 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
                 });
             }
         };
-        let dim_name = match kind {
-            TileReduceKind::Row => "ReduceDim::REDUCE_ROW",
-            TileReduceKind::Col => "ReduceDim::REDUCE_COL",
-            TileReduceKind::Scalar => "ReduceDim::REDUCE_SCALAR",
-        };
-        let params = (op_name, dim_name, cb_in, cb_sc, acc);
-        if !self.reduce_inits.contains(&params) {
-            self.reduce_inits.push(params);
+        let dim_name = reduce_dim_name(kind);
+        if self.transition(Programmed::Reduce(rop, kind, cb_in, cb_sc, acc)) {
+            writeln!(src, "{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});");
         }
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: reduce without MATH lock");
@@ -1343,7 +1482,10 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         };
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: binary without MATH lock");
-        self.binary_inits.insert(bop);
+        if self.transition(Programmed::Binary(bop)) {
+            let init = binary_init_name(bop).expect("tenstorrent2: binary op without init entry");
+            writeln!(src, "{indent}{init}");
+        }
         let odst = self.alloc(rc);
         writeln!(src, "{indent}{name}({x}, {y}, {odst});");
         self.tile_map.insert(op_id, odst);
@@ -1380,16 +1522,17 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         };
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: unary without MATH lock");
-        self.unary_inits.insert(uop);
+        if self.transition(Programmed::Unary(uop)) {
+            writeln!(src, "{indent}{};", unary_init_name(uop));
+        }
         writeln!(src, "{indent}{name}({x});");
         self.tile_map.insert(op_id, x);
         x
     }
 
-    /// Tiled cast: in-place like unary (`typecast_tile<IN,OUT>(x)`),
-    /// formats are tt::DataFormat values. Records the parameterized
-    /// hoisted init (deduped: re-init of the same pair is harmless but
-    /// noisy).
+    /// Tiled cast: in-place like unary (`typecast_tile<IN,OUT>(x)`).
+    /// DTypes ride through; `tt_fmt` converts at emission. The
+    /// transition records the pair and inits inline on kind switches.
     #[allow(dead_code)]
     fn cast(
         &mut self,
@@ -1397,23 +1540,26 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         indent: &str,
         op_id: OpId,
         x: TileId<DSTBF16>,
-        in_fmt: u32,
-        out_fmt: u32,
-    ) -> TileId<DSTBF16> {
+        in_dt: DType,
+        out_dt: DType,
+    ) -> Result<TileId<DSTBF16>, BackendError> {
+        let in_fmt = tt_fmt(in_dt)?;
+        let out_fmt = tt_fmt(out_dt)?;
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: cast without MATH lock");
-        if !self.typecast_inits.contains(&(in_fmt, out_fmt)) {
-            self.typecast_inits.push((in_fmt, out_fmt));
+        if self.transition(Programmed::Typecast(in_dt, out_dt)) {
+            writeln!(src, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
         }
         writeln!(src, "{indent}typecast_tile<{in_fmt}, {out_fmt}>({x});");
         self.tile_map.insert(op_id, x);
-        x
+        Ok(x)
     }
 
     /// Streaming transpose: waits the CB, takes the MATH lock,
     /// transposes the 32x32 tile into a fresh DST slot, pops the CB.
     /// Records the load op in `tile_map`. The `transpose_wh_init`
-    /// goes out hoisted (one per input/output CB pair).
+    /// goes out hoisted (one per input/output CB pair) and inline on
+    /// kind switches.
     fn transpose(
         &mut self,
         src: &mut String,
@@ -1428,8 +1574,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: transpose without MATH lock");
         let slot = self.alloc(rc);
-        if !self.transpose_inits.contains(&(cb, out)) {
-            self.transpose_inits.push((cb, out));
+        if self.transition(Programmed::Transpose(cb, out)) {
+            writeln!(src, "{indent}transpose_wh_init({cb}, {out});");
         }
         writeln!(src, "{indent}transpose_wh_tile({cb}, 0, {slot});");
         cb_em.pop_front(src, indent, cb);
@@ -1457,80 +1603,79 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// FP32 mode enables 32-bit DST right after. Matmul kernels skip
     /// startup: 0.72 `mm_init` owns the full UNPACK/MATH/PACK
     /// programming (the installed example calls nothing else).
-    /// Per-iteration init reprograms live packer state. The walk inserts
-    /// into the sets as it emits; this method only formats into the
-    /// section source. Always at function-scope indent: the anchor sits
-    /// at base indent by construction.
-    fn prepend_compute_inits(&self, src: &mut String, pos: usize) {
+    /// Per-iteration init reprograms live packer state. Op-init lines
+    /// carry their [`Programmed`] identity; the walk's first-used
+    /// kind sorts last so the anchor ends with its config active,
+    /// covering the walk's first op (later uses re-init inline at
+    /// kind switches via [`TileEmitter::transition`]). Always at
+    /// function-scope indent: the anchor sits at base indent by
+    /// construction.
+    fn prepend_compute_inits(&self, src: &mut String, pos: usize) -> Result<(), BackendError> {
         let indent = "  ";
-        let mut inits = String::new();
+        let mut head = String::new();
         if self.mm_inits.is_empty() {
             if let Some([in0, in1, out]) = self.startup {
                 let _ = std::fmt::Write::write_fmt(
-                    &mut inits,
+                    &mut head,
                     format_args!("{indent}compute_kernel_hw_startup({in0}, {in1}, {out});\n"),
                 );
                 if !DSTBF16 {
-                    let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}enable_fp32_dest_acc();\n"));
+                    let _ = std::fmt::Write::write_fmt(&mut head, format_args!("{indent}enable_fp32_dest_acc();\n"));
                 }
             }
-        } else {
+        } else if !DSTBF16 {
             // Matmul kernels: mm_init instead of startup (0.72 API).
-            if !DSTBF16 {
-                let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}enable_fp32_dest_acc();\n"));
-            }
+            let _ = std::fmt::Write::write_fmt(&mut head, format_args!("{indent}enable_fp32_dest_acc();\n"));
+        }
+        // (identity, line): copy has no identity (orthogonal per-CB
+        // programming, no cursor transitions).
+        let mut lines: Vec<(Option<Programmed<DSTBF16>>, String)> = Vec::new();
+        for &(cb_a, cb_b) in &self.mm_inits {
             let out = self.startup.map(|[_, _, o]| o).expect("tenstorrent2: matmul kernel without startup triple");
-            for &(cb_a, cb_b) in &self.mm_inits {
-                let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}mm_init({cb_a}, {cb_b}, {out});\n"));
-            }
+            lines.push((Some(Programmed::Matmul(cb_a, cb_b)), format!("{indent}mm_init({cb_a}, {cb_b}, {out});\n")));
         }
         for &cb in &self.copy_inits {
-            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}copy_tile_init({cb});\n"));
+            lines.push((None, format!("{indent}copy_tile_init({cb});\n")));
         }
         for &(cb_in, cb_out) in &self.transpose_inits {
-            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}transpose_wh_init({cb_in}, {cb_out});\n"));
+            lines.push((
+                Some(Programmed::Transpose(cb_in, cb_out)),
+                format!("{indent}transpose_wh_init({cb_in}, {cb_out});\n"),
+            ));
         }
         for &uop in &self.unary_inits {
-            let init = match uop {
-                UOp::Neg => "negative_tile_init();",
-                UOp::BitNot => "bitwise_not_tile_init();",
-                UOp::Exp => "exp_tile_init();",
-                UOp::Exp2 => "exp2_tile_init();",
-                UOp::Log2 => "log_tile_init();",
-                UOp::Reciprocal => "recip_tile_init();",
-                UOp::Sqrt => "sqrt_tile_init();",
-                UOp::Sin => "sin_tile_init();",
-                UOp::Cos => "cos_tile_init();",
-                UOp::Floor | UOp::Trunc => "rounding_op_tile_init();",
-                UOp::Abs => "abs_tile_init();",
-                UOp::Not => "logical_not_tile_init();",
-                UOp::Ln => unreachable!("ln is lowered to log2 before codegen"),
-            };
-            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}{init}\n"));
+            lines.push((Some(Programmed::Unary(uop)), format!("{indent}{}\n", unary_init_name(uop))));
         }
         for &bop in &self.binary_inits {
-            let init = match bop {
-                BOp::Add => Some("add_binary_tile_init();"),
-                BOp::Sub => Some("sub_binary_tile_init();"),
-                BOp::Mul => Some("mul_binary_tile_init();"),
-                BOp::Div => Some("div_binary_tile_init();"),
-                BOp::Max => Some("binary_max_tile_init();"),
-                BOp::BitShiftLeft => Some("binary_shift_tile_init();"),
-                BOp::BitShiftRight => Some("binary_shift_tile_init();"),
-                BOp::BitAnd => Some("bitwise_and_tile_init();"),
-                _ => None,
-            };
-            if let Some(init) = init {
-                let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}{init}\n"));
+            if let Some(init) = binary_init_name(bop) {
+                lines.push((Some(Programmed::Binary(bop)), format!("{indent}{init}\n")));
             }
         }
-        for &(in_fmt, out_fmt) in &self.typecast_inits {
-            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();\n"));
+        for &(in_dt, out_dt) in &self.typecast_inits {
+            let in_fmt = tt_fmt(in_dt)?;
+            let out_fmt = tt_fmt(out_dt)?;
+            lines.push((
+                Some(Programmed::Typecast(in_dt, out_dt)),
+                format!("{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();\n"),
+            ));
         }
-        for &(op_name, dim_name, cb_in, cb_sc, acc) in &self.reduce_inits {
-            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});\n"));
+        for &(rop, kind, cb_in, cb_sc, acc) in &self.reduce_inits {
+            let op_name = reduce_pool_name(rop);
+            let dim_name = reduce_dim_name(kind);
+            lines.push((
+                Some(Programmed::Reduce(rop, kind, cb_in, cb_sc, acc)),
+                format!("{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});\n"),
+            ));
+        }
+        if let Some(first) = self.first_programmed {
+            lines.sort_by_key(|(p, _)| *p == Some(first));
+        }
+        let mut inits = head;
+        for (_, line) in lines {
+            inits.push_str(&line);
         }
         src.insert_str(pos, &inits);
+        Ok(())
     }
 }
 
@@ -1912,9 +2057,9 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         if compute_data.rcs[&x] != 1 {
                             todo!("tenstorrent2 multi-use tiled cast operand, op {op_id}");
                         }
-                        let in_fmt = tt_fmt(compute_data.dtypes[&x].0)?;
-                        let out_fmt = tt_fmt(compute_data.dtypes[&op_id].0)?;
-                        self.tl.cast(&mut src, &indent, op_id, tile, in_fmt, out_fmt);
+                        let in_dt = compute_data.dtypes[&x].0;
+                        let out_dt = compute_data.dtypes[&op_id].0;
+                        self.tl.cast(&mut src, &indent, op_id, tile, in_dt, out_dt)?;
                     } else {
                         em.emit_op(&mut src, &indent, op_id, compute_data, &self.noc, scope_level)?;
                     }
@@ -2089,6 +2234,10 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 }
                 Op::EndIf => {
                     if_end(&mut src, &mut indent, &mut scope_level);
+                    // The branch may not have run: programmed config
+                    // is unknown at the join, the next init-needing
+                    // op re-inits inline.
+                    self.tl.invalidate_program();
                 }
                 Op::Index { .. } => todo!(),
                 Op::MatmulTile { x, y, acc } => {
@@ -2128,7 +2277,8 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     };
                     let rc = compute_data.rcs[&op_id];
                     let tile = self.tl.acc_tile(lacc, rc);
-                    self.tl.matmul(&mut src, &indent, &mut self.cb, op_id, cb_a, cb_b, tile);
+                    let out = self.tl.startup.map(|[_, _, o]| o).expect("tenstorrent2: matmul kernel without startup triple");
+                    self.tl.matmul(&mut src, &indent, &mut self.cb, op_id, cb_a, cb_b, out, tile);
                 }
                 Op::TransposeTile { x } => {
                     // x is a tile load from a live input CB. The op
@@ -2222,7 +2372,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
             }
         }
         // Hoisted tile-op inits land at the anchor, ahead of all loops.
-        self.tl.prepend_compute_inits(&mut src, init_anchor);
+        self.tl.prepend_compute_inits(&mut src, init_anchor)?;
 
         writeln!(src, "}}");
         self.cb.assert_settled("compute");
@@ -2588,16 +2738,34 @@ impl VarEmitter<'_> {
     }
 }
 
-/// TT `DataFormat` constant for a zyx dtype on the tile path.
-/// tt-metal 0.72 has no plain-Float16 SFPU kernel, so zyx F16
-/// rides Float16_b (see typecast.h supported list).
-fn tt_fmt(dt: DType) -> Result<u32, BackendError> {
+/// tt-metal `tt::DataFormat` values used on the tile path.
+/// Discriminants mirror `tt_backend_api_types.hpp` exactly (do NOT
+/// confuse with the CB descriptor codes F32=0/F16=1/BF16=2, which are
+/// a different enum). zyx F16 rides `Float16_b` — 0.72 has no
+/// plain-Float16 SFPU kernel (see typecast.h supported list).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TtDataFormat {
+    F32 = 0,
+    F16B = 5,
+    I32 = 8,
+    U16 = 9,
+    U32 = 24,
+}
+
+impl std::fmt::Display for TtDataFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", *self as u32)
+    }
+}
+
+/// TT `DataFormat` for a zyx dtype on the tile path.
+fn tt_fmt(dt: DType) -> Result<TtDataFormat, BackendError> {
     match dt {
-        DType::F32 => Ok(0),
-        DType::F16 | DType::BF16 => Ok(5),
-        DType::U16 => Ok(9),
-        DType::U32 => Ok(24),
-        DType::I32 => Ok(8),
+        DType::F32 => Ok(TtDataFormat::F32),
+        DType::F16 | DType::BF16 => Ok(TtDataFormat::F16B),
+        DType::U16 => Ok(TtDataFormat::U16),
+        DType::U32 => Ok(TtDataFormat::U32),
+        DType::I32 => Ok(TtDataFormat::I32),
         dt => Err(BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("tenstorrent2: dtype {dt:?} has no tt tile format").into(),

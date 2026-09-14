@@ -522,6 +522,72 @@ fn tenstorrent_eltwise_exp_sfpu() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// Mixed-kind cone (exp then add): proves the `Programmed` phase
+/// cursor — the `add_binary_tile_init` must appear hoisted AND
+/// inline at the unary→binary switch.
+#[test]
+fn tenstorrent_mixed_exp_add() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F16);
+    let b = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+
+    let ca = k.circular_storage(DType::F16, 1);
+    let cb = k.circular_storage(DType::F16, 1);
+    let cout = k.circular_storage(DType::F16, 1);
+
+    let _g = k.group_range(0, 1);
+
+    let ta = k.load_global_tile(a, 0);
+    k.store_circular(ca, ta, 0);
+    let tb = k.load_global_tile(b, 0);
+    k.store_circular(cb, tb, 0);
+    k.barrier();
+    let va = k.load_circular(ca, 0);
+    let ea = k.exp(va);
+    let vb = k.load_circular(cb, 0);
+    let eb = k.exp(vb);
+    let s = k.add(ea, eb);
+    k.store_circular(cout, s, 0);
+    k.barrier();
+    let v = k.load_circular(cout, 0);
+    k.store_global_tile(out, v, 0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // Inputs in [0, 2): F16-exact steps, no overflow.
+    let data_a: Vec<f32> = (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let data_b: Vec<f32> = (0..32 * 32).map(|j| ((j + 7) % 32) as f32 * 0.0625).collect();
+    let to_tt = |v: Vec<f32>| -> Result<Tensor, ZyxError> {
+        Tensor::from_vec(v, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))
+    };
+    let a_t = to_tt(data_a.clone())?;
+    let b_t = to_tt(data_b.clone())?;
+    let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (p, ((&x, &y), &v)) in data_a.iter().zip(data_b.iter()).zip(z.iter()).enumerate() {
+        let expected = x.exp() + y.exp();
+        if (v - expected).abs() >= 3e-2 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {expected}");
+            }
+            bad += 1;
+        }
+    }
+    println!("mixed bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
 /// Official `matmul_single_core` shape: reader streams A(mt,kt) + B(kt,nt)
 /// tiles in mt/nt/kt order, compute accumulates Kt tiles per output with
 /// the acquire hoisted above the Kt loop, writer drains row-major.

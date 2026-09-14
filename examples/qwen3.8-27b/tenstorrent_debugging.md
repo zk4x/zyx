@@ -387,6 +387,12 @@ auto p_out1 = TensorAccessor(args_out1, out1, 2048);
 - Face-order suspect exonerated: the bit-exact copy test anchors our `0 1 / 2 3` to hardware (packer scans DST in hw order, untilize inverts ours — a mismatch would scramble passthrough, not pass). Matmul passing proves nothing (face relabeling is permutation conjugation, commutes with matmul). Col corroborates: clean faces 0+1 in our frame would be split 0+2 under the swapped order.
 - Conclusion: the Row dual-fill is genuine LLK behavior, likely deliberate broadcast for fused-softmax subtract reuse — not our mapping.
 
+## 2026-09-14 — third state machine: `Programmed` phase cursor
+
+- Header inits are "first-call or switch-from-another-op" reconfigurations (`add_tiles_bcast` docs say it outright) — hoist-once is correct only for single-kind kernels. `Programmed` tracks the configured kind along the walk: first-seen kinds hoist (first-used hoists last, covering the walk's first op), switching back to a hoisted kind inits inline at the switch. `copy` excluded (orthogonal per-CB programming); cursor resets at `if`-joins and `reduce_uninit` teardown.
+- Single-kind output proven byte-identical: transpose compute-section diff before/after shows only the 3 new includes, zero init changes. All 8 board tests green.
+- Open: per-CB stickiness across alternating copies assumed, unproven; CB-granularity switches inside one kind (two mm pairs alternating) re-init inline — safe direction.
+
 ## 2026-09-14 — transpose bring-up: green first launch
 
 - `transpose_wh_init(icb, ocb)` hoisted + `transpose_wh_tile(cb, 0, slot)` under MATH lock: `transpose bad: 0/1024` first board launch, loop-less IR (entry states need no loops — the earlier `wait_front` panic was NOT loop-related).
