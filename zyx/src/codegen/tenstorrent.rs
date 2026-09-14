@@ -188,6 +188,10 @@ impl TileState {
 /// back to a hoisted kind needs its re-init inline at the switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Programmed<const DSTBF16: bool> {
+    /// Walk entry: trusts the anchor (first-hoisted-last) exactly once.
+    Entry,
+    /// Unknown config (if-joins, reduce teardown): always inits inline.
+    Unknown,
     Unary(UOp),
     Binary(BOp),
     Typecast(DType, DType),
@@ -204,7 +208,7 @@ fn unary_init_name(uop: UOp) -> &'static str {
         UOp::BitNot => "bitwise_not_tile_init();",
         UOp::Exp => "exp_tile_init();",
         UOp::Exp2 => "exp2_tile_init();",
-        UOp::Log2 => "log_tile_init();",
+        UOp::Log2 => "log_with_base_tile_init();",
         UOp::Reciprocal => "recip_tile_init();",
         UOp::Sqrt => "sqrt_tile_init();",
         UOp::Sin => "sin_tile_init();",
@@ -1147,9 +1151,8 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     /// owns the full programming like `mm_init` does).
     transpose_inits: Vec<(CBId, CBId)>,
     /// Phase-transition cursor: the init kind currently programmed
-    /// into unpacker/math (`None` = unknown: entry, `if`-joins,
-    /// reduce teardown).
-    programmed: Option<Programmed<DSTBF16>>,
+    /// into unpacker/math.
+    cursor: Programmed<DSTBF16>,
     /// First init kind used in the walk: hoists last, covering the
     /// walk's first op so it needs no inline init.
     first_programmed: Option<Programmed<DSTBF16>>,
@@ -1186,7 +1189,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             mm_inits: Vec::new(),
             reduce_inits: Vec::new(),
             transpose_inits: Vec::new(),
-            programmed: None,
+            cursor: Programmed::Entry,
             first_programmed: None,
             reduce_pending: false,
             startup: None,
@@ -1201,17 +1204,22 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     }
 
     /// Phase-transition init cursor. Records `prog` in its seen-set
-    /// and returns true if the caller must emit its init inline:
-    /// switching back to an already-hoisted kind needs the re-init
-    /// at the switch. First-seen kinds return false (the hoist covers
-    /// them — the first-used kind hoists last); repeating the
-    /// programmed kind needs nothing. `copy` stays out: per-CB source
-    /// programming is orthogonal, covered by `copy_inits` alone.
+    /// and returns true if the caller must emit its init inline.
+    /// `Entry` trusts the anchor exactly once (the first-used kind
+    /// hoists last, covering the walk's first op). After that every
+    /// kind switch inits inline — including first uses of later
+    /// kinds, whose hoisted twins are stale by then. Repeating the
+    /// programmed kind needs nothing; `Unknown` always inits.
+    /// `copy` stays out: per-CB source programming is orthogonal,
+    /// covered by `copy_inits` alone.
     fn transition(&mut self, prog: Programmed<DSTBF16>) -> bool {
         if self.first_programmed.is_none() {
             self.first_programmed = Some(prog);
         }
         let seen = match prog {
+            Programmed::Entry | Programmed::Unknown => {
+                unreachable!("tenstorrent2: lifecycle state passed as init identity")
+            }
             Programmed::Unary(u) => !self.unary_inits.insert(u),
             Programmed::Binary(b) => !self.binary_inits.insert(b),
             Programmed::Typecast(a, b) => {
@@ -1247,18 +1255,20 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
                 seen
             }
         };
-        if self.programmed == Some(prog) {
+        let _ = seen;
+        if self.cursor == prog {
             return false;
         }
-        self.programmed = Some(prog);
-        seen
+        let entry = self.cursor == Programmed::Entry;
+        self.cursor = prog;
+        !entry
     }
 
     /// Forget the programmed config: `if`-joins (branch may not have
     /// run) and reduce teardown (uninit returns the config to
     /// neutral). The next init-needing op re-inits inline.
     fn invalidate_program(&mut self) {
-        self.programmed = None;
+        self.cursor = Programmed::Unknown;
     }
 
     /// Allocate one DST slot. Capacity is asserted by
@@ -1377,7 +1387,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             self.reduce_pending = false;
             // Teardown returns the config to neutral: the next
             // init-needing op re-inits inline.
-            self.programmed = None;
+            self.cursor = Programmed::Unknown;
         }
         self.math_unlock(src, indent);
         cb_em.reserve_back(src, indent, cb);
@@ -1509,7 +1519,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             UOp::BitNot => "bitwise_not_tile",
             UOp::Exp => "exp_tile",
             UOp::Exp2 => "exp2_tile",
-            UOp::Log2 => "log_tile",
+            // log2 carries its base scale below; plain log_tile is ln.
+            UOp::Log2 => unreachable!("log2 needs its base scale, emitted below"),
             UOp::Sin => "sin_tile",
             UOp::Cos => "cos_tile",
             UOp::Reciprocal => "recip_tile",
@@ -1523,9 +1534,14 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: unary without MATH lock");
         if self.transition(Programmed::Unary(uop)) {
-            writeln!(src, "{indent}{};", unary_init_name(uop));
+            writeln!(src, "{indent}{}", unary_init_name(uop));
         }
-        writeln!(src, "{indent}{name}({x});");
+        // log2 passes its base scale (bits of 1/ln 2) explicitly.
+        if uop == UOp::Log2 {
+            writeln!(src, "{indent}log_with_base_tile({x}, 0x3fb8aa3b);");
+        } else {
+            writeln!(src, "{indent}{name}({x});");
+        }
         self.tile_map.insert(op_id, x);
         x
     }
@@ -1992,10 +2008,13 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         // Every shared CB is declared (matches reader/writer).
         self.cb.declare_all(&mut src, &indent);
         // Entry states: CBs this section loads start pushed (produced
-        // upstream); stored-only CBs start free. First-touch load/store
+        // upstream); stored-only CBs start free. A CB both stored and
+        // loaded in-section (mid-compute roundtrip) starts free: the
+        // store pushes, the later load waits. First-touch load/store
         // order also resolves the startup triple.
         let mut loaded_here: Set<CBId> = Set::default();
         let mut loaded_order: Vec<CBId> = Vec::new();
+        let mut stored_here: Set<CBId> = Set::default();
         let mut stored_first: Option<CBId> = None;
         for &op_id in &compute_data.ops {
             if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = kernel.ops[op_id].op {
@@ -2005,17 +2024,18 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     }
                 }
             }
-            if stored_first.is_none() {
-                if let Op::Store { dst, layout: MemLayout::Tile { .. }, .. } = kernel.ops[op_id].op {
-                    if let Some(&cb) = self.cb.map.get(&dst) {
+            if let Op::Store { dst, layout: MemLayout::Tile { .. }, .. } = kernel.ops[op_id].op {
+                if let Some(&cb) = self.cb.map.get(&dst) {
+                    stored_here.insert(cb);
+                    if stored_first.is_none() {
                         stored_first = Some(cb);
                     }
                 }
             }
         }
         self.cb.reset_all(CBState::Popped);
-        for cb in loaded_here {
-            self.cb.set(cb, CBState::Pushed);
+        for cb in loaded_here.difference(&stored_here) {
+            self.cb.set(*cb, CBState::Pushed);
         }
         // Startup triple `[in0, in1, out]`: single-input kernels repeat
         // in0 (the two-arg overload does the same). Kernels with no
@@ -2124,10 +2144,13 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     }
                     MemScope::Register => {
                         // Acc declaration takes the MATH lock (which
-                        // zeroes the file: the seed). Later takes in the
+                        // zeroes the file: the seed) and allocates the
+                        // slot: numbering follows IR declaration order,
+                        // not first-use accidents. Later takes in the
                         // cone keep. Compute-only: other sections must
                         // not emit MATH traffic.
                         self.tl.math_lock(&mut src, &indent);
+                        self.tl.acc_tile(op_id, compute_data.rcs[&op_id]);
                     }
                     MemScope::Local => unreachable!(
                         "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
@@ -2186,10 +2209,14 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     if !matches!(layout, MemLayout::Tile { .. }) {
                         todo!("tenstorrent2 compute only supports tile loads");
                     }
-                    // Register acc loads thread the SSA value: no CB, no
-                    // traffic. Anything else must be a mapped CB.
+                    // Register acc loads resolve to the declared slot
+                    // (allocated at the Storage op): no CB, no traffic.
                     if matches!(kernel.ops[*load_src].op, Op::Storage { scope: MemScope::Register, .. }) {
-                        // Emit nothing.
+                        let tile = self.tl.tile_map.get(load_src).copied().ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: compute acc load reads an undeclared acc, op {op_id}").into(),
+                        })?;
+                        self.tl.tile_map.insert(op_id, tile);
                     } else {
                         let Some(&cb) = self.cb.map.get(load_src) else {
                             return Err(BackendError {
