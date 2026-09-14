@@ -387,6 +387,12 @@ auto p_out1 = TensorAccessor(args_out1, out1, 2048);
 - Face-order suspect exonerated: the bit-exact copy test anchors our `0 1 / 2 3` to hardware (packer scans DST in hw order, untilize inverts ours — a mismatch would scramble passthrough, not pass). Matmul passing proves nothing (face relabeling is permutation conjugation, commutes with matmul). Col corroborates: clean faces 0+1 in our frame would be split 0+2 under the swapped order.
 - Conclusion: the Row dual-fill is genuine LLK behavior, likely deliberate broadcast for fused-softmax subtract reuse — not our mapping.
 
+## 2026-09-14 — transpose bring-up: green first launch
+
+- `transpose_wh_init(icb, ocb)` hoisted + `transpose_wh_tile(cb, 0, slot)` under MATH lock: `transpose bad: 0/1024` first board launch, loop-less IR (entry states need no loops — the earlier `wait_front` panic was NOT loop-related).
+- Real bug on the way there: the compute `Load` arm treats loads feeding only fused ops as lazy, and `TransposeTile` was missing from that list — the load copied first, then transpose's `wait_front` popped air. Any new fused CB→DST op must join that list.
+- Face note: transpose output reads back correctly through our tilize/untilize, further corroborating `0 1 / 2 3`.
+
 ## 2026-09-14 — salvaged from v1 (`tenstorrent_old.rs`, dead, uncompiled)
 
 - No hoisted reserves: every tile store reserves its own page per execution. A hoisted reserve pins a page on 1-page CBs and stalls the first iteration forever. V2 obeys (`reserve_back` per store); written down so nobody "optimizes" it later.

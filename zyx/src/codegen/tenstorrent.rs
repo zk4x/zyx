@@ -1336,6 +1336,9 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             BOp::Sub => "sub_binary_tile",
             BOp::Mul => "mul_binary_tile",
             BOp::Div => "div_binary_tile",
+            BOp::Max => "binary_max_tile",
+            BOp::BitShiftLeft => "binary_left_shift_tile",
+            BOp::BitShiftRight => "binary_right_shift_tile",
             _ => todo!("tenstorrent2 tiled binary {bop:?} op"),
         };
         self.math_lock(src, indent);
@@ -1363,11 +1366,17 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             UOp::Neg => "negative_tile",
             UOp::BitNot => "bitwise_not_tile",
             UOp::Exp => "exp_tile",
+            UOp::Exp2 => "exp2_tile",
+            UOp::Log2 => "log_tile",
             UOp::Sin => "sin_tile",
             UOp::Cos => "cos_tile",
             UOp::Reciprocal => "recip_tile",
             UOp::Sqrt => "sqrt_tile",
-            _ => todo!("tenstorrent2 tiled unary {uop:?} op"),
+            UOp::Floor => "floor_tile",
+            UOp::Trunc => "trunc_tile",
+            UOp::Abs => "abs_tile",
+            UOp::Not => "logical_not_tile",
+            UOp::Ln => unreachable!("ln is lowered to log2 before codegen"),
         };
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: unary without MATH lock");
@@ -1494,7 +1503,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
                 UOp::Cos => "cos_tile_init();",
                 UOp::Floor | UOp::Trunc => "rounding_op_tile_init();",
                 UOp::Abs => "abs_tile_init();",
-                UOp::Not => todo!("tenstorrent tiled logical not"),
+                UOp::Not => "logical_not_tile_init();",
                 UOp::Ln => unreachable!("ln is lowered to log2 before codegen"),
             };
             let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}{init}\n"));
@@ -1505,6 +1514,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
                 BOp::Sub => Some("sub_binary_tile_init();"),
                 BOp::Mul => Some("mul_binary_tile_init();"),
                 BOp::Div => Some("div_binary_tile_init();"),
+                BOp::Max => Some("binary_max_tile_init();"),
+                BOp::BitShiftLeft => Some("binary_shift_tile_init();"),
                 BOp::BitShiftRight => Some("binary_shift_tile_init();"),
                 BOp::BitAnd => Some("bitwise_and_tile_init();"),
                 _ => None,
@@ -1614,7 +1625,8 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
     }
 
     /// Exactly 2 barriers delimiting reader/compute/writer, else a
-    /// compilation error.
+    /// compilation error. Also rejects GPU-only ops up front (Wmma:
+    /// tenstorrent has `MatmulTile`, no WMMA units).
     fn check_sections(&self, kernel: &Kernel) -> Result<(), BackendError> {
         let mut barriers = 0u32;
         let mut scan = kernel.head;
@@ -1624,6 +1636,12 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
             }
             if matches!(kernel.ops[scan].op, Op::Barrier) {
                 barriers += 1;
+            }
+            if matches!(kernel.ops[scan].op, Op::Wmma { .. }) {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2: Wmma is GPU-only, tenstorrent uses Op::MatmulTile".into(),
+                });
             }
             scan = kernel.next_op(scan);
         }
@@ -1815,6 +1833,9 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         writeln!(src, "#include \"api/compute/eltwise_unary/negative.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/bitwise_not.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/typecast.h\"");
+        writeln!(src, "#include \"api/compute/eltwise_unary/logical_not.h\"");
+        writeln!(src, "#include \"api/compute/binary_max_min.h\"");
+        writeln!(src, "#include \"api/compute/binary_shift.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/fill.h\"");
         writeln!(src, "#include \"api/compute/matmul.h\"");
         writeln!(src, "#include \"api/compute/reduce.h\"");
@@ -2038,7 +2059,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         let mut fused_only = false;
                         for &consumer in &compute_data.ops {
                             if kernel.ops[consumer].op.parameters().any(|p| p == op_id) {
-                                if matches!(kernel.ops[consumer].op, Op::ReduceTile { .. } | Op::MatmulTile { .. }) {
+                                if matches!(kernel.ops[consumer].op, Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. }) {
                                     fused_only = true;
                                 } else {
                                     fused_only = false;
