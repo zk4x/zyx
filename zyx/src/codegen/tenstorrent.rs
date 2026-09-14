@@ -1311,13 +1311,14 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         op_id: OpId,
         cb: CBId,
         rc: u32,
+        index: &str,
     ) -> TileId<DSTBF16> {
         cb_em.wait_front(src, indent, cb);
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: copy without MATH lock");
         let slot = self.alloc(rc);
         self.copy_inits.insert(cb);
-        writeln!(src, "{indent}copy_tile({cb}, 0, {slot});");
+        writeln!(src, "{indent}copy_tile({cb}, {index}, {slot});");
         cb_em.pop_front(src, indent, cb);
         self.tile_map.insert(op_id, slot);
         slot
@@ -2191,10 +2192,12 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                                 }
                             }
                         }
-                        if !fused_only {
-                            let rc = compute_data.rcs[&op_id];
-                            self.tl.copy(&mut src, &indent, &mut self.cb, op_id, cb, rc);
-                        }
+                         if !fused_only {
+                             let rc = compute_data.rcs[&op_id];
+                             let Op::Load { index: ld_idx, .. } = kernel.ops[op_id].op else { unreachable!() };
+                             let idx = em.resolve_idx(kernel, compute_data, ld_idx, scope_level, "compute")?;
+                             self.tl.copy(&mut src, &indent, &mut self.cb, op_id, cb, rc, &idx);
+                         }
                     }
                 }
                 Op::Range { .. } => {

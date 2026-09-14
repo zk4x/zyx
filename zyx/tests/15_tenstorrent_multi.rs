@@ -393,8 +393,8 @@ fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
     let c = k.param(DType::F32);
     let out = k.param_mut(DType::F32);
 
-    let ca = k.circular_storage(DType::F16, 1);
-    let cb = k.circular_storage(DType::F16, 1);
+    let ca = k.circular_storage(DType::F16, 4);
+    let cb = k.circular_storage(DType::F16, 4);
     let cc = k.circular_storage(DType::F32, 2);
     let cout = k.circular_storage(DType::F32, 1);
 
