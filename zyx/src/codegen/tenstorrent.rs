@@ -1074,6 +1074,10 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     /// The tile emits per use; `reduce_uninit` goes out once per
     /// cone at the consuming pack (`math_unlock`).
     reduce_inits: Vec<(&'static str, &'static str, CBId, CBId, TileId<DSTBF16>)>,
+    /// Transpose CB pairs seen, for the hoisted `transpose_wh_init`
+    /// block (0.72 has no split `transpose_init`; the `_wh` long init
+    /// owns the full programming like `mm_init` does).
+    transpose_inits: Vec<(CBId, CBId)>,
     /// A reduce cone is open: the next `pack` closes it with
     /// `reduce_uninit` before the commit.
     reduce_pending: bool,
@@ -1106,6 +1110,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             copy_inits: Set::default(),
             mm_inits: Vec::new(),
             reduce_inits: Vec::new(),
+            transpose_inits: Vec::new(),
             reduce_pending: false,
             startup: None,
         }
@@ -1235,12 +1240,14 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         cb_em.reserve_back(src, indent, cb);
         self.pack_lock(src, indent);
         debug_assert_eq!(self.state, TileState::PackLock, "tenstorrent2: pack without PACK lock");
-        // Mode-native pack target needs no runtime reconfig (formats
-        // per `tt_fmt`: Float16_b=5 in 16-bit DST, Float32=0 in
-        // 32-bit DST); anything else keeps the override.
+        // Mode-native pack target needs no runtime reconfig: the JIT
+        // programs the packer for it by construction. Runtime CB
+        // format codes (see CBEmitter::new): F32=0, F16=1, BF16=2.
+        // 16-bit DST packs F16/BF16 natively, 32-bit DST packs F32;
+        // anything else keeps the override.
         let cb_fmt = cb_em.config[cb].0;
-        let native_fmt = if DSTBF16 { 5 } else { 0 };
-        if cb_fmt != native_fmt {
+        let native = if DSTBF16 { cb_fmt == 1 || cb_fmt == 2 } else { cb_fmt == 0 };
+        if !native {
             writeln!(src, "{indent}pack_reconfig_data_format({cb});");
         }
         writeln!(src, "{indent}pack_tile({slot}, {cb});");
@@ -1394,15 +1401,31 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         x
     }
 
-    /// Tiled transpose: takes the MATH lock. The op text itself is
-    /// unproven LLK interaction.
-    #[allow(dead_code)]
-    fn transpose(&mut self, src: &mut String, indent: &str, op_id: OpId, _x: TileId<DSTBF16>, rc: u32) -> TileId<DSTBF16> {
+    /// Streaming transpose: waits the CB, takes the MATH lock,
+    /// transposes the 32x32 tile into a fresh DST slot, pops the CB.
+    /// Records the load op in `tile_map`. The `transpose_wh_init`
+    /// goes out hoisted (one per input/output CB pair).
+    fn transpose(
+        &mut self,
+        src: &mut String,
+        indent: &str,
+        cb_em: &mut CBEmitter,
+        op_id: OpId,
+        cb: CBId,
+        out: CBId,
+        rc: u32,
+    ) -> TileId<DSTBF16> {
+        cb_em.wait_front(src, indent, cb);
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: transpose without MATH lock");
         let slot = self.alloc(rc);
+        if !self.transpose_inits.contains(&(cb, out)) {
+            self.transpose_inits.push((cb, out));
+        }
+        writeln!(src, "{indent}transpose_wh_tile({cb}, 0, {slot});");
+        cb_em.pop_front(src, indent, cb);
         self.tile_map.insert(op_id, slot);
-        todo!("tenstorrent2 tiled transpose op text");
+        slot
     }
 
     /// Tiled broadcast: takes the MATH lock. The op text itself is
@@ -1454,6 +1477,9 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         }
         for &cb in &self.copy_inits {
             let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}copy_tile_init({cb});\n"));
+        }
+        for &(cb_in, cb_out) in &self.transpose_inits {
+            let _ = std::fmt::Write::write_fmt(&mut inits, format_args!("{indent}transpose_wh_init({cb_in}, {cb_out});\n"));
         }
         for &uop in &self.unary_inits {
             let init = match uop {
@@ -1792,6 +1818,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         writeln!(src, "#include \"api/compute/eltwise_unary/fill.h\"");
         writeln!(src, "#include \"api/compute/matmul.h\"");
         writeln!(src, "#include \"api/compute/reduce.h\"");
+        writeln!(src, "#include \"api/compute/transpose_wh.h\"");
         writeln!(src, "#include \"api/compute/reconfig_data_format.h\"");
         writeln!(src, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(src, "#include \"api/debug/device_print.h\"");
@@ -2082,7 +2109,32 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     let tile = self.tl.acc_tile(lacc, rc);
                     self.tl.matmul(&mut src, &indent, &mut self.cb, op_id, cb_a, cb_b, tile);
                 }
-                Op::TransposeTile { .. } => todo!(),
+                Op::TransposeTile { x } => {
+                    // x is a tile load from a live input CB. The op
+                    // streams the tile through transpose_wh into a
+                    // fresh DST slot (wait/op/pop traffic, no acc).
+                    let Op::Load { src: lx, layout: MemLayout::Tile { x: wx, y: hx, .. }, .. } = kernel.ops[x].op else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: transpose side op {x} is no CB tile load").into(),
+                        });
+                    };
+                    if wx as u32 != 32 || hx as u32 != 32 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: transpose is fixed 32x32, op {x} is {wx}x{hx}").into(),
+                        });
+                    }
+                    let Some(&cb) = self.cb.map.get(&lx) else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: transpose side op {x} targets unmapped CB").into(),
+                        });
+                    };
+                    let out = self.tl.startup.map(|[_, _, o]| o).expect("tenstorrent2: transpose kernel without startup triple");
+                    let rc = compute_data.rcs[&op_id];
+                    self.tl.transpose(&mut src, &indent, &mut self.cb, op_id, cb, out, rc);
+                }
                 Op::ReduceTile { x, scaler, acc, rop, kind } => {
                     // x is a tile load from a live input CB, scaler a
                     // tile load from the scaler CB, acc a load threading

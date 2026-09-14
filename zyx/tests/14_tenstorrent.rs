@@ -319,9 +319,6 @@ fn tenstorrent_pad_move() -> Result<(), ZyxError> {
 
 #[test]
 fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
-    const TILE_ELEMS: i64 = 1024;
-    const WT: i64 = 4;
-
     let mut k = Kernel::new(Dev::TT(0));
     let x = k.param(DType::F16);
     let s = k.param(DType::F16);
@@ -332,44 +329,37 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     let cout = k.circular_storage(DType::F16, 1);
 
     let _g = k.group_range(0, 1);
-    let cwt = k.const_idx(WT);
-    let cone = k.const_idx(1);
-    let c1024 = k.const_idx(TILE_ELEMS);
-    let zero = k.const_idx(0);
 
-    // Reader: stream WT input tiles + scaler tiles.
-    k.loop_over(cwt, |k, ki| {
-        let tbase = k.mad(ki, c1024, zero);
+    // Reader: stream WT input tiles + scaler tiles (LLK-mandated ones).
+    k.loop_over(4, |k, ki| {
+        let tbase = k.mad(ki, 1024, 0);
         let tx = k.load_global_tile(x, tbase);
-        k.store_circular(cin, tx, zero);
-        let ts = k.load_global_tile(s, zero);
-        k.store_circular(csc, ts, zero);
+        k.store_circular(cin, tx, 0);
+        let ts = k.load_global_tile(s, 0);
+        k.store_circular(csc, ts, 0);
     });
     k.barrier();
 
-    // Compute: per tile reduce rows, fold running max directly into acc
-    // (TT reference shape: reduce_tile accumulates into the acc CB, no temp).
-    // Register-scoped acc: load/store are SSA threading, no CB traffic.
-    let cacc = k.storage(DType::F16, MemScope::Register, TILE_ELEMS);
-    k.loop_over(cwt, |k, _ki| {
-        let va = k.load_circular(cin, zero);
-        let vs = k.load_circular(csc, zero);
-        let a = k.load_register_tile(cacc, zero);
-        let f = k.reduce_tile(va, vs, a, BOp::Max, TileReduceKind::Row);
-        k.store_register_tile(cacc, f, zero);
+    // Compute: fold the running row-max into the Register acc over WT
+    // tiles, then pack it once. The acc lives in DST the whole time
+    // (acquire seeds it, the pack drains it); the load/store pair is
+    // pure SSA threading, no traffic.
+    let acc = k.storage(DType::F16, MemScope::Register, 1024);
+    k.loop_over(4, |k, _ki| {
+        let va = k.load_circular(cin, 0);
+        let vs = k.load_circular(csc, 0);
+        let av = k.load_register_tile(acc, 0);
+        let f = k.reduce_tile(va, vs, av, BOp::Max, TileReduceKind::Col);
+        k.store_register_tile(acc, f, 0);
     });
-    // Epilogue: pack final acc to cout (writer never touches cacc, so no
-    // race for the seed: cout gets its only tile after all compute).
-    k.loop_over(cone, |k, _ki| {
-        let f = k.load_register_tile(cacc, zero);
-        k.store_circular(cout, f, zero);
-    });
+    let f = k.load_register_tile(acc, 0);
+    k.store_circular(cout, f, 0);
     k.barrier();
 
-    // Writer: drain cout.
-    k.loop_over(cone, |k, _ki| {
-        let v = k.load_circular(cout, zero);
-        k.store_global_tile(out, v, zero);
+    // Writer: drain the single output tile.
+    k.loop_over(1, |k, _ki| {
+        let v = k.load_circular(cout, 0);
+        k.store_global_tile(out, v, 0);
     });
 
     k.verify();
@@ -379,7 +369,8 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
         return Ok(());
     }
 
-    // val(r, c) = r*0.5 + c*2^-7: exact in BF16, row max at c=127.
+    // val(r, c) = r*0.5 + c*2^-7: col max at r=31 of WT tile 3
+    // (c = 96+j): 31*0.5 + (96+j)*2^-7 = 16.25 + j*2^-7.
     let data: Vec<f32> = (0..32 * 128)
         .map(|j| {
             let (r, c) = (j / 128, j % 128);
@@ -393,11 +384,13 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     let s_t = to_tt(vec![1.0f32; 1024], 32, 32)?;
     let out_bufs = compiled.forward(&[&x_t, &s_t], vec![[32, 32]])?;
 
-    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    let host = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?;
+    println!("{host}");
+    let z: Vec<f32> = host.to_vec()?;
     assert_eq!(z.len(), 1024);
     let mut bad = 0;
     for c in 0..32 {
-        let expected = c as f32 * 0.5 + 0.9921875;
+        let expected = 16.25 + c as f32 * 0.0078125;
         if (z[c] - expected).abs() >= 3e-2 {
             if bad < 20 {
                 println!("z[{c}] = {}, expected {expected}, diff {}", z[c], z[c] - expected);
@@ -406,6 +399,60 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
         }
     }
     println!("reduce bad: {bad} / 32");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// Single 32x32 transpose: one WT tile through `transpose_wh`.
+#[test]
+fn tenstorrent_transpose_tile() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let x = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+
+    let cin = k.circular_storage(DType::F16, 1);
+    let cout = k.circular_storage(DType::F16, 1);
+
+    let _g = k.group_range(0, 1);
+
+    let tx = k.load_global_tile(x, 0);
+    k.store_circular(cin, tx, 0);
+    k.barrier();
+    let va = k.load_circular(cin, 0);
+    let t = k.transpose_tile(va);
+    k.store_circular(cout, t, 0);
+    k.barrier();
+    let v = k.load_circular(cout, 0);
+    k.store_global_tile(out, v, 0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // val(r, c) = r*32 + c: exact in F16, transpose swaps to c*32 + r.
+    let data: Vec<f32> = (0..32 * 32).map(|j| j as f32).collect();
+    let x_t = Tensor::from_vec(data, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&x_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for r in 0..32 {
+        for c in 0..32 {
+            let expected = (c * 32 + r) as f32;
+            if (z[r * 32 + c] - expected).abs() >= 3e-2 {
+                if bad < 10 {
+                    println!("z[{r}][{c}] = {}, expected {expected}", z[r * 32 + c]);
+                }
+                bad += 1;
+            }
+        }
+    }
+    println!("transpose bad: {bad} / 1024");
     assert_eq!(bad, 0);
 
     Ok(())

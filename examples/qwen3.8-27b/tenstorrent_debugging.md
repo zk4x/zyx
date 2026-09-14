@@ -379,8 +379,24 @@ auto p_out1 = TensorAccessor(args_out1, out1, 2048);
 - Process failure: launched without reading the ZYX_DEBUG=16 dump first; ZYX_TT_DUMP_ONLY is inert (nothing reads it) so every run was live. Next: real compile-only dump gate before any new-kernel launch.
 - Hang cause (prime suspect): `init_sfpu(icb, ocb)` programs unpack for ONE CB (datacopy, SrcA); the scaler tile arrives via SrcB whose format stays unconfigured → unpack stall on first `reduce_tile`. Reference calls `compute_kernel_hw_startup(input, scaler, acc)` (two-CB unpack). Fix: reduce-only kernels (`phases == {Reduce}`) emit the reference startup with the triple resolved from the first `ReduceTile` (input, scaler, acc); mixed Reduce+Sfpu keeps `init_sfpu` until softmax-fused designs it. `common.h` (already included) pulls the startup header.
 
+## 2026-09-14 — reduce result layout: Row writes row0+col0, Col writes row0
+
+- `REDUCE_ROW` does NOT pack results into the first row. Observed 32x32 tile: live faces 0 and 2 each hold their 16 maxima in row 0 AND column 0 (interior zero); faces 1 and 3 are all zero. All 32 maxima present and correct — math + accumulation proven, pure placement mismatch. The `TileReduceKind::Row` doc ("carried in the result tile's first row") is wrong: a row-0 reader sees faces 0/1 = 16 values + 16 zeros ("bad 16/32"), while column 0 alone holds all 32 maxima top to bottom.
+- `REDUCE_COL` is textbook: row 0 across the full 32-wide row (faces 0+1) = 32 column-maxes, rows 1-31 zero. `tenstorrent_row_max_reduce` flipped to Col + column-max expectations went green first launch (`reduce bad: 0/32`; adjacent columns share values — F16 ulp at 16.25 is 2x the 2^-7 step).
+- Rule: row-wise consumers read column 0 (or row 0 of even faces only); column-wise consumers read row 0.
+- Face-order suspect exonerated: the bit-exact copy test anchors our `0 1 / 2 3` to hardware (packer scans DST in hw order, untilize inverts ours — a mismatch would scramble passthrough, not pass). Matmul passing proves nothing (face relabeling is permutation conjugation, commutes with matmul). Col corroborates: clean faces 0+1 in our frame would be split 0+2 under the swapped order.
+- Conclusion: the Row dual-fill is genuine LLK behavior, likely deliberate broadcast for fused-softmax subtract reuse — not our mapping.
+
+## 2026-09-14 — salvaged from v1 (`tenstorrent_old.rs`, dead, uncompiled)
+
+- No hoisted reserves: every tile store reserves its own page per execution. A hoisted reserve pins a page on 1-page CBs and stalls the first iteration forever. V2 obeys (`reserve_back` per store); written down so nobody "optimizes" it later.
+- `copy_tile` under `mm_init`'s unpacker config stalls UNPACK (v1 wedge): matmul inputs must be read from CBs directly, never copied first. V2 immune by construction (matmul arm takes CB ids, rejects non-CB loads).
+- Explicitly NOT salvaged: the v1 "mixed matmul+SFPU ban" was a misdiagnosis of missing phase transitions. Do not re-add.
+
 ## Why we need our own driver (running list)
 
 1. Inter-core traffic does not work on Blackhole (driver, not hardware). All multi-core kernels must be embarrassingly parallel — no core-to-core communication.
 2. The JIT programs `pack_src` rigidly from the CB format (F16 CB → F16b src under fp32, no override) and the SFPU typecast op is mode-unaware (no `DST_ACCUM_MODE` term) — the stack, not the silicon, forbids fused mixed-format kernels.
 3. `are_packers_configured_correctly` is blind to Read_32b/Dstacc/strides/relu/threshold/L1acc; the 2-arg `pack_reconfig_data_format` silently skips src-only changes; the runtime DST toggle RMWs only Read_32b, leaving formats stale. Asserts that can't see the state they claim to check.
+4. Docs describe APIs the pinned SDK doesn't have: latest docs say `transpose_tile`/`transpose_init` (and the split `matmul_init`); 0.72 has neither — the only working spellings are marked deprecated. Every new op starts with version archaeology in the installed headers because the docs can't be trusted.
+5. Result geometry is unspecified: no header or doc says `REDUCE_ROW` lands in row 0 *and* column 0 of the even faces — found on silicon with a full-tile print. A contract that doesn't state where results land isn't a contract; board-discovery per op is the tax.
