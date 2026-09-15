@@ -1271,3 +1271,113 @@ fn tenstorrent_matmul_cast_probe() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+/// Row-wise softmax: max-sub-exp-sum-normalize over one [32,32] BF16 tile.
+/// max/sum via `TileDim::Row` reduce (per-row stats, column-vector layout),
+/// sub/mul via fused `*_bcast_cols`, div as recip+mul. Mirrors the official
+/// `moreh_softmax_w` structure (reduce ROW + bcast COL), minus masks/scalers.
+#[test]
+fn tenstorrent_softmax_rows() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::BF16);
+    let ones = k.param(DType::BF16);
+    let out = k.param_mut(DType::BF16);
+
+    let ca = k.circular_storage(DType::BF16, 2);
+    let cone = k.circular_storage(DType::BF16, 2);
+    let cm = k.circular_storage(DType::BF16, 1);
+    let ce = k.circular_storage(DType::BF16, 2);
+    let cs = k.circular_storage(DType::BF16, 1);
+    let cr = k.circular_storage(DType::BF16, 1);
+    let cout = k.circular_storage(DType::BF16, 1);
+    let acc = k.storage(DType::BF16, MemScope::Register, 1024);
+    let acc2 = k.storage(DType::BF16, MemScope::Register, 1024);
+
+    let _g = k.group_range(0, 1);
+
+    // Reader: two copies of A (max-fold, center-sub) + two ones
+    // (max-fold scaler, sum-fold scaler).
+    for _ in 0..2 {
+        let ta = k.load_global_tile(a, 0);
+        k.store_circular(ca, ta, 0);
+        let ts = k.load_global_tile(ones, 0);
+        k.store_circular(cone, ts, 0);
+    }
+    k.barrier();
+
+    // Row max -> cm.
+    let va = k.load_circular(ca, 0);
+    let vs = k.load_circular(cone, 0);
+    let vacc = k.load_register_tile(acc, 0);
+    let fm = k.reduce_tile(va, vs, vacc, BOp::Max, TileDim::Row);
+    k.store_register_tile(acc, fm, 0);
+    let vm = k.load_register_tile(acc, 0);
+    k.store_circular(cm, vm, 0);
+
+    // Center + exp -> ce (stored twice: sum-fold, final mul).
+    let va2 = k.load_circular(ca, 0);
+    let vm2 = k.load_circular(cm, 0);
+    let mb = k.broadcast_tile(vm2, TileDim::Col);
+    let d = k.sub(va2, mb);
+    let e = k.exp(d);
+    k.store_circular(ce, e, 0);
+    k.store_circular(ce, e, 0);
+
+    // Row sum -> cs, recip -> cr.
+    let ve1 = k.load_circular(ce, 0);
+    let vs2 = k.load_circular(cone, 0);
+    let vacc2 = k.load_register_tile(acc2, 0);
+    let fs = k.reduce_tile(ve1, vs2, vacc2, BOp::Add, TileDim::Row);
+    k.store_register_tile(acc2, fs, 0);
+    let vcs = k.load_register_tile(acc2, 0);
+    k.store_circular(cs, vcs, 0);
+    let vcs2 = k.load_circular(cs, 0);
+    let r = k.reciprocal(vcs2);
+    k.store_circular(cr, r, 0);
+
+    // Normalize: e * (1/sum) via fused bcast_cols mul.
+    let ve2 = k.load_circular(ce, 0);
+    let vr = k.load_circular(cr, 0);
+    let rb = k.broadcast_tile(vr, TileDim::Col);
+    let o = k.mul(ve2, rb);
+    k.store_circular(cout, o, 0);
+    k.barrier();
+
+    // Writer: drain the single output tile.
+    let v = k.load_circular(cout, 0);
+    k.store_global_tile(out, v, 0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // Non-negative data: max-fold seeds from zero acc, stays exact.
+    let a_data: Vec<f32> = (0..32 * 32).map(|j| (j % 8) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(a_data.clone(), [32, 32])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let ones_t = Tensor::from_vec(vec![1.0f32; 1024], [32, 32])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t, &ones_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for r in 0..32 {
+        let row: Vec<f32> = (0..32).map(|c| a_data[r * 32 + c]).collect();
+        let m = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let denom: f32 = row.iter().map(|x| (x - m).exp()).sum();
+        for c in 0..32 {
+            let expected = (a_data[r * 32 + c] - m).exp() / denom;
+            if (z[r * 32 + c] - expected).abs() >= 5e-2 {
+                if bad < 10 {
+                    println!("z[{}] = {}, expected {expected}", r * 32 + c, z[r * 32 + c]);
+                }
+                bad += 1;
+            }
+        }
+    }
+    println!("softmax bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}

@@ -2028,11 +2028,18 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// `tile_regs_acquire`: MATH takes the file. Lazy: the first take
     /// acquires (which zeroes the file, so the acc starts at zero
     /// with no seed traffic); later takes in the same cone keep the
-    /// content and emit nothing. Taking from `PackLock` is a loud
-    /// error (matrix X): the caller must release PACK first.
+    /// content and emit nothing. Taking from `PackLock` flushes the
+    /// deferred release first (see `pack`); taking from `PackLock`
+    /// is otherwise a loud error (matrix X): the caller must release
+    /// PACK first.
     fn math_lock(&mut self, src: &mut String, indent: &str) {
         if self.state == TileState::MathLock {
             return;
+        }
+        if self.state == TileState::PackLock {
+            // Deferred release: the previous cone's packs are done,
+            // MATH takes the file back.
+            self.pack_unlock(src, indent);
         }
         assert_eq!(self.state, TileState::Unlocked, "tenstorrent2: math op with DST in {:?}, must be Unlocked", self.state);
         writeln!(src, "{indent}tile_regs_acquire();");
@@ -2071,6 +2078,15 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         );
         writeln!(src, "{indent}tile_regs_release();");
         self.state.pack_unlock();
+    }
+
+    /// Section-end flush for the deferred release (see `pack`): if a
+    /// pack cone is still open, release it so the section ends with
+    /// DST `Unlocked`.
+    fn flush_pack(&mut self, src: &mut String, indent: &str) {
+        if self.state == TileState::PackLock {
+            self.pack_unlock(src, indent);
+        }
     }
 
     /// Fused matmul: waits both input CBs, emits the single
@@ -2155,19 +2171,20 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     }
 
     /// Pack out: closes any open reduce cone, commits MATH, reserves
-    /// the CB, takes the PACK lock, packs the slot, pushes the CB,
-    /// releases the file. The whole drain sequences here, in emission
-    /// order: uninit, commit, reserve, wait, [reconfig,] pack, push,
-    /// release. The packer reconfig goes out only for non-native pack
-    /// targets: the JIT programs the mode-native triple by
-    /// construction, so reprogramming it is redundant there.
-    /// Pack out: closes any open reduce cone, commits MATH, takes
-    /// the PACK lock, packs the slot, releases the file. The whole
-    /// drain sequences here, in emission order: uninit, commit, wait,
-    /// [reconfig,] pack, release. The CB sync (reserve/push) anchors
-    /// at the transaction's open/close events (see [`CBEmitter`]).
-    /// The packer reconfig goes out only for non-native pack targets:
-    /// the JIT programs the mode-native triple by construction, so
+    /// the CB, takes the PACK lock, packs the slot, pushes the CB.
+    /// The release is DEFERRED: consecutive packs share one cone
+    /// (commit, wait, pack, pack, release — the only shape where a
+    /// second `pack_tile` still finds DST acquired; a second
+    /// wait-after-release would stall PACK with no matching commit).
+    /// The deferred release flushes at the next `math_lock` or at
+    /// section end (`flush_pack`). Slots stay live across packs: the
+    /// allocator hands out fresh slots monotonically and never
+    /// reuses one, so no MATH op can clobber a packed slot. Packing
+    /// from `Unlocked` is a loud error (pack of a dead slot).
+    /// The whole drain sequences here, in emission order: uninit,
+    /// commit, reserve, wait, [reconfig,] pack, push. The packer
+    /// reconfig goes out only for non-native pack targets: the JIT
+    /// programs the mode-native triple by construction, so
     /// reprogramming it is redundant there.
     fn pack(&mut self, src: &mut String, indent: &str, cb_em: &CBEmitter, slot: TileId<DSTBF16>, cb: CBId) {
         if self.reduce_pending {
@@ -2177,8 +2194,18 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             // models the config as gone from here on (the unpack-A
             // source survives), so the next config op re-inits.
         }
-        self.math_unlock(src, indent);
-        self.pack_lock(src, indent);
+        match self.state {
+            TileState::MathLock => {
+                self.math_unlock(src, indent);
+                self.pack_lock(src, indent);
+            }
+            TileState::PackLock => {
+                debug_assert!(!self.reduce_pending, "tenstorrent2: reduce cone open across packs");
+            }
+            TileState::Unlocked => {
+                panic!("tenstorrent2: pack with DST Unlocked, no live cone (pack of a dead slot)");
+            }
+        }
         debug_assert_eq!(self.state, TileState::PackLock, "tenstorrent2: pack without PACK lock");
         // Mode-native pack target needs no runtime reconfig: the JIT
         // programs the packer for it by construction. Runtime CB
@@ -2191,7 +2218,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             writeln!(src, "{indent}pack_reconfig_data_format({cb});");
         }
         writeln!(src, "{indent}pack_tile({slot}, {cb});");
-        self.pack_unlock(src, indent);
+        // No release: the cone stays open for consecutive packs;
+        // the next math_lock or the section-end flush releases it.
     }
 
     /// Acc tile for a Register acc storage: looked up in `tile_map`,
@@ -3346,6 +3374,11 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     em.loop_begin(&mut src, &mut indent, kernel, compute_data, op_id, &mut scope_level)?;
                 }
                 Op::EndLoop => {
+                    // No open cone across the back-edge: the body is
+                    // emitted once but runs N times, so a PACK-held
+                    // file here would deadlock iteration 2+ on an
+                    // acquire whose release sits past the loop.
+                    self.tl.flush_pack(&mut src, &indent);
                     loop_end(&mut src, &mut indent, &mut scope_level);
                 }
                 Op::If { condition } => {
@@ -3543,6 +3576,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         // init) goes ahead of all loops, at the recorded anchor.
         self.tl.prepend_compute_inits(&mut src, init_anchor)?;
 
+        self.tl.flush_pack(&mut src, &indent);
         writeln!(src, "}}");
         self.cb.assert_settled("compute");
         assert_eq!(
