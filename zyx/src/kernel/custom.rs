@@ -630,7 +630,10 @@ impl Kernel {
         let dtype = self.dtype(x);
         let one = self.const_val(1.0f32);
         let one = self.cast(one, dtype);
-        let den = self.add(one, e);
+        // Tile first: `Kernel::layout` follows the `x` side, so a
+        // const-first add would poison the chain to Scalar layout and
+        // fail `verify` at the tile store (`a + b == b + a` bit-exact).
+        let den = self.add(e, one);
         self.reciprocal(den)
     }
 

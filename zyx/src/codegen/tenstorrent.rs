@@ -261,6 +261,202 @@ fn const_f32_bits(kernel: &Kernel, op: OpId) -> Option<u32> {
     }
 }
 
+/// A composite the backend recognizes and emits as one LLK call
+/// (`sigmoid_tile` / `silu_tile` from `compute_kernel_api.h`). The
+/// kernel IR is unchanged — no new `UOp`, no other backend touched.
+/// A missed match only costs speed: the plain composite still emits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum FusedKind {
+    Sigmoid,
+    Silu,
+}
+
+/// A matched composite: its external (non-const) input plus the ops
+/// the single call subsumes (root excluded — the root stays in the
+/// section op list, the inners are filtered out of it).
+#[derive(Clone, Debug)]
+struct FusedPat {
+    kind: FusedKind,
+    x: OpId,
+    inners: Vec<OpId>,
+}
+
+impl FusedKind {
+    fn init_name(self) -> &'static str {
+        match self {
+            FusedKind::Sigmoid => "sigmoid_tile_init();",
+            FusedKind::Silu => "silu_tile_init();",
+        }
+    }
+
+    fn call_name(self) -> &'static str {
+        match self {
+            FusedKind::Sigmoid => "sigmoid_tile",
+            FusedKind::Silu => "silu_tile",
+        }
+    }
+
+    /// Either fused shape at `op` (silu first): tile-domain float
+    /// roots only (BF16/FP32 DST; F16 SFPU is unproven on this
+    /// board). Strict containment — every subsumed op's consumers
+    /// are all inside the pattern, and the external input is consumed
+    /// only by the pattern (the single call transforms its slot in
+    /// place). Anything else falls back to the plain composite —
+    /// slower, never wrong.
+    fn match_pat(
+        kernel: &Kernel,
+        data: &SectionData,
+        consumers: &Map<OpId, Vec<OpId>>,
+        op: OpId,
+    ) -> Option<FusedPat> {
+        let (dt, layout) = data.dtypes.get(&op).copied()?;
+        if !matches!(layout, MemLayout::Tile { .. }) || !matches!(dt, DType::F32 | DType::BF16) {
+            return None;
+        }
+        Self::silu_pat(kernel, data, consumers, op).or_else(|| Self::sigmoid_pat(kernel, data, consumers, op))
+    }
+
+    /// Sigmoid shape below `s` (no containment yet): the external
+    /// input and the subsumed ops under `s` (`s` excluded — the caller
+    /// decides whether `s` stays (standalone root) or goes (silu
+    /// inner)). Two spellings: the builder composite
+    /// `reciprocal(1 + exp(-x))` and the eager `exp(x) / (exp(x) + 1)`
+    /// (shared `exp`, hence the two-consumer shape).
+    fn sigmoid_shape(kernel: &Kernel, data: &SectionData, s: OpId) -> Option<(OpId, Vec<OpId>)> {
+        if let Op::Unary { x: den, uop: UOp::Reciprocal } = kernel.at(s) {
+            let Op::Binary { x: a, y: b, bop: BOp::Add } = kernel.at(*den) else {
+                return None;
+            };
+            let e = if is_one_const(kernel, *a) {
+                *b
+            } else if is_one_const(kernel, *b) {
+                *a
+            } else {
+                return None;
+            };
+            let Op::Unary { x: nx, uop: UOp::Exp } = kernel.at(e) else {
+                return None;
+            };
+            let Op::Unary { x, uop: UOp::Neg } = kernel.at(*nx) else {
+                return None;
+            };
+            if !matches!(data.dtypes.get(x).map(|d| d.1), Some(MemLayout::Tile { .. })) {
+                return None;
+            }
+            return Some((*x, vec![*den, e, *nx]));
+        }
+        let Op::Binary { x: z, y: den, bop: BOp::Div } = kernel.at(s) else {
+            return None;
+        };
+        let Op::Binary { x: a, y: b, bop: BOp::Add } = kernel.at(*den) else {
+            return None;
+        };
+        if !(is_one_const(kernel, *a) && *b == *z || is_one_const(kernel, *b) && *a == *z) {
+            return None;
+        }
+        let Op::Unary { x, uop: UOp::Exp } = kernel.at(*z) else {
+            return None;
+        };
+        if !matches!(data.dtypes.get(x).map(|d| d.1), Some(MemLayout::Tile { .. })) {
+            return None;
+        }
+        Some((*x, vec![*z, *den]))
+    }
+
+    /// Silu shape at `op`: `mul(x, s)` (either side) with `s` a
+    /// sigmoid shape fed by the mul's other side. `s` itself goes
+    /// (its only consumer is the mul); the root stays.
+    fn silu_pat(
+        kernel: &Kernel,
+        data: &SectionData,
+        consumers: &Map<OpId, Vec<OpId>>,
+        op: OpId,
+    ) -> Option<FusedPat> {
+        let Op::Binary { x: a, y: b, bop: BOp::Mul } = kernel.at(op) else {
+            return None;
+        };
+        for (s, other) in [(*a, *b), (*b, *a)] {
+            let Some((x, below)) = Self::sigmoid_shape(kernel, data, s) else {
+                continue;
+            };
+            if x != other || !uses_exactly(consumers, s, &[op]) {
+                continue;
+            }
+            let mut allowed = below.clone();
+            allowed.push(s);
+            if !below.iter().all(|&inner| uses_within(consumers, inner, &allowed)) {
+                continue;
+            }
+            let Some(&entry) =
+                below.iter().find(|&&o| matches!(kernel.at(o), Op::Unary { x: ix, .. } if *ix == x))
+            else {
+                continue;
+            };
+            if !uses_exactly(consumers, x, &[entry, op]) {
+                continue;
+            }
+            let mut inners = below;
+            inners.push(s);
+            return Some(FusedPat { kind: FusedKind::Silu, x, inners });
+        }
+        None
+    }
+
+    /// Standalone sigmoid shape at `op`: the root stays, only the ops
+    /// below it go.
+    fn sigmoid_pat(
+        kernel: &Kernel,
+        data: &SectionData,
+        consumers: &Map<OpId, Vec<OpId>>,
+        op: OpId,
+    ) -> Option<FusedPat> {
+        let Some((x, below)) = Self::sigmoid_shape(kernel, data, op) else {
+            return None;
+        };
+        let entry = below
+            .iter()
+            .find(|&&o| matches!(kernel.at(o), Op::Unary { x: ix, .. } if *ix == x))
+            .copied()
+            .unwrap_or(x);
+        let mut allowed = below.clone();
+        allowed.push(op);
+        if !below.iter().all(|&inner| uses_within(consumers, inner, &allowed)) {
+            return None;
+        }
+        if !uses_exactly(consumers, x, &[entry]) {
+            return None;
+        }
+        Some(FusedPat { kind: FusedKind::Sigmoid, x, inners: below })
+    }
+}
+
+/// Set-equality on a consumer list: every consumer is expected and
+/// every expected op consumes (order-independent — the two users of
+/// a shared `exp` may appear in either IR order).
+fn uses_exactly(consumers: &Map<OpId, Vec<OpId>>, inner: OpId, expected: &[OpId]) -> bool {
+    match consumers.get(&inner) {
+        None => false,
+        Some(cs) => cs.len() == expected.len() && cs.iter().all(|c| expected.contains(c)),
+    }
+}
+
+/// Subset check for inner containment: every consumer is inside
+/// the pattern (unlike [`uses_exactly`], the pattern may hold other
+/// ops that do not consume this one).
+fn uses_within(consumers: &Map<OpId, Vec<OpId>>, inner: OpId, allowed: &[OpId]) -> bool {
+    match consumers.get(&inner) {
+        None => false,
+        Some(cs) => !cs.is_empty() && cs.iter().all(|c| allowed.contains(c)),
+    }
+}
+
+/// The `1` side of a sigmoid denominator: any const expression that
+/// folds to one (follows `Cast`, so the builder's `cast(1.0f32)`
+/// matches after `constant_folding`).
+fn is_one_const(kernel: &Kernel, op: OpId) -> bool {
+    kernel.resolve_const(op).is_some_and(|c| c.is_one())
+}
+
 /// The engine config a compute op programs, if any: the same
 /// classification the compute emitter's arms use, shared by the init
 /// placement pass (and its cleanliness scan).
@@ -457,6 +653,10 @@ enum Cfg {
     /// one side resolved to a compile-time `Const`. No CB traffic for
     /// the scalar, DST-inplace. The init programs no CBs.
     BinScalar,
+    /// Pattern-matched composite ([`FusedKind`]): the root op stays in
+    /// the section list, its subsumed inners are filtered out, and the
+    /// arm emits the one LLK call in the root's input slot.
+    Fused(FusedKind),
 }
 
 impl Cfg {
@@ -1932,6 +2132,11 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     /// Matmul presence: matmul kernels skip `compute_kernel_hw_startup`
     /// (0.72 `mm_init` owns the full UNPACK/MATH/PACK programming).
     has_matmul: bool,
+    /// Pattern-matched composites by root op ([`match_fused_pat`]):
+    /// the single source of truth — the same map drives the op-list
+    /// filter, init classification, and emission, so a filtered-out
+    /// inner can never strand a root (or vice versa).
+    fused: Map<OpId, FusedPat>,
     /// Unpack-A format tracking: the `(CB, tt format code)` the
     /// unpacker was last programmed for. `copy_tile_init` is the
     /// SHORT init — it programs copy mechanics but NOT the data
@@ -1959,6 +2164,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             at_op: Map::default(),
             top: Vec::new(),
             has_matmul: false,
+            fused: Map::default(),
             unpack_src: None,
         }
     }
@@ -2028,6 +2234,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
                 format!("{init}({cb_a}, {cb_b});")
             }
             PlacedInit::Full(Cfg::BinScalar) => "binop_with_scalar_tile_init();".to_string(),
+            PlacedInit::Full(Cfg::Fused(kind)) => kind.init_name().to_string(),
             PlacedInit::Full(Cfg::Reduce(rop, kind, ci, cs)) => {
                 let Some(slot) = acc else {
                     panic!("tenstorrent2: reduce init hoisted away from its op (the acc slot lives at the op)");
@@ -2669,8 +2876,32 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
     fn generate(kernel: &Kernel) -> Result<Self, BackendError> {
         let mut compiler = Compiler::new(kernel)?;
         let reader_data = kernel.get_needed_ops(TtSection::Reader);
-        let compute_data = kernel.get_needed_ops(TtSection::Compute);
+        let mut compute_data = kernel.get_needed_ops(TtSection::Compute);
         let writer_data = kernel.get_needed_ops(TtSection::Writer);
+        // Fused-LLK prepass (kernel immutable): match composites over
+        // the compute list, then drop the subsumed inners from that
+        // list only. Overlapping patterns share ops, so a match whose
+        // ops are already claimed loses (its composite still emits —
+        // reading the accepted match's slot — slower, never wrong).
+        // The stored map is the single source of truth for init
+        // classification and emission below.
+        let mut claimed: Set<OpId> = Set::default();
+        for &op in &compute_data.ops {
+            if let Some(pat) = FusedKind::match_pat(kernel, &compute_data, &compiler.cb.consumers, op) {
+                let touched: Vec<OpId> =
+                    std::iter::once(op).chain(std::iter::once(pat.x)).chain(pat.inners.iter().copied()).collect();
+                if touched.iter().all(|o| !claimed.contains(o)) {
+                    claimed.extend(touched);
+                    compiler.tl.fused.insert(op, pat);
+                }
+            }
+        }
+        let gone: Set<OpId> = compiler.tl.fused.values().flat_map(|pat| pat.inners.iter().copied()).collect();
+        compute_data.ops.retain(|op| !gone.contains(op));
+        debug_assert!(
+            compiler.tl.fused.keys().all(|op| compute_data.ops.contains(op)),
+            "tenstorrent2: fused root filtered out of its own section list"
+        );
         let [reader_params, compute_params, writer_params] =
             compiler.section_param_lists(kernel, &reader_data, &compute_data, &writer_data);
         // Per-section param ordinals (global head order): each section's
@@ -2846,7 +3077,15 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 Op::Loop { .. } | Op::If { .. } => close(Some(op), &mut scopes, &mut at_op, &mut top, &self.cb.config),
                 Op::Barrier => panic!("tenstorrent2: control flow crosses a section barrier"),
                 _ => {
-                    let Some(cfg) = classify_tile_cfg(kernel, &self.cb.map, data, &self.cb.consumers, op) else {
+                    // A fused root programs its one LLK init, ahead of
+                    // every other classification (notably `BinScalar`:
+                    // the sigmoid denominator's const side would match
+                    // the immediate form on its own).
+                    let cfg = match self.tl.fused.get(&op) {
+                        Some(pat) => Some(Cfg::Fused(pat.kind)),
+                        None => classify_tile_cfg(kernel, &self.cb.map, data, &self.cb.consumers, op),
+                    };
+                    let Some(cfg) = cfg else {
                         continue;
                     };
                     if let Cfg::Binary(bop) = cfg {
@@ -3197,25 +3436,74 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 }
                 Op::Unary { x, uop } => {
                     if matches!(compute_data.dtypes[&op_id].1, MemLayout::Tile { .. }) {
-                        // Tiled unary, in place: single-use operand only.
-                        let tile = self.tl.tile_map.get(&x).copied().ok_or_else(|| BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: tiled unary reads a value with no DST slot, op {op_id}").into(),
-                        })?;
-                        if compute_data.rcs[&x] != 1 {
-                            todo!("tenstorrent2 multi-use tiled unary operand, op {op_id}");
+                        // Fused composite: the one LLK call in the
+                        // external input's slot, in place like every
+                        // SFPU unary. The map is consulted, never
+                        // re-matched: inners are gone from this list,
+                        // so a miss here falls back to a shape whose
+                        // inputs exist (slower, never dangling).
+                        if let Some(pat) = self.tl.fused.get(&op_id).cloned() {
+                            let tile = self.tl.tile_map.get(&pat.x).copied().ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: fused op reads a value with no DST slot, op {op_id}")
+                                    .into(),
+                            })?;
+                            self.tl.math_lock(&mut src, &indent);
+                            debug_assert_eq!(self.tl.state, TileState::MathLock, "tenstorrent2: fused without MATH lock");
+                            match self.tl.pop(op_id) {
+                                None => {}
+                                Some(init @ PlacedInit::Full(Cfg::Fused(_))) => {
+                                    let line = self.tl.line(init, None).expect("tenstorrent2: fused init is infallible");
+                                    writeln!(src, "{indent}{line}");
+                                }
+                                Some(other) => panic!("tenstorrent2: fused op {op_id} placed a non-fused init ({other:?})"),
+                            }
+                            writeln!(src, "{indent}{}({tile});", pat.kind.call_name());
+                            self.tl.tile_map.insert(op_id, tile);
+                        } else {
+                            // Tiled unary, in place: single-use operand only.
+                            let tile = self.tl.tile_map.get(&x).copied().ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: tiled unary reads a value with no DST slot, op {op_id}").into(),
+                            })?;
+                            if compute_data.rcs[&x] != 1 {
+                                todo!("tenstorrent2 multi-use tiled unary operand, op {op_id}");
+                            }
+                            self.tl.unary(&mut src, &indent, op_id, tile, uop);
                         }
-                        self.tl.unary(&mut src, &indent, op_id, tile, uop);
                     } else {
                         em.emit_op(&mut src, &indent, op_id, compute_data, &self.noc, scope_level)?;
                     }
                 }
                 Op::Binary { x, y, bop } => {
                     if matches!(compute_data.dtypes[&op_id].1, MemLayout::Tile { .. }) {
-                        // A BroadcastTile-marked side fuses into the
-                        // CB-based broadcast form; otherwise the
-                        // DST-register form.
-                        let marker = |side: OpId| match kernel.ops[side].op {
+                        // Fused composite first (same shape as the unary
+                        // arm: consulted map, in-place call, loud slot
+                        // miss). Covers silu (`mul`) and the eager
+                        // div-spelled sigmoid.
+                        if let Some(pat) = self.tl.fused.get(&op_id).cloned() {
+                            let tile = self.tl.tile_map.get(&pat.x).copied().ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: fused op reads a value with no DST slot, op {op_id}")
+                                    .into(),
+                            })?;
+                            self.tl.math_lock(&mut src, &indent);
+                            debug_assert_eq!(self.tl.state, TileState::MathLock, "tenstorrent2: fused without MATH lock");
+                            match self.tl.pop(op_id) {
+                                None => {}
+                                Some(init @ PlacedInit::Full(Cfg::Fused(_))) => {
+                                    let line = self.tl.line(init, None).expect("tenstorrent2: fused init is infallible");
+                                    writeln!(src, "{indent}{line}");
+                                }
+                                Some(other) => panic!("tenstorrent2: fused op {op_id} placed a non-fused init ({other:?})"),
+                            }
+                            writeln!(src, "{indent}{}({tile});", pat.kind.call_name());
+                            self.tl.tile_map.insert(op_id, tile);
+                        } else {
+                            // A BroadcastTile-marked side fuses into the
+                            // CB-based broadcast form; otherwise the
+                            // DST-register form.
+                            let marker = |side: OpId| match kernel.ops[side].op {
                             Op::BroadcastTile { x: mx, kind } => Some((kind, mx)),
                             _ => None,
                         };
@@ -3299,6 +3587,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                                     self.tl.binary(&mut src, &indent, op_id, ta, tb, bop, rc);
                                 }
                             }
+                        }
                         }
                     } else {
                         em.emit_op(&mut src, &indent, op_id, compute_data, &self.noc, scope_level)?;
