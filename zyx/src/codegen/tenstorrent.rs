@@ -219,9 +219,9 @@ enum TrafficKind {
 fn fused_only_load(kernel: &Kernel, consumers: &Map<OpId, Vec<OpId>>, load: OpId) -> bool {
     match consumers.get(&load) {
         None => false,
-        Some(cs) => cs.iter().all(|&c| {
-            matches!(kernel.ops[c].op, Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. })
-        }),
+        Some(cs) => cs
+            .iter()
+            .all(|&c| matches!(kernel.ops[c].op, Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. })),
     }
 }
 
@@ -259,7 +259,9 @@ fn classify_tile_cfg(
         Op::TransposeTile { x } => tile_cb(kernel, x, map).map(Cfg::Transpose),
         Op::Binary { bop, .. } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => Some(Cfg::Binary(bop)),
         Op::Unary { uop, .. } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => Some(Cfg::Unary(uop)),
-        Op::Cast { x, dtype, .. } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => Some(Cfg::Typecast(data.dtypes[&x].0, dtype)),
+        Op::Cast { x, dtype, .. } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => {
+            Some(Cfg::Typecast(data.dtypes[&x].0, dtype))
+        }
         _ => None,
     }
 }
@@ -925,7 +927,14 @@ impl<'a> VarEmitter<'a> {
     /// value (including Variable params, slot-named at declaration)
     /// must already sit in `var_map`. Same-level uses decrement the
     /// refcount (house use-site rule).
-    fn resolve_idx(&mut self, kernel: &Kernel, _data: &SectionData, idx_op: OpId, scope_level: u8, who: &str) -> Result<String, BackendError> {
+    fn resolve_idx(
+        &mut self,
+        kernel: &Kernel,
+        _data: &SectionData,
+        idx_op: OpId,
+        scope_level: u8,
+        who: &str,
+    ) -> Result<String, BackendError> {
         if let Op::Const(c) = &kernel.ops[idx_op].op {
             return Ok(format!("{}", c.c_code()));
         }
@@ -1117,8 +1126,22 @@ impl NocEmitter {
     /// `rnoc{op_id}` from accessor `p{ld_src}`, then read into the CB
     /// write pointer. `off` is the tile-slot offset within the
     /// reserved block, in tile units ("0" = plain write pointer).
-    fn async_read_tile(&self, src: &mut String, indent: &str, op_id: OpId, ld_src: OpId, idx: &str, elem_size: u32, tile_bytes: u32, cb: CBId, off: &str) {
-        writeln!(src, "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{TT_DRAM_PAGE_BYTES}), (uint32_t)(({idx}*{elem_size})%{TT_DRAM_PAGE_BYTES}));");
+    fn async_read_tile(
+        &self,
+        src: &mut String,
+        indent: &str,
+        op_id: OpId,
+        ld_src: OpId,
+        idx: &str,
+        elem_size: u32,
+        tile_bytes: u32,
+        cb: CBId,
+        off: &str,
+    ) {
+        writeln!(
+            src,
+            "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{TT_DRAM_PAGE_BYTES}), (uint32_t)(({idx}*{elem_size})%{TT_DRAM_PAGE_BYTES}));"
+        );
         if off == "0" {
             writeln!(src, "{indent}noc_async_read(rnoc{op_id}, cb{cb}.get_write_ptr(), {tile_bytes});");
         } else {
@@ -1131,8 +1154,22 @@ impl NocEmitter {
     /// to DRAM address `wnoc{op_id}` in accessor `p_out{dst}`. `off`
     /// is the tile-slot offset within the waited block, in tile units
     /// ("0" = plain read pointer).
-    fn async_write_tile(&self, src: &mut String, indent: &str, op_id: OpId, dst: OpId, idx: &str, elem_size: u32, tile_bytes: u32, cb: CBId, off: &str) {
-        writeln!(src, "{indent}uint64_t wnoc{op_id} = p_out{dst}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{TT_DRAM_PAGE_BYTES}), (uint32_t)(({idx}*{elem_size})%{TT_DRAM_PAGE_BYTES}));");
+    fn async_write_tile(
+        &self,
+        src: &mut String,
+        indent: &str,
+        op_id: OpId,
+        dst: OpId,
+        idx: &str,
+        elem_size: u32,
+        tile_bytes: u32,
+        cb: CBId,
+        off: &str,
+    ) {
+        writeln!(
+            src,
+            "{indent}uint64_t wnoc{op_id} = p_out{dst}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{TT_DRAM_PAGE_BYTES}), (uint32_t)(({idx}*{elem_size})%{TT_DRAM_PAGE_BYTES}));"
+        );
         if off == "0" {
             writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr(), wnoc{op_id}, {tile_bytes});");
         } else {
@@ -1435,10 +1472,8 @@ impl CBEmitter {
                         {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!(
-                                    "tenstorrent2: CB{cb} index op {index} is neither the hoist loop counter nor 0"
-                                )
-                                .into(),
+                                context: format!("tenstorrent2: CB{cb} index op {index} is neither the hoist loop counter nor 0")
+                                    .into(),
                             });
                         }
                         // Upgrade the provisional single-tile
@@ -1469,7 +1504,7 @@ impl CBEmitter {
                         }
                     };
                     if let Some((kind, cb, index)) = traffic {
-                            record_traffic(scan, cb, index, kind, &mut stack, &mut produced, &mut consumed, &mut traffic_kind)?;
+                        record_traffic(scan, cb, index, kind, &mut stack, &mut produced, &mut consumed, &mut traffic_kind)?;
                         // Provisional single-tile transaction: open and
                         // close anchor at this op. A hoisting upgrade
                         // may replace it at the loop's EndLoop. The
@@ -1477,12 +1512,8 @@ impl CBEmitter {
                         // index must be 0 or tie to an enclosing
                         // counter (its DRAM-side meaning does not
                         // affect the CB slot).
-                        let counter_tied = stack
-                            .iter()
-                            .any(|f| deps_contain(kernel, index, f.op));
-                        if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0))
-                            && !counter_tied
-                        {
+                        let counter_tied = stack.iter().any(|f| deps_contain(kernel, index, f.op));
+                        if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0)) && !counter_tied {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
                                 context: format!(
@@ -1501,9 +1532,7 @@ impl CBEmitter {
                     // falls through to the walk advance.
                     let mut traffic: Option<(TrafficKind, CBId, OpId)> = None;
                     let mut fused_drain = false;
-                    if section == TtSection::Compute
-                        && matches!(layout, MemLayout::Tile { .. })
-                    {
+                    if section == TtSection::Compute && matches!(layout, MemLayout::Tile { .. }) {
                         if let Some(&cb) = map.get(src) {
                             if fused_only_load(kernel, &consumers, scan) {
                                 // Fused tile ops drain at a fixed slot
@@ -1538,12 +1567,8 @@ impl CBEmitter {
                             // in flight): the index must be 0 or tie
                             // to the enclosing counter (its DRAM-side
                             // meaning does not affect the CB slot).
-                            let counter_tied = stack
-                                .iter()
-                                .any(|f| deps_contain(kernel, index, f.op));
-                            if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0))
-                                && !counter_tied
-                            {
+                            let counter_tied = stack.iter().any(|f| deps_contain(kernel, index, f.op));
+                            if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0)) && !counter_tied {
                                 return Err(BackendError {
                                     status: ErrorStatus::KernelCompilation,
                                     context: format!(
@@ -1592,7 +1617,8 @@ impl CBEmitter {
         for (&cb, &p) in produced.iter() {
             let c = consumed[&cb];
             if p != c {
-                let Op::Storage { len, .. } = kernel.ops[map.iter().find_map(|(&op, &cid)| (cid == cb).then_some(op)).expect("CB registered")].op
+                let Op::Storage { len, .. } =
+                    kernel.ops[map.iter().find_map(|(&op, &cid)| (cid == cb).then_some(op)).expect("CB registered")].op
                 else {
                     unreachable!("tenstorrent2: CB map entry is a storage op")
                 };
@@ -1692,7 +1718,11 @@ impl CBEmitter {
                 assert_eq!(filled, m, "tenstorrent2: pop_front on CB{cb} with {filled}/{m} tiles consumed");
                 writeln!(src, "{indent}cb{cb}.pop_front({m});");
                 let rest = avail - m;
-                self.states[cb] = if rest == 0 { CBState::Popped } else { CBState::Pushed { avail: rest } };
+                self.states[cb] = if rest == 0 {
+                    CBState::Popped
+                } else {
+                    CBState::Pushed { avail: rest }
+                };
             }
             s => panic!("tenstorrent2: pop_front on CB{cb} in {s:?}, must be Waiting with matching block size"),
         }
@@ -1819,6 +1849,17 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     /// Matmul presence: matmul kernels skip `compute_kernel_hw_startup`
     /// (0.72 `mm_init` owns the full UNPACK/MATH/PACK programming).
     has_matmul: bool,
+    /// Unpack-A format tracking: the `(CB, tt format code)` the
+    /// unpacker was last programmed for. `copy_tile_init` is the
+    /// SHORT init — it programs copy mechanics but NOT the data
+    /// format, faces, or tile size — so a copy after a matmul (whose
+    /// short/full init leaves unpack in matmul geometry) unpacks a
+    /// different-format CB as zeros unless reconfigured. Only
+    /// `MmTop`/`MmShort` (matmul geometry) and `with_dt` copies
+    /// (reconfigured geometry) update this; every other init leaves
+    /// it (a stale entry only ever causes a redundant — always safe —
+    /// reconfig, never a missing one).
+    unpack_src: Option<(CBId, u32)>,
 }
 
 #[allow(unused_must_use)]
@@ -1835,6 +1876,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             at_op: Map::default(),
             top: Vec::new(),
             has_matmul: false,
+            unpack_src: None,
         }
     }
 
@@ -1843,6 +1885,28 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     fn set_startup(&mut self, triple: [CBId; 3]) {
         assert!(self.startup.is_none(), "tenstorrent2: compute startup triple set twice");
         self.startup = Some(triple);
+    }
+
+    /// Record the unpack-A source the engines are now programmed
+    /// for (matmul inits and `with_dt` copies program the format;
+    /// short copy inits do not and must not call this).
+    fn note_unpack(&mut self, cb: CBId, fmt: u32) {
+        self.unpack_src = Some((cb, fmt));
+    }
+
+    /// Copy-init text for `cb` (tt format code `fmt`): when the
+    /// tracked unpack format differs, the `with_dt` form (which
+    /// reconfigs UNPACK+MATH SRCA before the short init), otherwise
+    /// the plain short init. A reconfig updates the tracking; a
+    /// plain init leaves it (short inits program no format).
+    fn copy_init(&mut self, cb: CBId, fmt: u32) -> String {
+        match self.unpack_src {
+            Some((prev, f)) if f != fmt => {
+                self.unpack_src = Some((cb, fmt));
+                format!("copy_tile_to_dst_init_short_with_dt({prev}, {cb});")
+            }
+            _ => format!("copy_tile_init({cb});"),
+        }
     }
 
     /// Drain the placement at `op_id`, if the pass put one there
@@ -1923,7 +1987,12 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// `tile_regs_commit`: MATH releases the file. Unlocking an
     /// unlocked file is a loud error: every lock must pair.
     fn math_unlock(&mut self, src: &mut String, indent: &str) {
-        assert_eq!(self.state, TileState::MathLock, "tenstorrent2: math_unlock with DST in {:?}, every lock must pair", self.state);
+        assert_eq!(
+            self.state,
+            TileState::MathLock,
+            "tenstorrent2: math_unlock with DST in {:?}, every lock must pair",
+            self.state
+        );
         writeln!(src, "{indent}tile_regs_commit();");
         self.state.math_unlock();
     }
@@ -1939,7 +2008,12 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// `tile_regs_release`: PACK releases the file. Releasing without
     /// the PACK lock is a loud error: every lock must pair.
     fn pack_unlock(&mut self, src: &mut String, indent: &str) {
-        assert_eq!(self.state, TileState::PackLock, "tenstorrent2: pack_unlock with DST in {:?}, every lock must pair", self.state);
+        assert_eq!(
+            self.state,
+            TileState::PackLock,
+            "tenstorrent2: pack_unlock with DST in {:?}, every lock must pair",
+            self.state
+        );
         writeln!(src, "{indent}tile_regs_release();");
         self.state.pack_unlock();
     }
@@ -1975,6 +2049,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             Some(PlacedInit::MmShort(a, b, old)) => {
                 debug_assert_eq!((a, b), (cb_a, cb_b), "tenstorrent2: matmul op {op_id} placed a foreign short init");
                 writeln!(src, "{indent}mm_init_short_with_dt({cb_a}, {cb_b}, {old});");
+                self.note_unpack(cb_a, cb_em.config[cb_a].0);
             }
             Some(other) => panic!("tenstorrent2: matmul op {op_id} placed a non-short init ({other:?})"),
         }
@@ -1994,19 +2069,28 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// slot into a fresh DST slot. The wait/pop sync anchors at the
     /// transaction's open/close events (see [`CBEmitter`]); `index`
     /// is the tile slot within the waited block. Records the load op
-    /// in `tile_map`. `copy_tile_init` reprograms the unpack-A source
-    /// shared with matmul/reduce/transpose: its placement comes from
-    /// the plan (anchor-hoisted, inline per the pass, or nothing).
-    fn copy(&mut self, src: &mut String, indent: &str, op_id: OpId, cb: CBId, rc: u32, index: &str) -> TileId<DSTBF16> {
+    /// in `tile_map`. The init is the plain short form unless the
+    /// tracked unpack format differs from `fmt` (see `copy_init`):
+    /// its placement comes from the plan (anchor-hoisted, inline per
+    /// the pass, or nothing — a reconfig still goes out when the
+    /// tracking demands it).
+    fn copy(&mut self, src: &mut String, indent: &str, op_id: OpId, cb: CBId, rc: u32, index: &str, fmt: u32) -> TileId<DSTBF16> {
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: copy without MATH lock");
         let slot = self.alloc(rc);
         match self.pop(op_id) {
-            None => {}
             Some(PlacedInit::Full(Cfg::Copy(c))) => {
                 debug_assert_eq!(c, cb, "tenstorrent2: copy op {op_id} placed a foreign init");
-                let line = self.line(PlacedInit::Full(Cfg::Copy(c)), None).expect("tenstorrent2: copy init is infallible");
+                let line = self.copy_init(c, fmt);
                 writeln!(src, "{indent}{line}");
+            }
+            None => {
+                // No placed init, but a stale unpack format still
+                // needs the reconfig before this copy reads.
+                if matches!(self.unpack_src, Some((_, f)) if f != fmt) {
+                    let line = self.copy_init(cb, fmt);
+                    writeln!(src, "{indent}{line}");
+                }
             }
             Some(other) => panic!("tenstorrent2: copy op {op_id} placed a non-copy init ({other:?})"),
         }
@@ -2165,14 +2249,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// slot), so the result aliases the operand slot. Takes the MATH
     /// lock and records the hoisted init.
     #[allow(dead_code)]
-    fn unary(
-        &mut self,
-        src: &mut String,
-        indent: &str,
-        op_id: OpId,
-        x: TileId<DSTBF16>,
-        uop: UOp,
-    ) -> TileId<DSTBF16> {
+    fn unary(&mut self, src: &mut String, indent: &str, op_id: OpId, x: TileId<DSTBF16>, uop: UOp) -> TileId<DSTBF16> {
         // log2 passes its base scale (bits of 1/ln 2) explicitly, emitted
         // here: the `name` match below evaluates eagerly, so Log2 can never
         // be deferred to a later branch.
@@ -2240,7 +2317,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: cast without MATH lock");
         match self.pop(op_id) {
             None => {}
-            Some(init @ PlacedInit::Full(Cfg::Typecast(_,_))) => {
+            Some(init @ PlacedInit::Full(Cfg::Typecast(_, _))) => {
                 writeln!(src, "{indent}{}", self.line(init, None)?);
             }
             Some(other) => panic!("tenstorrent2: cast op {op_id} placed a non-cast init ({other:?})"),
@@ -2508,10 +2585,10 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         // occupant propagates to the parent (a child scope's content
         // sits mid-body, so the parent may not merge across it).
         let close = |boundary: Option<OpId>,
-                         scopes: &mut Vec<Scope>,
-                         at_op: &mut Map<OpId, PlacedInit>,
-                         top: &mut Vec<PlacedInit>,
-                         config: &Slab<CBId, (u32, u32, u32)>| {
+                     scopes: &mut Vec<Scope>,
+                     at_op: &mut Map<OpId, PlacedInit>,
+                     top: &mut Vec<PlacedInit>,
+                     config: &Slab<CBId, (u32, u32, u32)>| {
             let scope = scopes.pop().expect("tenstorrent2: init pass scope underflow");
             let lone = (scope.occupants.len() == 1)
                 .then(|| scope.occupants.iter().next().copied().expect("tenstorrent2: empty lone occupant set"))
@@ -2554,7 +2631,9 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         };
         for &op in data.ops.iter().rev() {
             match kernel.ops[op].op {
-                Op::EndLoop | Op::EndIf => scopes.push(Scope { occupants: Set::default(), members: Vec::new(), hoisted: Vec::new() }),
+                Op::EndLoop | Op::EndIf => {
+                    scopes.push(Scope { occupants: Set::default(), members: Vec::new(), hoisted: Vec::new() })
+                }
                 Op::Loop { .. } | Op::If { .. } => close(Some(op), &mut scopes, &mut at_op, &mut top, &self.cb.config),
                 Op::Barrier => panic!("tenstorrent2: control flow crosses a section barrier"),
                 _ => {
@@ -2584,10 +2663,14 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
             top.retain(|t| !matches!(t, PlacedInit::MmShort(..)));
         }
         if has_matmul {
-            let (cb_a, cb_b) = data.ops.iter().find_map(|&op| match classify_tile_cfg(kernel, &self.cb.map, data, &self.cb.consumers, op) {
-                Some(Cfg::Matmul(a, b)) => Some((a, b)),
-                _ => None,
-            }).expect("tenstorrent2: matmul flag without a matmul op");
+            let (cb_a, cb_b) = data
+                .ops
+                .iter()
+                .find_map(|&op| match classify_tile_cfg(kernel, &self.cb.map, data, &self.cb.consumers, op) {
+                    Some(Cfg::Matmul(a, b)) => Some((a, b)),
+                    _ => None,
+                })
+                .expect("tenstorrent2: matmul flag without a matmul op");
             top.insert(0, PlacedInit::MmTop(cb_a, cb_b));
         }
         self.tl.at_op = at_op;
@@ -2761,6 +2844,22 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         // Placement first: every config op's plan must exist before
         // its arm emits.
         self.compute_init_plans(kernel, compute_data);
+        // Seed the unpack tracking from the kernel-top block (it
+        // executes before every body op): a trailing `MmTop`
+        // programs matmul geometry for `cb_a`. Only plain copy
+        // inits may follow it (proven to program no format);
+        // anything else leaves the seed empty (a missing seed only
+        // ever skips a reconfig the old code never did either).
+        if let Some(top) = self.tl.top.iter().rev().find_map(|init| match *init {
+            PlacedInit::MmTop(a, _) => Some(Some(a)),
+            PlacedInit::Full(Cfg::Copy(_)) => None,
+            _ => Some(None),
+        }) {
+            if let Some(a) = top {
+                let fmt = self.cb.config[a].0;
+                self.tl.note_unpack(a, fmt);
+            }
+        }
         let mut em = VarEmitter::new(kernel);
         let mut src = String::new();
         let mut indent = String::from("  ");
@@ -2962,7 +3061,8 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         } else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: compute acc store reads a tile with no DST slot, op {op_id}").into(),
+                                context: format!("tenstorrent2: compute acc store reads a tile with no DST slot, op {op_id}")
+                                    .into(),
                             });
                         }
                     } else {
@@ -3023,7 +3123,10 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         let mut fused_only = false;
                         for &consumer in &compute_data.ops {
                             if kernel.ops[consumer].op.parameters().any(|p| p == op_id) {
-                                if matches!(kernel.ops[consumer].op, Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. }) {
+                                if matches!(
+                                    kernel.ops[consumer].op,
+                                    Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. }
+                                ) {
                                     fused_only = true;
                                 } else {
                                     fused_only = false;
@@ -3031,17 +3134,20 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                                 }
                             }
                         }
-                         if !fused_only {
-                              let rc = compute_data.rcs[&op_id];
-                              let Op::Load { index: ld_idx, .. } = kernel.ops[op_id].op else { unreachable!() };
-                              let b = self.cb.batch(op_id).expect("tenstorrent2: pre-pass assigned a batch to every traffic op");
-                              // The sync ops anchor at the transaction's
-                              // open/close events; this text copies its
-                              // block slot.
-                              let off = self.cb.slot_offset(kernel, &mut em, compute_data, ld_idx, b, scope_level, "compute")?;
-                              self.cb.record_move(b.cb, b.per_op);
-                              self.tl.copy(&mut src, &indent, op_id, cb, rc, &off);
-                          }
+                        if !fused_only {
+                            let rc = compute_data.rcs[&op_id];
+                            let Op::Load { index: ld_idx, .. } = kernel.ops[op_id].op else {
+                                unreachable!()
+                            };
+                            let b = self.cb.batch(op_id).expect("tenstorrent2: pre-pass assigned a batch to every traffic op");
+                            // The sync ops anchor at the transaction's
+                            // open/close events; this text copies its
+                            // block slot.
+                            let off = self.cb.slot_offset(kernel, &mut em, compute_data, ld_idx, b, scope_level, "compute")?;
+                            self.cb.record_move(b.cb, b.per_op);
+                            let fmt = self.cb.config[cb].0;
+                            self.tl.copy(&mut src, &indent, op_id, cb, rc, &off, fmt);
+                        }
                     }
                 }
                 Op::Range { .. } => {
@@ -3050,9 +3156,24 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 Op::Loop { .. } => {
                     // A placement keyed by this boundary emits ahead
                     // of the whole scope (the pass hoisted exactly one
-                    // occupant outward here).
+                    // occupant outward here). Hoisted copy inits get
+                    // the same stale-format treatment as inline ones;
+                    // shorts update the unpack tracking.
                     if let Some(init) = self.tl.pop(op_id) {
-                        writeln!(src, "{indent}{}", self.tl.line(init, None)?);
+                        match init {
+                            PlacedInit::Full(Cfg::Copy(c)) => {
+                                let fmt = self.cb.config[c].0;
+                                writeln!(src, "{indent}{}", self.tl.copy_init(c, fmt));
+                            }
+                            PlacedInit::MmShort(a, _, _) => {
+                                writeln!(src, "{indent}{}", self.tl.line(init, None)?);
+                                let fmt = self.cb.config[a].0;
+                                self.tl.note_unpack(a, fmt);
+                            }
+                            _ => {
+                                writeln!(src, "{indent}{}", self.tl.line(init, None)?);
+                            }
+                        }
                     }
                     em.loop_begin(&mut src, &mut indent, kernel, compute_data, op_id, &mut scope_level)?;
                 }
@@ -3067,7 +3188,20 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     // Plain brace scope otherwise: no lock/CB
                     // interaction (those pair with loops, never ifs).
                     if let Some(init) = self.tl.pop(op_id) {
-                        writeln!(src, "{indent}{}", self.tl.line(init, None)?);
+                        match init {
+                            PlacedInit::Full(Cfg::Copy(c)) => {
+                                let fmt = self.cb.config[c].0;
+                                writeln!(src, "{indent}{}", self.tl.copy_init(c, fmt));
+                            }
+                            PlacedInit::MmShort(a, _, _) => {
+                                writeln!(src, "{indent}{}", self.tl.line(init, None)?);
+                                let fmt = self.cb.config[a].0;
+                                self.tl.note_unpack(a, fmt);
+                            }
+                            _ => {
+                                writeln!(src, "{indent}{}", self.tl.line(init, None)?);
+                            }
+                        }
                     }
                     em.if_begin(&mut src, &mut indent, kernel, condition, &mut scope_level)?;
                 }
@@ -3243,7 +3377,12 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
 
         writeln!(src, "}}");
         self.cb.assert_settled("compute");
-        assert_eq!(self.tl.state, TileState::Unlocked, "tenstorrent2: compute ends with DST in {:?}, every lock must pair", self.tl.state);
+        assert_eq!(
+            self.tl.state,
+            TileState::Unlocked,
+            "tenstorrent2: compute ends with DST in {:?}, every lock must pair",
+            self.tl.state
+        );
         self.compute = TTKernel::Compute { src, ordinals: ordinals.to_vec() };
 
         Ok(())

@@ -53,9 +53,8 @@ fn tenstorrent_probe_add_add() -> Result<(), ZyxError> {
 
     let data_a: Vec<f32> = (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect();
     let data_b: Vec<f32> = (0..32 * 32).map(|j| ((j + 7) % 32) as f32 * 0.0625).collect();
-    let to_tt = |v: Vec<f32>| -> Result<Tensor, ZyxError> {
-        Tensor::from_vec(v, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))
-    };
+    let to_tt =
+        |v: Vec<f32>| -> Result<Tensor, ZyxError> { Tensor::from_vec(v, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0)) };
     let a_t = to_tt(data_a.clone())?;
     let b_t = to_tt(data_b.clone())?;
     let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 32]])?;
@@ -174,9 +173,8 @@ fn tenstorrent_mixed_exp_add() -> Result<(), ZyxError> {
     // Inputs in [0, 2): F16-exact steps, no overflow.
     let data_a: Vec<f32> = (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect();
     let data_b: Vec<f32> = (0..32 * 32).map(|j| ((j + 7) % 32) as f32 * 0.0625).collect();
-    let to_tt = |v: Vec<f32>| -> Result<Tensor, ZyxError> {
-        Tensor::from_vec(v, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))
-    };
+    let to_tt =
+        |v: Vec<f32>| -> Result<Tensor, ZyxError> { Tensor::from_vec(v, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0)) };
     let a_t = to_tt(data_a.clone())?;
     let b_t = to_tt(data_b.clone())?;
     let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 32]])?;
@@ -560,6 +558,391 @@ fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
         }
     }
     println!("mixed mm-bias bad: {bad} / 2048");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// Single-pass variant of `tenstorrent_mixed_matmul_bias` (nt=1): the
+/// short executes once on the virgin matmul-mode state, copy/add once
+/// with no second pass. Correct output here clears the once-through
+/// combination and points at the loop-carried (pass-2) state.
+#[test]
+fn tenstorrent_mixed_matmul_bias_single() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F16);
+    let b = k.param(DType::F16);
+    let c = k.param(DType::F32);
+    let out = k.param_mut(DType::F32);
+
+    let ca = k.circular_storage(DType::F16, 4);
+    let cb = k.circular_storage(DType::F16, 4);
+    let cc = k.circular_storage(DType::F32, 2);
+    let cout = k.circular_storage(DType::F32, 1);
+
+    let _g = k.group_range(0, 1);
+
+    // Reader: A tile (mt,kt) at mt*Kt+kt, B tile (kt,nt) at kt*Nt+nt,
+    // C bias tile (mt,nt) at mt*Nt+nt.
+    k.loop_over(1, |k, mti| {
+        k.loop_over(1, |k, nti| {
+            k.loop_over(2, |k, kti| {
+                let at = k.mad(mti, 2, kti);
+                let abase = k.mad(at, 1024, 0);
+                let ta = k.load_global_tile(a, abase);
+                k.store_circular(ca, ta, 0);
+                let bt = k.mad(kti, 1, nti);
+                let bbase = k.mad(bt, 1024, 0);
+                let tb = k.load_global_tile(b, bbase);
+                k.store_circular(cb, tb, 0);
+            });
+            let ct = k.mad(mti, 1, nti);
+            let cbase = k.mad(ct, 1024, 0);
+            let tc = k.load_global_tile(c, cbase);
+            k.store_circular(cc, tc, nti);
+        });
+    });
+    k.barrier();
+    // Compute: one acc cone per output tile, bias added after the Kt
+    // accumulation steps.
+    k.loop_over(1, |k, _mti| {
+        k.loop_over(1, |k, nti| {
+            let acc = k.storage(DType::F32, MemScope::Register, 1024);
+            k.loop_over(2, |k, _kti| {
+                let va = k.load_circular(ca, 0);
+                let vb = k.load_circular(cb, 0);
+                let av = k.load_register_tile(acc, 0);
+                let f = k.matmul_tile(va, vb, av);
+                k.store_register_tile(acc, f, 0);
+            });
+            let f = k.load_register_tile(acc, 0);
+            let vc = k.load_circular(cc, nti);
+            let s = k.add(f, vc);
+            k.store_circular(cout, s, 0);
+        });
+    });
+    k.barrier();
+    // Writer: output tile (mt,nt) at mt*Nt+nt, row-major.
+    k.loop_over(1, |k, mti| {
+        k.loop_over(1, |k, nti| {
+            let ot = k.mad(mti, 1, nti);
+            let obase = k.mad(ot, 1024, 0);
+            let v = k.load_circular(cout, 0);
+            k.store_global_tile(out, v, obase);
+        });
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // A[32,64] @ B[64,32] + C[32,32], values kept small.
+    let a_data: Vec<f32> = (0..32 * 64).map(|j| (j % 4) as f32 * 0.0625).collect();
+    let b_data: Vec<f32> = (0..64 * 32).map(|j| ((j / 4) % 4) as f32 * 0.0625).collect();
+    let c_data: Vec<f32> = (0..32 * 32).map(|j| (j % 8) as f32 * 0.0625).collect();
+    let mut expected = vec![0.0f32; 32 * 32];
+    for r in 0..32 {
+        for c in 0..32 {
+            let mut s = 0.0f32;
+            for t in 0..64 {
+                s += a_data[r * 64 + t] * b_data[t * 32 + c];
+            }
+            expected[r * 32 + c] = s + c_data[r * 32 + c];
+        }
+    }
+    let a_t = Tensor::from_vec(a_data, [32, 64])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let b_t = Tensor::from_vec(b_data, [64, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let c_t = Tensor::from_vec(c_data, [32, 32])?.tilize()?.cast(DType::F32).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t, &b_t, &c_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (p, (&v, &e)) in z.iter().zip(expected.iter()).enumerate() {
+        if (v - e).abs() >= 5e-2 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {e}");
+            }
+            bad += 1;
+        }
+    }
+    println!("mixed mm-bias single bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// Bisection: bias+copy+add with NO matmul (add the bias tile to
+/// itself, pack the sum). Correct output here clears reader, copy,
+/// add and DST slots 0-2, convicting the short'd matmul in the full
+/// combo; wrong output convicts the copy/add path itself.
+#[test]
+fn tenstorrent_bias_add_probe() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let c = k.param(DType::F32);
+    let out = k.param_mut(DType::F32);
+
+    let cc = k.circular_storage(DType::F32, 2);
+    let cout = k.circular_storage(DType::F32, 1);
+
+    let _g = k.group_range(0, 1);
+
+    // Reader: C bias tile at index nti.
+    k.loop_over(1, |k, mti| {
+        k.loop_over(1, |k, nti| {
+            let ct = k.mad(mti, 1, nti);
+            let cbase = k.mad(ct, 1024, 0);
+            let tc = k.load_global_tile(c, cbase);
+            k.store_circular(cc, tc, nti);
+        });
+    });
+    k.barrier();
+    // Compute: double the bias tile via add, packed out.
+    k.loop_over(1, |k, _mti| {
+        k.loop_over(1, |k, nti| {
+            let v0 = k.load_circular(cc, nti);
+            let s = k.add(v0, v0);
+            k.store_circular(cout, s, 0);
+        });
+    });
+    k.barrier();
+    // Writer: the single output tile, row-major.
+    k.loop_over(1, |k, mti| {
+        k.loop_over(1, |k, nti| {
+            let ot = k.mad(mti, 1, nti);
+            let obase = k.mad(ot, 1024, 0);
+            let v = k.load_circular(cout, 0);
+            k.store_global_tile(out, v, obase);
+        });
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // 2*C[32,32], values kept small.
+    let c_data: Vec<f32> = (0..32 * 32).map(|j| (j % 8) as f32 * 0.0625).collect();
+    let c_t = Tensor::from_vec(c_data.clone(), [32, 32])?.tilize()?.cast(DType::F32).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&c_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (p, (&v, &e)) in z.iter().zip(c_data.iter()).enumerate() {
+        let e2 = 2.0 * e;
+        if (v - e2).abs() >= 5e-2 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {e2}");
+            }
+            bad += 1;
+        }
+    }
+    println!("bias add probe bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// Bisection: matmul cone plus bias copy, packing the COPIED BIAS
+/// tile straight out. Correct output here clears the reader bias
+/// path and the copy path (check the dump for whether the unused
+/// matmul — and its short — survived DCE).
+#[test]
+fn tenstorrent_matmul_short_probe() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F16);
+    let b = k.param(DType::F16);
+    let c = k.param(DType::F32);
+    let out = k.param_mut(DType::F32);
+
+    let ca = k.circular_storage(DType::F16, 4);
+    let cb = k.circular_storage(DType::F16, 4);
+    let cc = k.circular_storage(DType::F32, 2);
+    let cout = k.circular_storage(DType::F32, 1);
+
+    let _g = k.group_range(0, 1);
+
+    // Reader: A tile (mt,kt) at mt*Kt+kt, B tile (kt,nt) at kt*Nt+nt,
+    // C bias tile (mt,nt) at mt*Nt+nt.
+    k.loop_over(1, |k, mti| {
+        k.loop_over(1, |k, nti| {
+            k.loop_over(2, |k, kti| {
+                let at = k.mad(mti, 2, kti);
+                let abase = k.mad(at, 1024, 0);
+                let ta = k.load_global_tile(a, abase);
+                k.store_circular(ca, ta, 0);
+                let bt = k.mad(kti, 1, nti);
+                let bbase = k.mad(bt, 1024, 0);
+                let tb = k.load_global_tile(b, bbase);
+                k.store_circular(cb, tb, 0);
+            });
+            let ct = k.mad(mti, 1, nti);
+            let cbase = k.mad(ct, 1024, 0);
+            let tc = k.load_global_tile(c, cbase);
+            k.store_circular(cc, tc, nti);
+        });
+    });
+    k.barrier();
+    // Compute: k-loop matmuls, then bias add; pack acc AND sum.
+    k.loop_over(1, |k, _mti| {
+        k.loop_over(1, |k, nti| {
+            let acc = k.storage(DType::F32, MemScope::Register, 1024);
+            k.loop_over(2, |k, _kti| {
+                let va = k.load_circular(ca, 0);
+                let vb = k.load_circular(cb, 0);
+                let av = k.load_register_tile(acc, 0);
+                let f = k.matmul_tile(va, vb, av);
+                k.store_register_tile(acc, f, 0);
+            });
+            let f = k.load_register_tile(acc, 0);
+            let vc = k.load_circular(cc, nti);
+            k.store_circular(cout, vc, 0);
+            let _ = f;
+        });
+    });
+    k.barrier();
+    // Writer: the single bias tile, row-major.
+    k.loop_over(1, |k, nti| {
+        let obase = k.mad(nti, 1024, 0);
+        let v = k.load_circular(cout, 0);
+        k.store_global_tile(out, v, obase);
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // C[32,32] bias tile, values kept small.
+    let a_data: Vec<f32> = (0..32 * 64).map(|j| (j % 4) as f32 * 0.0625).collect();
+    let b_data: Vec<f32> = (0..64 * 32).map(|j| ((j / 4) % 4) as f32 * 0.0625).collect();
+    let c_data: Vec<f32> = (0..32 * 32).map(|j| (j % 8) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(a_data, [32, 64])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let b_t = Tensor::from_vec(b_data, [64, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let c_t = Tensor::from_vec(c_data.clone(), [32, 32])?.tilize()?.cast(DType::F32).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t, &b_t, &c_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (p, (&v, &e)) in z.iter().zip(c_data.iter()).enumerate() {
+        if (v - e).abs() >= 5e-2 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {e}");
+            }
+            bad += 1;
+        }
+    }
+    println!("matmul short probe bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// Matmul→unary fusion probe: single-pass matmul cone with exp on the
+/// acc, packed out. No copy, no second operand — if this fails like
+/// the bias tests, the matmul→SFPU handoff itself is broken; if it
+/// passes, the handoff is fine and the bug is copy/add-specific.
+#[test]
+fn tenstorrent_mixed_matmul_exp() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F16);
+    let b = k.param(DType::F16);
+    let out = k.param_mut(DType::F32);
+
+    let ca = k.circular_storage(DType::F16, 4);
+    let cb = k.circular_storage(DType::F16, 4);
+    let cout = k.circular_storage(DType::F32, 1);
+
+    let _g = k.group_range(0, 1);
+
+    // Reader: A tile (mt,kt) at mt*Kt+kt, B tile (kt,nt) at kt*Nt+nt.
+    k.loop_over(1, |k, mti| {
+        k.loop_over(1, |k, nti| {
+            k.loop_over(2, |k, kti| {
+                let at = k.mad(mti, 2, kti);
+                let abase = k.mad(at, 1024, 0);
+                let ta = k.load_global_tile(a, abase);
+                k.store_circular(ca, ta, 0);
+                let bt = k.mad(kti, 1, nti);
+                let bbase = k.mad(bt, 1024, 0);
+                let tb = k.load_global_tile(b, bbase);
+                k.store_circular(cb, tb, 0);
+            });
+        });
+    });
+    k.barrier();
+    // Compute: k-loop matmuls, exp on the acc, packed out.
+    k.loop_over(1, |k, _mti| {
+        k.loop_over(1, |k, _nti| {
+            let acc = k.storage(DType::F32, MemScope::Register, 1024);
+            k.loop_over(2, |k, _kti| {
+                let va = k.load_circular(ca, 0);
+                let vb = k.load_circular(cb, 0);
+                let av = k.load_register_tile(acc, 0);
+                let f = k.matmul_tile(va, vb, av);
+                k.store_register_tile(acc, f, 0);
+            });
+            let f = k.load_register_tile(acc, 0);
+            let e = k.exp(f);
+            k.store_circular(cout, e, 0);
+        });
+    });
+    k.barrier();
+    // Writer: output tile (mt,nt) at mt*Nt+nt, row-major.
+    k.loop_over(1, |k, mti| {
+        k.loop_over(1, |k, nti| {
+            let ot = k.mad(mti, 1, nti);
+            let obase = k.mad(ot, 1024, 0);
+            let v = k.load_circular(cout, 0);
+            k.store_global_tile(out, v, obase);
+        });
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // exp(A[32,64] @ B[64,32]) with small values (keep exp in range).
+    let a_data: Vec<f32> = (0..32 * 64).map(|j| (j % 4) as f32 * 0.0625).collect();
+    let b_data: Vec<f32> = (0..64 * 32).map(|j| ((j / 4) % 4) as f32 * -0.0625).collect();
+    let mut expected = vec![0.0f32; 32 * 32];
+    for r in 0..32 {
+        for c in 0..32 {
+            let mut s = 0.0f32;
+            for t in 0..64 {
+                s += a_data[r * 64 + t] * b_data[t * 32 + c];
+            }
+            expected[r * 32 + c] = s.exp();
+        }
+    }
+    let a_t = Tensor::from_vec(a_data, [32, 64])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let b_t = Tensor::from_vec(b_data, [64, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (p, (&v, &e)) in z.iter().zip(expected.iter()).enumerate() {
+        if (v - e).abs() >= 5e-2 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {e}");
+            }
+            bad += 1;
+        }
+    }
+    println!("mixed mm-exp bad: {bad} / 1024");
     assert_eq!(bad, 0);
 
     Ok(())

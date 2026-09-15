@@ -316,10 +316,7 @@ impl Kernel {
                                 _ = writeln!(
                                     source,
                                     "{indent}{}",
-                                    bitcast_expr(
-                                        &lane_access(&format!("r{reg}"), i as usize),
-                                        &lane_access(&x, i as usize)
-                                    )
+                                    bitcast_expr(&lane_access(&format!("r{reg}"), i as usize), &lane_access(&x, i as usize))
                                 );
                             }
                         }

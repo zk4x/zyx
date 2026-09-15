@@ -153,11 +153,9 @@ impl Kernel {
                 }};
             }
             match self.at(id) {
-                Op::Cast { x, .. }
-                | Op::Bitcast { x, .. }
-                | Op::Unary { x, .. }
-                | Op::Move { x, .. }
-                | Op::Reduce { x, .. } => add_param!(x),
+                Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } | Op::Move { x, .. } | Op::Reduce { x, .. } => {
+                    add_param!(x)
+                }
                 Op::ReduceTile { x, scaler, acc, .. } => {
                     add_param!(x);
                     add_param!(scaler);
@@ -425,9 +423,7 @@ impl Kernel {
         // Loads keep their original order with inline asm: asm is an
         // opaque side effect (e.g. datapath setup must precede the
         // first copy), so traffic must not float across it.
-        let asm_positions: Vec<usize> = (0..n)
-            .filter(|&i| matches!(self.at(rest[i]), Op::Asm { .. }))
-            .collect();
+        let asm_positions: Vec<usize> = (0..n).filter(|&i| matches!(self.at(rest[i]), Op::Asm { .. })).collect();
         for i in 0..n {
             if !load[i] {
                 continue;

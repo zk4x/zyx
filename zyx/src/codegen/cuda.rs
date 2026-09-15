@@ -355,7 +355,12 @@ impl Kernel {
                             UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
                             UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabsf({x});"),
                         },
-                        MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: Tile layout not supported for Unary".into() }),
+                        MemLayout::Tile { .. } => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "CUDA codegen: Tile layout not supported for Unary".into(),
+                            });
+                        }
                     }
                 }
                 Op::Binary { x, y, bop } => {

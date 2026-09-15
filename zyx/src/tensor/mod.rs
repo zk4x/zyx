@@ -984,7 +984,9 @@ impl Tensor {
             ));
         }
         if dtype == DType::Bool {
-            return Err(ZyxError::dtype_error("bitcast to Bool is not allowed, arbitrary bits are not valid bool values.".into()));
+            return Err(ZyxError::dtype_error(
+                "bitcast to Bool is not allowed, arbitrary bits are not valid bool values.".into(),
+            ));
         }
         let id = RT.lock().bitcast(self.id, dtype);
         Ok(Tensor { id })

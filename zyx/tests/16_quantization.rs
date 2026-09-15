@@ -179,7 +179,11 @@ fn q4k_repack_whole() -> Result<(), ZyxError> {
         for w in 0..256 {
             let g = w / 64;
             let p = w % 64;
-            let (byte, high) = if p < 32 { (32 * g + p, false) } else { (32 * g + p - 32, true) };
+            let (byte, high) = if p < 32 {
+                (32 * g + p, false)
+            } else {
+                (32 * g + p - 32, true)
+            };
             let got = raw[b * 144 + 16 + byte];
             let exp = if high { (got >> 4) & 15 } else { got & 15 };
             assert_eq!(nib[b * 256 + w], u16::from(exp), "block {b} weight {w}");

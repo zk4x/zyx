@@ -2360,10 +2360,7 @@ impl Runtime {
                         Op::Param { kind: ParamKind::Variable, .. } => {
                             let value = match self.resolve_symbolic_class(graph_id, ek.loads[load_idx]) {
                                 Some(v) => v,
-                                None => unreachable!(
-                                    "dim variable class {:?} does not resolve to a value",
-                                    ek.loads[load_idx]
-                                ),
+                                None => unreachable!("dim variable class {:?} does not resolve to a value", ek.loads[load_idx]),
                             };
                             load_idx += 1;
                             args.push(LaunchArg::Variable(value));
@@ -2382,16 +2379,8 @@ impl Runtime {
                     }
                     p = ek.kernel.next_op(p);
                 }
-                debug_assert_eq!(
-                    load_idx,
-                    ek.loads.len(),
-                    "loads must parallel Global|Variable defines"
-                );
-                debug_assert_eq!(
-                    store_idx,
-                    ek.stores.len(),
-                    "stores must parallel GlobalMut defines"
-                );
+                debug_assert_eq!(load_idx, ek.loads.len(), "loads must parallel Global|Variable defines");
+                debug_assert_eq!(store_idx, ek.stores.len(), "stores must parallel GlobalMut defines");
             }
             args.extend(mut_args);
 

@@ -12,10 +12,10 @@
 use super::{DTypeCapability, Device, DeviceInfo, GwsDim, MemoryPool, gws_from_kernel};
 use crate::DType;
 use crate::backend::{DeviceId, DeviceProgramId, Event, LaunchArg, PoolBufferId, PoolId};
-use crate::kernel::MMADims;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Kernel;
+use crate::kernel::MMADims;
 use crate::scalar::{bf16, f16};
 use crate::shape::Dim;
 use crate::slab::Slab;

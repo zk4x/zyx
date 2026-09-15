@@ -19,7 +19,10 @@
 // single-core launch uses `gidx0 = 0, gidx1 = 0` (also written `{0, 0}`
 // in CoreCoord notation).
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, Kernel, LaunchArg, MemoryPool, PoolBufferId, PoolId, gws_from_kernel};
+use super::{
+    Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, Kernel, LaunchArg, MemoryPool, PoolBufferId, PoolId,
+    gws_from_kernel,
+};
 use crate::{
     DType,
     backend::DTypeCapability,
@@ -539,10 +542,7 @@ impl RuntimeProcess {
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
             let msg = extract_json_str(&resp, "msg").unwrap();
-            return Err(BackendError {
-                status: ErrorStatus::Initialization,
-                context: format!("grid error: {msg}").into(),
-            });
+            return Err(BackendError { status: ErrorStatus::Initialization, context: format!("grid error: {msg}").into() });
         }
         let parse = |key: &str| {
             extract_json_str(&resp, key)
@@ -551,10 +551,7 @@ impl RuntimeProcess {
                     context: format!("grid: no {key} in response").into(),
                 })?
                 .parse::<u32>()
-                .map_err(|_| BackendError {
-                    status: ErrorStatus::Initialization,
-                    context: format!("grid: invalid {key}").into(),
-                })
+                .map_err(|_| BackendError { status: ErrorStatus::Initialization, context: format!("grid: invalid {key}").into() })
         };
         Ok((parse("rows")?, parse("cols")?))
     }
@@ -1001,7 +998,10 @@ impl TTDevice {
             // Variable ordinals index the launch args (head order), which
             // always carry a Variable value at a Variable param's position.
             let dim = g.eval(&mut |ordinal| {
-                vars.iter().find(|(o, _)| *o == ordinal as u32).map(|(_, v)| Dim::from(*v)).expect("gws param ordinal has no Variable launch arg")
+                vars.iter()
+                    .find(|(o, _)| *o == ordinal as u32)
+                    .map(|(_, v)| Dim::from(*v))
+                    .expect("gws param ordinal has no Variable launch arg")
             });
             grid_dims[axis] = u32::try_from(dim).map_err(|_| BackendError {
                 status: ErrorStatus::KernelLaunch,

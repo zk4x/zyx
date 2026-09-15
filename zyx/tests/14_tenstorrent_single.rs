@@ -126,9 +126,7 @@ fn run_tt_binary(
         return Ok(());
     }
 
-    let to_tt = |v: Vec<f32>| -> Result<Tensor, ZyxError> {
-        Tensor::from_vec(v, [32, 32])?.tilize()?.cast(dtype).to(Dev::TT(0))
-    };
+    let to_tt = |v: Vec<f32>| -> Result<Tensor, ZyxError> { Tensor::from_vec(v, [32, 32])?.tilize()?.cast(dtype).to(Dev::TT(0)) };
     let a_t = to_tt(data_a.clone())?;
     let b_t = to_tt(data_b.clone())?;
     let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 32]])?;
@@ -729,9 +727,8 @@ fn tenstorrent_eltwise_add() -> Result<(), ZyxError> {
 
     let data_a: Vec<f32> = (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect();
     let data_b: Vec<f32> = (0..32 * 32).map(|j| ((j + 7) % 32) as f32 * 0.0625).collect();
-    let to_tt = |v: Vec<f32>| -> Result<Tensor, ZyxError> {
-        Tensor::from_vec(v, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))
-    };
+    let to_tt =
+        |v: Vec<f32>| -> Result<Tensor, ZyxError> { Tensor::from_vec(v, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0)) };
     let a_t = to_tt(data_a.clone())?;
     let b_t = to_tt(data_b.clone())?;
     let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 32]])?;
@@ -886,7 +883,15 @@ tt_unary!(tenstorrent_exp2_f16, |k: &mut Kernel, x: OpId| k.exp2(x), DType::F16,
 tt_unary!(tenstorrent_exp2_bf16, |k: &mut Kernel, x: OpId| k.exp2(x), DType::BF16, 3e-2, tt_range, |x: f32| x.exp2());
 tt_unary!(tenstorrent_log2_f16, |k: &mut Kernel, x: OpId| k.log2(x), DType::F16, 3e-2, tt_positive, |x: f32| x.log2(), ignore);
 tt_unary!(tenstorrent_log2_bf16, |k: &mut Kernel, x: OpId| k.log2(x), DType::BF16, 3e-2, tt_positive, |x: f32| x.log2());
-tt_unary!(tenstorrent_recip_f16, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::F16, 3e-2, tt_positive, |x: f32| x.recip(), ignore);
+tt_unary!(
+    tenstorrent_recip_f16,
+    |k: &mut Kernel, x: OpId| k.reciprocal(x),
+    DType::F16,
+    3e-2,
+    tt_positive,
+    |x: f32| x.recip(),
+    ignore
+);
 tt_unary!(tenstorrent_recip_bf16, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::BF16, 3e-2, tt_positive, |x: f32| x.recip());
 tt_unary!(tenstorrent_sqrt_f16, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::F16, 3e-2, tt_range, |x: f32| x.sqrt(), ignore);
 tt_unary!(tenstorrent_sqrt_bf16, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::BF16, 3e-2, tt_range, |x: f32| x.sqrt());
@@ -895,13 +900,95 @@ tt_unary!(tenstorrent_sin_bf16, |k: &mut Kernel, x: OpId| k.sin(x), DType::BF16,
 tt_unary!(tenstorrent_cos_f16, |k: &mut Kernel, x: OpId| k.cos(x), DType::F16, 3e-2, tt_centered, |x: f32| x.cos());
 tt_unary!(tenstorrent_cos_bf16, |k: &mut Kernel, x: OpId| k.cos(x), DType::BF16, 3e-2, tt_centered, |x: f32| x.cos());
 
-tt_binary!(tenstorrent_add_f16, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::F16, 1e-2, tt_range, tt_range, |x: f32, y: f32| x + y);
-tt_binary!(tenstorrent_add_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::BF16, 1e-2, tt_range, tt_range, |x: f32, y: f32| x + y);
-tt_binary!(tenstorrent_sub_f16, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::F16, 1e-2, tt_range, tt_range, |x: f32, y: f32| x - y);
-tt_binary!(tenstorrent_sub_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::BF16, 1e-2, tt_range, tt_range, |x: f32, y: f32| x - y);
-tt_binary!(tenstorrent_mul_f16, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::F16, 3e-2, tt_range, tt_range, |x: f32, y: f32| x * y, ignore);
-tt_binary!(tenstorrent_mul_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::BF16, 3e-2, tt_range, tt_range, |x: f32, y: f32| x * y);
-tt_binary!(tenstorrent_div_f16, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::F16, 3e-2, tt_range, tt_positive, |x: f32, y: f32| x / y, ignore);
-tt_binary!(tenstorrent_div_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::BF16, 3e-2, tt_range, tt_positive, |x: f32, y: f32| x / y);
-tt_binary!(tenstorrent_max_f16, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::F16, 1e-5, tt_centered, tt_range, |x: f32, y: f32| x.max(y));
-tt_binary!(tenstorrent_max_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::BF16, 1e-5, tt_centered, tt_range, |x: f32, y: f32| x.max(y));
+tt_binary!(
+    tenstorrent_add_f16,
+    |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y),
+    DType::F16,
+    1e-2,
+    tt_range,
+    tt_range,
+    |x: f32, y: f32| x + y
+);
+tt_binary!(
+    tenstorrent_add_bf16,
+    |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y),
+    DType::BF16,
+    1e-2,
+    tt_range,
+    tt_range,
+    |x: f32, y: f32| x + y
+);
+tt_binary!(
+    tenstorrent_sub_f16,
+    |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y),
+    DType::F16,
+    1e-2,
+    tt_range,
+    tt_range,
+    |x: f32, y: f32| x - y
+);
+tt_binary!(
+    tenstorrent_sub_bf16,
+    |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y),
+    DType::BF16,
+    1e-2,
+    tt_range,
+    tt_range,
+    |x: f32, y: f32| x - y
+);
+tt_binary!(
+    tenstorrent_mul_f16,
+    |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y),
+    DType::F16,
+    3e-2,
+    tt_range,
+    tt_range,
+    |x: f32, y: f32| x * y,
+    ignore
+);
+tt_binary!(
+    tenstorrent_mul_bf16,
+    |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y),
+    DType::BF16,
+    3e-2,
+    tt_range,
+    tt_range,
+    |x: f32, y: f32| x * y
+);
+tt_binary!(
+    tenstorrent_div_f16,
+    |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y),
+    DType::F16,
+    3e-2,
+    tt_range,
+    tt_positive,
+    |x: f32, y: f32| x / y,
+    ignore
+);
+tt_binary!(
+    tenstorrent_div_bf16,
+    |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y),
+    DType::BF16,
+    3e-2,
+    tt_range,
+    tt_positive,
+    |x: f32, y: f32| x / y
+);
+tt_binary!(
+    tenstorrent_max_f16,
+    |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y),
+    DType::F16,
+    1e-5,
+    tt_centered,
+    tt_range,
+    |x: f32, y: f32| x.max(y)
+);
+tt_binary!(
+    tenstorrent_max_bf16,
+    |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y),
+    DType::BF16,
+    1e-5,
+    tt_centered,
+    tt_range,
+    |x: f32, y: f32| x.max(y)
+);

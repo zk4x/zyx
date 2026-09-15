@@ -209,8 +209,7 @@ mod tests {
 
     #[test]
     fn tilize_batched_f16() -> Result<(), ZyxError> {
-        let data: Vec<crate::scalar::f16> =
-            (0..2 * 6 * 40).map(|i| crate::scalar::f16::from_f32(i as f32)).collect();
+        let data: Vec<crate::scalar::f16> = (0..2 * 6 * 40).map(|i| crate::scalar::f16::from_f32(i as f32)).collect();
         let t = Tensor::from_vec(data.clone(), [2, 6, 40])?;
         let til = Tensor::tilize(&t)?;
         let shape: Vec<i64> = til.shape().iter().map(|d| d.item::<Dim>() as i64).collect();
