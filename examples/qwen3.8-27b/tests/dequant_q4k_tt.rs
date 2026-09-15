@@ -10,13 +10,6 @@ use qwen3_8_27b::dequant_q4k_tt;
 use zyx::kernel::Dev;
 use zyx::{Tensor, ZyxError};
 
-// Tilized slot -> (row, col) within a 32x32 tile (zyx face order).
-fn slot_rc(s: usize) -> (usize, usize) {
-    let f = s / 256;
-    let l = s % 256;
-    ((f / 2) * 16 + l / 16, (f % 2) * 16 + l % 16)
-}
-
 #[test]
 fn dequant_q4k_tt_run() -> Result<(), ZyxError> {
     let dev = Dev::TT(0);
@@ -27,12 +20,6 @@ fn dequant_q4k_tt_run() -> Result<(), ZyxError> {
     // the dense file with on-device broadcast.
     let sv0: Vec<zyx::bf16> = repacked["scales"].narrow(0, 0i64, 4i64)?.to_vec()?;
     let mv0: Vec<zyx::bf16> = repacked["mins"].narrow(0, 0i64, 4i64)?.to_vec()?;
-    // TEMP-DEBUG: verify host-side fixture reads against the file bytes.
-    eprintln!(
-        "DBG sv0[0..4]={:?} mv0[0..4]={:?}",
-        sv0.iter().take(4).map(|x| x.to_f32()).collect::<Vec<_>>(),
-        mv0.iter().take(4).map(|x| x.to_f32()).collect::<Vec<_>>()
-    );
     let mut sc_full = Vec::with_capacity(4 * 1024);
     let mut mn_full = Vec::with_capacity(4 * 1024);
     for t in 0..4 {
@@ -55,22 +42,16 @@ fn dequant_q4k_tt_run() -> Result<(), ZyxError> {
     let out = k.forward(&[&packed, &scales, &mins], vec![[4 * 1024]])?;
     let v: Vec<f32> = out[0].to_vec()?;
 
-    // Host golden, tilized-flat: v[t*1024+s] = nib*sc - mn.
-    let pv: Vec<u16> = repacked["packed"].narrow(0, 0i64, 1024i64)?.to_vec()?;
-    let sv: Vec<zyx::bf16> = repacked["scales"].narrow(0, 0i64, 4i64)?.to_vec()?;
-    let mv: Vec<zyx::bf16> = repacked["mins"].narrow(0, 0i64, 4i64)?.to_vec()?;
+    // Host golden from llama.cpp itself (gguf python dequantize), tilized-flat.
+    let gold: Vec<f32> = Tensor::load("/tmp/opengen/golden_q4k_first4tiles.safetensors")?
+        .remove("x")
+        .expect("golden x")
+        .to_vec()?;
     assert_eq!(v.len(), 4096);
     let mut max_err = 0f32;
-    for t in 0..4 {
-        for s in 0..1024 {
-            let (r, _) = slot_rc(s);
-            // Plane interleave: u16[s] nibble t = tile t slot s.
-            let nib = ((pv[s] >> (4 * t)) & 15) as f32;
-            let exp = nib * sv[t * 32 + r].to_f32() - mv[t * 32 + r].to_f32();
-            let got = v[t * 1024 + s];
-            max_err = max_err.max((got - exp).abs());
-            assert!((got - exp).abs() < 1e-2, "tile {t} slot {s}: got {got}, expected {exp}");
-        }
+    for (s, (&got, &exp)) in v.iter().zip(gold.iter()).enumerate() {
+        max_err = max_err.max((got - exp).abs());
+        assert!((got - exp).abs() < 1e-2, "tile {s}/1024: got {got}, expected {exp}");
     }
     eprintln!("dequant_q4k_tt max_err {max_err}");
     Ok(())

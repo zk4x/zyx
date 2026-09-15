@@ -549,7 +549,9 @@ impl Tensor {
                         let offsets = text
                             .split(',')
                             .map(|offset| {
-                                offset.parse::<u64>().map_err(|err| {
+                                // Whitespace after commas is valid JSON; the
+                                // scanner keeps it in `text`, so trim first.
+                                offset.trim().parse::<u64>().map_err(|err| {
                                     ZyxError::parse_error(format!("Could not parse safetensors offset: {err}").into())
                                 })
                             })
