@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use std::{collections::HashMap, ffi::OsStr, fs::File, path::Path};
+use std::{collections::HashMap, ffi::OsStr, fs::File, io::Seek, path::Path};
 
 use crate::{DType, Map, RT, Tensor, ZyxError, shape::Dim};
 
@@ -60,6 +60,64 @@ pub trait Module {
         for tensor in self.iter() {
             f.write_all(&tensor.to_le_bytes()?)?;
         }
+        Ok(())
+    }
+
+    /// Save a single tensor to a `.npy` file (numpy array format).
+    /// Mirrors [`Self::load_numpy`]: little-endian, C order (Fortran order
+    /// is never written). Header is padded so data starts at a 64-byte
+    /// boundary, like numpy >= 1.9. Numpy files hold a single array, so
+    /// saving a module with more than one tensor is an error.
+    ///
+    /// # Errors
+    ///
+    /// Errors if the module holds more than one tensor, if the tensor
+    /// failed to realize or failed to save to disk.
+    fn save_numpy(&self, path: impl AsRef<Path>) -> Result<(), ZyxError> {
+        use std::io::Write as IOWrite;
+        let mut tensors = self.iter_tensors();
+        let (label, tensor) = match (tensors.next(), tensors.next()) {
+            (Some((label, tensor)), None) => (label, tensor),
+            (None, _) => return Err(ZyxError::parse_error("Cannot save empty module to numpy: no tensors.".into())),
+            (Some((l0, _)), Some((l1, _))) => {
+                return Err(ZyxError::parse_error(
+                    format!(
+                        "Cannot save module to numpy: numpy files hold a single array, module has tensors '{l0}' and '{l1}' (and possibly more)."
+                    )
+                    .into(),
+                ));
+            }
+        };
+        let _ = label;
+        let descr = match tensor.dtype() {
+            DType::F32 => "<f4",
+            DType::F64 => "<f8",
+            DType::F16 => "<f2",
+            DType::I8 => "|i1",
+            DType::I16 => "<i2",
+            DType::I32 => "<i4",
+            DType::I64 => "<i8",
+            DType::U8 => "|u1",
+            DType::U16 => "<u2",
+            DType::BF16 => todo!("BF16 has no numpy dtype"),
+            DType::U32 => todo!("u4 numpy arrays"),
+            DType::U64 => todo!("u8 numpy arrays"),
+            DType::Bool => todo!("Bool numpy arrays"),
+        };
+        let dims = tensor.resolve_shape();
+        let shape_str = format!("({})", dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(", "));
+        let mut header = format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape_str}, }}");
+        // magic(6) + version(2) + header_len(2) + header + '\n' must be a
+        // multiple of 64.
+        let total = 6 + 2 + 2 + header.len() + 1;
+        header.extend(core::iter::repeat(' ').take((64 - total % 64) % 64));
+        header.push('\n');
+        let mut f = File::create(path)?;
+        f.write_all(b"\x93NUMPY")?;
+        f.write_all(&[1u8, 0u8])?;
+        f.write_all(&(header.len() as u16).to_le_bytes())?;
+        f.write_all(header.as_bytes())?;
+        f.write_all(&tensor.to_le_bytes()?)?;
         Ok(())
     }
 }
@@ -154,7 +212,7 @@ impl Tensor {
         match e {
             "safetensors" => Self::load_safetensors(path),
             "gguf" => Ok(Self::load_gguf(path)?.1),
-            _ => panic!("Unknown file extension. Zyx currently supports only safetensors format."),
+            _ => panic!("Unknown file extension. Zyx currently supports only safetensors, gguf and npy formats."),
         }
     }
 
@@ -462,6 +520,18 @@ impl Tensor {
             tensor_header.insert(tensor_name, (shape, dtype, offset));
         }
 
+        // GGUF tensor offsets are relative to the data section, which starts
+        // right after the tensor infos, aligned up to `general.alignment`
+        // (spec default 32). The offsets must not be used as raw file
+        // offsets.
+        let alignment = match metadata.get("general.alignment") {
+            Some(GGUFMetadataValue::Uint32(a)) => (*a as usize).max(1),
+            Some(_) => todo!("general.alignment must be Uint32"),
+            None => 32,
+        };
+        let data_start = f.stream_position()? as usize;
+        let data_start = data_start.div_ceil(alignment) * alignment;
+
         let mut progress_bar = if RT.lock().debug.dev() {
             println!("Loading tensors from safetensors file");
             let bar = crate::progress::ProgressBar::new(tensor_count);
@@ -475,9 +545,104 @@ impl Tensor {
             if let Some(progress_bar) = &mut progress_bar {
                 progress_bar.inc(1, &format!("{name}, {shape:?}, {dtype}"));
             }
-            tensors.insert(name, Tensor::from_path(shape, dtype, &path, offset)?);
+            tensors.insert(name, Tensor::from_path(shape, dtype, &path, (data_start as u64) + offset)?);
         }
         Ok((metadata, tensors))
+    }
+
+    /// Load a single `.npy` array from path.
+    ///
+    /// Reads the array lazily from disk (no host copy until realize), like
+    /// [`Self::load_gguf`] and [`Self::load_safetensors`]. Supports little
+    /// -endian numeric dtypes; big-endian files, Fortran order and non
+    /// -numeric dtypes are loud errors, never guesses.
+    ///
+    /// # Errors
+    /// Errors if the path does not exist, IO failed, or the file uses an
+    /// unsupported dtype, byte order or memory order.
+    pub fn load_numpy(path: impl AsRef<Path>) -> Result<Tensor, ZyxError> {
+        use std::io::Read;
+        let path = path.as_ref();
+        let mut f = File::open(path)?;
+        let mut magic = [0; 6];
+        f.read_exact(&mut magic)?;
+        if magic != *b"\x93NUMPY" {
+            return Err(ZyxError::parse_error(format!("Unknown numpy magic: {magic:?} in {path:?}").into()));
+        }
+        let mut ver = [0; 2];
+        f.read_exact(&mut ver)?;
+        // v1.0 header len is u16, v2.0+ is u32.
+        let header_len = match ver[0] {
+            1 => {
+                let mut buf = [0; 2];
+                f.read_exact(&mut buf)?;
+                u16::from_le_bytes(buf) as usize
+            }
+            2 | 3 => {
+                let mut buf = [0; 4];
+                f.read_exact(&mut buf)?;
+                u32::from_le_bytes(buf) as usize
+            }
+            x => return Err(ZyxError::parse_error(format!("Unsupported numpy version {x} in {path:?}").into())),
+        };
+        let mut header = vec![0u8; header_len];
+        f.read_exact(&mut header)?;
+        let header = String::from_utf8(header)
+            .map_err(|e| ZyxError::parse_error(format!("numpy header is not valid UTF-8: {e} in {path:?}").into()))?;
+        // Header is a python dict literal: {'descr': '<f4', 'fortran_order': False, 'shape': (2, 3), }
+        let field = |key: &str| -> Option<String> {
+            let start = header.find(&format!("'{key}':"))? + key.len() + 4;
+            // Value ends at the next top-level ',' or '}'.
+            let rest = &header[start..];
+            let end = rest.find(|c| c == ',' || c == '}').unwrap_or(rest.len());
+            Some(rest[..end].trim().to_string())
+        };
+        let descr = field("descr")
+            .ok_or_else(|| ZyxError::parse_error(format!("numpy header missing 'descr' in {path:?}").into()))?;
+        let descr = descr.trim_matches(|c| c == '\'' || c == '"').to_string();
+        let fortran = field("fortran_order").unwrap_or_default();
+        if fortran.contains("True") {
+            return Err(ZyxError::parse_error(format!("Fortran-order numpy arrays are not supported: {path:?}").into()));
+        }
+        // The shape value is a tuple "(2, 3)" containing commas itself, so
+        // it cannot go through `field`, which stops at the first ','. Take
+        // everything up to the closing '}' of the dict instead.
+        let shape_start = header
+            .find("'shape':")
+            .ok_or_else(|| ZyxError::parse_error(format!("numpy header missing 'shape' in {path:?}").into()))?
+            + 8;
+        let rest = &header[shape_start..];
+        let end = rest.find('}').unwrap_or(rest.len());
+        let shape_str = rest[..end].trim().trim_end_matches(',').trim();
+        let shape_str = shape_str.trim_matches(|c| c == '(' || c == ')');
+        let shape: Vec<Dim> = shape_str
+            .split(',')
+            .filter(|d| !d.trim().is_empty())
+            .map(|d| {
+                d.trim().parse::<Dim>().map_err(|e| {
+                    ZyxError::parse_error(format!("Cannot parse numpy shape '{shape_str}': {e} in {path:?}").into())
+                })
+            })
+            .collect::<Result<_, ZyxError>>()?;
+        let dtype = match descr.as_str() {
+            "<f4" | "|f4" | "f4" => DType::F32,
+            "<f2" | "|f2" | "f2" => DType::F16,
+            "<f8" | "|f8" | "f8" => DType::F64,
+            "<i1" | "|i1" => DType::I8,
+            "<i2" | "|i2" => DType::I16,
+            "<i4" | "|i4" => DType::I32,
+            "<i8" | "|i8" => DType::I64,
+            "|u1" | "<u1" | "u1" => DType::U8,
+            "<u2" | "|u2" => DType::U16,
+            "<u4" | "|u4" => todo!("u4 numpy arrays"),
+            "<u8" | "|u8" => todo!("u8 numpy arrays"),
+            x => todo!("numpy dtype '{x}' is not supported ({path:?})"),
+        };
+        // numpy >= 1.9 pads the header so data starts at a 64-byte boundary;
+        // the padding is already counted in header_len, so the stream
+        // position after the header is the data start.
+        let data_start = f.stream_position()?;
+        Tensor::from_path(shape, dtype, path, data_start)
     }
 
     /// Load safetensors module from path
