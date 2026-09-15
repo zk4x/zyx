@@ -2099,9 +2099,24 @@ impl CBEmitter {
 /// `transpose`, `broadcast`, `copy`, `pack`) each drive the internal
 /// `math_lock`/`pack_lock`/`math_unlock`/`pack_unlock` transitions and
 /// emit exactly one sequence.
+/// Per-slot DST bookkeeping: remaining consumers and the scope level
+/// the slot was allocated at (a use at the slot's own scope
+/// decrements; deeper uses stay live).
+struct TileSlot {
+    rc: u32,
+    scope: u8,
+}
+
 pub(crate) struct TileEmitter<const DSTBF16: bool> {
-    /// Refcount per allocated DST slot.
-    tiles: Slab<TileId<DSTBF16>, u32>,
+    /// Refcount + defining scope per allocated DST slot. A use at the
+    /// slot's own scope level decrements (deeper uses stay live: a loop
+    /// body must not kill a value its enclosing scope still needs, and
+    /// re-emission is per-trip linear). `rc == 0` slots are dead and
+    /// reused by the next allocation.
+    tiles: Slab<TileId<DSTBF16>, TileSlot>,
+    /// Scope level the emission is currently inside (synced from the
+    /// walk's `scope_level` at every loop/if boundary).
+    scope: u8,
     /// IR value op (tile-op result or acc storage) to DST slot.
     tile_map: Map<OpId, TileId<DSTBF16>>,
     /// Next slot to allocate; `inc` asserts the DST capacity.
@@ -2156,6 +2171,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     fn new() -> Self {
         Self {
             tiles: Slab::new(),
+            scope: 0,
             tile_map: Map::default(),
             next: TileId::ZERO,
             state: TileState::Unlocked,
@@ -2257,14 +2273,47 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         })
     }
 
-    /// Allocate one DST slot. Capacity is asserted by
+    /// Allocate one DST slot: reuse a dead (`rc == 0`) slot if one
+    /// exists, else take a fresh one. Capacity is asserted by
     /// [`TileId::inc`]: 16 BF16 tiles, 8 FP32 tiles.
     fn alloc(&mut self, rc: u32) -> TileId<DSTBF16> {
+        if let Some((id, slot)) = self.tiles.iter_mut().find(|(_, s)| s.rc == 0) {
+            *slot = TileSlot { rc, scope: self.scope };
+            return id;
+        }
         let id = self.next;
         self.next.inc();
-        let pushed = self.tiles.push(rc);
+        let pushed = self.tiles.push(TileSlot { rc, scope: self.scope });
         debug_assert_eq!(pushed, id, "tenstorrent2: tile slab out of sync with allocator");
         id
+    }
+
+    /// Sync the emitter's scope with the walk (loop/if boundary).
+    fn set_scope(&mut self, scope: u8) {
+        self.scope = scope;
+    }
+
+    /// Record one use of a DST slot: a use at the slot's own scope
+    /// level decrements its refcount; deeper uses stay live. Dead
+    /// slots are reused by the next [`Self::alloc`].
+    fn use_tile(&mut self, slot: TileId<DSTBF16>) {
+        let Some(s) = self.tiles.get_mut(slot) else {
+            panic!("tenstorrent2: use of unallocated tile slot {slot}");
+        };
+        if s.scope == self.scope {
+            debug_assert!(s.rc > 0, "tenstorrent2: use of dead tile slot {slot}");
+            s.rc -= 1;
+        }
+    }
+
+    /// Re-target a slot's refcount after an in-place op: the slot now
+    /// holds the result value, whose consumer count replaces the
+    /// operand's remaining one.
+    fn set_result_rc(&mut self, slot: TileId<DSTBF16>, rc: u32) {
+        let Some(s) = self.tiles.get_mut(slot) else {
+            panic!("tenstorrent2: result rc of unallocated tile slot {slot}");
+        };
+        s.rc = rc;
     }
 
     /// `tile_regs_acquire`: MATH takes the file. Lazy: the first take
@@ -2419,9 +2468,12 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// second `pack_tile` still finds DST acquired; a second
     /// wait-after-release would stall PACK with no matching commit).
     /// The deferred release flushes at the next `math_lock` or at
-    /// section end (`flush_pack`). Slots stay live across packs: the
-    /// allocator hands out fresh slots monotonically and never
-    /// reuses one, so no MATH op can clobber a packed slot. Packing
+    /// section end (`flush_pack`). Slot liveness is refcount-driven
+    /// (see [`Self::use_tile`]): the pack is a use, and a slot whose
+    /// refcount reaches zero may be handed out again by the next
+    /// [`Self::alloc`] — all its uses precede that point in the
+    /// emitted text, so no MATH op can clobber a live packed slot.
+    /// Packing
     /// from `Unlocked` is a loud error (pack of a dead slot).
     /// The whole drain sequences here, in emission order: uninit,
     /// commit, reserve, wait, [reconfig,] pack, push. The packer
@@ -2460,6 +2512,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             writeln!(src, "{indent}pack_reconfig_data_format({cb});");
         }
         writeln!(src, "{indent}pack_tile({slot}, {cb});");
+        // The pack reads the slot: one consumer done.
+        self.use_tile(slot);
         // No release: the cone stays open for consecutive packs;
         // the next math_lock or the section-end flush releases it.
     }
@@ -2567,6 +2621,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         let odst = self.alloc(rc);
         writeln!(src, "{indent}{name}({x}, {y}, {odst});");
         self.tile_map.insert(op_id, odst);
+        self.use_tile(x);
+        self.use_tile(y);
         odst
     }
 
@@ -2633,7 +2689,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// slot), so the result aliases the operand slot. Takes the MATH
     /// lock and records the hoisted init.
     #[allow(dead_code)]
-    fn unary(&mut self, src: &mut String, indent: &str, op_id: OpId, x: TileId<DSTBF16>, uop: UOp) -> TileId<DSTBF16> {
+    fn unary(&mut self, src: &mut String, indent: &str, op_id: OpId, x: TileId<DSTBF16>, uop: UOp, rc: u32) -> TileId<DSTBF16> {
         // log2 passes its base scale (bits of 1/ln 2) explicitly, emitted
         // here: the `name` match below evaluates eagerly, so Log2 can never
         // be deferred to a later branch.
@@ -2650,6 +2706,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             }
             writeln!(src, "{indent}log_with_base_tile({x}, 0x3fb8aa3b);");
             self.tile_map.insert(op_id, x);
+            self.set_result_rc(x, rc);
             return x;
         }
         let name = match uop {
@@ -2680,6 +2737,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         }
         writeln!(src, "{indent}{name}({x});");
         self.tile_map.insert(op_id, x);
+        self.set_result_rc(x, rc);
         x
     }
 
@@ -2698,6 +2756,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         x: TileId<DSTBF16>,
         name: &str,
         bits: u32,
+        rc: u32,
     ) -> TileId<DSTBF16> {
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: scalar binary without MATH lock");
@@ -2711,6 +2770,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         }
         writeln!(src, "{indent}{name}({x}, {bits:#x});");
         self.tile_map.insert(op_id, x);
+        self.set_result_rc(x, rc);
         x
     }
 
@@ -2726,6 +2786,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         x: TileId<DSTBF16>,
         in_dt: DType,
         out_dt: DType,
+        rc: u32,
     ) -> Result<TileId<DSTBF16>, BackendError> {
         let in_fmt = tt_fmt(in_dt)?;
         let out_fmt = tt_fmt(out_dt)?;
@@ -2740,6 +2801,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         }
         writeln!(src, "{indent}typecast_tile<{in_fmt}, {out_fmt}>({x});");
         self.tile_map.insert(op_id, x);
+        self.set_result_rc(x, rc);
         Ok(x)
     }
 
@@ -3416,7 +3478,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         }
                         let in_dt = compute_data.dtypes[&x].0;
                         let out_dt = compute_data.dtypes[&op_id].0;
-                        self.tl.cast(&mut src, &indent, op_id, tile, in_dt, out_dt)?;
+                        self.tl.cast(&mut src, &indent, op_id, tile, in_dt, out_dt, compute_data.rcs[&op_id])?;
                     } else {
                         em.emit_op(&mut src, &indent, op_id, compute_data, &self.noc, scope_level)?;
                     }
@@ -3460,6 +3522,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                             }
                             writeln!(src, "{indent}{}({tile});", pat.kind.call_name());
                             self.tl.tile_map.insert(op_id, tile);
+                            self.tl.set_result_rc(tile, compute_data.rcs[&op_id]);
                         } else {
                             // Tiled unary, in place: single-use operand only.
                             let tile = self.tl.tile_map.get(&x).copied().ok_or_else(|| BackendError {
@@ -3469,7 +3532,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                             if compute_data.rcs[&x] != 1 {
                                 todo!("tenstorrent2 multi-use tiled unary operand, op {op_id}");
                             }
-                            self.tl.unary(&mut src, &indent, op_id, tile, uop);
+                            self.tl.unary(&mut src, &indent, op_id, tile, uop, compute_data.rcs[&op_id]);
                         }
                     } else {
                         em.emit_op(&mut src, &indent, op_id, compute_data, &self.noc, scope_level)?;
@@ -3499,6 +3562,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                             }
                             writeln!(src, "{indent}{}({tile});", pat.kind.call_name());
                             self.tl.tile_map.insert(op_id, tile);
+                            self.tl.set_result_rc(tile, compute_data.rcs[&op_id]);
                         } else {
                             // A BroadcastTile-marked side fuses into the
                             // CB-based broadcast form; otherwise the
@@ -3582,7 +3646,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                                             "tenstorrent2: scalar binary {op_id} needs a CB copy of its multi-use operand (no DST->DST copy on Tenstorrent): pack it to a Circular storage and copy_tile it back per use, dataflow style"
                                         );
                                     }
-                                    self.tl.bin_scalar(&mut src, &indent, op_id, t, name, bits);
+                                    self.tl.bin_scalar(&mut src, &indent, op_id, t, name, bits, compute_data.rcs[&op_id]);
                                 } else {
                                     // Tiled binary: three-operand form, inputs stay
                                     // live, result in a fresh slot.
@@ -3775,6 +3839,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         }
                     }
                     em.loop_begin(&mut src, &mut indent, kernel, compute_data, op_id, &mut scope_level)?;
+                    self.tl.set_scope(scope_level);
                 }
                 Op::EndLoop => {
                     // No open cone across the back-edge: the body is
@@ -3783,6 +3848,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                     // acquire whose release sits past the loop.
                     self.tl.flush_pack(&mut src, &indent);
                     loop_end(&mut src, &mut indent, &mut scope_level);
+                    self.tl.set_scope(scope_level);
                 }
                 Op::If { condition } => {
                     // Same boundary rule as loops: a placement keyed
@@ -3808,9 +3874,11 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         }
                     }
                     em.if_begin(&mut src, &mut indent, kernel, condition, &mut scope_level)?;
+                    self.tl.set_scope(scope_level);
                 }
                 Op::EndIf => {
                     if_end(&mut src, &mut indent, &mut scope_level);
+                    self.tl.set_scope(scope_level);
                 }
                 Op::Index { .. } => todo!(),
                 Op::MatmulTile { x, y, acc } => {

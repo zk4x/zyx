@@ -40,7 +40,8 @@ fn dequant_q4k_tt_run() -> Result<(), ZyxError> {
         return Ok(());
     }
     let out = k.forward(&[&packed, &scales, &mins], vec![[4 * 1024]])?;
-    let v: Vec<f32> = out[0].to_vec()?;
+    let vb: Vec<zyx::bf16> = out[0].to_vec()?;
+    let v: Vec<f32> = vb.iter().map(|&x| f32::from(x)).collect();
 
     // Host golden from llama.cpp itself (gguf python dequantize), tilized-flat.
     let gold: Vec<f32> = Tensor::load("/tmp/opengen/golden_q4k_first4tiles.safetensors")?
