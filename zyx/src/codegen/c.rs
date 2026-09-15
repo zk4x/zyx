@@ -524,7 +524,9 @@ impl Kernel {
   if (exp == 0) {
     if (mantissa == 0) { f = sign; }
     else {
-      int e = -1; unsigned int m = mantissa;
+      // Subnormal: value = m * 2^-24. After s shifts bit 10 is set and
+      // the normalized exponent field is 113 - s, so e starts at -14.
+      int e = -14; unsigned int m = mantissa;
       while ((m & 0x0400) == 0) { m <<= 1; e--; }
       f = sign | ((127 + e) << 23) | ((m & 0x03FF) << 13);
     }

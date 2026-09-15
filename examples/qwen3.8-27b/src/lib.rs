@@ -1161,14 +1161,15 @@ pub fn embed_kernel(_vocab: i64, dim: i64, seq: i64) -> Kernel {
     kernel
 }
 
-/// Tenstorrent Q4_K dequant (single core): out [T, 1024] F32 from
+/// Tenstorrent Q4_K dequant (single core): out [T, 1024] BF16 from
 /// strided per-page plane-interleaved packed U16 [L/4] (u16[1024p+s]
 /// nibble k = tile 4p+k slot s) + full-tile BF16 scales/mins.
 ///
-/// F32-out is forced: U16->F32 typecast and F32 SFPU need 32-bit DST mode,
-/// which the backend enables only with an F32 output; fused F32-compute
-/// with F16 pack in one kernel is off the supported path. The F32->F16
-/// cast is a standalone kernel later.
+/// BF16-out: the compute runs in F32 DST mode (U16->F32 typecast and F32
+/// SFPU need 32-bit DST mode; the mode comes from the F32 carry CB, not
+/// from the output), the final value casts to BF16 and the packer
+/// reconfigs for the BF16 pack target. GEMM consumes BF16, so no F32
+/// tiles ever reach DRAM.
 ///
 /// Structure (official single-core streaming): outer loop over input pages
 /// (1024 u16 = 4 output tiles); inner loop over the 4 planes with the
@@ -1191,13 +1192,20 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
     let packed = kernel.param(DType::U16);
     let sc = kernel.param(DType::BF16);
     let mn = kernel.param(DType::BF16);
-    let out = kernel.param_mut(DType::F32);
+    let out = kernel.param_mut(DType::BF16);
 
     let cu16 = kernel.storage(DType::U16, MemScope::Circular, TILE_ELEMS);
     let csc = kernel.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
     let cmn = kernel.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
     let ccur = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
-    let cout = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+    let ccur2 = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+    // Scratch for the trunc result: the carry b = trunc(cv/16) feeds an
+    // in-place x16 (for the nibble) AND two carry stores, and Tenstorrent
+    // has no DST->DST copy — so b is pushed through this 1-tile CB twice
+    // (push/pop/push/pop, never two tiles outstanding) and each consumer
+    // copy_tiles its own.
+    let cs = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+    let cout = kernel.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
 
     let _g = kernel.group_range(0, 1);
     let cpages = kernel.const_idx(pages);
@@ -1222,36 +1230,55 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
     });
     kernel.barrier();
 
-    // Compute: per page convert u16 once, seed the carry CB, then loop the
-    // 4 planes: cv holds x/16^k, nibble = cv - 16*trunc(cv/16), carry
-    // trunc(cv/16) back (all bit-exact in F32 for 16-bit inputs). The drain
-    // pop keeps the 1-tile carry CB empty across pages. Exactly one u16 pop
-    // per pushed page: a second pop over-consumes the CB, reads the next
-    // FIFO entry as garbage, and stalls the core on an empty CB once the
-    // unmatched pops run out. The INT shift/mask path is dead: tt-metal
-    // 0.72 bitwise_and.h does not compile for blackhole (read-only headers).
+    // Compute: per page convert u16 once, seed the TWO carry CBs (the
+    // nibble needs the unmodified cv twice; Tenstorrent has no DST->DST
+    // copy, so the copy is done dataflow-style: the same F32 page tile is
+    // pushed into two 1-tile CBs and each consumer copy_tiles its own), then
+    // loop the 4 planes: cv holds x/16^k, nibble = cv - 16*trunc(cv/16),
+    // carry trunc(cv/16) back into both (all bit-exact in F32 for 16-bit
+    // inputs). Two drain pops keep both 1-tile carry CBs empty across pages.
+    // Exactly one u16 pop per pushed page: a second pop over-consumes the
+    // CB, reads the next FIFO entry as garbage, and stalls the core on an
+    // empty CB once the unmatched pops run out. The INT shift/mask path is
+    // dead: tt-metal 0.72 bitwise_and.h does not compile for blackhole
+    // (read-only headers). Output is BF16: the F32 DST mode comes from the
+    // F32 carry CB, the packer reconfigs for the BF16 target, and GEMM
+    // consumes BF16 — no F32 tiles ever reach DRAM.
     let c063 = kernel.const_val(0.0625f32);
     let c16 = kernel.const_val(16.0f32);
     kernel.loop_over(cpages, |kernel, _pi| {
         let u1 = kernel.load_tile(cu16, c0, TDIM, TDIM, TDIM as u32);
         let f1 = kernel.cast(u1, DType::F32);
         kernel.store_tile(ccur, f1, c0, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(ccur2, f1, c0, TDIM, TDIM, TDIM as u32);
         kernel.loop_over(c4, |kernel, _ki| {
             let cv = kernel.load_tile(ccur, c0, TDIM, TDIM, TDIM as u32);
             let t = kernel.mul(cv, c063);
             let t = kernel.trunc(t);
-            let t16 = kernel.mul(t, c16);
-            let n = kernel.sub(cv, t16);
-            kernel.store_tile(ccur, t, c0, TDIM, TDIM, TDIM as u32);
+            // Duplicate the carry through the scratch CB: b = trunc(cv/16)
+            // feeds the in-place x16 and the two carry stores, so each
+            // consumer gets its own DST copy.
+            kernel.store_tile(cs, t, c0, TDIM, TDIM, TDIM as u32);
+            let b16 = kernel.load_tile(cs, c0, TDIM, TDIM, TDIM as u32);
+            kernel.store_tile(cs, t, c0, TDIM, TDIM, TDIM as u32);
+            let bc = kernel.load_tile(cs, c0, TDIM, TDIM, TDIM as u32);
+            let t16 = kernel.mul(b16, c16);
+            let cv2 = kernel.load_tile(ccur2, c0, TDIM, TDIM, TDIM as u32);
+            let n = kernel.sub(cv2, t16);
+            kernel.store_tile(ccur, bc, c0, TDIM, TDIM, TDIM as u32);
+            kernel.store_tile(ccur2, bc, c0, TDIM, TDIM, TDIM as u32);
             let s = kernel.load_tile(csc, c0, TDIM, TDIM, TDIM as u32);
             let sf = kernel.cast(s, DType::F32);
             let m1 = kernel.mul(n, sf);
             let g = kernel.load_tile(cmn, c0, TDIM, TDIM, TDIM as u32);
             let gf = kernel.cast(g, DType::F32);
-            let v = kernel.add(m1, gf);
-            kernel.store_tile(cout, v, c0, TDIM, TDIM, TDIM as u32);
+            // llama.cpp: v = n*d*sc - dmin*m; repack stores positive mins.
+            let v = kernel.sub(m1, gf);
+            let vb = kernel.cast(v, DType::BF16);
+            kernel.store_tile(cout, vb, c0, TDIM, TDIM, TDIM as u32);
         });
         let _drain = kernel.load_tile(ccur, c0, TDIM, TDIM, TDIM as u32);
+        let _drain2 = kernel.load_tile(ccur2, c0, TDIM, TDIM, TDIM as u32);
     });
     kernel.barrier();
 

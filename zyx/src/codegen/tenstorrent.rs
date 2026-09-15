@@ -3569,6 +3569,19 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                                         context: format!("tenstorrent2: scalar binary reads a value with no DST slot, op {op_id}")
                                             .into(),
                                     })?;
+                                    // The scalar call mutates the operand's
+                                    // DST slot in place. A second consumer of
+                                    // the operand (e.g. `n = cv - 16*trunc(cv/16)`)
+                                    // would read the mutated value: Tenstorrent
+                                    // has no DST->DST copy, so multi-use operands
+                                    // must be duplicated in a dataflow fashion —
+                                    // pack the operand into a Circular storage
+                                    // and copy_tile it back per use.
+                                    if compute_data.rcs[&tile_op] != 1 {
+                                        todo!(
+                                            "tenstorrent2: scalar binary {op_id} needs a CB copy of its multi-use operand (no DST->DST copy on Tenstorrent): pack it to a Circular storage and copy_tile it back per use, dataflow style"
+                                        );
+                                    }
                                     self.tl.bin_scalar(&mut src, &indent, op_id, t, name, bits);
                                 } else {
                                     // Tiled binary: three-operand form, inputs stay
