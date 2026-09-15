@@ -225,6 +225,45 @@ fn fused_only_load(kernel: &Kernel, consumers: &Map<OpId, Vec<OpId>>, load: OpId
     }
 }
 
+/// The CB a fused tile op's side (`x`/`scaler`) reads from: the side
+/// must be a tile load from a mapped storage.
+fn tile_cb(kernel: &Kernel, side: OpId, map: &Map<OpId, CBId>) -> Option<CBId> {
+    let Op::Load { src, .. } = kernel.ops[side].op else {
+        return None;
+    };
+    map.get(&src).copied()
+}
+
+/// The engine config a compute op programs, if any: the same
+/// classification the compute emitter's arms use, shared by the init
+/// placement pass (and its cleanliness scan).
+fn classify_tile_cfg(
+    kernel: &Kernel,
+    map: &Map<OpId, CBId>,
+    data: &SectionData,
+    consumers: &Map<OpId, Vec<OpId>>,
+    op: OpId,
+) -> Option<Cfg> {
+    match kernel.ops[op].op {
+        Op::Load { src, layout, .. } if matches!(layout, MemLayout::Tile { .. }) && !fused_only_load(kernel, consumers, op) => {
+            map.get(&src).copied().map(Cfg::Copy)
+        }
+        Op::MatmulTile { x, y, .. } => match (tile_cb(kernel, x, map), tile_cb(kernel, y, map)) {
+            (Some(a), Some(b)) => Some(Cfg::Matmul(a, b)),
+            _ => None,
+        },
+        Op::ReduceTile { x, scaler, rop, kind, .. } => match (tile_cb(kernel, x, map), tile_cb(kernel, scaler, map)) {
+            (Some(ci), Some(cs)) => Some(Cfg::Reduce(rop, kind, ci, cs)),
+            _ => None,
+        },
+        Op::TransposeTile { x } => tile_cb(kernel, x, map).map(Cfg::Transpose),
+        Op::Binary { bop, .. } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => Some(Cfg::Binary(bop)),
+        Op::Unary { uop, .. } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => Some(Cfg::Unary(uop)),
+        Op::Cast { x, dtype, .. } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => Some(Cfg::Typecast(data.dtypes[&x].0, dtype)),
+        _ => None,
+    }
+}
+
 /// Records one classified traffic op in the batching pre-pass: the
 /// traffic kind (for event construction), per-pass tile totals
 /// (product of all enclosing trips — symbolic trips are a loud
@@ -341,23 +380,93 @@ impl TileState {
     }
 }
 
-/// Programmed unpacker/math config: the phase-transition cursor
-/// (third state machine, next to [`TileState`]/CB state). Header
-/// inits are "first-call or switch-from-another-op" reconfigurations,
-/// not one-time setup: repeating a kind needs nothing, switching
-/// back to a hoisted kind needs its re-init inline at the switch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Programmed<const DSTBF16: bool> {
-    /// Walk entry: trusts the anchor (first-hoisted-last) exactly once.
-    Entry,
-    /// Unknown config (if-joins, reduce teardown): always inits inline.
-    Unknown,
+/// Engine config identity for init placement: one variant per
+/// config-programming tile op. Two executions of the same variant
+/// with the same operands share one programmed state. This is the
+/// init-placement pass's lattice element — NOT emission state (the
+/// emitter reads the placement plan; it keeps no cursor).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cfg {
     Unary(UOp),
     Binary(BOp),
     Typecast(DType, DType),
     Matmul(CBId, CBId),
-    Reduce(BOp, TileReduceKind, CBId, CBId, TileId<DSTBF16>),
-    Transpose(CBId, CBId),
+    /// `copy_tile_init(cb)`: shares unpack-A with matmul, reduce, and
+    /// transpose, so it is a config kind like any other.
+    Copy(CBId),
+    Reduce(BOp, TileReduceKind, CBId, CBId),
+    Transpose(CBId),
+}
+
+impl Cfg {
+    /// The unpack-A source this config programs, if it reads one.
+    /// DST-only kinds (unary/binary/typecast read and write DST
+    /// slots) leave the source untouched.
+    fn srca(self) -> Option<CBId> {
+        match self {
+            Cfg::Matmul(a, _) | Cfg::Copy(a) | Cfg::Reduce(_, _, a, _) | Cfg::Transpose(a) => Some(a),
+            Cfg::Unary(_) | Cfg::Binary(_) | Cfg::Typecast(_, _) => None,
+        }
+    }
+}
+
+/// Abstract config state at a program point: the last config
+/// executed (`None` = several possible — if-joins, unknown back
+/// edges) plus every possible current unpack-A source. DST-only
+/// kinds change the config but keep the possible sources;
+/// CB-reading kinds replace them. The join unions the sources.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+struct CfgState {
+    cfg: Option<Cfg>,
+    srcas: Set<CBId>,
+}
+
+/// Joins two possible incoming states: identical components survive,
+/// anything else goes to `None` (unknown config); the source sets
+/// union.
+fn join_state(a: CfgState, b: CfgState) -> CfgState {
+    if a == b {
+        return a;
+    }
+    CfgState {
+        cfg: if a.cfg == b.cfg { a.cfg } else { None },
+        srcas: a.srcas.union(&b.srcas).copied().collect(),
+    }
+}
+
+/// Optional join: the virgin state (`None`) is the identity — joining
+/// it with anything known leaves that known state intact.
+fn join_opt(a: Option<CfgState>, b: Option<CfgState>) -> Option<CfgState> {
+    match (a, b) {
+        (None, b) => b,
+        (a, None) => a,
+        (Some(a), Some(b)) => Some(join_state(a, b)),
+    }
+}
+
+/// Emission-facing init placement for one config-programming op,
+/// computed by `Compiler::compute_init_plans`. The kernel's first
+/// config op (the anchor) additionally hoists its full init to the
+/// kernel top ([`TileEmitter::anchor_op`]) and its plan covers only
+/// its re-entries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum InitPlan {
+    /// The incoming config already matches on every path: no init.
+    None,
+    /// Emit the op's own init inline before its text.
+    Init,
+    /// Matmul re-entry whose possible unpack-A sources all carry
+    /// `cb_a`'s format: `mm_init_short(cb_a, cb_b)`.
+    MmShort,
+    /// Matmul re-entry where a possible incoming source has a
+    /// different format: `mm_init_short_with_dt(cb_a, cb_b, old)`.
+    /// The reconfig always lands on `cb_a`'s format, so picking any
+    /// different-format source as `old` is safe on every path.
+    MmShortDt(CBId),
+    /// Matmul re-entry with no known incoming source — unreachable
+    /// on valid input (the anchor programs something first): full
+    /// `mm_init`, the only call that fixes a totally unknown state.
+    MmFull,
 }
 
 /// Hoisted init call for a tile unary op. Single table shared by the
@@ -390,16 +499,6 @@ fn binary_init_name(bop: BOp) -> Option<&'static str> {
         BOp::Max => Some("binary_max_tile_init();"),
         BOp::BitShiftLeft | BOp::BitShiftRight => Some("binary_shift_tile_init();"),
         _ => None,
-    }
-}
-
-/// LLK pool type for a tile reduce op. Callers validate support
-/// before transitioning; the fallback never fires on valid input.
-fn reduce_pool_name(rop: BOp) -> &'static str {
-    match rop {
-        BOp::Max => "PoolType::MAX",
-        BOp::Add => "PoolType::SUM",
-        _ => unreachable!("tenstorrent2: unsupported reduce rop reached codegen"),
     }
 }
 
@@ -1144,6 +1243,9 @@ pub(crate) struct CBEmitter {
     /// Tiles produced per pass per CB (sum of traffic-op runtime
     /// counts). Every mapped CB has an entry.
     produced: Map<CBId, u32>,
+    /// Operand → consumers, from the batching pre-pass: classifies
+    /// fused-only loads (compute section).
+    consumers: Map<OpId, Vec<OpId>>,
 }
 
 #[allow(unused_must_use)]
@@ -1341,6 +1443,13 @@ impl CBEmitter {
                             continue;
                         }
                         let &(index, _) = &traffic_kind[&op];
+                        // Fused-only loads drain at the consuming op
+                        // (legacy 1-tile path): they appear in the
+                        // frame's traffic map for the balance count,
+                        // but carry no provisional batch to upgrade.
+                        if !batches.contains_key(&op) {
+                            continue;
+                        }
                         // Block slot = index + counter; the index must
                         // tie to the counter or be plain 0 (producers
                         // pack sequentially, so the same rule covers
@@ -1387,12 +1496,21 @@ impl CBEmitter {
                             record_traffic(scan, cb, index, kind, &mut stack, &mut produced, &mut consumed, &mut traffic_kind)?;
                         // Provisional single-tile transaction: open and
                         // close anchor at this op. A hoisting upgrade
-                        // may replace it at the loop's EndLoop.
-                        if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0)) {
+                        // may replace it at the loop's EndLoop. The
+                        // slot is always 0 (one tile in flight): the
+                        // index must be 0 or tie to an enclosing
+                        // counter (its DRAM-side meaning does not
+                        // affect the CB slot).
+                        let counter_tied = stack
+                            .iter()
+                            .any(|f| deps_contain(kernel, index, f.op));
+                        if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0))
+                            && !counter_tied
+                        {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
                                 context: format!(
-                                    "tenstorrent2: single-tile transaction on CB{cb} (op {scan}) needs slot index 0, got op {index}"
+                                    "tenstorrent2: single-tile transaction on CB{cb} (op {scan}) needs slot index 0 or the loop counter, got op {index}"
                                 )
                                 .into(),
                             });
@@ -1440,12 +1558,20 @@ impl CBEmitter {
                             // Provisional single-tile transaction: open
                             // and close anchor at this op. A hoisting
                             // upgrade may replace it at the loop's
-                            // EndLoop.
-                            if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0)) {
+                            // EndLoop. The slot is always 0 (one tile
+                            // in flight): the index must be 0 or tie
+                            // to the enclosing counter (its DRAM-side
+                            // meaning does not affect the CB slot).
+                            let counter_tied = stack
+                                .iter()
+                                .any(|f| deps_contain(kernel, index, f.op));
+                            if !matches!(kernel.ops[index].op, Op::Const(c) if c.as_dim() == Some(0))
+                                && !counter_tied
+                            {
                                 return Err(BackendError {
                                     status: ErrorStatus::KernelCompilation,
                                     context: format!(
-                                        "tenstorrent2: single-tile transaction on CB{cb} (op {scan}) needs slot index 0, got op {index}"
+                                        "tenstorrent2: single-tile transaction on CB{cb} (op {scan}) needs slot index 0 or the loop counter, got op {index}"
                                     )
                                     .into(),
                                 });
@@ -1504,7 +1630,7 @@ impl CBEmitter {
                 });
             }
         }
-        Ok(Self { map, config, states, batches, opens, closes, produced })
+        Ok(Self { map, config, states, batches, opens, closes, produced, consumers })
     }
 
     /// Reset every CB to `state` (section entry).
@@ -1693,14 +1819,6 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     next: TileId<DSTBF16>,
     /// Whole-file MATH/PACK lock state.
     state: TileState,
-    /// Init kind currently programmed into unpacker/math. `Entry`
-    /// while only the anchor (below) has run, so its hoisted init is
-    /// still live; a switch away from it needs its init inline.
-    cursor: Programmed<DSTBF16>,
-    /// First init kind used in the walk: hoists once at the anchor,
-    /// covering the walk's first op so it needs no inline init.
-    /// `Entry` while no init-needing op has run yet.
-    anchor: Programmed<DSTBF16>,
     /// A reduce cone is open: the next `pack` closes it with
     /// `reduce_uninit` before the commit.
     reduce_pending: bool,
@@ -1708,8 +1826,32 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     /// `compute_kernel_hw_startup`: recorded at compute entry by the
     /// generator, emitted with the hoisted inits at the anchor.
     startup: Option<[CBId; 3]>,
-    /// Copy CBs seen, for the hoisted `copy_tile_init` block.
-    copy_inits: Set<CBId>,
+    /// The anchor op's init text (the kernel's first config op per
+    /// the placement plan), pushed at emission — the acc slot a
+    /// reduce anchor needs only exists once the walk reaches it —
+    /// and inserted at the kernel top by `prepend_compute_inits`.
+    anchor_lines: Vec<String>,
+    /// Init placement per config-programming compute op, from
+    /// [`Compiler::compute_init_plans`]. Compute-only state lives
+    /// here (not on [`CBEmitter`]) because only compute programs the
+    /// engines.
+    plans: Map<OpId, InitPlan>,
+    /// Init-hoist target per config op: when the innermost enclosing
+    /// loop body holds nothing config-affecting between its top and
+    /// the op, the init runs once at the loop top instead of at every
+    /// op execution. The op's [`InitPlan`] still picks the init text.
+    hoist_to: Map<OpId, OpId>,
+    /// Inits hoisted into loop bodies: (loop op, init line) pushed by
+    /// the arms, inserted right after the loop's opening line at the
+    /// end of the compute walk (the arm runs after the loop text).
+    loop_inits: Vec<(OpId, String)>,
+    /// The anchor op (the kernel's first config op): its full init
+    /// hoists to the kernel top, covering the virgin entry path. Its
+    /// plan covers only its re-entries via back edges.
+    anchor_op: Option<OpId>,
+    /// The anchor op's config: decides the startup-vs-`mm_init`
+    /// question in the hoisted block.
+    anchor_cfg: Option<Cfg>,
 }
 
 #[allow(unused_must_use)]
@@ -1721,11 +1863,14 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             tile_map: Map::default(),
             next: TileId::ZERO,
             state: TileState::Unlocked,
-            copy_inits: Set::default(),
-            cursor: Programmed::Entry,
-            anchor: Programmed::Entry,
             reduce_pending: false,
             startup: None,
+            anchor_lines: Vec::new(),
+            plans: Map::default(),
+            hoist_to: Map::default(),
+            loop_inits: Vec::new(),
+            anchor_op: None,
+            anchor_cfg: None,
         }
     }
 
@@ -1736,36 +1881,38 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         self.startup = Some(triple);
     }
 
-    /// Phase-transition init cursor. Returns true if the caller must
-    /// emit its init inline: on every kind switch, and after an
-    /// `invalidate_program` (branch joins, reduce teardown). The
-    /// walk's first op records the anchor and trusts its hoisted init;
-    /// anchor repeats cost nothing while no switch happened yet, so
-    /// the cursor stays `Entry` iff a single kind appears.
-    /// `copy` stays out: per-CB source programming is orthogonal.
-    fn transition(&mut self, prog: Programmed<DSTBF16>) -> bool {
-        if matches!(prog, Programmed::Entry | Programmed::Unknown) {
-            unreachable!("tenstorrent2: lifecycle state passed as init identity")
+    /// Emits this op's init per its placement plan (see [`InitPlan`],
+    /// computed by `Compiler::compute_init_plans`): the anchor op's
+    /// init hoists to the kernel top first, `None` emits nothing
+    /// (incoming config already matches on every path), everything
+    /// else emits inline before the op text — or at the top of the
+    /// innermost enclosing loop when the pass proved nothing in
+    /// between changes the config (`hoist_to`), so the init runs once
+    /// per loop pass instead of once per op execution. `line` is the
+    /// full init call including arguments and the trailing `;`.
+    fn emit_op_init(&mut self, src: &mut String, indent: &str, op_id: OpId, line: String) {
+        if self.anchor_op == Some(op_id) {
+            self.anchor_lines.push(line.clone());
         }
-        if self.cursor == prog {
-            return false;
+        match self.cb_plan(op_id) {
+            InitPlan::None => {}
+            _ => match self.hoist_to.get(&op_id) {
+                Some(&loop_op) => self.loop_inits.push((loop_op, line)),
+                None => {
+                    writeln!(src, "{indent}{line}");
+                }
+            },
         }
-        if self.anchor == Programmed::Entry {
-            self.anchor = prog;
-            return false;
-        }
-        if prog == self.anchor && self.cursor == Programmed::Entry {
-            return false;
-        }
-        self.cursor = prog;
-        true
     }
 
-    /// Forget the programmed config: `if`-joins (branch may not have
-    /// run) and reduce teardown (uninit returns the config to
-    /// neutral). The next init-needing op re-inits inline.
-    fn invalidate_program(&mut self) {
-        self.cursor = Programmed::Unknown;
+    /// The op's init placement plan; every config-programming op has
+    /// one. A missing plan is a codegen bug (pass and emitter
+    /// classification drifted apart) — loud, never a default.
+    fn cb_plan(&self, op_id: OpId) -> InitPlan {
+        self.plans
+            .get(&op_id)
+            .copied()
+            .unwrap_or_else(|| panic!("tenstorrent2: config op {op_id} has no init placement plan"))
     }
 
     /// Allocate one DST slot. Capacity is asserted by
@@ -1834,8 +1981,28 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         out: CBId,
         acc: TileId<DSTBF16>,
     ) {
-        if self.transition(Programmed::Matmul(cb_a, cb_b)) {
-            writeln!(src, "{indent}mm_init({cb_a}, {cb_b}, {out});");
+        // `mm_init` owns UNPACK+MATH+PACK engine programming (0.72):
+        // full form at the kernel anchor only (it replaces startup),
+        // short forms mid-kernel. `mm_init_short_with_dt` adds the
+        // unpack-A format reconfig when a possible incoming source
+        // carries another format (copy/reduce/transpose programmed
+        // another CB); the reconfig always lands on `cb_a`'s format.
+        if self.anchor_op == Some(op_id) {
+            self.anchor_lines.push(format!("mm_init({cb_a}, {cb_b}, {out});"));
+        }
+        let plan = self.cb_plan(op_id);
+        if plan != InitPlan::None {
+            let line = match plan {
+                InitPlan::MmShort => format!("mm_init_short({cb_a}, {cb_b});"),
+                InitPlan::MmShortDt(old) => format!("mm_init_short_with_dt({cb_a}, {cb_b}, {old});"),
+                InitPlan::Init | InitPlan::MmFull | InitPlan::None => format!("mm_init({cb_a}, {cb_b}, {out});"),
+            };
+            match self.hoist_to.get(&op_id) {
+                Some(&loop_op) => self.loop_inits.push((loop_op, line)),
+                None => {
+                    writeln!(src, "{indent}{line}");
+                }
+            }
         }
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: matmul without MATH lock");
@@ -1853,12 +2020,14 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
     /// slot into a fresh DST slot. The wait/pop sync anchors at the
     /// transaction's open/close events (see [`CBEmitter`]); `index`
     /// is the tile slot within the waited block. Records the load op
-    /// in `tile_map`. The `copy_tile_init` goes out hoisted (one per
-    /// CB).
+    /// in `tile_map`. `copy_tile_init` reprograms the unpack-A source
+    /// shared with matmul/reduce/transpose: its placement comes from
+    /// the plan (anchor-hoisted, inline per the pass, or nothing).
     fn copy(&mut self, src: &mut String, indent: &str, op_id: OpId, cb: CBId, rc: u32, index: &str) -> TileId<DSTBF16> {
         self.math_lock(src, indent);
-        debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: copy without MATH lock");        let slot = self.alloc(rc);
-        self.copy_inits.insert(cb);
+        debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: copy without MATH lock");
+        let slot = self.alloc(rc);
+        self.emit_op_init(src, indent, op_id, format!("copy_tile_init({cb});"));
         writeln!(src, "{indent}copy_tile({cb}, {index}, {slot});");
         self.tile_map.insert(op_id, slot);
         slot
@@ -1883,9 +2052,9 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         if self.reduce_pending {
             writeln!(src, "{indent}reduce_uninit();");
             self.reduce_pending = false;
-            // Teardown returns the config to neutral: the next
-            // init-needing op re-inits inline.
-            self.cursor = Programmed::Unknown;
+            // Teardown closes the reduce LLK cone: the placement pass
+            // models the config as gone from here on (the unpack-A
+            // source survives), so the next config op re-inits.
         }
         self.math_unlock(src, indent);
         self.pack_lock(src, indent);
@@ -1946,9 +2115,12 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             }
         };
         let dim_name = reduce_dim_name(kind);
-        if self.transition(Programmed::Reduce(rop, kind, cb_in, cb_sc, acc)) {
-            writeln!(src, "{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});");
-        }
+        self.emit_op_init(
+            src,
+            indent,
+            op_id,
+            format!("reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});"),
+        );
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: reduce without MATH lock");
         cb_em.wait_front(src, indent, cb_in, 1);
@@ -1990,9 +2162,8 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         };
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: binary without MATH lock");
-        if self.transition(Programmed::Binary(bop)) {
-            let init = binary_init_name(bop).expect("tenstorrent2: binary op without init entry");
-            writeln!(src, "{indent}{init}");
+        if let Some(init) = binary_init_name(bop) {
+            self.emit_op_init(src, indent, op_id, init.to_string());
         }
         let odst = self.alloc(rc);
         writeln!(src, "{indent}{name}({x}, {y}, {odst});");
@@ -2018,9 +2189,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         if uop == UOp::Log2 {
             self.math_lock(src, indent);
             debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: unary without MATH lock");
-            if self.transition(Programmed::Unary(uop)) {
-                writeln!(src, "{indent}{}", unary_init_name(uop));
-            }
+            self.emit_op_init(src, indent, op_id, unary_init_name(uop).to_string());
             writeln!(src, "{indent}log_with_base_tile({x}, 0x3fb8aa3b);");
             self.tile_map.insert(op_id, x);
             return x;
@@ -2042,9 +2211,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         };
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: unary without MATH lock");
-        if self.transition(Programmed::Unary(uop)) {
-            writeln!(src, "{indent}{}", unary_init_name(uop));
-        }
+        self.emit_op_init(src, indent, op_id, unary_init_name(uop).to_string());
         writeln!(src, "{indent}{name}({x});");
         self.tile_map.insert(op_id, x);
         x
@@ -2067,9 +2234,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         let out_fmt = tt_fmt(out_dt)?;
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: cast without MATH lock");
-        if self.transition(Programmed::Typecast(in_dt, out_dt)) {
-            writeln!(src, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
-        }
+        self.emit_op_init(src, indent, op_id, format!("typecast_tile_init<{in_fmt}, {out_fmt}>();"));
         writeln!(src, "{indent}typecast_tile<{in_fmt}, {out_fmt}>({x});");
         self.tile_map.insert(op_id, x);
         Ok(x)
@@ -2094,9 +2259,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         self.math_lock(src, indent);
         debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: transpose without MATH lock");
         let slot = self.alloc(rc);
-        if self.transition(Programmed::Transpose(cb, out)) {
-            writeln!(src, "{indent}transpose_wh_init({cb}, {out});");
-        }
+        self.emit_op_init(src, indent, op_id, format!("transpose_wh_init({cb}, {out});"));
         writeln!(src, "{indent}transpose_wh_tile({cb}, 0, {slot});");
         cb_em.record_move(cb, 1);
         cb_em.pop_front(src, indent, cb, 1);
@@ -2117,20 +2280,16 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
 
     /// Common pre-loop init emission for compute tile ops (v1-proven
     /// hoist, official eltwise shape): `compute_kernel_hw_startup`
-    /// once, then one `*_init` per collected kind, inserted at `pos`
-    /// — the anchor the caller records ahead of all loops. Startup
-    /// comes first (the header requires it exactly once at the
-    /// beginning, before any op init; no separate SFPU init exists);
-    /// FP32 mode enables 32-bit DST right after. Matmul kernels skip
-    /// startup: 0.72 `mm_init` owns the full UNPACK/MATH/PACK
-    /// programming (the installed example calls nothing else).
-    /// Per-iteration init reprograms live packer state. Op-init lines
-    /// carry their [`Programmed`] identity; the walk's first-used
-    /// kind sorts last so the anchor ends with its config active,
-    /// covering the walk's first op (later uses re-init inline at
-    /// kind switches via [`TileEmitter::transition`]). Always at
-    /// function-scope indent: the anchor sits at base indent by
-    /// construction.
+    /// once, then the anchor op's init (the kernel's first config op
+    /// per the placement plan), inserted at `pos` — ahead of all
+    /// loops. Startup comes first (the header requires it exactly
+    /// once at the beginning, before any op init; no separate SFPU
+    /// init exists); FP32 mode enables 32-bit DST right after.
+    /// Matmul kernels skip startup: 0.72 `mm_init` owns the full
+    /// UNPACK/MATH/PACK programming (the installed example calls
+    /// nothing else). All other placements emit inline at the op
+    /// (see [`InitPlan`]). Always at function-scope indent: the
+    /// anchor sits at base indent by construction.
     fn prepend_compute_inits(&self, src: &mut String, pos: usize) -> Result<(), BackendError> {
         let indent = "  ";
         let mut head = String::new();
@@ -2142,7 +2301,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             if let Some([in0, _, out]) = self.startup {
                 let _ = std::fmt::Write::write_fmt(&mut head, format_args!("{indent}init_sfpu({in0}, {out});\n"));
             }
-        } else if !matches!(self.anchor, Programmed::Matmul(..)) {
+        } else if !matches!(self.anchor_cfg, Some(Cfg::Matmul(..))) {
             if let Some([in0, in1, out]) = self.startup {
                 let _ = std::fmt::Write::write_fmt(
                     &mut head,
@@ -2156,41 +2315,9 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             // Matmul kernels: mm_init instead of startup (0.72 API).
             let _ = std::fmt::Write::write_fmt(&mut head, format_args!("{indent}enable_fp32_dest_acc();\n"));
         }
-        // (identity, line): copy has no identity (orthogonal per-CB
-        // programming, no cursor transitions).
         let mut inits = head;
-        for &cb in &self.copy_inits {
-            inits.push_str(&format!("{indent}copy_tile_init({cb});\n"));
-        }
-        // The anchor alone hoists; every kind switch inits inline at
-        // the switch (official sfpu_eltwise_chain shape).
-        match self.anchor {
-            Programmed::Entry | Programmed::Unknown => {}
-            Programmed::Unary(uop) => {
-                inits.push_str(&format!("{indent}{}\n", unary_init_name(uop)));
-            }
-            Programmed::Binary(bop) => {
-                if let Some(init) = binary_init_name(bop) {
-                    inits.push_str(&format!("{indent}{init}\n"));
-                }
-            }
-            Programmed::Typecast(in_dt, out_dt) => {
-                let in_fmt = tt_fmt(in_dt)?;
-                let out_fmt = tt_fmt(out_dt)?;
-                inits.push_str(&format!("{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();\n"));
-            }
-            Programmed::Matmul(cb_a, cb_b) => {
-                let out = self.startup.map(|[_, _, o]| o).expect("tenstorrent2: matmul kernel without startup triple");
-                inits.push_str(&format!("{indent}mm_init({cb_a}, {cb_b}, {out});\n"));
-            }
-            Programmed::Reduce(rop, kind, cb_in, cb_sc, acc) => {
-                let op_name = reduce_pool_name(rop);
-                let dim_name = reduce_dim_name(kind);
-                inits.push_str(&format!("{indent}reduce_init<{op_name}, {dim_name}>({cb_in}, {cb_sc}, {acc});\n"));
-            }
-            Programmed::Transpose(cb_in, cb_out) => {
-                inits.push_str(&format!("{indent}transpose_wh_init({cb_in}, {cb_out});\n"));
-            }
+        for line in &self.anchor_lines {
+            inits.push_str(&format!("{indent}{line}\n"));
         }
         src.insert_str(pos, &inits);
         Ok(())
@@ -2318,6 +2445,171 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
             });
         }
         Ok(())
+    }
+
+    /// Init-placement pass: fixes where every config-programming
+    /// compute op emits its `*_init` (see [`InitPlan`]). Dataflow over
+    /// the compute op list: the state at each point is the last
+    /// config executed plus every possible unpack-A source. Loops are
+    /// cycles — the state at a loop head is the join of the
+    /// fall-through entry and the back edge (the state at the body's
+    /// `EndLoop`), so the walk iterates to a fixpoint: placements
+    /// only ever shrink as back-edge states sharpen, and the walk
+    /// repeats until a pass reproduces its input states (bounded by
+    /// the nesting depth). `If` joins union the branch state with the
+    /// skipped state (the branch may not run). Reduce teardown
+    /// (`reduce_uninit` at the closing pack) clears the config; the
+    /// unpack-A source survives it.
+    fn compute_init_plans(&mut self, kernel: &Kernel, data: &SectionData) {
+        let mut backedge: Map<OpId, CfgState> = Map::default();
+        for _ in 0..10 {
+            let mut plans: Map<OpId, InitPlan> = Map::default();
+            let mut hoist_to: Map<OpId, OpId> = Map::default();
+            let mut anchor_cfg: Option<Cfg> = None;
+            let mut anchor_op: Option<OpId> = None;
+            // `None` = virgin (nothing programmed yet — distinct from
+            // "several configs possible"): the anchor's top init
+            // covers the virgin entry path, so only back-edge arrivals
+            // need inits there.
+            let mut state: Option<CfgState> = None;
+            let mut reduce_open = false;
+            // Enclosing loops: (loop op, state at the loop top, index
+            // of the `Loop` op). The state at the top is where a
+            // hoisted init executes, so the matmul variant picks its
+            // `old` source from it.
+            let mut loops: Vec<(OpId, Option<CfgState>, usize)> = Vec::new();
+            let mut ifs: Vec<Option<CfgState>> = Vec::new();
+            let mut changed = false;
+            for (i, &op) in data.ops.iter().enumerate() {
+                match kernel.ops[op].op {
+                    Op::Loop { .. } => {
+                        let back = backedge.get(&op).cloned();
+                        let entry = state.take();
+                        state = join_opt(entry, back);
+                        loops.push((op, state.clone(), i));
+                    }
+                    Op::EndLoop => {
+                        let (loop_op, _, _) = loops.pop().expect("tenstorrent2: EndLoop without Loop");
+                        if backedge.get(&loop_op).cloned() != state {
+                            changed = true;
+                        }
+                        backedge.insert(loop_op, state.clone().unwrap_or_default());
+                    }
+                    Op::If { .. } => ifs.push(state.clone()),
+                    Op::EndIf => {
+                        let entry = ifs.pop().expect("tenstorrent2: EndIf without If");
+                        let branch = state.take();
+                        state = join_opt(entry, branch);
+                    }
+                    Op::Barrier => {
+                        debug_assert!(loops.is_empty() && ifs.is_empty(), "tenstorrent2: control flow crosses a section barrier");
+                        state = None;
+                    }
+                    ref op_cfg => {
+                        let Some(cfg) = classify_tile_cfg(kernel, &self.cb.map, data, &self.cb.consumers, op) else {
+                            if let Op::Store { dst, .. } = op_cfg {
+                                // Every compute store into a CB packs;
+                                // a pack under an open reduce cone
+                                // tears it down.
+                                if reduce_open && self.cb.map.contains_key(&dst) {
+                                    reduce_open = false;
+                                    if let Some(s) = &mut state {
+                                        s.cfg = None;
+                                    }
+                                }
+                            }
+                            continue;
+                        };
+                        let is_reduce = matches!(cfg, Cfg::Reduce(..));
+                        let is_anchor = anchor_cfg.is_none();
+                        if is_anchor {
+                            anchor_cfg = Some(cfg);
+                            anchor_op = Some(op);
+                        }
+                        let incoming_matches = state.as_ref().and_then(|s| s.cfg) == Some(cfg);
+                        let virgin = state.is_none();
+                        if incoming_matches || (virgin && is_anchor) {
+                            // Matching on every path — or the virgin
+                            // entry path the anchor's top init covers.
+                            plans.insert(op, InitPlan::None);
+                            debug_assert!(!virgin || is_anchor, "tenstorrent2: config op under a virgin state without anchor coverage");
+                        } else {
+                            // Variant selection runs against the state
+                            // the init will execute under: the hoist
+                            // point's state when hoisted, the op's own
+                            // incoming state otherwise.
+                            let hoist = match loops.last() {
+                                // Reduce cannot hoist: reduce_init
+                                // takes the acc slot, which only
+                                // exists once the walk reaches the op.
+                                Some((loop_op, lstate, lo_pos))
+                                    if !is_reduce
+                                        && data.ops[lo_pos + 1..i].iter().all(|&o| {
+                                            classify_tile_cfg(kernel, &self.cb.map, data, &self.cb.consumers, o).is_none()
+                                                && !matches!(
+                                                    kernel.ops[o].op,
+                                                    Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf
+                                                )
+                                                && !matches!(&kernel.ops[o].op, Op::Store { dst, .. } if self.cb.map.contains_key(dst))
+                                        }) =>
+                                {
+                                    Some((lstate, *loop_op))
+                                }
+                                _ => None,
+                            };
+                            let (view, target) = match &hoist {
+                                Some((lstate, loop_op)) => (lstate.as_ref(), Some(*loop_op)),
+                                None => (state.as_ref(), None),
+                            };
+                            let srcas = view.and_then(|s| if s.srcas.is_empty() { None } else { Some(&s.srcas) });
+                            let plan = if let Cfg::Matmul(cb_a, _) = cfg {
+                                // Short form re-enters matmul mode; the
+                                // format reconfig is needed iff a
+                                // possible incoming source carries
+                                // another format than `cb_a`.
+                                let fmt_a = self.cb.config[cb_a].0;
+                                match srcas.and_then(|set| set.iter().copied().find(|&s| self.cb.config[s].0 != fmt_a)) {
+                                    Some(old) => InitPlan::MmShortDt(old),
+                                    None if srcas.is_none() => InitPlan::MmFull,
+                                    None => InitPlan::MmShort,
+                                }
+                            } else {
+                                InitPlan::Init
+                            };
+                            if let InitPlan::MmFull = plan {
+                                // Only the full form fixes a totally
+                                // unknown state; it belongs at the op.
+                                plans.insert(op, plan);
+                            } else {
+                                plans.insert(op, plan);
+                                if let Some(loop_op) = target {
+                                    hoist_to.insert(op, loop_op);
+                                }
+                            }
+                        }
+                        state = Some(CfgState { cfg: Some(cfg), srcas: match cfg.srca() {
+                            Some(s) => {
+                                let mut set = Set::default();
+                                set.insert(s);
+                                set
+                            }
+                            None => state.map(|s| s.srcas).unwrap_or_default(),
+                        } });
+                        if is_reduce {
+                            reduce_open = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                self.tl.plans = plans;
+                self.tl.hoist_to = hoist_to;
+                self.tl.anchor_cfg = anchor_cfg;
+                self.tl.anchor_op = anchor_op;
+                return;
+            }
+        }
+        panic!("tenstorrent2: init placement did not converge in 10 fixpoint passes");
     }
 
     /// Generate the reader (dataflow movement) kernel from the reader op
@@ -2483,6 +2775,9 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         params: &[OpId],
         ordinals: &[u32],
     ) -> Result<(), BackendError> {
+        // Placement first: every config op's plan must exist before
+        // its arm emits.
+        self.compute_init_plans(kernel, compute_data);
         let mut em = VarEmitter::new(kernel);
         let mut src = String::new();
         let mut indent = String::from("  ");
@@ -2524,6 +2819,9 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         let mut loaded_order: Vec<CBId> = Vec::new();
         let mut stored_here: Set<CBId> = Set::default();
         let mut stored_first: Option<CBId> = None;
+        // Body start (text position, body indent) per loop op, for the
+        // hoisted-in-loop init insertion at the end of the walk.
+        let mut loop_pos: Map<OpId, (usize, String)> = Map::default();
         for &op_id in &compute_data.ops {
             if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = kernel.ops[op_id].op {
                 if let Some(&cb) = self.cb.map.get(&src) {
@@ -2771,6 +3069,10 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 }
                 Op::Loop { .. } => {
                     em.loop_begin(&mut src, &mut indent, kernel, compute_data, op_id, &mut scope_level)?;
+                    // Hoisted inits for this loop's body go right
+                    // here: record the position and the (already
+                    // bumped) body indent for the end-of-walk insert.
+                    loop_pos.insert(op_id, (src.len(), indent.clone()));
                 }
                 Op::EndLoop => {
                     loop_end(&mut src, &mut indent, &mut scope_level);
@@ -2782,10 +3084,10 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 }
                 Op::EndIf => {
                     if_end(&mut src, &mut indent, &mut scope_level);
-                    // The branch may not have run: programmed config
-                    // is unknown at the join, the next init-needing
-                    // op re-inits inline.
-                    self.tl.invalidate_program();
+                    // The branch may not have run: the placement pass
+                    // joins the branch state with the skipped state at
+                    // this point, so the next config op re-inits per
+                    // its plan.
                 }
                 Op::Index { .. } => todo!(),
                 Op::MatmulTile { x, y, acc } => {
@@ -2950,7 +3252,23 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
             }
             self.cb.close_events(&mut src, &indent, op_id);
         }
-        // Hoisted tile-op inits land at the anchor, ahead of all loops.
+        // Hoisted tile-op inits land at the anchor, ahead of all
+        // loops; loop-hoisted inits at their loop's body start.
+        let mut inits: Vec<(usize, String)> = self
+            .tl
+            .loop_inits
+            .iter()
+            .map(|(loop_op, line)| {
+                let (pos, indent) = &loop_pos[loop_op];
+                (*pos, format!("{indent}{line}\n"))
+            })
+            .collect();
+        // Descending positions: each insertion leaves the earlier
+        // ones valid.
+        inits.sort_by_key(|(pos, _)| std::cmp::Reverse(*pos));
+        for (pos, text) in inits {
+            src.insert_str(pos, &text);
+        }
         self.tl.prepend_compute_inits(&mut src, init_anchor)?;
 
         writeln!(src, "}}");
