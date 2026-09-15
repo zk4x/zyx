@@ -1192,7 +1192,7 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
     let packed = kernel.param(DType::U16);
     let sc = kernel.param(DType::BF16);
     let mn = kernel.param(DType::BF16);
-    let out = kernel.param_mut(DType::BF16);
+    let out = kernel.param_mut(DType::F32); // TEMP-DIAG
 
     let cu16 = kernel.storage(DType::U16, MemScope::Circular, TILE_ELEMS);
     let csc = kernel.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
@@ -1205,7 +1205,7 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
     // (push/pop/push/pop, never two tiles outstanding) and each consumer
     // copy_tiles its own.
     let cs = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
-    let cout = kernel.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
+    let cout = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS); // TEMP-DIAG
 
     let _g = kernel.group_range(0, 1);
     let cpages = kernel.const_idx(pages);
@@ -1274,8 +1274,10 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
             let gf = kernel.cast(g, DType::F32);
             // llama.cpp: v = n*d*sc - dmin*m; repack stores positive mins.
             let v = kernel.sub(m1, gf);
-            let vb = kernel.cast(v, DType::BF16);
-            kernel.store_tile(cout, vb, c0, TDIM, TDIM, TDIM as u32);
+            // No explicit F32->BF16 cast: tt-metal's SFPU typecast does not
+            // support that pair — the packer converts (pack_reconfig to the
+            // BF16 CB format reads the fp32 DST entries as BF16).
+            kernel.store_tile(cout, v, c0, TDIM, TDIM, TDIM as u32);
         });
         let _drain = kernel.load_tile(ccur, c0, TDIM, TDIM, TDIM as u32);
         let _drain2 = kernel.load_tile(ccur2, c0, TDIM, TDIM, TDIM as u32);

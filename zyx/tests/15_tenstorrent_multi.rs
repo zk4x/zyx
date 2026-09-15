@@ -1637,3 +1637,547 @@ fn tenstorrent_fused_sigmoid_silu() -> Result<(), ZyxError> {
     assert_eq!(bad, 0);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Q4_K dequant decomposition probes. The full `dequant_q4k_tt` produces
+// zeros on even tiles and `full_word*sf - gf` on odd tiles; these four
+// probes isolate one stage each, on synthetic data with host-computed
+// goldens. One page = 4 tiles (1024 packed U16 words), matching the
+// production kernel's per-page plumbing.
+// ---------------------------------------------------------------------------
+
+/// Deterministic packed words: word j carries nibble k of tile k in bits 4k.
+fn probe_words() -> Vec<u16> {
+    (0..1024u32)
+        .map(|j| ((j.wrapping_mul(2654435761).wrapping_add(12345)) % 65536) as u16)
+        .collect()
+}
+
+/// Stage 1: nibble extraction — `n = cv - 16*trunc(cv/16)` on the full-word
+/// F32 value (cv used twice via two carry CBs, trunc result duplicated
+/// through the scratch CB), no scales/mins, no loop. Expected: `w & 15`.
+#[test]
+fn tenstorrent_probe_q4k_nibbles() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let packed = k.param(DType::U16);
+    let out = k.param_mut(DType::F32);
+    let cu16 = k.circular_storage(DType::U16, 1);
+    let ccur = k.circular_storage(DType::F32, 1);
+    let ccur2 = k.circular_storage(DType::F32, 1);
+    let cs = k.circular_storage(DType::F32, 2);
+    let cout = k.circular_storage(DType::F32, 1);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+    let c00625 = k.const_val(0.0625f32);
+    let c16 = k.const_val(16.0f32);
+
+    let u = k.load_global_tile(packed, c0);
+    k.store_circular(cu16, u, c0);
+    k.barrier();
+    let u1 = k.load_circular(cu16, c0);
+    let f1 = k.cast(u1, DType::F32);
+    k.store_circular(ccur, f1, c0);
+    k.store_circular(ccur2, f1, c0);
+    let cv = k.load_circular(ccur, c0);
+    let t = k.mul(cv, c00625);
+    let t = k.trunc(t);
+    k.store_circular(cs, t, c0);
+    let b16 = k.load_circular(cs, c0);
+    k.store_circular(cs, t, c0);
+    let bc = k.load_circular(cs, c0);
+    let t16 = k.mul(b16, c16);
+    let cv2 = k.load_circular(ccur2, c0);
+    let n = k.sub(cv2, t16);
+    k.store_circular(cout, n, c0);
+    k.store_circular(ccur, bc, c0);
+    // Drain pop: the stored carry would otherwise sit unconsumed in ccur.
+    let _drain = k.load_circular(ccur, c0);
+    k.barrier();
+    let v = k.load_circular(cout, c0);
+    k.store_global_tile(out, v, c0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let wu = probe_words();
+    let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (j, &w) in wu.iter().enumerate() {
+        let expected = (w & 15) as f32;
+        if (z[j] - expected).abs() >= 1e-4 {
+            if bad < 10 {
+                println!("z[{j}] = {}, expected {expected} (word {w})", z[j]);
+            }
+            bad += 1;
+        }
+    }
+    println!("q4k nibbles bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Stage 2: scale conversion — BF16 CB tile → F32 cast → out. Expected:
+/// the bf16-rounded input value, exactly.
+#[test]
+fn tenstorrent_probe_q4k_convert() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::BF16);
+    let out = k.param_mut(DType::F32);
+    let ca = k.circular_storage(DType::BF16, 1);
+    let cout = k.circular_storage(DType::F32, 1);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+
+    let t = k.load_global_tile(a, c0);
+    k.store_circular(ca, t, c0);
+    k.barrier();
+    let s = k.load_circular(ca, c0);
+    let sf = k.cast(s, DType::F32);
+    k.store_circular(cout, sf, c0);
+    k.barrier();
+    let v = k.load_circular(cout, c0);
+    k.store_global_tile(out, v, c0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let data: Vec<f32> = (0..1024).map(|j| 0.001 + (j % 32) as f32 * 0.0007).collect();
+    let expected: Vec<f32> = data.iter().map(|&x| zyx::bf16::from_f32(x).to_f32()).collect();
+    let a_t = Tensor::from_vec(data, [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let expected_t: Vec<f32> = Tensor::from_vec(expected.clone(), [32i64, 32])?.tilize()?.to_vec()?;
+    let mut bad = 0;
+    for (j, (&zv, &ev)) in z.iter().zip(expected_t.iter()).enumerate() {
+        if (zv - ev).abs() >= 1e-6 {
+            if bad < 10 {
+                println!("z[{j}] = {zv}, expected {ev}");
+            }
+            bad += 1;
+        }
+    }
+    println!("q4k convert bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Stage 3: carry streaming — cv through the two carry CBs across 4 loop
+/// trips, carry = `trunc(cv/16)` duplicated via the scratch CB, out tile k
+/// = nibble of trip k (`cv - 16*trunc(cv/16)`). Expected: `(w >> 4k) & 15`,
+/// exact in F32. Exercises loop-wrap CB accounting (both carry CBs pushed
+/// AND popped every trip).
+#[test]
+fn tenstorrent_probe_q4k_carry() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let packed = k.param(DType::U16);
+    let out = k.param_mut(DType::F32);
+    let cu16 = k.circular_storage(DType::U16, 1);
+    let ccur = k.circular_storage(DType::F32, 2);
+    let ccur2 = k.circular_storage(DType::F32, 2);
+    let cs = k.circular_storage(DType::F32, 2);
+    let cout = k.circular_storage(DType::F32, 4);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+    let c4 = k.const_idx(4);
+    let c00625 = k.const_val(0.0625f32);
+    let c16 = k.const_val(16.0f32);
+
+    let u = k.load_global_tile(packed, c0);
+    k.store_circular(cu16, u, c0);
+    k.barrier();
+    let u1 = k.load_circular(cu16, c0);
+    let f1 = k.cast(u1, DType::F32);
+    k.store_circular(ccur, f1, c0);
+    k.store_circular(ccur2, f1, c0);
+    k.loop_over(c4, |k, _i| {
+        let cv = k.load_circular(ccur, c0);
+        let t = k.mul(cv, c00625);
+        let t = k.trunc(t);
+        k.store_circular(cs, t, c0);
+        let b16 = k.load_circular(cs, c0);
+        k.store_circular(cs, t, c0);
+        let bc = k.load_circular(cs, c0);
+        let t16 = k.mul(b16, c16);
+        let cv2 = k.load_circular(ccur2, c0);
+        let n = k.sub(cv2, t16);
+        k.store_circular(ccur, bc, c0);
+        k.store_circular(ccur2, bc, c0);
+        k.store_circular(cout, n, c0);
+    });
+    // Drain pops keep the carry CBs empty at the end of the pass (the CB
+    // verifier flags any producer/consumer imbalance).
+    let _drain = k.load_circular(ccur, c0);
+    let _drain2 = k.load_circular(ccur2, c0);
+    k.barrier();
+    k.loop_over(c4, |k, i| {
+        let v = k.load_circular(cout, i);
+        k.store_global_tile(out, v, i);
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let wu = probe_words();
+    let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&packed_t], vec![[32, 128]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 128)?.to_vec()?;
+    assert_eq!(z.len(), 4096);
+    let mut bad = 0;
+    for (tile, &w) in wu.iter().enumerate() {
+        for trip in 0..4 {
+            let expected = ((w >> (4 * trip)) & 15) as f32;
+            let got = z[trip * 1024 + tile];
+            if (got - expected).abs() >= 1e-2 {
+                if bad < 10 {
+                    println!("z[trip {trip}, tile {tile}] = {got}, expected {expected} (word {w})");
+                }
+                bad += 1;
+            }
+        }
+    }
+    println!("q4k carry bad: {bad} / 4096");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Stage 4: full math chain, ONE trip — nibble plane 0, real cast scales
+/// and mins, `v = n*sf - gf`, out = v. Isolates trip-boundary handling:
+/// no page loop, no wraparound reconfig.
+#[test]
+fn tenstorrent_probe_q4k_onetrip() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let packed = k.param(DType::U16);
+    let sc = k.param(DType::BF16);
+    let mn = k.param(DType::BF16);
+    let out = k.param_mut(DType::F32);
+    let cu16 = k.circular_storage(DType::U16, 1);
+    let csc = k.circular_storage(DType::BF16, 1);
+    let cmn = k.circular_storage(DType::BF16, 1);
+    let ccur = k.circular_storage(DType::F32, 1);
+    let ccur2 = k.circular_storage(DType::F32, 1);
+    let cs = k.circular_storage(DType::F32, 2);
+    let cout = k.circular_storage(DType::F32, 1);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+    let c00625 = k.const_val(0.0625f32);
+    let c16 = k.const_val(16.0f32);
+
+    let u = k.load_global_tile(packed, c0);
+    k.store_circular(cu16, u, c0);
+    let s0 = k.load_global_tile(sc, c0);
+    k.store_circular(csc, s0, c0);
+    let m0 = k.load_global_tile(mn, c0);
+    k.store_circular(cmn, m0, c0);
+    k.barrier();
+    let u1 = k.load_circular(cu16, c0);
+    let f1 = k.cast(u1, DType::F32);
+    k.store_circular(ccur, f1, c0);
+    k.store_circular(ccur2, f1, c0);
+    let cv = k.load_circular(ccur, c0);
+    let t = k.mul(cv, c00625);
+    let t = k.trunc(t);
+    k.store_circular(cs, t, c0);
+    let b16 = k.load_circular(cs, c0);
+    k.store_circular(cs, t, c0);
+    let bc = k.load_circular(cs, c0);
+    let t16 = k.mul(b16, c16);
+    let cv2 = k.load_circular(ccur2, c0);
+    let n = k.sub(cv2, t16);
+    k.store_circular(ccur, bc, c0);
+    let s = k.load_circular(csc, c0);
+    let sf = k.cast(s, DType::F32);
+    let m1 = k.mul(n, sf);
+    let g = k.load_circular(cmn, c0);
+    let gf = k.cast(g, DType::F32);
+    let v = k.sub(m1, gf);
+    k.store_circular(cout, v, c0);
+    // Drain pop: the stored carry would otherwise sit unconsumed in ccur.
+    let _drain = k.load_circular(ccur, c0);
+    k.barrier();
+    let vo = k.load_circular(cout, c0);
+    k.store_global_tile(out, vo, c0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let wu = probe_words();
+    let sf_raw: Vec<f32> = (0..1024).map(|j| 0.001 + (j % 32) as f32 * 0.0007).collect();
+    let mn_raw: Vec<f32> = (0..1024).map(|j| 0.01 + (j % 16) as f32 * 0.001).collect();
+    let to_bf16 = |v: &[f32]| -> Vec<zyx::bf16> { v.iter().map(|&x| zyx::bf16::from_f32(x)).collect() };
+    let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let sc_t = Tensor::from_vec(to_bf16(&sf_raw), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let mn_t = Tensor::from_vec(to_bf16(&mn_raw), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&packed_t, &sc_t, &mn_t], vec![[32, 32]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let sf: Vec<f32> = sf_raw.iter().map(|&x| zyx::bf16::from_f32(x).to_f32()).collect();
+    let mn: Vec<f32> = mn_raw.iter().map(|&x| zyx::bf16::from_f32(x).to_f32()).collect();
+    let mut bad = 0;
+    for (j, &w) in wu.iter().enumerate() {
+        let n = (w & 15) as f32;
+        let expected = n * sf[j] - mn[j];
+        if (z[j] - expected).abs() >= 1e-4 {
+            if bad < 10 {
+                println!("z[{j}] = {}, expected {expected} (word {} n {n})", z[j], w);
+            }
+            bad += 1;
+        }
+    }
+    println!("q4k onetrip bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// fp32-entry SFPU bisect: which op breaks when DST entries are 4 bytes?
+// Each stage extends the previous by one op; the first stage that hangs
+// or corrupts on the simulator names the culprit. Run with
+// TT_METAL_SIMULATOR=$HOME/sim/libttsim_bh.so.
+// ---------------------------------------------------------------------------
+
+/// Stage 1: copy + typecast U16->F32 in fp32 DST mode, pack F32.
+#[test]
+fn tenstorrent_probe_fp32_seed() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let packed = k.param(DType::U16);
+    let out = k.param_mut(DType::F32);
+    let cu16 = k.circular_storage(DType::U16, 1);
+    let cout = k.circular_storage(DType::F32, 1);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+
+    let u = k.load_global_tile(packed, c0);
+    k.store_circular(cu16, u, c0);
+    k.barrier();
+    let u1 = k.load_circular(cu16, c0);
+    let f = k.cast(u1, DType::F32);
+    k.store_circular(cout, f, c0);
+    k.barrier();
+    let v = k.load_circular(cout, c0);
+    k.store_global_tile(out, v, c0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let wu = probe_words();
+    let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.to_vec()?;
+    let expected: Vec<f32> = Tensor::from_vec(
+        wu.iter().map(|&w| w as f32).collect::<Vec<f32>>(),
+        [32i64, 32],
+    )?
+    .tilize()?
+    .to_vec()?;
+    let mut bad = 0;
+    for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
+        if (zv - ev).abs() >= 1e-3 {
+            if bad < 6 {
+                println!("z[{j}] = {zv}, expected {ev}");
+            }
+            bad += 1;
+        }
+    }
+    println!("fp32 seed bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Stage 2: stage 1 + scalar mul (binop_with_scalar) in fp32 DST mode.
+#[test]
+fn tenstorrent_probe_fp32_scalar() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let packed = k.param(DType::U16);
+    let out = k.param_mut(DType::F32);
+    let cu16 = k.circular_storage(DType::U16, 1);
+    let cout = k.circular_storage(DType::F32, 1);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+    let c00625 = k.const_val(0.0625f32);
+
+    let u = k.load_global_tile(packed, c0);
+    k.store_circular(cu16, u, c0);
+    k.barrier();
+    let u1 = k.load_circular(cu16, c0);
+    let f = k.cast(u1, DType::F32);
+    let t = k.mul(f, c00625);
+    k.store_circular(cout, t, c0);
+    k.barrier();
+    let v = k.load_circular(cout, c0);
+    k.store_global_tile(out, v, c0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let wu = probe_words();
+    let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.to_vec()?;
+    let expected: Vec<f32> = Tensor::from_vec(
+        wu.iter().map(|&w| w as f32 * 0.0625).collect::<Vec<f32>>(),
+        [32i64, 32],
+    )?
+    .tilize()?
+    .to_vec()?;
+    let mut bad = 0;
+    for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
+        if (zv - ev).abs() >= 1e-3 {
+            if bad < 6 {
+                println!("z[{j}] = {zv}, expected {ev}");
+            }
+            bad += 1;
+        }
+    }
+    println!("fp32 scalar bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Stage 3: stage 2 + trunc in fp32 DST mode.
+#[test]
+fn tenstorrent_probe_fp32_trunc() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let packed = k.param(DType::U16);
+    let out = k.param_mut(DType::F32);
+    let cu16 = k.circular_storage(DType::U16, 1);
+    let cout = k.circular_storage(DType::F32, 1);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+    let c00625 = k.const_val(0.0625f32);
+
+    let u = k.load_global_tile(packed, c0);
+    k.store_circular(cu16, u, c0);
+    k.barrier();
+    let u1 = k.load_circular(cu16, c0);
+    let f = k.cast(u1, DType::F32);
+    let t = k.mul(f, c00625);
+    let t = k.trunc(t);
+    k.store_circular(cout, t, c0);
+    k.barrier();
+    let v = k.load_circular(cout, c0);
+    k.store_global_tile(out, v, c0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let wu = probe_words();
+    let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.to_vec()?;
+    let expected: Vec<f32> = Tensor::from_vec(
+        wu.iter().map(|&w| (w as f32 * 0.0625).trunc()).collect::<Vec<f32>>(),
+        [32i64, 32],
+    )?
+    .tilize()?
+    .to_vec()?;
+    let mut bad = 0;
+    for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
+        if (zv - ev).abs() >= 1e-3 {
+            if bad < 6 {
+                println!("z[{j}] = {zv}, expected {ev}");
+            }
+            bad += 1;
+        }
+    }
+    println!("fp32 trunc bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Stage 4: stage 3 + sub_binary_tile (n = cv2 - 16*t) in fp32 DST mode.
+#[test]
+fn tenstorrent_probe_fp32_sub() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let packed = k.param(DType::U16);
+    let out = k.param_mut(DType::F32);
+    let cu16 = k.circular_storage(DType::U16, 1);
+    let ccur = k.circular_storage(DType::F32, 1);
+    let ccur2 = k.circular_storage(DType::F32, 1);
+    let cout = k.circular_storage(DType::F32, 1);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+    let c00625 = k.const_val(0.0625f32);
+    let c16 = k.const_val(16.0f32);
+
+    let u = k.load_global_tile(packed, c0);
+    k.store_circular(cu16, u, c0);
+    k.barrier();
+    let u1 = k.load_circular(cu16, c0);
+    let f = k.cast(u1, DType::F32);
+    k.store_circular(ccur, f, c0);
+    k.store_circular(ccur2, f, c0);
+    let cv = k.load_circular(ccur, c0);
+    let t = k.mul(cv, c00625);
+    let t = k.trunc(t);
+    let t16 = k.mul(t, c16);
+    let cv2 = k.load_circular(ccur2, c0);
+    let n = k.sub(cv2, t16);
+    // Drain the carry CB so its single tile stays consumed.
+    let _carry = k.load_circular(ccur, c0);
+    k.store_circular(cout, n, c0);
+    k.barrier();
+    let v = k.load_circular(cout, c0);
+    k.store_global_tile(out, v, c0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let wu = probe_words();
+    let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.to_vec()?;
+    let expected: Vec<f32> = Tensor::from_vec(
+        wu.iter().map(|&w| (w & 15) as f32).collect::<Vec<f32>>(),
+        [32i64, 32],
+    )?
+    .tilize()?
+    .to_vec()?;
+    let mut bad = 0;
+    for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
+        if (zv - ev).abs() >= 1e-3 {
+            if bad < 6 {
+                println!("z[{j}] = {zv}, expected {ev}");
+            }
+            bad += 1;
+        }
+    }
+    println!("fp32 sub bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
