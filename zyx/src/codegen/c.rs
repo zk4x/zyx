@@ -449,6 +449,7 @@ impl Kernel {
                 Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
+                | Op::BroadcastTile { .. }
                 | Op::Move { .. }
                 | Op::Reduce { .. } => {
                     return Err(BackendError {

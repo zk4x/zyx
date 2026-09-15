@@ -167,6 +167,7 @@ impl Kernel {
                     add_param!(acc);
                 }
                 Op::TransposeTile { x } => add_param!(x),
+                Op::BroadcastTile { x, .. } => add_param!(x),
                 Op::Binary { x, y, .. } => {
                     add_param!(x);
                     add_param!(y);

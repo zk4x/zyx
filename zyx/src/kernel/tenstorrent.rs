@@ -797,7 +797,7 @@ impl Kernel {
                 scaler: accumulator,
                 acc: accumulator,
                 rop: accumulation_bop,
-                kind: crate::kernel::ops::TileReduceKind::Scalar,
+                kind: crate::kernel::ops::TileDim::Scalar,
             },
         );
 

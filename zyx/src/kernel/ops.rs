@@ -146,7 +146,7 @@ pub enum Op {
         scaler: OpId,
         acc: OpId,
         rop: BOp,
-        kind: TileReduceKind,
+        kind: TileDim,
     },
     /// Hardware tile matmul: folds `x @ y` into accumulator tile `acc`
     /// (TT: `matmul_tiles` accumulates into DST). Explicit `acc` keeps
@@ -158,6 +158,15 @@ pub enum Op {
     },
     TransposeTile {
         x: OpId,
+    },
+    /// Marker: tile `x` (a `load_circular` tile) is consumed with
+    /// broadcast `kind` by the consuming tiled binary, which emits the
+    /// fused broadcast form (TT: `add/sub/mul_tiles_bcast_*`, operands
+    /// stay in CBs). Without the marker the binary uses the plain
+    /// register form. Carries no traffic itself.
+    BroadcastTile {
+        x: OpId,
+        kind: TileDim,
     },
     // For backend specific assembly
     Asm {
@@ -177,14 +186,17 @@ pub enum Op {
     },
 }
 
-/// Which dimension a [`Op::ReduceTile`] collapses within each 32x32 tile.
+/// Which dimension a [`Op::ReduceTile`] collapses, or a
+/// [`Op::BroadcastTile`] replicates, within each 32x32 tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum TileReduceKind {
-    /// One value per row (32 values, carried in the result tile's first row).
+pub enum TileDim {
+    /// One value per row (reduce: 32 values carried in the result
+    /// tile's first row; broadcast: one row replicated to all rows).
     Row,
-    /// One value per column (32 values, carried in the result tile's first row).
+    /// One value per column (reduce: 32 values carried in the result
+    /// tile's first row; broadcast: one column replicated to all columns).
     Col,
-    /// Whole tile to a single scalar.
+    /// Whole tile to/from a single scalar.
     Scalar,
 }
 
@@ -546,6 +558,7 @@ impl Op {
             Op::If { condition } => vec![*condition],
             &Op::MatmulTile { x, y, acc } => vec![x, y, acc],
             &Op::TransposeTile { x } => vec![x],
+            &Op::BroadcastTile { x, .. } => vec![x],
             &Op::ReduceTile { x, acc, scaler, .. } => vec![x, acc, scaler],
         }
         .into_iter()
@@ -589,6 +602,7 @@ impl Op {
             Op::MatmulTile { x, y, acc } => vec![x, y, acc],
             Op::ReduceTile { x, acc, scaler, .. } => vec![x, acc, scaler],
             Op::TransposeTile { x } => vec![x],
+            Op::BroadcastTile { x, .. } => vec![x],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
         }
         .into_iter()

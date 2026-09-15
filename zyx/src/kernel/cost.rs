@@ -154,6 +154,10 @@ impl Kernel {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(x).or_insert(0) += 1;
                     }
+                    Op::BroadcastTile { x, .. } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
                     Op::If { condition } => {
                         *rcs.entry(condition).or_insert(0) += 1;
                     }
@@ -206,6 +210,7 @@ impl Kernel {
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
+                | Op::BroadcastTile { .. }
                 | Op::Loop { .. }
                 | Op::Index { .. }
                 | Op::Param { .. }
@@ -275,7 +280,8 @@ impl Kernel {
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
                 | Op::Asm { .. }
-                | Op::TransposeTile { .. } => {}
+                | Op::TransposeTile { .. }
+                | Op::BroadcastTile { .. } => {}
                 Op::Load { src, index, layout } => {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {

@@ -1926,7 +1926,8 @@ impl Runtime {
                     | Op::Index { .. }
                     | Op::Wmma { .. }
                     | Op::MatmulTile { .. }
-                    | Op::TransposeTile { .. } => {
+                    | Op::TransposeTile { .. }
+                    | Op::BroadcastTile { .. } => {
                         unreachable!("promote_to_graph: eager kernel op {oid:?}")
                     }
                 }
@@ -2052,7 +2053,8 @@ impl Runtime {
                                     | Op::Index { .. }
                                     | Op::Wmma { .. }
                                     | Op::MatmulTile { .. }
-                                    | Op::TransposeTile { .. } => {
+                                    | Op::TransposeTile { .. }
+                                    | Op::BroadcastTile { .. } => {
                                         unreachable!("promote_to_graph: dim op {entry:?} in param shape stack")
                                     }
                                 });

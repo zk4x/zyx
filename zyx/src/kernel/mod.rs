@@ -98,7 +98,7 @@ pub(crate) use crate::backend::DeviceId;
 use crate::backend::DeviceInfo;
 pub use crate::tensor::Dev;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
-pub use ops::{BOp, MMADType, MMADims, MMALayout, OpId, ParamKind, TileReduceKind};
+pub use ops::{BOp, MMADType, MMADims, MMALayout, OpId, ParamKind, TileDim};
 pub(crate) use ops::{MoveOp, Op, OpNode, RangeKind, UOp};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
@@ -364,6 +364,10 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
+                Op::BroadcastTile { x, .. } => {
+                    dtypes.insert(op_id, dtypes[&x]);
+                    *rcs.entry(x).or_insert(0) += 1;
+                }
                 Op::Binary { x, y, bop } => {
                     let dtype = if bop.returns_bool() {
                         (DType::Bool, dtypes[&x].1)
@@ -488,6 +492,7 @@ impl Kernel {
                 Op::Move { x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
                 Op::ReduceTile { acc, .. } => op_id = acc,
+                Op::BroadcastTile { x, .. } => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return MemLayout::Scalar,
                 Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
             }
@@ -532,6 +537,7 @@ impl Kernel {
                 Op::Move { x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
                 Op::ReduceTile { acc, .. } => op_id = acc,
+                Op::BroadcastTile { x, .. } => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return IDX_T,
                 Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
             }

@@ -48,6 +48,7 @@ impl Kernel {
                 | Op::EndIf
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
+                | Op::BroadcastTile { .. }
                 | Op::Index { .. }
                 | Op::Const(_)
                 | Op::Param { .. }

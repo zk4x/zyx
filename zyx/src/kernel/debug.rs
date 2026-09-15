@@ -134,6 +134,12 @@ impl Display for Kernel {
                     let x = id_map[&x];
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}").unwrap();
                 }
+                Op::BroadcastTile { x, kind } => {
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map[&x];
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}broadcast_tile_{kind:?}{reset} r{x}").unwrap();
+                }
                 Op::Param { dtype, kind, shape } => {
                     dtypes.insert(op_id, dtype);
                     if shape.is_null() {

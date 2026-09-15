@@ -10,7 +10,7 @@
 
 #![cfg(feature = "tenstorrent")]
 
-use zyx::kernel::{BOp, Dev, Kernel, MemScope, OpId, TileReduceKind};
+use zyx::kernel::{BOp, Dev, Kernel, MemScope, OpId, TileDim};
 use zyx::{DType, Tensor, ZyxError};
 
 /// Single-core dtype×op matrix: every elementwise op on F16 and BF16.
@@ -517,7 +517,7 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
         let va = k.load_circular(cin, 0);
         let vs = k.load_circular(csc, 0);
         let av = k.load_register_tile(acc, 0);
-        let f = k.reduce_tile(va, vs, av, BOp::Max, TileReduceKind::Col);
+        let f = k.reduce_tile(va, vs, av, BOp::Max, TileDim::Col);
         k.store_register_tile(acc, f, 0);
     });
     let f = k.load_register_tile(acc, 0);
@@ -850,6 +850,108 @@ fn tenstorrent_matmul_single_core() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// Matmul with BF16 acc: all-BF16 kernel (the JIT rejects mixed
+/// F16/BF16 input formats, so sides are BF16 too) under 16-bit DST
+/// — no F32 storage anywhere, Bf16 compiler path. Decides whether
+/// the matmul→reduce chain can skip the F32 acc + broken SFPU cast
+/// entirely.
+#[test]
+fn tenstorrent_matmul_bf16_acc() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::BF16);
+    let b = k.param(DType::BF16);
+    let out = k.param_mut(DType::BF16);
+
+    let ca = k.circular_storage(DType::BF16, 1);
+    let cb = k.circular_storage(DType::BF16, 1);
+    let cout = k.circular_storage(DType::BF16, 1);
+
+    let _g = k.group_range(0, 1);
+
+    // Reader: A tile (mt,kt) at mt*Kt+kt, B tile (kt,nt) at kt*Nt+nt.
+    k.loop_over(1, |k, mti| {
+        k.loop_over(2, |k, nti| {
+            k.loop_over(2, |k, kti| {
+                let at = k.mad(mti, 2, kti);
+                let abase = k.mad(at, 1024, 0);
+                let ta = k.load_global_tile(a, abase);
+                k.store_circular(ca, ta, 0);
+                let bt = k.mad(kti, 2, nti);
+                let bbase = k.mad(bt, 1024, 0);
+                let tb = k.load_global_tile(b, bbase);
+                k.store_circular(cb, tb, 0);
+            });
+        });
+    });
+    k.barrier();
+    // Compute: one acc cone per output tile, Kt accumulation steps.
+    k.loop_over(1, |k, _mti| {
+        k.loop_over(2, |k, _nti| {
+            let acc = k.storage(DType::BF16, MemScope::Register, 1024);
+            k.loop_over(2, |k, _kti| {
+                let va = k.load_circular(ca, 0);
+                let vb = k.load_circular(cb, 0);
+                let av = k.load_register_tile(acc, 0);
+                let f = k.matmul_tile(va, vb, av);
+                k.store_register_tile(acc, f, 0);
+            });
+            let f = k.load_register_tile(acc, 0);
+            k.store_circular(cout, f, 0);
+        });
+    });
+    k.barrier();
+    // Writer: output tile (mt,nt) at mt*Nt+nt, row-major.
+    k.loop_over(1, |k, mti| {
+        k.loop_over(2, |k, nti| {
+            let ot = k.mad(mti, 2, nti);
+            let obase = k.mad(ot, 1024, 0);
+            let v = k.load_circular(cout, 0);
+            k.store_global_tile(out, v, obase);
+        });
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // A[32,64] @ B[64,64], values kept small; BF16 accumulation
+    // over 64 terms, tolerance covers it.
+    let a_data: Vec<f32> = (0..32 * 64).map(|j| (j % 4) as f32 * 0.0625).collect();
+    let b_data: Vec<f32> = (0..64 * 64).map(|j| ((j / 4) % 4) as f32 * 0.0625).collect();
+    let mut expected = vec![0.0f32; 32 * 64];
+    for r in 0..32 {
+        for c in 0..64 {
+            let mut s = 0.0f32;
+            for t in 0..64 {
+                s += a_data[r * 64 + t] * b_data[t * 64 + c];
+            }
+            expected[r * 64 + c] = s;
+        }
+    }
+    let a_t = Tensor::from_vec(a_data, [32, 64])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let b_t = Tensor::from_vec(b_data, [64, 64])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 64]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 64)?.to_vec()?;
+    assert_eq!(z.len(), 2048);
+    let mut bad = 0;
+    for (p, (&v, &e)) in z.iter().zip(expected.iter()).enumerate() {
+        if (v - e).abs() >= 1.5e-1 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {e}");
+            }
+            bad += 1;
+        }
+    }
+    println!("mm bf16 acc bad: {bad} / 2048");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
 // Dtype x op matrix: every float elementwise op on F16 and BF16.
 //
 // IGNORED entries (all F16) are vendor-LLK/silicon failures, NOT zyx bugs:
@@ -992,3 +1094,80 @@ tt_binary!(
     tt_range,
     |x: f32, y: f32| x.max(y)
 );
+
+/// Row-broadcast add: full tile + bias row via the fused
+/// `add_tiles_bcast_rows` (operands stay in CBs, no pre-copies).
+/// A[32,32] + bias[1,32] -> out[32,32]. Single tile: the bias tile
+/// is pushed once and popped once, existing traffic only.
+#[test]
+fn tenstorrent_broadcast_row_add() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::BF16);
+    let bias = k.param(DType::BF16);
+    let out = k.param_mut(DType::BF16);
+
+    let ca = k.circular_storage(DType::BF16, 4);
+    let cb = k.circular_storage(DType::BF16, 1);
+    let cout = k.circular_storage(DType::BF16, 1);
+
+    let _g = k.group_range(0, 1);
+
+    k.loop_over(1, |k, _mti| {
+        k.loop_over(1, |k, _nti| {
+            let ta = k.load_global_tile(a, 0);
+            k.store_circular(ca, ta, 0);
+        });
+    });
+    let tb = k.load_global_tile(bias, 0);
+    k.store_circular(cb, tb, 0);
+    k.barrier();
+    k.loop_over(1, |k, _mti| {
+        k.loop_over(1, |k, _nti| {
+            let va = k.load_circular(ca, 0);
+            let vb = k.load_circular(cb, 0);
+            let b = k.broadcast_tile(vb, TileDim::Row);
+            let f = k.add(va, b);
+            k.store_circular(cout, f, 0);
+        });
+    });
+    k.barrier();
+    k.loop_over(1, |k, mti| {
+        k.loop_over(1, |k, nti| {
+            let ot = k.mad(mti, 1, nti);
+            let obase = k.mad(ot, 1024, 0);
+            let v = k.load_circular(cout, 0);
+            k.store_global_tile(out, v, obase);
+        });
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let a_data: Vec<f32> = (0..32 * 32).map(|j| (j % 8) as f32 * 0.0625).collect();
+    let b_data: Vec<f32> = (0..32).map(|j| (j % 4) as f32 * 0.125).collect();
+    let a_t = Tensor::from_vec(a_data.clone(), [32, 32])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let b_t = Tensor::from_vec(b_data.clone(), [1, 32])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t, &b_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for r in 0..32 {
+        for c in 0..32 {
+            let expected = a_data[r * 32 + c] + b_data[c];
+            if (z[r * 32 + c] - expected).abs() >= 5e-2 {
+                if bad < 10 {
+                    println!("z[{}] = {}, expected {expected}", r * 32 + c, z[r * 32 + c]);
+                }
+                bad += 1;
+            }
+        }
+    }
+    println!("bcast row-add bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}

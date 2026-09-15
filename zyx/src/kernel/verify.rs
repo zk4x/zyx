@@ -75,6 +75,7 @@ impl Kernel {
                     | Op::ReduceTile { .. }
                     | Op::MatmulTile { .. }
                     | Op::TransposeTile { .. }
+                    | Op::BroadcastTile { .. }
                     | Op::Asm { .. } => has_post_linearize_ops = true,
                     Op::Move { .. } | Op::Reduce { .. } => has_move_or_reduce = true,
                     _ => {}
@@ -220,6 +221,10 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&acc]);
                 }
                 Op::TransposeTile { x } => {
+                    check(op_id, x, &stack);
+                    dtypes.insert(op_id, dtypes[&x]);
+                }
+                Op::BroadcastTile { x, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }

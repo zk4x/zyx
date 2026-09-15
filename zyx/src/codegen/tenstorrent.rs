@@ -1,7 +1,7 @@
 use crate::{
     DType, Map, Set,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, Kernel, MMADType, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TileReduceKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, MMADType, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TileDim, UOp},
 };
 
 use nanoserde::{DeBin, SerBin};
@@ -219,9 +219,15 @@ enum TrafficKind {
 fn fused_only_load(kernel: &Kernel, consumers: &Map<OpId, Vec<OpId>>, load: OpId) -> bool {
     match consumers.get(&load) {
         None => false,
-        Some(cs) => cs
-            .iter()
-            .all(|&c| matches!(kernel.ops[c].op, Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. })),
+        Some(cs) => cs.iter().all(|&c| match kernel.ops[c].op {
+            Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. } | Op::BroadcastTile { .. } => true,
+            // A binary with a broadcast-marked side consumes both
+            // sides from CBs (fused form, no pre-copies).
+            Op::Binary { x, y, .. } => {
+                matches!(kernel.ops[x].op, Op::BroadcastTile { .. }) || matches!(kernel.ops[y].op, Op::BroadcastTile { .. })
+            }
+            _ => false,
+        }),
     }
 }
 
@@ -257,7 +263,21 @@ fn classify_tile_cfg(
             _ => None,
         },
         Op::TransposeTile { x } => tile_cb(kernel, x, map).map(Cfg::Transpose),
-        Op::Binary { bop, .. } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => Some(Cfg::Binary(bop)),
+        Op::Binary { x, y, bop } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => {
+            // A BroadcastTile-marked side fuses: the marker names the
+            // broadcast (B) operand, the plain side must be a CB load
+            // (the full A tile). Marker on both sides is unsupported.
+            let marker = |side: OpId| match kernel.ops[side].op {
+                Op::BroadcastTile { x: mx, kind } => Some((kind, tile_cb(kernel, mx, map))),
+                _ => None,
+            };
+            match (marker(x), marker(y)) {
+                (Some((kind, Some(cb_b))), None) => tile_cb(kernel, y, map).map(|cb_a| Cfg::Bcast(bop, kind, cb_a, cb_b)),
+                (None, Some((kind, Some(cb_b)))) => tile_cb(kernel, x, map).map(|cb_a| Cfg::Bcast(bop, kind, cb_a, cb_b)),
+                (None, None) => Some(Cfg::Binary(bop)),
+                _ => None,
+            }
+        }
         Op::Unary { uop, .. } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => Some(Cfg::Unary(uop)),
         Op::Cast { x, dtype, .. } if matches!(data.dtypes[&op].1, MemLayout::Tile { .. }) => {
             Some(Cfg::Typecast(data.dtypes[&x].0, dtype))
@@ -396,8 +416,14 @@ enum Cfg {
     /// `copy_tile_init(cb)`: shares unpack-A with matmul, reduce, and
     /// transpose, so it is a config kind like any other.
     Copy(CBId),
-    Reduce(BOp, TileReduceKind, CBId, CBId),
+    Reduce(BOp, TileDim, CBId, CBId),
     Transpose(CBId),
+    /// Fused broadcast binary (`add/sub/mul_tiles_bcast_*`): the full
+    /// tile comes from `CBId` 0, the broadcast lane tile from `CBId` 1.
+    /// Like other CB-consuming configs the init programs the unpacker
+    /// for both CBs; unlike the DST-register `Binary` it takes no
+    /// pre-copies.
+    Bcast(BOp, TileDim, CBId, CBId),
 }
 
 impl Cfg {
@@ -466,6 +492,25 @@ fn unary_init_name(uop: UOp) -> &'static str {
     }
 }
 
+/// Hoisted init call for a fused broadcast binary (all 0.72 forms
+/// are `_init_short`: MATH + unpack mode programming, no format
+/// reconfig — uniform-format probes only). `None` means the (op,
+/// kind) pair has no LLK (notably every `Div`).
+fn bcast_init_name(bop: BOp, kind: TileDim) -> Option<&'static str> {
+    match (bop, kind) {
+        (BOp::Add, TileDim::Row) => Some("add_bcast_rows_init_short"),
+        (BOp::Add, TileDim::Col) => Some("add_bcast_cols_init_short"),
+        (BOp::Add, TileDim::Scalar) => Some("add_bcast_scalar_init_short"),
+        (BOp::Sub, TileDim::Row) => Some("sub_bcast_rows_init_short"),
+        (BOp::Sub, TileDim::Col) => Some("sub_bcast_cols_init_short"),
+        (BOp::Sub, TileDim::Scalar) => Some("sub_tiles_bcast_scalar_init_short"),
+        (BOp::Mul, TileDim::Row) => Some("mul_bcast_rows_init_short"),
+        (BOp::Mul, TileDim::Col) => Some("mul_bcast_cols_init_short"),
+        (BOp::Mul, TileDim::Scalar) => Some("mul_tiles_bcast_scalar_init_short"),
+        _ => None,
+    }
+}
+
 /// Hoisted init call for a tile binary op, if it needs one. Single
 /// table shared by the hoist and inline transition emission.
 fn binary_init_name(bop: BOp) -> Option<&'static str> {
@@ -481,11 +526,11 @@ fn binary_init_name(bop: BOp) -> Option<&'static str> {
 }
 
 /// LLK reduce dimension for a tile reduce kind.
-fn reduce_dim_name(kind: TileReduceKind) -> &'static str {
+fn reduce_dim_name(kind: TileDim) -> &'static str {
     match kind {
-        TileReduceKind::Row => "ReduceDim::REDUCE_ROW",
-        TileReduceKind::Col => "ReduceDim::REDUCE_COL",
-        TileReduceKind::Scalar => "ReduceDim::REDUCE_SCALAR",
+        TileDim::Row => "ReduceDim::REDUCE_ROW",
+        TileDim::Col => "ReduceDim::REDUCE_COL",
+        TileDim::Scalar => "ReduceDim::REDUCE_SCALAR",
     }
 }
 
@@ -669,7 +714,7 @@ impl Kernel {
                 Op::Param { shape, .. } => {
                     stack.push(shape);
                 }
-                Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => {
+                Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } | Op::BroadcastTile { x, .. } => {
                     stack.push(x);
                 }
                 Op::Binary { x, y, .. } => {
@@ -848,6 +893,10 @@ impl Kernel {
                         *rcs.entry(acc).or_insert(0) += 1;
                     }
                     Op::TransposeTile { x } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::BroadcastTile { x, .. } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(x).or_insert(0) += 1;
                     }
@@ -1938,6 +1987,12 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
                 let out = self.startup.map(|[_, _, o]| o).expect("tenstorrent2: transpose init without startup triple");
                 format!("transpose_wh_init({cb}, {out});")
             }
+            PlacedInit::Full(Cfg::Bcast(bop, kind, cb_a, cb_b)) => {
+                let Some(init) = bcast_init_name(bop, kind) else {
+                    panic!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no init call")
+                };
+                format!("{init}({cb_a}, {cb_b});")
+            }
             PlacedInit::Full(Cfg::Reduce(rop, kind, ci, cs)) => {
                 let Some(slot) = acc else {
                     panic!("tenstorrent2: reduce init hoisted away from its op (the acc slot lives at the op)");
@@ -2167,7 +2222,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         cb_sc: CBId,
         acc: TileId<DSTBF16>,
         rop: BOp,
-        kind: TileReduceKind,
+        kind: TileDim,
         rc: u32,
     ) -> Result<TileId<DSTBF16>, BackendError> {
         let op_name = match rop {
@@ -2241,6 +2296,65 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
         }
         let odst = self.alloc(rc);
         writeln!(src, "{indent}{name}({x}, {y}, {odst});");
+        self.tile_map.insert(op_id, odst);
+        odst
+    }
+
+    /// Fused broadcast binary (`add/sub/mul_tiles_bcast_*`): both
+    /// operands stay in CBs — the full tile in `cb_a`, the broadcast
+    /// lane tile in `cb_b` — and the result lands in a fresh DST slot.
+    /// Single-tile traffic (pop both); multi-output reuse of one
+    /// broadcast tile is a later refinement.
+    #[allow(dead_code)]
+    fn bcast(
+        &mut self,
+        src: &mut String,
+        indent: &str,
+        cb_em: &mut CBEmitter,
+        op_id: OpId,
+        cb_a: CBId,
+        cb_b: CBId,
+        bop: BOp,
+        kind: TileDim,
+        rc: u32,
+    ) -> TileId<DSTBF16> {
+        let name = match (bop, kind) {
+            (BOp::Add, TileDim::Row) => "add_tiles_bcast_rows",
+            (BOp::Add, TileDim::Col) => "add_tiles_bcast_cols",
+            (BOp::Add, TileDim::Scalar) => "add_tiles_bcast_scalar",
+            (BOp::Sub, TileDim::Row) => "sub_tiles_bcast_rows",
+            (BOp::Sub, TileDim::Col) => "sub_tiles_bcast_cols",
+            (BOp::Sub, TileDim::Scalar) => "sub_tiles_bcast_scalar",
+            (BOp::Mul, TileDim::Row) => "mul_tiles_bcast_rows",
+            (BOp::Mul, TileDim::Col) => "mul_tiles_bcast_cols",
+            (BOp::Mul, TileDim::Scalar) => "mul_tiles_bcast_scalar",
+            _ => todo!("tenstorrent2 broadcast ({bop:?}, {kind:?}) op"),
+        };
+        match self.pop(op_id) {
+            None => {}
+            Some(init @ PlacedInit::Full(Cfg::Bcast(..))) => {
+                let line = self.line(init, None).expect("tenstorrent2: broadcast init is infallible");
+                writeln!(src, "{indent}{line}");
+            }
+            Some(other) => panic!("tenstorrent2: broadcast op {op_id} placed a non-broadcast init ({other:?})"),
+        }
+        self.math_lock(src, indent);
+        debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: broadcast without MATH lock");
+        let (fmt_a, fmt_b) = (cb_em.config[cb_a].0, cb_em.config[cb_b].0);
+        debug_assert_eq!(fmt_a, fmt_b, "tenstorrent2: broadcast op {op_id} mixes CB formats (short inits reconfigure nothing)");
+        cb_em.wait_front(src, indent, cb_a, 1);
+        cb_em.wait_front(src, indent, cb_b, 1);
+        let odst = self.alloc(rc);
+        if matches!(kind, TileDim::Row) {
+            writeln!(src, "{indent}{name}({cb_a}, {cb_b}, 0, 0, {odst}, 0);");
+        } else {
+            writeln!(src, "{indent}{name}({cb_a}, {cb_b}, 0, 0, {odst});");
+        }
+        cb_em.record_move(cb_a, 1);
+        cb_em.record_move(cb_b, 1);
+        cb_em.pop_front(src, indent, cb_a, 1);
+        cb_em.pop_front(src, indent, cb_b, 1);
+        self.note_unpack(cb_a, fmt_a);
         self.tile_map.insert(op_id, odst);
         odst
     }
@@ -2811,6 +2925,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
+                | Op::BroadcastTile { .. }
                 | Op::Asm { .. }
                 | Op::Move { .. }
                 | Op::Reduce { .. } => todo!("tenstorrent2 reader op {op_id}: {:?}", kernel.ops[op_id].op),
@@ -2884,6 +2999,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         writeln!(src, "#include \"api/compute/binary_shift.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/fill.h\"");
         writeln!(src, "#include \"api/compute/matmul.h\"");
+        writeln!(src, "#include \"api/compute/bcast.h\"");
         writeln!(src, "#include \"api/compute/reduce.h\"");
         writeln!(src, "#include \"api/compute/transpose_wh.h\"");
         writeln!(src, "#include \"api/compute/reconfig_data_format.h\"");
@@ -3000,21 +3116,69 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 }
                 Op::Binary { x, y, bop } => {
                     if matches!(compute_data.dtypes[&op_id].1, MemLayout::Tile { .. }) {
-                        // Tiled binary: three-operand form, inputs stay
-                        // live, result in a fresh slot.
-                        let ta = self.tl.tile_map.get(&x).copied().ok_or_else(|| BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}").into(),
-                        })?;
-                        let tb = self.tl.tile_map.get(&y).copied().ok_or_else(|| BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}").into(),
-                        })?;
-                        let rc = compute_data.rcs[&op_id];
-                        self.tl.binary(&mut src, &indent, op_id, ta, tb, bop, rc);
+                        // A BroadcastTile-marked side fuses into the
+                        // CB-based broadcast form; otherwise the
+                        // DST-register form.
+                        let marker = |side: OpId| match kernel.ops[side].op {
+                            Op::BroadcastTile { x: mx, kind } => Some((kind, mx)),
+                            _ => None,
+                        };
+                        let plain_cb = |side: OpId| match kernel.ops[side].op {
+                            Op::Load { src: lsrc, .. } => self.cb.map.get(&lsrc).copied(),
+                            _ => None,
+                        };
+                        match (marker(x), marker(y)) {
+                            (Some((kind, mx)), None) => {
+                                let (Some(cb_b), Some(cb_a)) = (plain_cb(mx), plain_cb(y)) else {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: broadcast op {op_id} side is no CB tile load").into(),
+                                    });
+                                };
+                                let rc = compute_data.rcs[&op_id];
+                                self.tl.bcast(&mut src, &indent, &mut self.cb, op_id, cb_a, cb_b, bop, kind, rc);
+                            }
+                            (None, Some((kind, my))) => {
+                                let (Some(cb_b), Some(cb_a)) = (plain_cb(my), plain_cb(x)) else {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: broadcast op {op_id} side is no CB tile load").into(),
+                                    });
+                                };
+                                let rc = compute_data.rcs[&op_id];
+                                self.tl.bcast(&mut src, &indent, &mut self.cb, op_id, cb_a, cb_b, bop, kind, rc);
+                            }
+                            (Some(_), Some(_)) => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: broadcast op {op_id} marks both sides").into(),
+                                });
+                            }
+                            (None, None) => {
+                                // Tiled binary: three-operand form, inputs stay
+                                // live, result in a fresh slot.
+                                let ta = self.tl.tile_map.get(&x).copied().ok_or_else(|| BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}")
+                                        .into(),
+                                })?;
+                                let tb = self.tl.tile_map.get(&y).copied().ok_or_else(|| BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}")
+                                        .into(),
+                                })?;
+                                let rc = compute_data.rcs[&op_id];
+                                self.tl.binary(&mut src, &indent, op_id, ta, tb, bop, rc);
+                            }
+                        }
                     } else {
                         em.emit_op(&mut src, &indent, op_id, compute_data, &self.noc, scope_level)?;
                     }
+                }
+                Op::BroadcastTile { .. } => {
+                    // Marker: no traffic of its own. The marked load
+                    // drains at the consuming fused binary; the plain
+                    // binary path never sees this op.
                 }
                 Op::Mad { .. } => {
                     if matches!(compute_data.dtypes[&op_id].1, MemLayout::Tile { .. }) {
@@ -3123,10 +3287,14 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         let mut fused_only = false;
                         for &consumer in &compute_data.ops {
                             if kernel.ops[consumer].op.parameters().any(|p| p == op_id) {
-                                if matches!(
-                                    kernel.ops[consumer].op,
-                                    Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. }
-                                ) {
+                                if match kernel.ops[consumer].op {
+                                    Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. } | Op::BroadcastTile { .. } => true,
+                                    Op::Binary { x, y, .. } => {
+                                        matches!(kernel.ops[x].op, Op::BroadcastTile { .. })
+                                            || matches!(kernel.ops[y].op, Op::BroadcastTile { .. })
+                                    }
+                                    _ => false,
+                                } {
                                     fused_only = true;
                                 } else {
                                     fused_only = false;
@@ -3323,10 +3491,10 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         });
                     };
                     for &s in &[lx, ls] {
-                        let Op::Storage { dtype: DType::F16, .. } = kernel.ops[s].op else {
+                        let Op::Storage { dtype: DType::F16 | DType::BF16, .. } = kernel.ops[s].op else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: reduce tiles are F16, op {op_id} is not").into(),
+                                context: format!("tenstorrent2: reduce tiles are F16/BF16, op {op_id} is not").into(),
                             });
                         };
                     }
@@ -3533,6 +3701,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
+                | Op::BroadcastTile { .. }
                 | Op::Asm { .. }
                 | Op::Move { .. }
                 | Op::Reduce { .. } => todo!("tenstorrent2 writer op"),
@@ -3742,6 +3911,7 @@ impl VarEmitter<'_> {
             | Op::ReduceTile { .. }
             | Op::MatmulTile { .. }
             | Op::TransposeTile { .. }
+            | Op::BroadcastTile { .. }
             | Op::Asm { .. }
             | Op::Move { .. }
             | Op::Reduce { .. } => todo!("tenstorrent2 scalar op"),

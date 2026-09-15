@@ -26,7 +26,7 @@ use crate::error::BackendError;
 use crate::graph::{ClassId, EClass, Node, NodeData};
 use crate::kernel::{
     BOp, DeviceId, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
-    ops::TileReduceKind,
+    ops::TileDim,
 };
 use crate::runtime::{KernelId, Runtime, TensorData};
 use crate::shape::UAxis;
@@ -801,12 +801,33 @@ impl Kernel {
 
     /// Hardware tile matmul: folds `x @ y` into accumulator tile `acc`,
     /// returning the new accumulator value (explicit SSA threading).
+    /// `x`/`y` are circular (`load_circular`) tiles, `acc` a register
+    /// (`load_register_tile`) tile: the op programs the unpacker itself
+    /// and cannot consume DST registers.
     pub fn matmul_tile(&mut self, x: OpId, y: OpId, acc: OpId) -> OpId {
+        debug_assert!(
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            "matmul_tile: x {x} is not a load_circular tile"
+        );
+        debug_assert!(
+            matches!(self.ops[y].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            "matmul_tile: y {y} is not a load_circular tile"
+        );
+        debug_assert!(
+            matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })),
+            "matmul_tile: acc {acc} is not a load_register_tile tile"
+        );
         self.push_back(Op::MatmulTile { x, y, acc })
     }
 
-    /// Hardware tile transpose.
+    /// Hardware tile transpose. `x` is a circular (`load_circular`)
+    /// tile: the op programs the unpacker itself and cannot consume a
+    /// DST register.
     pub fn transpose_tile(&mut self, x: OpId) -> OpId {
+        debug_assert!(
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            "transpose_tile: x {x} is not a load_circular tile"
+        );
         self.push_back(Op::TransposeTile { x })
     }
 
@@ -815,8 +836,31 @@ impl Kernel {
     /// threading). `scaler` is the LLK-mandated scale tile (ones when
     /// unused). On TT (`reduce_tile`) the result tile carries the
     /// values in its first row, rest zeros/unchanged.
-    pub fn reduce_tile(&mut self, x: OpId, scaler: OpId, acc: OpId, rop: BOp, kind: TileReduceKind) -> OpId {
+    pub fn reduce_tile(&mut self, x: OpId, scaler: OpId, acc: OpId, rop: BOp, kind: TileDim) -> OpId {
+        debug_assert!(
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            "reduce_tile: x {x} is not a load_circular tile"
+        );
+        debug_assert!(
+            matches!(self.ops[scaler].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            "reduce_tile: scaler {scaler} is not a load_circular tile"
+        );
+        debug_assert!(
+            matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })),
+            "reduce_tile: acc {acc} is not a load_register_tile tile"
+        );
         self.push_back(Op::ReduceTile { x, scaler, acc, rop, kind })
+    }
+
+    /// Marker: tile `x` (a `load_circular` tile) is consumed with
+    /// broadcast `kind` by the consuming tiled binary, which emits the
+    /// fused broadcast form. Carries no traffic itself; forwards `x`.
+    pub fn broadcast_tile(&mut self, x: OpId, kind: TileDim) -> OpId {
+        debug_assert!(
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            "broadcast_tile: x {x} is not a load_circular tile"
+        );
+        self.push_back(Op::BroadcastTile { x, kind })
     }
 
     /// Backend-specific assembly instruction applied to `ops`.
