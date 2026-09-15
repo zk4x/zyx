@@ -404,6 +404,37 @@ impl Kernel {
             }
         }
 
+        // A load from Circular storage is a FIFO pop: hoisting it out of
+        // any enclosing loop changes pop count and position even when no
+        // store to it sits in that loop (cross-section streaming, e.g. a
+        // reader producing per-iteration while compute consumes
+        // per-iteration). Pin such loads inside their full original loop
+        // nest; the loop-carried rule above only covers loops that also
+        // store to the target.
+        for i in 0..n {
+            if !load[i] {
+                continue;
+            }
+            let Op::Load { src, .. } = self.at(rest[i]) else { continue };
+            if !matches!(
+                self.at(*src),
+                Op::Storage {
+                    scope: MemScope::Circular,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            for &(opener, closer) in &loop_bounds {
+                if opener < i && i < closer {
+                    edges.push((opener, i));
+                    in_degree[i] += 1;
+                    edges.push((i, closer));
+                    in_degree[closer] += 1;
+                }
+            }
+        }
+
         let barrier_positions: Vec<usize> = (0..n).filter(|&i| barrier[i]).collect();
         // Loads never cross barriers.
         for i in 0..n {

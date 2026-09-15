@@ -27,6 +27,12 @@ fn dequant_q4k_tt_run() -> Result<(), ZyxError> {
     // the dense file with on-device broadcast.
     let sv0: Vec<zyx::bf16> = repacked["scales"].narrow(0, 0i64, 4i64)?.to_vec()?;
     let mv0: Vec<zyx::bf16> = repacked["mins"].narrow(0, 0i64, 4i64)?.to_vec()?;
+    // TEMP-DEBUG: verify host-side fixture reads against the file bytes.
+    eprintln!(
+        "DBG sv0[0..4]={:?} mv0[0..4]={:?}",
+        sv0.iter().take(4).map(|x| x.to_f32()).collect::<Vec<_>>(),
+        mv0.iter().take(4).map(|x| x.to_f32()).collect::<Vec<_>>()
+    );
     let mut sc_full = Vec::with_capacity(4 * 1024);
     let mut mn_full = Vec::with_capacity(4 * 1024);
     for t in 0..4 {

@@ -514,6 +514,23 @@ impl Kernel {
                     | Op::EndLoop
             ) {
                 params.push(op_id);
+                continue;
+            }
+            // A load from Circular storage is a FIFO pop: its value may
+            // be dead (e.g. a drain pop that only frees the producer
+            // slot) but the pop itself is a side effect, so the load is
+            // a root like a store. Removing it would silently unbalance
+            // CB push/pop traffic.
+            if let Op::Load { src, .. } = op {
+                if matches!(
+                    self.at(*src),
+                    Op::Storage {
+                        scope: MemScope::Circular,
+                        ..
+                    }
+                ) {
+                    params.push(op_id);
+                }
             }
         }
         while let Some(op_id) = params.pop() {

@@ -136,18 +136,11 @@ impl Kernel {
                 *shape = OpId::NULL;
             }
         }
-        _t = std::time::Instant::now();
+
         self.instruction_schedule();
-        eprintln!("[compile] instruction_schedule {}us", _t.elapsed().as_micros());
-        _t = std::time::Instant::now();
         self.constant_folding();
-        eprintln!("[compile] constant_folding {}us", _t.elapsed().as_micros());
-        _t = std::time::Instant::now();
         self.dead_code_elimination();
-        eprintln!("[compile] dead_code_elimination {}us", _t.elapsed().as_micros());
-        _t = std::time::Instant::now();
         self.verify();
-        eprintln!("[compile] verify {}us", _t.elapsed().as_micros());
 
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
