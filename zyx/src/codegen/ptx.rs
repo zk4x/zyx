@@ -186,6 +186,14 @@ impl Compiler {
                     context: format!("PTX: sqrt not available for {dtype:?}").into(),
                 }),
             },
+            UOp::Rsqrt => match dtype {
+                DType::F32 => Ok("rsqrt.approx"),
+                DType::F16 => Ok("rsqrt.approx"),
+                _ => Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("PTX: rsqrt not available for {dtype:?}").into(),
+                }),
+            },
             UOp::Sin => match dtype {
                 DType::F32 => Ok("sin.approx"),
                 _ => Err(BackendError {

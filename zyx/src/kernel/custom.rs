@@ -586,6 +586,12 @@ impl Kernel {
         self.unary(x, UOp::Sqrt)
     }
 
+    /// `1/sqrt(x)`
+    pub fn rsqrt(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        self.unary(x, UOp::Rsqrt)
+    }
+
     /// `sin(x)`
     pub fn sin(&mut self, x: impl IntoOp) -> OpId {
         let x = x.into_op(self);

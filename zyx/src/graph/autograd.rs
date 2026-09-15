@@ -96,6 +96,16 @@ impl Runtime {
                         let g = self.push_binary_node(graph_id, grad, z2, BOp::Div);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
+                    UOp::Rsqrt => {
+                        // dz/dx = -z^3/2 where z = rsqrt(x).
+                        let z2 = self.push_binary_node(graph_id, cid, cid, BOp::Mul);
+                        let z3 = self.push_binary_node(graph_id, z2, cid, BOp::Mul);
+                        let two_cid = self.push_const(graph_id, Constant::new(2));
+                        let z3_2 = self.push_binary_node(graph_id, z3, two_cid, BOp::Div);
+                        let neg = self.push_node(graph_id, Node::Unary { x: z3_2, uop: UOp::Neg }).1;
+                        let g = self.push_binary_node(graph_id, grad, neg, BOp::Mul);
+                        accum_grad(self, graph_id, &mut grads, x, g);
+                    }
                     UOp::Sin => {
                         let cos_x = self.push_node(graph_id, Node::Unary { x, uop: UOp::Cos }).1;
                         let g = self.push_binary_node(graph_id, grad, cos_x, BOp::Mul);

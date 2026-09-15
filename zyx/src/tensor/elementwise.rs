@@ -300,7 +300,8 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, where each element is the reciprocal square root (i.e., `1 / sqrt(x)`) of the corresponding element in the input tensor.
     #[must_use]
     pub fn rsqrt(&self) -> Tensor {
-        self.reciprocal().sqrt()
+        let x = self.float_cast().unwrap();
+        Tensor { id: RT.lock().unary(x.id, UOp::Rsqrt) }
     }
 
     /// Applies the Self-Normalized Linear Unit (Selu) activation function to each element in the input tensor.

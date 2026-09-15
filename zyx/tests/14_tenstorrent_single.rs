@@ -997,6 +997,7 @@ tt_unary!(
 tt_unary!(tenstorrent_recip_bf16, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::BF16, 3e-2, tt_positive, |x: f32| x.recip());
 tt_unary!(tenstorrent_sqrt_f16, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::F16, 3e-2, tt_range, |x: f32| x.sqrt(), ignore);
 tt_unary!(tenstorrent_sqrt_bf16, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::BF16, 3e-2, tt_range, |x: f32| x.sqrt());
+tt_unary!(tenstorrent_rsqrt_bf16, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::BF16, 3e-2, tt_positive, |x: f32| x.sqrt().recip());
 tt_unary!(tenstorrent_sin_f16, |k: &mut Kernel, x: OpId| k.sin(x), DType::F16, 3e-2, tt_centered, |x: f32| x.sin(), ignore);
 tt_unary!(tenstorrent_sin_bf16, |k: &mut Kernel, x: OpId| k.sin(x), DType::BF16, 3e-2, tt_centered, |x: f32| x.sin());
 tt_unary!(tenstorrent_cos_f16, |k: &mut Kernel, x: OpId| k.cos(x), DType::F16, 3e-2, tt_centered, |x: f32| x.cos());

@@ -1381,3 +1381,177 @@ fn tenstorrent_softmax_rows() -> Result<(), ZyxError> {
     assert_eq!(bad, 0);
     Ok(())
 }
+
+/// RMSNorm: y = x / sqrt(mean(x^2) + eps) * w over one [32,32] BF16 tile.
+/// mean via `TileDim::Row` SUM reduce with a host-filled 1/32 scaler
+/// tile (no const-div arm needed); eps as a full host-filled tile;
+/// `rsqrt` for the scale; two full-tile muls. No immediates.
+#[test]
+fn tenstorrent_rmsnorm_rows() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::BF16);
+    let w = k.param(DType::BF16);
+    let eps_t = k.param(DType::BF16);
+    let inv_n = k.param(DType::BF16);
+    let out = k.param_mut(DType::BF16);
+
+    let ca = k.circular_storage(DType::BF16, 2);
+    let cw = k.circular_storage(DType::BF16, 1);
+    let ceps = k.circular_storage(DType::BF16, 1);
+    let cs = k.circular_storage(DType::BF16, 1);
+    let csq = k.circular_storage(DType::BF16, 1);
+    let cm = k.circular_storage(DType::BF16, 1);
+    let cv = k.circular_storage(DType::BF16, 1);
+    let cr = k.circular_storage(DType::BF16, 1);
+    let cout = k.circular_storage(DType::BF16, 1);
+    let acc = k.storage(DType::BF16, MemScope::Register, 1024);
+
+    let _g = k.group_range(0, 1);
+
+    // Reader: two copies of A (square, final mul) + one each of the rest.
+    for _ in 0..2 {
+        let ta = k.load_global_tile(a, 0);
+        k.store_circular(ca, ta, 0);
+    }
+    let tw = k.load_global_tile(w, 0);
+    k.store_circular(cw, tw, 0);
+    let te = k.load_global_tile(eps_t, 0);
+    k.store_circular(ceps, te, 0);
+    let ts = k.load_global_tile(inv_n, 0);
+    k.store_circular(cs, ts, 0);
+    k.barrier();
+
+    // x^2 -> csq.
+    let va = k.load_circular(ca, 0);
+    let sq = k.mul(va, va);
+    k.store_circular(csq, sq, 0);
+
+    // mean(x^2) -> cm (1/32 folded in via the scaler tile).
+    let vsq = k.load_circular(csq, 0);
+    let vsc = k.load_circular(cs, 0);
+    let vacc = k.load_register_tile(acc, 0);
+    let fm = k.reduce_tile(vsq, vsc, vacc, BOp::Add, TileDim::Row);
+    k.store_register_tile(acc, fm, 0);
+    let vm = k.load_register_tile(acc, 0);
+    k.store_circular(cm, vm, 0);
+
+    // mean + eps -> cv, rsqrt -> cr.
+    let vm2 = k.load_circular(cm, 0);
+    let mb = k.broadcast_tile(vm2, TileDim::Col);
+    let veps = k.load_circular(ceps, 0);
+    let v = k.add(mb, veps);
+    k.store_circular(cv, v, 0);
+    let vv = k.load_circular(cv, 0);
+    let r = k.rsqrt(vv);
+    k.store_circular(cr, r, 0);
+
+    // x * rstd * w -> cout.
+    let va2 = k.load_circular(ca, 0);
+    let vr = k.load_circular(cr, 0);
+    let t = k.mul(va2, vr);
+    let vw = k.load_circular(cw, 0);
+    let o = k.mul(t, vw);
+    k.store_circular(cout, o, 0);
+    k.barrier();
+
+    // Writer: drain the single output tile.
+    let v = k.load_circular(cout, 0);
+    k.store_global_tile(out, v, 0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let eps = 1e-4f32;
+    let a_data: Vec<f32> = (0..32 * 32).map(|j| ((j % 8) as f32 - 3.5) * 0.25).collect();
+    let w_data: Vec<f32> = (0..32 * 32).map(|j| 0.5 + (j % 4) as f32 * 0.25).collect();
+    let a_t = Tensor::from_vec(a_data.clone(), [32, 32])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let w_t = Tensor::from_vec(w_data.clone(), [32, 32])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let eps_ten = Tensor::from_vec(vec![eps; 1024], [32, 32])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let inv_n_ten = Tensor::from_vec(vec![1.0 / 32.0; 1024], [32, 32])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t, &w_t, &eps_ten, &inv_n_ten], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for r in 0..32 {
+        let mean: f32 = (0..32).map(|c| { let x = a_data[r * 32 + c]; x * x }).sum::<f32>() / 32.0;
+        let rstd = 1.0 / (mean + eps).sqrt();
+        for c in 0..32 {
+            let expected = a_data[r * 32 + c] * rstd * w_data[r * 32 + c];
+            if (z[r * 32 + c] - expected).abs() >= 5e-2 {
+                if bad < 10 {
+                    println!("z[{}] = {}, expected {expected}", r * 32 + c, z[r * 32 + c]);
+                }
+                bad += 1;
+            }
+        }
+    }
+    println!("rmsnorm bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Tile-scalar binary: `(x + 1.5) * 3.0` over one [32,32] BF16 tile.
+/// Const sides fold into `add/mul_unary_tile` fp32-bits immediates
+/// (no CB traffic for the scalars); both ops share one hoisted
+/// `binop_with_scalar_tile_init`. (2.0 is unusable here:
+/// `fold_constants` strength-reduces `x * 2.0` into `x + x`.)
+#[test]
+fn tenstorrent_scalar_add_mul() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::BF16);
+    let out = k.param_mut(DType::BF16);
+
+    let ca = k.circular_storage(DType::BF16, 1);
+    let cout = k.circular_storage(DType::BF16, 1);
+
+    let _g = k.group_range(0, 1);
+
+    let ta = k.load_global_tile(a, 0);
+    k.store_circular(ca, ta, 0);
+    k.barrier();
+
+    let va = k.load_circular(ca, 0);
+    let c15v = k.const_val(1.5f32);
+    let c15 = k.cast(c15v, DType::BF16);
+    let s = k.add(va, c15);
+    let c20v = k.const_val(3.0f32);
+    let c20 = k.cast(c20v, DType::BF16);
+    let o = k.mul(s, c20);
+    k.store_circular(cout, o, 0);
+    k.barrier();
+
+    let v = k.load_circular(cout, 0);
+    k.store_global_tile(out, v, 0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let a_data: Vec<f32> = (0..32 * 32).map(|j| (j % 8) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(a_data.clone(), [32, 32])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (i, (&zv, &av)) in z.iter().zip(a_data.iter()).enumerate() {
+        let expected = (av + 1.5) * 3.0;
+        if (zv - expected).abs() >= 5e-2 {
+            if bad < 10 {
+                println!("z[{i}] = {zv}, expected {expected}");
+            }
+            bad += 1;
+        }
+    }
+    println!("scalar add-mul bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}

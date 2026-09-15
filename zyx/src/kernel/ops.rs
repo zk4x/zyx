@@ -246,6 +246,8 @@ pub enum UOp {
     Reciprocal,
     /// Square root: sqrt(x)
     Sqrt,
+    /// Reciprocal square root: 1/sqrt(x)
+    Rsqrt,
     /// Sine: sin(x)
     Sin,
     /// Cosine: cos(x)

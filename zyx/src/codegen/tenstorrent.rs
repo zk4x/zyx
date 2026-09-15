@@ -1,5 +1,6 @@
 use crate::{
     DType, Map, Set,
+    dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, IDX_T, Kernel, MMADType, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TileDim, UOp},
 };
@@ -240,6 +241,26 @@ fn tile_cb(kernel: &Kernel, side: OpId, map: &Map<OpId, CBId>) -> Option<CBId> {
     map.get(&src).copied()
 }
 
+/// A side that resolves to a compile-time float constant (follows
+/// `Cast`/`Unary`/`Binary` const expressions): folds into a
+/// `*_unary_tile` immediate instead of CB traffic.
+fn is_const_scalar(kernel: &Kernel, op: OpId) -> bool {
+    const_f32_bits(kernel, op).is_some()
+}
+
+/// The fp32-bits immediate for a compile-time float constant side.
+/// Integer constants are NOT converted (a tile op's scalar lane is
+/// float; silent int→float would hide dtype bugs).
+fn const_f32_bits(kernel: &Kernel, op: OpId) -> Option<u32> {
+    use crate::scalar::{bf16, f16};
+    match kernel.resolve_const(op)? {
+        Constant::F32(b) => Some(f32::from_le_bytes(b).to_bits()),
+        Constant::F16(b) => Some(f16::from_le_bytes(b).to_f32().to_bits()),
+        Constant::BF16(b) => Some(bf16::from_le_bytes(b).to_f32().to_bits()),
+        _ => None,
+    }
+}
+
 /// The engine config a compute op programs, if any: the same
 /// classification the compute emitter's arms use, shared by the init
 /// placement pass (and its cleanliness scan).
@@ -274,7 +295,15 @@ fn classify_tile_cfg(
             match (marker(x), marker(y)) {
                 (Some((kind, Some(cb_b))), None) => tile_cb(kernel, y, map).map(|cb_a| Cfg::Bcast(bop, kind, cb_a, cb_b)),
                 (None, Some((kind, Some(cb_b)))) => tile_cb(kernel, x, map).map(|cb_a| Cfg::Bcast(bop, kind, cb_a, cb_b)),
-                (None, None) => Some(Cfg::Binary(bop)),
+                (None, None) => {
+                    // A compile-time-const side folds into the
+                    // immediate form (no CB traffic for the scalar).
+                    if is_const_scalar(kernel, x) || is_const_scalar(kernel, y) {
+                        Some(Cfg::BinScalar)
+                    } else {
+                        Some(Cfg::Binary(bop))
+                    }
+                }
                 _ => None,
             }
         }
@@ -424,6 +453,10 @@ enum Cfg {
     /// for both CBs; unlike the DST-register `Binary` it takes no
     /// pre-copies.
     Bcast(BOp, TileDim, CBId, CBId),
+    /// Tile-scalar binary (`*_unary_tile` with an fp32-bits immediate):
+    /// one side resolved to a compile-time `Const`. No CB traffic for
+    /// the scalar, DST-inplace. The init programs no CBs.
+    BinScalar,
 }
 
 impl Cfg {
@@ -484,6 +517,7 @@ fn unary_init_name(uop: UOp) -> &'static str {
         UOp::Log2 => "log_with_base_tile_init();",
         UOp::Reciprocal => "recip_tile_init();",
         UOp::Sqrt => "sqrt_tile_init();",
+        UOp::Rsqrt => "rsqrt_tile_init();",
         UOp::Sin => "sin_tile_init();",
         UOp::Cos => "cos_tile_init();",
         UOp::Floor | UOp::Trunc => "rounding_op_tile_init();",
@@ -1993,6 +2027,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
                 };
                 format!("{init}({cb_a}, {cb_b});")
             }
+            PlacedInit::Full(Cfg::BinScalar) => "binop_with_scalar_tile_init();".to_string(),
             PlacedInit::Full(Cfg::Reduce(rop, kind, ci, cs)) => {
                 let Some(slot) = acc else {
                     panic!("tenstorrent2: reduce init hoisted away from its op (the acc slot lives at the op)");
@@ -2420,6 +2455,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             UOp::Cos => "cos_tile",
             UOp::Reciprocal => "recip_tile",
             UOp::Sqrt => "sqrt_tile",
+            UOp::Rsqrt => "rsqrt_tile",
             UOp::Floor => "floor_tile",
             UOp::Trunc => "trunc_tile",
             UOp::Abs => "abs_tile",
@@ -2436,6 +2472,37 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             Some(other) => panic!("tenstorrent2: unary op {op_id} placed a non-unary init ({other:?})"),
         }
         writeln!(src, "{indent}{name}({x});");
+        self.tile_map.insert(op_id, x);
+        x
+    }
+
+    /// Tile-scalar binary (`*_unary_tile` with an fp32-bits immediate):
+    /// DST-inplace like unary, no CB traffic for the scalar side.
+    /// `name` is the call (`add/sub/mul/div/rsub_unary_tile`); const-first
+    /// Div has no call (recip+mul is IR's job) and never reaches here.
+    /// WARNING: the header's doc table numbers the modes
+    /// add/mul/sub/div/rsub, but the `ADD_UNARY/SUB_UNARY/...` enum —
+    /// which the call names encode — is authoritative. Trust the names.
+    fn bin_scalar(
+        &mut self,
+        src: &mut String,
+        indent: &str,
+        op_id: OpId,
+        x: TileId<DSTBF16>,
+        name: &str,
+        bits: u32,
+    ) -> TileId<DSTBF16> {
+        self.math_lock(src, indent);
+        debug_assert_eq!(self.state, TileState::MathLock, "tenstorrent2: scalar binary without MATH lock");
+        match self.pop(op_id) {
+            None => {}
+            Some(init @ PlacedInit::Full(Cfg::BinScalar)) => {
+                let line = self.line(init, None).expect("tenstorrent2: scalar binary init is infallible");
+                writeln!(src, "{indent}{line}");
+            }
+            Some(other) => panic!("tenstorrent2: scalar binary op {op_id} placed a non-scalar init ({other:?})"),
+        }
+        writeln!(src, "{indent}{name}({x}, {bits:#x});");
         self.tile_map.insert(op_id, x);
         x
     }
@@ -3011,12 +3078,13 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         writeln!(src, "#include <cstdint>");
         writeln!(src, "#include \"api/compute/common.h\"");
         writeln!(src, "#include \"api/compute/compute_kernel_api.h\"");
-        writeln!(src, "#include \"api/compute/eltwise_binary_sfpu.h\"");
-        writeln!(src, "#include \"api/compute/tile_move_copy.h\"");
+                writeln!(src, "#include \"api/compute/eltwise_binary_sfpu.h\"");
+        writeln!(src, "#include \"api/compute/eltwise_unary/binop_with_scalar.h\"");        writeln!(src, "#include \"api/compute/tile_move_copy.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/eltwise_unary.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/trigonometry.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/exp.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/recip.h\"");
+        writeln!(src, "#include \"api/compute/eltwise_unary/rsqrt.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/sqrt.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/rounding.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/negative.h\"");
@@ -3183,20 +3251,53 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                                 });
                             }
                             (None, None) => {
-                                // Tiled binary: three-operand form, inputs stay
-                                // live, result in a fresh slot.
-                                let ta = self.tl.tile_map.get(&x).copied().ok_or_else(|| BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: format!("tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}")
-                                        .into(),
-                                })?;
-                                let tb = self.tl.tile_map.get(&y).copied().ok_or_else(|| BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: format!("tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}")
-                                        .into(),
-                                })?;
-                                let rc = compute_data.rcs[&op_id];
-                                self.tl.binary(&mut src, &indent, op_id, ta, tb, bop, rc);
+                                // Const side folds into the immediate
+                                // form: (call name, tile side). Add/Mul
+                                // commute; Sub picks sub/rsub by side;
+                                // const-first Div has no call (loud).
+                                let xc = const_f32_bits(kernel, x);
+                                let yc = const_f32_bits(kernel, y);
+                                let scalar = match (xc, yc) {
+                                    (None, Some(bits)) => Some(("tile", bits, x)),
+                                    (Some(bits), None) => Some(("const", bits, y)),
+                                    _ => None,
+                                };
+                                if let Some((side, bits, tile_op)) = scalar {
+                                    let name = match (bop, side) {
+                                        (BOp::Add, _) => "add_unary_tile",
+                                        (BOp::Mul, _) => "mul_unary_tile",
+                                        (BOp::Sub, "tile") => "sub_unary_tile",
+                                        (BOp::Sub, _) => "rsub_unary_tile",
+                                        (BOp::Div, "tile") => "div_unary_tile",
+                                        _ => {
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!("tenstorrent2: const-first {bop:?} has no scalar call, op {op_id}").into(),
+                                            });
+                                        }
+                                    };
+                                    let t = self.tl.tile_map.get(&tile_op).copied().ok_or_else(|| BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: scalar binary reads a value with no DST slot, op {op_id}")
+                                            .into(),
+                                    })?;
+                                    self.tl.bin_scalar(&mut src, &indent, op_id, t, name, bits);
+                                } else {
+                                    // Tiled binary: three-operand form, inputs stay
+                                    // live, result in a fresh slot.
+                                    let ta = self.tl.tile_map.get(&x).copied().ok_or_else(|| BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}")
+                                            .into(),
+                                    })?;
+                                    let tb = self.tl.tile_map.get(&y).copied().ok_or_else(|| BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}")
+                                            .into(),
+                                    })?;
+                                    let rc = compute_data.rcs[&op_id];
+                                    self.tl.binary(&mut src, &indent, op_id, ta, tb, bop, rc);
+                                }
                             }
                         }
                     } else {

@@ -266,6 +266,7 @@ mod glsl {
     pub const Log2: u32 = 30;
     pub const Exp: u32 = 27;
     pub const Sqrt: u32 = 31;
+    pub const InverseSqrt: u32 = 32;
     pub const Pow: u32 = 26;
 }
 
@@ -1511,6 +1512,9 @@ impl Kernel {
                             }
                             UOp::Sqrt => {
                                 asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::Sqrt, src_id]);
+                            }
+                            UOp::Rsqrt => {
+                                asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::InverseSqrt, src_id]);
                             }
                             UOp::Sin => {
                                 asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::Sin, src_id]);

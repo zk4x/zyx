@@ -808,6 +808,7 @@ impl Kernel {
                     UOp::Log2 => "log2",
                     UOp::Reciprocal => "reciprocal",
                     UOp::Sqrt => "sqrt",
+                    UOp::Rsqrt => "rsqrt",
                     UOp::Sin => "sin",
                     UOp::Cos => "cos",
                     UOp::Floor => "floor",

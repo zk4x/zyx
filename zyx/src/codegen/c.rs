@@ -343,6 +343,7 @@ impl Kernel {
                                         _ = writeln!(source, "{indent}{dst} = {}/{lane};", dtype.0.one_constant().c_code())
                                     }
                                     UOp::Sqrt => _ = writeln!(source, "{indent}{dst} = sqrt({lane});"),
+                                    UOp::Rsqrt => _ = writeln!(source, "{indent}{dst} = {}/sqrt({lane});", dtype.0.one_constant().c_code()),
                                     UOp::Sin => _ = writeln!(source, "{indent}{dst} = sin({lane});"),
                                     UOp::Cos => _ = writeln!(source, "{indent}{dst} = cos({lane});"),
                                     UOp::Floor => _ = writeln!(source, "{indent}{dst} = floor({lane});"),
@@ -360,6 +361,7 @@ impl Kernel {
                             UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
                             UOp::Reciprocal => _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().c_code()),
                             UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
+                            UOp::Rsqrt => _ = writeln!(source, "{indent}r{reg} = {}/sqrt({x});", dtype.0.one_constant().c_code()),
                             UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
                             UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
                             UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),

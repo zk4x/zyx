@@ -319,6 +319,7 @@ impl Kernel {
                                         writeln!(source, "{indent}r{reg}.{c} = {}/{x}.{c};", dtype.0.one_constant().cu())
                                     }
                                     UOp::Sqrt => writeln!(source, "{indent}r{reg}.{c} = sqrt({x}.{c});"),
+                                    UOp::Rsqrt => writeln!(source, "{indent}r{reg}.{c} = rsqrt({x}.{c});"),
                                     UOp::Sin => writeln!(source, "{indent}r{reg}.{c} = sin({x}.{c});"),
                                     UOp::Cos => writeln!(source, "{indent}r{reg}.{c} = cos({x}.{c});"),
                                     UOp::Floor => writeln!(source, "{indent}r{reg}.{c} = floor({x}.{c});"),
@@ -350,6 +351,7 @@ impl Kernel {
                                 _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().cu());
                             }
                             UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
+                            UOp::Rsqrt => _ = writeln!(source, "{indent}r{reg} = rsqrt({x});"),
                             UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
                             UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
                             UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
