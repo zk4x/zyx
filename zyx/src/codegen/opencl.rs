@@ -525,6 +525,7 @@ impl DType {
             Self::Bool => "bool",
             Self::U32 => "uint",
             Self::U64 => "ulong",
+            Self::F8E4M3 | Self::F8E5M2 => todo!("fp8 not yet supported on OpenCL"),
         }
     }
     fn ocl_vec_type(self, len: u16) -> String {
@@ -579,6 +580,7 @@ impl Constant {
             Self::I32(x) => format!("(int){x}"),
             Self::I64(x) => format!("(long){}", i64::from_le_bytes(x)),
             Self::Bool(x) => format!("{x}"),
+            Self::F8E4M3(_) | Self::F8E5M2(_) => todo!("fp8 not yet supported on OpenCL"),
         }
     }
 }

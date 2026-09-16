@@ -689,7 +689,7 @@ fn emit_binary_op(source: &mut String, indent: &str, reg: usize, lane: usize, x:
 }
 
 impl DType {
-    pub(crate) const fn c_type(self) -> &'static str {
+    pub(crate) fn c_type(self) -> &'static str {
         match self {
             Self::F64 => "double",
             Self::U8 | Self::Bool => "uint8_t",
@@ -701,6 +701,7 @@ impl DType {
             Self::I32 => "int32_t",
             Self::I64 => "int64_t",
             Self::F32 | Self::F16 | Self::BF16 => "float",
+            Self::F8E4M3 | Self::F8E5M2 => todo!("fp8 has no C type yet"),
         }
     }
 
@@ -753,6 +754,7 @@ impl Constant {
                     format!("u32tof32(0x{:08X}u)", val.to_bits())
                 }
             }
+            Self::F8E4M3(_) | Self::F8E5M2(_) => todo!("fp8 has no C literal yet"),
         }
     }
 }

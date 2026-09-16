@@ -103,6 +103,8 @@ pub trait Module {
             DType::U32 => todo!("u4 numpy arrays"),
             DType::U64 => todo!("u8 numpy arrays"),
             DType::Bool => todo!("Bool numpy arrays"),
+            DType::F8E4M3 => todo!("F8E4M3 numpy arrays"),
+            DType::F8E5M2 => todo!("F8E5M2 numpy arrays"),
         };
         let dims = tensor.resolve_shape();
         let shape_str = format!("({})", dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(", "));

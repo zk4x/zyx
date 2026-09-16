@@ -13,7 +13,7 @@ use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
 use crate::runtime::ResolvedDim;
 use crate::scalar::{Float, Scalar};
-use crate::scalar::{bf16, f16};
+use crate::scalar::{bf16, f16, f8e4m3, f8e5m2};
 use crate::shape::{Dim, UAxis, into_axes, into_axis};
 use crate::slab::SlabId;
 use crate::{DebugMask, RT};
@@ -553,6 +553,14 @@ impl Tensor {
                 let data: Vec<f64> = self.try_into()?;
                 RT.lock().new_host_tensor(shape_id, data.into())
             }
+            DType::F8E4M3 => {
+                let data: Vec<f8e4m3> = self.try_into()?;
+                RT.lock().new_host_tensor(shape_id, data.into())
+            }
+            DType::F8E5M2 => {
+                let data: Vec<f8e5m2> = self.try_into()?;
+                RT.lock().new_host_tensor(shape_id, data.into())
+            }
             DType::U8 => {
                 let data: Vec<u8> = self.try_into()?;
                 RT.lock().new_host_tensor(shape_id, data.into())
@@ -658,6 +666,14 @@ impl Tensor {
                         let data: Vec<f64> = (0..n).map(|_| rt.rng.rand()).collect();
                         Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
                     }
+                    DType::F8E4M3 => {
+                        let data: Vec<f8e4m3> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::F8E5M2 => {
+                        let data: Vec<f8e5m2> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
                     DType::U8
                     | DType::U16
                     | DType::U32
@@ -703,7 +719,9 @@ impl Tensor {
                         Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
                     }
                     DType::Bool => Err(ZyxError::dtype_error("Uniform is not supported for bool".into())),
-                    DType::BF16 | DType::F16 | DType::F32 | DType::F64 => unreachable!(),
+                    DType::BF16 | DType::F16 | DType::F32 | DType::F64 | DType::F8E4M3 | DType::F8E5M2 => {
+                        unreachable!()
+                    }
                 }
             }
         }
@@ -3297,6 +3315,14 @@ impl Tensor {
                 let data: Vec<f64> = self.clone().try_into()?;
                 data.into_iter().flat_map(f64::to_le_bytes).collect()
             }
+            DType::F8E4M3 => {
+                let data: Vec<f8e4m3> = self.clone().try_into()?;
+                data.into_iter().flat_map(f8e4m3::to_le_bytes).collect()
+            }
+            DType::F8E5M2 => {
+                let data: Vec<f8e5m2> = self.clone().try_into()?;
+                data.into_iter().flat_map(f8e5m2::to_le_bytes).collect()
+            }
             DType::U8 => {
                 let data: Vec<u8> = self.clone().try_into()?;
                 data.into_iter().flat_map(u8::to_le_bytes).collect()
@@ -3756,6 +3782,20 @@ impl Display for Tensor {
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.resolve_shape(), precision, f.width()),
                     Err(e) => format!("f64 tensor failed to realize {e:?}"),
+                }
+            }
+            DType::F8E4M3 => {
+                let data: Result<Vec<f8e4m3>, _> = x.try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.resolve_shape(), precision, f.width()),
+                    Err(e) => format!("f8e4m3 tensor failed to realize {e:?}"),
+                }
+            }
+            DType::F8E5M2 => {
+                let data: Result<Vec<f8e5m2>, _> = x.try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.resolve_shape(), precision, f.width()),
+                    Err(e) => format!("f8e5m2 tensor failed to realize {e:?}"),
                 }
             }
             DType::U8 => {

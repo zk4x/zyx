@@ -128,7 +128,9 @@ impl Rng {
     /// Generates random number, floats in range 0..1, integers in range `int::MIN..int::MAX`
     pub(super) fn rand<T: Scalar>(&mut self) -> T {
         match T::dtype() {
-            DType::BF16 | DType::F16 | DType::F32 | DType::F64 => self.next_f32().cast(),
+            DType::BF16 | DType::F16 | DType::F32 | DType::F64 | DType::F8E4M3 | DType::F8E5M2 => {
+                self.next_f32().cast()
+            }
             DType::U8 | DType::Bool => self.next_u8().cast(),
             DType::U16 => self.next_u16().cast(),
             DType::U32 => self.next_u32().cast(),
@@ -142,7 +144,7 @@ impl Rng {
 
     pub fn range<T: Scalar>(&mut self, range: impl std::ops::RangeBounds<T>) -> T {
         match T::dtype() {
-            DType::BF16 | DType::F16 | DType::F32 | DType::F64 => {
+            DType::BF16 | DType::F16 | DType::F32 | DType::F64 | DType::F8E4M3 | DType::F8E5M2 => {
                 let mut start: f64 = match range.start_bound() {
                     std::ops::Bound::Included(_) => todo!(),
                     std::ops::Bound::Excluded(start) => *start,

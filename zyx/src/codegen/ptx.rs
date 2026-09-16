@@ -30,6 +30,8 @@ impl DType {
             Self::U16 => "u16",
             Self::U32 => "u32",
             Self::U64 => "u64",
+            Self::F8E4M3 => "e4m3",
+            Self::F8E5M2 => "e5m2",
         }
     }
 
@@ -95,6 +97,7 @@ impl Constant {
             Self::I32(x) => format!("{x}"),
             Self::I64(x) => format!("{}", i64::from_le_bytes(*x)),
             Self::Bool(x) => format!("{}", if *x { 1 } else { 0 }),
+            Self::F8E4M3(_) | Self::F8E5M2(_) => todo!("fp8 immediates not yet supported in PTX"),
         }
     }
 }

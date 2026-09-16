@@ -325,6 +325,7 @@ fn emit_type(asm: &mut Asm, cache: &mut Map<DType, u32>, dt: DType) -> u32 {
         return id;
     }
     let id = match dt {
+        DType::F8E4M3 | DType::F8E5M2 => todo!("SPIR-V has no 8-bit float type"),
         DType::Bool => {
             let i = asm.id();
             asm.emit_type(OpTypeBool, i, &[]);
@@ -406,7 +407,7 @@ fn compute_dtypes(kernel: &Kernel) -> Map<OpId, (DType, MemLayout)> {
 
 fn elem_stride(dt: DType) -> usize {
     match dt {
-        DType::Bool | DType::I8 | DType::U8 => 1,
+        DType::Bool | DType::I8 | DType::U8 | DType::F8E4M3 | DType::F8E5M2 => 1,
         DType::I16 | DType::U16 | DType::F16 | DType::BF16 => 2,
         DType::I32 | DType::U32 | DType::F32 => 4,
         DType::I64 | DType::U64 | DType::F64 => 8,
@@ -498,6 +499,7 @@ impl Kernel {
                 return id;
             }
             let id = match dt {
+                DType::F8E4M3 | DType::F8E5M2 => todo!("SPIR-V has no 8-bit float type"),
                 DType::Bool => {
                     let i = asm.id();
                     entries.push((OpTypeBool, i, vec![]));
@@ -1885,6 +1887,7 @@ fn const_to_words(c: &Constant) -> Vec<u32> {
         }
         Constant::F16(x) => vec![u16::from_le_bytes(x) as u32],
         Constant::BF16(x) => vec![u16::from_le_bytes(x) as u32],
+        Constant::F8E4M3(x) | Constant::F8E5M2(x) => vec![x as u32],
         Constant::F32(x) => vec![u32::from_le_bytes(x)],
         Constant::F64(x) => vec![
             u32::from_le_bytes(x[..4].try_into().unwrap()),
@@ -1901,7 +1904,7 @@ fn float_one(dt: DType) -> Constant {
 fn bit_size(dt: DType) -> u32 {
     match dt {
         DType::Bool => 8,
-        DType::I8 | DType::U8 => 8,
+        DType::I8 | DType::U8 | DType::F8E4M3 | DType::F8E5M2 => 8,
         DType::I16 | DType::U16 | DType::F16 | DType::BF16 => 16,
         DType::I32 | DType::U32 | DType::F32 => 32,
         DType::I64 | DType::U64 | DType::F64 => 64,

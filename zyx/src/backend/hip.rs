@@ -774,7 +774,7 @@ impl HIPStatus {
 }
 
 impl DType {
-    pub(super) const fn hip(&self) -> &str {
+    pub(super) fn hip(&self) -> &str {
         match self {
             Self::BF16 => "hip_bfloat16",
             Self::F16 => "half",
@@ -789,6 +789,7 @@ impl DType {
             Self::U16 => "unsigned short",
             Self::U32 => "unsigned int",
             Self::U64 => "unsigned long",
+            Self::F8E4M3 | Self::F8E5M2 => todo!("fp8 not yet supported on HIP"),
         }
     }
 }
@@ -823,6 +824,7 @@ impl Constant {
             Self::I32(x) => format!("{x}"),
             Self::I64(x) => format!("{}", i64::from_le_bytes(x)),
             Self::Bool(x) => format!("{x}"),
+            Self::F8E4M3(_) | Self::F8E5M2(_) => todo!("fp8 not yet supported on HIP"),
         }
     }
 }

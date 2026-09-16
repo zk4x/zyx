@@ -5,7 +5,7 @@
 
 #![allow(unused)]
 
-use crate::scalar::{bf16, f16};
+use crate::scalar::{bf16, f16, f8e4m3, f8e5m2};
 use crate::{
     Scalar, ZyxError,
     kernel::{BOp, IDX_T, UOp},
@@ -26,6 +26,10 @@ pub enum DType {
     F32,
     /// 64 bit float data type.
     F64,
+    /// 8 bit float data type, 4 exponent bits, 3 mantissa bits.
+    F8E4M3,
+    /// 8 bit float data type, 5 exponent bits, 2 mantissa bits.
+    F8E5M2,
     /// 8 bit unsigned integer data type.
     U8,
     /// 16 bit unsigned integer data type.
@@ -47,7 +51,7 @@ pub enum DType {
 }
 
 impl DType {
-    pub(crate) const N_DTYPES: usize = 13;
+    pub(crate) const N_DTYPES: usize = 15;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
@@ -56,6 +60,8 @@ pub enum Constant {
     F16([u8; 2]),  // le bytes
     F32([u8; 4]),  // le bytes
     F64([u8; 8]),  // le bytes
+    F8E4M3(u8),
+    F8E5M2(u8),
     U8(u8),
     U16(u16),
     U32(u32),
@@ -74,6 +80,8 @@ impl Display for DType {
             Self::F16 => "f16",
             Self::F32 => "f32",
             Self::F64 => "f64",
+            Self::F8E4M3 => "f8e4m3",
+            Self::F8E5M2 => "f8e5m2",
             Self::U8 => "u8",
             Self::U16 => "u16",
             Self::U32 => "u32",
@@ -93,7 +101,7 @@ impl DType {
     pub const fn is_float(self) -> bool {
         use DType::*;
         match self {
-            BF16 | F16 | F32 | F64 => true,
+            BF16 | F16 | F32 | F64 | F8E4M3 | F8E5M2 => true,
             U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | Bool => false,
         }
     }
@@ -103,7 +111,7 @@ impl DType {
     pub const fn is_int(self) -> bool {
         use DType::*;
         match self {
-            BF16 | F16 | F32 | F64 | Bool => false,
+            BF16 | F16 | F32 | F64 | F8E4M3 | F8E5M2 | Bool => false,
             U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 => true,
         }
     }
@@ -114,6 +122,7 @@ impl DType {
         use DType::*;
         match self {
             BF16 | F16 | F32 | F64 | Bool | I8 | I16 | I32 | I64 => false,
+            F8E4M3 | F8E5M2 => false,
             U8 | U16 | U32 | U64 => true,
         }
     }
@@ -121,7 +130,7 @@ impl DType {
     pub(crate) fn least_upper_dtype(self, rhs: DType) -> DType {
         use DType::*;
         // define an ordered list of "widening" priority
-        let order = [Bool, U8, U16, U32, U64, I8, I16, I32, I64, BF16, F16, F32, F64];
+        let order = [Bool, U8, U16, U32, U64, I8, I16, I32, I64, F8E4M3, F8E5M2, BF16, F16, F32, F64];
 
         let i1 = order.iter().position(|&d| d == self).unwrap();
         let i2 = order.iter().position(|&d| d == rhs).unwrap();
@@ -133,7 +142,7 @@ impl DType {
     pub const fn bit_size(&self) -> u8 {
         use DType::*;
         match self {
-            U8 | I8 | Bool => 8,
+            U8 | I8 | Bool | F8E4M3 | F8E5M2 => 8,
             BF16 | F16 | I16 | U16 => 16,
             F32 | I32 | U32 => 32,
             F64 | I64 | U64 => 64,
@@ -173,6 +182,8 @@ impl DType {
             Self::F16 => Constant::F16(f16::ZERO.to_le_bytes()),
             Self::F32 => Constant::F32(0f32.to_le_bytes()),
             Self::F64 => Constant::F64(0f64.to_le_bytes()),
+            Self::F8E4M3 => Constant::F8E4M3(f8e4m3::ZERO.to_bits()),
+            Self::F8E5M2 => Constant::F8E5M2(f8e5m2::ZERO.to_bits()),
             Self::U8 => Constant::U8(0),
             Self::U16 => Constant::U16(0),
             Self::U32 => Constant::U32(0),
@@ -192,6 +203,8 @@ impl DType {
             Self::F16 => Constant::F16(f16::ONE.to_le_bytes()),
             Self::F32 => Constant::F32(1f32.to_le_bytes()),
             Self::F64 => Constant::F64(1f64.to_le_bytes()),
+            Self::F8E4M3 => Constant::F8E4M3(f8e4m3::ONE.to_bits()),
+            Self::F8E5M2 => Constant::F8E5M2(f8e5m2::ONE.to_bits()),
             Self::U8 => Constant::U8(1),
             Self::U16 => Constant::U16(1),
             Self::U32 => Constant::U32(1),
@@ -211,6 +224,8 @@ impl DType {
             Self::F16 => Constant::F16(f16::MIN.to_le_bytes()),
             Self::F32 => Constant::F32(f32::MIN.to_le_bytes()),
             Self::F64 => Constant::F64(f64::MIN.to_le_bytes()),
+            Self::F8E4M3 => Constant::F8E4M3(f8e4m3::MIN.to_bits()),
+            Self::F8E5M2 => Constant::F8E5M2(f8e5m2::MIN.to_bits()),
             Self::U8 => Constant::U8(u8::MIN),
             Self::U16 => Constant::U16(u16::MIN),
             Self::U32 => Constant::U32(u32::MIN),
@@ -230,6 +245,8 @@ impl DType {
             Self::F16 => "F16",
             Self::F32 => "F32",
             Self::F64 => "F64",
+            Self::F8E4M3 => "F8_E4M3",
+            Self::F8E5M2 => "F8_E5M2",
             Self::U8 => "U8",
             Self::U16 => "U16",
             Self::U32 => "U32",
@@ -248,6 +265,8 @@ impl DType {
             "F16" => Self::F16,
             "F32" => Self::F32,
             "F64" => Self::F64,
+            "F8_E4M3" => Self::F8E4M3,
+            "F8_E5M2" => Self::F8E5M2,
             "U8" => Self::U8,
             "U16" => Self::U16,
             "U32" => Self::U32,
@@ -272,6 +291,8 @@ impl Constant {
             DType::F16 => Self::F16(unsafe { t(&x) }),
             DType::F32 => Self::F32(unsafe { t(&x) }),
             DType::F64 => Self::F64(unsafe { t(&x) }),
+            DType::F8E4M3 => Self::F8E4M3(unsafe { t(&x) }),
+            DType::F8E5M2 => Self::F8E5M2(unsafe { t(&x) }),
             DType::U8 => Self::U8(unsafe { t(&x) }),
             DType::U16 => Self::U16(unsafe { t(&x) }),
             DType::U32 => Self::U32(unsafe { t(&x) }),
@@ -291,6 +312,7 @@ impl Constant {
             Constant::F32(x) => x.to_vec(),
             Constant::F64(x) => x.to_vec(),
             Constant::U8(x) => vec![x],
+            Constant::F8E4M3(x) | Constant::F8E5M2(x) => vec![x],
             Constant::U16(x) => x.to_le_bytes().to_vec(),
             Constant::U32(x) => x.to_le_bytes().to_vec(),
             Constant::U64(x) | Constant::I64(x) => x.to_vec(),
@@ -371,6 +393,8 @@ impl Constant {
             DType::F32 => Self::F32([bytes[0], bytes[1], bytes[2], bytes[3]]),
             DType::F64 => Self::F64([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]),
             DType::U8 => Self::U8(u8::from_le_bytes([bytes[0]])),
+            DType::F8E4M3 => Self::F8E4M3(bytes[0]),
+            DType::F8E5M2 => Self::F8E5M2(bytes[0]),
             DType::U16 => Self::U16(u16::from_le_bytes([bytes[0], bytes[1]])),
             DType::U32 => Self::U32(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
             DType::U64 => Self::U64([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]),
@@ -388,6 +412,8 @@ impl Constant {
             Self::F16(_) => DType::F16,
             Self::F32(_) => DType::F32,
             Self::F64(_) => DType::F64,
+            Self::F8E4M3(_) => DType::F8E4M3,
+            Self::F8E5M2(_) => DType::F8E5M2,
             Self::U8(_) => DType::U8,
             Self::U16(_) => DType::U16,
             Self::U32(_) => DType::U32,
@@ -406,6 +432,8 @@ impl Constant {
             Constant::F16(x) => f16::from_le_bytes(x) >= f16::ZERO,
             Constant::F32(x) => f32::from_le_bytes(x) >= 0f32,
             Constant::F64(x) => f64::from_le_bytes(x) >= 0f64,
+            Constant::F8E4M3(x) => f8e4m3::from_bits(x) >= f8e4m3::ZERO,
+            Constant::F8E5M2(x) => f8e5m2::from_bits(x) >= f8e5m2::ZERO,
             Constant::U8(_) | Constant::U16(_) | Constant::U32(_) | Constant::U64(_) | Constant::Bool(_) => true,
             Constant::I8(x) => x >= 0,
             Constant::I16(x) => x >= 0,
@@ -421,6 +449,8 @@ impl Constant {
             Constant::F16(x) => f16::from_le_bytes(x) == f16::MIN,
             Constant::F32(x) => f32::from_le_bytes(x) == f32::MIN,
             Constant::F64(x) => f64::from_le_bytes(x) == f64::MIN,
+            Constant::F8E4M3(x) => f8e4m3::from_bits(x) == f8e4m3::MIN,
+            Constant::F8E5M2(x) => f8e5m2::from_bits(x) == f8e5m2::MIN,
             Constant::U8(x) => x == u8::MIN,
             Constant::U16(x) => x == u16::MIN,
             Constant::U32(x) => x == u32::MIN,
@@ -439,6 +469,8 @@ impl Constant {
             Constant::F16(x) => f16::from_le_bytes(x) == f16::ZERO,
             Constant::F32(x) => f32::from_le_bytes(x) == 0f32,
             Constant::F64(x) => f64::from_le_bytes(x) == 0f64,
+            Constant::F8E4M3(x) => f8e4m3::from_bits(x) == f8e4m3::ZERO,
+            Constant::F8E5M2(x) => f8e5m2::from_bits(x) == f8e5m2::ZERO,
             Constant::U8(x) => x == 0,
             Constant::U16(x) => x == 0,
             Constant::U32(x) => x == 0,
@@ -458,6 +490,8 @@ impl Constant {
             Constant::F16(x) => f16::from_le_bytes(x) == f16::ONE,
             Constant::F32(x) => f32::from_le_bytes(x) == 1f32,
             Constant::F64(x) => f64::from_le_bytes(x) == 1f64,
+            Constant::F8E4M3(x) => f8e4m3::from_bits(x) == f8e4m3::ONE,
+            Constant::F8E5M2(x) => f8e5m2::from_bits(x) == f8e5m2::ONE,
             Constant::U8(x) => x == 1,
             Constant::U16(x) => x == 1,
             Constant::U32(x) => x == 1,
@@ -477,6 +511,8 @@ impl Constant {
             Constant::F16(x) => f16::from_le_bytes(x) == f16::ONE + f16::ONE,
             Constant::F32(x) => f32::from_le_bytes(x) == 2f32,
             Constant::F64(x) => f64::from_le_bytes(x) == 2f64,
+            Constant::F8E4M3(x) => f8e4m3::from_bits(x) == f8e4m3::ONE + f8e4m3::ONE,
+            Constant::F8E5M2(x) => f8e5m2::from_bits(x) == f8e5m2::ONE + f8e5m2::ONE,
             Constant::U8(x) => x == 2,
             Constant::U16(x) => x == 2,
             Constant::U32(x) => x == 2,
@@ -512,6 +548,7 @@ impl Constant {
             Constant::F32(x) => bytes[..4].copy_from_slice(&x),
             Constant::F64(x) | Constant::U64(x) | Constant::I64(x) => bytes.copy_from_slice(&x),
             Constant::U8(x) => bytes[0] = x,
+            Constant::F8E4M3(x) | Constant::F8E5M2(x) => bytes[0] = x,
             Constant::I8(x) => bytes[0] = x as u8,
             Constant::U16(x) => bytes[..2].copy_from_slice(&x.to_le_bytes()),
             Constant::I16(x) => bytes[..2].copy_from_slice(&x.to_le_bytes()),
@@ -525,6 +562,8 @@ impl Constant {
             DType::F32 => Constant::F32([bytes[0], bytes[1], bytes[2], bytes[3]]),
             DType::F64 => Constant::F64(bytes),
             DType::U8 => Constant::U8(bytes[0]),
+            DType::F8E4M3 => Constant::F8E4M3(bytes[0]),
+            DType::F8E5M2 => Constant::F8E5M2(bytes[0]),
             DType::U16 => Constant::U16(u16::from_le_bytes([bytes[0], bytes[1]])),
             DType::U32 => Constant::U32(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
             DType::U64 => Constant::U64(bytes),
@@ -542,6 +581,8 @@ impl Constant {
             Constant::F16(x) => f16::from_le_bytes(x).cast_dtype(dtype),
             Constant::F32(x) => f32::from_le_bytes(x).cast_dtype(dtype),
             Constant::F64(x) => f64::from_le_bytes(x).cast_dtype(dtype),
+            Constant::F8E4M3(x) => f8e4m3::from_bits(x).cast_dtype(dtype),
+            Constant::F8E5M2(x) => f8e5m2::from_bits(x).cast_dtype(dtype),
             Constant::U8(x) => x.cast_dtype(dtype),
             Constant::I8(x) => x.cast_dtype(dtype),
             Constant::I16(x) => x.cast_dtype(dtype),
@@ -611,6 +652,12 @@ impl Constant {
             Constant::F16(x) => Constant::F16(unary_func_float(f16::from_le_bytes(x), uop).to_le_bytes()),
             Constant::F32(x) => Constant::F32(unary_func_float(f32::from_le_bytes(x), uop).to_le_bytes()),
             Constant::F64(x) => Constant::F64(unary_func_float(f64::from_le_bytes(x), uop).to_le_bytes()),
+            Constant::F8E4M3(x) => {
+                Constant::F8E4M3(unary_func_float(f8e4m3::from_bits(x), uop).to_bits())
+            }
+            Constant::F8E5M2(x) => {
+                Constant::F8E5M2(unary_func_float(f8e5m2::from_bits(x), uop).to_bits())
+            }
             Constant::U8(x) => Constant::U8(unary_func(x, uop)),
             Constant::U16(x) => Constant::U16(unary_func(x, uop)),
             Constant::U32(x) => Constant::U32(unary_func(x, uop)),
@@ -664,6 +711,14 @@ impl Constant {
             Constant::F64(x) => {
                 let Constant::F64(y) = y else { unreachable!() };
                 binary_func(f64::from_le_bytes(x), f64::from_le_bytes(y), bop)
+            }
+            Constant::F8E4M3(x) => {
+                let Constant::F8E4M3(y) = y else { unreachable!() };
+                binary_func(f8e4m3::from_bits(x), f8e4m3::from_bits(y), bop)
+            }
+            Constant::F8E5M2(x) => {
+                let Constant::F8E5M2(y) = y else { unreachable!() };
+                binary_func(f8e5m2::from_bits(x), f8e5m2::from_bits(y), bop)
             }
             Constant::U8(x) => {
                 let Constant::U8(y) = y else { unreachable!() };
@@ -719,6 +774,8 @@ impl Constant {
                 let b = u16::from_le_bytes(*x);
                 b & 0x7c00 == 0x7c00 && b & 0x03ff != 0
             }
+            Constant::F8E4M3(x) => *x == 0x7f || *x == 0xff,
+            Constant::F8E5M2(x) => *x & 0x7c == 0x7c && *x & 0x03 != 0,
             _ => false,
         }
     }
@@ -731,6 +788,8 @@ trait CastDType: Scalar {
             DType::F16 => Constant::F16(self.cast::<f16>().to_le_bytes()),
             DType::F32 => Constant::F32(self.cast::<f32>().to_le_bytes()),
             DType::F64 => Constant::F64(self.cast::<f64>().to_le_bytes()),
+            DType::F8E4M3 => Constant::F8E4M3(self.cast::<f8e4m3>().to_bits()),
+            DType::F8E5M2 => Constant::F8E5M2(self.cast::<f8e5m2>().to_bits()),
             DType::U8 => Constant::U8(self.cast()),
             DType::U16 => Constant::U16(self.cast()),
             DType::U32 => Constant::U32(self.cast()),
@@ -753,6 +812,8 @@ impl Display for Constant {
             Self::F16(value) => f.write_fmt(format_args!("{}", f16::from_le_bytes(*value))),
             Self::F32(value) => f.write_fmt(format_args!("{}", f32::from_le_bytes(*value))),
             Self::F64(value) => f.write_fmt(format_args!("{}", f64::from_le_bytes(*value))),
+            Self::F8E4M3(value) => f.write_fmt(format_args!("{}", f8e4m3::from_bits(*value))),
+            Self::F8E5M2(value) => f.write_fmt(format_args!("{}", f8e5m2::from_bits(*value))),
             Self::U8(value) => f.write_fmt(format_args!("{value}")),
             Self::U16(value) => f.write_fmt(format_args!("{value}")),
             &Self::U64(value) => f.write_fmt(format_args!("{}", u64::from_le_bytes(value))),
