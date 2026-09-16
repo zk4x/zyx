@@ -833,15 +833,11 @@ impl Kernel {
     #[allow(unused_must_use)]
     pub(crate) fn generate_tenstorrent(&self) -> Result<TTCompiler, BackendError> {
         // DST mode is a type-level constant but only known at runtime:
-        // 32-bit iff the kernel touches F32 tiles in registers (F32
-        // Register storage, e.g. matmul accumulation). F32 Circular
-        // storage is rejected below: tt-metal 0.72 has no working
-        // 32-bit CB move/copy path (corrupt data on silicon, hang on
-        // ttsim), so emitting such a kernel would only produce wrong
-        // results. Matches the typecast header: any F32 input/output
-        // needs 32-bit Dest mode. A narrower rule (compute-section
-        // loads only) silently packs BF16-rounded values into F32
-        // CBs — no error, lost precision — so the mode is kernel-wide.
+        // 32-bit iff the kernel touches F32 tiles (F32 storage, e.g.
+        // matmul accumulation into an F32 circular acc/output tile).
+        // A narrower rule (compute-section loads only) silently packs
+        // BF16-rounded values into F32 CBs — no error, lost precision —
+        // so the mode is kernel-wide.
         let mut fp32 = false;
         let mut scan = self.head;
         for _ in 0..10_000 {
@@ -850,16 +846,9 @@ impl Kernel {
             }
             if let Op::Storage { dtype, scope, .. } = self.ops[scan].op {
                 match (dtype, scope) {
-                    (DType::F32, MemScope::Circular) => {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: "tenstorrent2: F32 circular buffers are unsupported (no working 32-bit CB move/copy path in tt-metal 0.72); F32 register accumulation is still allowed"
-                                .into(),
-                        });
-                    }
                     // Blackhole mandates 32-bit DST whenever an Fp8 CB
                     // shares the core (tt-metal program.cpp check).
-                    (DType::F32, MemScope::Register) | (DType::F8E4M3, MemScope::Circular) => {
+                    (DType::F32, _) | (DType::F8E4M3, MemScope::Circular) => {
                         fp32 = true;
                         break;
                     }

@@ -2408,3 +2408,136 @@ fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
     assert_eq!(bad, 0);
     Ok(())
 }
+
+/// IO bisect probes for the dequant pipeline (moved from
+/// `examples/qwen3.8-27b/tests/probe_tt_io.rs`): minimal single-tile
+/// kernels isolating (1) U16->F32 typecast, (2) BF16 passthrough,
+/// (3) the plane-0 nibble chain. Each compares board output against
+/// host truth.
+#[test]
+fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+
+    fn tt_kernel(build: impl FnOnce(&mut Kernel)) -> Result<zyx::kernel::CompiledKernel, ZyxError> {
+        let mut k = Kernel::new(Dev::TT(0));
+        build(&mut k);
+        k.verify();
+        k.compile()
+    }
+
+    // Fixtures: one tile each.
+    let words: Vec<u16> = (0..1024).map(|i| (i * 2654435761u32 as usize % 65536) as u16).collect();
+    let scales: Vec<zyx::bf16> = (0..1024).map(|i| zyx::bf16::from_f32(0.001 + i as f32 * 1e-5)).collect();
+
+    // --- Probe 1: U16 -> F32 typecast passthrough ---
+    let k1 = tt_kernel(|k| {
+        let inp = k.param(DType::U16);
+        let out = k.param_mut(DType::F32);
+        let cin = k.storage(DType::U16, MemScope::Circular, TILE_ELEMS);
+        let cout = k.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+        let c0 = k.const_idx(0);
+        let _g = k.group_range(0, 1);
+        let c1 = k.const_idx(1);
+        k.loop_over(c1, |k, _| {
+            let u = k.load_tile(inp, c0, TDIM, TDIM, TDIM as u32);
+            k.store_tile(cin, u, c0, TDIM, TDIM, TDIM as u32);
+        });
+        k.barrier();
+        let c1 = k.const_idx(1);
+        k.loop_over(c1, |k, _| {
+            let u = k.load_tile(cin, c0, TDIM, TDIM, TDIM as u32);
+            let f = k.cast(u, DType::F32);
+            k.store_tile(cout, f, c0, TDIM, TDIM, TDIM as u32);
+        });
+        k.barrier();
+        let c1 = k.const_idx(1);
+        k.loop_over(c1, |k, _| {
+            let v = k.load_tile(cout, c0, TDIM, TDIM, TDIM as u32);
+            k.store_tile(out, v, c0, TDIM, TDIM, TDIM as u32);
+        });
+    })?;
+    let in1 = Tensor::from(words.clone()).to(Dev::TT(0))?;
+    let out1 = k1.forward(&[&in1], vec![[TILE_ELEMS]])?;
+    let v1: Vec<f32> = out1[0].to_vec()?;
+    let exp1: Vec<f32> = words.iter().map(|&w| w as f32).collect();
+    let bad1 = v1.iter().zip(&exp1).filter(|(a, b)| a != b).count();
+    println!("probe1 U16->F32 mismatches: {bad1}, first 4: {:?}", &v1[..4]);
+
+    // --- Probe 2: BF16 passthrough ---
+    let k2 = tt_kernel(|k| {
+        let inp = k.param(DType::BF16);
+        let out = k.param_mut(DType::BF16);
+        let cin = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
+        let cout = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
+        let c0 = k.const_idx(0);
+        let _g = k.group_range(0, 1);
+        let c1 = k.const_idx(1);
+        k.loop_over(c1, |k, _| {
+            let u = k.load_tile(inp, c0, TDIM, TDIM, TDIM as u32);
+            k.store_tile(cin, u, c0, TDIM, TDIM, TDIM as u32);
+        });
+        k.barrier();
+        let c1 = k.const_idx(1);
+        k.loop_over(c1, |k, _| {
+            let v = k.load_tile(cin, c0, TDIM, TDIM, TDIM as u32);
+            k.store_tile(cout, v, c0, TDIM, TDIM, TDIM as u32);
+        });
+        k.barrier();
+        let c1 = k.const_idx(1);
+        k.loop_over(c1, |k, _| {
+            let v = k.load_tile(cout, c0, TDIM, TDIM, TDIM as u32);
+            k.store_tile(out, v, c0, TDIM, TDIM, TDIM as u32);
+        });
+    })?;
+    let in2 = Tensor::from_vec(scales.clone(), [TILE_ELEMS])?.to(Dev::TT(0))?;
+    let out2 = k2.forward(&[&in2], vec![[TILE_ELEMS]])?;
+    let v2: Vec<zyx::bf16> = out2[0].to_vec()?;
+    let bad2 = v2.iter().zip(&scales).filter(|(a, b)| a != b).count();
+    println!("probe2 BF16 passthrough mismatches: {bad2}, first 4: {:?}", &v2[..4]);
+
+    // --- Probe 3: plane-0 nibble: n = cv - 16*trunc(cv/16), F32 out ---
+    let k3 = tt_kernel(|k| {
+        let inp = k.param(DType::U16);
+        let out = k.param_mut(DType::F32);
+        let cin = k.storage(DType::U16, MemScope::Circular, TILE_ELEMS);
+        let cout = k.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+        let c0 = k.const_idx(0);
+        let _g = k.group_range(0, 1);
+        let c1 = k.const_idx(1);
+        k.loop_over(c1, |k, _| {
+            let u = k.load_tile(inp, c0, TDIM, TDIM, TDIM as u32);
+            k.store_tile(cin, u, c0, TDIM, TDIM, TDIM as u32);
+        });
+        k.barrier();
+        let c063 = k.const_val(0.0625f32);
+        let c16 = k.const_val(16.0f32);
+        let c1 = k.const_idx(1);
+        k.loop_over(c1, |k, _| {
+            let u = k.load_tile(cin, c0, TDIM, TDIM, TDIM as u32);
+            let f = k.cast(u, DType::F32);
+            let t = k.mul(f, c063);
+            let t = k.trunc(t);
+            let t16 = k.mul(t, c16);
+            let n = k.sub(f, t16);
+            k.store_tile(cout, n, c0, TDIM, TDIM, TDIM as u32);
+        });
+        k.barrier();
+        let c1 = k.const_idx(1);
+        k.loop_over(c1, |k, _| {
+            let v = k.load_tile(cout, c0, TDIM, TDIM, TDIM as u32);
+            k.store_tile(out, v, c0, TDIM, TDIM, TDIM as u32);
+        });
+    })?;
+    let in3 = Tensor::from(words.clone()).to(Dev::TT(0))?;
+    let out3 = k3.forward(&[&in3], vec![[TILE_ELEMS]])?;
+    let v3: Vec<f32> = out3[0].to_vec()?;
+    let exp3: Vec<f32> = words.iter().map(|&w| (w % 16) as f32).collect();
+    let bad3 = v3.iter().zip(&exp3).filter(|(a, b)| a != b).count();
+    println!("probe3 nibble0 mismatches: {bad3}, first 4: {:?} exp {:?}", &v3[..4], &exp3[..4]);
+
+    assert_eq!(bad1, 0);
+    assert_eq!(bad2, 0);
+    assert_eq!(bad3, 0);
+    Ok(())
+}

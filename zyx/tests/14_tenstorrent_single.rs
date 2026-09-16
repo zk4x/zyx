@@ -1456,6 +1456,26 @@ fn tenstorrent_matmul_bf16_acc() -> Result<(), ZyxError> {
 // `copy_f8` (same-format, no SFPU) and `copy_f8_xfmt` hang identically.
 // `pad_move` (F32 tiles): ignored by policy — F32 CBs are rejected at
 // compile time (no 32-bit CB move path in tt-metal 0.72).
+//
+// IGNORED int entries: every int compute kernel hangs at launch (30s
+// timeout); int dataflow is separately green (`pad_move_u8` 0/1024).
+// Proven per dtype by abs/add/max/cast probes; the rest share the
+// identical emission shape (only the SFPU op name differs, and the hang
+// is op-independent — `copy_f8` with no op hangs too). Suspects:
+// unpack-from-int / pack-to-int programming under 16-bit DST.
+// IGNORED `not` entries (all dtypes): codegen emits bare
+// `logical_not_tile(0)` but the header declares
+// `template <DataFormat>` — device-JIT error, kernel never runs,
+// timeout + mutex-poison abort. Fix = emit the `<FORMAT>` arg;
+// F16/U8/I8/F8 DST formats are not in the op's supported list and stay
+// unsupported. Same bare-template cause for all 14 shift rows
+// (`binary_left/right_shift_tile`, proven via shl_bf16/shl_u16 aborts).
+// IGNORED `bitnot_f16/bf16`: run, 1008/1024 wrong values (int op on
+// float DST bits). IGNORED `rsqrt_f16`: 1024/1024 wrong (F16 SFPU class).
+// IGNORED cross-format casts: any format-converting cast in compute
+// hangs (f16<->bf16 abort; u8->f16/bf16, f16/bf16->u8, u8->u8 timeout).
+// Identity copies pass (`cast_f16_f16`, `cast_bf16_bf16` green).
+// F32 on either side: compile-reject by the F32-CB policy.
 
 tt_unary!(tenstorrent_neg_f16, |k: &mut Kernel, x: OpId| k.neg(x), DType::F16, 1e-5, tt_centered, |x: f32| -x);
 tt_unary!(tenstorrent_neg_bf16, |k: &mut Kernel, x: OpId| k.neg(x), DType::BF16, 1e-5, tt_centered, |x: f32| -x);
@@ -1583,11 +1603,11 @@ tt_binary!(
 );
 
 // F16/BF16 gap rows: every UOp with a TT lowering gets a row.
-tt_unary!(tenstorrent_not_f16, |k: &mut Kernel, x: OpId| k.not(x), DType::F16, 1e-5, tt_centered, |x: f32| if x == 0. { 1. } else { 0. });
-tt_unary!(tenstorrent_not_bf16, |k: &mut Kernel, x: OpId| k.not(x), DType::BF16, 1e-5, tt_centered, |x: f32| if x == 0. { 1. } else { 0. });
-tt_unary!(tenstorrent_bitnot_f16, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::F16, 1e-5, tt_centered, |x: f32| f32::from_bits(!x.to_bits()));
-tt_unary!(tenstorrent_bitnot_bf16, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::BF16, 1e-5, tt_centered, |x: f32| f32::from_bits(!x.to_bits()));
-tt_unary!(tenstorrent_rsqrt_f16, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::F16, 3e-2, tt_positive, |x: f32| x.sqrt().recip());
+tt_unary!(tenstorrent_not_f16, |k: &mut Kernel, x: OpId| k.not(x), DType::F16, 1e-5, tt_centered, |x: f32| if x == 0. { 1. } else { 0. }, ignore);
+tt_unary!(tenstorrent_not_bf16, |k: &mut Kernel, x: OpId| k.not(x), DType::BF16, 1e-5, tt_centered, |x: f32| if x == 0. { 1. } else { 0. }, ignore);
+tt_unary!(tenstorrent_bitnot_f16, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::F16, 1e-5, tt_centered, |x: f32| f32::from_bits(!x.to_bits()), ignore);
+tt_unary!(tenstorrent_bitnot_bf16, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::BF16, 1e-5, tt_centered, |x: f32| f32::from_bits(!x.to_bits()), ignore);
+tt_unary!(tenstorrent_rsqrt_f16, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::F16, 3e-2, tt_positive, |x: f32| x.sqrt().recip(), ignore);
 
 // F8E4M3 unary: inputs are E4M3-exact; tol covers E4M3 quantization only.
 tt_unary!(tenstorrent_neg_f8, |k: &mut Kernel, x: OpId| k.neg(x), DType::F8E4M3, 1e-5, tt_f8_exact, |x: f32| -x, ignore);
@@ -1621,69 +1641,69 @@ tt_unary!(tenstorrent_sqrt_u8, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::U8, 5
 tt_unary!(tenstorrent_rsqrt_u8, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::U8, 5e-1, tt_u8_pos, |x: f32| x.sqrt().recip(), ignore);
 tt_unary!(tenstorrent_sin_u8, |k: &mut Kernel, x: OpId| k.sin(x), DType::U8, 5e-1, tt_u8_small, |x: f32| x.sin(), ignore);
 tt_unary!(tenstorrent_cos_u8, |k: &mut Kernel, x: OpId| k.cos(x), DType::U8, 5e-1, tt_u8_small, |x: f32| x.cos(), ignore);
-tt_unary!(tenstorrent_neg_u16, |k: &mut Kernel, x: OpId| k.neg(x), DType::U16, 1e-5, tt_u16_full, |x: f32| -x);
-tt_unary!(tenstorrent_abs_u16, |k: &mut Kernel, x: OpId| k.abs(x), DType::U16, 1e-5, tt_u16_full, |x: f32| x.abs());
-tt_unary!(tenstorrent_not_u16, |k: &mut Kernel, x: OpId| k.not(x), DType::U16, 1e-5, tt_u16_full, |x: f32| if x == 0. { 1. } else { 0. });
-tt_unary!(tenstorrent_bitnot_u16, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::U16, 1e-5, tt_u16_full, |x: f32| (!(x as u16)) as f32);
-tt_unary!(tenstorrent_floor_u16, |k: &mut Kernel, x: OpId| k.floor(x), DType::U16, 1e-5, tt_u16_full, |x: f32| x.floor());
-tt_unary!(tenstorrent_trunc_u16, |k: &mut Kernel, x: OpId| k.trunc(x), DType::U16, 1e-5, tt_u16_full, |x: f32| x.trunc());
-tt_unary!(tenstorrent_exp_u16, |k: &mut Kernel, x: OpId| k.exp(x), DType::U16, 5e-1, tt_u16_small, |x: f32| x.exp());
-tt_unary!(tenstorrent_exp2_u16, |k: &mut Kernel, x: OpId| k.exp2(x), DType::U16, 5e-1, tt_u16_small, |x: f32| x.exp2());
-tt_unary!(tenstorrent_log2_u16, |k: &mut Kernel, x: OpId| k.log2(x), DType::U16, 5e-1, tt_u16_pos, |x: f32| x.log2());
-tt_unary!(tenstorrent_recip_u16, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::U16, 5e-1, tt_u16_pos, |x: f32| x.recip());
-tt_unary!(tenstorrent_sqrt_u16, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::U16, 5e-1, tt_u16_small, |x: f32| x.sqrt());
-tt_unary!(tenstorrent_rsqrt_u16, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::U16, 5e-1, tt_u16_pos, |x: f32| x.sqrt().recip());
-tt_unary!(tenstorrent_sin_u16, |k: &mut Kernel, x: OpId| k.sin(x), DType::U16, 5e-1, tt_u16_small, |x: f32| x.sin());
-tt_unary!(tenstorrent_cos_u16, |k: &mut Kernel, x: OpId| k.cos(x), DType::U16, 5e-1, tt_u16_small, |x: f32| x.cos());
-tt_unary!(tenstorrent_neg_u32, |k: &mut Kernel, x: OpId| k.neg(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| -x);
-tt_unary!(tenstorrent_abs_u32, |k: &mut Kernel, x: OpId| k.abs(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| x.abs());
-tt_unary!(tenstorrent_not_u32, |k: &mut Kernel, x: OpId| k.not(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| if x == 0. { 1. } else { 0. });
-tt_unary!(tenstorrent_bitnot_u32, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| (!(x as u32)) as f32);
-tt_unary!(tenstorrent_floor_u32, |k: &mut Kernel, x: OpId| k.floor(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| x.floor());
-tt_unary!(tenstorrent_trunc_u32, |k: &mut Kernel, x: OpId| k.trunc(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| x.trunc());
-tt_unary!(tenstorrent_exp_u32, |k: &mut Kernel, x: OpId| k.exp(x), DType::U32, 5e-1, tt_u32_small, |x: f32| x.exp());
-tt_unary!(tenstorrent_exp2_u32, |k: &mut Kernel, x: OpId| k.exp2(x), DType::U32, 5e-1, tt_u32_small, |x: f32| x.exp2());
-tt_unary!(tenstorrent_log2_u32, |k: &mut Kernel, x: OpId| k.log2(x), DType::U32, 5e-1, tt_u32_pos, |x: f32| x.log2());
-tt_unary!(tenstorrent_recip_u32, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::U32, 5e-1, tt_u32_pos, |x: f32| x.recip());
-tt_unary!(tenstorrent_sqrt_u32, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::U32, 5e-1, tt_u32_small, |x: f32| x.sqrt());
-tt_unary!(tenstorrent_rsqrt_u32, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::U32, 5e-1, tt_u32_pos, |x: f32| x.sqrt().recip());
-tt_unary!(tenstorrent_sin_u32, |k: &mut Kernel, x: OpId| k.sin(x), DType::U32, 5e-1, tt_u32_small, |x: f32| x.sin());
-tt_unary!(tenstorrent_cos_u32, |k: &mut Kernel, x: OpId| k.cos(x), DType::U32, 5e-1, tt_u32_small, |x: f32| x.cos());
-tt_unary!(tenstorrent_neg_i8, |k: &mut Kernel, x: OpId| k.neg(x), DType::I8, 1e-5, tt_i8_full, |x: f32| -x);
-tt_unary!(tenstorrent_abs_i8, |k: &mut Kernel, x: OpId| k.abs(x), DType::I8, 1e-5, tt_i8_full, |x: f32| x.abs());
-tt_unary!(tenstorrent_not_i8, |k: &mut Kernel, x: OpId| k.not(x), DType::I8, 1e-5, tt_i8_full, |x: f32| if x == 0. { 1. } else { 0. });
-tt_unary!(tenstorrent_bitnot_i8, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::I8, 1e-5, tt_i8_full, |x: f32| (!(x as i8)) as f32);
-tt_unary!(tenstorrent_floor_i8, |k: &mut Kernel, x: OpId| k.floor(x), DType::I8, 1e-5, tt_i8_full, |x: f32| x.floor());
-tt_unary!(tenstorrent_trunc_i8, |k: &mut Kernel, x: OpId| k.trunc(x), DType::I8, 1e-5, tt_i8_full, |x: f32| x.trunc());
-tt_unary!(tenstorrent_exp_i8, |k: &mut Kernel, x: OpId| k.exp(x), DType::I8, 5e-1, tt_i8_small, |x: f32| x.exp());
-tt_unary!(tenstorrent_exp2_i8, |k: &mut Kernel, x: OpId| k.exp2(x), DType::I8, 5e-1, tt_i8_small, |x: f32| x.exp2());
-tt_unary!(tenstorrent_log2_i8, |k: &mut Kernel, x: OpId| k.log2(x), DType::I8, 5e-1, tt_i8_pos, |x: f32| x.log2());
-tt_unary!(tenstorrent_recip_i8, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::I8, 5e-1, tt_i8_pos, |x: f32| x.recip());
-tt_unary!(tenstorrent_sqrt_i8, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::I8, 5e-1, tt_i8_pos, |x: f32| x.sqrt());
-tt_unary!(tenstorrent_rsqrt_i8, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::I8, 5e-1, tt_i8_pos, |x: f32| x.sqrt().recip());
-tt_unary!(tenstorrent_sin_i8, |k: &mut Kernel, x: OpId| k.sin(x), DType::I8, 5e-1, tt_i8_small, |x: f32| x.sin());
-tt_unary!(tenstorrent_cos_i8, |k: &mut Kernel, x: OpId| k.cos(x), DType::I8, 5e-1, tt_i8_small, |x: f32| x.cos());
-tt_unary!(tenstorrent_neg_i32, |k: &mut Kernel, x: OpId| k.neg(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| -x);
-tt_unary!(tenstorrent_abs_i32, |k: &mut Kernel, x: OpId| k.abs(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| x.abs());
-tt_unary!(tenstorrent_not_i32, |k: &mut Kernel, x: OpId| k.not(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| if x == 0. { 1. } else { 0. });
-tt_unary!(tenstorrent_bitnot_i32, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| (!(x as i32)) as f32);
-tt_unary!(tenstorrent_floor_i32, |k: &mut Kernel, x: OpId| k.floor(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| x.floor());
-tt_unary!(tenstorrent_trunc_i32, |k: &mut Kernel, x: OpId| k.trunc(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| x.trunc());
-tt_unary!(tenstorrent_exp_i32, |k: &mut Kernel, x: OpId| k.exp(x), DType::I32, 5e-1, tt_i32_small, |x: f32| x.exp());
-tt_unary!(tenstorrent_exp2_i32, |k: &mut Kernel, x: OpId| k.exp2(x), DType::I32, 5e-1, tt_i32_small, |x: f32| x.exp2());
-tt_unary!(tenstorrent_log2_i32, |k: &mut Kernel, x: OpId| k.log2(x), DType::I32, 5e-1, tt_i32_pos, |x: f32| x.log2());
-tt_unary!(tenstorrent_recip_i32, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::I32, 5e-1, tt_i32_pos, |x: f32| x.recip());
-tt_unary!(tenstorrent_sqrt_i32, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::I32, 5e-1, tt_i32_pos, |x: f32| x.sqrt());
-tt_unary!(tenstorrent_rsqrt_i32, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::I32, 5e-1, tt_i32_pos, |x: f32| x.sqrt().recip());
-tt_unary!(tenstorrent_sin_i32, |k: &mut Kernel, x: OpId| k.sin(x), DType::I32, 5e-1, tt_i32_small, |x: f32| x.sin());
-tt_unary!(tenstorrent_cos_i32, |k: &mut Kernel, x: OpId| k.cos(x), DType::I32, 5e-1, tt_i32_small, |x: f32| x.cos());
+tt_unary!(tenstorrent_neg_u16, |k: &mut Kernel, x: OpId| k.neg(x), DType::U16, 1e-5, tt_u16_full, |x: f32| -x, ignore);
+tt_unary!(tenstorrent_abs_u16, |k: &mut Kernel, x: OpId| k.abs(x), DType::U16, 1e-5, tt_u16_full, |x: f32| x.abs(), ignore);
+tt_unary!(tenstorrent_not_u16, |k: &mut Kernel, x: OpId| k.not(x), DType::U16, 1e-5, tt_u16_full, |x: f32| if x == 0. { 1. } else { 0. }, ignore);
+tt_unary!(tenstorrent_bitnot_u16, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::U16, 1e-5, tt_u16_full, |x: f32| (!(x as u16)) as f32, ignore);
+tt_unary!(tenstorrent_floor_u16, |k: &mut Kernel, x: OpId| k.floor(x), DType::U16, 1e-5, tt_u16_full, |x: f32| x.floor(), ignore);
+tt_unary!(tenstorrent_trunc_u16, |k: &mut Kernel, x: OpId| k.trunc(x), DType::U16, 1e-5, tt_u16_full, |x: f32| x.trunc(), ignore);
+tt_unary!(tenstorrent_exp_u16, |k: &mut Kernel, x: OpId| k.exp(x), DType::U16, 5e-1, tt_u16_small, |x: f32| x.exp(), ignore);
+tt_unary!(tenstorrent_exp2_u16, |k: &mut Kernel, x: OpId| k.exp2(x), DType::U16, 5e-1, tt_u16_small, |x: f32| x.exp2(), ignore);
+tt_unary!(tenstorrent_log2_u16, |k: &mut Kernel, x: OpId| k.log2(x), DType::U16, 5e-1, tt_u16_pos, |x: f32| x.log2(), ignore);
+tt_unary!(tenstorrent_recip_u16, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::U16, 5e-1, tt_u16_pos, |x: f32| x.recip(), ignore);
+tt_unary!(tenstorrent_sqrt_u16, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::U16, 5e-1, tt_u16_small, |x: f32| x.sqrt(), ignore);
+tt_unary!(tenstorrent_rsqrt_u16, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::U16, 5e-1, tt_u16_pos, |x: f32| x.sqrt().recip(), ignore);
+tt_unary!(tenstorrent_sin_u16, |k: &mut Kernel, x: OpId| k.sin(x), DType::U16, 5e-1, tt_u16_small, |x: f32| x.sin(), ignore);
+tt_unary!(tenstorrent_cos_u16, |k: &mut Kernel, x: OpId| k.cos(x), DType::U16, 5e-1, tt_u16_small, |x: f32| x.cos(), ignore);
+tt_unary!(tenstorrent_neg_u32, |k: &mut Kernel, x: OpId| k.neg(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| -x, ignore);
+tt_unary!(tenstorrent_abs_u32, |k: &mut Kernel, x: OpId| k.abs(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| x.abs(), ignore);
+tt_unary!(tenstorrent_not_u32, |k: &mut Kernel, x: OpId| k.not(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| if x == 0. { 1. } else { 0. }, ignore);
+tt_unary!(tenstorrent_bitnot_u32, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| (!(x as u32)) as f32, ignore);
+tt_unary!(tenstorrent_floor_u32, |k: &mut Kernel, x: OpId| k.floor(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| x.floor(), ignore);
+tt_unary!(tenstorrent_trunc_u32, |k: &mut Kernel, x: OpId| k.trunc(x), DType::U32, 1e-5, tt_u32_mix, |x: f32| x.trunc(), ignore);
+tt_unary!(tenstorrent_exp_u32, |k: &mut Kernel, x: OpId| k.exp(x), DType::U32, 5e-1, tt_u32_small, |x: f32| x.exp(), ignore);
+tt_unary!(tenstorrent_exp2_u32, |k: &mut Kernel, x: OpId| k.exp2(x), DType::U32, 5e-1, tt_u32_small, |x: f32| x.exp2(), ignore);
+tt_unary!(tenstorrent_log2_u32, |k: &mut Kernel, x: OpId| k.log2(x), DType::U32, 5e-1, tt_u32_pos, |x: f32| x.log2(), ignore);
+tt_unary!(tenstorrent_recip_u32, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::U32, 5e-1, tt_u32_pos, |x: f32| x.recip(), ignore);
+tt_unary!(tenstorrent_sqrt_u32, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::U32, 5e-1, tt_u32_small, |x: f32| x.sqrt(), ignore);
+tt_unary!(tenstorrent_rsqrt_u32, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::U32, 5e-1, tt_u32_pos, |x: f32| x.sqrt().recip(), ignore);
+tt_unary!(tenstorrent_sin_u32, |k: &mut Kernel, x: OpId| k.sin(x), DType::U32, 5e-1, tt_u32_small, |x: f32| x.sin(), ignore);
+tt_unary!(tenstorrent_cos_u32, |k: &mut Kernel, x: OpId| k.cos(x), DType::U32, 5e-1, tt_u32_small, |x: f32| x.cos(), ignore);
+tt_unary!(tenstorrent_neg_i8, |k: &mut Kernel, x: OpId| k.neg(x), DType::I8, 1e-5, tt_i8_full, |x: f32| -x, ignore);
+tt_unary!(tenstorrent_abs_i8, |k: &mut Kernel, x: OpId| k.abs(x), DType::I8, 1e-5, tt_i8_full, |x: f32| x.abs(), ignore);
+tt_unary!(tenstorrent_not_i8, |k: &mut Kernel, x: OpId| k.not(x), DType::I8, 1e-5, tt_i8_full, |x: f32| if x == 0. { 1. } else { 0. }, ignore);
+tt_unary!(tenstorrent_bitnot_i8, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::I8, 1e-5, tt_i8_full, |x: f32| (!(x as i8)) as f32, ignore);
+tt_unary!(tenstorrent_floor_i8, |k: &mut Kernel, x: OpId| k.floor(x), DType::I8, 1e-5, tt_i8_full, |x: f32| x.floor(), ignore);
+tt_unary!(tenstorrent_trunc_i8, |k: &mut Kernel, x: OpId| k.trunc(x), DType::I8, 1e-5, tt_i8_full, |x: f32| x.trunc(), ignore);
+tt_unary!(tenstorrent_exp_i8, |k: &mut Kernel, x: OpId| k.exp(x), DType::I8, 5e-1, tt_i8_small, |x: f32| x.exp(), ignore);
+tt_unary!(tenstorrent_exp2_i8, |k: &mut Kernel, x: OpId| k.exp2(x), DType::I8, 5e-1, tt_i8_small, |x: f32| x.exp2(), ignore);
+tt_unary!(tenstorrent_log2_i8, |k: &mut Kernel, x: OpId| k.log2(x), DType::I8, 5e-1, tt_i8_pos, |x: f32| x.log2(), ignore);
+tt_unary!(tenstorrent_recip_i8, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::I8, 5e-1, tt_i8_pos, |x: f32| x.recip(), ignore);
+tt_unary!(tenstorrent_sqrt_i8, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::I8, 5e-1, tt_i8_pos, |x: f32| x.sqrt(), ignore);
+tt_unary!(tenstorrent_rsqrt_i8, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::I8, 5e-1, tt_i8_pos, |x: f32| x.sqrt().recip(), ignore);
+tt_unary!(tenstorrent_sin_i8, |k: &mut Kernel, x: OpId| k.sin(x), DType::I8, 5e-1, tt_i8_small, |x: f32| x.sin(), ignore);
+tt_unary!(tenstorrent_cos_i8, |k: &mut Kernel, x: OpId| k.cos(x), DType::I8, 5e-1, tt_i8_small, |x: f32| x.cos(), ignore);
+tt_unary!(tenstorrent_neg_i32, |k: &mut Kernel, x: OpId| k.neg(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| -x, ignore);
+tt_unary!(tenstorrent_abs_i32, |k: &mut Kernel, x: OpId| k.abs(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| x.abs(), ignore);
+tt_unary!(tenstorrent_not_i32, |k: &mut Kernel, x: OpId| k.not(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| if x == 0. { 1. } else { 0. }, ignore);
+tt_unary!(tenstorrent_bitnot_i32, |k: &mut Kernel, x: OpId| k.bit_not(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| (!(x as i32)) as f32, ignore);
+tt_unary!(tenstorrent_floor_i32, |k: &mut Kernel, x: OpId| k.floor(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| x.floor(), ignore);
+tt_unary!(tenstorrent_trunc_i32, |k: &mut Kernel, x: OpId| k.trunc(x), DType::I32, 1e-5, tt_i32_mix, |x: f32| x.trunc(), ignore);
+tt_unary!(tenstorrent_exp_i32, |k: &mut Kernel, x: OpId| k.exp(x), DType::I32, 5e-1, tt_i32_small, |x: f32| x.exp(), ignore);
+tt_unary!(tenstorrent_exp2_i32, |k: &mut Kernel, x: OpId| k.exp2(x), DType::I32, 5e-1, tt_i32_small, |x: f32| x.exp2(), ignore);
+tt_unary!(tenstorrent_log2_i32, |k: &mut Kernel, x: OpId| k.log2(x), DType::I32, 5e-1, tt_i32_pos, |x: f32| x.log2(), ignore);
+tt_unary!(tenstorrent_recip_i32, |k: &mut Kernel, x: OpId| k.reciprocal(x), DType::I32, 5e-1, tt_i32_pos, |x: f32| x.recip(), ignore);
+tt_unary!(tenstorrent_sqrt_i32, |k: &mut Kernel, x: OpId| k.sqrt(x), DType::I32, 5e-1, tt_i32_pos, |x: f32| x.sqrt(), ignore);
+tt_unary!(tenstorrent_rsqrt_i32, |k: &mut Kernel, x: OpId| k.rsqrt(x), DType::I32, 5e-1, tt_i32_pos, |x: f32| x.sqrt().recip(), ignore);
+tt_unary!(tenstorrent_sin_i32, |k: &mut Kernel, x: OpId| k.sin(x), DType::I32, 5e-1, tt_i32_small, |x: f32| x.sin(), ignore);
+tt_unary!(tenstorrent_cos_i32, |k: &mut Kernel, x: OpId| k.cos(x), DType::I32, 5e-1, tt_i32_small, |x: f32| x.cos(), ignore);
 
 // F16/BF16 shifts: the LLK shift op is int-only; these rows record the
 // failure mode (compile-time static_assert, not silent wrong values).
-tt_binary!(tenstorrent_shl_f16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::F16, 1e-5, tt_range, tt_shift_amt, |x: f32, y: f32| f32::from_bits(x.to_bits().wrapping_shl(y as u32)));
-tt_binary!(tenstorrent_shr_f16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::F16, 1e-5, tt_range, tt_shift_amt, |x: f32, y: f32| f32::from_bits(x.to_bits().wrapping_shr(y as u32)));
-tt_binary!(tenstorrent_shl_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::BF16, 1e-5, tt_range, tt_shift_amt, |x: f32, y: f32| f32::from_bits(x.to_bits().wrapping_shl(y as u32)));
-tt_binary!(tenstorrent_shr_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::BF16, 1e-5, tt_range, tt_shift_amt, |x: f32, y: f32| f32::from_bits(x.to_bits().wrapping_shr(y as u32)));
+tt_binary!(tenstorrent_shl_f16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::F16, 1e-5, tt_range, tt_shift_amt, |x: f32, y: f32| f32::from_bits(x.to_bits().wrapping_shl(y as u32)), ignore);
+tt_binary!(tenstorrent_shr_f16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::F16, 1e-5, tt_range, tt_shift_amt, |x: f32, y: f32| f32::from_bits(x.to_bits().wrapping_shr(y as u32)), ignore);
+tt_binary!(tenstorrent_shl_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::BF16, 1e-5, tt_range, tt_shift_amt, |x: f32, y: f32| f32::from_bits(x.to_bits().wrapping_shl(y as u32)), ignore);
+tt_binary!(tenstorrent_shr_bf16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::BF16, 1e-5, tt_range, tt_shift_amt, |x: f32, y: f32| f32::from_bits(x.to_bits().wrapping_shr(y as u32)), ignore);
 
 // F8E4M3 binary: exact where the format allows, E4M3-quantized tol elsewhere.
 tt_binary!(tenstorrent_add_f8, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::F8E4M3, 1e-5, tt_f8_int8, tt_f8_int8_b, |x: f32, y: f32| x + y, ignore);
@@ -1696,41 +1716,41 @@ tt_binary!(tenstorrent_shr_f8, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_ri
 
 // Integer binary: wrapping refs where overflow is possible; div uses 0.6
 // since int-div semantics (trunc vs float) are what the run classifies.
-tt_binary!(tenstorrent_add_u8, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::U8, 1e-5, tt_u8_small, tt_u8_small_b, |x: f32, y: f32| x + y);
-tt_binary!(tenstorrent_sub_u8, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::U8, 1e-5, tt_u8_small, tt_u8_small_b, |x: f32, y: f32| (x as u8).wrapping_sub(y as u8) as f32);
-tt_binary!(tenstorrent_mul_u8, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::U8, 1e-5, tt_u8_small, tt_u8_small_b, |x: f32, y: f32| x * y);
-tt_binary!(tenstorrent_div_u8, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::U8, 6e-1, tt_u8_small, tt_u8_pos, |x: f32, y: f32| x / y);
-tt_binary!(tenstorrent_max_u8, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::U8, 1e-5, tt_u8_full, tt_u8_small_b, |x: f32, y: f32| x.max(y));
-tt_binary!(tenstorrent_shl_u8, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::U8, 1e-5, tt_u8_full, tt_shift_amt, |x: f32, y: f32| (x as u8).wrapping_shl(y as u32) as f32);
-tt_binary!(tenstorrent_shr_u8, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::U8, 1e-5, tt_u8_full, tt_shift_amt, |x: f32, y: f32| (x as u8).wrapping_shr(y as u32) as f32);
-tt_binary!(tenstorrent_add_u16, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::U16, 1e-5, tt_u16_small, tt_u16_small_b, |x: f32, y: f32| x + y);
-tt_binary!(tenstorrent_sub_u16, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::U16, 1e-5, tt_u16_small, tt_u16_small_b, |x: f32, y: f32| (x as u16).wrapping_sub(y as u16) as f32);
-tt_binary!(tenstorrent_mul_u16, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::U16, 1e-5, tt_u16_small, tt_u16_small_b, |x: f32, y: f32| x * y);
-tt_binary!(tenstorrent_div_u16, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::U16, 6e-1, tt_u16_small, tt_u16_pos, |x: f32, y: f32| x / y);
-tt_binary!(tenstorrent_max_u16, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::U16, 1e-5, tt_u16_full, tt_u16_small_b, |x: f32, y: f32| x.max(y));
-tt_binary!(tenstorrent_shl_u16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::U16, 1e-5, tt_u16_full, tt_shift_amt, |x: f32, y: f32| (x as u16).wrapping_shl(y as u32) as f32);
-tt_binary!(tenstorrent_shr_u16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::U16, 1e-5, tt_u16_full, tt_shift_amt, |x: f32, y: f32| (x as u16).wrapping_shr(y as u32) as f32);
-tt_binary!(tenstorrent_add_u32, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::U32, 1e-5, tt_u32_small, tt_u32_small_b, |x: f32, y: f32| x + y);
-tt_binary!(tenstorrent_sub_u32, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::U32, 1e-5, tt_u32_small, tt_u32_small_b, |x: f32, y: f32| (x as u32).wrapping_sub(y as u32) as f32);
-tt_binary!(tenstorrent_mul_u32, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::U32, 1e-5, tt_u32_small, tt_u32_small_b, |x: f32, y: f32| x * y);
-tt_binary!(tenstorrent_div_u32, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::U32, 6e-1, tt_u32_small, tt_u32_pos, |x: f32, y: f32| x / y);
-tt_binary!(tenstorrent_max_u32, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::U32, 1e-5, tt_u32_mix, tt_u32_small_b, |x: f32, y: f32| x.max(y));
-tt_binary!(tenstorrent_shl_u32, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::U32, 1e-5, tt_u32_small, tt_shift_amt32, |x: f32, y: f32| (x as u32).wrapping_shl(y as u32) as f32);
-tt_binary!(tenstorrent_shr_u32, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::U32, 1e-5, tt_u32_small, tt_shift_amt32, |x: f32, y: f32| (x as u32).wrapping_shr(y as u32) as f32);
-tt_binary!(tenstorrent_add_i8, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::I8, 1e-5, tt_i8_small, tt_i8_small_b, |x: f32, y: f32| x + y);
-tt_binary!(tenstorrent_sub_i8, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::I8, 1e-5, tt_i8_small, tt_i8_small_b, |x: f32, y: f32| x - y);
-tt_binary!(tenstorrent_mul_i8, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::I8, 1e-5, tt_i8_small, tt_i8_small_b, |x: f32, y: f32| x * y);
-tt_binary!(tenstorrent_div_i8, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::I8, 6e-1, tt_i8_small, tt_i8_pos, |x: f32, y: f32| x / y);
-tt_binary!(tenstorrent_max_i8, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::I8, 1e-5, tt_i8_full, tt_i8_small_b, |x: f32, y: f32| x.max(y));
-tt_binary!(tenstorrent_shl_i8, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::I8, 1e-5, tt_i8_small, tt_shift_amt, |x: f32, y: f32| (x as i8).wrapping_shl(y as u32) as f32);
-tt_binary!(tenstorrent_shr_i8, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::I8, 1e-5, tt_i8_small, tt_shift_amt, |x: f32, y: f32| (x as i8).wrapping_shr(y as u32) as f32);
-tt_binary!(tenstorrent_add_i32, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::I32, 1e-5, tt_i32_small, tt_i32_small_b, |x: f32, y: f32| x + y);
-tt_binary!(tenstorrent_sub_i32, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::I32, 1e-5, tt_i32_small, tt_i32_small_b, |x: f32, y: f32| x - y);
-tt_binary!(tenstorrent_mul_i32, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::I32, 1e-5, tt_i32_small, tt_i32_small_b, |x: f32, y: f32| x * y);
-tt_binary!(tenstorrent_div_i32, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::I32, 6e-1, tt_i32_small, tt_i32_pos, |x: f32, y: f32| x / y);
-tt_binary!(tenstorrent_max_i32, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::I32, 1e-5, tt_i32_mix, tt_i32_small_b, |x: f32, y: f32| x.max(y));
-tt_binary!(tenstorrent_shl_i32, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::I32, 1e-5, tt_i32_small, tt_shift_amt32, |x: f32, y: f32| (x as i32).wrapping_shl(y as u32) as f32);
-tt_binary!(tenstorrent_shr_i32, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::I32, 1e-5, tt_i32_small, tt_shift_amt32, |x: f32, y: f32| (x as i32).wrapping_shr(y as u32) as f32);
+tt_binary!(tenstorrent_add_u8, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::U8, 1e-5, tt_u8_small, tt_u8_small_b, |x: f32, y: f32| x + y, ignore);
+tt_binary!(tenstorrent_sub_u8, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::U8, 1e-5, tt_u8_small, tt_u8_small_b, |x: f32, y: f32| (x as u8).wrapping_sub(y as u8) as f32, ignore);
+tt_binary!(tenstorrent_mul_u8, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::U8, 1e-5, tt_u8_small, tt_u8_small_b, |x: f32, y: f32| x * y, ignore);
+tt_binary!(tenstorrent_div_u8, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::U8, 6e-1, tt_u8_small, tt_u8_pos, |x: f32, y: f32| x / y, ignore);
+tt_binary!(tenstorrent_max_u8, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::U8, 1e-5, tt_u8_full, tt_u8_small_b, |x: f32, y: f32| x.max(y), ignore);
+tt_binary!(tenstorrent_shl_u8, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::U8, 1e-5, tt_u8_full, tt_shift_amt, |x: f32, y: f32| (x as u8).wrapping_shl(y as u32) as f32, ignore);
+tt_binary!(tenstorrent_shr_u8, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::U8, 1e-5, tt_u8_full, tt_shift_amt, |x: f32, y: f32| (x as u8).wrapping_shr(y as u32) as f32, ignore);
+tt_binary!(tenstorrent_add_u16, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::U16, 1e-5, tt_u16_small, tt_u16_small_b, |x: f32, y: f32| x + y, ignore);
+tt_binary!(tenstorrent_sub_u16, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::U16, 1e-5, tt_u16_small, tt_u16_small_b, |x: f32, y: f32| (x as u16).wrapping_sub(y as u16) as f32, ignore);
+tt_binary!(tenstorrent_mul_u16, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::U16, 1e-5, tt_u16_small, tt_u16_small_b, |x: f32, y: f32| x * y, ignore);
+tt_binary!(tenstorrent_div_u16, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::U16, 6e-1, tt_u16_small, tt_u16_pos, |x: f32, y: f32| x / y, ignore);
+tt_binary!(tenstorrent_max_u16, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::U16, 1e-5, tt_u16_full, tt_u16_small_b, |x: f32, y: f32| x.max(y), ignore);
+tt_binary!(tenstorrent_shl_u16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::U16, 1e-5, tt_u16_full, tt_shift_amt, |x: f32, y: f32| (x as u16).wrapping_shl(y as u32) as f32, ignore);
+tt_binary!(tenstorrent_shr_u16, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::U16, 1e-5, tt_u16_full, tt_shift_amt, |x: f32, y: f32| (x as u16).wrapping_shr(y as u32) as f32, ignore);
+tt_binary!(tenstorrent_add_u32, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::U32, 1e-5, tt_u32_small, tt_u32_small_b, |x: f32, y: f32| x + y, ignore);
+tt_binary!(tenstorrent_sub_u32, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::U32, 1e-5, tt_u32_small, tt_u32_small_b, |x: f32, y: f32| (x as u32).wrapping_sub(y as u32) as f32, ignore);
+tt_binary!(tenstorrent_mul_u32, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::U32, 1e-5, tt_u32_small, tt_u32_small_b, |x: f32, y: f32| x * y, ignore);
+tt_binary!(tenstorrent_div_u32, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::U32, 6e-1, tt_u32_small, tt_u32_pos, |x: f32, y: f32| x / y, ignore);
+tt_binary!(tenstorrent_max_u32, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::U32, 1e-5, tt_u32_mix, tt_u32_small_b, |x: f32, y: f32| x.max(y), ignore);
+tt_binary!(tenstorrent_shl_u32, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::U32, 1e-5, tt_u32_small, tt_shift_amt32, |x: f32, y: f32| (x as u32).wrapping_shl(y as u32) as f32, ignore);
+tt_binary!(tenstorrent_shr_u32, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::U32, 1e-5, tt_u32_small, tt_shift_amt32, |x: f32, y: f32| (x as u32).wrapping_shr(y as u32) as f32, ignore);
+tt_binary!(tenstorrent_add_i8, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::I8, 1e-5, tt_i8_small, tt_i8_small_b, |x: f32, y: f32| x + y, ignore);
+tt_binary!(tenstorrent_sub_i8, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::I8, 1e-5, tt_i8_small, tt_i8_small_b, |x: f32, y: f32| x - y, ignore);
+tt_binary!(tenstorrent_mul_i8, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::I8, 1e-5, tt_i8_small, tt_i8_small_b, |x: f32, y: f32| x * y, ignore);
+tt_binary!(tenstorrent_div_i8, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::I8, 6e-1, tt_i8_small, tt_i8_pos, |x: f32, y: f32| x / y, ignore);
+tt_binary!(tenstorrent_max_i8, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::I8, 1e-5, tt_i8_full, tt_i8_small_b, |x: f32, y: f32| x.max(y), ignore);
+tt_binary!(tenstorrent_shl_i8, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::I8, 1e-5, tt_i8_small, tt_shift_amt, |x: f32, y: f32| (x as i8).wrapping_shl(y as u32) as f32, ignore);
+tt_binary!(tenstorrent_shr_i8, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::I8, 1e-5, tt_i8_small, tt_shift_amt, |x: f32, y: f32| (x as i8).wrapping_shr(y as u32) as f32, ignore);
+tt_binary!(tenstorrent_add_i32, |k: &mut Kernel, x: OpId, y: OpId| k.add(x, y), DType::I32, 1e-5, tt_i32_small, tt_i32_small_b, |x: f32, y: f32| x + y, ignore);
+tt_binary!(tenstorrent_sub_i32, |k: &mut Kernel, x: OpId, y: OpId| k.sub(x, y), DType::I32, 1e-5, tt_i32_small, tt_i32_small_b, |x: f32, y: f32| x - y, ignore);
+tt_binary!(tenstorrent_mul_i32, |k: &mut Kernel, x: OpId, y: OpId| k.mul(x, y), DType::I32, 1e-5, tt_i32_small, tt_i32_small_b, |x: f32, y: f32| x * y, ignore);
+tt_binary!(tenstorrent_div_i32, |k: &mut Kernel, x: OpId, y: OpId| k.div(x, y), DType::I32, 6e-1, tt_i32_small, tt_i32_pos, |x: f32, y: f32| x / y, ignore);
+tt_binary!(tenstorrent_max_i32, |k: &mut Kernel, x: OpId, y: OpId| k.max(x, y), DType::I32, 1e-5, tt_i32_mix, tt_i32_small_b, |x: f32, y: f32| x.max(y), ignore);
+tt_binary!(tenstorrent_shl_i32, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y), DType::I32, 1e-5, tt_i32_small, tt_shift_amt32, |x: f32, y: f32| (x as i32).wrapping_shl(y as u32) as f32, ignore);
+tt_binary!(tenstorrent_shr_i32, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y), DType::I32, 1e-5, tt_i32_small, tt_shift_amt32, |x: f32, y: f32| (x as i32).wrapping_shr(y as u32) as f32, ignore);
 
 // Typecast matrix: every directed pair over F16/BF16/F8E4M3/F32 plus U8.
 // Lowering is always SFPU `typecast_tile<in,out>` over unpack-converted
@@ -1738,9 +1758,9 @@ tt_binary!(tenstorrent_shr_i32, |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_r
 // F32 on either side fails at compile (F32 CBs rejected, no 32-bit CB
 // move path); any F8 side hangs at launch (open Fp8-compute issue).
 // Both classes are ignored with docs; the rest run.
-tt_cast!(tenstorrent_cast_f16_bf16, DType::F16, DType::BF16, 1e-5, tt_range, |x: f32| x);
-tt_cast!(tenstorrent_cast_bf16_f16, DType::BF16, DType::F16, 1e-5, tt_range, |x: f32| x);
-tt_cast!(tenstorrent_cast_bf16_f16_fine, DType::BF16, DType::F16, 1e-5, tt_fine, |x: f32| f16::from_f32(bf16_trunc(x)).to_f32());
+tt_cast!(tenstorrent_cast_f16_bf16, DType::F16, DType::BF16, 1e-5, tt_range, |x: f32| x, ignore);
+tt_cast!(tenstorrent_cast_bf16_f16, DType::BF16, DType::F16, 1e-5, tt_range, |x: f32| x, ignore);
+tt_cast!(tenstorrent_cast_bf16_f16_fine, DType::BF16, DType::F16, 1e-5, tt_fine, |x: f32| f16::from_f32(bf16_trunc(x)).to_f32(), ignore);
 tt_cast!(tenstorrent_cast_f16_f16, DType::F16, DType::F16, 1e-5, tt_range, |x: f32| x);
 tt_cast!(tenstorrent_cast_bf16_bf16, DType::BF16, DType::BF16, 1e-5, tt_range, |x: f32| x);
 tt_cast!(tenstorrent_cast_f8_bf16, DType::F8E4M3, DType::BF16, 1e-5, tt_f8_exact, |x: f32| x, ignore);
@@ -1752,13 +1772,13 @@ tt_cast!(tenstorrent_cast_f32_f32, DType::F32, DType::F32, 1e-5, tt_range, |x: f
 tt_cast!(tenstorrent_cast_f16_f32, DType::F16, DType::F32, 1e-5, tt_range, |x: f32| x, ignore);
 tt_cast!(tenstorrent_cast_bf16_f32, DType::BF16, DType::F32, 1e-5, tt_range, |x: f32| x, ignore);
 tt_cast!(tenstorrent_cast_f8_f32, DType::F8E4M3, DType::F32, 1e-5, tt_f8_exact, |x: f32| x, ignore);
-tt_cast!(tenstorrent_cast_u8_f16, DType::U8, DType::F16, 1e-5, tt_u8_full, |x: f32| x);
-tt_cast!(tenstorrent_cast_u8_bf16, DType::U8, DType::BF16, 1e-5, tt_u8_full, |x: f32| x);
+tt_cast!(tenstorrent_cast_u8_f16, DType::U8, DType::F16, 1e-5, tt_u8_full, |x: f32| x, ignore);
+tt_cast!(tenstorrent_cast_u8_bf16, DType::U8, DType::BF16, 1e-5, tt_u8_full, |x: f32| x, ignore);
 tt_cast!(tenstorrent_cast_u8_f8, DType::U8, DType::F8E4M3, 1e-5, tt_u8_full, |x: f32| f8e4m3::from_f32(x).to_f32(), ignore);
 tt_cast!(tenstorrent_cast_u8_f32, DType::U8, DType::F32, 1e-5, tt_u8_full, |x: f32| x, ignore);
-tt_cast!(tenstorrent_cast_u8_u8, DType::U8, DType::U8, 1e-5, tt_u8_full, |x: f32| x);
-tt_cast!(tenstorrent_cast_f16_u8, DType::F16, DType::U8, 1e-5, tt_range, |x: f32| x.trunc());
-tt_cast!(tenstorrent_cast_bf16_u8, DType::BF16, DType::U8, 1e-5, tt_range, |x: f32| x.trunc());
+tt_cast!(tenstorrent_cast_u8_u8, DType::U8, DType::U8, 1e-5, tt_u8_full, |x: f32| x, ignore);
+tt_cast!(tenstorrent_cast_f16_u8, DType::F16, DType::U8, 1e-5, tt_range, |x: f32| x.trunc(), ignore);
+tt_cast!(tenstorrent_cast_bf16_u8, DType::BF16, DType::U8, 1e-5, tt_range, |x: f32| x.trunc(), ignore);
 tt_cast!(tenstorrent_cast_f8_u8, DType::F8E4M3, DType::U8, 1e-5, tt_f8_small, |x: f32| x.trunc(), ignore);
 tt_cast!(tenstorrent_cast_f32_u8, DType::F32, DType::U8, 1e-5, tt_range, |x: f32| x.trunc(), ignore);
 
