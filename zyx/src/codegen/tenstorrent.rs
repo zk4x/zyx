@@ -3658,9 +3658,11 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                                     // pack the operand into a Circular storage
                                     // and copy_tile it back per use.
                                     if compute_data.rcs[&tile_op] != 1 {
-                                        todo!(
-                                            "tenstorrent2: scalar binary {op_id} needs a CB copy of its multi-use operand (no DST->DST copy on Tenstorrent): pack it to a Circular storage and copy_tile it back per use, dataflow style"
-                                        );
+                                        return Err(BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!("tenstorrent2: scalar binary {op_id} reads a multi-use operand: the scalar call mutates the DST slot in place and Tenstorrent has no DST->DST copy, so spill the operand to a Circular storage and load it back once per use (load_circular/store_circular, dataflow style)")
+                                                .into(),
+                                        });
                                     }
                                     self.tl.bin_scalar(&mut src, &indent, op_id, t, name, bits, compute_data.rcs[&op_id]);
                                 } else {

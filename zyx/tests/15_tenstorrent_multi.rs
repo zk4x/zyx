@@ -1483,7 +1483,13 @@ fn tenstorrent_rmsnorm_rows() -> Result<(), ZyxError> {
     assert_eq!(z.len(), 1024);
     let mut bad = 0;
     for r in 0..32 {
-        let mean: f32 = (0..32).map(|c| { let x = a_data[r * 32 + c]; x * x }).sum::<f32>() / 32.0;
+        let mean: f32 = (0..32)
+            .map(|c| {
+                let x = a_data[r * 32 + c];
+                x * x
+            })
+            .sum::<f32>()
+            / 32.0;
         let rstd = 1.0 / (mean + eps).sqrt();
         for c in 0..32 {
             let expected = a_data[r * 32 + c] * rstd * w_data[r * 32 + c];
@@ -1648,9 +1654,7 @@ fn tenstorrent_fused_sigmoid_silu() -> Result<(), ZyxError> {
 
 /// Deterministic packed words: word j carries nibble k of tile k in bits 4k.
 fn probe_words() -> Vec<u16> {
-    (0..1024u32)
-        .map(|j| ((j.wrapping_mul(2654435761).wrapping_add(12345)) % 65536) as u16)
-        .collect()
+    (0..1024u32).map(|j| ((j.wrapping_mul(2654435761).wrapping_add(12345)) % 65536) as u16).collect()
 }
 
 /// Stage 1: nibble extraction — `n = cv - 16*trunc(cv/16)` on the full-word
@@ -2048,12 +2052,8 @@ fn tenstorrent_probe_fp32_seed() -> Result<(), ZyxError> {
     let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
     let z: Vec<f32> = out_bufs[0].to(Dev::C)?.to_vec()?;
-    let expected: Vec<f32> = Tensor::from_vec(
-        wu.iter().map(|&w| w as f32).collect::<Vec<f32>>(),
-        [32i64, 32],
-    )?
-    .tilize()?
-    .to_vec()?;
+    let expected: Vec<f32> =
+        Tensor::from_vec(wu.iter().map(|&w| w as f32).collect::<Vec<f32>>(), [32i64, 32])?.tilize()?.to_vec()?;
     let mut bad = 0;
     for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
         if (zv - ev).abs() >= 1e-3 {
@@ -2109,12 +2109,8 @@ fn tenstorrent_probe_fp32_scalar() -> Result<(), ZyxError> {
     let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
     let z: Vec<f32> = out_bufs[0].to(Dev::C)?.to_vec()?;
-    let expected: Vec<f32> = Tensor::from_vec(
-        wu.iter().map(|&w| w as f32 * 0.0625).collect::<Vec<f32>>(),
-        [32i64, 32],
-    )?
-    .tilize()?
-    .to_vec()?;
+    let expected: Vec<f32> =
+        Tensor::from_vec(wu.iter().map(|&w| w as f32 * 0.0625).collect::<Vec<f32>>(), [32i64, 32])?.tilize()?.to_vec()?;
     let mut bad = 0;
     for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
         if (zv - ev).abs() >= 1e-3 {
@@ -2171,12 +2167,10 @@ fn tenstorrent_probe_fp32_trunc() -> Result<(), ZyxError> {
     let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
     let z: Vec<f32> = out_bufs[0].to(Dev::C)?.to_vec()?;
-    let expected: Vec<f32> = Tensor::from_vec(
-        wu.iter().map(|&w| (w as f32 * 0.0625).trunc()).collect::<Vec<f32>>(),
-        [32i64, 32],
-    )?
-    .tilize()?
-    .to_vec()?;
+    let expected: Vec<f32> =
+        Tensor::from_vec(wu.iter().map(|&w| (w as f32 * 0.0625).trunc()).collect::<Vec<f32>>(), [32i64, 32])?
+            .tilize()?
+            .to_vec()?;
     let mut bad = 0;
     for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
         if (zv - ev).abs() >= 1e-3 {
@@ -2239,12 +2233,8 @@ fn tenstorrent_probe_fp32_sub() -> Result<(), ZyxError> {
     let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
     let z: Vec<f32> = out_bufs[0].to(Dev::C)?.to_vec()?;
-    let expected: Vec<f32> = Tensor::from_vec(
-        wu.iter().map(|&w| (w & 15) as f32).collect::<Vec<f32>>(),
-        [32i64, 32],
-    )?
-    .tilize()?
-    .to_vec()?;
+    let expected: Vec<f32> =
+        Tensor::from_vec(wu.iter().map(|&w| (w & 15) as f32).collect::<Vec<f32>>(), [32i64, 32])?.tilize()?.to_vec()?;
     let mut bad = 0;
     for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
         if (zv - ev).abs() >= 1e-3 {
@@ -2296,12 +2286,8 @@ fn tenstorrent_probe_u8chain_cast() -> Result<(), ZyxError> {
     let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
     let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
     assert_eq!(z.len(), 1024);
-    let expected: Vec<f32> = Tensor::from_vec(
-        wu.iter().map(|&w| w as f32).collect::<Vec<f32>>(),
-        [32i64, 32],
-    )?
-    .tilize()?
-    .to_vec()?;
+    let expected: Vec<f32> =
+        Tensor::from_vec(wu.iter().map(|&w| w as f32).collect::<Vec<f32>>(), [32i64, 32])?.tilize()?.to_vec()?;
     let mut bad = 0;
     for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
         if zv != ev {
@@ -2383,18 +2369,10 @@ fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
     let out_bufs = compiled.forward(&[&packed_t], vec![[32, 64]])?;
     let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
     assert_eq!(z.len(), 2048);
-    let exp0: Vec<f32> = Tensor::from_vec(
-        wu.iter().map(|&w| (w & 15) as f32).collect::<Vec<f32>>(),
-        [32i64, 32],
-    )?
-    .tilize()?
-    .to_vec()?;
-    let exp1: Vec<f32> = Tensor::from_vec(
-        wu.iter().map(|&w| (w >> 4) as f32).collect::<Vec<f32>>(),
-        [32i64, 32],
-    )?
-    .tilize()?
-    .to_vec()?;
+    let exp0: Vec<f32> =
+        Tensor::from_vec(wu.iter().map(|&w| (w & 15) as f32).collect::<Vec<f32>>(), [32i64, 32])?.tilize()?.to_vec()?;
+    let exp1: Vec<f32> =
+        Tensor::from_vec(wu.iter().map(|&w| (w >> 4) as f32).collect::<Vec<f32>>(), [32i64, 32])?.tilize()?.to_vec()?;
     let mut bad = 0;
     for (j, (&zv, &ev)) in z.iter().zip(exp0.iter().chain(exp1.iter())).enumerate() {
         if zv != ev {
@@ -2416,7 +2394,6 @@ fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
 /// host truth.
 #[test]
 fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
-    const TDIM: u16 = 32;
     const TILE_ELEMS: i64 = 1024;
 
     fn tt_kernel(build: impl FnOnce(&mut Kernel)) -> Result<zyx::kernel::CompiledKernel, ZyxError> {
@@ -2434,28 +2411,18 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
     let k1 = tt_kernel(|k| {
         let inp = k.param(DType::U16);
         let out = k.param_mut(DType::F32);
-        let cin = k.storage(DType::U16, MemScope::Circular, TILE_ELEMS);
-        let cout = k.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+        let cin = k.circular_storage(DType::U16, 1);
+        let cout = k.circular_storage(DType::F32, 1);
         let c0 = k.const_idx(0);
-        let _g = k.group_range(0, 1);
-        let c1 = k.const_idx(1);
-        k.loop_over(c1, |k, _| {
-            let u = k.load_tile(inp, c0, TDIM, TDIM, TDIM as u32);
-            k.store_tile(cin, u, c0, TDIM, TDIM, TDIM as u32);
-        });
+        let u = k.load_global_tile(inp, c0);
+        k.store_circular(cin, u, c0);
         k.barrier();
-        let c1 = k.const_idx(1);
-        k.loop_over(c1, |k, _| {
-            let u = k.load_tile(cin, c0, TDIM, TDIM, TDIM as u32);
-            let f = k.cast(u, DType::F32);
-            k.store_tile(cout, f, c0, TDIM, TDIM, TDIM as u32);
-        });
+        let u = k.load_circular(cin, c0);
+        let f = k.cast(u, DType::F32);
+        k.store_circular(cout, f, c0);
         k.barrier();
-        let c1 = k.const_idx(1);
-        k.loop_over(c1, |k, _| {
-            let v = k.load_tile(cout, c0, TDIM, TDIM, TDIM as u32);
-            k.store_tile(out, v, c0, TDIM, TDIM, TDIM as u32);
-        });
+        let v = k.load_circular(cout, c0);
+        k.store_global_tile(out, v, c0);
     })?;
     let in1 = Tensor::from(words.clone()).to(Dev::TT(0))?;
     let out1 = k1.forward(&[&in1], vec![[TILE_ELEMS]])?;
@@ -2468,27 +2435,17 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
     let k2 = tt_kernel(|k| {
         let inp = k.param(DType::BF16);
         let out = k.param_mut(DType::BF16);
-        let cin = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
-        let cout = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
+        let cin = k.circular_storage(DType::BF16, 1);
+        let cout = k.circular_storage(DType::BF16, 1);
         let c0 = k.const_idx(0);
-        let _g = k.group_range(0, 1);
-        let c1 = k.const_idx(1);
-        k.loop_over(c1, |k, _| {
-            let u = k.load_tile(inp, c0, TDIM, TDIM, TDIM as u32);
-            k.store_tile(cin, u, c0, TDIM, TDIM, TDIM as u32);
-        });
+        let u = k.load_global_tile(inp, c0);
+        k.store_circular(cin, u, c0);
         k.barrier();
-        let c1 = k.const_idx(1);
-        k.loop_over(c1, |k, _| {
-            let v = k.load_tile(cin, c0, TDIM, TDIM, TDIM as u32);
-            k.store_tile(cout, v, c0, TDIM, TDIM, TDIM as u32);
-        });
+        let v = k.load_circular(cin, c0);
+        k.store_circular(cout, v, c0);
         k.barrier();
-        let c1 = k.const_idx(1);
-        k.loop_over(c1, |k, _| {
-            let v = k.load_tile(cout, c0, TDIM, TDIM, TDIM as u32);
-            k.store_tile(out, v, c0, TDIM, TDIM, TDIM as u32);
-        });
+        let v = k.load_circular(cout, c0);
+        k.store_global_tile(out, v, c0);
     })?;
     let in2 = Tensor::from_vec(scales.clone(), [TILE_ELEMS])?.to(Dev::TT(0))?;
     let out2 = k2.forward(&[&in2], vec![[TILE_ELEMS]])?;
@@ -2497,37 +2454,33 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
     println!("probe2 BF16 passthrough mismatches: {bad2}, first 4: {:?}", &v2[..4]);
 
     // --- Probe 3: plane-0 nibble: n = cv - 16*trunc(cv/16), F32 out ---
+    // DST->DST copy doesn't exist on Tenstorrent, so the twice-used
+    // operand `f` is spilled to a CB — pushed twice (one per use),
+    // reloaded once per use. cmid holds 2 tiles.
     let k3 = tt_kernel(|k| {
         let inp = k.param(DType::U16);
         let out = k.param_mut(DType::F32);
-        let cin = k.storage(DType::U16, MemScope::Circular, TILE_ELEMS);
-        let cout = k.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+        let cin = k.circular_storage(DType::U16, 1);
+        let cmid = k.circular_storage(DType::F32, 2);
+        let cout = k.circular_storage(DType::F32, 1);
         let c0 = k.const_idx(0);
-        let _g = k.group_range(0, 1);
-        let c1 = k.const_idx(1);
-        k.loop_over(c1, |k, _| {
-            let u = k.load_tile(inp, c0, TDIM, TDIM, TDIM as u32);
-            k.store_tile(cin, u, c0, TDIM, TDIM, TDIM as u32);
-        });
+        let u = k.load_global_tile(inp, c0);
+        k.store_circular(cin, u, c0);
         k.barrier();
-        let c063 = k.const_val(0.0625f32);
-        let c16 = k.const_val(16.0f32);
-        let c1 = k.const_idx(1);
-        k.loop_over(c1, |k, _| {
-            let u = k.load_tile(cin, c0, TDIM, TDIM, TDIM as u32);
-            let f = k.cast(u, DType::F32);
-            let t = k.mul(f, c063);
-            let t = k.trunc(t);
-            let t16 = k.mul(t, c16);
-            let n = k.sub(f, t16);
-            k.store_tile(cout, n, c0, TDIM, TDIM, TDIM as u32);
-        });
+        let u = k.load_circular(cin, c0);
+        let f = k.cast(u, DType::F32);
+        k.store_circular(cmid, f, c0);
+        k.store_circular(cmid, f, c0);
+        let f1 = k.load_circular(cmid, c0);
+        let t = k.mul(f1, 0.0625f32);
+        let t = k.trunc(t);
+        let t16 = k.mul(t, 16f32);
+        let f2 = k.load_circular(cmid, c0);
+        let n = k.sub(f2, t16);
+        k.store_circular(cout, n, c0);
         k.barrier();
-        let c1 = k.const_idx(1);
-        k.loop_over(c1, |k, _| {
-            let v = k.load_tile(cout, c0, TDIM, TDIM, TDIM as u32);
-            k.store_tile(out, v, c0, TDIM, TDIM, TDIM as u32);
-        });
+        let v = k.load_circular(cout, c0);
+        k.store_global_tile(out, v, c0);
     })?;
     let in3 = Tensor::from(words.clone()).to(Dev::TT(0))?;
     let out3 = k3.forward(&[&in3], vec![[TILE_ELEMS]])?;

@@ -29,6 +29,24 @@ fn tt_centered() -> Vec<f32> {
     (0..32 * 32).map(|j| ((j % 64) as f32 - 32.) * 0.0625).collect()
 }
 
+fn tt_bf16_full() -> Vec<f32> {
+    // Full BF16 sweep, every value BF16-exact (fractions, ints, .5s,
+    // exact multiples up to ±65280): any mismatch is the op's fault,
+    // never input quantization.
+    (0..32 * 32)
+        .map(|j| match j % 8 {
+            0 => ((j % 64) as f32 - 32.) * 0.0625,
+            1 => (j % 256) as f32,
+            2 => -((j % 256) as f32),
+            3 => ((j % 128) as f32) + 0.5,
+            4 => -(((j % 128) as f32) + 0.5),
+            5 => (((j * 7) % 256) * 256) as f32,
+            6 => -((((j * 7) % 256) * 256) as f32),
+            _ => (((j * 32) % 8192) as f32) - 4096.,
+        })
+        .collect()
+}
+
 fn tt_positive() -> Vec<f32> {
     // (0, 2]: strictly positive for log2/recip/divisors.
     (0..32 * 32).map(|j| ((j % 32) as f32 + 1.) * 0.0625).collect()
@@ -1484,7 +1502,7 @@ tt_unary!(tenstorrent_abs_bf16, |k: &mut Kernel, x: OpId| k.abs(x), DType::BF16,
 tt_unary!(tenstorrent_floor_f16, |k: &mut Kernel, x: OpId| k.floor(x), DType::F16, 1e-5, tt_centered, |x: f32| x.floor(), ignore);
 tt_unary!(tenstorrent_floor_bf16, |k: &mut Kernel, x: OpId| k.floor(x), DType::BF16, 1e-5, tt_centered, |x: f32| x.floor());
 tt_unary!(tenstorrent_trunc_f16, |k: &mut Kernel, x: OpId| k.trunc(x), DType::F16, 1e-5, tt_centered, |x: f32| x.trunc(), ignore);
-tt_unary!(tenstorrent_trunc_bf16, |k: &mut Kernel, x: OpId| k.trunc(x), DType::BF16, 1e-5, tt_centered, |x: f32| x.trunc());
+tt_unary!(tenstorrent_trunc_bf16, |k: &mut Kernel, x: OpId| k.trunc(x), DType::BF16, 1e-5, tt_bf16_full, |x: f32| x.trunc());
 tt_unary!(tenstorrent_exp_f16, |k: &mut Kernel, x: OpId| k.exp(x), DType::F16, 3e-2, tt_range, |x: f32| x.exp());
 tt_unary!(tenstorrent_exp_bf16, |k: &mut Kernel, x: OpId| k.exp(x), DType::BF16, 3e-2, tt_range, |x: f32| x.exp());
 tt_unary!(tenstorrent_exp2_f16, |k: &mut Kernel, x: OpId| k.exp2(x), DType::F16, 3e-2, tt_range, |x: f32| x.exp2());
