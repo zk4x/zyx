@@ -833,28 +833,36 @@ impl Kernel {
     #[allow(unused_must_use)]
     pub(crate) fn generate_tenstorrent(&self) -> Result<TTCompiler, BackendError> {
         // DST mode is a type-level constant but only known at runtime:
-        // 32-bit iff compute unpacks an F32 tile into DST (F32 CB/acc
-        // load in the compute section). Matches the typecast header:
-        // any F32 input/output needs 32-bit Dest mode.
+        // 32-bit iff the kernel touches F32 tiles in registers (F32
+        // Register storage, e.g. matmul accumulation). F32 Circular
+        // storage is rejected below: tt-metal 0.72 has no working
+        // 32-bit CB move/copy path (corrupt data on silicon, hang on
+        // ttsim), so emitting such a kernel would only produce wrong
+        // results. Matches the typecast header: any F32 input/output
+        // needs 32-bit Dest mode. A narrower rule (compute-section
+        // loads only) silently packs BF16-rounded values into F32
+        // CBs — no error, lost precision — so the mode is kernel-wide.
         let mut fp32 = false;
-        let mut section = TtSection::Reader;
         let mut scan = self.head;
         for _ in 0..10_000 {
             if scan.is_null() {
                 break;
             }
-            match self.ops[scan].op {
-                Op::Barrier => section.advance(),
-                Op::Load { src, .. } if section == TtSection::Compute => {
-                    if matches!(
-                        self.ops[src].op,
-                        Op::Storage { dtype: DType::F32, scope: MemScope::Circular | MemScope::Register, .. }
-                    ) {
+            if let Op::Storage { dtype: DType::F32, scope, .. } = self.ops[scan].op {
+                match scope {
+                    MemScope::Circular => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: F32 circular buffers are unsupported (no working 32-bit CB move/copy path in tt-metal 0.72); F32 register accumulation is still allowed"
+                                .into(),
+                        });
+                    }
+                    MemScope::Register => {
                         fp32 = true;
                         break;
                     }
+                    _ => {}
                 }
-                _ => {}
             }
             scan = self.next_op(scan);
         }
@@ -2163,6 +2171,16 @@ pub(crate) struct TileEmitter<const DSTBF16: bool> {
     /// it (a stale entry only ever causes a redundant — always safe —
     /// reconfig, never a missing one).
     unpack_src: Option<(CBId, u32)>,
+    /// Packer data-format state: `None` until the first pack of the
+    /// kernel. The packer's initial format is NOT the mode-native one
+    /// (silicon + golden simulator both start it on BF16), so the first
+    /// pack always emits an explicit reconfig; after that, only a
+    /// format change does. Full format-code compare (not just width):
+    /// F16 and BF16 are both 2-byte entries but pack differently.
+    /// NOTE: a loop body that packs mixed formats still needs a
+    /// back-edge reconfig — this tracks compile-time emission order
+    /// only and does not model the wraparound edge.
+    pack_fmt: Option<u32>,
 }
 
 #[allow(unused_must_use)]
@@ -2182,6 +2200,7 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             has_matmul: false,
             fused: Map::default(),
             unpack_src: None,
+            pack_fmt: None,
         }
     }
 
@@ -2501,15 +2520,15 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
             }
         }
         debug_assert_eq!(self.state, TileState::PackLock, "tenstorrent2: pack without PACK lock");
-        // Mode-native pack target needs no runtime reconfig: the JIT
-        // programs the packer for it by construction. Runtime CB
+        // Pack format: the packer's initial format is not trustworthy
+        // (both silicon and the golden simulator start it on BF16 even
+        // in fp32 DST mode), so the FIRST pack always reconfigures;
+        // afterwards only a full format-code change does. Runtime CB
         // format codes (see CBEmitter::new): F32=0, F16=1, BF16=2.
-        // 16-bit DST packs F16/BF16 natively, 32-bit DST packs F32;
-        // anything else keeps the override.
         let cb_fmt = cb_em.config[cb].0;
-        let native = if DSTBF16 { cb_fmt == 1 || cb_fmt == 2 } else { cb_fmt == 0 };
-        if !native {
+        if self.pack_fmt != Some(cb_fmt) {
             writeln!(src, "{indent}pack_reconfig_data_format({cb});");
+            self.pack_fmt = Some(cb_fmt);
         }
         writeln!(src, "{indent}pack_tile({slot}, {cb});");
         // The pack reads the slot: one consumer done.
@@ -2873,18 +2892,17 @@ impl<const DSTBF16: bool> TileEmitter<DSTBF16> {
                 let _ = std::fmt::Write::write_fmt(&mut head, format_args!("{indent}init_sfpu({in0}, {out});\n"));
             }
         } else if self.has_matmul {
-            if !DSTBF16 {
-                let _ = std::fmt::Write::write_fmt(&mut head, format_args!("{indent}enable_fp32_dest_acc();\n"));
-            }
+            // No explicit enable_fp32_dest_acc(): no official kernel
+            // calls it — the JIT/FW owns the DST-mode registers from
+            // the kernel config (fp32_dest_acc_en). Verified neutral
+            // on silicon (identical output with and without the call).
         } else {
             if let Some([in0, in1, out]) = self.startup {
                 let _ = std::fmt::Write::write_fmt(
                     &mut head,
                     format_args!("{indent}compute_kernel_hw_startup({in0}, {in1}, {out});\n"),
                 );
-                if !DSTBF16 {
-                    let _ = std::fmt::Write::write_fmt(&mut head, format_args!("{indent}enable_fp32_dest_acc();\n"));
-                }
+                // No explicit enable_fp32_dest_acc() here either (see above).
             }
         }
         let mut inits = head;

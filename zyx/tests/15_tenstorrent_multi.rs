@@ -1950,18 +1950,77 @@ fn tenstorrent_probe_q4k_onetrip() -> Result<(), ZyxError> {
 
 // ---------------------------------------------------------------------------
 // fp32-entry SFPU bisect: which op breaks when DST entries are 4 bytes?
-// Each stage extends the previous by one op; the first stage that hangs
-// or corrupts on the simulator names the culprit. Run with
-// TT_METAL_SIMULATOR=$HOME/sim/libttsim_bh.so.
+// PARKED: tt-metal 0.72 has no working reference for F32 circular-buffer
+// movement with fp32 dest acc (corrupt halved data on silicon, hang on
+// ttsim), and codegen now rejects F32 CBs at compile time. The stages
+// below are kept as documentation of that finding; F32 register
+// accumulation (matmul) is unaffected and stays allowed.
 // ---------------------------------------------------------------------------
 
+/// Stage 0: fp32 DST mode with no SFPU ops — F32 in, copy through an F32
+/// CB, pack F32. Isolates `enable_fp32_dest_acc` + hw_startup from any
+/// typecast/math op.
+///
+/// Ignored: needs F32 circular buffers, which codegen rejects because the
+/// 32-bit CB move/copy path is broken in tt-metal 0.72.
+#[ignore]
+#[test]
+fn tenstorrent_probe_fp32_passthru() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F32);
+    let out = k.param_mut(DType::F32);
+    let ca = k.circular_storage(DType::F32, 1);
+    let cout = k.circular_storage(DType::F32, 1);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+
+    let t = k.load_global_tile(a, c0);
+    k.store_circular(ca, t, c0);
+    k.barrier();
+    let v = k.load_circular(ca, c0);
+    k.store_circular(cout, v, c0);
+    k.barrier();
+    let v2 = k.load_circular(cout, c0);
+    k.store_global_tile(out, v2, c0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let data: Vec<f32> = (0..1024).map(|j| j as f32 * 0.25).collect();
+    let a_t = Tensor::from_vec(data.clone(), [32i64, 32])?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.to_vec()?;
+    let expected: Vec<f32> = Tensor::from_vec(data, [32i64, 32])?.tilize()?.to_vec()?;
+    let mut bad = 0;
+    for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
+        if (zv - ev).abs() >= 1e-3 {
+            if bad < 6 {
+                println!("z[{j}] = {zv}, expected {ev}");
+            }
+            bad += 1;
+        }
+    }
+    println!("fp32 passthru bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
 /// Stage 1: copy + typecast U16->F32 in fp32 DST mode, pack F32.
+///
+/// Ignored: needs F32 circular buffers, which codegen rejects because the
+/// 32-bit CB move/copy path is broken in tt-metal 0.72.
+#[ignore]
 #[test]
 fn tenstorrent_probe_fp32_seed() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let out = k.param_mut(DType::F32);
     let cu16 = k.circular_storage(DType::U16, 1);
+    let ccur = k.circular_storage(DType::F32, 1);
     let cout = k.circular_storage(DType::F32, 1);
     let _g = k.group_range(0, 1);
     let c0 = k.const_idx(0);
@@ -1971,7 +2030,9 @@ fn tenstorrent_probe_fp32_seed() -> Result<(), ZyxError> {
     k.barrier();
     let u1 = k.load_circular(cu16, c0);
     let f = k.cast(u1, DType::F32);
-    k.store_circular(cout, f, c0);
+    k.store_circular(ccur, f, c0);
+    let f2 = k.load_circular(ccur, c0);
+    k.store_circular(cout, f2, c0);
     k.barrier();
     let v = k.load_circular(cout, c0);
     k.store_global_tile(out, v, c0);
@@ -2008,12 +2069,17 @@ fn tenstorrent_probe_fp32_seed() -> Result<(), ZyxError> {
 }
 
 /// Stage 2: stage 1 + scalar mul (binop_with_scalar) in fp32 DST mode.
+///
+/// Ignored: needs F32 circular buffers, which codegen rejects because the
+/// 32-bit CB move/copy path is broken in tt-metal 0.72.
+#[ignore]
 #[test]
 fn tenstorrent_probe_fp32_scalar() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let out = k.param_mut(DType::F32);
     let cu16 = k.circular_storage(DType::U16, 1);
+    let ccur = k.circular_storage(DType::F32, 1);
     let cout = k.circular_storage(DType::F32, 1);
     let _g = k.group_range(0, 1);
     let c0 = k.const_idx(0);
@@ -2024,7 +2090,9 @@ fn tenstorrent_probe_fp32_scalar() -> Result<(), ZyxError> {
     k.barrier();
     let u1 = k.load_circular(cu16, c0);
     let f = k.cast(u1, DType::F32);
-    let t = k.mul(f, c00625);
+    k.store_circular(ccur, f, c0);
+    let f2 = k.load_circular(ccur, c0);
+    let t = k.mul(f2, c00625);
     k.store_circular(cout, t, c0);
     k.barrier();
     let v = k.load_circular(cout, c0);
@@ -2062,12 +2130,17 @@ fn tenstorrent_probe_fp32_scalar() -> Result<(), ZyxError> {
 }
 
 /// Stage 3: stage 2 + trunc in fp32 DST mode.
+///
+/// Ignored: needs F32 circular buffers, which codegen rejects because the
+/// 32-bit CB move/copy path is broken in tt-metal 0.72.
+#[ignore]
 #[test]
 fn tenstorrent_probe_fp32_trunc() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let out = k.param_mut(DType::F32);
     let cu16 = k.circular_storage(DType::U16, 1);
+    let ccur = k.circular_storage(DType::F32, 1);
     let cout = k.circular_storage(DType::F32, 1);
     let _g = k.group_range(0, 1);
     let c0 = k.const_idx(0);
@@ -2078,7 +2151,9 @@ fn tenstorrent_probe_fp32_trunc() -> Result<(), ZyxError> {
     k.barrier();
     let u1 = k.load_circular(cu16, c0);
     let f = k.cast(u1, DType::F32);
-    let t = k.mul(f, c00625);
+    k.store_circular(ccur, f, c0);
+    let f2 = k.load_circular(ccur, c0);
+    let t = k.mul(f2, c00625);
     let t = k.trunc(t);
     k.store_circular(cout, t, c0);
     k.barrier();
@@ -2117,6 +2192,10 @@ fn tenstorrent_probe_fp32_trunc() -> Result<(), ZyxError> {
 }
 
 /// Stage 4: stage 3 + sub_binary_tile (n = cv2 - 16*t) in fp32 DST mode.
+///
+/// Ignored: needs F32 circular buffers, which codegen rejects because the
+/// 32-bit CB move/copy path is broken in tt-metal 0.72.
+#[ignore]
 #[test]
 fn tenstorrent_probe_fp32_sub() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -2144,8 +2223,6 @@ fn tenstorrent_probe_fp32_sub() -> Result<(), ZyxError> {
     let t16 = k.mul(t, c16);
     let cv2 = k.load_circular(ccur2, c0);
     let n = k.sub(cv2, t16);
-    // Drain the carry CB so its single tile stays consumed.
-    let _carry = k.load_circular(ccur, c0);
     k.store_circular(cout, n, c0);
     k.barrier();
     let v = k.load_circular(cout, c0);
@@ -2178,6 +2255,156 @@ fn tenstorrent_probe_fp32_sub() -> Result<(), ZyxError> {
         }
     }
     println!("fp32 sub bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Byte-chain cast probe (step 1 of the 8-bit-chain proposal): a U16 CB
+/// holding byte-range values (0..255) → cast U16→BF16
+/// (`typecast_tile<3,2>`) → one BF16 output tile. Must come out exact:
+/// every integer 0..255 is exactly representable in BF16 entries. The
+/// trunc/mul/sub nibble chain on top comes only after this is green.
+#[test]
+fn tenstorrent_probe_u8chain_cast() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let packed = k.param(DType::U16);
+    let out = k.param_mut(DType::BF16);
+    let cu16 = k.circular_storage(DType::U16, 1);
+    let cout = k.circular_storage(DType::BF16, 1);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+
+    let u = k.load_global_tile(packed, c0);
+    k.store_circular(cu16, u, c0);
+    k.barrier();
+    let u1 = k.load_circular(cu16, c0);
+    let f = k.cast(u1, DType::BF16);
+    k.store_circular(cout, f, c0);
+    k.barrier();
+    let v = k.load_circular(cout, c0);
+    k.store_global_tile(out, v, c0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let wu: Vec<u16> = (0..1024).map(|j| (j % 256) as u16).collect();
+    let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&packed_t], vec![[32, 32]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let expected: Vec<f32> = Tensor::from_vec(
+        wu.iter().map(|&w| w as f32).collect::<Vec<f32>>(),
+        [32i64, 32],
+    )?
+    .tilize()?
+    .to_vec()?;
+    let mut bad = 0;
+    for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
+        if zv != ev {
+            if bad < 10 {
+                println!("z[{j}] = {zv}, expected {ev}");
+            }
+            bad += 1;
+        }
+    }
+    println!("u8chain cast bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Byte-chain nibble probe (step 2): the cast above plus the full nibble
+/// chain in BF16 DST — `b = trunc(cv/16)`, `n = cv - 16b`, carry feeds
+/// trip 2 — over two trips (one byte holds two nibbles; trip p writes
+/// output tile p). Every intermediate is ≤ 255, hence bit-exact in BF16
+/// entries, so both nibbles must come out exact.
+#[test]
+fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let packed = k.param(DType::U16);
+    let out = k.param_mut(DType::BF16);
+    let cu16 = k.circular_storage(DType::U16, 1);
+    let ccur = k.circular_storage(DType::BF16, 2);
+    let ccur2 = k.circular_storage(DType::BF16, 2);
+    let cs = k.circular_storage(DType::BF16, 2);
+    let cout = k.circular_storage(DType::BF16, 2);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+    let c00625v = k.const_val(0.0625f32);
+    let c00625 = k.cast(c00625v, DType::BF16);
+    let c16v = k.const_val(16.0f32);
+    let c16 = k.cast(c16v, DType::BF16);
+
+    let u = k.load_global_tile(packed, c0);
+    k.store_circular(cu16, u, c0);
+    k.barrier();
+    let u1 = k.load_circular(cu16, c0);
+    let f = k.cast(u1, DType::BF16);
+    k.store_circular(ccur, f, c0);
+    k.store_circular(ccur2, f, c0);
+    k.loop_over(2, |k, p| {
+        let cv = k.load_circular(ccur, c0);
+        let t = k.mul(cv, c00625);
+        let t = k.trunc(t);
+        k.store_circular(cs, t, c0);
+        let b16 = k.load_circular(cs, c0);
+        k.store_circular(cs, t, c0);
+        let bc = k.load_circular(cs, c0);
+        let t16 = k.mul(b16, c16);
+        let cv2 = k.load_circular(ccur2, c0);
+        let n = k.sub(cv2, t16);
+        k.store_circular(ccur, bc, c0);
+        k.store_circular(ccur2, bc, c0);
+        k.store_circular(cout, n, p);
+    });
+    // Drain pops keep the carry CBs empty at the end of the pass (the CB
+    // verifier flags any producer/consumer imbalance).
+    let _drain = k.load_circular(ccur, c0);
+    let _drain2 = k.load_circular(ccur2, c0);
+    k.barrier();
+    k.loop_over(2, |k, p| {
+        let base = k.mad(p, 1024, 0);
+        let v = k.load_circular(cout, p);
+        k.store_global_tile(out, v, base);
+    });
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let wu: Vec<u16> = (0..1024).map(|j| (j % 256) as u16).collect();
+    let packed_t = Tensor::from_vec(wu.clone(), [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&packed_t], vec![[32, 64]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
+    assert_eq!(z.len(), 2048);
+    let exp0: Vec<f32> = Tensor::from_vec(
+        wu.iter().map(|&w| (w & 15) as f32).collect::<Vec<f32>>(),
+        [32i64, 32],
+    )?
+    .tilize()?
+    .to_vec()?;
+    let exp1: Vec<f32> = Tensor::from_vec(
+        wu.iter().map(|&w| (w >> 4) as f32).collect::<Vec<f32>>(),
+        [32i64, 32],
+    )?
+    .tilize()?
+    .to_vec()?;
+    let mut bad = 0;
+    for (j, (&zv, &ev)) in z.iter().zip(exp0.iter().chain(exp1.iter())).enumerate() {
+        if zv != ev {
+            if bad < 10 {
+                println!("z[{j}] = {zv}, expected {ev}");
+            }
+            bad += 1;
+        }
+    }
+    println!("u8chain nibbles bad: {bad} / 2048");
     assert_eq!(bad, 0);
     Ok(())
 }
