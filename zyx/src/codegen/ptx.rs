@@ -159,8 +159,12 @@ impl Compiler {
     fn uop_to_ptx(&self, uop: UOp, dtype: DType) -> Result<&'static str, BackendError> {
         match uop {
             UOp::Neg => Ok("neg"),
-            UOp::Not => Ok("not"),
-            UOp::BitNot => Ok("not"),
+            // Not/BitNot need dedicated emission (setp+selp / .bN suffix
+            // with b-typed registers); a bare name here would miscompile.
+            UOp::Not | UOp::BitNot => Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "PTX: Not/BitNot must use the dedicated Unary emission arms".into(),
+            }),
             UOp::Exp => Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "PTX: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching PTX backend".into(),
@@ -712,6 +716,51 @@ impl Kernel {
                     match uop {
                         UOp::Floor => _ = writeln!(comp.body, "{}cvt.rmi.{t}.{t} %r{reg}, %r{x};", comp.indent, t = dtype.ptx()),
                         UOp::Trunc => _ = writeln!(comp.body, "{}cvt.rzi.{t}.{t} %r{reg}, %r{x};", comp.indent, t = dtype.ptx()),
+                        UOp::Not => {
+                            // Logical not yields 0/1 in the input dtype (C
+                            // `!x` semantics). PTX `not` is bitwise-only and
+                            // `cnot` writes int bits (0x1 = 1.4e-45 as f32,
+                            // not 1.0), so: compare-then-select. The b16
+                            // path compares bits (-0.0 reads nonzero);
+                            // float paths compare by value.
+                            let pred = comp.new_reg(DType::Bool, MemLayout::Scalar, 1);
+                            let (t, one, zero) = match dtype {
+                                DType::F32 => ("f32", "0f3F800000", "0f00000000"),
+                                DType::F64 => ("f64", "0d3FF0000000000000", "0d0000000000000000"),
+                                DType::F16 => ("b16", "0x3C00", "0x0"),
+                                DType::BF16 => ("b16", "0x3F80", "0x0"),
+                                DType::U32 | DType::I32 => ("b32", "1", "0"),
+                                _ => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("PTX: logical not unsupported for {dtype:?}").into(),
+                                    });
+                                }
+                            };
+                            _ = writeln!(comp.body, "{indent}setp.eq.{t} %r{pred}, %r{x}, {zero};", indent = comp.indent);
+                            _ = writeln!(
+                                comp.body,
+                                "{indent}selp.{t} %r{reg}, {one}, {zero}, %r{pred};",
+                                indent = comp.indent
+                            );
+                            comp.release_reg(pred);
+                        }
+                        UOp::BitNot => {
+                            // PTX `not` exists only as .b16/.b32/.b64 and the
+                            // datum must already live in a b-typed register.
+                            // No float form exists: loud error, never a
+                            // wrong op.
+                            let t = match dtype {
+                                DType::U32 | DType::I32 => "b32",
+                                _ => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("PTX: bitwise not unsupported for {dtype:?}").into(),
+                                    });
+                                }
+                            };
+                            _ = writeln!(comp.body, "{}not.{t} %r{reg}, %r{x};", comp.indent);
+                        }
                         _ => {
                             _ = writeln!(
                                 comp.body,
