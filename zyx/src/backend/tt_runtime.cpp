@@ -637,6 +637,21 @@ int main() {
           case 3:
             df = DataFormat::UInt16;
             break;
+          case 4:
+            df = DataFormat::Fp8_e4m3;
+            break;
+          case 5:
+            df = DataFormat::UInt8;
+            break;
+          case 6:
+            df = DataFormat::Int8;
+            break;
+          case 7:
+            df = DataFormat::UInt32;
+            break;
+          case 8:
+            df = DataFormat::Int32;
+            break;
           default:
             throw runtime_error("unsupported data_format " +
                                 to_string(cfg.cb_formats[i]));

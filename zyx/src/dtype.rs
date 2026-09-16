@@ -127,6 +127,40 @@ impl DType {
         }
     }
 
+    /// Is `self -> dtype` cast value-preserving for every input?
+    ///
+    /// Used by Cast-of-Cast folding: collapsing `Cast(Cast(a→B)→C)` into
+    /// `Cast(a→C)` is only valid when `A→B` is lossless. When in doubt a
+    /// pair is absent here (lossy): that only misses an optimization,
+    /// never miscompiles. Note `F16<->BF16` is lossy in both directions
+    /// (mantissa vs range), and float->int is never lossless.
+    #[must_use]
+    pub fn is_lossless_cast(self, dtype: DType) -> bool {
+        use DType::*;
+        if self == dtype {
+            return true;
+        }
+        match self {
+            F8E4M3 | F8E5M2 => matches!(dtype, F16 | BF16 | F32 | F64),
+            F16 => matches!(dtype, F32 | F64),
+            BF16 => matches!(dtype, F32 | F64),
+            F32 => matches!(dtype, F64),
+            F64 => false,
+            U8 => matches!(dtype, U16 | U32 | U64 | I16 | I32 | I64 | F16 | BF16 | F32 | F64),
+            U16 => matches!(dtype, U32 | U64 | I32 | I64 | F32 | F64),
+            U32 => matches!(dtype, U64 | I64 | F64),
+            U64 => false,
+            I8 => matches!(dtype, I16 | I32 | I64 | U16 | U32 | U64 | F16 | BF16 | F32 | F64),
+            I16 => matches!(dtype, I32 | I64 | U32 | U64 | F32 | F64),
+            I32 => matches!(dtype, I64 | U64 | F64),
+            I64 => false,
+            Bool => matches!(
+                dtype,
+                U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | F8E4M3 | F8E5M2 | F16 | BF16 | F32 | F64
+            ),
+        }
+    }
+
     pub(crate) fn least_upper_dtype(self, rhs: DType) -> DType {
         use DType::*;
         // define an ordered list of "widening" priority

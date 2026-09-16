@@ -188,6 +188,9 @@ pub(super) fn initialize_device(
 
     let _device_id = devices.len();
     let dev_id = config.device_ids.as_ref().and_then(|ids| ids.first().copied()).unwrap();
+    // F8E5M2 has no Blackhole DataFormat: not a capable dtype, codegen rejects it.
+    let mut dtype_capability = [DTypeCapability::all(); DType::N_DTYPES];
+    dtype_capability[DType::F8E5M2 as usize] = DTypeCapability::ZERO;
     devices.push(Device::TT(TTDevice {
         dev_id: u32::try_from(dev_id).unwrap(),
         device_info: Arc::new(DeviceInfo {
@@ -203,7 +206,7 @@ pub(super) fn initialize_device(
             tensor_cores: true,
             warp_size: 1, // Tensix has no SIMT warps
             cc: [0, 0],
-            dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
+            dtype_capability,
             has_native_exp2: false,
             supported_vec_lens: vec![32],
             tenstorrent: true,

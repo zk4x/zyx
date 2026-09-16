@@ -83,11 +83,16 @@ impl Kernel {
                     if let Op::Const(cx) = self.at(x) {
                         self.ops[op_id].op = Op::Const(cx.cast(dtype));
                     }
-                    // Cast of Cast: remove intermediate cast. NOTE: collapsing
-                    // can itself produce a same-type cast (Cast(Cast(a→B)→A)
-                    // becomes Cast(a→A)), so the same-type check must run
-                    // after this rewrite, not before.
-                    if let Op::Cast { x: inner_x, .. } = *self.at(x) {
+                    // Cast of Cast: remove intermediate cast only when it is
+                    // lossless (DType::is_lossless_cast). Collapsing through
+                    // a narrowing cast (e.g. F32→F8→F32) would silently
+                    // delete quantization. NOTE: collapsing can itself
+                    // produce a same-type cast (Cast(Cast(a→B)→A) becomes
+                    // Cast(a→A)), so the same-type check must run after
+                    // this rewrite, not before.
+                    if let Op::Cast { x: inner_x, dtype: inner_dt } = *self.at(x)
+                        && self.dtype(inner_x).is_lossless_cast(inner_dt)
+                    {
                         self.ops[op_id].op = Op::Cast { x: inner_x, dtype };
                     }
                     // x + c1 - c1 simplifies to x

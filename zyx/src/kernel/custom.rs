@@ -499,6 +499,12 @@ impl Kernel {
         self.unary(x, UOp::BitNot)
     }
 
+    /// `!x` (logical not)
+    pub fn not(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        self.unary(x, UOp::Not)
+    }
+
     /// `e^x`. Emits the raw `Exp` op; `default_epilogue` converts it to
     /// `exp2` on devices that prefer it, and the CUDA codegen emits `exp`
     /// directly.

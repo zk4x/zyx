@@ -4136,6 +4136,7 @@ impl Scalar for bool {
 #[cfg(test)]
 mod tests {
     use super::{f8e4m3, f8e5m2};
+    use crate::{DType, Tensor};
 
     #[test]
     fn f8_roundtrip() {
@@ -4164,5 +4165,23 @@ mod tests {
         assert_eq!((f8e4m3::from_f32(1.5) + f8e4m3::from_f32(2.25)).to_f32(), 3.75);
         assert_eq!((f8e5m2::from_f32(2.0) * f8e5m2::from_f32(3.0)).to_f32(), 6.0);
         assert_eq!(f8e4m3::from_f32(7.0).to_f32(), 7.0);
+    }
+
+    #[test]
+    fn f8_c_roundtrip() {
+        // C backend F32->F8->F32 must match scalar::from_f32/to_f32 exactly.
+        let data: Vec<f32> = (0..256).map(|i| (i as f32 - 128.0) * 3.0).collect();
+        for dtype in [DType::F8E4M3, DType::F8E5M2] {
+            let t = Tensor::from_vec(data.clone(), [16, 16]).unwrap().cast(dtype).cast(DType::F32);
+            let back: Vec<f32> = t.to_vec().unwrap();
+            assert_eq!(back.len(), 256);
+            for (i, (&x, &v)) in data.iter().zip(back.iter()).enumerate() {
+                let expected = match dtype {
+                    DType::F8E4M3 => f8e4m3::from_f32(x).to_f32(),
+                    _ => f8e5m2::from_f32(x).to_f32(),
+                };
+                assert_eq!(v, expected, "{dtype:?}[{i}] x={x}");
+            }
+        }
     }
 }

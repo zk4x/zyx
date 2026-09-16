@@ -848,16 +848,18 @@ impl Kernel {
             if scan.is_null() {
                 break;
             }
-            if let Op::Storage { dtype: DType::F32, scope, .. } = self.ops[scan].op {
-                match scope {
-                    MemScope::Circular => {
+            if let Op::Storage { dtype, scope, .. } = self.ops[scan].op {
+                match (dtype, scope) {
+                    (DType::F32, MemScope::Circular) => {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: "tenstorrent2: F32 circular buffers are unsupported (no working 32-bit CB move/copy path in tt-metal 0.72); F32 register accumulation is still allowed"
                                 .into(),
                         });
                     }
-                    MemScope::Register => {
+                    // Blackhole mandates 32-bit DST whenever an Fp8 CB
+                    // shares the core (tt-metal program.cpp check).
+                    (DType::F32, MemScope::Register) | (DType::F8E4M3, MemScope::Circular) => {
                         fp32 = true;
                         break;
                     }
@@ -1612,8 +1614,9 @@ impl CBEmitter {
                 .into(),
             });
         }
-        // Every mapped CB holds whole 2048B pages within the
-        // single-core L1 budget.
+        // Every mapped CB holds whole tile pages (1024 elements ×
+        // dtype width: 1024B for 8-bit, 2048B for 16-bit, 4096B for
+        // 32-bit) within the single-core L1 budget.
         for (&storage, &cb) in map.iter() {
             let Op::Storage { dtype, len, .. } = kernel.ops[storage].op else {
                 return Err(BackendError {
@@ -1629,10 +1632,11 @@ impl CBEmitter {
                     context: format!("tenstorrent2: CB{cb} holds {len} elements, not whole 1024-element tiles").into(),
                 });
             }
-            if bytes % 2048 != 0 {
+            let page = 1024 * elem;
+            if bytes % page != 0 {
                 return Err(BackendError {
                     status: ErrorStatus::InvalidCircularBuffer,
-                    context: format!("tenstorrent2: CB{cb} holds {bytes} bytes, not whole 2048B pages").into(),
+                    context: format!("tenstorrent2: CB{cb} holds {bytes} bytes, not whole {page}B pages").into(),
                 });
             }
             if bytes > 32768 {
@@ -1656,6 +1660,11 @@ impl CBEmitter {
                 DType::F16 => (1, 2048),
                 DType::BF16 => (2, 2048),
                 DType::U16 => (3, 2048),
+                DType::F8E4M3 => (4, 1024),
+                DType::U8 => (5, 1024),
+                DType::I8 => (6, 1024),
+                DType::U32 => (7, 4096),
+                DType::I32 => (8, 4096),
                 dt => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
@@ -4454,7 +4463,10 @@ enum TtDataFormat {
     F16B = 5,
     I32 = 8,
     U16 = 9,
+    I8 = 14,
     U32 = 24,
+    Fp8E4M3 = 26,
+    U8 = 30,
 }
 
 impl std::fmt::Display for TtDataFormat {
@@ -4471,6 +4483,14 @@ fn tt_fmt(dt: DType) -> Result<TtDataFormat, BackendError> {
         DType::U16 => Ok(TtDataFormat::U16),
         DType::U32 => Ok(TtDataFormat::U32),
         DType::I32 => Ok(TtDataFormat::I32),
+        DType::U8 => Ok(TtDataFormat::U8),
+        DType::I8 => Ok(TtDataFormat::I8),
+        DType::F8E4M3 => Ok(TtDataFormat::Fp8E4M3),
+        // F8E5M2 has no Blackhole DataFormat: reject loudly, never convert.
+        DType::F8E5M2 => Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: "tenstorrent2: dtype F8E5M2 has no tt tile format".into(),
+        }),
         dt => Err(BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("tenstorrent2: dtype {dt:?} has no tt tile format").into(),

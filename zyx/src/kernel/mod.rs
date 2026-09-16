@@ -488,7 +488,8 @@ impl Kernel {
                     return MemLayout::Vector(ops.len().try_into().unwrap());
                 }
                 Op::Asm { ref ops, .. } => op_id = ops[0],
-                Op::Index { vec, .. } => op_id = vec,
+                // Index extracts a single lane: a scalar, not the vec layout.
+                Op::Index { .. } => return MemLayout::Scalar,
                 Op::Move { x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
                 Op::ReduceTile { acc, .. } => op_id = acc,

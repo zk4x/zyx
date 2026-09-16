@@ -260,21 +260,35 @@ impl Kernel {
                 }
                 Op::Cast { x, dtype } => {
                     let vlen = dtypes[&x].1;
+                    let src_dt = dtypes[&x].0;
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
+                    // F8 needs real encode/decode: a plain C cast would
+                    // convert the raw byte value instead of the float it
+                    // encodes. Rounding is nearest ties-up, matching
+                    // scalar::f8e4m3/f8e5m2::from_f32 exactly.
+                    let cast_expr = |x: &str| -> String {
+                        match (src_dt, dtype) {
+                            (DType::F8E4M3, DType::F8E4M3) | (DType::F8E5M2, DType::F8E5M2) => x.to_string(),
+                            (DType::F8E4M3, _) => format!("({})f8e4m3_to_f32({x})", dtype.c_type()),
+                            (DType::F8E5M2, _) => format!("({})f8e5m2_to_f32({x})", dtype.c_type()),
+                            (_, DType::F8E4M3) => format!("f32_to_f8e4m3((float){x})"),
+                            (_, DType::F8E5M2) => format!("f32_to_f8e5m2((float){x})"),
+                            _ => format!("({}){x}", dtype.c_type()),
+                        }
+                    };
                     match vlen {
                         MemLayout::Vector(n) => {
                             for i in 0..n {
                                 _ = writeln!(
                                     source,
-                                    "{indent}{} = ({})({});",
+                                    "{indent}{} = {};",
                                     lane_access(&format!("r{reg}"), i as usize),
-                                    dtype.c_type(),
-                                    lane_access(&x, i as usize)
+                                    cast_expr(&lane_access(&x, i as usize)),
                                 );
                             }
                         }
-                        _ => _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.c_type()),
+                        _ => _ = writeln!(source, "{indent}r{reg} = {};", cast_expr(&x)),
                     }
                 }
                 Op::Bitcast { x, dtype } => {
@@ -562,8 +576,93 @@ static inline unsigned short f32tobf16(float v) {
 "
             .to_string()
         };
-        let bit_helpers = if !dtypes.values().any(|(dt, _)| matches!(dt, DType::F32 | DType::F64)) {
+        // F8 encode/decode mirrors scalar::f8e4m3/f8e5m2 bit-for-bit:
+        // nearest ties-up, E4M3 saturates (never inf), E5M2 is IEEE.
+        let f8_helpers = if !dtypes.values().any(|(dt, _)| matches!(dt, DType::F8E4M3 | DType::F8E5M2)) {
             String::new()
+        } else {
+            r"static inline float f8e4m3_to_f32(unsigned char b) {
+  unsigned int sign = (b & 0x80) ? 0x80000000u : 0u;
+  unsigned int e = (b >> 3) & 0x0Fu;
+  unsigned int m = b & 0x07u;
+  unsigned int f;
+  if (e == 0) {
+    if (m == 0) { f = sign; }
+    else {
+      int e2 = -6; unsigned int mm = m;
+      while ((mm & 0x08u) == 0) { mm <<= 1; e2--; }
+      f = sign | ((unsigned int)(127 + e2) << 23) | ((mm & 0x07u) << 20);
+    }
+  } else if (e == 15 && m == 7) {
+    f = sign | 0x7F800000u | 0x00400000u;
+  } else {
+    f = sign | ((unsigned int)(127 + (int)e - 7) << 23) | (m << 20);
+  }
+  float r; memcpy(&r, &f, sizeof(r)); return r;
+}
+static inline unsigned char f32_to_f8e4m3(float v) {
+  if (v != v) return 0x7Fu;
+  unsigned int b; memcpy(&b, &v, sizeof(b));
+  unsigned char sign = (unsigned char)((b >> 24) & 0x80u);
+  float a = v < 0.0f ? -v : v;
+  if (a == 0.0f) return sign;
+  if (a >= 448.0f) return (unsigned char)(sign | 0x7Eu);
+  int e = (int)floorf(log2f(a));
+  if (e < -6) {
+    unsigned int m = (unsigned int)(a * 512.0f + 0.5f);
+    if (m >= 8) return (unsigned char)(sign | 0x08u);
+    return (unsigned char)(sign | (m & 0x07u));
+  }
+  if (e > 8) e = 8;
+  int m = (int)((a / ldexpf(1.0f, e) - 1.0f) * 8.0f + 0.5f);
+  if (m >= 8) { e++; m = 0; }
+  if (e > 8) return (unsigned char)(sign | 0x7Eu);
+  if (e == 8 && m >= 7) return (unsigned char)(sign | 0x7Eu);
+  return (unsigned char)(sign | (((e + 7) << 3) | (m & 0x07)));
+}
+static inline float f8e5m2_to_f32(unsigned char b) {
+  unsigned int sign = (b & 0x80) ? 0x80000000u : 0u;
+  unsigned int e = (b >> 2) & 0x1Fu;
+  unsigned int m = b & 0x03u;
+  unsigned int f;
+  if (e == 0) {
+    if (m == 0) { f = sign; }
+    else {
+      int e2 = -14; unsigned int mm = m;
+      while ((mm & 0x04u) == 0) { mm <<= 1; e2--; }
+      f = sign | ((unsigned int)(127 + e2) << 23) | ((mm & 0x03u) << 21);
+    }
+  } else if (e == 31) {
+    f = sign | 0x7F800000u | (m << 21);
+  } else {
+    f = sign | ((unsigned int)(127 + (int)e - 15) << 23) | (m << 21);
+  }
+  float r; memcpy(&r, &f, sizeof(r)); return r;
+}
+static inline unsigned char f32_to_f8e5m2(float v) {
+  if (v != v) return 0x7Fu;
+  unsigned int b; memcpy(&b, &v, sizeof(b));
+  unsigned char sign = (unsigned char)((b >> 24) & 0x80u);
+  float a = v < 0.0f ? -v : v;
+  if (a == 0.0f) return sign;
+  if (a > 57344.0f) return (unsigned char)(sign | 0x7Cu);
+  if (a < 0.00000762939453125f) return sign;
+  int e = (int)floorf(log2f(a));
+  if (e < -14) {
+    unsigned int m = (unsigned int)(a * 65536.0f + 0.5f);
+    if (m >= 4) return (unsigned char)(sign | 0x04u);
+    return (unsigned char)(sign | (m & 0x03u));
+  }
+  if (e > 15) e = 15;
+  int m = (int)((a / ldexpf(1.0f, e) - 1.0f) * 4.0f + 0.5f);
+  if (m >= 4) { e++; m = 0; }
+  if (e > 15) return (unsigned char)(sign | 0x7Cu);
+  return (unsigned char)(sign | (((e + 15) << 2) | (m & 0x03)));
+}
+"
+            .to_string()
+        };
+        let bit_helpers = if !dtypes.values().any(|(dt, _)| matches!(dt, DType::F32 | DType::F64)) {            String::new()
         } else {
             "static inline float u32tof32(unsigned int b) { union { unsigned int u; float f; } v; v.u = b; return v.f; }\n\
              static inline double u64tof64(unsigned long b) { union { unsigned long u; double f; } v; v.u = b; return v.f; }\n"
@@ -589,6 +688,7 @@ static inline unsigned short f32tobf16(float v) {
              {omp_include}\
              {vec_types}\
              {f16_helpers}\
+             {f8_helpers}\
              {bit_helpers}\
              void {name}(void** args, unsigned long nargs) {{\n\
              {nargs_check}\
@@ -701,7 +801,9 @@ impl DType {
             Self::I32 => "int32_t",
             Self::I64 => "int64_t",
             Self::F32 | Self::F16 | Self::BF16 => "float",
-            Self::F8E4M3 | Self::F8E5M2 => todo!("fp8 has no C type yet"),
+            // F8 rides in uint8_t lanes holding the raw bits; Cast arms
+            // convert via the f8 helpers below, never plain C casts.
+            Self::F8E4M3 | Self::F8E5M2 => "uint8_t",
         }
     }
 
@@ -754,7 +856,8 @@ impl Constant {
                     format!("u32tof32(0x{:08X}u)", val.to_bits())
                 }
             }
-            Self::F8E4M3(_) | Self::F8E5M2(_) => todo!("fp8 has no C literal yet"),
+            // F8 constants ride as raw bits; conversion happens in Cast arms.
+            Self::F8E4M3(x) | Self::F8E5M2(x) => format!("{x}"),
         }
     }
 }
