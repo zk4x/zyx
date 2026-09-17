@@ -112,7 +112,6 @@ pub struct CblasProgram {
 #[derive(Debug)]
 pub struct CblasDevice {
     device_info: Arc<DeviceInfo>,
-    memory_pool: Pool,
     /// Keeps the libopenblas library loaded so the [`CblasKernel`] fn pointers stay valid.
     /// Never read, but dropping it would unload the library.
     #[allow(dead_code)]
@@ -174,7 +173,6 @@ fn device_with(config: &CblasConfig, debug_dev: bool) -> Result<Arc<Mutex<CblasD
             has_openmp: false,
         }),
         // cblas reuses the host pool (like the C backend)
-        memory_pool: Pool::Host,
         lib,
         kernels,
         programs: Slab::new(),
@@ -191,14 +189,8 @@ pub(super) fn device() -> Result<Arc<Mutex<CblasDevice>>, BackendError> {
 }
 
 impl CblasDevice {
-    pub const fn deinitialize(&mut self) {}
-
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.device_info.clone()
-    }
-
-    pub const fn memory_pool(&self) -> Pool {
-        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {

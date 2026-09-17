@@ -120,11 +120,6 @@ pub(super) fn device() -> Result<Arc<Mutex<DummyDevice>>, BackendError> {
 }
 
 impl DummyMemoryPool {
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
-
     pub const fn free_bytes(&self) -> Dim {
         //println!("Free bytes {} B", self.free_bytes);
         self.free_bytes
@@ -205,18 +200,8 @@ impl DummyMemoryPool {
 }
 
 impl DummyDevice {
-    #[allow(unused)]
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
-
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.device_info.clone()
-    }
-
-    pub const fn memory_pool(&self) -> Pool {
-        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {

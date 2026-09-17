@@ -51,11 +51,6 @@ struct DiskBuffer {
 pub struct DiskEvent {}
 
 impl DiskMemoryPool {
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
-
     pub const fn free_bytes(&self) -> Dim {
         self.free_bytes
     }

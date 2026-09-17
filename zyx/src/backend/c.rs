@@ -46,7 +46,6 @@ pub struct CProgram {
 #[derive(Debug)]
 pub struct CDevice {
     device_info: Arc<DeviceInfo>,
-    memory_pool: Pool,
     programs: Slab<DeviceProgramId, CProgram>,
     pub has_openmp: bool,
 }
@@ -140,7 +139,6 @@ fn device_with(config: &CConfig, debug_dev: bool) -> Result<Arc<Mutex<CDevice>>,
             num_circular_buffers: 0,
             has_openmp,
         }),
-        memory_pool: Pool::Host,
         programs: Slab::new(),
         has_openmp,
     }));
@@ -161,14 +159,8 @@ pub(super) fn device() -> Result<Arc<Mutex<CDevice>>, BackendError> {
 }
 
 impl CDevice {
-    pub const fn deinitialize(&mut self) {}
-
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.device_info.clone()
-    }
-
-    pub const fn memory_pool(&self) -> Pool {
-        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {

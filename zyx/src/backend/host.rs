@@ -49,11 +49,6 @@ fn detect_host_memory_bytes() -> u64 {
 }
 
 impl HostMemoryPool {
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
-
     pub const fn free_bytes(&self) -> Dim {
         self.free_bytes
     }

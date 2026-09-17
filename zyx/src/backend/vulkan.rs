@@ -472,8 +472,6 @@ pub struct VulkanMemoryPool {
     tx: Sender<VulkanCommand>,
     free_bytes: Arc<AtomicU64>,
     dev_info: DeviceInfo,
-    /// Real Vulkan physical device index. Not the pool ordinal.
-    dev_id: u32,
 }
 
 impl std::fmt::Debug for VulkanMemoryPool {
@@ -486,7 +484,6 @@ impl VulkanMemoryPool {
     pub(super) fn free_bytes(&self) -> Dim {
         self.free_bytes.load(Ordering::SeqCst) as i64
     }
-    pub(super) const fn deinitialize(&mut self) {}
     pub(super) fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         let (reply, rx) = channel();
         self.tx.send(VulkanCommand::Allocate { bytes, reply }).unwrap();
@@ -593,8 +590,6 @@ pub(super) struct VulkanBuffer {
 pub struct VulkanDevice {
     tx: Sender<VulkanCommand>,
     dev_info: Arc<DeviceInfo>,
-    /// Real Vulkan physical device index, set at init. Not the slab index.
-    pub(crate) dev_id: u32,
     memory_pool: Pool,
 }
 
@@ -605,12 +600,8 @@ impl std::fmt::Debug for VulkanDevice {
 }
 
 impl VulkanDevice {
-    pub(super) const fn deinitialize(&mut self) {}
     pub(super) fn info(&self) -> Arc<DeviceInfo> {
         self.dev_info.clone()
-    }
-    pub(super) const fn memory_pool(&self) -> Pool {
-        self.memory_pool
     }
     pub(super) const fn free_compute(&self) -> u128 {
         1_000_000_000_000
@@ -1888,7 +1879,6 @@ pub(super) fn ensure_pool_table(
             tx,
             free_bytes: Arc::clone(&free_bytes_atomic),
             dev_info,
-            dev_id: u32::try_from(gpu_i).unwrap(),
         })));
     }
 
@@ -1943,9 +1933,8 @@ fn ensure_device_table(
         let guard = super::lock(pool_id, pool_arc);
         let tx = guard.tx.clone();
         let dev_info = Arc::new(guard.dev_info.clone());
-        let dev_id = guard.dev_id;
         drop(guard);
-        devs.push(Arc::new(Mutex::new(VulkanDevice { tx, dev_info, dev_id, memory_pool: pool_id })));
+        devs.push(Arc::new(Mutex::new(VulkanDevice { tx, dev_info, memory_pool: pool_id })));
     }
     Ok(devs)
 }

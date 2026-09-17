@@ -844,8 +844,6 @@ fn ensure_device_table(
 }
 
 impl OpenCLMemoryPool {
-    pub fn deinitialize(&mut self) {}
-
     pub fn free_bytes(&self) -> Dim {
         self.free_bytes.load(Ordering::SeqCst) as i64
     }
@@ -947,17 +945,8 @@ impl OpenCLMemoryPool {
 }
 
 impl OpenCLDevice {
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
-
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.dev_info.clone()
-    }
-
-    pub const fn memory_pool(&self) -> Pool {
-        self.memory_pool
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
