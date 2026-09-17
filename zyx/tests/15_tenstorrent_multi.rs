@@ -2310,9 +2310,9 @@ fn tenstorrent_probe_u8chain_cast() -> Result<(), ZyxError> {
 #[test]
 fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
-    let packed = k.param(DType::U16);
+    let packed = k.param(DType::U8);
     let out = k.param_mut(DType::BF16);
-    let cu16 = k.circular_storage(DType::U16, 1);
+    let cu8 = k.circular_storage(DType::U8, 1);
     let ccur = k.circular_storage(DType::BF16, 2);
     let ccur2 = k.circular_storage(DType::BF16, 2);
     let cs = k.circular_storage(DType::BF16, 2);
