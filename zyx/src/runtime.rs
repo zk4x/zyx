@@ -235,7 +235,7 @@ use crate::{
     backend::{BufferId, DeviceProgramId, DTypeCapability, Event, LaunchArg, Pool, ProgramId},
     dtype::Constant,
     graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
-    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp, autotune::BeamSearch},
+    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     rng::Rng,
     scalar::{bf16, f16, f8e4m3, f8e5m2},
     shape::{Dim, UAxis},
@@ -497,7 +497,6 @@ pub struct Runtime {
     pub buffer_map: Map<TensorId, BufferId>,
     pub events: Map<BTreeSet<BufferId>, Event>,
     pub rng: Rng,
-    pub(crate) beam_search: BeamSearch,
     pub implicit_casts: bool,
     pub training: bool,
     pub plan_cache: Map<u64, ExecPlan>,
@@ -535,7 +534,6 @@ impl Runtime {
             buffer_map: Map::with_hasher(BuildHasherDefault::new()),
             events: Map::with_hasher(BuildHasherDefault::new()),
             rng: Rng::seed_from_u64(42069),
-            beam_search: BeamSearch::new(),
             implicit_casts: true,
             training: false,
             plan_cache: Map::with_hasher(BuildHasherDefault::new()),
@@ -4592,7 +4590,7 @@ impl Runtime {
             base.default_epilogue();
         }
 
-        let beam_search = self.beam_search.clone();
+        let beam_search = crate::backend::autotune_config();
         let (winner, timing) = beam_search.run_(
             self,
             [base],

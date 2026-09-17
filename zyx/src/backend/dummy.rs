@@ -54,7 +54,7 @@ pub(super) fn pool() -> Result<Arc<Mutex<DummyMemoryPool>>, BackendError> {
 
 /// Constructs the global dummy pool. Fails when dummy is configured out.
 fn ensure_pool() -> Result<DummyMemoryPool, BackendError> {
-    let config = super::load_config();
+    let config = super::config();
     if !config.dummy.enabled {
         if super::debug_backends() {
             println!("[dummy] configured out");
@@ -81,7 +81,7 @@ pub(super) fn device() -> Result<Arc<Mutex<DummyDevice>>, BackendError> {
     if let Some(dev) = DUMMY_DEVICE.get() {
         return Ok(dev.clone());
     }
-    let config = super::load_config();
+    let config = super::config();
     if !config.dummy.enabled {
         if super::debug_backends() {
             println!("[dummy] configured out");

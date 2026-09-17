@@ -155,7 +155,7 @@ fn configured_out() -> BackendError {
 }
 
 pub(super) fn device() -> Result<Arc<Mutex<CDevice>>, BackendError> {
-    device_with(&super::load_config().c, super::debug_backends())
+    device_with(&super::config().c, super::debug_backends())
 }
 
 impl CDevice {

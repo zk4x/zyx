@@ -277,7 +277,7 @@ fn devices_with(config: &TTConfig, debug_dev: bool) -> Result<&'static Vec<Arc<M
 }
 
 fn devices() -> Result<&'static Vec<Arc<Mutex<TTDevice>>>, BackendError> {
-    devices_with(&super::load_config().tenstorrent, super::debug_backends())
+    devices_with(&super::config().tenstorrent, super::debug_backends())
 }
 
 pub(super) fn device(id: u16) -> Result<Arc<Mutex<TTDevice>>, BackendError> {

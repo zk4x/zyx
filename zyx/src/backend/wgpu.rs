@@ -254,7 +254,7 @@ fn devices_with(config: &WGPUConfig, debug_dev: bool) -> Result<&'static Vec<Arc
 }
 
 fn devices() -> Result<&'static Vec<Arc<Mutex<WGPUDevice>>>, BackendError> {
-    devices_with(&super::load_config().wgpu, super::debug_backends())
+    devices_with(&super::config().wgpu, super::debug_backends())
 }
 
 pub(super) fn device(id: u16) -> Result<Arc<Mutex<WGPUDevice>>, BackendError> {

@@ -185,7 +185,7 @@ fn device_with(config: &CblasConfig, debug_dev: bool) -> Result<Arc<Mutex<CblasD
 }
 
 pub(super) fn device() -> Result<Arc<Mutex<CblasDevice>>, BackendError> {
-    device_with(&super::load_config().cblas, super::debug_backends())
+    device_with(&super::config().cblas, super::debug_backends())
 }
 
 impl CblasDevice {

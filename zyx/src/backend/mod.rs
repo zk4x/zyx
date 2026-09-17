@@ -17,7 +17,7 @@
 //!   Nothing derives a device from a pool; callers that need both take the
 //!   `Dev` and derive the `Pool` from it.
 //! - Both pools and devices are lazily initialized on first access, per
-//!   backend, from the backend config file (see [`load_config`]). The only
+//!   backend, from the backend config file (see [`config`]). The only
 //!   lock takers are the device-API entry points (alloc/free/copy/compile/
 //!   launch); the per-op tensor path never touches the globals directly.
 
@@ -600,11 +600,17 @@ impl Pool {
     }
 }
 
-/// Read the backend config file (same search as `Runtime::initialize_backends`
-/// used to do: `$XDG_CONFIG_HOME/zyx/config.json`, else `~/.config/zyx/config.json`).
-/// Missing or unparsable file means defaults. Each pool/device lazy init reads
-/// it independently; the file read is not on any hot path.
-pub(crate) fn load_config() -> Config {
+/// Process-wide backend config, parsed once from `$XDG_CONFIG_HOME/zyx/config.json`
+/// (else `~/.config/zyx/config.json`) on first access. Missing or unparsable
+/// file means defaults.
+pub(crate) fn config() -> &'static Config {
+    static CONFIG: std::sync::OnceLock<Config> = std::sync::OnceLock::new();
+    CONFIG.get_or_init(load_config_file)
+}
+
+/// Read the backend config file (same search `Runtime::initialize_backends`
+/// used to do). Missing or unparsable file means defaults.
+fn load_config_file() -> Config {
     use std::path::PathBuf;
     let debug = debug_backends();
     let config_file = std::env::var_os("XDG_CONFIG_HOME")
@@ -641,6 +647,13 @@ pub(crate) fn load_config() -> Config {
 /// Whether backend debug printing is enabled (`ZYX_DEBUG` device bit).
 pub(crate) fn debug_backends() -> bool {
     std::env::var("ZYX_DEBUG").ok().and_then(|x| x.parse::<u32>().ok()).is_some_and(|x| DebugMask::new(x).dev())
+}
+
+/// Autotune config from the backend config file.
+/// Falls back to `BeamSearch::new()` defaults when the file is missing or
+/// unparsable — the same values `Runtime` used before lazy init existed.
+pub(crate) fn autotune_config() -> crate::kernel::autotune::BeamSearch {
+    config().autotune.clone()
 }
 
 #[derive(Debug, Clone)]

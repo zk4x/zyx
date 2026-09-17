@@ -413,7 +413,7 @@ fn ensure_driver_locked() -> Result<Arc<CudaDriver>, BackendError> {
         return Ok(driver.clone());
     }
     let debug_dev = super::debug_backends();
-    let config = super::load_config();
+    let config = super::config();
     if let Some(device_ids) = &config.cuda.device_ids
         && device_ids.is_empty()
     {
@@ -1026,7 +1026,7 @@ fn devices_with(config: &CUDAConfig, debug_dev: bool) -> Result<&'static Vec<Arc
 }
 
 fn devices() -> Result<&'static Vec<Arc<Mutex<CUDADevice>>>, BackendError> {
-    devices_with(&super::load_config().cuda, super::debug_backends())
+    devices_with(&super::config().cuda, super::debug_backends())
 }
 
 pub(super) fn device(id: u16) -> Result<Arc<Mutex<CUDADevice>>, BackendError> {

@@ -1908,7 +1908,7 @@ fn devices_with(config: &VulkanConfig, debug_dev: bool) -> Result<&'static Vec<A
 }
 
 fn devices() -> Result<&'static Vec<Arc<Mutex<VulkanDevice>>>, BackendError> {
-    devices_with(&super::load_config().vulkan, super::debug_backends())
+    devices_with(&super::config().vulkan, super::debug_backends())
 }
 
 pub(super) fn device(id: u16) -> Result<Arc<Mutex<VulkanDevice>>, BackendError> {
