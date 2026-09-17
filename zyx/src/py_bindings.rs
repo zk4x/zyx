@@ -5,7 +5,7 @@
 
 use crate::DebugMask;
 use crate::Dev;
-use crate::kernel::{CompiledKernel, Kernel, MemLayout, MemScope, OpId, ParamKind};
+use crate::kernel::{CompiledKernel, Kernel, MemScope, OpId};
 use crate::shape::Dim;
 use crate::tape::FrozenTape;
 use crate::tensor::{Axis, DebugGuard, ReduceOp};
@@ -311,6 +311,8 @@ impl Tensor {
                 let data: Vec<bool> = self.clone().try_into()?;
                 np.getattr("array")?.call1((data, "bool"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
+            DType::F8E4M3 => todo!(),
+            DType::F8E5M2 => todo!(),
         })
     }
 
@@ -1635,7 +1637,9 @@ impl Tensor {
 
     #[pyo3(name = "to")]
     pub fn to_py(&self, device: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
-        if let Ok(id) = device.extract::<usize>() {
+        if let Ok(d) = device.extract::<Bound<'_, PyDev>>() {
+            self.to(d.borrow().0)
+        } else if let Ok(id) = device.extract::<usize>() {
             self.to(Dev::Cuda(id as u16))
         } else if let Ok(s) = device.extract::<String>() {
             // string like "cpu", "cuda:0" - fallback to AUTO
@@ -1644,6 +1648,11 @@ impl Tensor {
         } else {
             Err(ZyxError::ParseError("invalid device".into()))
         }
+    }
+
+    #[pyo3(name = "device")]
+    pub fn device_py(&self) -> PyDev {
+        PyDev(self.device())
     }
 
     #[pyo3(name = "contiguous")]
@@ -1657,6 +1666,67 @@ impl Tensor {
     }
 }
 
+// device bindings
+/// Python-visible device handle. Construct with `Dev.cpu()`, `Dev.cuda(0)`, ...
+/// and pass to `Tensor.to()` or `PyKernel()` instead of fragile integer ordinals.
+#[pyo3::pyclass(name = "Dev")]
+#[derive(Clone, Copy)]
+pub struct PyDev(pub Dev);
+
+#[pyo3::pymethods]
+impl PyDev {
+    /// Auto-select: resolves to the first available device.
+    #[staticmethod]
+    fn auto() -> Self {
+        Self(Dev::Auto)
+    }
+    /// CPU backend.
+    #[staticmethod]
+    fn cpu() -> Self {
+        Self(Dev::C)
+    }
+    /// CBLAS backend for AOT matmuls.
+    #[staticmethod]
+    fn cblas() -> Self {
+        Self(Dev::Cblas)
+    }
+    /// CUDA GPU with the given driver ordinal.
+    #[staticmethod]
+    fn cuda(id: u16) -> Self {
+        Self(Dev::Cuda(id))
+    }
+    /// Tenstorrent chip with the given id.
+    #[cfg(feature = "tenstorrent")]
+    #[staticmethod]
+    fn tt(id: u16) -> Self {
+        Self(Dev::TT(id))
+    }
+    /// Vulkan physical device with the given index.
+    #[staticmethod]
+    fn vulkan(id: u16) -> Self {
+        Self(Dev::Vulkan(id))
+    }
+    /// OpenCL device with the given index.
+    #[staticmethod]
+    fn opencl(id: u16) -> Self {
+        Self(Dev::OpenCL(id))
+    }
+    /// WGPU device with the given index.
+    #[cfg(feature = "wgpu")]
+    #[staticmethod]
+    fn wgpu(id: u16) -> Self {
+        Self(Dev::WGPU(id))
+    }
+    /// Testing dummy device.
+    #[staticmethod]
+    fn dummy() -> Self {
+        Self(Dev::Dummy)
+    }
+    fn __repr__(&self) -> String {
+        format!("Dev::{:?}", self.0)
+    }
+}
+
 // kernel bindings
 #[pyo3::pyclass]
 pub struct PyKernel {
@@ -1667,9 +1737,18 @@ pub struct PyKernel {
 impl PyKernel {
     #[new]
     #[pyo3(signature = (device=None))]
-    fn new(device: Option<u32>) -> Self {
-        let dev =
-            device.map(|i| Dev::all().get(i as usize).copied().expect("py kernel device index out of range")).unwrap_or(Dev::Auto);
+    fn new(device: Option<&Bound<'_, PyAny>>) -> Self {
+        let dev = device
+            .map(|d| {
+                if let Ok(p) = d.extract::<Bound<'_, PyDev>>() {
+                    p.borrow().0
+                } else if let Ok(i) = d.extract::<usize>() {
+                    Dev::all().get(i).copied().expect("py kernel device index out of range")
+                } else {
+                    panic!("device must be a Dev or an index")
+                }
+            })
+            .unwrap_or(Dev::Auto);
         Self { inner: Some(Kernel::new(dev)) }
     }
 
@@ -1681,14 +1760,13 @@ impl PyKernel {
     }
 
     #[pyo3(name = "param")]
-    fn param_py(&mut self, dtype: DType, kind: u8, shape: u32) -> u32 {
-        let k = match kind {
-            0 => ParamKind::Global,
-            1 => ParamKind::GlobalMut,
-            2 => ParamKind::Variable,
-            _ => ParamKind::Global,
-        };
-        self.inner.as_mut().unwrap().param(dtype, k, OpId(shape)).0
+    fn param_py(&mut self, dtype: DType, kind: u8) -> u32 {
+        let k = self.inner.as_mut().unwrap();
+        match kind {
+            1 => k.param_mut(dtype).0,
+            2 => k.variable(dtype).0,
+            _ => k.param(dtype).0,
+        }
     }
 
     #[pyo3(name = "add_shape")]
@@ -1730,22 +1808,22 @@ impl PyKernel {
 
     #[pyo3(name = "load")]
     fn load_py(&mut self, src: u32, index: u32, layout: u8) -> u32 {
-        let layout = if layout == 0 {
-            MemLayout::Scalar
+        let k = self.inner.as_mut().unwrap();
+        if layout == 0 {
+            k.load(OpId(src), OpId(index)).0
         } else {
-            MemLayout::Vector(layout as u16)
-        };
-        self.inner.as_mut().unwrap().load(OpId(src), OpId(index), layout).0
+            k.load_vector(OpId(src), OpId(index), layout as u16).0
+        }
     }
 
     #[pyo3(name = "store")]
     fn store_py(&mut self, dst: u32, src: u32, index: u32, layout: u8) {
-        let layout = if layout == 0 {
-            MemLayout::Scalar
+        let k = self.inner.as_mut().unwrap();
+        if layout == 0 {
+            k.store(OpId(dst), OpId(src), OpId(index))
         } else {
-            MemLayout::Vector(layout as u16)
-        };
-        self.inner.as_mut().unwrap().store(OpId(dst), OpId(src), OpId(index), layout)
+            k.store_vector(OpId(dst), OpId(src), OpId(index), layout as u16)
+        }
     }
 
     // unary
@@ -1846,6 +1924,7 @@ pub fn register_tensor(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FrozenTape>()?;
     m.add_class::<PyKernel>()?;
     m.add_class::<PyCompiledKernel>()?;
+    m.add_class::<PyDev>()?;
     Ok(())
 }
 
