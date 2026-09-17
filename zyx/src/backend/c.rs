@@ -9,9 +9,7 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, MemoryPool, PoolId, host::HostMemoryPool,
-};
+use super::{DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool};
 use crate::DType;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{Kernel, Op, RangeKind};
@@ -43,14 +41,13 @@ pub struct CProgram {
 #[derive(Debug)]
 pub struct CDevice {
     device_info: Arc<DeviceInfo>,
-    memory_pool_id: PoolId,
+    memory_pool: Pool,
     programs: Slab<DeviceProgramId, CProgram>,
     pub has_openmp: bool,
 }
 
 pub(super) fn initialize_device(
     config: &CConfig,
-    memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
@@ -63,15 +60,7 @@ pub(super) fn initialize_device(
     if debug_dev {
         println!("[c] initialized");
     }
-    // C backend reuses HostMemoryPool — doesn't create its own pool
-    // Just register the device with the host pool
-    if memory_pools.is_empty() {
-        return Err(BackendError {
-            status: ErrorStatus::Initialization,
-            context: "C backend requires HostMemoryPool to be initialized first.".into(),
-        });
-    }
-    let pool_id = PoolId::from(0); // use the first (host) pool
+    // C backend reuses the global host pool — no init ordering needed.
     let compilers = ["clang-11", "clang", "gcc", "cc"];
     let compiler = compilers.iter().find(|c| Command::new(c).arg("--version").output().is_ok()).copied().unwrap_or("cc");
     let has_vector_exts = Command::new(compiler)
@@ -136,7 +125,7 @@ pub(super) fn initialize_device(
             wmma_layouts: vec![],
             num_circular_buffers: 0,
         }),
-        memory_pool_id: pool_id,
+        memory_pool: Pool::Host,
         programs: Slab::new(),
         has_openmp,
     }));
@@ -154,8 +143,8 @@ impl CDevice {
         self.device_info.clone()
     }
 
-    pub const fn memory_pool_id(&self) -> PoolId {
-        self.memory_pool_id
+    pub const fn memory_pool(&self) -> Pool {
+        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {
@@ -277,11 +266,14 @@ impl CDevice {
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
-        memory_pool: &mut HostMemoryPool,
+        pool_handle: Pool,
         args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = event_wait_list; // sync not needed for sequential CPU
+        debug_assert_eq!(pool_handle, Pool::Host);
+        let host = super::host::pool();
+        let mut memory_pool = super::lock(pool_handle, &host);
 
         let program = &self.programs[program_id];
 

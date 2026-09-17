@@ -10,17 +10,34 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{Event, MemoryPool, PoolBufferId, PoolId};
+use super::Event;
+use super::PoolBufferId;
 use crate::{
     error::{BackendError, ErrorStatus},
     shape::Dim,
     slab::Slab,
 };
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug)]
 pub struct DiskMemoryPool {
     free_bytes: Dim,
     buffers: Slab<PoolBufferId, DiskBuffer>,
+}
+
+/// Constructs the global disk pool. Infallible — `Disk` is always available.
+pub(super) fn ensure_pool() -> DiskMemoryPool {
+    if super::debug_backends() {
+        println!("[disk] initialized");
+    }
+    DiskMemoryPool { free_bytes: 0, buffers: Slab::new() }
+}
+
+/// Process-wide global disk pool. Owned here — `mod.rs` only holds the `Pool::Disk` handle.
+static DISK_POOL: OnceLock<Arc<Mutex<DiskMemoryPool>>> = OnceLock::new();
+
+pub(super) fn pool() -> Arc<Mutex<DiskMemoryPool>> {
+    DISK_POOL.get_or_init(|| Arc::new(Mutex::new(ensure_pool()))).clone()
 }
 
 #[derive(Debug)]
@@ -32,19 +49,6 @@ struct DiskBuffer {
 
 #[derive(Debug, Clone)]
 pub struct DiskEvent {}
-
-#[allow(clippy::unnecessary_wraps)]
-pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
-    if debug_dev {
-        println!("[disk] initialized");
-    }
-    let pool = MemoryPool::Disk(DiskMemoryPool {
-        free_bytes: 0, // Non allocatable
-        buffers: Slab::new(),
-    });
-    memory_pools.push(pool);
-    Ok(())
-}
 
 impl DiskMemoryPool {
     #[allow(clippy::needless_pass_by_ref_mut)]

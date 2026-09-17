@@ -2693,7 +2693,7 @@ impl Runtime {
                     Device::TT(d) => Dev::TT(d.dev_id as u16),
                     Device::Vulkan(d) => Dev::Vulkan(d.dev_id as u16),
                     Device::OpenCL(d) => Dev::OpenCL(d.device_idx as u16),
-                    Device::HIP(_) | Device::Dummy(_) => todo!(),
+                    Device::Dummy(_) => todo!(),
                     #[cfg(feature = "wgpu")]
                     Device::WGPU(_) => todo!(),
                 },
@@ -2707,7 +2707,6 @@ impl Runtime {
                             Device::TT(_) => "TT",
                             Device::Vulkan(_) => "Vulkan",
                             Device::OpenCL(_) => "OpenCL",
-                            Device::HIP(_) => "HIP",
                             Device::Dummy(_) => "Dummy",
                             #[cfg(feature = "wgpu")]
                             Device::WGPU(_) => "WGPU",
@@ -2735,7 +2734,7 @@ impl Runtime {
                     Device::TT(d) => Dev::TT(d.dev_id as u16),
                     Device::Vulkan(d) => Dev::Vulkan(d.dev_id as u16),
                     Device::OpenCL(d) => Dev::OpenCL(d.device_idx as u16),
-                    Device::HIP(_) | Device::Dummy(_) => todo!(),
+                    Device::Dummy(_) => todo!(),
                     #[cfg(feature = "wgpu")]
                     Device::WGPU(_) => todo!(),
                 }

@@ -1,12 +1,13 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use super::{Event, MemoryPool, PoolBufferId, PoolId};
+use super::{Event, Pool, PoolBufferId};
 use crate::{
     error::{BackendError, ErrorStatus},
     shape::Dim,
     slab::Slab,
 };
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug)]
 pub struct HostMemoryPool {
@@ -16,6 +17,23 @@ pub struct HostMemoryPool {
 
 #[derive(Debug, Clone)]
 pub struct HostEvent;
+
+/// Constructs the global host pool. Infallible — `Host` is always available.
+pub(super) fn ensure_pool() -> HostMemoryPool {
+    let total_bytes = detect_host_memory_bytes();
+    if super::debug_backends() {
+        println!("[host] initialized");
+        println!("[host] device total memory: {} MB", total_bytes / (1024 * 1024));
+    }
+    HostMemoryPool { free_bytes: total_bytes as i64, buffers: Slab::new() }
+}
+
+/// Process-wide global host pool. Owned here — `mod.rs` only holds the `Pool::Host` handle.
+static HOST_POOL: OnceLock<Arc<Mutex<HostMemoryPool>>> = OnceLock::new();
+
+pub(super) fn pool() -> Arc<Mutex<HostMemoryPool>> {
+    HOST_POOL.get_or_init(|| Arc::new(Mutex::new(ensure_pool()))).clone()
+}
 
 fn detect_host_memory_bytes() -> u64 {
     let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
@@ -28,20 +46,6 @@ fn detect_host_memory_bytes() -> u64 {
         }
     }
     1024 * 1024 * 1024
-}
-
-#[allow(clippy::unnecessary_wraps)]
-pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
-    if debug_dev {
-        println!("[host] initialized");
-    }
-    let total_bytes = detect_host_memory_bytes();
-    let pool = MemoryPool::Host(HostMemoryPool { free_bytes: total_bytes as i64, buffers: Slab::new() });
-    if debug_dev {
-        println!("[host] device total memory: {} MB", total_bytes / (1024 * 1024));
-    }
-    memory_pools.push(pool);
-    Ok(())
 }
 
 impl HostMemoryPool {
@@ -107,33 +111,49 @@ impl HostMemoryPool {
 
     pub fn pool_to_pool(
         &mut self,
-        src_pool: &mut MemoryPool,
-        src: PoolBufferId,
-        dst: PoolBufferId,
+        src: Pool,
+        src_buf: PoolBufferId,
+        dst_buf: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        match src_pool {
-            MemoryPool::Disk(src_pool) => {
-                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src) as usize];
-                src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
-                self.host_to_pool(&byte_slice, dst, event_wait_list)
+        match src {
+            Pool::Host => {
+                let len = self.buffers[src_buf].len().min(self.buffers[dst_buf].len());
+                let src_bytes = self.buffers[src_buf][..len].to_vec();
+                self.buffers[dst_buf][..len].copy_from_slice(&src_bytes);
+                let _ = event_wait_list;
+                Ok(Event::Host(HostEvent))
+            }
+            Pool::Disk => {
+                let src_pool = super::disk::pool();
+                let mut src_pool = super::lock(src, &src_pool);
+                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src_buf) as usize];
+                src_pool.pool_to_host(src_buf, &mut byte_slice, Vec::new())?;
+                drop(src_pool);
+                self.host_to_pool(&byte_slice, dst_buf, event_wait_list)
             }
             // CUDA -> host: download the device buffer into host bytes,
             // then memcpy into the host buffer.
-            MemoryPool::CUDA(src_pool) => {
-                let mut byte_slice = vec![0u8; self.buffers[dst].len()];
-                src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
-                self.host_to_pool(&byte_slice, dst, event_wait_list)
+            Pool::Cuda(id) => {
+                let src_pool = super::cuda::pool(id)?;
+                let mut src_pool = super::lock(src, &src_pool);
+                let mut byte_slice = vec![0u8; self.buffers[dst_buf].len()];
+                src_pool.pool_to_host(src_buf, &mut byte_slice, Vec::new())?;
+                drop(src_pool);
+                self.host_to_pool(&byte_slice, dst_buf, event_wait_list)
             }
             // TT -> host: read the device DRAM buffer into host bytes via the
             // runtime shim (read_buf), then memcpy into the host buffer.
             #[cfg(feature = "tenstorrent")]
-            MemoryPool::TT(src_pool) => {
-                let mut byte_slice = vec![0u8; src_pool.buffers[src].size as usize];
-                src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
-                self.host_to_pool(&byte_slice, dst, event_wait_list)
+            Pool::TT(id) => {
+                let src_pool = super::tenstorrent::pool(id)?;
+                let mut src_pool = super::lock(src, &src_pool);
+                let mut byte_slice = vec![0u8; src_pool.buffers[src_buf].size as usize];
+                src_pool.pool_to_host(src_buf, &mut byte_slice, Vec::new())?;
+                drop(src_pool);
+                self.host_to_pool(&byte_slice, dst_buf, event_wait_list)
             }
-            _ => todo!(),
+            _ => todo!("host pool_to_pool from {src:?}"),
         }
     }
 

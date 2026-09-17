@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, CString};
 use std::sync::{
-    Arc,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
     mpsc::{Receiver, Sender, channel},
 };
@@ -26,7 +26,8 @@ use crate::{
 };
 
 use super::{
-    DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, MemoryPool, PoolBufferId, PoolId, gws_from_kernel,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, Pool, PoolBufferId,
+    gws_from_kernel,
 };
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
@@ -428,9 +429,52 @@ unsafe impl Send for VulkanCommand {}
 
 // ── Memory Pool ──────────────────────────────────────────────────────────────
 
+/// Process-wide per-device pools. Owned here — `mod.rs` only holds
+/// `Pool::Vulkan(i)` handles. `VULKAN_INIT` serializes first construction
+/// only; the alloc/free path never takes it. Each pool owns one device
+/// (one worker thread); the pool carries its `DeviceInfo` for later
+/// device registration.
+static VULKAN_POOLS: OnceLock<Vec<Arc<Mutex<VulkanMemoryPool>>>> = OnceLock::new();
+static VULKAN_INIT: Mutex<()> = Mutex::new(());
+
+fn pools_with(config: &VulkanConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<VulkanMemoryPool>>>, BackendError> {
+    if let Some(pools) = VULKAN_POOLS.get() {
+        return Ok(pools);
+    }
+    let _init = VULKAN_INIT.lock().unwrap_or_else(|_| panic!("vulkan pool init lock poisoned"));
+    if let Some(pools) = VULKAN_POOLS.get() {
+        return Ok(pools);
+    }
+    let pools = ensure_pool_table(config, debug_dev)?;
+    let _ = VULKAN_POOLS.set(pools);
+    VULKAN_POOLS.get().ok_or_else(|| BackendError {
+        status: ErrorStatus::Initialization,
+        context: "Vulkan pool init failed".into(),
+    })
+}
+
+fn pools() -> Result<&'static Vec<Arc<Mutex<VulkanMemoryPool>>>, BackendError> {
+    pools_with(&VulkanConfig::default(), false)
+}
+
+pub(super) fn pool(id: u16) -> Result<Arc<Mutex<VulkanMemoryPool>>, BackendError> {
+    pools()?.get(id as usize).cloned().ok_or_else(|| no_pool(id))
+}
+
+pub(super) fn pool_count() -> u16 {
+    pools().map(|pools| pools.len() as u16).unwrap_or(0)
+}
+
+fn no_pool(id: u16) -> BackendError {
+    BackendError { status: ErrorStatus::Initialization, context: format!("Pool::Vulkan({id}) is not available").into() }
+}
+
 pub struct VulkanMemoryPool {
     tx: Sender<VulkanCommand>,
     free_bytes: Arc<AtomicU64>,
+    dev_info: DeviceInfo,
+    /// Real Vulkan physical device index. Not the pool ordinal.
+    dev_id: u32,
 }
 
 impl std::fmt::Debug for VulkanMemoryPool {
@@ -464,17 +508,24 @@ impl VulkanMemoryPool {
     }
     pub(super) fn pool_to_pool(
         &mut self,
-        src_pool: &mut MemoryPool,
-        src: PoolBufferId,
-        dst: PoolBufferId,
+        src: Pool,
+        src_buf: PoolBufferId,
+        dst_buf: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        match src_pool {
-            MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
-            MemoryPool::Disk(src_pool) => {
-                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src) as usize];
-                src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
-                self.host_to_pool(&byte_slice, dst, event_wait_list)
+        match src {
+            Pool::Host => {
+                let src_pool = super::host::pool();
+                let src_pool = super::lock(src, &src_pool);
+                self.host_to_pool(src_pool.get_buffer(src_buf), dst_buf, event_wait_list)
+            }
+            Pool::Disk => {
+                let src_pool = super::disk::pool();
+                let mut src_pool = super::lock(src, &src_pool);
+                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src_buf) as usize];
+                src_pool.pool_to_host(src_buf, &mut byte_slice, Vec::new())?;
+                drop(src_pool);
+                self.host_to_pool(&byte_slice, dst_buf, event_wait_list)
             }
             _ => todo!(),
         }
@@ -545,12 +596,12 @@ pub struct VulkanDevice {
     dev_info: Arc<DeviceInfo>,
     /// Real Vulkan physical device index, set at init. Not the slab index.
     pub(crate) dev_id: u32,
-    memory_pool_id: PoolId,
+    memory_pool: Pool,
 }
 
 impl std::fmt::Debug for VulkanDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VulkanDevice").field("dev_info", &self.dev_info).field("memory_pool_id", &self.memory_pool_id).finish()
+        f.debug_struct("VulkanDevice").field("dev_info", &self.dev_info).field("memory_pool", &self.memory_pool).finish()
     }
 }
 
@@ -559,8 +610,8 @@ impl VulkanDevice {
     pub(super) fn info(&self) -> Arc<DeviceInfo> {
         self.dev_info.clone()
     }
-    pub(super) const fn memory_pool_id(&self) -> PoolId {
-        self.memory_pool_id
+    pub(super) const fn memory_pool(&self) -> Pool {
+        self.memory_pool
     }
     pub(super) const fn free_compute(&self) -> u128 {
         1_000_000_000_000
@@ -576,10 +627,11 @@ impl VulkanDevice {
     pub(super) fn launch(
         &mut self,
         program_id: DeviceProgramId,
-        _memory_pool: &mut VulkanMemoryPool,
+        pool_handle: Pool,
         args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
+        debug_assert_eq!(pool_handle, self.memory_pool);
         let (reply, rx) = channel();
         self.tx.send(VulkanCommand::Launch { program_id, args: args.to_vec(), event_wait_list, reply }).unwrap();
         rx.recv().unwrap()
@@ -603,19 +655,18 @@ fn find_mem_type(
 // ── Initialization ───────────────────────────────────────────────────────────
 
 #[allow(clippy::unnecessary_wraps)]
-pub(super) fn initialize_device(
+pub(super) fn ensure_pool_table(
     config: &VulkanConfig,
-    memory_pools: &mut Slab<super::PoolId, MemoryPool>,
-    devices: &mut Slab<super::DeviceId, super::Device>,
     debug_dev: bool,
-) -> Result<(), BackendError> {
+) -> Result<Vec<Arc<Mutex<VulkanMemoryPool>>>, BackendError> {
+    let mut pools: Vec<Arc<Mutex<VulkanMemoryPool>>> = Vec::new();
     if let Some(ids) = &config.device_ids
         && ids.is_empty()
     {
         if debug_dev {
             println!("[vulkan] configured out");
         }
-        return Ok(());
+        return Ok(pools);
     }
 
     let vulkan_paths = [
@@ -1079,7 +1130,7 @@ pub(super) fn initialize_device(
         let worker_library = Arc::clone(&library);
         // Built up-front so the worker thread can validate group lengths at
         // compile and launch time against the device grid limits.
-        let dev_info = Arc::new(DeviceInfo {
+        let dev_info = DeviceInfo {
             compute: 1_000_000_000_000,
             max_global_work_dims: max_wg_count.iter().map(|&c| Dim::from(c)).collect(),
             max_local_threads: max_wg_invocations,
@@ -1119,11 +1170,11 @@ pub(super) fn initialize_device(
             tile_sizes: vec![],
             wmma_layouts: vec![],
             num_circular_buffers: 0,
-        });
+        };
 
         std::thread::spawn({
             let free_bytes_atomic = Arc::clone(&free_bytes_atomic);
-            let dev_info = dev_info.clone();
+            let dev_info = Arc::new(dev_info.clone());
             move || {
                 let _worker_library = worker_library; // keep libvulkan.so alive
                 let instance = instance_raw as VkInstance;
@@ -1833,17 +1884,31 @@ pub(super) fn initialize_device(
             }
         });
 
-        let mem_pool = VulkanMemoryPool { tx: tx.clone(), free_bytes: Arc::clone(&free_bytes_atomic) };
-        memory_pools.push(MemoryPool::Vulkan(mem_pool));
-        let dev = VulkanDevice {
+        pools.push(Arc::new(Mutex::new(VulkanMemoryPool {
             tx,
-            dev_id: u32::try_from(gpu_i).unwrap(),
+            free_bytes: Arc::clone(&free_bytes_atomic),
             dev_info,
-            memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
-        };
-
-        devices.push(super::Device::Vulkan(dev));
+            dev_id: u32::try_from(gpu_i).unwrap(),
+        })));
     }
 
+    Ok(pools)
+}
+
+pub(super) fn initialize_device(
+    config: &VulkanConfig,
+    devices: &mut Slab<DeviceId, Device>,
+    debug_dev: bool,
+) -> Result<(), BackendError> {
+    let pools = pools_with(config, debug_dev)?;
+    for (idx, pool_arc) in pools.iter().enumerate() {
+        let pool_id = Pool::Vulkan(u16::try_from(idx).expect("So many Vulkan devices..."));
+        let guard = super::lock(pool_id, pool_arc);
+        let tx = guard.tx.clone();
+        let dev_info = Arc::new(guard.dev_info.clone());
+        let dev_id = guard.dev_id;
+        drop(guard);
+        devices.push(Device::Vulkan(VulkanDevice { tx, dev_info, dev_id, memory_pool: pool_id }));
+    }
     Ok(())
 }

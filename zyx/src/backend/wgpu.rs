@@ -2,18 +2,21 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use super::{
-    BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, GwsDim, LaunchArg, MemoryPool, PoolId, gws_from_kernel,
+    BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
 };
 use crate::{
     DType,
-    backend::{DTypeCapability, DeviceProgramId, PoolBufferId},
-    kernel::{IdxKind, Kernel, MemScope, Op, ParamKind},
+    backend::{DTypeCapability, DeviceProgramId},
+    kernel::{Kernel, MemScope, Op, ParamKind, RangeKind},
     shape::Dim,
     slab::Slab,
 };
 use nanoserde::DeJson;
 use pollster::FutureExt;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
 use wgpu::{
     BindGroupLayout, BufferDescriptor, BufferUsages, ComputePipeline, PowerPreference, ShaderModule, SubmissionIndex,
     wgt::PollType,
@@ -36,13 +39,53 @@ pub struct WGPUMemoryPool {
     free_bytes: Dim,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
+    adapter: wgpu::Adapter,
     buffers: Slab<PoolBufferId, wgpu::Buffer>,
+    dev_info: DeviceInfo,
+}
+
+/// Process-wide per-device pools. Owned here — `mod.rs` only holds
+/// `Pool::WGPU(i)` handles. `WGPU_INIT` serializes first construction only;
+/// the alloc/free path never takes it.
+static WGPU_POOLS: OnceLock<Vec<Arc<Mutex<WGPUMemoryPool>>>> = OnceLock::new();
+static WGPU_INIT: Mutex<()> = Mutex::new(());
+
+fn pools_with(config: &WGPUConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<WGPUMemoryPool>>>, BackendError> {
+    if let Some(pools) = WGPU_POOLS.get() {
+        return Ok(pools);
+    }
+    let _init = WGPU_INIT.lock().unwrap_or_else(|_| panic!("wgpu pool init lock poisoned"));
+    if let Some(pools) = WGPU_POOLS.get() {
+        return Ok(pools);
+    }
+    let pools = ensure_pool_table(config, debug_dev)?;
+    let _ = WGPU_POOLS.set(pools);
+    WGPU_POOLS.get().ok_or_else(|| BackendError {
+        status: ErrorStatus::Initialization,
+        context: "WGPU pool init failed".into(),
+    })
+}
+
+fn pools() -> Result<&'static Vec<Arc<Mutex<WGPUMemoryPool>>>, BackendError> {
+    pools_with(&WGPUConfig::default(), false)
+}
+
+pub(super) fn pool(id: u16) -> Result<Arc<Mutex<WGPUMemoryPool>>, BackendError> {
+    pools()?.get(id as usize).cloned().ok_or_else(|| no_pool(id))
+}
+
+pub(super) fn pool_count() -> u16 {
+    pools().map(|pools| pools.len() as u16).unwrap_or(0)
+}
+
+fn no_pool(id: u16) -> BackendError {
+    BackendError { status: ErrorStatus::Initialization, context: format!("Pool::WGPU({id}) is not available").into() }
 }
 
 #[derive(Debug)]
 pub struct WGPUDevice {
     dev_info: Arc<DeviceInfo>,
-    memory_pool_id: PoolId,
+    memory_pool: Pool,
     device: Arc<wgpu::Device>,
     #[allow(unused)]
     adapter: wgpu::Adapter,
@@ -66,17 +109,16 @@ pub(super) struct WGPUProgram {
     gws: Vec<GwsDim>,
 }
 
-pub(super) fn initialize_device(
+pub(super) fn ensure_pool_table(
     config: &WGPUConfig,
-    memory_pools: &mut Slab<PoolId, MemoryPool>,
-    devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
-) -> Result<(), BackendError> {
+) -> Result<Vec<Arc<Mutex<WGPUMemoryPool>>>, BackendError> {
+    let mut pools: Vec<Arc<Mutex<WGPUMemoryPool>>> = Vec::new();
     if !config.enabled {
         if debug_dev {
             println!("[WGPU] configured out");
         }
-        return Ok(());
+        return Ok(pools);
     }
 
     let power_preference = PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
@@ -128,16 +170,9 @@ pub(super) fn initialize_device(
     }
     let device = Arc::new(wgpu_device);
     let queue = Arc::new(wgpu_queue);
-    let pool = MemoryPool::WGPU(WGPUMemoryPool {
-        free_bytes: 1_000_000_000,
-        device: device.clone(),
-        queue: queue.clone(),
-        buffers: Slab::new(),
-    });
     if debug_dev {
         println!("[WGPU] device total memory: {} MB", 1_000_000_000u64 / (1024 * 1024));
     }
-    memory_pools.push(pool);
     let limits = device.limits();
     let wgpu_features = wgpu_adapter.features();
     let dtype_capability = {
@@ -160,17 +195,20 @@ pub(super) fn initialize_device(
         ops[DType::I16 as usize] = DTypeCapability::none();
         ops
     };
-    devices.push(Device::WGPU(WGPUDevice {
+    pools.push(Arc::new(Mutex::new(WGPUMemoryPool {
+        free_bytes: 1_000_000_000,
         device,
+        queue,
         adapter: wgpu_adapter,
-        dev_info: Arc::new(DeviceInfo {
+        buffers: Slab::new(),
+        dev_info: DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![100_000; 3],
-            max_local_threads: Dim::from(limits.max_compute_invocations_per_workgroup),
+            max_local_threads: limits.max_compute_invocations_per_workgroup,
             max_local_work_dims: vec![
-                Dim::from(limits.max_compute_workgroup_size_x),
-                Dim::from(limits.max_compute_workgroup_size_y),
-                Dim::from(limits.max_compute_workgroup_size_z),
+                limits.max_compute_workgroup_size_x,
+                limits.max_compute_workgroup_size_y,
+                limits.max_compute_workgroup_size_z,
             ],
             preferred_vector_size: 4,
             local_mem_size: 64 * 1024,
@@ -186,12 +224,30 @@ pub(super) fn initialize_device(
             tile_sizes: vec![],
             wmma_layouts: vec![],
             num_circular_buffers: 0,
-        }),
-        memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
-        programs: Slab::new(),
-        queue,
-    }));
+        },
+    })));
 
+    Ok(pools)
+}
+
+pub(super) fn initialize_device(
+    config: &WGPUConfig,
+    devices: &mut Slab<DeviceId, Device>,
+    debug_dev: bool,
+) -> Result<(), BackendError> {
+    let pools = pools_with(config, debug_dev)?;
+    for (idx, pool_arc) in pools.iter().enumerate() {
+        let pool_id = Pool::WGPU(u16::try_from(idx).expect("So many WGPU devices..."));
+        let guard = super::lock(pool_id, pool_arc);
+        devices.push(Device::WGPU(WGPUDevice {
+            dev_info: Arc::new(guard.dev_info.clone()),
+            memory_pool: pool_id,
+            device: guard.device.clone(),
+            adapter: guard.adapter.clone(),
+            programs: Slab::new(),
+            queue: guard.queue.clone(),
+        }));
+    }
     Ok(())
 }
 
@@ -204,14 +260,14 @@ impl WGPUMemoryPool {
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
-        const ALIGN: Dim = wgpu::COPY_BUFFER_ALIGNMENT;
-        let bytes = bytes.div_ceil(ALIGN) * ALIGN;
+        let align = wgpu::COPY_BUFFER_ALIGNMENT as Dim;
+        let bytes = (bytes + align - 1) / align * align;
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
         let buffer = self.device.create_buffer(&BufferDescriptor {
             label: None,
-            size: bytes,
+            size: bytes as u64,
             usage: BufferUsages::from_bits_truncate(
                 BufferUsages::STORAGE.bits() | BufferUsages::COPY_SRC.bits() | BufferUsages::COPY_DST.bits(),
             ),
@@ -261,7 +317,7 @@ impl WGPUMemoryPool {
             // Write the remaining bytes padded with zeros
             if remaining > 0 {
                 padded[..remaining].copy_from_slice(&src[full_chunks * ALIGN..]);
-                self.queue.write_buffer(dst, (full_chunks * ALIGN) as i64, &padded);
+                self.queue.write_buffer(dst, (full_chunks * ALIGN) as u64, &padded);
             }
         } else {
             // Already aligned
@@ -306,7 +362,7 @@ impl WGPUMemoryPool {
         // Create a temporary download buffer to receive data from the GPU
         let download_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("DownloadBuffer"), // You can try removing or adjusting the label if needed
-            size: dst.len() as i64,
+            size: dst.len() as u64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, // Ensure proper usage flags
             mapped_at_creation: false,
         });
@@ -321,7 +377,7 @@ impl WGPUMemoryPool {
             0, // Start at the beginning of the source buffer
             &download_buffer,
             0,                // Start at the beginning of the destination buffer
-            dst.len() as i64, // The number of bytes to copy
+            dst.len() as u64, // The number of bytes to copy
         );
 
         // Submit the command to the GPU
@@ -372,14 +428,18 @@ impl WGPUMemoryPool {
 
     pub fn pool_to_pool(
         &mut self,
-        src_pool: &mut MemoryPool,
-        src: PoolBufferId,
-        dst: PoolBufferId,
+        src: Pool,
+        src_buf: PoolBufferId,
+        dst_buf: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        match src_pool {
-            MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
-            _ => todo!("pool_to_pool from {:?} to WGPU", std::mem::discriminant(src_pool)),
+        match src {
+            Pool::Host => {
+                let src_pool = super::host::pool();
+                let src_pool = super::lock(src, &src_pool);
+                self.host_to_pool(src_pool.get_buffer(src_buf), dst_buf, event_wait_list)
+            }
+            _ => todo!("pool_to_pool from {src:?} to WGPU"),
         }
     }
 
@@ -396,8 +456,8 @@ impl WGPUDevice {
         self.dev_info.clone()
     }
 
-    pub const fn memory_pool_id(&self) -> PoolId {
-        self.memory_pool_id
+    pub const fn memory_pool(&self) -> Pool {
+        self.memory_pool
     }
 
     pub const fn free_compute(&self) -> u128 {
@@ -405,7 +465,7 @@ impl WGPUDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let mut lws = [Dim::from(1i64); 3];
+        let mut lws = [1u64; 3];
         let mut op_id = kernel.head;
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
@@ -413,11 +473,12 @@ impl WGPUDevice {
             if steps_op_id > 10_000 {
                 panic!("compile did not finish in 10000 steps");
             }
-            if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
+            if let Op::Range { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
-                    IdxKind::Group(_) => {}
-                    IdxKind::Local(len) => lws[axis as usize] = Dim::from(u64::from(len)),
-                    IdxKind::Warp(_) => todo!(),
+                    RangeKind::Group(_) => {}
+                    RangeKind::Local(len) => lws[axis as usize] = u64::from(len),
+                    // A warp is a view over a local range — adds no threads.
+                    RangeKind::Warp(_) => {}
                 }
             }
             op_id = kernel.next_op(op_id);
@@ -430,7 +491,7 @@ impl WGPUDevice {
             source: wgpu::ShaderSource::SpirV(std::borrow::Cow::Owned(spirv_words)),
         });
 
-        if lws.iter().product::<u64>() > self.dev_info.max_local_threads {
+        if lws.iter().product::<u64>() > u64::from(self.dev_info.max_local_threads) {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
@@ -499,11 +560,15 @@ impl WGPUDevice {
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
-        memory_pool: &mut WGPUMemoryPool,
+        pool_handle: Pool,
         args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
+        debug_assert_eq!(pool_handle, self.memory_pool);
         drop(event_wait_list);
+        let Pool::WGPU(id) = pool_handle else { unreachable!("WGPU launch with non-WGPU pool") };
+        let pool_arc = pool(id).expect("launch on unavailable WGPU pool");
+        let memory_pool = super::lock(pool_handle, &pool_arc);
         let program = &self.programs[program_id];
         let binds: Vec<wgpu::BindGroupEntry> = args
             .iter()

@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, MemoryPool, PoolBufferId, PoolId,
-    opencl::OpenCLEvent,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool, PoolBufferId, opencl::OpenCLEvent,
 };
 use crate::{
     DType,
@@ -13,6 +12,7 @@ use crate::{
     slab::{Slab, SlabId},
 };
 use nanoserde::DeJson;
+use std::sync::{Mutex, OnceLock};
 use std::{ptr, sync::Arc};
 
 #[derive(Default, Debug, DeJson)]
@@ -30,12 +30,46 @@ pub struct DummyMemoryPool {
 #[derive(Debug)]
 pub struct DummyDevice {
     device_info: Arc<DeviceInfo>,
-    memory_pool_id: PoolId,
+    memory_pool: Pool,
+}
+
+/// Process-wide global dummy pool. Owned here — `mod.rs` only holds the
+/// `Pool::Dummy` handle. `INIT` serializes first construction only; the
+/// alloc/free path never takes it.
+static DUMMY_POOL: OnceLock<Arc<Mutex<DummyMemoryPool>>> = OnceLock::new();
+static DUMMY_INIT: Mutex<()> = Mutex::new(());
+
+pub(super) fn pool() -> Result<Arc<Mutex<DummyMemoryPool>>, BackendError> {
+    if let Some(pool) = DUMMY_POOL.get() {
+        return Ok(pool.clone());
+    }
+    let _init = DUMMY_INIT.lock().unwrap_or_else(|_| panic!("dummy pool init lock poisoned"));
+    if let Some(pool) = DUMMY_POOL.get() {
+        return Ok(pool.clone());
+    }
+    let pool = Arc::new(Mutex::new(ensure_pool()?));
+    DUMMY_POOL.set(pool.clone()).expect("dummy pool set twice under init lock");
+    Ok(pool)
+}
+
+/// Constructs the global dummy pool. Fails when dummy is configured out.
+fn ensure_pool() -> Result<DummyMemoryPool, BackendError> {
+    let config = super::load_config();
+    if !config.dummy.enabled {
+        if super::debug_backends() {
+            println!("[dummy] configured out");
+        }
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "[dummy] configured out".into() });
+    }
+    if super::debug_backends() {
+        println!("[dummy] initialized");
+        println!("[dummy] device total memory: {} MB", 1024 * 1024);
+    }
+    Ok(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() })
 }
 
 pub(super) fn initialize_device(
     config: &DummyConfig,
-    memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
@@ -48,11 +82,6 @@ pub(super) fn initialize_device(
     if debug_dev {
         println!("[dummy] initialized");
     }
-    let pool = MemoryPool::Dummy(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() });
-    if debug_dev {
-        println!("[dummy] device total memory: {} MB", 1024 * 1024);
-    }
-    memory_pools.push(pool);
     devices.push(Device::Dummy(DummyDevice {
         device_info: Arc::new(DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,
@@ -74,7 +103,7 @@ pub(super) fn initialize_device(
             wmma_layouts: vec![],
             num_circular_buffers: 0,
         }),
-        memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
+        memory_pool: Pool::Dummy,
     }));
     Ok(())
 }
@@ -135,6 +164,17 @@ impl DummyMemoryPool {
         Ok(())
     }
 
+    pub fn pool_to_pool(
+        &mut self,
+        src: Pool,
+        src_buf: PoolBufferId,
+        dst_buf: PoolBufferId,
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
+        let _ = (src, src_buf, dst_buf, event_wait_list);
+        todo!("copies into dummy pool")
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -164,8 +204,8 @@ impl DummyDevice {
         self.device_info.clone()
     }
 
-    pub const fn memory_pool_id(&self) -> PoolId {
-        self.memory_pool_id
+    pub const fn memory_pool(&self) -> Pool {
+        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {
@@ -193,13 +233,16 @@ impl DummyDevice {
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
-        memory_pool: &mut DummyMemoryPool,
+        pool_handle: Pool,
         args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
+        debug_assert_eq!(pool_handle, self.memory_pool);
         let _ = self;
         let _ = program_id;
         let _ = event_wait_list;
+        let memory_pool = pool()?;
+        let memory_pool = super::lock(pool_handle, &memory_pool);
         for arg in args {
             match arg {
                 LaunchArg::Buffer(buffer_id) => {

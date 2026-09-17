@@ -16,10 +16,7 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(clippy::needless_pass_by_ref_mut)]
 
-use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, MemoryPool, PoolId, ProgramId,
-    host::HostEvent,
-};
+use super::{DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool, ProgramId, host::HostEvent};
 use crate::{
     DType, Set,
     error::{BackendError, ErrorStatus},
@@ -113,7 +110,7 @@ pub struct CblasProgram {
 pub struct CblasDevice {
     device_info: Arc<DeviceInfo>,
     device_id: DeviceId,
-    memory_pool_id: PoolId,
+    memory_pool: Pool,
     /// Keeps the libopenblas library loaded so the [`CblasKernel`] fn pointers stay valid.
     /// Never read, but dropping it would unload the library.
     #[allow(dead_code)]
@@ -124,7 +121,6 @@ pub struct CblasDevice {
 
 pub(super) fn initialize_device(
     config: &CblasConfig,
-    memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
@@ -134,12 +130,7 @@ pub(super) fn initialize_device(
         }
         return Ok(());
     }
-    if memory_pools.is_empty() {
-        return Err(BackendError {
-            status: ErrorStatus::Initialization,
-            context: "cblas backend requires HostMemoryPool to be initialized first.".into(),
-        });
-    }
+    // cblas reuses the global host pool — no init ordering needed.
 
     // Load libopenblas and fail fast if cblas_sgemm is missing
     let lib = unsafe { Library::new(OPENBLAS_PATH) }?;
@@ -173,7 +164,7 @@ pub(super) fn initialize_device(
         }),
         device_id: DeviceId::NULL,
         // cblas reuses the host pool (like the C backend)
-        memory_pool_id: PoolId::from(0),
+        memory_pool: Pool::Host,
         lib,
         kernels,
         programs: Slab::new(),
@@ -194,8 +185,8 @@ impl CblasDevice {
         self.device_info.clone()
     }
 
-    pub const fn memory_pool_id(&self) -> PoolId {
-        self.memory_pool_id
+    pub const fn memory_pool(&self) -> Pool {
+        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {
@@ -247,11 +238,14 @@ impl CblasDevice {
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
-        memory_pool: &mut super::host::HostMemoryPool,
+        pool_handle: Pool,
         args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = event_wait_list; // sync not needed for sequential CPU
+        debug_assert_eq!(pool_handle, Pool::Host);
+        let host = super::host::pool();
+        let mut memory_pool = super::lock(pool_handle, &host);
 
         let program = &self.programs[program_id];
         let kernel = &self.kernels[program.kernel];

@@ -20,8 +20,7 @@
 // in CoreCoord notation).
 
 use super::{
-    Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, Kernel, LaunchArg, MemoryPool, PoolBufferId, PoolId,
-    gws_from_kernel,
+    Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, Kernel, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
 };
 use crate::{
     DType,
@@ -37,7 +36,7 @@ use std::{
     io::{BufRead, BufReader, BufWriter, Write as IoWrite},
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 // ---------------------------------------------------------------------------
@@ -119,29 +118,66 @@ pub(crate) struct TTBuffer {
 // The pool shares the runtime IPC channel with TTDevice via Arc<Mutex>.
 // ---------------------------------------------------------------------------
 
+/// Process-wide per-device pools. Owned here — `mod.rs` only holds
+/// `Pool::TT(i)` handles. `TT_INIT` serializes first construction only;
+/// the alloc/free path never takes it. The pool carries its `DeviceInfo`
+/// for later device registration.
+static TT_POOLS: OnceLock<Vec<Arc<Mutex<TTMemoryPool>>>> = OnceLock::new();
+static TT_INIT: Mutex<()> = Mutex::new(());
+
+fn pools_with(config: &TTConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<TTMemoryPool>>>, BackendError> {
+    if let Some(pools) = TT_POOLS.get() {
+        return Ok(pools);
+    }
+    let _init = TT_INIT.lock().unwrap_or_else(|_| panic!("tt pool init lock poisoned"));
+    if let Some(pools) = TT_POOLS.get() {
+        return Ok(pools);
+    }
+    let pools = ensure_pool_table(config, debug_dev)?;
+    let _ = TT_POOLS.set(pools);
+    TT_POOLS
+        .get()
+        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "TT pool init failed".into() })
+}
+
+fn pools() -> Result<&'static Vec<Arc<Mutex<TTMemoryPool>>>, BackendError> {
+    pools_with(&TTConfig::default(), false)
+}
+
+pub(super) fn pool(id: u16) -> Result<Arc<Mutex<TTMemoryPool>>, BackendError> {
+    pools()?.get(id as usize).cloned().ok_or_else(|| no_pool(id))
+}
+
+pub(super) fn pool_count() -> u16 {
+    pools().map(|pools| pools.len() as u16).unwrap_or(0)
+}
+
+fn no_pool(id: u16) -> BackendError {
+    BackendError { status: ErrorStatus::Initialization, context: format!("Pool::TT({id}) is not available").into() }
+}
+
 #[derive(Debug)]
 pub struct TTMemoryPool {
     pub(crate) buffers: Slab<PoolBufferId, TTBuffer>,
     runtime: Arc<Mutex<RuntimeProcess>>,
     free_bytes: Dim,
+    dev_info: DeviceInfo,
+    /// Real Tenstorrent chip id (from device_ids config). Not the pool ordinal.
+    dev_id: u32,
 }
 
 #[derive(Debug, Clone)]
 pub struct TTEvent;
 
-pub(super) fn initialize_device(
-    config: &TTConfig,
-    memory_pools: &mut Slab<PoolId, MemoryPool>,
-    devices: &mut Slab<DeviceId, Device>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
+pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Arc<Mutex<TTMemoryPool>>>, BackendError> {
+    let mut pools: Vec<Arc<Mutex<TTMemoryPool>>> = Vec::new();
     if let Some(device_ids) = &config.device_ids
         && device_ids.is_empty()
     {
         if debug_dev {
             println!("[tenstorrent] configured out");
         }
-        return Ok(());
+        return Ok(pools);
     }
 
     let dram_bytes = detect_dram_bytes();
@@ -181,19 +217,15 @@ pub(super) fn initialize_device(
         println!("[tenstorrent] tensix grid {grid_rows} rows x {grid_cols} cols");
     }
 
-    let pool_id = memory_pools.len();
-    let pool =
-        MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(dram_bytes as i64) });
-    memory_pools.push(pool);
-
-    let _device_id = devices.len();
     let dev_id = config.device_ids.as_ref().and_then(|ids| ids.first().copied()).unwrap();
     // F8E5M2 has no Blackhole DataFormat: not a capable dtype, codegen rejects it.
     let mut dtype_capability = [DTypeCapability::all(); DType::N_DTYPES];
     dtype_capability[DType::F8E5M2 as usize] = DTypeCapability::ZERO;
-    devices.push(Device::TT(TTDevice {
-        dev_id: u32::try_from(dev_id).unwrap(),
-        device_info: Arc::new(DeviceInfo {
+    pools.push(Arc::new(Mutex::new(TTMemoryPool {
+        buffers: Slab::new(),
+        runtime: runtime.clone(),
+        free_bytes: Dim::from(dram_bytes as i64),
+        dev_info: DeviceInfo {
             compute: 200_000_000_000_000, // ~200 TFLOPS BF16
             // Grid axes only (gidx0 row, gidx1 col); TT launches at most
             // 2 group axes, and the launch path rejects more.
@@ -214,11 +246,30 @@ pub(super) fn initialize_device(
             tile_sizes: vec![[32, 32]],
             wmma_layouts: vec![],
             num_circular_buffers: 32, // architectural CB0-CB31
-        }),
-        memory_pool_id: pool_id,
-        runtime,
-        programs: Slab::new(),
-    }));
+        },
+        dev_id: u32::try_from(dev_id).unwrap(),
+    })));
+
+    Ok(pools)
+}
+
+pub(super) fn initialize_device(
+    config: &TTConfig,
+    devices: &mut Slab<DeviceId, Device>,
+    debug_dev: bool,
+) -> Result<(), BackendError> {
+    let pools = pools_with(config, debug_dev)?;
+    for (idx, pool_arc) in pools.iter().enumerate() {
+        let pool_id = Pool::TT(u16::try_from(idx).expect("So many Tenstorrent devices..."));
+        let guard = super::lock(pool_id, pool_arc);
+        devices.push(Device::TT(TTDevice {
+            device_info: Arc::new(guard.dev_info.clone()),
+            dev_id: guard.dev_id,
+            memory_pool: pool_id,
+            runtime: guard.runtime.clone(),
+            programs: Slab::new(),
+        }));
+    }
     Ok(())
 }
 
@@ -328,31 +379,33 @@ impl TTMemoryPool {
 
     pub fn pool_to_pool(
         &mut self,
-        src_pool: &mut MemoryPool,
-        src: PoolBufferId,
-        dst: PoolBufferId,
+        src: Pool,
+        src_buf: PoolBufferId,
+        dst_buf: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         eprintln!("[TT-MARK] pool_to_pool start");
-        match src_pool {
-            MemoryPool::Host(host_pool) => {
+        match src {
+            Pool::Host => {
                 eprintln!("[TT-MARK] pool_to_pool src=host");
-                let data = host_pool.get_buffer(src);
-                self.host_to_pool(data, dst, event_wait_list)
+                let src_pool = super::host::pool();
+                let src_pool = super::lock(src, &src_pool);
+                let data = src_pool.get_buffer(src_buf);
+                self.host_to_pool(data, dst_buf, event_wait_list)
             }
             // No P2P path in the tt-runtime shim yet — stage through host.
             _ => {
                 eprintln!("[TT-MARK] pool_to_pool src=other-pool, staging via host");
                 let len = {
-                    let dst_buf = self.buffers.get(dst).ok_or_else(|| BackendError {
+                    let dst_ref = self.buffers.get(dst_buf).ok_or_else(|| BackendError {
                         status: ErrorStatus::MemoryCopyP2H,
                         context: "invalid dst buffer id".into(),
                     })?;
-                    dst_buf.size as usize
+                    dst_ref.size as usize
                 };
                 let mut staging = vec![0u8; len];
-                src_pool.pool_to_host(src, &mut staging, event_wait_list)?;
-                self.host_to_pool(&staging, dst, Vec::new())
+                src.pool_to_host(src_buf, &mut staging, event_wait_list)?;
+                self.host_to_pool(&staging, dst_buf, Vec::new())
             }
         }
     }
@@ -763,7 +816,7 @@ pub struct TTDevice {
     device_info: Arc<DeviceInfo>,
     /// Real Tenstorrent chip id (from device_ids config), set at init. Not the slab index.
     pub(crate) dev_id: u32,
-    memory_pool_id: PoolId,
+    memory_pool: Pool,
     runtime: Arc<Mutex<RuntimeProcess>>,
     programs: Slab<DeviceProgramId, TTProgram>,
 }
@@ -775,8 +828,8 @@ impl TTDevice {
         self.device_info.clone()
     }
 
-    pub const fn memory_pool_id(&self) -> PoolId {
-        self.memory_pool_id
+    pub const fn memory_pool(&self) -> Pool {
+        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {
@@ -918,11 +971,17 @@ impl TTDevice {
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
-        memory_pool: &mut TTMemoryPool,
+        pool_handle: Pool,
         args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
+        debug_assert_eq!(pool_handle, self.memory_pool);
         let _ = event_wait_list;
+        let Pool::TT(id) = pool_handle else {
+            unreachable!("TT launch with non-TT pool")
+        };
+        let pool_arc = pool(id).expect("launch on unavailable TT pool");
+        let memory_pool = super::lock(pool_handle, &pool_arc);
         let prog = if self.programs.contains_id(program_id) {
             &self.programs[program_id]
         } else {

@@ -202,6 +202,34 @@
   - [ ] llama
   - [ ] phi LLM
 
+- [ ] device/pool global handles (device-layer rewrite, RT/slab/TensorId/tape unchanged)
+  - [ ] add Copy `Pool` enum (Host, Disk(u16), Cuda(u16), TT(u16), ...) as the only way to access memory pools
+  - [ ] add Copy `Dev` enum as the only way to access devices, with `Dev::pool() -> Pool`
+  - [ ] wrap each concrete pool (HostMemoryPool, DiskMemoryPool, ...) in its own global `Arc<Mutex<>>`, one per ordinal (per-GPU separate globals), in per-variant `OnceLock` tables preserving arbitrary device counts
+  - [ ] lazy init on `Pool::alloc` / `Dev::compile` (no uninit access path, just initialize); `Dev::launch` and `Pool::copy`/`free` assume already-initialized devices
+  - [ ] device API (alloc, free, copy, compile, launch) as the only global lock takers; per-op tensor path touches no globals
+  - [ ] `pool_to_pool(dst, src)` lock order: dst then src
+  - [ ] change `BufferId` to hold `pool: Pool` + buffer id, stays `Copy`; `buffer_map` unchanged
+  - [ ] remove `MemoryPool` and `Device` dispatch enums, call concrete pool/device methods directly on resolved globals
+  - [ ] land always-compiled backends first, feature-gated (wgpu, tenstorrent) after
+- [ ] symbolic dims as thread-local hashconsed values (no rc, no reclamation, append-only table)
+  - [ ] add `Sym` enum (`Const(Constant)` inline, `Expr` for composite dims) as the per-dim slot type
+  - [ ] thread-local hashcons table for symbolic dim expressions, plain HashMap, no atomics
+  - [ ] debug-only thread-ownership guard on symbolic id resolution (wrong-thread id collision check)
+  - [ ] serialize symbolic expressions by value, never by id (disk backend, AOT, py bindings)
+- [ ] TensorData rewrite for hashconsed symbolics
+  - [ ] rewrite `TensorData` so shapes reference `Sym` slots (const dims inline, zero alloc, zero lock)
+  - [ ] keep compute tensors on per-thread slab with u32 ids and iterative rc (exact reclamation)
+- [ ] graph ownership via Rc (kills ambient RT for graph paths)
+  - [ ] `TensorData::Graph(Rc<RefCell<Graph>>)` so `x + y` on two graph tensors resolves the shared graph from the operands (`Rc::ptr_eq`, else error)
+  - [ ] mixed eager/graph binary ops promote the eager operand into the graph found on the other operand
+  - [ ] `gradient` hangs off the graph itself (it already lives in class space); tape becomes a thin borrow of the graph from a tensor
+  - [ ] one-directional Rc rule: graph never owns `Graph`-variant tensors back (leaves stored as non-graph variants only)
+  - [ ] `RefCell` borrow discipline: realize is the only mutation while pushes are outstanding; debug_assert the contract
+  - [ ] decide Drop-driven kernel materialization lock order, or keep explicit teardown like the current death path
+- [ ] per-thread runtimes (later, after device layer)
+  - [ ] per-thread Runtime (slab + kernels + rng/config as thread-locals), no cross-thread tensors
+  - [ ] shared layer is only backends/devices/kernel cache behind `Arc<Mutex<>>`
 - [ ] python bindings
   - [x] basic tensor creation (randn, zeros, ones, from numpy)
   - [x] elementwise ops: abs, cos, cosh, exp, floor, ln, log2, relu, rsqrt, sigmoid, sin, sinh, sqrt, tan, tanh, leaky_relu, celu, elu, softplus, exp2, mish, quick_gelu, selu, hard_sigmoid, swish, cmplt, cmpgt, maximum, minimum, clamp

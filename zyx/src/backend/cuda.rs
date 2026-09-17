@@ -98,7 +98,7 @@ use std::{
     path::PathBuf,
     ptr,
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
@@ -131,8 +131,8 @@ macro_rules! send_or_continue {
 }
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, MemoryPool, PoolBufferId, PoolId,
-    ProgramId, gws_from_kernel,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, Pool, PoolBufferId, ProgramId,
+    gws_from_kernel,
 };
 
 /// CUDA configuration
@@ -151,6 +151,10 @@ pub struct CUDAConfig {
 pub struct CUDAMemoryPool {
     tx: Sender<CUDACommand>,
     free_bytes: Arc<AtomicU64>,
+    /// CUDA device handle owned by this pool's worker thread.
+    pub(super) device: CUdevice,
+    /// Driver ordinal (nvidia-smi id) of this pool's GPU.
+    pub(super) dev_ordinal: i32,
 }
 
 #[derive(Debug)]
@@ -166,7 +170,7 @@ pub struct CUDADevice {
     device_id: DeviceId,
     /// Real CUDA driver ordinal (nvidia-smi id), set at init. Not the slab index.
     pub(crate) dev_id: u32,
-    memory_pool_id: PoolId,
+    memory_pool: Pool,
     dev_info: Arc<DeviceInfo>,
     pub compute_capability: [c_int; 2],
     cudnn_available: bool,
@@ -312,19 +316,113 @@ enum CUDACommand {
 
 unsafe impl Send for CUDACommand {}
 
-pub(super) fn initialize_device(
-    config: &CUDAConfig,
-    memory_pools: &mut Slab<PoolId, MemoryPool>,
-    devices: &mut Slab<DeviceId, Device>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
-    if let Some(device_ids) = &config.device_ids
+/// dlopen'd CUDA driver: the library handle (kept loaded for the process
+/// lifetime so worker-thread symbols stay valid), all resolved symbols, the
+/// optional cuDNN handle library, and the config-filtered device ordinals.
+/// Built once under the pool init lock; shared by pool and device init.
+struct CudaDriver {
+    _lib: Library,
+    cudnn: Option<Arc<CudnnLib>>,
+    device_ids: Vec<i32>,
+    cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus,
+    cuDriverGetVersion: unsafe extern "C" fn(*mut c_int) -> CUDAStatus,
+    cuDeviceGetCount: unsafe extern "C" fn(*mut c_int) -> CUDAStatus,
+    cuDeviceGet: unsafe extern "C" fn(*mut CUdevice, c_int) -> CUDAStatus,
+    cuDeviceGetName: unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> CUDAStatus,
+    cuDeviceComputeCapability: unsafe extern "C" fn(*mut c_int, *mut c_int, CUdevice) -> CUDAStatus,
+    cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus,
+    cuDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, CUdevice_attribute, CUdevice) -> CUDAStatus,
+    cuCtxCreate: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus,
+    cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus,
+    cuMemGetInfo: unsafe extern "C" fn(*mut usize, *mut usize) -> CUDAStatus,
+    cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus,
+    cuMemcpyHtoDAsync: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize, CUstream) -> CUDAStatus,
+    cuMemcpyDtoHAsync: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize, CUstream) -> CUDAStatus,
+    cuModuleLoadDataEx:
+        unsafe extern "C" fn(*mut CUmodule, *const c_void, c_uint, *mut CUjit_option, *mut *mut c_void) -> CUDAStatus,
+    cuModuleGetFunction: unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUDAStatus,
+    cuLaunchKernel: unsafe extern "C" fn(
+        CUfunction,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        CUstream,
+        *mut *mut c_void,
+        *mut *mut c_void,
+    ) -> CUDAStatus,
+    cuStreamCreate: unsafe extern "C" fn(*mut CUstream, c_uint) -> CUDAStatus,
+    cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
+    cuStreamWaitEvent: unsafe extern "C" fn(CUstream, CUevent, c_uint) -> CUDAStatus,
+    cuModuleUnload: unsafe extern "C" fn(CUmodule) -> CUDAStatus,
+    cuEventCreate: unsafe extern "C" fn(*mut CUevent, c_uint) -> CUDAStatus,
+    cuEventRecord: unsafe extern "C" fn(CUevent, CUstream) -> CUDAStatus,
+    cuEventSynchronize: unsafe extern "C" fn(CUevent) -> CUDAStatus,
+    cuEventDestroy: unsafe extern "C" fn(CUevent) -> CUDAStatus,
+}
+
+static CUDA_DRIVER: OnceLock<Arc<CudaDriver>> = OnceLock::new();
+
+/// Process-wide per-GPU pools. Owned here — `mod.rs` only holds `Pool::Cuda(i)`
+/// handles. `CUDA_INIT` serializes first construction only (driver load +
+/// worker spawn); the alloc/free path never takes it.
+static CUDA_POOLS: OnceLock<Vec<Arc<Mutex<CUDAMemoryPool>>>> = OnceLock::new();
+static CUDA_INIT: Mutex<()> = Mutex::new(());
+
+pub(super) fn pool(id: u16) -> Result<Arc<Mutex<CUDAMemoryPool>>, BackendError> {
+    if let Some(pool) = CUDA_POOLS.get().and_then(|pools| pools.get(id as usize)) {
+        return Ok(pool.clone());
+    }
+    let _init = CUDA_INIT.lock().unwrap_or_else(|_| panic!("cuda pool init lock poisoned"));
+    if let Some(pool) = CUDA_POOLS.get().and_then(|pools| pools.get(id as usize)) {
+        return Ok(pool.clone());
+    }
+    let table = ensure_pool_table()?;
+    CUDA_POOLS.set(table).ok();
+    CUDA_POOLS.get().and_then(|pools| pools.get(id as usize)).cloned().ok_or_else(|| no_pool(id))
+}
+
+pub(super) fn pool_count() -> u16 {
+    if CUDA_POOLS.get().is_none() {
+        let _init = CUDA_INIT.lock().unwrap_or_else(|_| panic!("cuda pool init lock poisoned"));
+        if CUDA_POOLS.get().is_none() {
+            match ensure_pool_table() {
+                Ok(table) => {
+                    CUDA_POOLS.set(table).ok();
+                }
+                Err(_) => return 0,
+            }
+        }
+    }
+    CUDA_POOLS.get().map(|pools| pools.len() as u16).unwrap_or(0)
+}
+
+fn no_pool(id: u16) -> BackendError {
+    BackendError { status: ErrorStatus::Initialization, context: format!("Pool::Cuda({id}) is not available").into() }
+}
+
+impl std::fmt::Debug for CudaDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CudaDriver").field("device_ids", &self.device_ids).finish()
+    }
+}
+
+fn ensure_driver_locked() -> Result<Arc<CudaDriver>, BackendError> {
+    if let Some(driver) = CUDA_DRIVER.get() {
+        return Ok(driver.clone());
+    }
+    let debug_dev = super::debug_backends();
+    let config = super::load_config();
+    if let Some(device_ids) = &config.cuda.device_ids
         && device_ids.is_empty()
     {
         if debug_dev {
             println!("[cuda] configured out");
         }
-        return Ok(());
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "[cuda] configured out".into() });
     }
 
     let cuda_paths = [
@@ -348,10 +446,10 @@ pub(super) fn initialize_device(
 
     // Load cuDNN for AOT matmul kernels (optional). Kept alive for the worker
     // threads via an Arc; without it the CUDA backend still works normally.
-    let cudnn = if config.cudnn { load_cudnn() } else { None };
+    let cudnn = if config.cuda.cudnn { load_cudnn() } else { None };
     if debug_dev && cudnn.is_some() {
         println!("[cuda] cuDNN graph API loaded");
-    } else if debug_dev && !config.cudnn {
+    } else if debug_dev && !config.cuda.cudnn {
         println!("[cuda] cuDNN disabled by config");
     }
 
@@ -381,7 +479,7 @@ pub(super) fn initialize_device(
         *unsafe { cuda.get(b"cuMemcpyDtoHAsync_v2\0") }?;
     //let cuMemcpyPeer = *unsafe { cuda.get(b"cuMemcpyPeer\0") }?;
     //let cuCtxSetCurrent = *unsafe { cuda.get(b"cuCtxGetCurrent\0") };
-    //let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }?;
+    //let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy_v2\0") }?;
     let cuModuleLoadDataEx: unsafe extern "C" fn(
         *mut CUmodule,
         *const c_void,
@@ -431,7 +529,7 @@ pub(super) fn initialize_device(
         return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "[CUDA] no available device.".into() });
     }
     let device_ids: Vec<i32> =
-        (0..num_devices).filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id))).collect();
+        (0..num_devices).filter(|id| config.cuda.device_ids.as_ref().is_none_or(|ids| ids.contains(id))).collect();
     if debug_dev && !device_ids.is_empty() {
         println!(
             "[cuda] driver version {}.{} on devices:",
@@ -439,22 +537,453 @@ pub(super) fn initialize_device(
             (driver_version - (driver_version / 1000 * 1000)) / 10
         );
     }
+    let driver = Arc::new(CudaDriver {
+        _lib: cuda,
+        cudnn,
+        device_ids,
+        cuInit,
+        cuDriverGetVersion,
+        cuDeviceGetCount,
+        cuDeviceGet,
+        cuDeviceGetName,
+        cuDeviceComputeCapability,
+        cuDeviceTotalMem,
+        cuDeviceGetAttribute,
+        cuCtxCreate,
+        cuMemAlloc,
+        cuMemGetInfo,
+        cuMemFree,
+        cuMemcpyHtoDAsync,
+        cuMemcpyDtoHAsync,
+        cuModuleLoadDataEx,
+        cuModuleGetFunction,
+        cuLaunchKernel,
+        cuStreamCreate,
+        cuStreamSynchronize,
+        cuStreamWaitEvent,
+        cuModuleUnload,
+        cuEventCreate,
+        cuEventRecord,
+        cuEventSynchronize,
+        cuEventDestroy,
+    });
+    CUDA_DRIVER.set(driver.clone()).expect("cuda driver set twice under init lock");
+    Ok(driver)
+}
 
-    for dev_id in device_ids {
-        let mut device = 0;
-        if let Err(err) = unsafe { cuDeviceGet(&raw mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration) {
+fn ensure_driver() -> Result<Arc<CudaDriver>, BackendError> {
+    if let Some(driver) = CUDA_DRIVER.get() {
+        return Ok(driver.clone());
+    }
+    let _init = CUDA_INIT.lock().unwrap_or_else(|_| panic!("cuda pool init lock poisoned"));
+    ensure_driver_locked()
+}
+
+/// Spawns one GPU's worker thread (owns the CUDA context) and returns nothing;
+/// all communication goes through the pool's channel. Moved verbatim out of
+/// the old `initialize_device` so pool init can run without device init.
+fn spawn_worker(
+    driver: &CudaDriver,
+    device: CUdevice,
+    dev_ordinal: i32,
+    debug_dev: bool,
+    rx: Receiver<CUDACommand>,
+    free_bytes_atomic: Arc<AtomicU64>,
+) {
+    let CudaDriver {
+        cuCtxCreate,
+        cuDeviceGetAttribute,
+        cuEventCreate,
+        cuEventDestroy,
+        cuEventRecord,
+        cuEventSynchronize,
+        cuLaunchKernel,
+        cuMemAlloc,
+        cuMemFree,
+        cuMemcpyDtoHAsync,
+        cuMemcpyHtoDAsync,
+        cuModuleGetFunction,
+        cuModuleLoadDataEx,
+        cuModuleUnload,
+        cuStreamCreate,
+        cuStreamSynchronize,
+        cuStreamWaitEvent,
+        ..
+    } = *driver;
+    let cudnn = driver.cudnn.clone();
+    std::thread::spawn(move || {
+        //println!("INIT receiver");
+        // Initialize raw CUDA context
+        let mut context: CUcontext = ptr::null_mut();
+        if let Err(e) = unsafe { cuCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization) {
             if debug_dev {
-                println!("[cuda] device {dev_id}: could not be enumerated: {err}.");
+                println!("[cuda] context init failed: {e:?}");
+            }
+            return;
+        }
+
+        let mut streams = Vec::new();
+        for _ in 0..8 {
+            let mut stream = ptr::null_mut();
+            if let Err(err) = unsafe { cuStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization) {
+                if debug_dev {
+                    println!("[cuda] device {dev_ordinal}: stream init failed: {err:?}");
+                }
+                continue;
+            }
+            streams.push(CUDAStream { stream, load: 0 });
+        }
+
+        // Per-axis max grid extents, checked against every evaluated
+        // grid dimension before launching (see gws_from_kernel for the
+        // compile-time counterpart covering constant dims).
+        let mut max_grid = [0; 3];
+        for (axis, attr) in [
+            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
+            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y,
+            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut value: c_int = 0;
+            if let Err(err) = unsafe { (cuDeviceGetAttribute)(&raw mut value, attr, device) }.check(ErrorStatus::DeviceQuery) {
+                if debug_dev {
+                    println!("[cuda] device {dev_ordinal}: grid dim query failed: {err:?}");
+                }
+                return;
+            }
+            max_grid[axis] = i64::from(value);
+        }
+
+        let mut buffers: Slab<PoolBufferId, CUDABuffer> = Slab::new();
+        let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
+
+        // Create the cuDNN handle on this worker thread (it owns the
+        // current CUDA context). Optional — only used by AOT cudnn kernels.
+        let cudnn_handle = cudnn.as_ref().and_then(|cudnn| {
+            let mut handle = ptr::null_mut();
+            if unsafe { (cudnn.create)(&raw mut handle) } == CUDNN_STATUS_SUCCESS {
+                Some(handle)
+            } else {
+                None
+            }
+        });
+
+        // Worker loop
+        'work_thread_loop: while let Ok(cmd) = rx.recv() {
+            match cmd {
+                CUDACommand::Allocate { bytes, reply } => {
+                    //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
+
+                    let stream = next_stream(&mut streams, cuStreamSynchronize);
+                    let mut ptr = u64::try_from(device).expect("What is a negative cuda device?");
+                    let mut event = ptr::null_mut();
+                    send_or_continue!(
+                        unsafe { (cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryAllocation),
+                        reply
+                    );
+                    debug_assert!(!stream.is_null());
+                    //unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
+                    send_or_continue!(
+                        unsafe { (cuMemAlloc)(&raw mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation),
+                        reply
+                    );
+                    assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
+                    send_or_continue!(unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryAllocation), reply);
+                    debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes as u64);
+                    free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
+                    let buffer_id = buffers.push(CUDABuffer { ptr, bytes });
+                    let event = Event::CUDA(CUDAEvent { event });
+                    let _ = reply.send(Ok((buffer_id, event)));
+                }
+                CUDACommand::Deallocate { buffer_id, event_wait_list: mut events } => {
+                    while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
+                        if !event.is_null() {
+                            // cuMemFree below is a synchronous host call, not ordered
+                            // behind stream work, so block on the event before freeing.
+                            _ = unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::MemoryDeallocation);
+                            _ = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H);
+                        }
+                    }
+                    if !buffers.contains_id(buffer_id) {
+                        continue;
+                    }
+                    let CUDABuffer { ptr, bytes } = buffers[buffer_id];
+                    {
+                        //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
+                        _ = unsafe { (cuMemFree)(ptr) }.check(ErrorStatus::MemoryDeallocation);
+                        free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
+                    }
+                    buffers.remove(buffer_id);
+                }
+                CUDACommand::HostToPool { src, bytes, dst, mut event_wait_list, reply } => {
+                    let stream = next_stream(&mut streams, cuStreamSynchronize);
+                    while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
+                        if !event.is_null() {
+                            send_or_continue!(
+                                unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::MemoryCopyH2P),
+                                reply
+                            );
+                        }
+                    }
+                    let mut event = ptr::null_mut();
+                    send_or_continue!(unsafe { (cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyH2P), reply);
+                    debug_assert!(!stream.is_null());
+                    //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
+                    let status = unsafe { (cuMemcpyHtoDAsync)(buffers[dst].ptr, src.cast(), bytes as usize, stream) };
+                    send_or_continue!(status.check(ErrorStatus::MemoryCopyH2P), reply);
+                    send_or_continue!(unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyH2P), reply);
+                    //unsafe { (cuStreamSynchronize)(stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
+                    _ = reply.send(Ok(Event::CUDA(CUDAEvent { event })));
+                }
+                CUDACommand::PoolToHost { src, dst, bytes, mut event_wait_list, reply } => {
+                    let stream = next_stream(&mut streams, cuStreamSynchronize);
+                    while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
+                        if !event.is_null() {
+                            send_or_continue!(
+                                unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::MemoryCopyP2H),
+                                reply
+                            );
+                            // Should we destroy the event here?
+                        }
+                    }
+                    let src = &buffers[src];
+                    let mut event = ptr::null_mut();
+                    send_or_continue!(unsafe { (cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyP2H), reply);
+                    send_or_continue!(
+                        unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes as usize, stream) }
+                            .check(ErrorStatus::MemoryCopyP2H),
+                        reply
+                    );
+                    send_or_continue!(unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyP2H), reply);
+                    //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
+                    send_or_continue!(unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::MemoryCopyP2H), reply);
+                    send_or_continue!(unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H), reply);
+                    _ = reply.send(Ok(()));
+                }
+                CUDACommand::Compile { lws, gws, name, ptx, reply } => {
+                    //println!("name {name}, gws {gws:?}, lws {lws:?} ptx:\n{}", std::ffi::CString::from_vec_with_nul(ptx.clone()).unwrap().into_string().unwrap());
+
+                    let mut module = ptr::null_mut();
+                    if let Err(err) =
+                        unsafe { (cuModuleLoadDataEx)(&raw mut module, ptx.as_ptr().cast(), 0, ptr::null_mut(), ptr::null_mut()) }
+                            .check(ErrorStatus::KernelCompilation)
+                    {
+                        if debug_dev {
+                            println!("[cuda] PTX compilation failed: {err:?}");
+                        }
+                        //panic!();
+                        _ = reply.send(Err(err));
+                        continue;
+                    }
+                    let mut function: CUfunction = ptr::null_mut();
+                    // Don't forget that the name is null terminated string
+                    if let Err(err) = unsafe { (cuModuleGetFunction)(&raw mut function, module, name.as_ptr().cast()) }
+                        .check(ErrorStatus::KernelLaunch)
+                    {
+                        if debug_dev {
+                            println!("[cuda] kernel launch failed: {err:?}\n");
+                        }
+                        _ = reply.send(Err(err));
+                        continue;
+                    }
+
+                    let program_id = programs.push(CUDAProgram::Module { module, function, lws, gws });
+                    _ = reply.send(Ok(program_id));
+                }
+                CUDACommand::CompileCudnn { graph, reply } => {
+                    let Some(cudnn) = &cudnn else {
+                        _ = reply.send(Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "cuDNN library not loaded.".into(),
+                        }));
+                        continue;
+                    };
+                    match unsafe { build_cudnn_plan(cudnn, &graph, cuMemAlloc) } {
+                        Ok(plan) => {
+                            let program_id = programs.push(CUDAProgram::Cudnn { plan });
+                            _ = reply.send(Ok(program_id));
+                        }
+                        Err(e) => {
+                            _ = reply.send(Err(e));
+                        }
+                    }
+                }
+                CUDACommand::Launch { program_id, args, mut event_wait_list, reply } => {
+                    let stream = next_stream(&mut streams, cuStreamSynchronize);
+
+                    while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
+                        if !event.is_null()
+                            && let Err(err) = unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::KernelLaunch)
+                        {
+                            _ = reply.send(Err(err));
+                            continue 'work_thread_loop;
+                        }
+                    }
+
+                    let mut event = ptr::null_mut();
+                    if let Err(err) = unsafe { (cuEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch) {
+                        _ = reply.send(Err(err));
+                        continue;
+                    };
+
+                    let result = match &programs[program_id] {
+                        CUDAProgram::Module { function, lws, gws, .. } => {
+                            let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
+                            // Boxed so reallocs of this vec can never dangle the
+                            // pointers handed to cuLaunchKernel.
+                            let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
+                            // Stable storage for the device pointers of buffer args —
+                            // cuLaunchKernel receives their addresses by reference.
+                            let mut buffer_ptrs: Vec<u64> = args
+                                .iter()
+                                .filter_map(|arg| match arg {
+                                    LaunchArg::Buffer(buffer_id) => Some(buffers[*buffer_id].ptr),
+                                    LaunchArg::Variable(_) => None,
+                                })
+                                .collect();
+                            let mut buf_ptr_idx = 0usize;
+                            for arg in args.iter() {
+                                match arg {
+                                    LaunchArg::Buffer(_) => {
+                                        let ptr = &buffer_ptrs[buf_ptr_idx];
+                                        buf_ptr_idx += 1;
+                                        let slot: *const u64 = core::ptr::from_ref(ptr);
+                                        kernel_params.push(slot.cast_mut().cast());
+                                    }
+                                    LaunchArg::Variable(constant) => {
+                                        scalar_values.push(constant.to_le_bytes().into());
+                                        let value = scalar_values.last().unwrap();
+                                        kernel_params.push(value.as_ptr().cast_mut().cast());
+                                    }
+                                }
+                            }
+                            let grid = |gdim: &GwsDim| -> Dim {
+                                gdim.eval(&mut |ordinal| match &args[ordinal] {
+                                    LaunchArg::Variable(c) => c.as_dim().unwrap(),
+                                    LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+                                })
+                            };
+                            let default_gws = GwsDim::Const(1);
+                            let (gx, gy, gz) = (
+                                grid(gws.first().unwrap_or(&default_gws)),
+                                grid(gws.get(1).unwrap_or(&default_gws)),
+                                grid(gws.get(2).unwrap_or(&default_gws)),
+                            );
+                            if gx < 0 || gy < 0 || gz < 0 || gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
+                                _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
+                                }));
+                                continue 'work_thread_loop;
+                            }
+                            let (gx, gy, gz) =
+                                (u32::try_from(gx).unwrap(), u32::try_from(gy).unwrap(), u32::try_from(gz).unwrap());
+                            unsafe {
+                                (cuLaunchKernel)(
+                                    *function,
+                                    gx,
+                                    gy,
+                                    gz,
+                                    u32::try_from(lws.first().copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(lws.get(1).copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(lws.get(2).copied().unwrap_or(1)).unwrap(),
+                                    0,
+                                    stream,
+                                    kernel_params.as_mut_ptr(),
+                                    ptr::null_mut(),
+                                )
+                            }
+                            .check(ErrorStatus::KernelLaunch)
+                        }
+                        CUDAProgram::Cudnn { plan } => unsafe {
+                            launch_cudnn_plan(&cudnn, cudnn_handle, plan, &buffers, &args, stream)
+                        },
+                    };
+                    if let Err(err) = result {
+                        _ = reply.send(Err(err));
+                        continue;
+                    }
+                    if let Err(err) = unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::KernelLaunch) {
+                        _ = reply.send(Err(err));
+                        continue;
+                    }
+                    //unsafe { (cuStreamSynchronize)(stream) }.check(ErrorStatus::KernelLaunch).unwrap();
+                    _ = reply.send(Ok(Event::CUDA(CUDAEvent { event })));
+                }
+                CUDACommand::SyncEvents { mut events, reply } => {
+                    while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
+                        if !event.is_null() {
+                            if let Err(err) = unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::KernelSync) {
+                                _ = reply.send(Err(err));
+                                continue;
+                            }
+                            if let Err(err) = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::KernelSync) {
+                                _ = reply.send(Err(err));
+                                continue;
+                            }
+                        }
+                    }
+                    _ = reply.send(Ok(()));
+                }
+                CUDACommand::ReleaseProgram { program_id } => {
+                    match &programs[program_id] {
+                        CUDAProgram::Module { module, .. } => {
+                            let _ = unsafe { (cuModuleUnload)(*module) }.check(ErrorStatus::Deinitialization);
+                        }
+                        CUDAProgram::Cudnn { plan } => {
+                            if let Some(cudnn) = &cudnn {
+                                for desc in plan.descrs.iter().rev() {
+                                    let _ = unsafe { (cudnn.backend_destroy_descriptor)(*desc) };
+                                }
+                                if plan.workspace != 0 {
+                                    let _ = unsafe { (cuMemFree)(plan.workspace) }.check(ErrorStatus::MemoryDeallocation);
+                                }
+                            }
+                        }
+                    }
+                    programs.remove(program_id);
+                }
+                CUDACommand::ReleaseEvents { events } => {
+                    for event in events {
+                        let Event::CUDA(CUDAEvent { event }) = event else {
+                            unreachable!()
+                        };
+                        _ = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization);
+                    }
+                }
+            }
+        }
+        //println!("DEINIT receiver");
+    });
+}
+
+/// Builds one GPU's pool table entry: per-device queries, worker-thread spawn
+/// (the CUDA context is created on the worker, never on the calling thread),
+/// and the pool struct. Pure constructor — the table itself lives in `mod.rs`.
+/// Callers must hold the pool init lock (all `mod.rs` resolution paths do).
+pub(super) fn ensure_pool_table() -> Result<Vec<Arc<Mutex<CUDAMemoryPool>>>, BackendError> {
+    let driver = ensure_driver_locked()?;
+    let debug_dev = super::debug_backends();
+    let mut pools = Vec::new();
+    for dev_ordinal in driver.device_ids.clone() {
+        let mut device = 0;
+        if let Err(err) = unsafe { (driver.cuDeviceGet)(&raw mut device, dev_ordinal) }.check(ErrorStatus::DeviceEnumeration) {
+            if debug_dev {
+                println!("[cuda] device {dev_ordinal}: could not be enumerated: {err}.");
             }
             continue;
         }
         let mut device_name = [0; 100];
-        let Ok(()) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check(ErrorStatus::DeviceQuery) else {
+        let Ok(()) = unsafe { (driver.cuDeviceGetName)(device_name.as_mut_ptr(), 100, device) }.check(ErrorStatus::DeviceQuery)
+        else {
             continue;
         };
         let mut major = 0;
         let mut minor = 0;
-        let Ok(()) = unsafe { cuDeviceComputeCapability(&raw mut major, &raw mut minor, device) }.check(ErrorStatus::DeviceQuery)
+        let Ok(()) =
+            unsafe { (driver.cuDeviceComputeCapability)(&raw mut major, &raw mut minor, device) }.check(ErrorStatus::DeviceQuery)
         else {
             continue;
         };
@@ -462,7 +991,7 @@ pub(super) fn initialize_device(
             println!("[cuda] {:?}, compute: {major}.{minor}", unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) });
         }
         let mut free_bytes = 0usize;
-        let Ok(()) = unsafe { cuDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
+        let Ok(()) = unsafe { (driver.cuDeviceTotalMem)(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
         if debug_dev {
@@ -470,373 +999,32 @@ pub(super) fn initialize_device(
         }
         let (tx, rx): (Sender<CUDACommand>, Receiver<CUDACommand>) = channel();
         let free_bytes_atomic = Arc::new(AtomicU64::new(free_bytes as u64));
-        std::thread::spawn({
-            let free_bytes_atomic = Arc::clone(&free_bytes_atomic);
-            let cudnn = cudnn.clone();
-            move || {
-                //println!("INIT receiver");
-                // Initialize raw CUDA context
-                let mut context: CUcontext = ptr::null_mut();
-                if let Err(e) = unsafe { cuCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization) {
-                    if debug_dev {
-                        println!("[cuda] context init failed: {e:?}");
-                    }
-                    return;
-                }
+        spawn_worker(&driver, device, dev_ordinal, debug_dev, rx, Arc::clone(&free_bytes_atomic));
+        pools.push(Arc::new(Mutex::new(CUDAMemoryPool { tx, free_bytes: free_bytes_atomic, device, dev_ordinal })));
+    }
+    Ok(pools)
+}
 
-                let mut streams = Vec::new();
-                for _ in 0..8 {
-                    let mut stream = ptr::null_mut();
-                    if let Err(err) = unsafe { cuStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization) {
-                        if debug_dev {
-                            println!("[cuda] device {dev_id}: stream init failed: {err:?}");
-                        }
-                        continue;
-                    }
-                    streams.push(CUDAStream { stream, load: 0 });
-                }
-
-                // Per-axis max grid extents, checked against every evaluated
-                // grid dimension before launching (see gws_from_kernel for the
-                // compile-time counterpart covering constant dims).
-                let mut max_grid = [0; 3];
-                for (axis, attr) in [
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y,
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z,
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let mut value: c_int = 0;
-                    if let Err(err) =
-                        unsafe { (cuDeviceGetAttribute)(&raw mut value, attr, device) }.check(ErrorStatus::DeviceQuery)
-                    {
-                        if debug_dev {
-                            println!("[cuda] device {dev_id}: grid dim query failed: {err:?}");
-                        }
-                        return;
-                    }
-                    max_grid[axis] = i64::from(value);
-                }
-
-                let mut buffers: Slab<PoolBufferId, CUDABuffer> = Slab::new();
-                let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
-
-                // Create the cuDNN handle on this worker thread (it owns the
-                // current CUDA context). Optional — only used by AOT cudnn kernels.
-                let cudnn_handle = cudnn.as_ref().and_then(|cudnn| {
-                    let mut handle = ptr::null_mut();
-                    if unsafe { (cudnn.create)(&raw mut handle) } == CUDNN_STATUS_SUCCESS {
-                        Some(handle)
-                    } else {
-                        None
-                    }
-                });
-
-                // Worker loop
-                'work_thread_loop: while let Ok(cmd) = rx.recv() {
-                    match cmd {
-                        CUDACommand::Allocate { bytes, reply } => {
-                            //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
-
-                            let stream = next_stream(&mut streams, cuStreamSynchronize);
-                            let mut ptr = u64::try_from(device).expect("What is a negative cuda device?");
-                            let mut event = ptr::null_mut();
-                            send_or_continue!(
-                                unsafe { (cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryAllocation),
-                                reply
-                            );
-                            debug_assert!(!stream.is_null());
-                            //unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
-                            send_or_continue!(
-                                unsafe { (cuMemAlloc)(&raw mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation),
-                                reply
-                            );
-                            assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
-                            send_or_continue!(
-                                unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryAllocation),
-                                reply
-                            );
-                            debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes as u64);
-                            free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
-                            let buffer_id = buffers.push(CUDABuffer { ptr, bytes });
-                            let event = Event::CUDA(CUDAEvent { event });
-                            let _ = reply.send(Ok((buffer_id, event)));
-                        }
-                        CUDACommand::Deallocate { buffer_id, event_wait_list: mut events } => {
-                            while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
-                                if !event.is_null() {
-                                    // cuMemFree below is a synchronous host call, not ordered
-                                    // behind stream work, so block on the event before freeing.
-                                    _ = unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::MemoryDeallocation);
-                                    _ = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H);
-                                }
-                            }
-                            if !buffers.contains_id(buffer_id) {
-                                continue;
-                            }
-                            let CUDABuffer { ptr, bytes } = buffers[buffer_id];
-                            {
-                                //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
-                                _ = unsafe { (cuMemFree)(ptr) }.check(ErrorStatus::MemoryDeallocation);
-                                free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
-                            }
-                            buffers.remove(buffer_id);
-                        }
-                        CUDACommand::HostToPool { src, bytes, dst, mut event_wait_list, reply } => {
-                            let stream = next_stream(&mut streams, cuStreamSynchronize);
-                            while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
-                                if !event.is_null() {
-                                    send_or_continue!(
-                                        unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::MemoryCopyH2P),
-                                        reply
-                                    );
-                                }
-                            }
-                            let mut event = ptr::null_mut();
-                            send_or_continue!(
-                                unsafe { (cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyH2P),
-                                reply
-                            );
-                            debug_assert!(!stream.is_null());
-                            //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
-                            let status = unsafe { (cuMemcpyHtoDAsync)(buffers[dst].ptr, src.cast(), bytes as usize, stream) };
-                            send_or_continue!(status.check(ErrorStatus::MemoryCopyH2P), reply);
-                            send_or_continue!(unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyH2P), reply);
-                            //unsafe { (cuStreamSynchronize)(stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
-                            _ = reply.send(Ok(Event::CUDA(CUDAEvent { event })));
-                        }
-                        CUDACommand::PoolToHost { src, dst, bytes, mut event_wait_list, reply } => {
-                            let stream = next_stream(&mut streams, cuStreamSynchronize);
-                            while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
-                                if !event.is_null() {
-                                    send_or_continue!(
-                                        unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::MemoryCopyP2H),
-                                        reply
-                                    );
-                                    // Should we destroy the event here?
-                                }
-                            }
-                            let src = &buffers[src];
-                            let mut event = ptr::null_mut();
-                            send_or_continue!(
-                                unsafe { (cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyP2H),
-                                reply
-                            );
-                            send_or_continue!(
-                                unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes as usize, stream) }
-                                    .check(ErrorStatus::MemoryCopyP2H),
-                                reply
-                            );
-                            send_or_continue!(unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyP2H), reply);
-                            //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
-                            send_or_continue!(unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::MemoryCopyP2H), reply);
-                            send_or_continue!(unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H), reply);
-                            _ = reply.send(Ok(()));
-                        }
-                        CUDACommand::Compile { lws, gws, name, ptx, reply } => {
-                            //println!("name {name}, gws {gws:?}, lws {lws:?} ptx:\n{}", std::ffi::CString::from_vec_with_nul(ptx.clone()).unwrap().into_string().unwrap());
-
-                            let mut module = ptr::null_mut();
-                            if let Err(err) = unsafe {
-                                (cuModuleLoadDataEx)(&raw mut module, ptx.as_ptr().cast(), 0, ptr::null_mut(), ptr::null_mut())
-                            }
-                            .check(ErrorStatus::KernelCompilation)
-                            {
-                                if debug_dev {
-                                    println!("[cuda] PTX compilation failed: {err:?}");
-                                }
-                                //panic!();
-                                _ = reply.send(Err(err));
-                                continue;
-                            }
-                            let mut function: CUfunction = ptr::null_mut();
-                            // Don't forget that the name is null terminated string
-                            if let Err(err) = unsafe { (cuModuleGetFunction)(&raw mut function, module, name.as_ptr().cast()) }
-                                .check(ErrorStatus::KernelLaunch)
-                            {
-                                if debug_dev {
-                                    println!("[cuda] kernel launch failed: {err:?}\n");
-                                }
-                                _ = reply.send(Err(err));
-                                continue;
-                            }
-
-                            let program_id = programs.push(CUDAProgram::Module { module, function, lws, gws });
-                            _ = reply.send(Ok(program_id));
-                        }
-                        CUDACommand::CompileCudnn { graph, reply } => {
-                            let Some(cudnn) = &cudnn else {
-                                _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: "cuDNN library not loaded.".into(),
-                                }));
-                                continue;
-                            };
-                            match unsafe { build_cudnn_plan(cudnn, &graph, cuMemAlloc) } {
-                                Ok(plan) => {
-                                    let program_id = programs.push(CUDAProgram::Cudnn { plan });
-                                    _ = reply.send(Ok(program_id));
-                                }
-                                Err(e) => {
-                                    _ = reply.send(Err(e));
-                                }
-                            }
-                        }
-                        CUDACommand::Launch { program_id, args, mut event_wait_list, reply } => {
-                            let stream = next_stream(&mut streams, cuStreamSynchronize);
-
-                            while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
-                                if !event.is_null()
-                                    && let Err(err) =
-                                        unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::KernelLaunch)
-                                {
-                                    _ = reply.send(Err(err));
-                                    continue 'work_thread_loop;
-                                }
-                            }
-
-                            let mut event = ptr::null_mut();
-                            if let Err(err) = unsafe { (cuEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch) {
-                                _ = reply.send(Err(err));
-                                continue;
-                            };
-
-                            let result = match &programs[program_id] {
-                                CUDAProgram::Module { function, lws, gws, .. } => {
-                                    let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
-                                    // Boxed so reallocs of this vec can never dangle the
-                                    // pointers handed to cuLaunchKernel.
-                                    let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
-                                    // Stable storage for the device pointers of buffer args —
-                                    // cuLaunchKernel receives their addresses by reference.
-                                    let mut buffer_ptrs: Vec<u64> = args
-                                        .iter()
-                                        .filter_map(|arg| match arg {
-                                            LaunchArg::Buffer(buffer_id) => Some(buffers[*buffer_id].ptr),
-                                            LaunchArg::Variable(_) => None,
-                                        })
-                                        .collect();
-                                    let mut buf_ptr_idx = 0usize;
-                                    for arg in args.iter() {
-                                        match arg {
-                                            LaunchArg::Buffer(_) => {
-                                                let ptr = &buffer_ptrs[buf_ptr_idx];
-                                                buf_ptr_idx += 1;
-                                                let slot: *const u64 = core::ptr::from_ref(ptr);
-                                                kernel_params.push(slot.cast_mut().cast());
-                                            }
-                                            LaunchArg::Variable(constant) => {
-                                                scalar_values.push(constant.to_le_bytes().into());
-                                                let value = scalar_values.last().unwrap();
-                                                kernel_params.push(value.as_ptr().cast_mut().cast());
-                                            }
-                                        }
-                                    }
-                                    let grid = |gdim: &GwsDim| -> Dim {
-                                        gdim.eval(&mut |ordinal| match &args[ordinal] {
-                                            LaunchArg::Variable(c) => c.as_dim().unwrap(),
-                                            LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
-                                        })
-                                    };
-                                    let default_gws = GwsDim::Const(1);
-                                    let (gx, gy, gz) = (
-                                        grid(gws.first().unwrap_or(&default_gws)),
-                                        grid(gws.get(1).unwrap_or(&default_gws)),
-                                        grid(gws.get(2).unwrap_or(&default_gws)),
-                                    );
-                                    if gx < 0 || gy < 0 || gz < 0 || gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
-                                        _ = reply.send(Err(BackendError {
-                                            status: ErrorStatus::KernelLaunch,
-                                            context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
-                                        }));
-                                        continue 'work_thread_loop;
-                                    }
-                                    let (gx, gy, gz) =
-                                        (u32::try_from(gx).unwrap(), u32::try_from(gy).unwrap(), u32::try_from(gz).unwrap());
-                                    unsafe {
-                                        (cuLaunchKernel)(
-                                            *function,
-                                            gx,
-                                            gy,
-                                            gz,
-                                            u32::try_from(lws.first().copied().unwrap_or(1)).unwrap(),
-                                            u32::try_from(lws.get(1).copied().unwrap_or(1)).unwrap(),
-                                            u32::try_from(lws.get(2).copied().unwrap_or(1)).unwrap(),
-                                            0,
-                                            stream,
-                                            kernel_params.as_mut_ptr(),
-                                            ptr::null_mut(),
-                                        )
-                                    }
-                                    .check(ErrorStatus::KernelLaunch)
-                                }
-                                CUDAProgram::Cudnn { plan } => unsafe {
-                                    launch_cudnn_plan(&cudnn, cudnn_handle, plan, &buffers, &args, stream)
-                                },
-                            };
-                            if let Err(err) = result {
-                                _ = reply.send(Err(err));
-                                continue;
-                            }
-                            if let Err(err) = unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::KernelLaunch) {
-                                _ = reply.send(Err(err));
-                                continue;
-                            }
-                            //unsafe { (cuStreamSynchronize)(stream) }.check(ErrorStatus::KernelLaunch).unwrap();
-                            _ = reply.send(Ok(Event::CUDA(CUDAEvent { event })));
-                        }
-                        CUDACommand::SyncEvents { mut events, reply } => {
-                            while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
-                                if !event.is_null() {
-                                    if let Err(err) = unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::KernelSync) {
-                                        _ = reply.send(Err(err));
-                                        continue;
-                                    }
-                                    if let Err(err) = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::KernelSync) {
-                                        _ = reply.send(Err(err));
-                                        continue;
-                                    }
-                                }
-                            }
-                            _ = reply.send(Ok(()));
-                        }
-                        CUDACommand::ReleaseProgram { program_id } => {
-                            match &programs[program_id] {
-                                CUDAProgram::Module { module, .. } => {
-                                    let _ = unsafe { (cuModuleUnload)(*module) }.check(ErrorStatus::Deinitialization);
-                                }
-                                CUDAProgram::Cudnn { plan } => {
-                                    if let Some(cudnn) = &cudnn {
-                                        for desc in plan.descrs.iter().rev() {
-                                            let _ = unsafe { (cudnn.backend_destroy_descriptor)(*desc) };
-                                        }
-                                        if plan.workspace != 0 {
-                                            let _ = unsafe { (cuMemFree)(plan.workspace) }.check(ErrorStatus::MemoryDeallocation);
-                                        }
-                                    }
-                                }
-                            }
-                            programs.remove(program_id);
-                        }
-                        CUDACommand::ReleaseEvents { events } => {
-                            for event in events {
-                                let Event::CUDA(CUDAEvent { event }) = event else {
-                                    unreachable!()
-                                };
-                                _ = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization);
-                            }
-                        }
-                    }
-                }
-                //println!("DEINIT receiver");
-            }
-        });
-
-        let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes: free_bytes_atomic });
-        memory_pools.push(pool);
-
+pub(super) fn initialize_device(
+    config: &CUDAConfig,
+    devices: &mut Slab<DeviceId, Device>,
+    debug_dev: bool,
+) -> Result<(), BackendError> {
+    let _ = config;
+    let _ = debug_dev;
+    let driver = ensure_driver()?;
+    let count = pool_count();
+    let cuDeviceGetAttribute = driver.cuDeviceGetAttribute;
+    let cuDeviceComputeCapability = driver.cuDeviceComputeCapability;
+    for index in 0..count {
+        let pool = pool(index)?;
+        let (tx, device, dev_ordinal) = {
+            let pool = pool.lock().unwrap_or_else(|_| panic!("cuda pool lock poisoned"));
+            (pool.tx.clone(), pool.device, pool.dev_ordinal)
+        };
+        let mut major = 0;
+        let mut minor = 0;
+        unsafe { (cuDeviceComputeCapability)(&raw mut major, &raw mut minor, device) }.check(ErrorStatus::DeviceQuery)?;
         let mut dev = CUDADevice {
             tx,
             device,
@@ -860,11 +1048,11 @@ pub(super) fn initialize_device(
                 wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
                 num_circular_buffers: 0,
             }),
-            memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
+            memory_pool: Pool::Cuda(index as u16),
             compute_capability: [major, minor],
-            cudnn_available: cudnn.is_some(),
+            cudnn_available: driver.cudnn.is_some(),
             device_id: DeviceId::NULL,
-            dev_id: u32::try_from(dev_id).unwrap(),
+            dev_id: u32::try_from(dev_ordinal).unwrap(),
         };
         let max_regs_per_block: i32 =
             dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK, cuDeviceGetAttribute)?;
@@ -919,6 +1107,11 @@ pub(super) fn initialize_device(
     Ok(())
 }
 
+// (old eager init body removed; see ensure_driver/ensure_pool_table/spawn_worker above)
+// (old eager init body removed; see ensure_driver/ensure_pool_table/spawn_worker above)
+// (old eager init body removed; see ensure_driver/ensure_pool_table/spawn_worker above)
+// (old eager init body removed; see ensure_driver/ensure_pool_table/spawn_worker above)
+
 impl CUDAMemoryPool {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub const fn deinitialize(&mut self) {
@@ -965,17 +1158,24 @@ impl CUDAMemoryPool {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn pool_to_pool(
         &mut self,
-        src_pool: &mut MemoryPool,
-        src: PoolBufferId,
-        dst: PoolBufferId,
+        src: Pool,
+        src_buf: PoolBufferId,
+        dst_buf: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        match src_pool {
-            MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
-            MemoryPool::Disk(src_pool) => {
-                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src) as usize];
-                src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
-                self.host_to_pool(&byte_slice, dst, event_wait_list)
+        match src {
+            Pool::Host => {
+                let src_pool = super::host::pool();
+                let src_pool = super::lock(src, &src_pool);
+                self.host_to_pool(src_pool.get_buffer(src_buf), dst_buf, event_wait_list)
+            }
+            Pool::Disk => {
+                let src_pool = super::disk::pool();
+                let mut src_pool = super::lock(src, &src_pool);
+                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src_buf) as usize];
+                src_pool.pool_to_host(src_buf, &mut byte_slice, Vec::new())?;
+                drop(src_pool);
+                self.host_to_pool(&byte_slice, dst_buf, event_wait_list)
             }
             _ => todo!(),
         }
@@ -1004,8 +1204,8 @@ impl CUDADevice {
         self.dev_info.clone()
     }
 
-    pub const fn memory_pool_id(&self) -> PoolId {
-        self.memory_pool_id
+    pub const fn memory_pool(&self) -> Pool {
+        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {
@@ -1026,11 +1226,13 @@ impl CUDADevice {
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
-        _memory_pool: &mut CUDAMemoryPool,
+        pool: Pool,
         args: &[LaunchArg],
         // If sync is empty, kernel will be immediatelly synchronized
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
+        // Buffers live worker-side; the pool handle only identifies the device.
+        debug_assert_eq!(pool, self.memory_pool);
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply }).unwrap();
         reply_rx.recv().unwrap()
