@@ -226,24 +226,16 @@
 // the wait list passed to the next launch. A removed event is consumed.
 // -----------------------------
 
-use std::{
-    collections::BTreeSet,
-    env,
-    hash::BuildHasherDefault,
-    path::{Path, PathBuf},
-};
-
-use nanoserde::DeJson;
+use std::{collections::BTreeSet, hash::BuildHasherDefault, path::Path};
 
 #[cfg(feature = "viz")]
 use crate::viz::Viz;
 use crate::{
-    DType, DebugMask, Dev, Map, Scalar, Set, ZyxError,
-    backend::{BufferId, Config, DTypeCapability, Device, DeviceProgramId, Event, LaunchArg, MemoryPool, PoolId, ProgramId},
+    DType, Dev, Map, Scalar, Set, ZyxError,
+    backend::{BufferId, DeviceProgramId, DTypeCapability, Event, LaunchArg, Pool, ProgramId},
     dtype::Constant,
-    error::{BackendError, ErrorStatus},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
-    kernel::{BOp, DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp, autotune::BeamSearch},
+    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp, autotune::BeamSearch},
     rng::Rng,
     scalar::{bf16, f16, f8e4m3, f8e5m2},
     shape::{Dim, UAxis},
@@ -333,7 +325,7 @@ pub enum TensorData {
         depends_on: KernelId,
         shape_id: TensorId,
         dtype: DType,
-        device_id: DeviceId,
+        device_id: Dev,
         rc: u16,
     },
     // Eager only
@@ -502,17 +494,12 @@ pub struct Runtime {
     kernel_map: Map<Kernel, KernelId>,
     programs: Map<KernelId, DeviceProgramId>,
     timings: Map<ProgramId, u64>,
-    pub devices: Slab<DeviceId, Device>,
-    // Pool 0 is always host, pool 1 is disk if disk is present
-    pub pools: Slab<PoolId, MemoryPool>,
-    config_dir: Option<PathBuf>,
     pub buffer_map: Map<TensorId, BufferId>,
     pub events: Map<BTreeSet<BufferId>, Event>,
     pub rng: Rng,
     pub(crate) beam_search: BeamSearch,
     pub implicit_casts: bool,
     pub training: bool,
-    pub debug: DebugMask,
     pub plan_cache: Map<u64, ExecPlan>,
     #[cfg(feature = "viz")]
     pub viz: Viz,
@@ -543,18 +530,14 @@ impl Runtime {
             tensors: Slab::new(),
             kernels: Slab::new(),
             kernel_map: Map::with_hasher(BuildHasherDefault::new()),
-            devices: Slab::new(),
-            pools: Slab::new(),
             programs: Map::with_hasher(BuildHasherDefault::new()),
             timings: Map::with_hasher(BuildHasherDefault::new()),
-            config_dir: None,
             buffer_map: Map::with_hasher(BuildHasherDefault::new()),
             events: Map::with_hasher(BuildHasherDefault::new()),
             rng: Rng::seed_from_u64(42069),
             beam_search: BeamSearch::new(),
             implicit_casts: true,
             training: false,
-            debug: DebugMask::new(0),
             plan_cache: Map::with_hasher(BuildHasherDefault::new()),
             #[cfg(feature = "viz")]
             viz: Viz::new(),
@@ -971,9 +954,8 @@ impl Runtime {
 
     /// Returns operation capabilities for a dtype across all devices.
     pub fn supports_dtype(&mut self, dtype: DType) -> DTypeCapability {
-        self.initialize_backends();
         let mut caps = DTypeCapability::none();
-        for (_id, dev) in self.devices.iter() {
+        for dev in Dev::all() {
             caps = caps.include(dev.info().supports_dtype(dtype));
         }
         caps
@@ -1051,7 +1033,7 @@ impl Runtime {
             let still_used = self.buffer_map.values().any(|b| b.pool == buf_id.pool && b.buffer == buf_id.buffer);
             if !still_used {
                 let wait_list = drain_events_for_buf(&mut self.events, buf_id);
-                self.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
+                buf_id.pool.deallocate(buf_id.buffer, wait_list);
             }
         }
     }
@@ -1075,8 +1057,7 @@ impl Runtime {
             return Ok(());
         };
         let ev = self.events.remove(&key).expect("event key exists");
-        let pool_id = buf_id.pool;
-        self.pools[pool_id].sync_events(vec![ev]).map_err(|e| ZyxError::from(e))?;
+        buf_id.pool.sync_events(vec![ev]).map_err(ZyxError::from)?;
         Ok(())
     }
 
@@ -2076,7 +2057,7 @@ impl Runtime {
     /// anymore (the old rc==2 handle+self-load construction is gone).
     pub fn new_eager_tensor(&mut self, shape_id: TensorId, dtype: DType) -> TensorId {
         let tid =
-            self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: DeviceId::AUTO, rc: 1 });
+            self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: Dev::Auto, rc: 1 });
         #[cfg(feature = "debug_tensor_op")]
         println!("rc::new_eager_tensor -> tid={tid} Leaf shape_id={shape_id} rc=1 (handle only)");
         tid
@@ -2093,13 +2074,9 @@ impl Runtime {
             TensorData::Leaf { shape_id, device_id, .. } => (shape_id, device_id),
             ref t => unreachable!("leaf_load: {t:?}"),
         };
-        // NULL device (unbound placeholder) gets no info, mirroring the old
+        // Auto (unbound placeholder) gets no info, mirroring the old
         // from_device_id behavior — without taking the RT lock (not reentrant).
-        let dev_info = if device_id.is_null() {
-            None
-        } else {
-            Some(self.devices[device_id].info())
-        };
+        let dev_info = if device_id == Dev::Auto { None } else { Some(device_id.info()) };
         let kernel_id = self.kernels.push(KernelData {
             outputs: Set::default(),
             loads: Vec::new(),
@@ -2155,7 +2132,6 @@ impl Runtime {
         }
 
         let dtype = T::dtype();
-        self.initialize_backends();
 
         let bytes = (data.len() * dtype.bit_size() as usize).div_ceil(8);
         debug_assert_eq!(data.len() * std::mem::size_of::<T>(), bytes);
@@ -2165,10 +2141,7 @@ impl Runtime {
         // targets, e.g. in-place assign).
         let alloc_bytes = bytes + dtype.bit_size() as usize / 8;
         // Store to Host memory
-        let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
-            unreachable!("Host must exist.")
-        };
-        let free_bytes = pool.free_bytes();
+        let free_bytes = Pool::Host.free_bytes();
         if alloc_bytes as Dim > free_bytes {
             return Err(ZyxError::AllocationError(
                 format!("Attempted to allocate {alloc_bytes} B on host, but it only has {free_bytes} B free").into(),
@@ -2179,7 +2152,7 @@ impl Runtime {
         let src = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), bytes) };
         buf[..bytes].copy_from_slice(src);
 
-        let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.insert(buf) };
+        let buffer_id = BufferId { pool: Pool::Host, buffer: Pool::Host.insert_host(buf) };
 
         // The caller keeps its own handle on `shape`; new_eager_tensor
         // consumes one reference.
@@ -2201,14 +2174,11 @@ impl Runtime {
         path: &Path,
         offset_bytes: u64,
     ) -> Result<TensorId, ZyxError> {
-        self.initialize_backends();
         let resolved = self.resolve_symbolic_dims(shape);
         let bytes: Dim = ((resolved.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
 
-        let pool = self.pools[PoolId::DISK]
-            .disk_pool()
-            .ok_or(BackendError { status: ErrorStatus::Initialization, context: "[disk] not available.".into() })?;
-        let buffer_id = BufferId { pool: PoolId::DISK, buffer: pool.buffer_from_path(bytes, path, offset_bytes) };
+        let buffer_id =
+            BufferId { pool: Pool::Disk, buffer: Pool::Disk.disk_buffer_from_path(bytes, path, offset_bytes) };
 
         // The caller keeps its own handle on `shape`; new_eager_tensor
         // consumes one reference.
@@ -2684,85 +2654,35 @@ impl Runtime {
     /// If the tensor's buffer pool has no devices attached.
     pub fn device(&self, x: TensorId) -> Dev {
         if let Some(buf_id) = self.buffer_map.get(&x) {
-            let found = self.devices.iter().find(|(_, device)| device.memory_pool_id() == buf_id.pool);
-            return match found {
-                Some((_, device)) => match device {
-                    Device::C(_) | Device::Cblas(_) => Dev::C,
-                    Device::CUDA(d) => Dev::Cuda(d.dev_id as u16),
-                    #[cfg(feature = "tenstorrent")]
-                    Device::TT(d) => Dev::TT(d.dev_id as u16),
-                    Device::Vulkan(d) => Dev::Vulkan(d.dev_id as u16),
-                    Device::OpenCL(d) => Dev::OpenCL(d.device_idx as u16),
-                    Device::Dummy(_) => todo!(),
-                    #[cfg(feature = "wgpu")]
-                    Device::WGPU(_) => todo!(),
-                },
-                None => {
-                    let mut attached = String::from("[");
-                    for (_, device) in self.devices.iter() {
-                        let name = match device {
-                            Device::C(_) | Device::Cblas(_) => "C",
-                            Device::CUDA(_) => "CUDA",
-                            #[cfg(feature = "tenstorrent")]
-                            Device::TT(_) => "TT",
-                            Device::Vulkan(_) => "Vulkan",
-                            Device::OpenCL(_) => "OpenCL",
-                            Device::Dummy(_) => "Dummy",
-                            #[cfg(feature = "wgpu")]
-                            Device::WGPU(_) => "WGPU",
-                        };
-                        attached.push_str(&format!("{name} -> {:?}, ", device.memory_pool_id()));
-                    }
-                    attached.push(']');
+            // The host pool is shared by the C and Cblas devices; report C.
+            // The disk pool has no device; report Auto.
+            return match buf_id.pool {
+                Pool::Host => Dev::C,
+                Pool::Disk => Dev::Auto,
+                pool => Dev::all().into_iter().find(|d| d.pool() == pool).unwrap_or_else(|| {
                     panic!(
-                        "device: tensor {x} lives in pool {:?}, which has no devices attached. Attached devices: {attached}. The backend operating this pool was likely configured out or never initialized.",
-                        buf_id.pool
+                        "device: tensor {x} lives in pool {pool:?}, which has no devices attached. The backend operating this pool was likely configured out or never initialized."
                     )
-                }
+                }),
             };
         }
         match self.tensors[x] {
-            TensorData::Eager { kernel_id, .. } => {
-                let device_id = self.kernels[kernel_id].kernel.device_id;
-                if device_id == DeviceId::AUTO || device_id.is_null() {
-                    return Dev::Auto;
-                }
-                match &self.devices[device_id] {
-                    Device::C(_) | Device::Cblas(_) => Dev::C,
-                    Device::CUDA(d) => Dev::Cuda(d.dev_id as u16),
-                    #[cfg(feature = "tenstorrent")]
-                    Device::TT(d) => Dev::TT(d.dev_id as u16),
-                    Device::Vulkan(d) => Dev::Vulkan(d.dev_id as u16),
-                    Device::OpenCL(d) => Dev::OpenCL(d.device_idx as u16),
-                    Device::Dummy(_) => todo!(),
-                    #[cfg(feature = "wgpu")]
-                    Device::WGPU(_) => todo!(),
-                }
-            }
+            TensorData::Eager { kernel_id, .. } => self.kernels[kernel_id].kernel.device_id,
             _ => Dev::Auto,
         }
     }
 
-    /// Resolves a public [`Dev`] selector to an internal slab `DeviceId`.
+    /// Resolves a public [`Dev`] selector against the initialized devices.
     ///
-    /// `Dev::Auto` picks the first initialized device. Backend variants match on the
-    /// device's real hardware id (`dev_id` / driver ordinal), never the slab order.
+    /// `Dev::Auto` picks the first initialized device.
     ///
     /// # Panics
     ///
     /// If no initialized device matches `dev`.
-    pub fn resolve_dev(&self, dev: Dev) -> DeviceId {
-        let find = |f: &dyn Fn(&Device) -> bool| self.devices.iter().find(|(_, device)| f(device)).map(|(id, _)| id);
+    pub fn resolve_dev(&self, dev: Dev) -> Dev {
         let found = match dev {
-            Dev::Auto => self.devices.ids().next(),
-            Dev::C => find(&|device| matches!(device, Device::C(_) | Device::Cblas(_))),
-            Dev::Cuda(id) => find(&|device| matches!(device, Device::CUDA(d) if d.dev_id == u32::from(id))),
-            #[cfg(feature = "tenstorrent")]
-            Dev::TT(id) => find(&|device| matches!(device, Device::TT(d) if d.dev_id == u32::from(id))),
-            #[cfg(not(feature = "tenstorrent"))]
-            Dev::TT(_) => None,
-            Dev::Vulkan(id) => find(&|device| matches!(device, Device::Vulkan(d) if d.dev_id == u32::from(id))),
-            Dev::OpenCL(id) => find(&|device| matches!(device, Device::OpenCL(d) if d.device_idx as u32 == u32::from(id))),
+            Dev::Auto => Dev::all().into_iter().next(),
+            dev => Dev::all().into_iter().find(|&d| d == dev),
         };
         found.unwrap_or_else(|| panic!("resolve_dev: no initialized device matches {dev:?}"))
     }
@@ -2772,7 +2692,7 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device={device:?})");
         let device_id = self.resolve_dev(device);
-        let dst_pool = self.devices[device_id].memory_pool_id();
+        let dst_pool = device_id.pool();
         // Fast path: tensor already lives in the destination pool. Compares
         // pools (not devices via device(x)): the source pool may have no
         // devices attached at all (e.g. disk), which device(x) panics on.
@@ -2803,7 +2723,7 @@ impl Runtime {
                 let shape = self.resolve_shape(x);
                 let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
                 let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
-                let (dst_buf, alloc_ev) = self.pools[dst_pool].allocate(alloc_bytes)?;
+                let (dst_buf, alloc_ev) = dst_pool.allocate(alloc_bytes)?;
                 let dst_id = BufferId { pool: dst_pool, buffer: dst_buf };
                 // Drain pending events on the source buffer before the copy.
                 let mut events: Vec<Event> = Vec::new();
@@ -2812,9 +2732,7 @@ impl Runtime {
                     events.push(self.events.remove(&key).unwrap());
                 }
                 events.push(alloc_ev);
-                let src_pool_ptr: *mut MemoryPool = &mut self.pools[buf_id.pool];
-                let copy_ev =
-                    self.pools[dst_pool].pool_to_pool(unsafe { &mut *src_pool_ptr }, buf_id.buffer, dst_id.buffer, events)?;
+                let copy_ev = dst_pool.pool_to_pool(buf_id.pool, buf_id.buffer, dst_id.buffer, events)?;
                 self.events.insert(BTreeSet::from([dst_id]), copy_ev);
                 debug_assert!(!shape_id.is_null(), "to_device: eager tensor {x} has no shape expression");
                 self.retain(shape_id);
@@ -3264,7 +3182,7 @@ impl Runtime {
                 let dtype = self.dtype(x);
                 let device_id = match self.tensors[x] {
                     TensorData::Leaf { device_id, .. } => device_id,
-                    _ => DeviceId::AUTO,
+                    _ => Dev::Auto,
                 };
                 let tid = self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id, rc: 1 });
                 self.buffer_map.insert(tid, buf_id);
@@ -3362,7 +3280,7 @@ impl Runtime {
                 outputs: Set::default(),
                 loads: Vec::new(),
                 stores: Vec::new(),
-                kernel: Kernel::from_device_id(DeviceId::AUTO, None),
+                kernel: Kernel::from_device_id(Dev::Auto, None),
             });
             let val_op = self.replay_symbolic_into_kernel(kid, x);
             let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);
@@ -3798,7 +3716,6 @@ impl Runtime {
         }
         let Some(mut buffer_id) = self.buffer_map.get(&x).copied() else {
             let this = &mut *self;
-            this.initialize_backends();
             let pending = match this.tensors[x] {
                 TensorData::Eager { depends_on, .. } | TensorData::Leaf { depends_on, .. } => depends_on,
                 TensorData::Graph { .. } => return Err(ZyxError::graph_tensor_not_realized(x)),
@@ -3831,13 +3748,13 @@ impl Runtime {
                 if buffers.contains(&buffer_id) {
                     let buffers = buffers.clone();
                     let event = this.events.remove(&buffers).unwrap();
-                    this.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
+                    buffer_id.pool.pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
                     #[cfg(feature = "debug_tensor_op")]
                     println!("  -> x={x}, {:?}", self.tensors[x]);
                     return Ok(());
                 }
             }
-            this.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
+            buffer_id.pool.pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> x={x}, {:?}", self.tensors[x]);
             return Ok(());
@@ -3866,13 +3783,13 @@ impl Runtime {
             if buffers.contains(&buffer_id) {
                 let buffers = buffers.clone();
                 let event = self.events.remove(&buffers).unwrap();
-                self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
+                buffer_id.pool.pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> x={x}, {:?}", self.tensors[x]);
                 return Ok(());
             }
         }
-        self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
+        buffer_id.pool.pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> x={x}, {:?}", self.tensors[x]);
         Ok(())
@@ -4313,84 +4230,8 @@ impl Runtime {
         Ok(())
     }
 
-    /// Initializes all available devices, creating a device for each compute
-    /// device and a memory pool for each physical memory.
-    /// Does nothing if devices were already initialized.
-    pub fn initialize_backends(&mut self) {
-        if !self.pools.is_empty() {
-            return;
-        }
-
-        // Set env vars
-        if let Ok(x) = env::var("ZYX_DEBUG")
-            && let Ok(x) = x.parse::<u32>()
-        {
-            self.debug = DebugMask(x);
-        }
-
-        // Search through config directory and find zyx/backend_config.json
-        // If not found or failed to parse, use defaults.
-
-        let config_file = env::var_os("XDG_CONFIG_HOME")
-            .and_then(|path| {
-                let path = PathBuf::from(path);
-                if path.is_absolute() { Some(path) } else { None }
-            })
-            .or_else(|| env::home_dir().map(|home| home.join(".config")))
-            .map(|path| path.join("zyx/config.json"))
-            .and_then(|mut path| {
-                if let Ok(file) = std::fs::read_to_string(&path) {
-                    path.pop();
-                    self.config_dir = Some(path);
-                    Some(file)
-                } else {
-                    None
-                }
-            });
-
-        let config = config_file
-            .and_then(|file| {
-                DeJson::deserialize_json(&file)
-                    .map_err(|e| {
-                        if self.debug.dev() {
-                            println!("Failed to parse config.json, {e}");
-                        }
-                    })
-                    .ok()
-            })
-            .inspect(|_| {
-                if self.debug.dev() {
-                    println!("Device config successfully read and parsed.");
-                }
-            })
-            .unwrap_or_else(|| {
-                if self.debug.dev() {
-                    println!("Failed to get device config, using defaults.");
-                }
-                Config::default()
-            });
-
-        // Load optimizer cache from disk if it exists
-        /*if let Some(mut path) = self.config_dir.clone() {
-            path.push("cached_kernels");
-            if let Ok(mut file) = std::fs::File::open(path) {
-                use std::io::Read;
-                let mut buf = Vec::new();
-                file.read_to_end(&mut buf).unwrap();
-                if let Ok(cache) = nanoserde::DeBin::deserialize_bin(&buf) {
-                    self.kernel_cache = cache;
-                }
-            }
-        }*/
-
-        crate::backend::initialize_backends(&config, &mut self.pools, &mut self.devices, self.debug.dev());
-
-        self.beam_search = config.autotune;
-        //println!("INIT runtime");
-    }
-
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
-    /// It does not reset the rng and it does not change debug, search, training and `config_dir` fields
+    /// It does not reset the rng and it does not change search and training fields
     #[allow(unused)]
     pub fn deinitialize(&mut self) {
         #[cfg(feature = "time")]
@@ -4415,10 +4256,7 @@ impl Runtime {
 
     /// Returns the maximum free bytes available across all memory pools.
     pub fn free_memory(&mut self) -> Dim {
-        if self.pools.is_empty() {
-            self.initialize_backends();
-        }
-        self.pools.iter().map(|(_, p)| p.free_bytes()).max().unwrap_or(0)
+        Dev::all().iter().map(|d| d.pool().free_bytes()).max().unwrap_or(0)
     }
 }
 
@@ -4695,7 +4533,7 @@ impl Runtime {
     pub fn get_or_autotune(&mut self, kernel: Kernel, buffers: &[LaunchArg]) -> Result<(DeviceProgramId, u64), ZyxError> {
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
-                let pid = ProgramId { device_id: kernel.device_id, program_id };
+                let pid = ProgramId { dev: kernel.device_id, program_id };
                 let timing = self.timings.get(&pid).copied().unwrap_or(10_000_000_000);
                 return Ok((program_id, timing));
             }
@@ -4709,7 +4547,7 @@ impl Runtime {
             kernel_id
         };
 
-        if self.debug.sched() {
+        if crate::debug_mask().sched() {
             kernel.debug();
         }
 
@@ -4731,7 +4569,7 @@ impl Runtime {
             }
             debug_assert_eq!(buffers.len(), n_params, "caller arg count must match kernel param count");
         }
-        let dev_info = self.devices[device_id].info();
+        let dev_info = device_id.info();
         let mut base = kernel;
         base.linearize();
         base.common_subexpression_elimination();
@@ -4764,27 +4602,26 @@ impl Runtime {
             Kernel::base_cost,
         )?;
 
-        let program_id = {
-            let device = &mut self.devices[device_id];
-            device.compile(&winner, self.debug.asm())?
-        };
+        let program_id = device_id.compile(&winner, crate::debug_mask().asm())?;
         self.programs.insert(kernel_id, program_id);
-        self.timings.insert(ProgramId { device_id, program_id }, timing);
+        self.timings.insert(ProgramId { dev: device_id, program_id }, timing);
 
         #[cfg(feature = "viz")]
         {
             let kc = {
-                let dev = &self.devices[device_id];
                 crate::viz::KernelCapture {
                     sched_kernel,
                     winner: winner.clone(),
-                    dev_info: dev.info().clone(),
-                    device_label: dev.name(),
-                    cc: dev.compute_capability(),
-                    has_openmp: dev.has_openmp(),
+                    dev_info: dev_info.clone(),
+                    device_label: device_id.name(),
+                    cc: match device_id {
+                        Dev::Cuda(_) => Some(dev_info.cc),
+                        _ => None,
+                    },
+                    has_openmp: dev_info.has_openmp,
                 }
             };
-            self.viz.record(ProgramId { device: device_id, program: program_id }, kc);
+            self.viz.record(ProgramId { dev: device_id, program_id }, kc);
         }
 
         Ok((program_id, timing))
@@ -4806,19 +4643,15 @@ impl Runtime {
     /// # Invariant
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// Picks the fastest device (by compute) that has at least `bytes` free.
-    fn pick_device(&self, bytes: Dim) -> Result<DeviceId, ZyxError> {
-        let mut dev_ids: Vec<DeviceId> = self
-            .devices
-            .iter()
-            .filter(|(_, device)| !device.aot_only() && self.pools[device.memory_pool_id()].free_bytes() >= bytes)
-            .map(|(dev_id, _)| dev_id)
-            .collect();
-        if dev_ids.is_empty() {
+    fn pick_device(&self, bytes: Dim) -> Result<Dev, ZyxError> {
+        let mut devs: Vec<Dev> =
+            Dev::all().into_iter().filter(|&dev| !dev.aot_only() && dev.pool().free_bytes() >= bytes).collect();
+        if devs.is_empty() {
             return Err(ZyxError::AllocationError(format!("no device with {bytes} bytes free").into()));
         }
-        dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
-        dev_ids.reverse();
-        Ok(dev_ids[0])
+        devs.sort_unstable_by_key(|&dev| dev.free_compute());
+        devs.reverse();
+        Ok(devs[0])
     }
 
     pub(crate) fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
@@ -4943,15 +4776,12 @@ impl Runtime {
             "all loads must be realized after recursive materialization"
         );
 
-        // Pick device and pool
-        self.initialize_backends();
-
         // If stores already have buffers (e.g. assign writes in-place), a
         // kernel can only touch memory of one pool, so those buffers dictate
         // the pool — and hence the device. Stores spanning multiple pools is
         // an error. Without existing store buffers (or if no device shares
         // their pool), fall back to the freest device and move the buffers.
-        let mut store_pools: BTreeSet<PoolId> = BTreeSet::new();
+        let mut store_pools: BTreeSet<Pool> = BTreeSet::new();
         for &tid in &stores {
             if let Some(buf_id) = self.buffer_map.get(&tid) {
                 store_pools.insert(buf_id.pool);
@@ -4968,34 +4798,33 @@ impl Runtime {
             .sum();
         // A pinned device (kernel built with a concrete `Dev`) wins over
         // everything — when the user moves a tensor to a device, that has to
-        // take effect. Only a `DeviceId::AUTO` kernel gets auto-picked.
-        let (dev_id, pool_id) = if kernel.device_id != DeviceId::AUTO {
+        // take effect. Only a `Dev::Auto` kernel gets auto-picked.
+        let (dev_id, pool_id) = if kernel.device_id != Dev::Auto {
             let dev_id = kernel.device_id;
-            if store_pools.len() > 1 || !store_pools.iter().all(|&pool| pool == self.devices[dev_id].memory_pool_id()) {
+            if store_pools.len() > 1 || !store_pools.iter().all(|&pool| pool == dev_id.pool()) {
                 return Err(ZyxError::AllocationError(
                     format!(
-                        "stores {store_pools:?} do not match the kernel's pinned device {} and cannot span multiple pools",
-                        dev_id.0
+                        "stores {store_pools:?} do not match the kernel's pinned device {dev_id:?} and cannot span multiple pools",
                     )
                     .into(),
                 ));
             }
-            (dev_id, self.devices[dev_id].memory_pool_id())
+            (dev_id, dev_id.pool())
         } else if store_pools.len() == 1 {
             let pool_id = *store_pools.iter().next().unwrap();
-            let dev_id = self.devices.ids().find(|&dev_id| self.devices[dev_id].memory_pool_id() == pool_id);
+            let dev_id = Dev::all().into_iter().find(|dev| dev.pool() == pool_id);
             match dev_id {
                 Some(dev_id) => (dev_id, pool_id),
                 None => {
                     let dev_id = self.pick_device(out_bytes)?;
-                    (dev_id, self.devices[dev_id].memory_pool_id())
+                    (dev_id, dev_id.pool())
                 }
             }
         } else if store_pools.is_empty() {
             // Pick the device where most loaded bytes reside, provided it has
             // enough memory for the outputs; otherwise the fastest device
             // with enough memory.
-            let mut loaded_bytes: Map<PoolId, Dim> = Map::default();
+            let mut loaded_bytes: Map<Pool, Dim> = Map::default();
             for &tid in &loads {
                 if let Some(buf_id) = self.buffer_map.get(&tid) {
                     let dtype = dtypes[&tid];
@@ -5003,13 +4832,13 @@ impl Runtime {
                         (self.resolve_shape(tid).iter().product::<Dim>() * dtype.bit_size() as Dim + 7) / 8;
                 }
             }
-            let mut best: Option<(DeviceId, PoolId)> = None;
-            for (dev_id, device) in self.devices.iter() {
-                if device.aot_only() {
+            let mut best: Option<(Dev, Pool)> = None;
+            for dev_id in Dev::all() {
+                if dev_id.aot_only() {
                     continue;
                 }
-                let pool_id = device.memory_pool_id();
-                if self.pools[pool_id].free_bytes() < out_bytes {
+                let pool_id = dev_id.pool();
+                if pool_id.free_bytes() < out_bytes {
                     continue;
                 }
                 let bytes = loaded_bytes.get(&pool_id).copied().unwrap_or(0);
@@ -5021,7 +4850,7 @@ impl Runtime {
                 Some((dev_id, pool_id)) => (dev_id, pool_id),
                 None => {
                     let dev_id = self.pick_device(out_bytes)?;
-                    (dev_id, self.devices[dev_id].memory_pool_id())
+                    (dev_id, dev_id.pool())
                 }
             }
         } else {
@@ -5030,7 +4859,7 @@ impl Runtime {
             ));
         };
         kernel.device_id = dev_id;
-        kernel.dev_info = Some(self.devices[dev_id].info());
+        kernel.dev_info = Some(dev_id.info());
 
         // Ensure loads are in target pool. Variables and symbolic leaves are
         // not backed by any buffer — they bind at launch from `variable_map`.
@@ -5055,21 +4884,18 @@ impl Runtime {
                     }
                 }
 
-                let (dst, alloc_ev) = self.pools[pool_id].allocate(alloc_bytes as Dim)?;
+                let (dst, alloc_ev) = pool_id.allocate(alloc_bytes as Dim)?;
                 let dst_global = BufferId { pool: pool_id, buffer: dst };
                 debug_assert_ne!(buf_id.pool, pool_id, "pool_to_pool across the same pool is disallowed");
-                let src_pool_ptr: *mut MemoryPool = &mut self.pools[buf_id.pool];
-                let copy_ev = self.pools[pool_id].pool_to_pool(unsafe { &mut *src_pool_ptr }, src, dst, {
-                    wait_list.push(alloc_ev);
-                    wait_list
-                })?;
-                self.pools[pool_id].sync_events(vec![copy_ev])?;
+                wait_list.push(alloc_ev);
+                let copy_ev = pool_id.pool_to_pool(buf_id.pool, src, dst, wait_list)?;
+                pool_id.sync_events(vec![copy_ev])?;
 
                 // Remove and deallocate the old buffer only AFTER pool_to_pool
                 // has finished reading it.
                 self.buffer_map.remove(&tid);
                 if !self.buffer_map.values().any(|b| b.buffer == src) {
-                    self.pools[buf_id.pool].deallocate(src, vec![]);
+                    buf_id.pool.deallocate(src, vec![]);
                 }
                 self.buffer_map.insert(tid, dst_global);
             } else {
@@ -5106,16 +4932,16 @@ impl Runtime {
                         break;
                     }
                 }
-                self.pools[buf_id.pool].pool_to_host(src, &mut byte_slice, ev)?;
+                buf_id.pool.pool_to_host(src, &mut byte_slice, ev)?;
                 self.buffer_map.remove(&tid);
                 if !self.buffer_map.values().any(|b| b.buffer == src) {
-                    self.pools[buf_id.pool].deallocate(src, vec![]);
+                    buf_id.pool.deallocate(src, vec![]);
                 }
 
-                let (dst, event) = self.pools[pool_id].allocate(alloc_bytes)?;
+                let (dst, event) = pool_id.allocate(alloc_bytes)?;
                 let dst_global = BufferId { pool: pool_id, buffer: dst };
-                let event = self.pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
-                self.pools[pool_id].sync_events(vec![event])?;
+                let event = pool_id.host_to_pool(&byte_slice, dst, vec![event])?;
+                pool_id.sync_events(vec![event])?;
                 self.buffer_map.insert(tid, dst_global);
             }
         }
@@ -5141,7 +4967,7 @@ impl Runtime {
                 let bytes =
                     (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
                 let alloc_bytes = bytes as Dim + Dim::from(dtypes[&tid].bit_size() / 8);
-                let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
+                let (buf, event) = pool_id.allocate(alloc_bytes)?;
                 let global_id = BufferId { pool: pool_id, buffer: buf };
                 self.buffer_map.insert(tid, global_id);
                 if let TensorData::Eager { depends_on, .. } | TensorData::Leaf { depends_on, .. } = &mut self.tensors[tid] {
@@ -5194,7 +5020,7 @@ impl Runtime {
         // Compile and launch (caches in kernel_map / programs)
         let (dev_prog, _timing) = self.get_or_autotune(kernel, &buffers)?;
 
-        let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &buffers, event_wait_list)?;
+        let event = dev_id.launch(dev_prog, &buffers, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
 
         // The kernel has consumed its loads. Release the load references so

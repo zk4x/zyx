@@ -20,12 +20,12 @@ use std::collections::BTreeSet;
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use std::sync::Arc;
 
-use crate::backend::{BufferId, DeviceInfo, LaunchArg, MemoryPool, ProgramId};
+use crate::backend::{BufferId, DeviceInfo, LaunchArg, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::{ClassId, EClass, Node, NodeData};
 use crate::kernel::{
-    BOp, DeviceId, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
+    BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
     ops::TileDim,
 };
 use crate::runtime::{KernelId, Runtime, TensorData};
@@ -61,10 +61,10 @@ impl Kernel {
     /// # Example
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, MemLayout, DeviceId, ParamKind};
+    /// use zyx::kernel::{Kernel, MemLayout, Dev, ParamKind};
     /// use zyx::DType;
     ///
-    /// let mut kernel = Kernel::new(DeviceId::AUTO);
+    /// let mut kernel = Kernel::new(Dev::Auto);
     /// let n = 4;
     /// let inp = kernel.param(DType::F32);
     /// let len = kernel.const_idx(n);
@@ -75,10 +75,8 @@ impl Kernel {
     /// kernel.store(out, doubled, gidx);
     /// ```
     pub fn new(dev: Dev) -> Self {
-        let mut rt = crate::RT.lock();
-        rt.initialize_backends();
-        let device_id = rt.resolve_dev(dev);
-        let dev_info = Some(rt.devices[device_id].info());
+        let device_id = crate::RT.lock().resolve_dev(dev);
+        let dev_info = Some(device_id.info());
         Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, dev_info, shape_cache: Map::default() }
     }
 
@@ -96,14 +94,14 @@ impl Kernel {
     ///
     /// # Example
     ///
-    /// Build a simple element-wise doubling kernel using [`DeviceId::AUTO`] to
+    /// Build a simple element-wise doubling kernel using [`Dev::Auto`] to
     /// let the runtime pick the first available device:
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, MemLayout, DeviceId, ParamKind};
+    /// use zyx::kernel::{Kernel, MemLayout, Dev, ParamKind};
     /// use zyx::{DType, Tensor, ZyxError};
     ///
-    /// let mut kernel = Kernel::new(DeviceId::AUTO);
+    /// let mut kernel = Kernel::new(Dev::Auto);
     /// let n = 4;
     /// let inp = kernel.param(DType::F32);
     /// let len = kernel.const_idx(n);
@@ -164,26 +162,24 @@ impl Kernel {
 
         // Get shapes and dtypes for inputs and outputs
 
-        let mut rt = crate::RT.lock();
-        rt.initialize_backends();
-        let device_id = if self.device_id == DeviceId::AUTO {
-            rt.devices.ids().next().expect("no devices available")
+        let device_id = if self.device_id == Dev::Auto {
+            Dev::all().into_iter().next().expect("no devices available")
         } else {
             self.device_id
         };
         // Bind the resolved device so codegen can read dev_info
         // (mirrors Kernel::new; from_device_id placeholders carry None).
         self.device_id = device_id;
-        self.dev_info = Some(rt.devices[device_id].info());
-        if rt.debug.ir() {
+        self.dev_info = Some(device_id.info());
+        if crate::debug_mask().ir() {
             self.debug();
         }
-        let debug_asm = rt.debug.asm();
+        let debug_asm = crate::debug_mask().asm();
         _t = std::time::Instant::now();
-        let program_id = rt.devices[device_id].compile(&self, debug_asm)?;
+        let program_id = device_id.compile(&self, debug_asm)?;
         eprintln!("[compile] device.compile {}us", _t.elapsed().as_micros());
         eprintln!("[compile] total {}us", _compile_start.elapsed().as_micros());
-        let program = crate::backend::ProgramId { device_id, program_id };
+        let program = crate::backend::ProgramId { dev: device_id, program_id };
         Ok(CompiledKernel { program, inputs, outputs })
     }
 
@@ -999,7 +995,7 @@ impl Kernel {
 impl CompiledKernel {
     /// Returns the DeviceInfo for the device this kernel was compiled on.
     pub fn device_info(&self) -> Arc<DeviceInfo> {
-        crate::RT.lock().devices[self.program.device_id].info()
+        self.program.dev.info()
     }
 
     /// Execute the compiled kernel with new input tensors.
@@ -1071,7 +1067,7 @@ impl Runtime {
             // kernels have no device yet; cross-device placement for them and
             // for graph inputs is resolved at compile time by
             // `Graph::add_memory_ops`.
-            let prog_pool = self.devices[program.device_id].memory_pool_id();
+            let prog_pool = program.dev.pool();
             for &input in inputs {
                 if !self.is_graph(input) && self.buffer_map.contains_key(&input) && self.buffer_map[&input].pool != prog_pool {
                     return Err(ZyxError::BackendError(BackendError {
@@ -1172,8 +1168,8 @@ impl Runtime {
         // are kernel params, never buffers.
         // NOTE: all async — allocate is pool bump, launch is stream enqueue, sync is deferred to to_vec/item.
         let _fwd_start = std::time::Instant::now();
-        let device_id = program.device_id;
-        let pool_id = self.devices[device_id].memory_pool_id();
+        let device_id = program.dev;
+        let pool_id = device_id.pool();
         let mut input_args: Vec<LaunchArg> = Vec::with_capacity(inputs.len());
         let mut all_bufs = BTreeSet::new();
         let mut event_wait_list = Vec::new();
@@ -1218,7 +1214,7 @@ impl Runtime {
         for (i, dtype) in output_dtypes.iter().enumerate() {
             let shape = &shapes[i];
             let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
-            let (buf, ev) = self.pools[pool_id].allocate(bytes)?;
+            let (buf, ev) = pool_id.allocate(bytes)?;
             event_wait_list.push(ev);
             let buf_id = BufferId { pool: pool_id, buffer: buf };
             output_bufs.push(buf_id);
@@ -1229,10 +1225,8 @@ impl Runtime {
         for buf in &output_bufs {
             args.push(LaunchArg::Buffer(buf.buffer));
         }
-        let pool_ptr = &mut self.pools[pool_id] as *mut MemoryPool;
-        let device = &mut self.devices[device_id];
         let _launch_t = std::time::Instant::now();
-        let event = unsafe { device.launch(program.program_id, &mut *pool_ptr, &args, event_wait_list)? };
+        let event = device_id.launch(program.program_id, &args, event_wait_list)?;
         /*eprintln!(
             "[forward async] launch enqueue {}us total {}us (async, no sync)",
             _launch_t.elapsed().as_micros(),
@@ -1259,7 +1253,7 @@ impl Runtime {
                 depends_on: KernelId::NULL,
                 shape_id,
                 dtype,
-                device_id: program.device_id,
+                device_id: program.dev,
                 rc: 1,
             });
             self.buffer_map.insert(id, buf_id);

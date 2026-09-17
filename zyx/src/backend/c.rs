@@ -9,7 +9,7 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool};
+use super::{DTypeCapability, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool};
 use crate::DType;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{Kernel, Op, RangeKind};
@@ -17,7 +17,12 @@ use crate::shape::Dim;
 use crate::slab::Slab;
 use libloading::{Library, Symbol};
 use nanoserde::DeJson;
-use std::{ffi::CString, path::PathBuf, process::Command, sync::Arc};
+use std::{
+    ffi::CString,
+    path::PathBuf,
+    process::Command,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 #[derive(Debug, DeJson)]
 #[nserde(default)]
@@ -46,16 +51,25 @@ pub struct CDevice {
     pub has_openmp: bool,
 }
 
-pub(super) fn initialize_device(
-    config: &CConfig,
-    devices: &mut Slab<DeviceId, Device>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
+/// Process-wide C device. Owned here — `mod.rs` only holds the `Dev::C`
+/// handle. `C_INIT` serializes first construction only; compile/launch
+/// take the device lock, never the init lock.
+static C_DEVICE: OnceLock<Arc<Mutex<CDevice>>> = OnceLock::new();
+static C_INIT: Mutex<()> = Mutex::new(());
+
+fn device_with(config: &CConfig, debug_dev: bool) -> Result<Arc<Mutex<CDevice>>, BackendError> {
+    if let Some(dev) = C_DEVICE.get() {
+        return Ok(dev.clone());
+    }
+    let _init = C_INIT.lock().unwrap_or_else(|_| panic!("c device init lock poisoned"));
+    if let Some(dev) = C_DEVICE.get() {
+        return Ok(dev.clone());
+    }
     if !config.enabled {
         if debug_dev {
             println!("[c] configured out");
         }
-        return Ok(());
+        return Err(configured_out());
     }
     if debug_dev {
         println!("[c] initialized");
@@ -104,7 +118,7 @@ pub(super) fn initialize_device(
         })
         .map(|s| s.success())
         .unwrap_or(false);
-    devices.push(Device::C(CDevice {
+    let dev = Arc::new(Mutex::new(CDevice {
         device_info: Arc::new(DeviceInfo {
             compute: 10 * 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![Dim::from(1_000_000_000); 3],
@@ -124,6 +138,7 @@ pub(super) fn initialize_device(
             tile_sizes: vec![],
             wmma_layouts: vec![],
             num_circular_buffers: 0,
+            has_openmp,
         }),
         memory_pool: Pool::Host,
         programs: Slab::new(),
@@ -133,7 +148,16 @@ pub(super) fn initialize_device(
         println!("[c] vector extensions: {has_vector_exts}");
         println!("[c] OpenMP: {has_openmp}");
     }
-    Ok(())
+    let _ = C_DEVICE.set(dev.clone());
+    Ok(dev)
+}
+
+fn configured_out() -> BackendError {
+    BackendError { status: ErrorStatus::Initialization, context: "C backend configured out".into() }
+}
+
+pub(super) fn device() -> Result<Arc<Mutex<CDevice>>, BackendError> {
+    device_with(&super::load_config().c, super::debug_backends())
 }
 
 impl CDevice {

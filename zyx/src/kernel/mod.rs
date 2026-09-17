@@ -94,9 +94,7 @@
 //! // kernel.compile()?;  // requires CUDA with tensor cores
 //! ```
 
-pub(crate) use crate::backend::DeviceId;
-use crate::backend::DeviceInfo;
-pub use crate::tensor::Dev;
+pub use crate::backend::{Dev, DeviceInfo};
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{BOp, MMADType, MMADims, MMALayout, OpId, ParamKind, TileDim};
 pub(crate) use ops::{MoveOp, Op, OpNode, RangeKind, UOp};
@@ -205,12 +203,12 @@ pub struct Kernel {
     /// Tail of the operation linked list.
     pub(crate) tail: OpId,
     /// Target device for compilation.
-    pub(crate) device_id: DeviceId,
+    pub(crate) device_id: Dev,
     /// Snapshot of the device's [`DeviceInfo`] taken when a device is bound —
     /// the warp size and limits live here so kernel passes never need to lock
     /// the RT (it is not reentrant). Shared via `Arc` so kernel clones
     /// (autotune creates thousands) don't re-allocate. `None` only for
-    /// placeholder kernels (`DeviceId::NULL`) before their device is bound.
+    /// placeholder kernels (`Dev::Auto`) before their device is bound.
     /// Hardware properties are fixed, so the snapshot cannot go stale.
     pub(crate) dev_info: Option<Arc<DeviceInfo>>,
     /// Memoized [`Self::shape_ids`] results. Only valid pre-linearization —
@@ -281,7 +279,7 @@ impl SerBin for Kernel {
         let ops = Slab::<OpId, OpNode>::de_bin(offset, bytes)?;
         let start = OpId::de_bin(offset, bytes)?;
         let end = OpId::de_bin(offset, bytes)?;
-        Ok(Self { head: start, tail: end, ops, device_id: DeviceId::AUTO })
+        Ok(Self { head: start, tail: end, ops, device_id: Dev::Auto })
     }
 }*/
 
@@ -295,16 +293,16 @@ impl Hash for Kernel {
 
 // Custom kernel machinery
 impl Kernel {
-    /// Creates an empty kernel bound to the given internal device id.
+    /// Creates an empty kernel bound to the given device.
     ///
-    /// `DeviceId::NULL` (placeholder kernels) gets no [`DeviceInfo`] — it is
+    /// `Dev::Auto` (placeholder kernels) gets no [`DeviceInfo`] — it is
     /// bound together with the real device before compilation
     /// (`kernel.device_id = dev` sites must set both).
     ///
     /// Takes the device info as an argument and never locks the RT: this
     /// constructor runs while callers already hold the RT lock (it is not
-    /// reentrant). Pass `None` for late-bound placeholders (`NULL`, `AUTO`).
-    pub(crate) fn from_device_id(device_id: DeviceId, dev_info: Option<Arc<DeviceInfo>>) -> Self {
+    /// reentrant). Pass `None` for late-bound placeholders (`Dev::Auto`).
+    pub(crate) fn from_device_id(device_id: Dev, dev_info: Option<Arc<DeviceInfo>>) -> Self {
         Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, dev_info, shape_cache: Map::default() }
     }
 
@@ -313,9 +311,9 @@ impl Kernel {
     /// # Panics
     ///
     /// If the kernel has no device bound (placeholder kernels with
-    /// `DeviceId::NULL` that were never compiled).
+    /// `Dev::Auto` that were never compiled).
     pub(crate) fn dev_info(&self) -> &DeviceInfo {
-        self.dev_info.as_ref().expect("kernel has no device bound (DeviceId::NULL placeholder)")
+        self.dev_info.as_ref().expect("kernel has no device bound (Dev::Auto placeholder)")
     }
 
     /// Compute dtypes and reference counts for all operations.

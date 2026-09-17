@@ -131,8 +131,7 @@ macro_rules! send_or_continue {
 }
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, Pool, PoolBufferId, ProgramId,
-    gws_from_kernel,
+    DTypeCapability, Dev, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, Pool, PoolBufferId, ProgramId, gws_from_kernel,
 };
 
 /// CUDA configuration
@@ -167,8 +166,7 @@ pub(super) struct CUDABuffer {
 pub struct CUDADevice {
     tx: Sender<CUDACommand>,
     device: CUdevice,
-    device_id: DeviceId,
-    /// Real CUDA driver ordinal (nvidia-smi id), set at init. Not the slab index.
+    /// Real CUDA driver ordinal (nvidia-smi id), set at init. Not the pool ordinal.
     pub(crate) dev_id: u32,
     memory_pool: Pool,
     dev_info: Arc<DeviceInfo>,
@@ -1005,17 +1003,51 @@ pub(super) fn ensure_pool_table() -> Result<Vec<Arc<Mutex<CUDAMemoryPool>>>, Bac
     Ok(pools)
 }
 
-pub(super) fn initialize_device(
-    config: &CUDAConfig,
-    devices: &mut Slab<DeviceId, Device>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
+/// Process-wide per-GPU CUDA devices. Owned here — `mod.rs` only holds
+/// `Dev::Cuda(i)` handles. `CUDA_DEV_INIT` serializes first construction
+/// only; compile/launch take the device lock, never the init lock.
+static CUDA_DEVICES: OnceLock<Vec<Arc<Mutex<CUDADevice>>>> = OnceLock::new();
+static CUDA_DEV_INIT: Mutex<()> = Mutex::new(());
+
+fn devices_with(config: &CUDAConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<CUDADevice>>>, BackendError> {
+    if let Some(devs) = CUDA_DEVICES.get() {
+        return Ok(devs);
+    }
+    let _init = CUDA_DEV_INIT.lock().unwrap_or_else(|_| panic!("cuda device init lock poisoned"));
+    if let Some(devs) = CUDA_DEVICES.get() {
+        return Ok(devs);
+    }
+    let devs = ensure_device_table(config, debug_dev)?;
+    let _ = CUDA_DEVICES.set(devs);
+    CUDA_DEVICES.get().ok_or_else(|| BackendError {
+        status: ErrorStatus::Initialization,
+        context: "CUDA device init failed".into(),
+    })
+}
+
+fn devices() -> Result<&'static Vec<Arc<Mutex<CUDADevice>>>, BackendError> {
+    devices_with(&super::load_config().cuda, super::debug_backends())
+}
+
+pub(super) fn device(id: u16) -> Result<Arc<Mutex<CUDADevice>>, BackendError> {
+    devices()?.get(id as usize).cloned().ok_or_else(|| BackendError {
+        status: ErrorStatus::Initialization,
+        context: format!("Dev::Cuda({id}) is not available").into(),
+    })
+}
+
+pub(super) fn device_count() -> u16 {
+    devices().map(|devs| devs.len() as u16).unwrap_or(0)
+}
+
+fn ensure_device_table(config: &CUDAConfig, debug_dev: bool) -> Result<Vec<Arc<Mutex<CUDADevice>>>, BackendError> {
     let _ = config;
     let _ = debug_dev;
     let driver = ensure_driver()?;
     let count = pool_count();
     let cuDeviceGetAttribute = driver.cuDeviceGetAttribute;
     let cuDeviceComputeCapability = driver.cuDeviceComputeCapability;
+    let mut devs = Vec::with_capacity(count as usize);
     for index in 0..count {
         let pool = pool(index)?;
         let (tx, device, dev_ordinal) = {
@@ -1047,11 +1079,11 @@ pub(super) fn initialize_device(
                 tile_sizes: vec![],
                 wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
                 num_circular_buffers: 0,
+                has_openmp: false,
             }),
             memory_pool: Pool::Cuda(index as u16),
             compute_capability: [major, minor],
             cudnn_available: driver.cudnn.is_some(),
-            device_id: DeviceId::NULL,
             dev_id: u32::try_from(dev_ordinal).unwrap(),
         };
         let max_regs_per_block: i32 =
@@ -1098,13 +1130,13 @@ pub(super) fn initialize_device(
             tile_sizes: vec![],
             wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
             num_circular_buffers: 0,
+            has_openmp: false,
         });
-        let cuda_id = devices.push(Device::CUDA(dev));
-        if let Device::CUDA(dev) = &mut devices[cuda_id] {
-            dev.device_id = cuda_id;
-        }
+        let cuda_id = devs.len();
+        devs.push(Arc::new(Mutex::new(dev)));
+        let _ = cuda_id;
     }
-    Ok(())
+    Ok(devs)
 }
 
 // (old eager init body removed; see ensure_driver/ensure_pool_table/spawn_worker above)
@@ -1281,7 +1313,13 @@ impl CUDADevice {
                 node: Node::Kernel {
                     inputs: Box::new([mm.a, mm.b]),
                     outputs: Box::new([mm.out]),
-                    program_id: ProgramId { device_id: self.device_id, program_id },
+                    program_id: ProgramId {
+                        dev: match self.memory_pool {
+                            Pool::Cuda(i) => Dev::Cuda(i),
+                            pool => unreachable!("CUDA device with non-CUDA pool {pool:?}"),
+                        },
+                        program_id,
+                    },
                     time: 1,
                 },
                 class_of: mm.out,

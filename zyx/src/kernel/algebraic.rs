@@ -1016,7 +1016,7 @@ fn fold_cmp(bop: BOp, lb: Dim, ub: Dim, c: Dim, const_is_left: bool) -> Option<b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::{DeviceId, MemScope};
+    use crate::kernel::{Dev, MemScope};
 
     /// Build the cumsum-window mask kernel exactly as linearize produces it
     /// for the gather_f32_dtype one-hot reduce: thread index r47 (outer loop)
@@ -1024,7 +1024,7 @@ mod tests {
     /// back into (row, col) via >>2 / %4, repacked as `col + 8*row`, then
     /// masked with `% 7 > 2`. Returns the kernel and the mask cmpgt op.
     fn make_mask_kernel() -> (Kernel, OpId) {
-        let mut k = Kernel::from_device_id(DeviceId::AUTO, None);
+        let mut k = Kernel::from_device_id(Dev::Auto, None);
 
         let r72 = k.param(DType::I32);
         let r65 = k.param(DType::F32);

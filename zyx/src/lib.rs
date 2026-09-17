@@ -163,6 +163,27 @@ impl DebugMask {
     }
 }
 
+static DEBUG_MASK: mutex::Mutex<Option<DebugMask>> = mutex::Mutex::new(None);
+
+/// Returns the global debug mask, loading `ZYX_DEBUG` from the
+/// environment on first access. Lives outside [`Runtime`] so any
+/// thread can read it without locking the runtime.
+pub(crate) fn debug_mask() -> DebugMask {
+    let mut guard = DEBUG_MASK.lock();
+    if let Some(mask) = *guard {
+        mask
+    } else {
+        let mask = std::env::var("ZYX_DEBUG").ok().and_then(|x| x.parse::<u32>().ok()).map(DebugMask).unwrap_or(DebugMask::new(0));
+        *guard = Some(mask);
+        mask
+    }
+}
+
+/// Sets the global debug mask (used by [`tensor::Tensor::with_debug`]).
+pub(crate) fn set_debug_mask(mask: DebugMask) {
+    *DEBUG_MASK.lock() = Some(mask);
+}
+
 const BOLD: &str = "\x1b[1m";
 const GREY: &str = "\x1b[38;5;252m";
 const RED: &str = "\x1b[31m";

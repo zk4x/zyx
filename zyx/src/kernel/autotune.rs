@@ -23,7 +23,7 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::derived_hash_with_manual_eq)]
 
-use crate::backend::{Device, DeviceProgramId, LaunchArg, MemoryPool, PoolBufferId};
+use crate::backend::{Dev, DeviceProgramId, LaunchArg, Pool, PoolBufferId};
 use crate::dtype::{Constant, DType};
 use crate::error::BackendError;
 use crate::hashers::AHasher;
@@ -109,9 +109,9 @@ impl Kernel {
         }
     }
 
-    pub(crate) fn dealloc_buffers(&self, args: Vec<PoolBufferId>, memory_pool: &mut MemoryPool) {
+    pub(crate) fn dealloc_buffers(&self, args: Vec<PoolBufferId>, pool: Pool) {
         for buf in args {
-            memory_pool.deallocate(buf, Vec::new());
+            pool.deallocate(buf, Vec::new());
         }
     }
 
@@ -131,14 +131,14 @@ impl Kernel {
     fn launch_with_timings(
         &self,
         buffers: &[LaunchArg],
-        device: &mut Device,
-        memory_pool: &mut MemoryPool,
+        device: Dev,
+        pool: Pool,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
         let begin = std::time::Instant::now();
-        let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
-        memory_pool.sync_events(vec![event])?;
+        let event = device.launch(program_id, buffers, Vec::new())?;
+        pool.sync_events(vec![event])?;
         let nanos = begin.elapsed().as_nanos() as u64;
         Ok((program_id, nanos))
     }
@@ -294,14 +294,14 @@ impl BeamSearch {
     /// with its measured time in nanoseconds.
     pub fn run_(
         &self,
-        rt: &mut Runtime,
+        _rt: &mut Runtime,
         seeds: impl IntoIterator<Item = Kernel>,
         args: &[LaunchArg],
         optimizations: &[MakeOpt],
         epilogue: impl Fn(&mut Kernel),
         cost: impl Fn(&Kernel) -> u64,
     ) -> Result<(Kernel, u64), ZyxError> {
-        let debug = rt.debug;
+        let debug = crate::debug_mask();
         let seeds: Vec<Kernel> = seeds.into_iter().collect();
         if seeds.is_empty() {
             return Err(ZyxError::kernel_error("autotune: no seeds".into()));
@@ -310,9 +310,9 @@ impl BeamSearch {
         if seeds.iter().any(|seed| seed.device_id != device_id) {
             return Err(ZyxError::kernel_error("autotune: seeds span multiple devices".into()));
         }
-        let pool_id = rt.devices[device_id].memory_pool_id();
-        let device = &mut rt.devices[device_id];
-        let pool = &mut rt.pools[pool_id];
+        let pool_id = device_id.pool();
+        let device = device_id;
+        let pool = pool_id;
 
         // Every seed must be linearized and share one parameter signature;
         // `args` binds against it positionally (read-only params first, then

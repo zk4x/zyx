@@ -10,7 +10,7 @@
 #![allow(clippy::unused_self)]
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
+    DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
 };
 use crate::{
     DType,
@@ -789,21 +789,58 @@ pub(super) fn ensure_pool_table(
     Ok(pools)
 }
 
-pub(super) fn initialize_device(
+/// Process-wide per-device OpenCL devices. Owned here — `mod.rs` only holds
+/// `Dev::OpenCL(i)` handles. `OPENCL_DEV_INIT` serializes first construction
+/// only; compile/launch take the device lock, never the init lock.
+static OPENCL_DEVICES: OnceLock<Vec<Arc<Mutex<OpenCLDevice>>>> = OnceLock::new();
+static OPENCL_DEV_INIT: Mutex<()> = Mutex::new(());
+
+fn devices_with(config: &OpenCLConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<OpenCLDevice>>>, BackendError> {
+    if let Some(devs) = OPENCL_DEVICES.get() {
+        return Ok(devs);
+    }
+    let _init = OPENCL_DEV_INIT.lock().unwrap_or_else(|_| panic!("opencl device init lock poisoned"));
+    if let Some(devs) = OPENCL_DEVICES.get() {
+        return Ok(devs);
+    }
+    let devs = ensure_device_table(config, debug_dev)?;
+    let _ = OPENCL_DEVICES.set(devs);
+    OPENCL_DEVICES.get().ok_or_else(|| BackendError {
+        status: ErrorStatus::Initialization,
+        context: "OpenCL device init failed".into(),
+    })
+}
+
+fn devices() -> Result<&'static Vec<Arc<Mutex<OpenCLDevice>>>, BackendError> {
+    devices_with(&super::load_config().opencl, super::debug_backends())
+}
+
+pub(super) fn device(id: u16) -> Result<Arc<Mutex<OpenCLDevice>>, BackendError> {
+    devices()?.get(id as usize).cloned().ok_or_else(|| BackendError {
+        status: ErrorStatus::Initialization,
+        context: format!("Dev::OpenCL({id}) is not available").into(),
+    })
+}
+
+pub(super) fn device_count() -> u16 {
+    devices().map(|devs| devs.len() as u16).unwrap_or(0)
+}
+
+fn ensure_device_table(
     config: &OpenCLConfig,
-    devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
-) -> Result<(), BackendError> {
+) -> Result<Vec<Arc<Mutex<OpenCLDevice>>>, BackendError> {
     let pools = pools_with(config, debug_dev)?;
+    let mut devs = Vec::with_capacity(pools.len());
     for (idx, pool_arc) in pools.iter().enumerate() {
         let pool_id = Pool::OpenCL(u16::try_from(idx).expect("So many OpenCL devices..."));
         let guard = super::lock(pool_id, pool_arc);
         let tx = guard.tx.clone();
         let dev_info = guard.dev_info.clone();
         drop(guard);
-        devices.push(Device::OpenCL(OpenCLDevice { tx, dev_info: Arc::new(dev_info), memory_pool: pool_id, device_idx: idx }));
+        devs.push(Arc::new(Mutex::new(OpenCLDevice { tx, dev_info: Arc::new(dev_info), memory_pool: pool_id, device_idx: idx })));
     }
-    Ok(())
+    Ok(devs)
 }
 
 impl OpenCLMemoryPool {
@@ -1067,6 +1104,7 @@ fn query_device_info(
         tile_sizes: vec![],
         wmma_layouts: vec![],
         num_circular_buffers: 0,
+        has_openmp: false,
         warp_size: {
             if let Ok(device_type_data) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_TYPE) {
                 let device_type = u64::from_ne_bytes(device_type_data.try_into().unwrap_or_default());

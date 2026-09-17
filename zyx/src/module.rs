@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, ffi::OsStr, fs::File, io::Seek, path::Path};
 
-use crate::{DType, Map, RT, Tensor, ZyxError, shape::Dim};
+use crate::{DType, Map, Tensor, ZyxError, shape::Dim};
 
 /// Module trait
 pub trait Module {
@@ -209,7 +209,6 @@ impl Tensor {
     where
         Self: Sized,
     {
-        RT.lock().initialize_backends(); // So that we load debug mask
         let e = path.as_ref().extension().and_then(OsStr::to_str).unwrap();
         match e {
             "safetensors" => Self::load_safetensors(path),
@@ -534,7 +533,7 @@ impl Tensor {
         let data_start = f.stream_position()? as usize;
         let data_start = data_start.div_ceil(alignment) * alignment;
 
-        let mut progress_bar = if RT.lock().debug.dev() {
+        let mut progress_bar = if crate::debug_mask().dev() {
             println!("Loading tensors from safetensors file");
             let bar = crate::progress::ProgressBar::new(tensor_count);
             Some(bar)
@@ -671,7 +670,7 @@ impl Tensor {
         let mut shape = vec![1i64];
         let mut label = String::new();
         let mut metadata = true;
-        let mut progress_bar = if RT.lock().debug.dev() {
+        let mut progress_bar = if crate::debug_mask().dev() {
             println!("Loading tensors from safetensors file");
             let bar = crate::progress::ProgressBar::new(u64::try_from(header.chars().filter(|&c| c == '[').count()).unwrap() / 2);
             Some(bar)

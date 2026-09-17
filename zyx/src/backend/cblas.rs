@@ -16,7 +16,7 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(clippy::needless_pass_by_ref_mut)]
 
-use super::{DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool, ProgramId, host::HostEvent};
+use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool, ProgramId, host::HostEvent};
 use crate::{
     DType, Set,
     error::{BackendError, ErrorStatus},
@@ -27,7 +27,10 @@ use crate::{
 };
 use libloading::Library;
 use nanoserde::DeJson;
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 /// `cblas_sgemm(Order, TransA, TransB, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc)`
 type SgemmFn = unsafe extern "C" fn(
@@ -109,7 +112,6 @@ pub struct CblasProgram {
 #[derive(Debug)]
 pub struct CblasDevice {
     device_info: Arc<DeviceInfo>,
-    device_id: DeviceId,
     memory_pool: Pool,
     /// Keeps the libopenblas library loaded so the [`CblasKernel`] fn pointers stay valid.
     /// Never read, but dropping it would unload the library.
@@ -119,16 +121,24 @@ pub struct CblasDevice {
     programs: Slab<DeviceProgramId, CblasProgram>,
 }
 
-pub(super) fn initialize_device(
-    config: &CblasConfig,
-    devices: &mut Slab<DeviceId, Device>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
+/// Process-wide CBLAS device. Owned here — `mod.rs` only holds the
+/// `Dev::Cblas` handle. `CBLAS_INIT` serializes first construction only.
+static CBLAS_DEVICE: OnceLock<Arc<Mutex<CblasDevice>>> = OnceLock::new();
+static CBLAS_INIT: Mutex<()> = Mutex::new(());
+
+fn device_with(config: &CblasConfig, debug_dev: bool) -> Result<Arc<Mutex<CblasDevice>>, BackendError> {
+    if let Some(dev) = CBLAS_DEVICE.get() {
+        return Ok(dev.clone());
+    }
+    let _init = CBLAS_INIT.lock().unwrap_or_else(|_| panic!("cblas device init lock poisoned"));
+    if let Some(dev) = CBLAS_DEVICE.get() {
+        return Ok(dev.clone());
+    }
     if !config.enabled {
         if debug_dev {
             println!("[cblas] configured out");
         }
-        return Ok(());
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "CBLAS backend configured out".into() });
     }
     // cblas reuses the global host pool — no init ordering needed.
 
@@ -139,7 +149,7 @@ pub(super) fn initialize_device(
     let mut kernels = Slab::new();
     kernels.push(CblasKernel { sgemm });
 
-    let device_id = devices.push(Device::Cblas(CblasDevice {
+    let dev = Arc::new(Mutex::new(CblasDevice {
         // Tiny compute and no dtype capabilities: this device never gets picked
         // for generic (eager) kernels, it only runs matched AOT matmuls.
         device_info: Arc::new(DeviceInfo {
@@ -161,21 +171,23 @@ pub(super) fn initialize_device(
             tile_sizes: vec![],
             wmma_layouts: vec![],
             num_circular_buffers: 0,
+            has_openmp: false,
         }),
-        device_id: DeviceId::NULL,
         // cblas reuses the host pool (like the C backend)
         memory_pool: Pool::Host,
         lib,
         kernels,
         programs: Slab::new(),
     }));
-    if let Device::Cblas(dev) = &mut devices[device_id] {
-        dev.device_id = device_id;
-    }
     if debug_dev {
         println!("[cblas] initialized from {OPENBLAS_PATH}");
     }
-    Ok(())
+    let _ = CBLAS_DEVICE.set(dev.clone());
+    Ok(dev)
+}
+
+pub(super) fn device() -> Result<Arc<Mutex<CblasDevice>>, BackendError> {
+    device_with(&super::load_config().cblas, super::debug_backends())
 }
 
 impl CblasDevice {
@@ -225,7 +237,7 @@ impl CblasDevice {
                 node: Node::Kernel {
                     inputs: Box::new([mm.a, mm.b]),
                     outputs: Box::new([mm.out]),
-                    program_id: ProgramId { device_id: self.device_id, program_id },
+                    program_id: ProgramId { dev: Dev::Cblas, program_id },
                     time: 1,
                 },
                 class_of: mm.out,

@@ -50,7 +50,7 @@ use crate::{
     backend::BufferId,
     dtype::Constant,
     graph::{ClassId, Graph, GraphId},
-    kernel::DeviceId,
+    kernel::Dev,
     runtime::{KernelId, Runtime, TensorData},
     shape::Dim,
     slab::SlabId,
@@ -346,7 +346,7 @@ impl Drop for Tape {
                                 _ => unreachable!(),
                             };
                             rt.tensors[tid] =
-                                TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: DeviceId::AUTO, rc };
+                                TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: Dev::Auto, rc };
                         } else {
                             rt.graphs[graph_id].ref_count -= 1;
                             match &mut rt.tensors[tid] {

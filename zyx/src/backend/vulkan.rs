@@ -26,8 +26,7 @@ use crate::{
 };
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, Pool, PoolBufferId,
-    gws_from_kernel,
+    DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
 };
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
@@ -1170,6 +1169,7 @@ pub(super) fn ensure_pool_table(
             tile_sizes: vec![],
             wmma_layouts: vec![],
             num_circular_buffers: 0,
+            has_openmp: false,
         };
 
         std::thread::spawn({
@@ -1895,12 +1895,49 @@ pub(super) fn ensure_pool_table(
     Ok(pools)
 }
 
-pub(super) fn initialize_device(
+/// Process-wide per-device Vulkan devices. Owned here — `mod.rs` only holds
+/// `Dev::Vulkan(i)` handles. `VULKAN_DEV_INIT` serializes first construction
+/// only; compile/launch take the device lock, never the init lock.
+static VULKAN_DEVICES: OnceLock<Vec<Arc<Mutex<VulkanDevice>>>> = OnceLock::new();
+static VULKAN_DEV_INIT: Mutex<()> = Mutex::new(());
+
+fn devices_with(config: &VulkanConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<VulkanDevice>>>, BackendError> {
+    if let Some(devs) = VULKAN_DEVICES.get() {
+        return Ok(devs);
+    }
+    let _init = VULKAN_DEV_INIT.lock().unwrap_or_else(|_| panic!("vulkan device init lock poisoned"));
+    if let Some(devs) = VULKAN_DEVICES.get() {
+        return Ok(devs);
+    }
+    let devs = ensure_device_table(config, debug_dev)?;
+    let _ = VULKAN_DEVICES.set(devs);
+    VULKAN_DEVICES.get().ok_or_else(|| BackendError {
+        status: ErrorStatus::Initialization,
+        context: "Vulkan device init failed".into(),
+    })
+}
+
+fn devices() -> Result<&'static Vec<Arc<Mutex<VulkanDevice>>>, BackendError> {
+    devices_with(&super::load_config().vulkan, super::debug_backends())
+}
+
+pub(super) fn device(id: u16) -> Result<Arc<Mutex<VulkanDevice>>, BackendError> {
+    devices()?.get(id as usize).cloned().ok_or_else(|| BackendError {
+        status: ErrorStatus::Initialization,
+        context: format!("Dev::Vulkan({id}) is not available").into(),
+    })
+}
+
+pub(super) fn device_count() -> u16 {
+    devices().map(|devs| devs.len() as u16).unwrap_or(0)
+}
+
+fn ensure_device_table(
     config: &VulkanConfig,
-    devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
-) -> Result<(), BackendError> {
+) -> Result<Vec<Arc<Mutex<VulkanDevice>>>, BackendError> {
     let pools = pools_with(config, debug_dev)?;
+    let mut devs = Vec::with_capacity(pools.len());
     for (idx, pool_arc) in pools.iter().enumerate() {
         let pool_id = Pool::Vulkan(u16::try_from(idx).expect("So many Vulkan devices..."));
         let guard = super::lock(pool_id, pool_arc);
@@ -1908,7 +1945,7 @@ pub(super) fn initialize_device(
         let dev_info = Arc::new(guard.dev_info.clone());
         let dev_id = guard.dev_id;
         drop(guard);
-        devices.push(Device::Vulkan(VulkanDevice { tx, dev_info, dev_id, memory_pool: pool_id }));
+        devs.push(Arc::new(Mutex::new(VulkanDevice { tx, dev_info, dev_id, memory_pool: pool_id })));
     }
-    Ok(())
+    Ok(devs)
 }

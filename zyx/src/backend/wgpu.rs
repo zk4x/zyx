@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use super::{
-    BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
+    BackendError, DeviceInfo, ErrorStatus, Event, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
 };
 use crate::{
     DType,
@@ -224,31 +224,69 @@ pub(super) fn ensure_pool_table(
             tile_sizes: vec![],
             wmma_layouts: vec![],
             num_circular_buffers: 0,
+            has_openmp: false,
         },
     })));
 
     Ok(pools)
 }
 
-pub(super) fn initialize_device(
+/// Process-wide per-device WGPU devices. Owned here — `mod.rs` only holds
+/// `Dev::WGPU(i)` handles. `WGPU_DEV_INIT` serializes first construction
+/// only; compile/launch take the device lock, never the init lock.
+static WGPU_DEVICES: OnceLock<Vec<Arc<Mutex<WGPUDevice>>>> = OnceLock::new();
+static WGPU_DEV_INIT: Mutex<()> = Mutex::new(());
+
+fn devices_with(config: &WGPUConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<WGPUDevice>>>, BackendError> {
+    if let Some(devs) = WGPU_DEVICES.get() {
+        return Ok(devs);
+    }
+    let _init = WGPU_DEV_INIT.lock().unwrap_or_else(|_| panic!("wgpu device init lock poisoned"));
+    if let Some(devs) = WGPU_DEVICES.get() {
+        return Ok(devs);
+    }
+    let devs = ensure_device_table(config, debug_dev)?;
+    let _ = WGPU_DEVICES.set(devs);
+    WGPU_DEVICES.get().ok_or_else(|| BackendError {
+        status: ErrorStatus::Initialization,
+        context: "WGPU device init failed".into(),
+    })
+}
+
+fn devices() -> Result<&'static Vec<Arc<Mutex<WGPUDevice>>>, BackendError> {
+    devices_with(&super::load_config().wgpu, super::debug_backends())
+}
+
+pub(super) fn device(id: u16) -> Result<Arc<Mutex<WGPUDevice>>, BackendError> {
+    devices()?.get(id as usize).cloned().ok_or_else(|| BackendError {
+        status: ErrorStatus::Initialization,
+        context: format!("Dev::WGPU({id}) is not available").into(),
+    })
+}
+
+pub(super) fn device_count() -> u16 {
+    devices().map(|devs| devs.len() as u16).unwrap_or(0)
+}
+
+fn ensure_device_table(
     config: &WGPUConfig,
-    devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
-) -> Result<(), BackendError> {
+) -> Result<Vec<Arc<Mutex<WGPUDevice>>>, BackendError> {
     let pools = pools_with(config, debug_dev)?;
+    let mut devs = Vec::with_capacity(pools.len());
     for (idx, pool_arc) in pools.iter().enumerate() {
         let pool_id = Pool::WGPU(u16::try_from(idx).expect("So many WGPU devices..."));
         let guard = super::lock(pool_id, pool_arc);
-        devices.push(Device::WGPU(WGPUDevice {
+        devs.push(Arc::new(Mutex::new(WGPUDevice {
             dev_info: Arc::new(guard.dev_info.clone()),
             memory_pool: pool_id,
             device: guard.device.clone(),
             adapter: guard.adapter.clone(),
             programs: Slab::new(),
             queue: guard.queue.clone(),
-        }));
+        })));
     }
-    Ok(())
+    Ok(devs)
 }
 
 impl WGPUMemoryPool {

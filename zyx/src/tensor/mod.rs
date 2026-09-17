@@ -75,24 +75,10 @@ impl Display for TensorId {
     }
 }
 
-/// Device selector. The number in a variant is the device's
-/// hardware/driver ordinal (e.g. nvidia-smi id), matching torch
-/// semantics
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Dev {
-    /// Auto-select: resolves to the first initialized device.
-    Auto,
-    /// CPU backend.
-    C,
-    /// CUDA GPU with the given driver ordinal.
-    Cuda(u16),
-    /// Tenstorrent chip with the given id.
-    TT(u16),
-    /// Vulkan physical device with the given index.
-    Vulkan(u16),
-    /// OpenCL device with the given index.
-    OpenCL(u16),
-}
+/// Device selector and handle. Re-exported from the backend: `Copy`, names the
+/// backend plus the hardware ordinal, resolves to a process-wide global device.
+/// The device's memory pool is always derived from the device, never the reverse.
+pub use crate::backend::Dev;
 
 /// A tensor represents a multi-dimensional array of values. This is the primary data structure in the library.
 ///
@@ -607,9 +593,8 @@ impl Tensor {
     /// For more look at `ENV_VARS.md`
     #[must_use]
     pub fn with_debug(debug: DebugMask) -> DebugGuard {
-        let mut rt = RT.lock();
-        let guard = DebugGuard { debug: rt.debug };
-        rt.debug = debug;
+        let guard = DebugGuard { debug: crate::debug_mask() };
+        crate::set_debug_mask(debug);
         guard
     }
 
@@ -3395,11 +3380,7 @@ pub struct DebugGuard {
 
 impl Drop for DebugGuard {
     fn drop(&mut self) {
-        if let Ok(mut rt) = RT.try_lock() {
-            rt.debug = self.debug;
-        } else {
-            println!("Warning: Unable to drop DebugGuard due to runtime mutex lock.");
-        }
+        crate::set_debug_mask(self.debug);
     }
 }
 

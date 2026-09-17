@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool, PoolBufferId, opencl::OpenCLEvent,
+    DTypeCapability, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool, PoolBufferId, opencl::OpenCLEvent,
 };
 use crate::{
     DType,
@@ -68,21 +68,30 @@ fn ensure_pool() -> Result<DummyMemoryPool, BackendError> {
     Ok(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() })
 }
 
-pub(super) fn initialize_device(
-    config: &DummyConfig,
-    devices: &mut Slab<DeviceId, Device>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
-    if !config.enabled {
-        if debug_dev {
+/// Process-wide global dummy device. Owned here — `mod.rs` only holds the
+/// `Dev::Dummy` handle. Lazy like the dummy pool; fails when configured out.
+static DUMMY_DEVICE: OnceLock<Arc<Mutex<DummyDevice>>> = OnceLock::new();
+static DUMMY_DEV_INIT: Mutex<()> = Mutex::new(());
+
+pub(super) fn device() -> Result<Arc<Mutex<DummyDevice>>, BackendError> {
+    if let Some(dev) = DUMMY_DEVICE.get() {
+        return Ok(dev.clone());
+    }
+    let _init = DUMMY_DEV_INIT.lock().unwrap_or_else(|_| panic!("dummy device init lock poisoned"));
+    if let Some(dev) = DUMMY_DEVICE.get() {
+        return Ok(dev.clone());
+    }
+    let config = super::load_config();
+    if !config.dummy.enabled {
+        if super::debug_backends() {
             println!("[dummy] configured out");
         }
-        return Ok(());
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "[dummy] configured out".into() });
     }
-    if debug_dev {
+    if super::debug_backends() {
         println!("[dummy] initialized");
     }
-    devices.push(Device::Dummy(DummyDevice {
+    let dev = Arc::new(Mutex::new(DummyDevice {
         device_info: Arc::new(DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![Dim::from(u32::MAX); 3],
@@ -102,10 +111,12 @@ pub(super) fn initialize_device(
             tile_sizes: vec![],
             wmma_layouts: vec![],
             num_circular_buffers: 0,
+            has_openmp: false,
         }),
         memory_pool: Pool::Dummy,
     }));
-    Ok(())
+    DUMMY_DEVICE.set(dev.clone()).expect("dummy device set twice under init lock");
+    Ok(dev)
 }
 
 impl DummyMemoryPool {

@@ -1668,7 +1668,8 @@ impl PyKernel {
     #[new]
     #[pyo3(signature = (device=None))]
     fn new(device: Option<u32>) -> Self {
-        let dev = device.map(DeviceId).unwrap_or(DeviceId::AUTO);
+        let dev =
+            device.map(|i| Dev::all().get(i as usize).copied().expect("py kernel device index out of range")).unwrap_or(Dev::Auto);
         Self { inner: Some(Kernel::new(dev)) }
     }
 

@@ -4,13 +4,12 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, Set, ZyxError,
-    backend::{BufferId, Device, DeviceId, Event, LaunchArg, MemoryPool, PoolId, ProgramId},
+    backend::{BufferId, Event, LaunchArg, Pool, ProgramId},
     dtype::Constant,
     graph::{ClassId, Graph, Node, NodeId},
     kernel::BOp,
     runtime::Runtime,
     shape::Dim,
-    slab::Slab,
 };
 
 /// One dim of an allocation spec: an expression tree over compile-time
@@ -53,7 +52,7 @@ impl PlanDim {
 pub enum ExecNode {
     Allocate {
         class: ClassId,
-        pool: PoolId,
+        pool: Pool,
         dtype_size: Dim,
         /// One dim expression per shape axis; the buffer is sized by their
         /// product, evaluated at execution time.
@@ -87,7 +86,7 @@ pub struct ExecPlan {
     // Pool each leaf class lived in when the plan was compiled. Leaf pools
     // must not vary across plan reuse, or the preplanned Alias/Allocate/Copy
     // binding would be wrong — debug-asserted in execute_plan.
-    pub leaf_pools: Map<ClassId, PoolId>,
+    pub leaf_pools: Map<ClassId, Pool>,
 }
 
 impl ExecPlan {
@@ -96,8 +95,7 @@ impl ExecPlan {
         graph: &Graph,
         nodes: &[NodeId],
         output_set: &BTreeSet<ClassId>,
-        devices: &Slab<DeviceId, Device>,
-        leaf_pools: &Map<ClassId, PoolId>,
+        leaf_pools: &Map<ClassId, Pool>,
     ) -> Self {
         let mut rc: Map<ClassId, u32> = Map::default();
         for &nid in nodes {
@@ -161,10 +159,10 @@ impl ExecPlan {
 
         // Pool of the kernel that stores each alias class — precomputed so the
         // binding below is decided at plan time, not execution time.
-        let mut store_pool: Map<ClassId, PoolId> = Map::default();
+        let mut store_pool: Map<ClassId, Pool> = Map::default();
         for &nid in nodes {
             if let Node::Kernel { outputs, program_id, .. } = &graph.nodes[nid].node {
-                let pool = devices[program_id.device_id].memory_pool_id();
+                let pool = program_id.dev.pool();
                 for &oc in &**outputs {
                     store_pool.insert(oc, pool);
                 }
@@ -197,7 +195,7 @@ impl ExecPlan {
         for &nid in nodes {
             match &graph.nodes[nid].node {
                 Node::Kernel { inputs, outputs, program_id, .. } => {
-                    let pool = devices[program_id.device_id].memory_pool_id();
+                    let pool = program_id.dev.pool();
                     for &oc in &**outputs {
                         if !allocated.insert(oc) {
                             continue;
@@ -228,7 +226,8 @@ impl ExecPlan {
                     }
                 }
                 &Node::ToDevice { x, device, .. } => {
-                    let pool = devices[device].memory_pool_id();
+                    // Pool is always derived from the device, never the reverse.
+                    let pool = device.pool();
                     let class_of = graph.nodes[nid].class_of;
                     if allocated.insert(class_of) && !graph.leaf_map.contains_key(&class_of) && !alias_classes.contains(&class_of)
                     {
@@ -323,13 +322,12 @@ impl Runtime {
                     }
                     debug_assert!(elements > 0, "allocation for class {class:?} would be empty ({elements} elements)");
                     let bytes = (elements + 1) * dtype_size;
-                    let (buf, event) = self.pools[*pool].allocate(bytes)?;
+                    let (buf, event) = pool.allocate(bytes)?;
                     let buf_id = BufferId { pool: *pool, buffer: buf };
                     class_buf.insert(*class, buf_id);
                     self.events.insert(BTreeSet::from([buf_id]), event);
                 }
                 ExecNode::Launch { program_id, load_classes, store_classes } => {
-                    let pool_id = self.devices[program_id.device_id].memory_pool_id();
                     let mut args = Vec::new();
                     let mut kernel_bufs = BTreeSet::new();
                     for c in load_classes.iter().chain(store_classes.iter()) {
@@ -347,34 +345,24 @@ impl Runtime {
                         kernel_bufs.insert(*buf);
                     }
                     let wait_list = drain_events_for_bufs(&mut self.events, &kernel_bufs);
-                    if self.debug.dev() {
+                    if crate::debug_mask().dev() {
                         println!("launching kernel {program_id:?}");
                     }
-                    let event = self.devices[program_id.device_id].launch(
-                        program_id.program_id,
-                        &mut self.pools[pool_id],
-                        &args,
-                        wait_list,
-                    )?;
+                    let event = program_id.dev.launch(program_id.program_id, &args, wait_list)?;
                     self.events.insert(kernel_bufs, event);
                 }
                 ExecNode::Copy { dst_class, src_class } => {
                     let src = class_buf[src_class];
                     let dst = class_buf[dst_class];
                     let wait_list = drain_events_for_buf(&mut self.events, src);
-                    // SAFETY: src_pool and dst_pool are different PoolIds (checked
-                    // below); rust cannot split the Slab borrow across the two
-                    // indices.
                     debug_assert_ne!(src.pool, dst.pool);
-                    let src_pool: *mut MemoryPool = &mut self.pools[src.pool];
-                    let dst_pool = &mut self.pools[dst.pool];
-                    let event = dst_pool.pool_to_pool(unsafe { &mut *src_pool }, src.buffer, dst.buffer, wait_list)?;
-                    self.pools[dst.pool].sync_events(vec![event])?;
+                    let event = dst.pool.pool_to_pool(src.pool, src.buffer, dst.buffer, wait_list)?;
+                    dst.pool.sync_events(vec![event])?;
                 }
                 ExecNode::Deallocate { class } => {
                     let buf = class_buf.remove(class).unwrap();
                     let wait_list = drain_events_for_buf(&mut self.events, buf);
-                    self.pools[buf.pool].deallocate(buf.buffer, wait_list);
+                    buf.pool.deallocate(buf.buffer, wait_list);
                 }
                 ExecNode::Alias { class, to } => {
                     let buf = class_buf[to];

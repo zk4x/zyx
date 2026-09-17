@@ -18,9 +18,9 @@ use std::collections::BTreeSet;
 
 use crate::{
     DType, Map, Set, ZyxError,
-    backend::{BufferId, Device, LaunchArg, PoolBufferId, PoolId, ProgramId},
+    backend::{BufferId, Dev, LaunchArg, Pool, PoolBufferId, ProgramId},
     dtype::Constant,
-    kernel::{BOp, DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     runtime::{KernelId, Runtime, TensorData},
     scalar::{bf16, f16, f8e4m3, f8e5m2},
     shape::{Dim, UAxis},
@@ -218,7 +218,7 @@ pub enum Node {
     },
     ToDevice {
         x: ClassId,
-        device: DeviceId,
+        device: Dev,
         time: u64,
     },
     Contiguous {
@@ -569,7 +569,7 @@ impl Graph {
         self.classes[class_id].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::After { .. }))
     }
 
-    pub fn push_to_device(&mut self, x: ClassId, device: DeviceId, time: u64) -> ClassId {
+    pub fn push_to_device(&mut self, x: ClassId, device: Dev, time: u64) -> ClassId {
         let node = Node::ToDevice { x, device, time };
         if let Some(&nid) = self.hashcons.get(&node) {
             return self.nodes[nid].class_of;
@@ -919,7 +919,6 @@ impl Graph {
     /// as-is and reused through hashconsing.
     pub fn add_memory_ops(
         &mut self,
-        devices: &Slab<DeviceId, Device>,
         buffer_map: &Map<TensorId, BufferId>,
         chosen: &[NodeId],
     ) -> Vec<NodeId> {
@@ -927,7 +926,7 @@ impl Graph {
         // outputs live in their kernel's pool, chosen transfers in their
         // target pool, realized leaves in their buffer pool. Variable leaves
         // have no buffer and no placement — they bind at launch.
-        let mut pool_of: Map<ClassId, PoolId> = Map::default();
+        let mut pool_of: Map<ClassId, Pool> = Map::default();
         for (&cid, &tid) in &self.leaf_map {
             if let Some(buf) = buffer_map.get(&tid) {
                 pool_of.insert(cid, buf.pool);
@@ -939,11 +938,12 @@ impl Graph {
         for &nid in chosen {
             let (device_id, inputs, class_of) = match &self.nodes[nid].node {
                 Node::Kernel { program_id, inputs, .. } => {
-                    debug_assert_ne!(program_id.device_id, DeviceId::NULL);
-                    (program_id.device_id, inputs.clone(), self.nodes[nid].class_of)
+                    debug_assert_ne!(program_id.dev, Dev::Auto);
+                    (program_id.dev, inputs.clone(), self.nodes[nid].class_of)
                 }
                 Node::ToDevice { device, .. } => {
-                    pool_of.insert(self.nodes[nid].class_of, devices[*device].memory_pool_id());
+                    // Pool is always derived from the device, never the reverse.
+                    pool_of.insert(self.nodes[nid].class_of, device.pool());
                     if emitted.insert(nid) {
                         repaired.push(nid);
                     }
@@ -951,7 +951,7 @@ impl Graph {
                 }
                 _ => unreachable!("add_memory_ops runs on extracted nodes, which are only Kernel/ToDevice"),
             };
-            let dev_pool = devices[device_id].memory_pool_id();
+            let dev_pool = device_id.pool();
             if let Node::Kernel { outputs, .. } = &self.nodes[nid].node {
                 for &oc in &**outputs {
                     pool_of.insert(oc, dev_pool);
@@ -2312,7 +2312,7 @@ impl Runtime {
 
     pub fn autotune_jit_kernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
         println!("Autotuning");
-        let device_ids: Vec<DeviceId> = self.devices.ids().collect();
+        let device_ids: Vec<Dev> = Dev::all();
 
         let jit_kernels: *const Slab<JitKernelId, JitKernelData> = &self.graphs[graph_id].jit_kernels;
         let jit_kernels: &Slab<JitKernelId, JitKernelData> = unsafe { &*jit_kernels };
@@ -2388,16 +2388,16 @@ impl Runtime {
 
             for &dev_id in device_ids.iter() {
                 // AOT-only devices (e.g. cblas) never compile generic zyx kernels
-                if self.devices[dev_id].aot_only() {
+                if dev_id.aot_only() {
                     continue;
                 }
                 let mut kernel = ek.kernel.clone();
                 kernel.device_id = dev_id;
-                kernel.dev_info = Some(self.devices[dev_id].info());
-                progress_bar.inc(1, &format!("autotune {} on dev={}", kernel.name(), dev_id.0));
+                kernel.dev_info = Some(dev_id.info());
+                progress_bar.inc(1, &format!("autotune {} on dev={dev_id:?}", kernel.name()));
                 // Allocate fresh timing buffers in this device's pool for
                 // every NULL slot, pre-filled with ones like eager inputs.
-                let pool_id = self.devices[dev_id].memory_pool_id();
+                let pool_id = dev_id.pool();
                 let mut full_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
                 let mut full_mut: Vec<LaunchArg> = Vec::with_capacity(mut_lens.len());
                 let mut fresh: Vec<PoolBufferId> = Vec::new();
@@ -2423,7 +2423,7 @@ impl Runtime {
                                         (len, false)
                                     };
                                     let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
-                                    let (buf, ev) = self.pools[pool_id].allocate(bytes_alloc)?;
+                                    let (buf, ev) = pool_id.allocate(bytes_alloc)?;
                                     fresh.push(buf);
                                     if !is_mut {
                                         let one: Vec<u8> = match dtype {
@@ -2439,7 +2439,7 @@ impl Runtime {
                                             DType::U64 | DType::I64 => 1i64.to_le_bytes().to_vec(),
                                         };
                                         let fill = one.repeat(len as usize);
-                                        let ev = self.pools[pool_id].host_to_pool(&fill, buf, vec![ev])?;
+                                        let ev = pool_id.host_to_pool(&fill, buf, vec![ev])?;
                                         events.push(ev);
                                     }
                                     if is_mut {
@@ -2454,11 +2454,11 @@ impl Runtime {
                         p = kernel.next_op(p);
                     }
                 }
-                let _ = self.pools[pool_id].sync_events(events);
+                let _ = pool_id.sync_events(events);
                 full_args.extend(full_mut);
                 let (dev_prog, timing) = self.get_or_autotune(kernel, &full_args)?;
-                ek.kernel.dealloc_buffers(fresh, &mut self.pools[pool_id]);
-                let prog = ProgramId { device_id: dev_id, program_id: dev_prog };
+                ek.kernel.dealloc_buffers(fresh, pool_id);
+                let prog = ProgramId { dev: dev_id, program_id: dev_prog };
 
                 let knid = self.graphs[graph_id].nodes.push(NodeData {
                     node: Node::Kernel {
@@ -2537,7 +2537,7 @@ impl Runtime {
         debug_assert!(self.graphs.contains_id(graph_id));
         self.debug_assert_pre_realize(graph_id);
 
-        if self.debug.egraph() {
+        if crate::debug_mask().egraph() {
             self.graphs[graph_id].debug();
         }
 
@@ -2559,11 +2559,11 @@ impl Runtime {
 
         // Pattern match specialized AOT kernels (e.g. matmul -> cblas) so they can
         // compete with the fused zyx kernels in extraction.
-        // SAFETY: devices, graphs and shapes are separate fields of Runtime, no aliasing, rust is stupid
-        let dev_ids: Vec<DeviceId> = self.devices.ids().collect();
+        // SAFETY: graphs borrow ends before the match call, rust is stupid
+        let dev_ids: Vec<Dev> = Dev::all();
         let graph_ptr: *mut Graph = &mut self.graphs[graph_id];
         for dev_id in dev_ids {
-            self.devices[dev_id].match_graph(unsafe { &mut *graph_ptr }, output_set);
+            dev_id.match_graph(unsafe { &mut *graph_ptr }, output_set);
         }
 
         // Lower user custom kernels into Kernel twins so the pool grouping and
@@ -2571,11 +2571,11 @@ impl Runtime {
         self.graphs[graph_id].lower_custom_kernels();
 
         // AOT kernel output classes, grouped by the memory pool they run in.
-        let mut pool_kernel_outputs: Map<PoolId, Set<ClassId>> = Map::default();
+        let mut pool_kernel_outputs: Map<Pool, Set<ClassId>> = Map::default();
         for cid in self.graphs[graph_id].classes.ids() {
             for nid in &self.graphs[graph_id].classes[cid].nodes {
                 if let Node::Kernel { program_id, .. } = &self.graphs[graph_id].nodes[*nid].node {
-                    let pool = self.devices[program_id.device_id].memory_pool_id();
+                    let pool = program_id.dev.pool();
                     pool_kernel_outputs.entry(pool).or_default().insert(cid);
                 }
             }
@@ -2601,14 +2601,13 @@ impl Runtime {
         // on different devices. Only the extracted path is considered: a
         // class holding kernels on several devices needs no transfer when
         // extraction chose the same-device producer.
-        // SAFETY: devices, graphs and shapes are separate fields of Runtime, no aliasing, rust is stupid
-        let devices_ptr: *const Slab<DeviceId, Device> = &self.devices;
+        // SAFETY: buffer_map borrow ends before the add call, rust is stupid
         let buffer_map_ptr: *const Map<TensorId, BufferId> = &self.buffer_map;
-        let nodes = self.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr }, &nodes);
+        let nodes = self.graphs[graph_id].add_memory_ops(unsafe { &*buffer_map_ptr }, &nodes);
 
         // Leaf pools at compile time — the plan bakes the alias binding (and
         // any cross-pool copy) into its ExecNodes, so leaves must stay put.
-        let mut leaf_pools: Map<ClassId, PoolId> = Map::default();
+        let mut leaf_pools: Map<ClassId, Pool> = Map::default();
         for (&cid, &tid) in &self.graphs[graph_id].leaf_map {
             // Variable leaves have no buffer and no pool — they bind per exec
             // from the tensors slab, so no pool invariant applies to them.
@@ -2616,8 +2615,8 @@ impl Runtime {
                 leaf_pools.insert(cid, buf.pool);
             }
         }
-        let plan = ExecPlan::new(&self.graphs[graph_id], &nodes, output_set, &self.devices, &leaf_pools);
-        if self.debug.egraph() {
+        let plan = ExecPlan::new(&self.graphs[graph_id], &nodes, output_set, &leaf_pools);
+        if crate::debug_mask().egraph() {
             plan.debug();
         }
         #[cfg(feature = "viz")]
@@ -2675,7 +2674,7 @@ impl Runtime {
                 ref t => unreachable!("eagerify: {t:?}"),
             };
             let _ = dtype;
-            self.tensors[tid] = TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: DeviceId::AUTO, rc };
+            self.tensors[tid] = TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: Dev::Auto, rc };
             // Fully detach from the old producer: its load entries on tid are
             // released. Without this the old kernel keeps a stale edge whose
             // count pins tid above the death threshold forever.

@@ -6,6 +6,20 @@
 //! Backend automatically keeps track of hardware queues.
 //! Interfaces use events independent from underlying implementation.
 //! Events are used to achieve maximum asynchronous execution.
+//!
+//! Handles and ownership:
+//! - [`Pool`] and [`Dev`] are `Copy` handles. They name the backend plus the
+//!   ordinal and resolve directly to that backend's process-wide globals —
+//!   one `Arc<Mutex<pool>>` per pool ordinal, one `Arc<Mutex<device>>` per
+//!   device. There are no tables, no slab ids, no `Runtime`-owned pools/devices.
+//! - The mapping direction is fixed: **the pool is always derived from the
+//!   device, never the other way around** ([`Dev::pool`] is a pure function).
+//!   Nothing derives a device from a pool; callers that need both take the
+//!   `Dev` and derive the `Pool` from it.
+//! - Both pools and devices are lazily initialized on first access, per
+//!   backend, from the backend config file (see [`load_config`]). The only
+//!   lock takers are the device-API entry points (alloc/free/copy/compile/
+//!   launch); the per-op tensor path never touches the globals directly.
 
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::upper_case_acronyms)]
@@ -19,22 +33,12 @@ use crate::{
     graph::{ClassId, Graph},
     kernel::{BOp, Kernel, MMADims, Op, OpId, ParamKind, RangeKind, UOp},
     shape::Dim,
-    slab::{Slab, SlabId},
+    slab::SlabId,
 };
 use crate::{Map, hashers::FHasher};
-use c::CDevice;
-use cblas::CblasDevice;
-use cuda::CUDADevice;
-use dummy::DummyDevice;
 use nanoserde::{DeBin, DeJson, SerBin};
-use opencl::OpenCLDevice;
 use std::sync::Mutex;
 use std::{collections::BTreeSet, hash::BuildHasherDefault, sync::Arc};
-#[cfg(feature = "tenstorrent")]
-use tenstorrent::{TTDevice, TTMemoryPool};
-use vulkan::VulkanDevice;
-#[cfg(feature = "wgpu")]
-use wgpu::{WGPUDevice, WGPUMemoryPool};
 
 mod c;
 mod cblas;
@@ -82,8 +86,285 @@ pub enum Pool {
     Dummy,
 }
 
+/// Device selector and handle. `Copy`, names the backend plus the hardware
+/// ordinal, and resolves directly to that device's global `Arc<Mutex<...>>`.
+///
+/// `Auto` is the default scheduling selector (first available device);
+/// every other variant is a concrete device. The device's memory pool is
+/// always derived from the device via [`Dev::pool`] — never the reverse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Dev {
+    /// Auto-select: resolves to the first available device from [`Dev::all`].
+    Auto,
+    /// CPU backend (runs on [`Pool::Host`]).
+    C,
+    /// CBLAS backend for AOT matmuls (runs on [`Pool::Host`]).
+    Cblas,
+    /// CUDA GPU with the given driver ordinal.
+    Cuda(u16),
+    /// Tenstorrent chip with the given id.
+    #[cfg(feature = "tenstorrent")]
+    TT(u16),
+    /// Vulkan physical device with the given index.
+    Vulkan(u16),
+    /// OpenCL device with the given index.
+    OpenCL(u16),
+    /// WGPU device with the given index.
+    #[cfg(feature = "wgpu")]
+    WGPU(u16),
+    /// Testing dummy device (config-gated).
+    Dummy,
+}
+
 pub(super) fn lock<'a, T>(pool: Pool, arc: &'a Arc<Mutex<T>>) -> std::sync::MutexGuard<'a, T> {
     arc.lock().unwrap_or_else(|_| panic!("{pool:?} pool lock poisoned by a panicking holder"))
+}
+
+pub(super) fn dlock<'a, T>(dev: Dev, arc: &'a Arc<Mutex<T>>) -> std::sync::MutexGuard<'a, T> {
+    arc.lock().unwrap_or_else(|_| panic!("{dev:?} device lock poisoned by a panicking holder"))
+}
+
+impl Dev {
+    /// All currently available devices, triggering lazy init of every
+    /// backend (backends that are configured out or whose hardware/driver
+    /// is missing contribute nothing).
+    #[must_use]
+    pub fn all() -> Vec<Dev> {
+        let mut out = Vec::new();
+        if c::device().is_ok() {
+            out.push(Dev::C);
+        }
+        if cblas::device().is_ok() {
+            out.push(Dev::Cblas);
+        }
+        for i in 0..cuda::device_count() {
+            out.push(Dev::Cuda(i));
+        }
+        #[cfg(feature = "tenstorrent")]
+        for i in 0..tenstorrent::device_count() {
+            out.push(Dev::TT(i));
+        }
+        for i in 0..vulkan::device_count() {
+            out.push(Dev::Vulkan(i));
+        }
+        for i in 0..opencl::device_count() {
+            out.push(Dev::OpenCL(i));
+        }
+        #[cfg(feature = "wgpu")]
+        for i in 0..wgpu::device_count() {
+            out.push(Dev::WGPU(i));
+        }
+        if dummy::device().is_ok() {
+            out.push(Dev::Dummy);
+        }
+        out
+    }
+
+    /// Resolve the `Auto` selector to the first available device.
+    pub fn auto() -> Result<Dev, BackendError> {
+        Dev::all().into_iter().next().ok_or_else(|| BackendError {
+            status: ErrorStatus::Initialization,
+            context: "all devices failed to initialize or were configured out".into(),
+        })
+    }
+
+    /// The memory pool belonging to this device. Pure function — the pool
+    /// is always derived from the device, never the reverse.
+    #[must_use]
+    pub fn pool(self) -> Pool {
+        match self {
+            Dev::Auto => panic!("Dev::Auto has no pool; resolve it with Dev::auto() first"),
+            Dev::C | Dev::Cblas => Pool::Host,
+            Dev::Cuda(i) => Pool::Cuda(i),
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(i) => Pool::TT(i),
+            Dev::Vulkan(i) => Pool::Vulkan(i),
+            Dev::OpenCL(i) => Pool::OpenCL(i),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(i) => Pool::WGPU(i),
+            Dev::Dummy => Pool::Dummy,
+        }
+    }
+
+    /// Device info for this device.
+    pub fn info(self) -> Arc<DeviceInfo> {
+        match self {
+            Dev::Auto => panic!("Dev::Auto has no info; resolve it with Dev::auto() first"),
+            Dev::C => c::device().expect("C device unavailable").lock().unwrap().info(),
+            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().info(),
+            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).info(),
+            Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).info(),
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).info(),
+            Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).info(),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).info(),
+            Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().info(),
+        }
+    }
+
+    /// How much compute is available on the device.
+    pub fn free_compute(self) -> u128 {
+        match self {
+            Dev::Auto => panic!("Dev::Auto has no compute; resolve it with Dev::auto() first"),
+            Dev::C => c::device().expect("C device unavailable").lock().unwrap().free_compute(),
+            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().free_compute(),
+            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).free_compute(),
+            Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).free_compute(),
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).free_compute(),
+            Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).free_compute(),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).free_compute(),
+            Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().free_compute(),
+        }
+    }
+
+    /// Whether this device only runs AOT (precompiled) kernels and cannot
+    /// compile generic zyx kernels (e.g. the cblas backend). Such devices
+    /// must be skipped by generic kernel autotuning.
+    #[must_use]
+    pub const fn aot_only(self) -> bool {
+        matches!(self, Self::Cblas)
+    }
+
+    /// Human-readable device name (e.g. "CUDA", "OpenCL", "C").
+    #[cfg(feature = "viz")]
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Dev::Auto => "Auto",
+            Dev::C => "C",
+            Dev::Cblas => "CBLAS",
+            Dev::Dummy => "Dummy",
+            Dev::Cuda(_) => "CUDA",
+            Dev::OpenCL(_) => "OpenCL",
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(_) => "Tenstorrent",
+            Dev::Vulkan(_) => "Vulkan",
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(_) => "WGPU",
+        }
+    }
+
+    /// Compile a kernel into a device program. Returns a program ID usable with
+    /// `launch` and `release`. The `debug_asm` flag controls whether the backend
+    /// prints the compiled assembly/source (for `ZYX_DEBUG=16`).
+    pub fn compile(self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
+        let name = match self {
+            Dev::Auto => "auto",
+            Dev::C => "C",
+            Dev::Cblas => "cblas",
+            Dev::Dummy => "dummy",
+            Dev::Cuda(_) => "CUDA",
+            Dev::OpenCL(_) => "OPENCL",
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(_) => "tenstorrent",
+            Dev::Vulkan(_) => "Vulkan",
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(_) => "WGPU",
+        };
+        let result = match self {
+            Dev::Auto => panic!("Dev::Auto cannot compile; resolve it with Dev::auto() first"),
+            Dev::C => c::device().expect("C device unavailable").lock().unwrap().compile(kernel, debug_asm),
+            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().compile(kernel, debug_asm),
+            Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().compile(kernel, debug_asm),
+            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).compile(kernel, debug_asm),
+            Dev::OpenCL(id) => {
+                dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).compile(kernel, debug_asm)
+            }
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).compile(kernel, debug_asm),
+            Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).compile(kernel, debug_asm),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).compile(kernel, debug_asm),
+        };
+        if let Ok(x) = std::env::var("ZYX_DEBUG")
+            && let Ok(x) = x.parse::<u32>()
+            && DebugMask(x).compile()
+        {
+            println!("[{name}] compile kernel");
+        }
+        result
+    }
+
+    /// Free a compiled program and its device resources (pipeline, shader module, etc.).
+    pub fn release(self, program_id: DeviceProgramId) {
+        match self {
+            Dev::Auto => panic!("Dev::Auto cannot release; resolve it with Dev::auto() first"),
+            Dev::C => c::device().expect("C device unavailable").lock().unwrap().release(program_id),
+            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().release(program_id),
+            Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().release(program_id),
+            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).release(program_id),
+            Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).release(program_id),
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).release(program_id),
+            Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).release(program_id),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).release(program_id),
+        }
+    }
+
+    /// Pattern-matches subgraphs in `graph` (e.g. matmul) and adds `Node::Kernel`s
+    /// backed by this device's AOT kernels so they compete with the fused zyx
+    /// kernels in extraction. No-op for devices without AOT kernels.
+    pub fn match_graph(self, graph: &mut Graph, outputs: &BTreeSet<ClassId>) {
+        match self {
+            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().match_graph(graph, outputs),
+            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).match_graph(graph, outputs),
+            _ => {}
+        }
+        // A vendor pass adds Node::Kernel nodes with input edges; those must
+        // never close a dependency cycle over the class graph.
+        graph.verify();
+    }
+
+    /// Launch a kernel on the device. Waits on all events in `event_wait_list`
+    /// before submitting to the GPU queue (ensures input buffers are ready).
+    /// Returns an event that signals when the kernel completes.
+    ///
+    /// The `args` are the `LaunchArg`s for the kernel in the order the
+    /// `Param` ops appear in the kernel IR given to compile (flat, head order, all
+    /// kinds: `Variable`/`Global`/`GlobalMut`). `Op::Storage` is NOT a kernel
+    /// parameter. `LaunchArg::Buffer` ids point into this device's pool
+    /// ([`Dev::pool`]); `LaunchArg::Variable` carries the scalar
+    /// value directly — backends never store variables. The grid (gws) is NOT
+    /// passed here — each backend derives it at launch from the per-axis
+    /// `GwsDim` it stored at compile, evaluating `Param(ordinal)` leaves
+    /// against `args[ordinal]` (`LaunchArg::Variable` → `Constant::as_dim()`).
+    pub fn launch(
+        self,
+        program_id: DeviceProgramId,
+        args: &[LaunchArg],
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
+        // A kernel always has at least one Param (its output); launching with
+        // no args means buffer binding failed upstream — backends would pass
+        // garbage param pointers to the driver.
+        debug_assert!(!args.is_empty(), "launch with empty args: buffer binding failed upstream");
+        let pool = self.pool();
+        match self {
+            Dev::Auto => panic!("Dev::Auto cannot launch; resolve it with Dev::auto() first"),
+            Dev::C => c::device().expect("C device unavailable").lock().unwrap().launch(program_id, pool, args, event_wait_list),
+            Dev::Cblas => {
+                cblas::device().expect("CBLAS device unavailable").lock().unwrap().launch(program_id, pool, args, event_wait_list)
+            }
+            Dev::Dummy => {
+                dummy::device().expect("dummy device unavailable").lock().unwrap().launch(program_id, pool, args, event_wait_list)
+            }
+            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).launch(program_id, pool, args, event_wait_list),
+            Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable"))
+                .launch(program_id, pool, args, event_wait_list),
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable"))
+                .launch(program_id, pool, args, event_wait_list),
+            Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable"))
+                .launch(program_id, pool, args, event_wait_list),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable"))
+                .launch(program_id, pool, args, event_wait_list),
+        }
+    }
 }
 
 impl Pool {
@@ -143,6 +424,24 @@ impl Pool {
             eprintln!("[{name}] allocate FAILED {bytes} -> free {free} B");
         }
         result
+    }
+
+    /// Insert an already-filled host buffer into the pool. Only valid for
+    /// [`Pool::Host`]; any other pool is a programming error and panics.
+    pub fn insert_host(self, buf: Box<[u8]>) -> PoolBufferId {
+        match self {
+            Pool::Host => lock(self, &host::pool()).insert(buf),
+            _ => unreachable!("Pool::insert is only valid for the host pool, got {self:?}"),
+        }
+    }
+
+    /// Map a slice of a file on disk into the disk pool. Only valid for
+    /// [`Pool::Disk`]; any other pool is a programming error and panics.
+    pub fn disk_buffer_from_path(self, bytes: Dim, path: &std::path::Path, offset_bytes: u64) -> PoolBufferId {
+        match self {
+            Pool::Disk => lock(self, &disk::pool()).buffer_from_path(bytes, path, offset_bytes),
+            _ => unreachable!("Pool::disk_buffer_from_path is only valid for the disk pool, got {self:?}"),
+        }
     }
 
     /// Free a buffer. The pool must already be initialized (a buffer id for it
@@ -206,8 +505,7 @@ impl Pool {
         }
     }
 
-    pub fn host_to_pool(self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
-        match self {
+    pub fn host_to_pool(self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {        match self {
             Pool::Host => lock(self, &host::pool()).host_to_pool(src, dst, event_wait_list),
             Pool::Disk => todo!("host to disk copy"),
             Pool::Cuda(id) => lock(self, &cuda::pool(id)?).host_to_pool(src, dst, event_wait_list),
@@ -521,72 +819,6 @@ impl SlabId for DeviceProgramId {
     }
 }
 
-/// Pool identifier for use with `Slab<PoolId, MemoryPool>`
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PoolId(u32);
-
-impl PoolId {
-    pub const HOST: Self = Self(0);
-    pub const DISK: Self = Self(1);
-}
-
-impl From<usize> for PoolId {
-    fn from(value: usize) -> Self {
-        PoolId(u32::try_from(value).unwrap())
-    }
-}
-
-impl From<PoolId> for usize {
-    fn from(value: PoolId) -> Self {
-        value.0 as usize
-    }
-}
-
-impl SlabId for PoolId {
-    const ZERO: Self = Self(0);
-    const NULL: Self = Self(u32::MAX);
-
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
-}
-
-impl std::ops::AddAssign<u32> for PoolId {
-    fn add_assign(&mut self, rhs: u32) {
-        self.0 += rhs;
-    }
-}
-
-/// Device identifier for use with `Slab<DeviceId, Device>`
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, DeBin, SerBin)]
-pub struct DeviceId(pub(crate) u32);
-
-impl From<usize> for DeviceId {
-    fn from(value: usize) -> Self {
-        DeviceId(u32::try_from(value).unwrap())
-    }
-}
-
-impl From<DeviceId> for usize {
-    fn from(value: DeviceId) -> Self {
-        value.0 as usize
-    }
-}
-
-impl DeviceId {
-    /// Auto-select the device (default scheduling behavior).
-    pub const AUTO: Self = Self(u32::MAX);
-}
-
-impl SlabId for DeviceId {
-    const ZERO: Self = Self(0);
-    const NULL: Self = Self(u32::MAX);
-
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
-}
-
 /// Globally unique buffer identifier: the owning global pool plus the
 /// buffer id within that pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -605,21 +837,16 @@ impl From<BufferId> for usize {
     }
 }
 
-/// Globally unique program identifier
+/// Globally unique program identifier: the owning device plus the
+/// program id within that device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProgramId {
-    pub device_id: DeviceId,
+    pub dev: Dev,
     pub program_id: DeviceProgramId,
 }
 
 impl ProgramId {
-    pub const NULL: Self = Self { device_id: DeviceId::NULL, program_id: DeviceProgramId(u32::MAX) };
-}
-
-impl From<usize> for ProgramId {
-    fn from(value: usize) -> Self {
-        ProgramId { device_id: DeviceId::ZERO, program_id: DeviceProgramId(u32::try_from(value).unwrap()) }
-    }
+    pub const NULL: Self = Self { dev: Dev::Auto, program_id: DeviceProgramId(u32::MAX) };
 }
 
 impl From<ProgramId> for usize {
@@ -631,59 +858,6 @@ impl From<ProgramId> for usize {
 impl From<libloading::Error> for BackendError {
     fn from(value: libloading::Error) -> Self {
         BackendError { status: ErrorStatus::Initialization, context: value.to_string().into() }
-    }
-}
-
-pub fn initialize_backends(device_config: &Config, devices: &mut Slab<DeviceId, Device>, debug_backends: bool) {
-    // Pools are process-wide globals now, resolved lazily via each backend's
-    // `pool()` on first use. This only registers `Device` entries (stays until
-    // the device-slab removal step).
-    if let Err(err) = c::initialize_device(&device_config.c, devices, debug_backends)
-        && debug_backends
-    {
-        println!("[C] {err}");
-    }
-    if let Err(err) = cblas::initialize_device(&device_config.cblas, devices, debug_backends)
-        && debug_backends
-    {
-        println!("[cblas] {err}");
-    }
-    if let Err(err) = cuda::initialize_device(&device_config.cuda, devices, debug_backends)
-        && debug_backends
-    {
-        println!("[cuda] {err}");
-    }
-    #[cfg(feature = "tenstorrent")]
-    if let Err(err) = tenstorrent::initialize_device(&device_config.tenstorrent, devices, debug_backends) {
-        if debug_backends {
-            println!("[tenstorrent] {err}");
-        }
-    }
-    if let Err(err) = vulkan::initialize_device(&device_config.vulkan, devices, debug_backends)
-        && debug_backends
-    {
-        println!("[vulkan] {err}");
-    }
-    if let Err(err) = opencl::initialize_device(&device_config.opencl, devices, debug_backends)
-        && debug_backends
-    {
-        println!("[opencl] {err}");
-    }
-    #[cfg(feature = "wgpu")]
-    if let Err(err) = wgpu::initialize_device(&device_config.wgpu, devices, debug_backends)
-        && debug_backends
-    {
-        println!("[wgpu] {err}");
-    }
-    if let Err(err) = dummy::initialize_device(&device_config.dummy, devices, debug_backends)
-        && debug_backends
-    {
-        println!("[dummy] {err}");
-    }
-    //println!("YO {:?}", devices[DeviceId::from(0)].info().supported_dtypes);
-
-    if devices.is_empty() {
-        println!("All devices failed to initialize or were configured out.");
     }
 }
 
@@ -860,238 +1034,14 @@ pub struct DeviceInfo {
     /// size (2KB vs 4KB tiles); page size constrains L1 budget, not count.
     /// Zero on devices without circular buffers.
     pub num_circular_buffers: u32,
+    /// Whether the C backend was compiled with OpenMP support.
+    /// Only meaningful for the C device; false everywhere else.
+    pub has_openmp: bool,
 }
 
 impl DeviceInfo {
     /// Returns operation capabilities for a dtype (none() if dtype is unsupported)
     pub const fn supports_dtype(&self, dtype: DType) -> DTypeCapability {
         self.dtype_capability[dtype as usize]
-    }
-}
-
-#[derive(Debug)]
-pub enum Device {
-    C(CDevice),
-    Cblas(CblasDevice),
-    Dummy(DummyDevice),
-    CUDA(CUDADevice),
-    OpenCL(OpenCLDevice),
-    #[cfg(feature = "tenstorrent")]
-    TT(TTDevice),
-    Vulkan(VulkanDevice),
-    #[cfg(feature = "wgpu")]
-    WGPU(WGPUDevice),
-}
-
-impl Device {
-    #[allow(unused)]
-    pub fn deinitialize(&mut self) {
-        match self {
-            Device::C(dev) => dev.deinitialize(),
-            Device::Cblas(dev) => dev.deinitialize(),
-            Device::Dummy(dev) => dev.deinitialize(),
-            Device::CUDA(dev) => dev.deinitialize(),
-            Device::OpenCL(dev) => dev.deinitialize(),
-            #[cfg(feature = "tenstorrent")]
-            Device::TT(dev) => dev.deinitialize(),
-            Device::Vulkan(dev) => dev.deinitialize(),
-            #[cfg(feature = "wgpu")]
-            Device::WGPU(dev) => dev.deinitialize(),
-        }
-    }
-
-    pub fn info(&self) -> Arc<DeviceInfo> {
-        match self {
-            Device::C(dev) => dev.info(),
-            Device::Cblas(dev) => dev.info(),
-            Device::Dummy(dev) => dev.info(),
-            Device::CUDA(dev) => dev.info(),
-            Device::OpenCL(dev) => dev.info(),
-            #[cfg(feature = "tenstorrent")]
-            Device::TT(dev) => dev.info(),
-            Device::Vulkan(dev) => dev.info(),
-            #[cfg(feature = "wgpu")]
-            Device::WGPU(dev) => dev.info(),
-        }
-    }
-
-    pub const fn memory_pool(&self) -> Pool {
-        match self {
-            Device::C(dev) => dev.memory_pool(),
-            Device::Cblas(dev) => dev.memory_pool(),
-            Device::Dummy(dev) => dev.memory_pool(),
-            Device::CUDA(dev) => dev.memory_pool(),
-            Device::OpenCL(dev) => dev.memory_pool(),
-            #[cfg(feature = "tenstorrent")]
-            Device::TT(dev) => dev.memory_pool(),
-            Device::Vulkan(dev) => dev.memory_pool(),
-            #[cfg(feature = "wgpu")]
-            Device::WGPU(dev) => dev.memory_pool(),
-        }
-    }
-
-    /// How much compute is available on the device,
-    /// Internally this should be adjusted for current `device_usage`,
-    /// so that we spread the laod across all available devices appropriatelly.
-    pub fn free_compute(&self) -> u128 {
-        match self {
-            Device::C(dev) => dev.free_compute(),
-            Device::Cblas(dev) => dev.free_compute(),
-            Device::Dummy(dev) => dev.free_compute(),
-            Device::CUDA(dev) => dev.free_compute(),
-            Device::OpenCL(dev) => dev.free_compute(),
-            #[cfg(feature = "tenstorrent")]
-            Device::TT(dev) => dev.free_compute(),
-            Device::Vulkan(dev) => dev.free_compute(),
-            #[cfg(feature = "wgpu")]
-            Device::WGPU(dev) => dev.free_compute(),
-        }
-    }
-
-    /// Whether this device only runs AOT (precompiled) kernels and cannot
-    /// compile generic zyx kernels (e.g. the cblas backend). Such devices
-    /// must be skipped by generic kernel autotuning.
-    pub const fn aot_only(&self) -> bool {
-        matches!(self, Self::Cblas(_))
-    }
-
-    /// Human-readable device name (e.g. "CUDA", "OpenCL", "C").
-    #[cfg(feature = "viz")]
-    pub const fn name(&self) -> &'static str {
-        match self {
-            Device::C(_) => "C",
-            Device::Cblas(_) => "CBLAS",
-            Device::Dummy(_) => "Dummy",
-            Device::CUDA(_) => "CUDA",
-            Device::OpenCL(_) => "OpenCL",
-            #[cfg(feature = "tenstorrent")]
-            Device::TT(_) => "Tenstorrent",
-            Device::Vulkan(_) => "Vulkan",
-            #[cfg(feature = "wgpu")]
-            Device::WGPU(_) => "WGPU",
-        }
-    }
-
-    /// CUDA compute capability, if available.
-    #[cfg(feature = "viz")]
-    pub fn compute_capability(&self) -> Option<[i32; 2]> {
-        match self {
-            Device::CUDA(dev) => Some(dev.compute_capability),
-            _ => None,
-        }
-    }
-
-    /// Whether the C backend was compiled with OpenMP support.
-    #[cfg(feature = "viz")]
-    pub fn has_openmp(&self) -> bool {
-        match self {
-            Device::C(dev) => dev.has_openmp,
-            _ => false,
-        }
-    }
-
-    /// Compile a kernel into a device program. Returns a program ID usable with
-    /// `launch` and `release`. The `debug_asm` flag controls whether the backend
-    /// prints the compiled assembly/source (for `ZYX_DEBUG=16`).
-    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let name = match self {
-            Device::C(_) => "C",
-            Device::Cblas(_) => "cblas",
-            Device::Dummy(_) => "dummy",
-            Device::CUDA(_) => "CUDA",
-            Device::OpenCL(_) => "OPENCL",
-            #[cfg(feature = "tenstorrent")]
-            Device::TT(_) => "tenstorrent",
-            Device::Vulkan(_) => "Vulkan",
-            #[cfg(feature = "wgpu")]
-            Device::WGPU(_) => "WGPU",
-        };
-        let result = match self {
-            Device::C(dev) => dev.compile(kernel, debug_asm),
-            Device::Cblas(dev) => dev.compile(kernel, debug_asm),
-            Device::Dummy(dev) => dev.compile(kernel, debug_asm),
-            Device::CUDA(dev) => dev.compile(kernel, debug_asm),
-            Device::OpenCL(dev) => dev.compile(kernel, debug_asm),
-            #[cfg(feature = "tenstorrent")]
-            Device::TT(dev) => dev.compile(kernel, debug_asm),
-            Device::Vulkan(dev) => dev.compile(kernel, debug_asm),
-            #[cfg(feature = "wgpu")]
-            Device::WGPU(dev) => dev.compile(kernel, debug_asm),
-        };
-        if let Ok(x) = std::env::var("ZYX_DEBUG")
-            && let Ok(x) = x.parse::<u32>()
-            && DebugMask(x).compile()
-        {
-            println!("[{name}] compile kernel");
-        }
-        result
-    }
-
-    /// Free a compiled program and its device resources (pipeline, shader module, etc.).
-    pub fn release(&mut self, program_id: DeviceProgramId) {
-        match self {
-            Device::C(dev) => dev.release(program_id),
-            Device::Cblas(dev) => dev.release(program_id),
-            Device::Dummy(dev) => dev.release(program_id),
-            Device::CUDA(dev) => dev.release(program_id),
-            Device::OpenCL(dev) => dev.release(program_id),
-            #[cfg(feature = "tenstorrent")]
-            Device::TT(dev) => dev.release(program_id),
-            Device::Vulkan(dev) => dev.release(program_id),
-            #[cfg(feature = "wgpu")]
-            Device::WGPU(dev) => dev.release(program_id),
-        }
-    }
-
-    /// Pattern-matches subgraphs in `graph` (e.g. matmul) and adds `Node::Kernel`s
-    /// backed by this device's AOT kernels so they compete with the fused zyx
-    /// kernels in extraction. No-op for devices without AOT kernels.
-    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>) {
-        match self {
-            Device::Cblas(dev) => dev.match_graph(graph, outputs),
-            Device::CUDA(dev) => dev.match_graph(graph, outputs),
-            _ => {}
-        }
-        // A vendor pass adds Node::Kernel nodes with input edges; those must
-        // never close a dependency cycle over the class graph.
-        graph.verify();
-    }
-
-    /// Launch a kernel on the device. Waits on all events in `event_wait_list`
-    /// before submitting to the GPU queue (ensures input buffers are ready).
-    /// Returns an event that signals when the kernel completes.
-    ///
-    /// The `args` are the `LaunchArg`s for the kernel in the order the
-    /// `Param` ops appear in the kernel IR given to compile (flat, head order, all
-    /// kinds: `Variable`/`Global`/`GlobalMut`). `Op::Storage` is NOT a kernel
-    /// parameter. `LaunchArg::Buffer` ids point into `pool` (which must be the
-    /// device's own `memory_pool()`); `LaunchArg::Variable` carries the scalar
-    /// value directly — backends never store variables. The grid (gws) is NOT
-    /// passed here — each backend derives it at launch from the per-axis
-    /// `GwsDim` it stored at compile, evaluating `Param(ordinal)` leaves
-    /// against `args[ordinal]` (`LaunchArg::Variable` → `Constant::as_dim()`).
-    pub fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        pool: Pool,
-        args: &[LaunchArg],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
-        // A kernel always has at least one Param (its output); launching with
-        // no args means buffer binding failed upstream — backends would pass
-        // garbage param pointers to the driver.
-        debug_assert!(!args.is_empty(), "launch with empty args: buffer binding failed upstream");
-        match self {
-            Device::C(dev) => dev.launch(program_id, pool, args, event_wait_list),
-            Device::Cblas(dev) => dev.launch(program_id, pool, args, event_wait_list),
-            Device::Dummy(dev) => dev.launch(program_id, pool, args, event_wait_list),
-            Device::CUDA(dev) => dev.launch(program_id, pool, args, event_wait_list),
-            Device::OpenCL(dev) => dev.launch(program_id, pool, args, event_wait_list),
-            #[cfg(feature = "tenstorrent")]
-            Device::TT(dev) => dev.launch(program_id, pool, args, event_wait_list),
-            Device::Vulkan(dev) => dev.launch(program_id, pool, args, event_wait_list),
-            #[cfg(feature = "wgpu")]
-            Device::WGPU(dev) => dev.launch(program_id, pool, args, event_wait_list),
-        }
     }
 }
