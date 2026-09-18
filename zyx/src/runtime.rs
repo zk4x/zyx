@@ -1099,21 +1099,15 @@ impl Runtime {
                 unreachable!("new_kernel_from_leaf: {:?}", self.tensors[x])
             }
         };
-        // Device comes from the Leaf's buffer pool (Host reports C, Disk
-        // reports Auto — see `device`). Auto (unbound placeholder) gets no
-        // info, mirroring the old from_device_id behavior — without taking
-        // the RT lock (not reentrant).
-        let device_id = self.device(x);
-        let dev_info = if device_id == Dev::Auto {
-            None
-        } else {
-            Some(device_id.info())
-        };
+        // The kernel binds Dev::Auto (unbound placeholder): the launch device
+        // is resolved at compile time and materialize moves the buffers to the
+        // resolved device's pool. Auto carries no info — without taking the
+        // RT lock (not reentrant).
         let kernel_id = self.kernels.push(KernelData {
             outputs: Set::default(),
             loads: Vec::new(),
             stores: Vec::new(),
-            kernel: Kernel::from_device_id(device_id, dev_info),
+            kernel: Kernel::from_device_id(Dev::Auto, None),
         });
         let shape = self.replay_expr(kernel_id, shape_id);
         let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
@@ -2283,76 +2277,78 @@ impl Runtime {
             debug_assert!(old == new || old == 1, "expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", sh, target);
         }
 
-        if self.is_graph(x) {
-            let graph_id = match self.tensors[x] {
-                TensorData::Graph { graph_id, .. } | TensorData::Promoted { graph_id, .. } => graph_id,
-                ref t => unreachable!("{t:?}"),
-            };
-            self.assert_graph_alive(graph_id);
-            if !self.is_graph(x) {
-                self.promote_to_graph(x, graph_id)?;
-            }
-            let x_class = match self.tensors[x] {
-                TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                ref t => unreachable!("{t:?}"),
-            };
-            let shape_class = match self.tensors[shape_id] {
-                TensorData::Graph { class_id, graph_id: g, .. } | TensorData::Promoted { class_id, graph_id: g, .. } => {
-                    assert!(g == graph_id, "expand: shape belongs to a different tape scope");
-                    class_id
-                }
-                _ => self.replay_symbolic_into_graph(graph_id, shape_id),
-            };
-            let (_, class_id) = self.push_node(graph_id, Node::Expand { x: x_class, shape: shape_class });
-            {
-                self.graphs[graph_id].ref_count += 1;
+        match self.tensors[x] {
+            TensorData::Graph { class_id: x_class, graph_id, .. }
+            | TensorData::GraphLeaf { class_id: x_class, graph_id, .. }
+            | TensorData::Promoted { class_id: x_class, graph_id, .. } => {
+                self.assert_graph_alive(graph_id);
+                let shape_class = match self.tensors[shape_id] {
+                    TensorData::Graph { class_id, graph_id: g, .. }
+                    | TensorData::GraphLeaf { class_id, graph_id: g, .. }
+                    | TensorData::Promoted { class_id, graph_id: g, .. } => {
+                        assert!(g == graph_id, "expand: shape belongs to a different tape scope");
+                        class_id
+                    }
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, shape_id),
+                };
+                let (_, class_id) = self.push_node(graph_id, Node::Expand { x: x_class, shape: shape_class });
+                {
+                    self.graphs[graph_id].ref_count += 1;
 
-                let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id: shape_expr, dtype, rc: 1 });
+                    let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id: shape_expr, dtype, rc: 1 });
+                    Ok(tid)
+                }
+            }
+            TensorData::Symbolic { .. } => {
+                // Pure-slab operand (e.g. a broadcast scalar): materialize it into
+                // a fresh eager kernel that replays the slab expression and
+                // expands it to the target shape.
+                let kid = self.kernels.push(KernelData {
+                    outputs: Set::default(),
+                    loads: Vec::new(),
+                    stores: Vec::new(),
+                    kernel: Kernel::from_device_id(Dev::Auto, None),
+                });
+                let val_op = self.replay_symbolic_into_kernel(kid, x);
+                let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);
+                let op_id = self.kernels[kid].kernel.expand(val_op, shape_op);
+                if !shape_expr.is_null() {}
+                let tid = self.tensors.push(TensorData::Eager { kernel_id: kid, op_id, shape_id: shape_expr, dtype, rc: 1 });
+                self.kernels[kid].outputs.insert(tid);
+                #[cfg(feature = "debug_tensor_op")]
+                println!("runtime::expand(x={x}) -> eager from slab: tid={tid}, kid={kid:?}, op_id={op_id:?}");
                 Ok(tid)
             }
-        } else if matches!(self.tensors[x], TensorData::Symbolic { .. }) {
-            // Pure-slab operand (e.g. a broadcast scalar): materialize it into
-            // a fresh eager kernel that replays the slab expression and
-            // expands it to the target shape.
-            let kid = self.kernels.push(KernelData {
-                outputs: Set::default(),
-                loads: Vec::new(),
-                stores: Vec::new(),
-                kernel: Kernel::from_device_id(Dev::Auto, None),
-            });
-            let val_op = self.replay_symbolic_into_kernel(kid, x);
-            let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);
-            let op_id = self.kernels[kid].kernel.expand(val_op, shape_op);
-            if !shape_expr.is_null() {}
-            let tid = self.tensors.push(TensorData::Eager { kernel_id: kid, op_id, shape_id: shape_expr, dtype, rc: 1 });
-            self.kernels[kid].outputs.insert(tid);
-            #[cfg(feature = "debug_tensor_op")]
-            println!("runtime::expand(x={x}) -> eager from slab: tid={tid}, kid={kid:?}, op_id={op_id:?}");
-            Ok(tid)
-        } else {
-            let force_store = match self.tensors[x] {
-                TensorData::Eager { kernel_id, op_id, .. } => self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id),
-                TensorData::Leaf { .. } => false,
-                ref t => panic!("expand: operand tid {x} is not an eager tensor: {t:?}"),
-            };
-            let (kernel_id, op_id) = self.duplicate_or_store(x, force_store)?;
+            TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
+                let force_store = match self.tensors[x] {
+                    TensorData::Eager { kernel_id, op_id, .. } => self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id),
+                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => false,
+                    TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                        panic!("expand: operand tid {x} is not an eager tensor: {:?}", self.tensors[x])
+                    }
+                };
+                let (kernel_id, op_id) = self.duplicate_or_store(x, force_store)?;
 
-            debug_assert_eq!(
-                self.kernels[kernel_id].outputs.len(),
-                0,
-                "input into expand must have empty outputs before the shape kernel is merged"
-            );
-            let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
-            let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape_op);
+                debug_assert_eq!(
+                    self.kernels[kernel_id].outputs.len(),
+                    0,
+                    "input into expand must have empty outputs before the shape kernel is merged"
+                );
+                let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
+                let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape_op);
 
-            let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
+                let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
-            debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
-            self.kernels[kernel_id].outputs.insert(tid);
+                debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
+                self.kernels[kernel_id].outputs.insert(tid);
 
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            Ok(tid)
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+                Ok(tid)
+            }
         }
     }
 
@@ -2466,28 +2462,47 @@ impl Runtime {
             let stacked = self.stack(&dims).expect("pad_zeros: failed to build shape stack");
             let expr = match self.tensors[stacked] {
                 TensorData::Symbolic { expr, .. } => expr,
-                ref t => panic!("pad_zeros: shape tid {stacked} is not symbolic: {t:?}"),
+                TensorData::Eager { .. }
+                | TensorData::Leaf { .. }
+                | TensorData::PendingLeaf { .. }
+                | TensorData::Graph { .. }
+                | TensorData::GraphLeaf { .. }
+                | TensorData::Promoted { .. } => {
+                    panic!("pad_zeros: shape tid {stacked} is not symbolic: {:?}", self.tensors[stacked])
+                }
             };
             self.release(stacked);
             expr
         };
 
         match self.tensors[x] {
-            TensorData::Graph { class_id, graph_id, dtype, .. } | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
+            TensorData::Graph { class_id, graph_id, dtype, .. }
+            | TensorData::GraphLeaf { class_id, graph_id, dtype, .. }
+            | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
                 let lp_class = match self.tensors[lp] {
-                    TensorData::Graph { class_id, graph_id: g, .. } | TensorData::Promoted { class_id, graph_id: g, .. } => {
+                    TensorData::Graph { class_id, graph_id: g, .. }
+                    | TensorData::GraphLeaf { class_id, graph_id: g, .. }
+                    | TensorData::Promoted { class_id, graph_id: g, .. } => {
                         assert!(g == graph_id, "pad_zeros: lp belongs to a different tape scope");
                         class_id
                     }
-                    _ => self.replay_symbolic_into_graph(graph_id, lp),
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, lp),
                 };
                 let len_class = match self.tensors[len] {
-                    TensorData::Graph { class_id, graph_id: g, .. } | TensorData::Promoted { class_id, graph_id: g, .. } => {
+                    TensorData::Graph { class_id, graph_id: g, .. }
+                    | TensorData::GraphLeaf { class_id, graph_id: g, .. }
+                    | TensorData::Promoted { class_id, graph_id: g, .. } => {
                         assert!(g == graph_id, "pad_zeros: len belongs to a different tape scope");
                         class_id
                     }
-                    _ => self.replay_symbolic_into_graph(graph_id, len),
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, len),
                 };
                 let (_, class_id) = self.push_node(graph_id, Node::Pad { x: class_id, axis, lp: lp_class, len: len_class });
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
@@ -2496,7 +2511,7 @@ impl Runtime {
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
                 tid
             }
-            TensorData::Eager { dtype, .. } | TensorData::Leaf { dtype, .. } => {
+            TensorData::Eager { dtype, .. } | TensorData::Leaf { dtype, .. } | TensorData::PendingLeaf { dtype, .. } => {
                 // Duplicate only when the pad actually grows the tensor AND
                 // compute precedes it in the kernel (conv layers need this).
                 let len_const = self
@@ -2509,8 +2524,10 @@ impl Runtime {
                     TensorData::Eager { kernel_id, op_id, .. } => {
                         grows && self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id)
                     }
-                    TensorData::Leaf { .. } => false,
-                    ref t => unreachable!("{t:?}"),
+                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Promoted { .. } => false,
+                    TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Symbolic { .. } => {
+                        unreachable!("{:?}", self.tensors[x])
+                    }
                 };
                 let (kernel_id, op_id) = self.duplicate_or_store(x, force_store).unwrap();
 
@@ -2531,7 +2548,7 @@ impl Runtime {
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
             }
-            ref t => todo!("pad_zeros of pure-slab tensor {t:?}"),
+            TensorData::Symbolic { .. } => todo!("pad_zeros of symbolic scalar"),
         }
     }
 
@@ -2922,93 +2939,93 @@ impl Runtime {
                 .into(),
             ));
         }
-        if self.is_graph(dst) {
-            // Graph-mode in-place assign: record a Node::Assign inside the tape
-            // graph. The plan writes src's value into dst's buffer in-place; dst
-            // is either a realized (promoted) leaf tensor or a movement view over
-            // one (e.g. a slice), whose movement chain the kernelizer replays
-            // into src's kernel so the store lands at the view's position.
-            if dst == src {
-                return Err(ZyxError::ShapeError("assign: dst equals src (self-assign)".into()));
-            }
-            let (dst_cid, graph_id) = match self.tensors[dst] {
-                TensorData::Graph { class_id, graph_id, .. }
-                | TensorData::GraphLeaf { class_id, graph_id, .. }
-                | TensorData::Promoted { class_id, graph_id, .. } => (class_id, graph_id),
-                TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. } => {
-                    unreachable!("assign: is_graph(dst) guaranteed a graph-affiliated tensor: {:?}", self.tensors[dst])
+        match self.tensors[dst] {
+            TensorData::Graph { class_id: dst_cid, graph_id, .. }
+            | TensorData::GraphLeaf { class_id: dst_cid, graph_id, .. }
+            | TensorData::Promoted { class_id: dst_cid, graph_id, .. } => {
+                // Graph-mode in-place assign: record a Node::Assign inside the tape
+                // graph. The plan writes src's value into dst's buffer in-place; dst
+                // is either a realized (promoted) leaf tensor or a movement view over
+                // one (e.g. a slice), whose movement chain the kernelizer replays
+                // into src's kernel so the store lands at the view's position.
+                if dst == src {
+                    return Err(ZyxError::ShapeError("assign: dst equals src (self-assign)".into()));
                 }
-            };
-            self.assert_graph_alive(graph_id);
-            match self.tensors[src] {
-                TensorData::Graph { graph_id: g, .. }
-                | TensorData::GraphLeaf { graph_id: g, .. }
-                | TensorData::Promoted { graph_id: g, .. } => {
-                    if g != graph_id {
-                        panic!("tensor belongs to a different tape scope");
+                self.assert_graph_alive(graph_id);
+                match self.tensors[src] {
+                    TensorData::Graph { graph_id: g, .. }
+                    | TensorData::GraphLeaf { graph_id: g, .. }
+                    | TensorData::Promoted { graph_id: g, .. } => {
+                        if g != graph_id {
+                            panic!("tensor belongs to a different tape scope");
+                        }
                     }
-                }
-                TensorData::Eager { .. }
-                | TensorData::Leaf { .. }
-                | TensorData::PendingLeaf { .. }
-                | TensorData::Symbolic { .. } => {
-                    self.promote_to_graph(src, graph_id)?;
-                }
-            }
-            let mut dst_leaf_cid = dst_cid;
-            // Walk graph to find the source of the lvalue
-            let graph = &self.graphs[graph_id];
-            loop {
-                match graph.nodes[graph.classes[dst_leaf_cid].nodes[0]].node {
-                    Node::Pad { x, .. }
-                    | Node::Flip { x, .. }
-                    | Node::Expand { x, .. }
-                    | Node::Reshape { x, .. }
-                    | Node::Narrow { x, .. }
-                    | Node::Permute { x, .. } => dst_leaf_cid = x,
-                    Node::After { .. } | Node::Leaf { .. } => break,
-                    ref op => unreachable!("{op:?}"),
-                }
-            }
-            // Resolve the base leaf through any After chain (a previous assign on
-            // the same buffer) to find the base tensor. The After for this assign
-            // threads onto the previous After, not the original buffer.
-            let mut leaf_cid = dst_leaf_cid;
-            while let Node::After { x, .. } = &graph.nodes[graph.classes[leaf_cid].nodes[0]].node {
-                leaf_cid = *x;
-            }
-            let dst_leaf = graph.leaf_map[&leaf_cid];
-
-            // The Assign node keeps the ORIGINAL dst-chain and src classes; the
-            // output class cid is what any later use of dst or src resolves to,
-            // so both tensors are re-pointed at it.
-            let src_cid = match self.tensors[src] {
-                TensorData::Graph { class_id, .. }
-                | TensorData::GraphLeaf { class_id, .. }
-                | TensorData::Promoted { class_id, .. } => class_id,
-                TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. } => {
-                    unreachable!("{:?}", self.tensors[src])
-                }
-            };
-            let (_node_id, assign_cid) = self.push_node(graph_id, Node::Assign { dst: dst_cid, src: src_cid });
-            let leaf_class = self.push_node(graph_id, Node::After { x: dst_leaf_cid, dep: assign_cid }).1;
-            let dst_class = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }).1;
-            for (tid, class_id) in [(dst_leaf, leaf_class), (dst, dst_class)] {
-                match &mut self.tensors[tid] {
-                    TensorData::Graph { class_id: c, .. }
-                    | TensorData::GraphLeaf { class_id: c, .. }
-                    | TensorData::Promoted { class_id: c, .. } => *c = class_id,
                     TensorData::Eager { .. }
                     | TensorData::Leaf { .. }
                     | TensorData::PendingLeaf { .. }
                     | TensorData::Symbolic { .. } => {
-                        panic!("assign: tensor {tid} has no graph class to re-point: {:?}", self.tensors[tid])
+                        self.promote_to_graph(src, graph_id)?;
                     }
                 }
+                let mut dst_leaf_cid = dst_cid;
+                // Walk graph to find the source of the lvalue
+                let graph = &self.graphs[graph_id];
+                loop {
+                    match graph.nodes[graph.classes[dst_leaf_cid].nodes[0]].node {
+                        Node::Pad { x, .. }
+                        | Node::Flip { x, .. }
+                        | Node::Expand { x, .. }
+                        | Node::Reshape { x, .. }
+                        | Node::Narrow { x, .. }
+                        | Node::Permute { x, .. } => dst_leaf_cid = x,
+                        Node::After { .. } | Node::Leaf { .. } => break,
+                        ref op => unreachable!("{op:?}"),
+                    }
+                }
+                // Resolve the base leaf through any After chain (a previous assign on
+                // the same buffer) to find the base tensor. The After for this assign
+                // threads onto the previous After, not the original buffer.
+                let mut leaf_cid = dst_leaf_cid;
+                while let Node::After { x, .. } = &graph.nodes[graph.classes[leaf_cid].nodes[0]].node {
+                    leaf_cid = *x;
+                }
+                let dst_leaf = graph.leaf_map[&leaf_cid];
+
+                // The Assign node keeps the ORIGINAL dst-chain and src classes; the
+                // output class cid is what any later use of dst or src resolves to,
+                // so both tensors are re-pointed at it.
+                let src_cid = match self.tensors[src] {
+                    TensorData::Graph { class_id, .. }
+                    | TensorData::GraphLeaf { class_id, .. }
+                    | TensorData::Promoted { class_id, .. } => class_id,
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Symbolic { .. } => {
+                        unreachable!("{:?}", self.tensors[src])
+                    }
+                };
+                let (_node_id, assign_cid) = self.push_node(graph_id, Node::Assign { dst: dst_cid, src: src_cid });
+                let leaf_class = self.push_node(graph_id, Node::After { x: dst_leaf_cid, dep: assign_cid }).1;
+                let dst_class = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }).1;
+                for (tid, class_id) in [(dst_leaf, leaf_class), (dst, dst_class)] {
+                    match &mut self.tensors[tid] {
+                        TensorData::Graph { class_id: c, .. }
+                        | TensorData::GraphLeaf { class_id: c, .. }
+                        | TensorData::Promoted { class_id: c, .. } => *c = class_id,
+                        TensorData::Eager { .. }
+                        | TensorData::Leaf { .. }
+                        | TensorData::PendingLeaf { .. }
+                        | TensorData::Symbolic { .. } => {
+                            panic!("assign: tensor {tid} has no graph class to re-point: {:?}", self.tensors[tid])
+                        }
+                    }
+                }
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> assign_cid={assign_cid:?}");
+                return Ok(());
             }
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> assign_cid={assign_cid:?}");
-            return Ok(());
+            TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. } => {}
         }
         // Merge dst's (movement-only) kernel ops into src's kernel, then store
         // src's value into dst's base buffer in-place. A Leaf src has no

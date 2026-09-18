@@ -158,11 +158,16 @@ impl Tape {
             .into_iter()
             .map(|t| {
                 let class_id = match rt.tensors[t.id] {
-                    TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                    TensorData::Graph { class_id, .. }
+                    | TensorData::GraphLeaf { class_id, .. }
+                    | TensorData::Promoted { class_id, .. } => class_id,
                     // NOTE: never format the `Tensor` itself here (Display
                     // clones + re-locks RT, which deadlocks under this guard);
                     // `TensorData`'s Debug is lock-free.
-                    ref td => panic!(
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Symbolic { .. } => panic!(
                         "Tape::realize was given a tensor that never entered the tape's graph \
                          (tid {}, data {:?}).\n\
                          This is a caller mistake, not a zyx bug: the tensor is eager — it was \
@@ -174,7 +179,7 @@ impl Tape {
                          with a graph tensor are pulled into the graph automatically; an all-eager \
                          chain stays eager.",
                         t.id(),
-                        td
+                        rt.tensors[t.id]
                     ),
                 };
                 (t.id, class_id)

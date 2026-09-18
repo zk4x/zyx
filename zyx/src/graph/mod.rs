@@ -2659,8 +2659,13 @@ impl Runtime {
             TensorData::GraphLeaf { graph_id, shape_id, dtype, rc, buffer: old, .. } => {
                 // Realized: release the previous buffer and re-point at the
                 // realization's buffer. No producer to detach from (GraphLeaf
-                // carries no kernel_id).
-                old.pool.release(old.buffer_id);
+                // carries no kernel_id). When both are the SAME buffer (an
+                // assign's After class aliases the base leaf's buffer), the
+                // rc transfers to the kept binding — releasing would
+                // deallocate the buffer this Leaf continues to hold.
+                if old != new_buffer_id {
+                    old.pool.release(old.buffer_id);
+                }
                 self.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer: new_buffer_id, rc };
                 graph_id
             }

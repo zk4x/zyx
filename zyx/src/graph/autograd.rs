@@ -15,24 +15,27 @@ use std::collections::BTreeSet;
 impl Runtime {
     pub(crate) fn gradient(&mut self, target: TensorId, sources: Set<TensorId>, graph_id: GraphId) -> Map<TensorId, TensorId> {
         let target_class = match self.tensors[target] {
-            TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-            _ => ClassId::NULL,
+            TensorData::Graph { class_id, .. }
+            | TensorData::GraphLeaf { class_id, .. }
+            | TensorData::Promoted { class_id, .. } => class_id,
+            TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. } => {
+                panic!("gradient on non-graph tensor")
+            }
         };
-        if target_class.is_null() {
-            panic!("gradient on non-graph tensor");
-        }
         let source_classes: Set<ClassId> = sources
             .iter()
             .map(|tid| match self.tensors[*tid] {
-                TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                _ => ClassId::NULL,
+                TensorData::Graph { class_id, .. }
+                | TensorData::GraphLeaf { class_id, .. }
+                | TensorData::Promoted { class_id, .. } => class_id,
+                TensorData::Eager { .. }
+                | TensorData::Leaf { .. }
+                | TensorData::PendingLeaf { .. }
+                | TensorData::Symbolic { .. } => {
+                    panic!("one of the sources is non-graph tensor: {tid}")
+                }
             })
             .collect();
-        for class_id in &source_classes {
-            if class_id.is_null() {
-                panic!("one of the sources is non-graph tensor");
-            }
-        }
 
         let output_set: BTreeSet<ClassId> = [target_class].into();
         let topo = self.graphs[graph_id].build_topo(&output_set, &source_classes);
@@ -428,15 +431,29 @@ impl Runtime {
         for tid in sources {
             // The gradient result shares the source's shape expression.
             let (shape_id, dtype) = match self.tensors[tid] {
-                TensorData::Graph { shape_id, dtype, .. } | TensorData::Promoted { shape_id, dtype, .. } => (shape_id, dtype),
-                ref t => panic!("gradient source {tid} is not a graph tensor: {t:?}"),
+                TensorData::Graph { shape_id, dtype, .. }
+                | TensorData::GraphLeaf { shape_id, dtype, .. }
+                | TensorData::Promoted { shape_id, dtype, .. } => (shape_id, dtype),
+                TensorData::Eager { .. }
+                | TensorData::Leaf { .. }
+                | TensorData::PendingLeaf { .. }
+                | TensorData::Symbolic { .. } => {
+                    panic!("gradient source {tid} is not a graph tensor: {:?}", self.tensors[tid])
+                }
             };
             // Shape expressions live in the append-only expr slab: shared by
             // reference, no retain needed.
             let _ = shape_id;
             let grad_tid = match grads.get(&match self.tensors[tid] {
-                TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                ref t => unreachable!("{t:?}"),
+                TensorData::Graph { class_id, .. }
+                | TensorData::GraphLeaf { class_id, .. }
+                | TensorData::Promoted { class_id, .. } => class_id,
+                TensorData::Eager { .. }
+                | TensorData::Leaf { .. }
+                | TensorData::PendingLeaf { .. }
+                | TensorData::Symbolic { .. } => {
+                    unreachable!("{:?}", self.tensors[tid])
+                }
             }) {
                 Some(&gcid) => gcid,
                 None => {
