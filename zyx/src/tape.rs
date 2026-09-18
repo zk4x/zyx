@@ -47,11 +47,10 @@ use std::collections::BTreeSet;
 
 use crate::{
     DType, Map, RT, Set, Tensor, ZyxError,
-    backend::BufferId,
+    backend::Buffer,
     dtype::Constant,
     graph::{ClassId, Graph, GraphId},
-    kernel::Dev,
-    runtime::{KernelId, Runtime, TensorData},
+    runtime::{Runtime, TensorData},
     shape::Dim,
     slab::SlabId,
     tensor::TensorId,
@@ -191,11 +190,11 @@ impl Tape {
         let cache_key = rt.plan_cache_key(graph_id, &output_set);
 
         if let Some(plan) = rt.plan_cache.get(&cache_key) {
-            let mut class_buf: Map<ClassId, BufferId> = Map::default();
+            let mut class_buf: Map<ClassId, Buffer> = Map::default();
             let mut class_vars: Map<ClassId, Constant> = Map::default();
             for &cid in &plan.leaf_classes {
                 let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
-                if let Some(&buf_id) = rt.buffer_map.get(&tid) {
+                if let Some(buf_id) = rt.leaf_buffer(tid) {
                     class_buf.insert(cid, buf_id);
                 } else {
                     // Variable leaf: no buffer anywhere; its scalar value
@@ -207,8 +206,7 @@ impl Tape {
 
             rt.execute_plan(cache_key, &mut class_buf, &class_vars)?;
             for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
-                rt.buffer_map.insert(tid, class_buf[&cid]);
-                rt.eagerify(tid);
+                rt.eagerify(tid, class_buf[&cid]);
             }
             rt.debug_assert_no_stray_buffers(graph_id, &output_tids);
 
@@ -217,11 +215,11 @@ impl Tape {
 
         let plan = rt.compile_graph(graph_id, &output_set)?;
 
-        let mut class_buf: Map<ClassId, BufferId> = Map::default();
+        let mut class_buf: Map<ClassId, Buffer> = Map::default();
         let mut class_vars: Map<ClassId, Constant> = Map::default();
         for &cid in &plan.leaf_classes {
             let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
-            if let Some(&buf_id) = rt.buffer_map.get(&tid) {
+            if let Some(buf_id) = rt.leaf_buffer(tid) {
                 class_buf.insert(cid, buf_id);
             } else {
                 // Variable leaf: no buffer anywhere; its scalar value
@@ -235,8 +233,7 @@ impl Tape {
 
         rt.execute_plan(cache_key, &mut class_buf, &class_vars)?;
         for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
-            rt.buffer_map.insert(tid, class_buf[&cid]);
-            rt.eagerify(tid);
+            rt.eagerify(tid, class_buf[&cid]);
         }
         rt.debug_assert_no_stray_buffers(graph_id, &output_tids);
 
@@ -321,41 +318,41 @@ impl Drop for Tape {
                             // clears the graph affiliation.
                             rt.release(tid);
                         } else {
-                            rt.eagerify(tid);
+                            rt.eagerify(tid, Buffer::NULL);
                         }
                     }
                 }
-                TensorData::Graph { graph_id: _g, rc, .. } => {
+                TensorData::GraphLeaf { buffer_id, rc, .. } => {
+                    // A buffer-backed Graph tensor is a promoted **Leaf**:
+                    // its value is computed and its buffer lives on —
+                    // revert it to a Leaf instead of tombstoning, so the
+                    // eager handle stays usable after the tape dies. The
+                    // leaf-edge rc is released by the `leafs` loop below.
                     if rc > 0 {
-                        // A buffer-backed Graph tensor is a promoted **Leaf**:
-                        // its value is computed and its buffer lives on —
-                        // revert it to a Leaf instead of tombstoning, so the
-                        // eager handle stays usable after the tape dies. The
-                        // leaf-edge rc is released by the `leafs` loop below.
-                        if rt.buffer_map.contains_key(&tid) {
-                            rt.graphs[graph_id].ref_count -= 1;
-                            match &mut rt.tensors[tid] {
-                                TensorData::Graph { graph_id, class_id, .. } => {
-                                    *graph_id = GraphId::NULL;
-                                    *class_id = ClassId::NULL;
-                                }
-                                _ => unreachable!(),
+                        rt.graphs[graph_id].ref_count -= 1;
+                        match &mut rt.tensors[tid] {
+                            TensorData::Graph { graph_id, class_id, .. } => {
+                                *graph_id = GraphId::NULL;
+                                *class_id = ClassId::NULL;
                             }
-                            let (shape_id, dtype, rc) = match rt.tensors[tid] {
-                                TensorData::Graph { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
-                                _ => unreachable!(),
-                            };
-                            rt.tensors[tid] =
-                                TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: Dev::Auto, rc };
-                        } else {
-                            rt.graphs[graph_id].ref_count -= 1;
-                            match &mut rt.tensors[tid] {
-                                TensorData::Graph { graph_id, class_id, .. } => {
-                                    *graph_id = GraphId::NULL;
-                                    *class_id = ClassId::NULL;
-                                }
-                                _ => unreachable!(),
+                            _ => unreachable!(),
+                        }
+                        let (shape_id, dtype, rc) = match rt.tensors[tid] {
+                            TensorData::Graph { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
+                            _ => unreachable!(),
+                        };
+                        rt.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer_id, rc };
+                    }
+                }
+                TensorData::Graph { rc, .. } => {
+                    if rc > 0 {
+                        rt.graphs[graph_id].ref_count -= 1;
+                        match &mut rt.tensors[tid] {
+                            TensorData::Graph { graph_id, class_id, .. } => {
+                                *graph_id = GraphId::NULL;
+                                *class_id = ClassId::NULL;
                             }
+                            _ => unreachable!(),
                         }
                     }
                 }
@@ -475,15 +472,15 @@ impl FrozenTape {
     pub fn replay<'a>(&self, inputs: impl IntoIterator<Item = &'a Tensor>) -> Result<Vec<Tensor>, ZyxError> {
         let mut rt = RT.lock();
 
-        let mut class_buf: Map<ClassId, BufferId> = Map::default();
+        let mut class_buf: Map<ClassId, Buffer> = Map::default();
         let mut class_vars: Map<ClassId, Constant> = Map::default();
-        for (tid, &cid) in inputs.into_iter().zip(rt.plan_cache[&self.cache_key].leaf_classes.iter()) {
+        for (tensor, &cid) in inputs.into_iter().zip(rt.plan_cache[&self.cache_key].leaf_classes.iter()) {
             // The frozen contract: leaf bindings are fixed since `freeze` — a
             // compiled plan bakes pool-dependent decisions (ExecPlan::new's
             // cross-pool alias handling), so replaying with a leaf buffer in a
             // different pool would execute a wrong plan. Loud error instead:
             // re-freeze the tape.
-            if let Some(&buf_id) = rt.buffer_map.get(&tid.id) {
+            if let Some(buf_id) = rt.leaf_buffer(tensor.id) {
                 let expected = rt.plan_cache[&self.cache_key].leaf_pools.get(&cid).copied();
                 if expected != Some(buf_id.pool) {
                     return Err(ZyxError::frozen_plan_stale(
@@ -499,7 +496,7 @@ impl FrozenTape {
             } else {
                 // Variable leaf: no buffer anywhere; its scalar value
                 // resolves from variable_map (directly or symbolically).
-                let value = rt.resolve_symbolic(tid.id).expect("replay input resolves neither to a buffer nor a variable");
+                let value = rt.resolve_symbolic(tensor.id).expect("replay input resolves neither to a buffer nor a variable");
                 class_vars.insert(cid, value);
             }
         }
@@ -518,8 +515,7 @@ impl FrozenTape {
                 }
                 s
             };
-            let tid = rt.new_eager_tensor(stid, *dtype);
-            rt.buffer_map.insert(tid, class_buf[cid]);
+            let tid = rt.new_eager_tensor(stid, *dtype, class_buf[cid]);
             outputs.push(Tensor::from_id(tid));
         }
 
@@ -543,7 +539,7 @@ impl Runtime {
                     && !self.graphs[graph_id].is_after(class_id)
                 {
                     debug_assert!(
-                        !self.buffer_map.contains_key(&tid),
+                        self.leaf_buffer(tid).is_none(),
                         "non-leaf, non-output graph tensor {tid} realized after execute_plan"
                     );
                 }

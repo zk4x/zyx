@@ -23,7 +23,7 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::derived_hash_with_manual_eq)]
 
-use crate::backend::{Dev, DeviceProgramId, LaunchArg, Pool, PoolBufferId};
+use crate::backend::{Dev, DeviceProgramId, LaunchArg};
 use crate::dtype::{Constant, DType};
 use crate::error::BackendError;
 use crate::hashers::AHasher;
@@ -109,12 +109,6 @@ impl Kernel {
         }
     }
 
-    pub(crate) fn dealloc_buffers(&self, args: Vec<PoolBufferId>, pool: Pool) {
-        for buf in args {
-            pool.deallocate(buf, Vec::new());
-        }
-    }
-
     /// Get a hash of the kernel for deduplication during autotuning.
     ///
     /// This hash is used to track visited kernel states and avoid
@@ -132,14 +126,10 @@ impl Kernel {
         &self,
         buffers: &[LaunchArg],
         device: Dev,
-        pool: Pool,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
-        let begin = std::time::Instant::now();
-        let event = device.launch(program_id, buffers, Vec::new())?;
-        pool.sync_events(vec![event])?;
-        let nanos = begin.elapsed().as_nanos() as u64;
+        let nanos = device.launch_timed(program_id, buffers)?;
         Ok((program_id, nanos))
     }
 }
@@ -268,8 +258,8 @@ impl BeamSearch {
     ) -> Result<(Kernel, u64), ZyxError> {
         let mut args: Vec<LaunchArg> = Vec::with_capacity(tensors.len());
         for tensor in tensors {
-            if let Some(&buf_id) = rt.buffer_map.get(&tensor.id()) {
-                args.push(LaunchArg::Buffer(buf_id.buffer));
+            if let Some(buf_id) = rt.leaf_buffer(tensor.id()) {
+                args.push(LaunchArg::Buffer(buf_id.buffer_id));
             } else if let Some(value) = rt.resolve_symbolic(tensor.id()) {
                 args.push(LaunchArg::Variable(value));
             } else {
@@ -306,13 +296,10 @@ impl BeamSearch {
         if seeds.is_empty() {
             return Err(ZyxError::kernel_error("autotune: no seeds".into()));
         }
-        let device_id = seeds[0].device_id;
-        if seeds.iter().any(|seed| seed.device_id != device_id) {
+        let dev = seeds[0].device_id;
+        if seeds.iter().any(|seed| seed.device_id != dev) {
             return Err(ZyxError::kernel_error("autotune: seeds span multiple devices".into()));
         }
-        let pool_id = device_id.pool();
-        let device = device_id;
-        let pool = pool_id;
 
         // Every seed must be linearized and share one parameter signature;
         // `args` binds against it positionally (read-only params first, then
@@ -454,7 +441,7 @@ impl BeamSearch {
                         kernel.debug();
                     }
 
-                    match kernel.launch_with_timings(&args, device, pool, debug) {
+                    match kernel.launch_with_timings(&args, dev, debug) {
                         Ok((program_id, time)) => {
                             programs.push(program_id);
                             if time < best_time {
@@ -472,7 +459,7 @@ impl BeamSearch {
 
         // Drop all compiled programs; the winner is returned as a kernel.
         for program_id in programs {
-            device.release(program_id);
+            dev.release(program_id);
         }
 
         match best_kernel {

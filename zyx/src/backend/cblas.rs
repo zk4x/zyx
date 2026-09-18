@@ -16,7 +16,7 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(clippy::needless_pass_by_ref_mut)]
 
-use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool, ProgramId, host::HostEvent};
+use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Pool, ProgramId};
 use crate::{
     DType, Set,
     error::{BackendError, ErrorStatus},
@@ -244,9 +244,8 @@ impl CblasDevice {
         program_id: DeviceProgramId,
         pool_handle: Pool,
         args: &[LaunchArg],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
-        let _ = event_wait_list; // sync not needed for sequential CPU
+    ) -> Result<(), BackendError> {
+        // Sequential CPU: the kernel runs to completion before returning.
         debug_assert_eq!(pool_handle, Pool::Host);
         let host = super::host::pool();
         let mut memory_pool = super::lock(pool_handle, &host);
@@ -280,6 +279,6 @@ impl CblasDevice {
             (kernel.sgemm)(CBLAS_ROW_MAJOR, CBLAS_NO_TRANS, CBLAS_NO_TRANS, m, n, k, 1.0, a, k, b, n, 0.0, c, n);
         }
 
-        Ok(Event::Host(HostEvent))
+        Ok(())
     }
 }

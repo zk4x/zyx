@@ -15,6 +15,7 @@ use std::sync::{
 
 use libloading::Library;
 use nanoserde::DeJson;
+use std::time::Instant;
 
 use crate::kernel::{Op, RangeKind};
 use crate::{
@@ -26,7 +27,7 @@ use crate::{
 };
 
 use super::{
-    DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
+    DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
 };
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
@@ -382,27 +383,38 @@ pub struct VulkanConfig {
 
 // ── Worker-thread command enum ───────────────────────────────────────────────
 
+/// Pending commands accumulate until the micro-batch window is flushed.
+const MICRO_BATCH_WINDOW: usize = 100;
+
 enum VulkanCommand {
     Allocate {
         bytes: Dim,
-        reply: Sender<Result<(PoolBufferId, Event), BackendError>>,
+        reply: Sender<Result<PoolBufferId, BackendError>>,
     },
-    Deallocate {
+    Retain {
         buffer_id: PoolBufferId,
-        event_wait_list: Vec<Event>,
     },
-    HostToPool {
-        src: *const u8,
+    Release {
+        buffer_id: PoolBufferId,
+    },
+    /// Async copy into this pool's buffer (host-mapped memcpy on the worker,
+    /// ordered against pending/in-flight GPU work). `VulkanMemoryPool::
+    /// pool_to_pool` retained the source pool buffer; the worker releases it
+    /// once the copy is done.
+    Copy {
+        src_pool: Pool,
+        src_buf: PoolBufferId,
+        src_ptr: *const u8,
         bytes: usize,
-        dst: PoolBufferId,
-        event_wait_list: Vec<Event>,
-        reply: Sender<Result<Event, BackendError>>,
+        dst_buf: PoolBufferId,
     },
+    /// Blocking read-back: the reply is sent after the data arrived in host
+    /// memory. This is a sync point — all pending work is submitted and
+    /// every in-flight batch is drained first.
     PoolToHost {
         src: PoolBufferId,
         dst: *mut u8,
         bytes: usize,
-        event_wait_list: Vec<Event>,
         reply: Sender<Result<(), BackendError>>,
     },
     Compile {
@@ -410,21 +422,41 @@ enum VulkanCommand {
         debug_asm: bool,
         reply: Sender<Result<DeviceProgramId, BackendError>>,
     },
+    /// Fire-and-forget kernel launch: appended to the pending micro-batch
+    /// window; the whole window is submitted as one batched vkQueueSubmit
+    /// when it flushes.
     Launch {
         program_id: DeviceProgramId,
         args: Vec<LaunchArg>,
-        event_wait_list: Vec<Event>,
-        reply: Sender<Result<Event, BackendError>>,
     },
-    SyncEvents {
-        events: Vec<Event>,
-        reply: Sender<Result<(), BackendError>>,
+    /// Timed launch for autotune: flush + drain first (uncontended timing),
+    /// then launch solo and measure enqueue-to-fence.
+    LaunchTimed {
+        program_id: DeviceProgramId,
+        args: Vec<LaunchArg>,
+        reply: Sender<Result<u64, BackendError>>,
     },
     ReleaseProgram(DeviceProgramId),
-    ReleaseEvents(Vec<Event>),
 }
 
 unsafe impl Send for VulkanCommand {}
+
+enum Pending {
+    Launch {
+        program_id: DeviceProgramId,
+        args: Vec<LaunchArg>,
+    },
+}
+
+/// One batched submission: the window's command buffers were recorded and
+/// submitted with a single fence. Resources are freed once the fence signals
+/// (sweep/drain) — never behind in-flight GPU work.
+struct InFlight {
+    fence: VkFence,
+    cmds: Vec<VkCommandBuffer>,
+    desc_sets: Vec<VkDescriptorSet>,
+    buffers: Vec<PoolBufferId>,
+}
 
 // ── Memory Pool ──────────────────────────────────────────────────────────────
 
@@ -484,83 +516,78 @@ impl VulkanMemoryPool {
     pub(super) fn free_bytes(&self) -> Dim {
         self.free_bytes.load(Ordering::SeqCst) as i64
     }
-    pub(super) fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
+    pub(super) fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
         let (reply, rx) = channel();
         self.tx.send(VulkanCommand::Allocate { bytes, reply }).unwrap();
         rx.recv().unwrap()
     }
-    pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
-        self.tx.send(VulkanCommand::Deallocate { buffer_id, event_wait_list }).unwrap();
+    /// Increment the buffer's reference count (allocate starts it at 1).
+    pub(super) fn retain(&mut self, buffer_id: PoolBufferId) {
+        self.tx.send(VulkanCommand::Retain { buffer_id }).unwrap();
     }
-    pub(super) fn host_to_pool(
-        &mut self,
-        src: &[u8],
-        dst: PoolBufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    /// Decrement the buffer's reference count. At zero the worker waits for
+    /// all in-flight batches touching the buffer before freeing it — the
+    /// buffer is never freed behind in-flight GPU work (the worker waits;
+    /// callers never block).
+    pub(super) fn release(&mut self, buffer_id: PoolBufferId) {
+        self.tx.send(VulkanCommand::Release { buffer_id }).unwrap();
+    }
+    /// Blocking read-back (sync point).
+    pub(super) fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
         let (reply, rx) = channel();
-        self.tx.send(VulkanCommand::HostToPool { src: src.as_ptr(), bytes: src.len(), dst, event_wait_list, reply }).unwrap();
+        self.tx.send(VulkanCommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len(), reply }).unwrap();
         rx.recv().unwrap()
     }
-    pub(super) fn pool_to_pool(
-        &mut self,
-        src: Pool,
-        src_buf: PoolBufferId,
-        dst_buf: PoolBufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    /// Copy into this pool (dst-owned). The source pool buffer is retained
+    /// here and released by the worker once the copy is done. Host sources
+    /// copy directly; every other pool stages through a temporary host-pool
+    /// buffer.
+    pub(super) fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
+        // Retain the source buffer for the duration of the copy; the worker
+        // releases it back once the copy is done.
+        src.retain(src_buf);
         match src {
             Pool::Host => {
                 let src_pool = super::host::pool();
                 let src_pool = super::lock(src, &src_pool);
-                self.host_to_pool(src_pool.get_buffer(src_buf), dst_buf, event_wait_list)
+                let bytes = src_pool.get_buffer(src_buf).len();
+                let src_ptr = src_pool.get_buffer(src_buf).as_ptr();
+                drop(src_pool);
+                self.tx.send(VulkanCommand::Copy { src_pool: Pool::Host, src_buf, src_ptr, bytes, dst_buf }).unwrap();
+                Ok(())
             }
             Pool::Disk => {
                 let src_pool = super::disk::pool();
                 let mut src_pool = super::lock(src, &src_pool);
                 let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src_buf) as usize];
-                src_pool.pool_to_host(src_buf, &mut byte_slice, Vec::new())?;
+                let staged = src_pool.pool_to_host(src_buf, &mut byte_slice);
                 drop(src_pool);
-                self.host_to_pool(&byte_slice, dst_buf, event_wait_list)
+                match staged {
+                    Ok(()) => {
+                        src.release(src_buf);
+                        let tmp = Pool::Host.insert_host(byte_slice.into_boxed_slice());
+                        let host_pool = super::host::pool();
+                        let host_pool = super::lock(Pool::Host, &host_pool);
+                        let bytes = host_pool.get_buffer(tmp).len();
+                        let src_ptr = host_pool.get_buffer(tmp).as_ptr();
+                        drop(host_pool);
+                        self.tx.send(VulkanCommand::Copy { src_pool: Pool::Host, src_buf: tmp, src_ptr, bytes, dst_buf }).unwrap();
+                        Ok(())
+                    }
+                    Err(err) => {
+                        src.release(src_buf);
+                        Err(err)
+                    }
+                }
             }
-            _ => todo!(),
+            Pool::Cuda(_) => todo!("cross-pool copy from CUDA to Vulkan"),
+            Pool::OpenCL(_) => todo!("cross-pool copy from OpenCL to Vulkan"),
+            Pool::Vulkan(_) | Pool::Dummy => todo!("cross-pool copy from {src:?} to Vulkan"),
+            #[cfg(feature = "tenstorrent")]
+            Pool::TT(_) => todo!("cross-pool copy from TT to Vulkan"),
+            #[cfg(feature = "wgpu")]
+            Pool::WGPU(_) => todo!("cross-pool copy from WGPU to Vulkan"),
         }
-    }
-    pub(super) fn pool_to_host(
-        &mut self,
-        src: PoolBufferId,
-        dst: &mut [u8],
-        event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError> {
-        let (reply, rx) = channel();
-        self.tx
-            .send(VulkanCommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len(), event_wait_list, reply })
-            .unwrap();
-        rx.recv().unwrap()
-    }
-    pub(super) fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
-        let (reply, rx) = channel();
-        self.tx.send(VulkanCommand::SyncEvents { events, reply }).unwrap();
-        rx.recv().unwrap()
-    }
-    pub(super) fn release_events(&mut self, events: Vec<Event>) {
-        self.tx.send(VulkanCommand::ReleaseEvents(events)).unwrap();
-    }
-}
-
-// ── Event ────────────────────────────────────────────────────────────────────
-
-pub struct VulkanEvent {
-    fence: VkFence,
-    cmd: VkCommandBuffer,
-    desc_set: VkDescriptorSet,
-}
-
-unsafe impl Send for VulkanEvent {}
-
-impl std::fmt::Debug for VulkanEvent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VulkanEvent").finish_non_exhaustive()
     }
 }
 
@@ -583,6 +610,7 @@ pub(super) struct VulkanBuffer {
     mem: VkDeviceMemory,
     ptr: *mut u8,
     bytes: usize,
+    rc: u16,
 }
 
 // ── Device ───────────────────────────────────────────────────────────────────
@@ -614,16 +642,26 @@ impl VulkanDevice {
         self.tx.send(VulkanCommand::Compile { kernel: Box::new(kernel.clone()), debug_asm, reply }).unwrap();
         rx.recv().unwrap()
     }
+    /// Fire-and-forget launch: the command is queued to the device's worker,
+    /// which appends it to the micro-batch window; the whole window is
+    /// submitted as one batched vkQueueSubmit when it flushes.
     pub(super) fn launch(
         &mut self,
         program_id: DeviceProgramId,
         pool_handle: Pool,
         args: &[LaunchArg],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    ) -> Result<(), BackendError> {
         debug_assert_eq!(pool_handle, self.memory_pool);
+        self.tx.send(VulkanCommand::Launch { program_id, args: args.to_vec() }).unwrap();
+        Ok(())
+    }
+
+    /// Timed launch for autotune: the worker's pending window is submitted
+    /// and every in-flight batch drained first, then the kernel runs solo and
+    /// the wall-clock nanos are measured around submit-to-fence.
+    pub(super) fn launch_timed(&mut self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<u64, BackendError> {
         let (reply, rx) = channel();
-        self.tx.send(VulkanCommand::Launch { program_id, args: args.to_vec(), event_wait_list, reply }).unwrap();
+        self.tx.send(VulkanCommand::LaunchTimed { program_id, args: args.to_vec(), reply }).unwrap();
         rx.recv().unwrap()
     }
 }
@@ -640,6 +678,339 @@ fn find_mem_type(
     unsafe { vkGetPhysicalDeviceMemoryProperties(gpu, &mut mem) };
     (0..mem.memoryTypeCount)
         .find(|&i| (type_filter & (1 << i)) != 0 && mem.memoryTypes[i as usize].propertyFlags & required == required)
+}
+
+// ── Batched submission ───────────────────────────────────────────────────────
+
+/// Records the pending micro-batch window and submits it as ONE batched
+/// `vkQueueSubmit` with a single fence. The batch is pushed to `inflight`;
+/// its resources are freed once the fence signals (`sweep_inflight` /
+/// `drain_*`) — never behind in-flight GPU work. Commands are recorded in
+/// program order on the single in-order queue, so no cross-command waits are
+/// needed.
+#[allow(clippy::too_many_arguments)]
+fn submit_window(
+    pending: &mut Vec<Pending>,
+    queue: VkQueue,
+    device: VkDevice,
+    cmd_pool: VkCommandPool,
+    desc_pool: VkDescriptorPool,
+    buffers: &Slab<PoolBufferId, VulkanBuffer>,
+    programs: &Slab<DeviceProgramId, VulkanProgram>,
+    max_grid: &[Dim],
+    inflight: &mut Vec<InFlight>,
+    debug_dev: bool,
+    vkAllocateDescriptorSets: unsafe extern "system" fn(VkDevice, *const VkDescriptorSetAllocateInfo, *mut VkDescriptorSet) -> VkResult,
+    vkUpdateDescriptorSets: unsafe extern "system" fn(VkDevice, u32, *const VkWriteDescriptorSet, u32, *const std::ffi::c_void),
+    vkAllocateCommandBuffers: unsafe extern "system" fn(VkDevice, *const VkCommandBufferAllocateInfo, *mut VkCommandBuffer) -> VkResult,
+    vkBeginCommandBuffer: unsafe extern "system" fn(VkCommandBuffer, *const VkCommandBufferBeginInfo) -> VkResult,
+    vkEndCommandBuffer: unsafe extern "system" fn(VkCommandBuffer) -> VkResult,
+    vkCmdBindPipeline: unsafe extern "system" fn(VkCommandBuffer, u32, VkPipeline),
+    vkCmdPushConstants: unsafe extern "system" fn(VkCommandBuffer, VkPipelineLayout, u32, u32, u32, *const std::ffi::c_void),
+    vkCmdBindDescriptorSets: unsafe extern "system" fn(
+        VkCommandBuffer,
+        u32,
+        VkPipelineLayout,
+        u32,
+        u32,
+        *const VkDescriptorSet,
+        u32,
+        *const u32,
+    ),
+    vkCmdDispatch: unsafe extern "system" fn(VkCommandBuffer, u32, u32, u32),
+    vkCreateFence: unsafe extern "system" fn(VkDevice, *const VkFenceCreateInfo, *const std::ffi::c_void, *mut VkFence) -> VkResult,
+    vkQueueSubmit: unsafe extern "system" fn(VkQueue, u32, *const VkSubmitInfo, VkFence) -> VkResult,
+) -> Result<(), BackendError> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let mut cmds: Vec<VkCommandBuffer> = Vec::with_capacity(pending.len());
+    let mut desc_sets: Vec<VkDescriptorSet> = Vec::with_capacity(pending.len());
+    let mut batch_buffers: Vec<PoolBufferId> = Vec::new();
+    let mut submit_infos: Vec<VkSubmitInfo> = Vec::with_capacity(pending.len());
+    for Pending::Launch { program_id, args } in pending.drain(..) {
+        let prog = &programs[program_id];
+
+        let ds_layouts = [prog.desc_layout];
+        let ds_alloc = VkDescriptorSetAllocateInfo {
+            sType: VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            pNext: std::ptr::null(),
+            descriptorPool: desc_pool,
+            descriptorSetCount: 1,
+            pSetLayouts: ds_layouts.as_ptr(),
+        };
+        let mut desc_set = std::ptr::null_mut();
+        let res = unsafe { vkAllocateDescriptorSets(device, &ds_alloc, &mut desc_set) };
+        if res != VK_SUCCESS {
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("vkAllocateDescriptorSets: {res}").into(),
+            });
+        }
+        // Separate buffer args (descriptors) from variable args (push constants).
+        // Buffer bindings are 0..nbuffers in param order; push-constant members
+        // use the same std140 layout as the SPIR-V block, in param order.
+        let mut buf_infos: Vec<VkDescriptorBufferInfo> = Vec::with_capacity(args.len());
+        let mut push_constants: Vec<u8> = vec![0u8; prog.push_constants_size as usize];
+        let mut push_off: u32 = 0;
+        for arg_id in &args {
+            match arg_id {
+                LaunchArg::Variable(constant) => {
+                    let storage_bits =
+                        if constant.dtype() == crate::DType::Bool { 32 } else { constant.dtype().bit_size() };
+                    let size = storage_bits as u32 / 8;
+                    let align = if size >= 8 { 8 } else { 4 };
+                    push_off = push_off.next_multiple_of(align);
+                    let bytes = constant.to_le_bytes();
+                    push_constants[push_off as usize..push_off as usize + bytes.len()].copy_from_slice(&bytes);
+                    push_off += size;
+                }
+                LaunchArg::Buffer(buffer_id) => {
+                    buf_infos.push(VkDescriptorBufferInfo {
+                        buffer: buffers[*buffer_id].buf,
+                        offset: 0,
+                        range: VK_WHOLE_SIZE,
+                    });
+                    batch_buffers.push(*buffer_id);
+                }
+            }
+        }
+        let n_buffers = buf_infos.len();
+        let mut writes: Vec<VkWriteDescriptorSet> = Vec::with_capacity(n_buffers);
+        for (i, buf_info) in buf_infos.iter().enumerate() {
+            writes.push(VkWriteDescriptorSet {
+                sType: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                pNext: std::ptr::null(),
+                dstSet: desc_set,
+                dstBinding: i as u32,
+                dstArrayElement: 0,
+                descriptorCount: 1,
+                descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                pImageInfo: std::ptr::null(),
+                pBufferInfo: buf_info,
+                pTexelBufferView: std::ptr::null(),
+            });
+        }
+        unsafe { vkUpdateDescriptorSets(device, writes.len() as u32, writes.as_ptr(), 0, std::ptr::null()) };
+
+        let cmd_alloc = VkCommandBufferAllocateInfo {
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            pNext: std::ptr::null(),
+            commandPool: cmd_pool,
+            level: VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1,
+        };
+        let mut cmd = std::ptr::null_mut();
+        let res = unsafe { vkAllocateCommandBuffers(device, &cmd_alloc, &mut cmd) };
+        if res != VK_SUCCESS {
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("vkAllocateCommandBuffers: {res}").into(),
+            });
+        }
+
+        let begin = VkCommandBufferBeginInfo {
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            pNext: std::ptr::null(),
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            pInheritanceInfo: std::ptr::null(),
+        };
+        let res = unsafe { vkBeginCommandBuffer(cmd, &begin) };
+        if res != VK_SUCCESS {
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("vkBeginCommandBuffer: {res}").into(),
+            });
+        }
+
+        let default_gws = GwsDim::Const(1);
+        let grid = |gdim: &GwsDim| -> Dim {
+            gdim.eval(&mut |ordinal| match &args[ordinal] {
+                LaunchArg::Variable(c) => c.as_dim().unwrap(),
+                LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+            })
+        };
+        let gx = grid(prog.gws.first().unwrap_or(&default_gws));
+        let gy = grid(prog.gws.get(1).unwrap_or(&default_gws));
+        let gz = grid(prog.gws.get(2).unwrap_or(&default_gws));
+
+        if gx <= 0 || gy <= 0 || gz <= 0 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("dispatch dims non-positive: ({gx},{gy},{gz})").into(),
+            });
+        }
+        if gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
+            });
+        }
+        let (gx, gy, gz) = (u32::try_from(gx).unwrap(), u32::try_from(gy).unwrap(), u32::try_from(gz).unwrap());
+
+        unsafe {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prog.pipeline);
+            if prog.push_constants_size > 0 {
+                vkCmdPushConstants(
+                    cmd,
+                    prog.pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    push_constants.len() as u32,
+                    push_constants.as_ptr().cast(),
+                );
+            }
+            vkCmdBindDescriptorSets(
+                cmd,
+                VK_PIPELINE_BIND_POINT_COMPUTE,
+                prog.pipeline_layout,
+                0,
+                1,
+                &desc_set,
+                0,
+                std::ptr::null(),
+            );
+            vkCmdDispatch(cmd, gx, gy, gz);
+        }
+
+        let res = unsafe { vkEndCommandBuffer(cmd) };
+        if res != VK_SUCCESS {
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("vkEndCommandBuffer: {res}").into(),
+            });
+        }
+
+        submit_infos.push(VkSubmitInfo {
+            sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            pNext: std::ptr::null(),
+            waitSemaphoreCount: 0,
+            pWaitSemaphores: std::ptr::null(),
+            pWaitDstStageMask: std::ptr::null(),
+            commandBufferCount: 1,
+            pCommandBuffers: &cmd,
+            signalSemaphoreCount: 0,
+            pSignalSemaphores: std::ptr::null(),
+        });
+        cmds.push(cmd);
+        desc_sets.push(desc_set);
+    }
+
+    let fence_ci = VkFenceCreateInfo { sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, pNext: std::ptr::null(), flags: 0 };
+    let mut fence = std::ptr::null_mut();
+    let res = unsafe { vkCreateFence(device, &fence_ci, std::ptr::null(), &mut fence) };
+    if res != VK_SUCCESS {
+        return Err(BackendError { status: ErrorStatus::KernelLaunch, context: format!("vkCreateFence: {res}").into() });
+    }
+
+    // pCommandBuffers must point at stable storage — cmds outlives the submit.
+    let res = unsafe { vkQueueSubmit(queue, submit_infos.len() as u32, submit_infos.as_ptr(), fence) };
+    if res != VK_SUCCESS {
+        if debug_dev {
+            println!("[vulkan] batched submission error: vkQueueSubmit: {res}");
+        }
+        return Err(BackendError { status: ErrorStatus::KernelLaunch, context: format!("vkQueueSubmit: {res}").into() });
+    }
+
+    inflight.push(InFlight { fence, cmds, desc_sets, buffers: batch_buffers });
+    Ok(())
+}
+
+/// Frees a completed batch's fence, command buffers and descriptor sets.
+fn destroy_batch(
+    device: VkDevice,
+    cmd_pool: VkCommandPool,
+    desc_pool: VkDescriptorPool,
+    batch: InFlight,
+    vkFreeCommandBuffers: unsafe extern "system" fn(VkDevice, VkCommandPool, u32, *const VkCommandBuffer),
+    vkFreeDescriptorSets: unsafe extern "system" fn(VkDevice, VkDescriptorPool, u32, *const VkDescriptorSet) -> VkResult,
+    vkDestroyFence: unsafe extern "system" fn(VkDevice, VkFence, *const std::ffi::c_void),
+) {
+    if !batch.fence.is_null() {
+        unsafe { vkDestroyFence(device, batch.fence, std::ptr::null()) };
+    }
+    if !batch.cmds.is_empty() {
+        unsafe { vkFreeCommandBuffers(device, cmd_pool, batch.cmds.len() as u32, batch.cmds.as_ptr()) };
+    }
+    if !batch.desc_sets.is_empty() {
+        unsafe { vkFreeDescriptorSets(device, desc_pool, batch.desc_sets.len() as u32, batch.desc_sets.as_ptr()) };
+    }
+}
+
+/// Waits for and destroys every in-flight batch (a full sync point).
+#[allow(clippy::too_many_arguments)]
+fn drain_all(
+    inflight: &mut Vec<InFlight>,
+    device: VkDevice,
+    cmd_pool: VkCommandPool,
+    desc_pool: VkDescriptorPool,
+    vkWaitForFences: unsafe extern "system" fn(VkDevice, u32, *const VkFence, u32, u64) -> VkResult,
+    vkFreeCommandBuffers: unsafe extern "system" fn(VkDevice, VkCommandPool, u32, *const VkCommandBuffer),
+    vkFreeDescriptorSets: unsafe extern "system" fn(VkDevice, VkDescriptorPool, u32, *const VkDescriptorSet) -> VkResult,
+    vkDestroyFence: unsafe extern "system" fn(VkDevice, VkFence, *const std::ffi::c_void),
+) {
+    for batch in inflight.drain(..) {
+        let res = unsafe { vkWaitForFences(device, 1, &batch.fence, 1, u64::MAX) };
+        if res != VK_SUCCESS {
+            // The device is in a broken state; still reap the host-side
+            // resources and let the error surface at the sync point.
+        }
+        destroy_batch(device, cmd_pool, desc_pool, batch, vkFreeCommandBuffers, vkFreeDescriptorSets, vkDestroyFence);
+    }
+}
+
+/// Waits for and destroys every in-flight batch that touched `buffer_id`.
+/// Single in-order queue: waiting the batch fence completes all earlier
+/// batches too, so every use of the buffer up to the release is covered.
+#[allow(clippy::too_many_arguments)]
+fn drain_touching(
+    inflight: &mut Vec<InFlight>,
+    buffer_id: PoolBufferId,
+    device: VkDevice,
+    cmd_pool: VkCommandPool,
+    desc_pool: VkDescriptorPool,
+    vkWaitForFences: unsafe extern "system" fn(VkDevice, u32, *const VkFence, u32, u64) -> VkResult,
+    vkFreeCommandBuffers: unsafe extern "system" fn(VkDevice, VkCommandPool, u32, *const VkCommandBuffer),
+    vkFreeDescriptorSets: unsafe extern "system" fn(VkDevice, VkDescriptorPool, u32, *const VkDescriptorSet) -> VkResult,
+    vkDestroyFence: unsafe extern "system" fn(VkDevice, VkFence, *const std::ffi::c_void),
+) {
+    let mut remaining = Vec::new();
+    for batch in inflight.drain(..) {
+        if batch.buffers.contains(&buffer_id) {
+            let res = unsafe { vkWaitForFences(device, 1, &batch.fence, 1, u64::MAX) };
+            if res != VK_SUCCESS {
+                // Broken device: reap and continue; the error surfaces at the
+                // next sync point.
+            }
+            destroy_batch(device, cmd_pool, desc_pool, batch, vkFreeCommandBuffers, vkFreeDescriptorSets, vkDestroyFence);
+        } else {
+            remaining.push(batch);
+        }
+    }
+    *inflight = remaining;
+}
+
+/// Reaps batches whose fence has signaled (a cheap `vkGetFenceStatus` poll).
+#[allow(clippy::too_many_arguments)]
+fn sweep_inflight(
+    inflight: &mut Vec<InFlight>,
+    device: VkDevice,
+    vkGetFenceStatus: unsafe extern "system" fn(VkDevice, VkFence) -> VkResult,
+    cmd_pool: VkCommandPool,
+    desc_pool: VkDescriptorPool,
+    vkFreeCommandBuffers: unsafe extern "system" fn(VkDevice, VkCommandPool, u32, *const VkCommandBuffer),
+    vkFreeDescriptorSets: unsafe extern "system" fn(VkDevice, VkDescriptorPool, u32, *const VkDescriptorSet) -> VkResult,
+    vkDestroyFence: unsafe extern "system" fn(VkDevice, VkFence, *const std::ffi::c_void),
+) {
+    let mut remaining = Vec::new();
+    for batch in inflight.drain(..) {
+        if unsafe { vkGetFenceStatus(device, batch.fence) } == VK_SUCCESS {
+            destroy_batch(device, cmd_pool, desc_pool, batch, vkFreeCommandBuffers, vkFreeDescriptorSets, vkDestroyFence);
+        } else {
+            remaining.push(batch);
+        }
+    }
+    *inflight = remaining;
 }
 
 // ── Initialization ───────────────────────────────────────────────────────────
@@ -1058,6 +1429,7 @@ pub(super) fn ensure_pool_table(
             ld!("vkGetBufferMemoryRequirements");
         let vkWaitForFences: unsafe extern "system" fn(VkDevice, u32, *const VkFence, u32, u64) -> VkResult =
             ld!("vkWaitForFences");
+        let vkGetFenceStatus: unsafe extern "system" fn(VkDevice, VkFence) -> VkResult = ld!("vkGetFenceStatus");
         let vkDeviceWaitIdle: unsafe extern "system" fn(VkDevice) -> VkResult = ld!("vkDeviceWaitIdle");
         let vkAllocateDescriptorSets: unsafe extern "system" fn(
             VkDevice,
@@ -1286,43 +1658,94 @@ pub(super) fn ensure_pool_table(
                     Ok((buf, mem, ptr.cast::<u8>()))
                 };
 
+                // Pending micro-batch window: launches accumulate here in
+                // program order until MICRO_BATCH_WINDOW is reached (or a
+                // sync point arrives), then the whole window is recorded and
+                // submitted as ONE batched vkQueueSubmit.
+                let mut pending: Vec<Pending> = Vec::new();
+                // Submitted-but-maybe-in-flight batches, freed once their
+                // fence signals (swept each loop iteration, drained at sync
+                // points and buffer releases).
+                let mut inflight: Vec<InFlight> = Vec::new();
+                // First async submission error since the last sync point.
+                let mut last_error: Option<BackendError> = None;
+
                 while let Ok(cmd) = rx.recv() {
+                    // Poll completed batches: reap resources whose fence
+                    // signaled. Cheap (vkGetFenceStatus) and usually a no-op.
+                    sweep_inflight(
+                        &mut inflight,
+                        device,
+                        vkGetFenceStatus,
+                        cmd_pool,
+                        desc_pool,
+                        vkFreeCommandBuffers,
+                        vkFreeDescriptorSets,
+                        vkDestroyFence,
+                    );
                     match cmd {
                         VulkanCommand::Allocate { bytes, reply } => {
                             let size = (bytes + 3) & !3;
                             let (buf, mem, ptr) = send_or_continue!(create_buffer(size as u64), reply);
-                            let id = buffers.push(VulkanBuffer { buf, mem, ptr, bytes: bytes as usize });
+                            let id = buffers.push(VulkanBuffer { buf, mem, ptr, bytes: bytes as usize, rc: 1 });
                             free_bytes_atomic.fetch_sub(size as u64, Ordering::SeqCst);
-                            let _ = reply.send(Ok((
-                                id,
-                                Event::Vulkan(VulkanEvent {
-                                    fence: std::ptr::null_mut(),
-                                    cmd: std::ptr::null_mut(),
-                                    desc_set: std::ptr::null_mut(),
-                                }),
-                            )));
+                            let _ = reply.send(Ok(id));
                         }
-                        VulkanCommand::Deallocate { buffer_id, mut event_wait_list } => {
-                            while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
-                                if !ev.fence.is_null() {
-                                    unsafe {
-                                        let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
-                                        vkDestroyFence(device, ev.fence, std::ptr::null());
-                                    }
-                                }
-                                if !ev.cmd.is_null() {
-                                    unsafe {
-                                        vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd);
-                                    }
-                                }
-                                if !ev.desc_set.is_null() {
-                                    unsafe {
-                                        vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set);
-                                    }
-                                }
+                        VulkanCommand::Retain { buffer_id } => match buffers.get_mut(buffer_id) {
+                            Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("VulkanBuffer rc overflow"),
+                            None => debug_assert!(false, "retain of unknown Vulkan buffer {buffer_id:?}"),
+                        },
+                        VulkanCommand::Release { buffer_id } => {
+                            let Some(buffer) = buffers.get_mut(buffer_id) else {
+                                debug_assert!(false, "release of unknown Vulkan buffer {buffer_id:?}");
+                                continue;
+                            };
+                            buffer.rc = buffer.rc.checked_sub(1).expect("VulkanBuffer rc underflow");
+                            if buffer.rc > 0 {
+                                continue;
                             }
-                            let res = unsafe { buffers.remove_and_return(buffer_id) };
-                            let VulkanBuffer { buf, mem, ptr, bytes: size } = res;
+                            // rc hit zero: submit pending launches, then wait
+                            // for every in-flight batch that touched this
+                            // buffer before destroying it. The worker waits;
+                            // callers never block.
+                            if let Err(err) = submit_window(
+                                &mut pending,
+                                queue,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                &buffers,
+                                &programs,
+                                &dev_info.max_global_work_dims,
+                                &mut inflight,
+                                debug_dev,
+                                vkAllocateDescriptorSets,
+                                vkUpdateDescriptorSets,
+                                vkAllocateCommandBuffers,
+                                vkBeginCommandBuffer,
+                                vkEndCommandBuffer,
+                                vkCmdBindPipeline,
+                                vkCmdPushConstants,
+                                vkCmdBindDescriptorSets,
+                                vkCmdDispatch,
+                                vkCreateFence,
+                                vkQueueSubmit,
+                            ) && last_error.is_none()
+                            {
+                                last_error = Some(err);
+                            }
+                            drain_touching(
+                                &mut inflight,
+                                buffer_id,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                vkWaitForFences,
+                                vkFreeCommandBuffers,
+                                vkFreeDescriptorSets,
+                                vkDestroyFence,
+                            );
+                            let VulkanBuffer { buf, mem, ptr, bytes: size, .. } = unsafe { buffers.remove_and_return(buffer_id) };
                             if !ptr.is_null() {
                                 unsafe { vkUnmapMemory(device, mem) };
                             }
@@ -1332,43 +1755,96 @@ pub(super) fn ensure_pool_table(
                             }
                             free_bytes_atomic.fetch_add(size as u64, Ordering::SeqCst);
                         }
-                        VulkanCommand::HostToPool { src, bytes, dst, mut event_wait_list, reply } => {
-                            while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
-                                if !ev.fence.is_null() {
-                                    unsafe {
-                                        let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
-                                        vkDestroyFence(device, ev.fence, std::ptr::null());
-                                    }
-                                }
-                                if !ev.cmd.is_null() {
-                                    unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
-                                }
-                                if !ev.desc_set.is_null() {
-                                    unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
-                                }
+                        VulkanCommand::Copy { src_pool, src_buf, src_ptr, bytes, dst_buf } => {
+                            // Host-mapped memcpy done on the worker: order it
+                            // against pending + in-flight GPU work first. The
+                            // copy itself is a CPU memcpy — the retained
+                            // source is consumed by it and released right
+                            // after.
+                            if let Err(err) = submit_window(
+                                &mut pending,
+                                queue,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                &buffers,
+                                &programs,
+                                &dev_info.max_global_work_dims,
+                                &mut inflight,
+                                debug_dev,
+                                vkAllocateDescriptorSets,
+                                vkUpdateDescriptorSets,
+                                vkAllocateCommandBuffers,
+                                vkBeginCommandBuffer,
+                                vkEndCommandBuffer,
+                                vkCmdBindPipeline,
+                                vkCmdPushConstants,
+                                vkCmdBindDescriptorSets,
+                                vkCmdDispatch,
+                                vkCreateFence,
+                                vkQueueSubmit,
+                            ) && last_error.is_none()
+                            {
+                                last_error = Some(err);
                             }
-                            let VulkanBuffer { ptr, .. } = buffers[dst];
-                            unsafe { std::ptr::copy_nonoverlapping(src, ptr, bytes) };
-                            let _ = reply.send(Ok(Event::Vulkan(VulkanEvent {
-                                fence: std::ptr::null_mut(),
-                                cmd: std::ptr::null_mut(),
-                                desc_set: std::ptr::null_mut(),
-                            })));
+                            drain_touching(
+                                &mut inflight,
+                                dst_buf,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                vkWaitForFences,
+                                vkFreeCommandBuffers,
+                                vkFreeDescriptorSets,
+                                vkDestroyFence,
+                            );
+                            let VulkanBuffer { ptr, .. } = buffers[dst_buf];
+                            unsafe { std::ptr::copy_nonoverlapping(src_ptr, ptr, bytes) };
+                            src_pool.release(src_buf);
                         }
-                        VulkanCommand::PoolToHost { src, dst, bytes, mut event_wait_list, reply } => {
-                            while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
-                                if !ev.fence.is_null() {
-                                    unsafe {
-                                        let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
-                                        vkDestroyFence(device, ev.fence, std::ptr::null());
-                                    }
-                                }
-                                if !ev.cmd.is_null() {
-                                    unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
-                                }
-                                if !ev.desc_set.is_null() {
-                                    unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
-                                }
+                        VulkanCommand::PoolToHost { src, dst, bytes, reply } => {
+                            // Sync point: submit everything pending, drain all
+                            // in-flight batches, surface async submission
+                            // errors, then read back.
+                            if let Err(err) = submit_window(
+                                &mut pending,
+                                queue,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                &buffers,
+                                &programs,
+                                &dev_info.max_global_work_dims,
+                                &mut inflight,
+                                debug_dev,
+                                vkAllocateDescriptorSets,
+                                vkUpdateDescriptorSets,
+                                vkAllocateCommandBuffers,
+                                vkBeginCommandBuffer,
+                                vkEndCommandBuffer,
+                                vkCmdBindPipeline,
+                                vkCmdPushConstants,
+                                vkCmdBindDescriptorSets,
+                                vkCmdDispatch,
+                                vkCreateFence,
+                                vkQueueSubmit,
+                            ) && last_error.is_none()
+                            {
+                                last_error = Some(err);
+                            }
+                            drain_all(
+                                &mut inflight,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                vkWaitForFences,
+                                vkFreeCommandBuffers,
+                                vkFreeDescriptorSets,
+                                vkDestroyFence,
+                            );
+                            if let Some(err) = last_error.take() {
+                                let _ = reply.send(Err(err));
+                                continue;
                             }
                             let VulkanBuffer { ptr, .. } = buffers[src];
                             unsafe { std::ptr::copy_nonoverlapping(ptr, dst, bytes) };
@@ -1574,244 +2050,133 @@ pub(super) fn ensure_pool_table(
                                 programs.push(VulkanProgram { pipeline, pipeline_layout, desc_layout, push_constants_size, gws });
                             let _ = reply.send(Ok(id));
                         }
-                        VulkanCommand::Launch { program_id, args, mut event_wait_list, reply } => {
-                            while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
-                                if !ev.fence.is_null() {
-                                    unsafe {
-                                        let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
-                                        vkDestroyFence(device, ev.fence, std::ptr::null());
-                                    }
-                                }
-                                if !ev.cmd.is_null() {
-                                    unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
-                                }
-                                if !ev.desc_set.is_null() {
-                                    unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
-                                }
+                        VulkanCommand::Launch { program_id, args } => {
+                            // Fire and forget: append to the micro-batch
+                            // window; the whole window is recorded and
+                            // submitted as one batched vkQueueSubmit when it
+                            // flushes.
+                            pending.push(Pending::Launch { program_id, args });
+                            if pending.len() >= MICRO_BATCH_WINDOW
+                                && let Err(err) = submit_window(
+                                    &mut pending,
+                                    queue,
+                                    device,
+                                    cmd_pool,
+                                    desc_pool,
+                                    &buffers,
+                                    &programs,
+                                    &dev_info.max_global_work_dims,
+                                    &mut inflight,
+                                    debug_dev,
+                                    vkAllocateDescriptorSets,
+                                    vkUpdateDescriptorSets,
+                                    vkAllocateCommandBuffers,
+                                    vkBeginCommandBuffer,
+                                    vkEndCommandBuffer,
+                                    vkCmdBindPipeline,
+                                    vkCmdPushConstants,
+                                    vkCmdBindDescriptorSets,
+                                    vkCmdDispatch,
+                                    vkCreateFence,
+                                    vkQueueSubmit,
+                                )
+                                && last_error.is_none()
+                            {
+                                last_error = Some(err);
                             }
-
-                            let prog = &programs[program_id];
-
-                            let ds_layouts = [prog.desc_layout];
-                            let ds_alloc = VkDescriptorSetAllocateInfo {
-                                sType: VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                pNext: std::ptr::null(),
-                                descriptorPool: desc_pool,
-                                descriptorSetCount: 1,
-                                pSetLayouts: ds_layouts.as_ptr(),
-                            };
-                            let mut desc_set = std::ptr::null_mut();
-                            let res = unsafe { vkAllocateDescriptorSets(device, &ds_alloc, &mut desc_set) };
-                            if res != VK_SUCCESS {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: format!("vkAllocateDescriptorSets: {res}").into(),
-                                }));
-                                continue;
-                            }
-                            let n = args.len();
-                            // Separate buffer args (descriptors) from variable args (push constants).
-                            // Buffer bindings are 0..nbuffers in param order; push-constant members
-                            // use the same std140 layout as the SPIR-V block, in param order.
-                            let mut buf_infos: Vec<VkDescriptorBufferInfo> = Vec::with_capacity(n);
-                            let mut push_constants: Vec<u8> = vec![0u8; prog.push_constants_size as usize];
-                            let mut push_off: u32 = 0;
-                            for arg_id in &args {
-                                match arg_id {
-                                    LaunchArg::Variable(constant) => {
-                                        let storage_bits = if constant.dtype() == crate::DType::Bool {
-                                            32
-                                        } else {
-                                            constant.dtype().bit_size()
-                                        };
-                                        let size = storage_bits as u32 / 8;
-                                        let align = if size >= 8 { 8 } else { 4 };
-                                        push_off = push_off.next_multiple_of(align);
-                                        let bytes = constant.to_le_bytes();
-                                        push_constants[push_off as usize..push_off as usize + bytes.len()]
-                                            .copy_from_slice(&bytes);
-                                        push_off += size;
-                                    }
-                                    LaunchArg::Buffer(buffer_id) => {
-                                        buf_infos.push(VkDescriptorBufferInfo {
-                                            buffer: buffers[*buffer_id].buf,
-                                            offset: 0,
-                                            range: VK_WHOLE_SIZE,
-                                        });
-                                    }
-                                }
-                            }
-                            let n_buffers = buf_infos.len();
-                            let mut writes: Vec<VkWriteDescriptorSet> = Vec::with_capacity(n_buffers);
-                            for (i, buf_info) in buf_infos.iter().enumerate() {
-                                writes.push(VkWriteDescriptorSet {
-                                    sType: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                    pNext: std::ptr::null(),
-                                    dstSet: desc_set,
-                                    dstBinding: i as u32,
-                                    dstArrayElement: 0,
-                                    descriptorCount: 1,
-                                    descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                    pImageInfo: std::ptr::null(),
-                                    pBufferInfo: buf_info,
-                                    pTexelBufferView: std::ptr::null(),
-                                });
-                            }
-                            unsafe { vkUpdateDescriptorSets(device, writes.len() as u32, writes.as_ptr(), 0, std::ptr::null()) };
-
-                            let cmd_alloc = VkCommandBufferAllocateInfo {
-                                sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                                pNext: std::ptr::null(),
-                                commandPool: cmd_pool,
-                                level: VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                                commandBufferCount: 1,
-                            };
-                            let mut cmd = std::ptr::null_mut();
-                            let res = unsafe { vkAllocateCommandBuffers(device, &cmd_alloc, &mut cmd) };
-                            if res != VK_SUCCESS {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: format!("vkAllocateCommandBuffers: {res}").into(),
-                                }));
-                                continue;
-                            }
-
-                            let begin = VkCommandBufferBeginInfo {
-                                sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                pNext: std::ptr::null(),
-                                flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                                pInheritanceInfo: std::ptr::null(),
-                            };
-                            let res = unsafe { vkBeginCommandBuffer(cmd, &begin) };
-                            if res != VK_SUCCESS {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: format!("vkBeginCommandBuffer: {res}").into(),
-                                }));
-                                continue;
-                            }
-
-                            let default_gws = GwsDim::Const(1);
-                            let grid = |gdim: &GwsDim| -> Dim {
-                                gdim.eval(&mut |ordinal| match &args[ordinal] {
-                                    LaunchArg::Variable(c) => c.as_dim().unwrap(),
-                                    LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
-                                })
-                            };
-                            let gx = grid(prog.gws.first().unwrap_or(&default_gws));
-                            let gy = grid(prog.gws.get(1).unwrap_or(&default_gws));
-                            let gz = grid(prog.gws.get(2).unwrap_or(&default_gws));
-
-                            if gx <= 0 || gy <= 0 || gz <= 0 {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: format!("dispatch dims non-positive: ({gx},{gy},{gz})").into(),
-                                }));
-                                continue;
-                            }
-                            let max_grid = &dev_info.max_global_work_dims;
-                            if gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
-                                }));
-                                continue;
-                            }
-                            let (gx, gy, gz) =
-                                (u32::try_from(gx).unwrap(), u32::try_from(gy).unwrap(), u32::try_from(gz).unwrap());
-
-                            unsafe {
-                                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prog.pipeline);
-                                if prog.push_constants_size > 0 {
-                                    vkCmdPushConstants(
-                                        cmd,
-                                        prog.pipeline_layout,
-                                        VK_SHADER_STAGE_COMPUTE_BIT,
-                                        0,
-                                        push_constants.len() as u32,
-                                        push_constants.as_ptr().cast(),
-                                    );
-                                }
-                                vkCmdBindDescriptorSets(
-                                    cmd,
-                                    VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    prog.pipeline_layout,
-                                    0,
-                                    1,
-                                    &desc_set,
-                                    0,
-                                    std::ptr::null(),
-                                );
-                                vkCmdDispatch(cmd, gx, gy, gz);
-                            }
-
-                            let res = unsafe { vkEndCommandBuffer(cmd) };
-                            if res != VK_SUCCESS {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: format!("vkEndCommandBuffer: {res}").into(),
-                                }));
-                                continue;
-                            }
-
-                            let fence_ci = VkFenceCreateInfo {
-                                sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-                                pNext: std::ptr::null(),
-                                flags: 0,
-                            };
-                            let mut fence = std::ptr::null_mut();
-                            let res = unsafe { vkCreateFence(device, &fence_ci, std::ptr::null(), &mut fence) };
-                            if res != VK_SUCCESS {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: format!("vkCreateFence: {res}").into(),
-                                }));
-                                continue;
-                            }
-
-                            let submit = VkSubmitInfo {
-                                sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                                pNext: std::ptr::null(),
-                                waitSemaphoreCount: 0,
-                                pWaitSemaphores: std::ptr::null(),
-                                pWaitDstStageMask: std::ptr::null(),
-                                commandBufferCount: 1,
-                                pCommandBuffers: &cmd,
-                                signalSemaphoreCount: 0,
-                                pSignalSemaphores: std::ptr::null(),
-                            };
-                            let res = unsafe { vkQueueSubmit(queue, 1, &submit, fence) };
-                            if res != VK_SUCCESS {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: format!("vkQueueSubmit: {res}").into(),
-                                }));
-                                continue;
-                            }
-
-                            let _ = reply.send(Ok(Event::Vulkan(VulkanEvent { fence, cmd, desc_set })));
                         }
-                        VulkanCommand::SyncEvents { mut events, reply } => {
-                            for event in &mut events {
-                                if let Event::Vulkan(ev) = event {
-                                    if !ev.fence.is_null() {
-                                        unsafe {
-                                            let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
-                                            vkDestroyFence(device, ev.fence, std::ptr::null());
-                                        }
-                                        ev.fence = std::ptr::null_mut();
-                                    }
-                                    if !ev.cmd.is_null() {
-                                        unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
-                                        ev.cmd = std::ptr::null_mut();
-                                    }
-                                    if !ev.desc_set.is_null() {
-                                        unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
-                                        ev.desc_set = std::ptr::null_mut();
-                                    }
-                                }
+                        VulkanCommand::LaunchTimed { program_id, args, reply } => {
+                            // Uncontended timing for autotune: submit the
+                            // pending window, drain every in-flight batch,
+                            // surface async errors, then run the kernel solo
+                            // and measure submit-to-fence.
+                            if let Err(err) = submit_window(
+                                &mut pending,
+                                queue,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                &buffers,
+                                &programs,
+                                &dev_info.max_global_work_dims,
+                                &mut inflight,
+                                debug_dev,
+                                vkAllocateDescriptorSets,
+                                vkUpdateDescriptorSets,
+                                vkAllocateCommandBuffers,
+                                vkBeginCommandBuffer,
+                                vkEndCommandBuffer,
+                                vkCmdBindPipeline,
+                                vkCmdPushConstants,
+                                vkCmdBindDescriptorSets,
+                                vkCmdDispatch,
+                                vkCreateFence,
+                                vkQueueSubmit,
+                            ) && last_error.is_none()
+                            {
+                                last_error = Some(err);
                             }
-                            let _ = reply.send(Ok(()));
+                            drain_all(
+                                &mut inflight,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                vkWaitForFences,
+                                vkFreeCommandBuffers,
+                                vkFreeDescriptorSets,
+                                vkDestroyFence,
+                            );
+                            if let Some(err) = last_error.take() {
+                                let _ = reply.send(Err(err));
+                                continue;
+                            }
+                            let start = Instant::now();
+                            let result = submit_window(
+                                &mut vec![Pending::Launch { program_id, args }],
+                                queue,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                &buffers,
+                                &programs,
+                                &dev_info.max_global_work_dims,
+                                &mut inflight,
+                                debug_dev,
+                                vkAllocateDescriptorSets,
+                                vkUpdateDescriptorSets,
+                                vkAllocateCommandBuffers,
+                                vkBeginCommandBuffer,
+                                vkEndCommandBuffer,
+                                vkCmdBindPipeline,
+                                vkCmdPushConstants,
+                                vkCmdBindDescriptorSets,
+                                vkCmdDispatch,
+                                vkCreateFence,
+                                vkQueueSubmit,
+                            )
+                            .and_then(|()| {
+                                // The solo batch is the most recent one.
+                                match inflight.pop() {
+                                    Some(batch) => {
+                                        let r = unsafe { vkWaitForFences(device, 1, &batch.fence, 1, u64::MAX) };
+                                        destroy_batch(device, cmd_pool, desc_pool, batch, vkFreeCommandBuffers, vkFreeDescriptorSets, vkDestroyFence);
+                                        if r == VK_SUCCESS {
+                                            Ok(())
+                                        } else {
+                                            Err(BackendError {
+                                                status: ErrorStatus::KernelSync,
+                                                context: format!("vkWaitForFences: {r}").into(),
+                                            })
+                                        }
+                                    }
+                                    None => Err(BackendError {
+                                        status: ErrorStatus::KernelSync,
+                                        context: "timed launch produced no batch".into(),
+                                    }),
+                                }
+                            });
+                            let nanos = start.elapsed().as_nanos() as u64;
+                            let _ = reply.send(result.map(|()| nanos));
                         }
                         VulkanCommand::ReleaseProgram(program_id) => {
                             if programs.contains_id(program_id) {
@@ -1819,22 +2184,7 @@ pub(super) fn ensure_pool_table(
                                 unsafe {
                                     vkDestroyPipeline(device, prog.pipeline, std::ptr::null());
                                     vkDestroyPipelineLayout(device, prog.pipeline_layout, std::ptr::null());
-                                    vkDestroyDescriptorSetLayout(device, prog.desc_layout, std::ptr::null());
-                                }
-                            }
-                        }
-                        VulkanCommand::ReleaseEvents(events) => {
-                            for event in events {
-                                if let Event::Vulkan(ev) = event {
-                                    if !ev.fence.is_null() {
-                                        unsafe { vkDestroyFence(device, ev.fence, std::ptr::null()) };
-                                    }
-                                    if !ev.cmd.is_null() {
-                                        unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
-                                    }
-                                    if !ev.desc_set.is_null() {
-                                        unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
-                                    }
+                                     vkDestroyDescriptorSetLayout(device, prog.desc_layout, std::ptr::null());
                                 }
                             }
                         }
@@ -1847,8 +2197,18 @@ pub(super) fn ensure_pool_table(
                 };
 
                 // Cleanup all resources
+                drain_all(
+                    &mut inflight,
+                    device,
+                    cmd_pool,
+                    desc_pool,
+                    vkWaitForFences,
+                    vkFreeCommandBuffers,
+                    vkFreeDescriptorSets,
+                    vkDestroyFence,
+                );
                 for id in buffers.ids().collect::<Vec<_>>() {
-                    let VulkanBuffer { buf, mem, ptr, bytes: _ } = unsafe { buffers.remove_and_return(id) };
+                    let VulkanBuffer { buf, mem, ptr, bytes: _, .. } = unsafe { buffers.remove_and_return(id) };
                     if !ptr.is_null() {
                         unsafe { vkUnmapMemory(device, mem) };
                     }

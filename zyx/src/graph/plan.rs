@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, Set, ZyxError,
-    backend::{BufferId, Event, LaunchArg, Pool, ProgramId},
+    backend::{Buffer, LaunchArg, Pool, ProgramId},
     dtype::Constant,
     graph::{ClassId, Graph, Node, NodeId},
     kernel::BOp,
@@ -91,12 +91,7 @@ pub struct ExecPlan {
 
 impl ExecPlan {
     #[must_use]
-    pub fn new(
-        graph: &Graph,
-        nodes: &[NodeId],
-        output_set: &BTreeSet<ClassId>,
-        leaf_pools: &Map<ClassId, Pool>,
-    ) -> Self {
+    pub fn new(graph: &Graph, nodes: &[NodeId], output_set: &BTreeSet<ClassId>, leaf_pools: &Map<ClassId, Pool>) -> Self {
         let mut rc: Map<ClassId, u32> = Map::default();
         for &nid in nodes {
             match &graph.nodes[nid].node {
@@ -291,7 +286,7 @@ impl Runtime {
     pub fn execute_plan(
         &mut self,
         cache_key: u64,
-        class_buf: &mut Map<ClassId, BufferId>,
+        class_buf: &mut Map<ClassId, Buffer>,
         class_vars: &Map<ClassId, Constant>,
     ) -> Result<(), ZyxError> {
         let plan = self.plan_cache.get(&cache_key).unwrap();
@@ -322,10 +317,9 @@ impl Runtime {
                     }
                     debug_assert!(elements > 0, "allocation for class {class:?} would be empty ({elements} elements)");
                     let bytes = (elements + 1) * dtype_size;
-                    let (buf, event) = pool.allocate(bytes)?;
-                    let buf_id = BufferId { pool: *pool, buffer: buf };
+                    let buf = pool.allocate(bytes)?;
+                    let buf_id = Buffer { pool: *pool, buffer_id: buf };
                     class_buf.insert(*class, buf_id);
-                    self.events.insert(BTreeSet::from([buf_id]), event);
                 }
                 ExecNode::Launch { program_id, load_classes, store_classes } => {
                     let mut args = Vec::new();
@@ -341,28 +335,22 @@ impl Runtime {
                                 "DEBUG launch: class {c:?} (program {program_id:?}) has no allocated buffer; load_classes={load_classes:?}, store_classes={store_classes:?}"
                             );
                         };
-                        args.push(LaunchArg::Buffer(buf.buffer));
+                        args.push(LaunchArg::Buffer(buf.buffer_id));
                         kernel_bufs.insert(*buf);
                     }
-                    let wait_list = drain_events_for_bufs(&mut self.events, &kernel_bufs);
                     if crate::debug_mask().dev() {
                         println!("launching kernel {program_id:?}");
                     }
-                    let event = program_id.dev.launch(program_id.program_id, &args, wait_list)?;
-                    self.events.insert(kernel_bufs, event);
+                    program_id.dev.launch(program_id.program_id, &args)?;
                 }
                 ExecNode::Copy { dst_class, src_class } => {
                     let src = class_buf[src_class];
                     let dst = class_buf[dst_class];
-                    let wait_list = drain_events_for_buf(&mut self.events, src);
                     debug_assert_ne!(src.pool, dst.pool);
-                    let event = dst.pool.pool_to_pool(src.pool, src.buffer, dst.buffer, wait_list)?;
-                    dst.pool.sync_events(vec![event])?;
                 }
                 ExecNode::Deallocate { class } => {
                     let buf = class_buf.remove(class).unwrap();
-                    let wait_list = drain_events_for_buf(&mut self.events, buf);
-                    buf.pool.deallocate(buf.buffer, wait_list);
+                    buf.pool.release(buf.buffer_id);
                 }
                 ExecNode::Alias { class, to } => {
                     let buf = class_buf[to];
@@ -373,22 +361,4 @@ impl Runtime {
 
         Ok(())
     }
-}
-
-pub(crate) fn drain_events_for_buf(events: &mut Map<BTreeSet<BufferId>, Event>, buf: BufferId) -> Vec<Event> {
-    let keys: Vec<BTreeSet<BufferId>> = events.keys().filter(|k| k.contains(&buf)).cloned().collect();
-    let mut result = Vec::new();
-    for key in keys {
-        result.push(events.remove(&key).unwrap());
-    }
-    result
-}
-
-fn drain_events_for_bufs(events: &mut Map<BTreeSet<BufferId>, Event>, bufs: &BTreeSet<BufferId>) -> Vec<Event> {
-    let keys: Vec<BTreeSet<BufferId>> = events.keys().filter(|k| !k.is_disjoint(bufs)).cloned().collect();
-    let mut result = Vec::new();
-    for key in keys {
-        result.push(events.remove(&key).unwrap());
-    }
-    result
 }

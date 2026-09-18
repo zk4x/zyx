@@ -171,6 +171,8 @@ pub enum ErrorStatus {
     MemoryCopyH2P,
     /// Failed to copy memory to host
     MemoryCopyP2H,
+    /// Failed to copy memory between pools (device-to-device peer copy)
+    MemoryCopyP2P,
     /// Kernel argument was not correct
     IncorrectKernelArg,
     /// Failed to compile kernel

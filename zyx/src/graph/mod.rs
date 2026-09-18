@@ -18,11 +18,11 @@ use std::collections::BTreeSet;
 
 use crate::{
     DType, Map, Set, ZyxError,
-    backend::{BufferId, Dev, LaunchArg, Pool, PoolBufferId, ProgramId},
+    backend::{Buffer, Dev, LaunchArg, Pool, PoolBufferId, ProgramId},
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     runtime::{KernelId, Runtime, TensorData},
-    scalar::{bf16, f16, f8e4m3, f8e5m2},
+    scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -917,11 +917,7 @@ impl Graph {
     /// extracted path (chosen kernel output, chosen transfer output, or
     /// realized leaf buffer). User-inserted [`Node::ToDevice`] nodes are kept
     /// as-is and reused through hashconsing.
-    pub fn add_memory_ops(
-        &mut self,
-        buffer_map: &Map<TensorId, BufferId>,
-        chosen: &[NodeId],
-    ) -> Vec<NodeId> {
+    pub fn add_memory_ops(&mut self, buffer_map: &Map<TensorId, Buffer>, chosen: &[NodeId]) -> Vec<NodeId> {
         // Pool each class lives in on the extracted path. Chosen kernel
         // outputs live in their kernel's pool, chosen transfers in their
         // target pool, realized leaves in their buffer pool. Variable leaves
@@ -1653,7 +1649,7 @@ impl Runtime {
             match &mut self.tensors[tid] {
                 TensorData::Promoted { kernel_id, op_id, shape_id, rc, dtype, .. } => {
                     let (kernel_id, op_id, shape_id, rc, dtype) = (*kernel_id, *op_id, *shape_id, *rc, *dtype);
-                    self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, dtype, rc };
+                    self.tensors[tid] = TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc };
                 }
                 ref t => panic!("promote_to_graph: dead-graph tensor {tid} has no eager side to revert to: {t:?}"),
             }
@@ -1677,7 +1673,7 @@ impl Runtime {
                 ref t => unreachable!("{t:?}"),
             };
             debug_assert!(
-                self.buffer_map.contains_key(&tid),
+                self.leaf_buffer(tid).is_some(),
                 "promote_to_graph: Leaf {tid} has no buffer (pending store not realized)"
             );
             let shape_class = if shape_id.is_null() {
@@ -1779,7 +1775,7 @@ impl Runtime {
         // Their buffer is read by the plan as an input; the value is preserved and
         // not recomputed. The eager kernel is left untouched (rc/outputs already
         // count the handles), so the tensor reverts to eager when the graph dies.
-        if self.buffer_map.contains_key(&tid) {
+        if self.leaf_buffer(tid).is_some() {
             let dtype = self.dtype(tid);
             // Build the leaf's symbolic shape class from the eager kernel's
             // own Param shape stack: const dims become Const classes, dynamic
@@ -1849,10 +1845,7 @@ impl Runtime {
                 TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
                 TensorData::Eager { .. } => {
                     let (kernel_id, op_id, shape_id, rc, dtype) = match self.tensors[tid] {
-                        TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc, dtype } => {
-                            debug_assert!(depends_on.is_null(), "promoting unrealized tensor {tid} with pending store");
-                            (kernel_id, op_id, shape_id, rc, dtype)
-                        }
+                        TensorData::Eager { kernel_id, op_id, shape_id, rc, dtype } => (kernel_id, op_id, shape_id, rc, dtype),
                         ref t => unreachable!("{t:?}"),
                     };
                     self.tensors[tid] = TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, dtype, rc };
@@ -1956,17 +1949,18 @@ impl Runtime {
                 let class_id = match self.kernels[kernel_id].kernel.ops[op_id].op {
                     Op::Param { shape, dtype, .. } => {
                         let load_tid = loads[load_of_param[&op_id]];
-                        if !self.buffer_map.contains_key(&load_tid) {
-                            // An `Eager` tensor never carries a graph class,
-                            // so its depends_on is the pending producer. A
-                            // `Variable` scalar has no buffer and no producer —
-                            // its value comes from the variable slots at launch;
-                            // it is registered as a leaf below.
+                        if self.leaf_buffer(load_tid).is_none() {
+                            // Loads without a buffer are pending: the producer
+                            // is recorded on the tensor. A `Variable` scalar
+                            // has no buffer and no producer — its value comes
+                            // from the variable slots at launch; it is
+                            // registered as a leaf below.
                             let pending = match &self.tensors[load_tid] {
-                                TensorData::Eager { depends_on, .. } | TensorData::Leaf { depends_on, .. } => *depends_on,
-                                TensorData::Graph { .. } | TensorData::Promoted { .. } | TensorData::Variable { .. } => {
-                                    KernelId::NULL
-                                }
+                                TensorData::PendingLeaf { depends_on, .. } => *depends_on,
+                                TensorData::Eager { .. }
+                                | TensorData::Graph { .. }
+                                | TensorData::Promoted { .. }
+                                | TensorData::Variable { .. } => KernelId::NULL,
                                 ref t => panic!("promote_to_graph: load tid {load_tid} is not a kernel tensor: {t:?}"),
                             };
                             if !pending.is_null() {
@@ -2081,11 +2075,7 @@ impl Runtime {
                                     // alive through the leaf edge and is freed
                                     // by its death path.
                                     let (kernel_id, op_id, shape_id, rc, dtype) = match self.tensors[load_tid] {
-                                        TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc, dtype } => {
-                                            debug_assert!(
-                                                depends_on.is_null(),
-                                                "promoting unrealized tensor {load_tid} with pending store"
-                                            );
+                                        TensorData::Eager { kernel_id, op_id, shape_id, rc, dtype } => {
                                             (kernel_id, op_id, shape_id, rc, dtype)
                                         }
                                         ref t => unreachable!("{t:?}"),
@@ -2231,10 +2221,7 @@ impl Runtime {
             TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
             TensorData::Eager { .. } => {
                 let (kernel_id, op_id, shape_id, rc, dtype) = match self.tensors[tid] {
-                    TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc, dtype } => {
-                        debug_assert!(depends_on.is_null(), "promoting unrealized tensor {tid} with pending store");
-                        (kernel_id, op_id, shape_id, rc, dtype)
-                    }
+                    TensorData::Eager { kernel_id, op_id, shape_id, rc, dtype } => (kernel_id, op_id, shape_id, rc, dtype),
                     ref t => unreachable!("{t:?}"),
                 };
                 self.tensors[tid] = TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, dtype, rc };
@@ -2423,7 +2410,7 @@ impl Runtime {
                                         (len, false)
                                     };
                                     let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
-                                    let (buf, ev) = pool_id.allocate(bytes_alloc)?;
+                                    let buf = pool_id.allocate(bytes_alloc)?;
                                     fresh.push(buf);
                                     if !is_mut {
                                         let one: Vec<u8> = match dtype {
@@ -2439,8 +2426,7 @@ impl Runtime {
                                             DType::U64 | DType::I64 => 1i64.to_le_bytes().to_vec(),
                                         };
                                         let fill = one.repeat(len as usize);
-                                        let ev = pool_id.host_to_pool(&fill, buf, vec![ev])?;
-                                        events.push(ev);
+                                        pool_id.host_to_pool(&fill, buf)?;
                                     }
                                     if is_mut {
                                         full_mut.push(LaunchArg::Buffer(buf));
@@ -2454,10 +2440,11 @@ impl Runtime {
                         p = kernel.next_op(p);
                     }
                 }
-                let _ = pool_id.sync_events(events);
                 full_args.extend(full_mut);
                 let (dev_prog, timing) = self.get_or_autotune(kernel, &full_args)?;
-                ek.kernel.dealloc_buffers(fresh, pool_id);
+                for buf in fresh {
+                    pool_id.release(buf);
+                }
                 let prog = ProgramId { dev: dev_id, program_id: dev_prog };
 
                 let knid = self.graphs[graph_id].nodes.push(NodeData {
@@ -2503,7 +2490,7 @@ impl Runtime {
             // kernel (Eager state) — both carry a buffer.
             for &tid in self.graphs[graph_id].leaf_map.values() {
                 debug_assert!(
-                    self.buffer_map.contains_key(&tid) | matches!(self.tensors[tid], TensorData::Variable { .. }),
+                    self.leaf_buffer(tid).is_some() | matches!(self.tensors[tid], TensorData::Variable { .. }),
                     "leaf {tid} not realized"
                 );
                 let affiliated = match self.tensors[tid] {
@@ -2524,7 +2511,7 @@ impl Runtime {
                     _ => continue,
                 };
                 if affiliated && !self.graphs[graph_id].is_leaf(class_id) && !self.graphs[graph_id].is_after(class_id) {
-                    debug_assert!(!self.buffer_map.contains_key(&tid), "non-leaf graph tensor {tid} realized before realize");
+                    debug_assert!(self.leaf_buffer(tid).is_none(), "non-leaf graph tensor {tid} realized before realize");
                 }
             }
         }
@@ -2549,7 +2536,7 @@ impl Runtime {
             if has_leaf {
                 let &tid = self.graphs[graph_id].leaf_map.get(&cid).expect("class {cid:?} has Leaf node but not in leaf_map");
                 assert!(
-                    self.buffer_map.contains_key(&tid) || matches!(self.tensors[tid], TensorData::Variable { .. }),
+                    self.leaf_buffer(tid).is_some() || matches!(self.tensors[tid], TensorData::Variable { .. }),
                     "leaf class {cid:?} tid {tid:?} neither in buffer_map nor a variable"
                 );
             } else {
@@ -2602,7 +2589,6 @@ impl Runtime {
         // class holding kernels on several devices needs no transfer when
         // extraction chose the same-device producer.
         // SAFETY: buffer_map borrow ends before the add call, rust is stupid
-        let buffer_map_ptr: *const Map<TensorId, BufferId> = &self.buffer_map;
         let nodes = self.graphs[graph_id].add_memory_ops(unsafe { &*buffer_map_ptr }, &nodes);
 
         // Leaf pools at compile time — the plan bakes the alias binding (and
@@ -2611,7 +2597,7 @@ impl Runtime {
         for (&cid, &tid) in &self.graphs[graph_id].leaf_map {
             // Variable leaves have no buffer and no pool — they bind per exec
             // from the tensors slab, so no pool invariant applies to them.
-            if let Some(buf) = self.buffer_map.get(&tid) {
+            if let Some(buf) = self.leaf_buffer(tid) {
                 leaf_pools.insert(cid, buf.pool);
             }
         }
@@ -2625,84 +2611,83 @@ impl Runtime {
         Ok(plan)
     }
 
-    pub fn eagerify(&mut self, tid: TensorId) {
-        let realized = self.buffer_map.contains_key(&tid);
-        let (old_kernel_id, _, graph_id, shape_id) = match self.tensors[tid] {
-            TensorData::Graph { graph_id, shape_id, .. } => (KernelId::NULL, OpId::NULL, graph_id, shape_id),
-            TensorData::Promoted { kernel_id, op_id, graph_id, shape_id, .. } => (kernel_id, op_id, graph_id, shape_id),
+    pub fn eagerify(&mut self, tid: TensorId, new_buffer_id: Buffer) {
+        let (old_kernel_id, graph_id, shape_id) = match self.tensors[tid] {
+            TensorData::Graph { graph_id, shape_id, .. } => (KernelId::NULL, graph_id, shape_id),
+            TensorData::Promoted { kernel_id, graph_id, shape_id, .. } => (kernel_id, graph_id, shape_id),
             // Already eager or a pure-slab value: nothing to do.
             _ => return,
         };
 
-        if !realized {
-            match self.tensors[tid] {
-                TensorData::Promoted { kernel_id, op_id, shape_id, rc, dtype, .. } => {
-                    // Unrealized promoted tensor: the eager producer kernel was
-                    // never mutated, so just demote in place.
-                    self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, dtype, rc };
-                }
-                TensorData::Graph { .. } => {
-                    // Unrealized graph-only tensor: its value can only be
-                    // recomputed by the (dropping) graph; keep it as a dead
-                    // handle that panics on use.
-                    return;
-                }
-                ref t => unreachable!("eagerify: unexpected variant after affiliation match: {t:?}"),
+        match self.tensors[tid] {
+            TensorData::Promoted { kernel_id, op_id, shape_id, rc, dtype, .. } => {
+                // Unrealized promoted tensor: the eager producer kernel was
+                // never mutated, so just demote in place.
+                self.tensors[tid] = TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc };
             }
-        } else {
-            // Realized: the value lives in `buffer_map`. Under the Leaf design
-            // there is no eager producer kernel to rebuild — the tensor
-            // becomes a **Leaf** (no kernel, no load edge, so no retain). A
-            // Promoted detaches from its old producer first. The promotion's
-            // leaf-edge rc is NOT undone here: `Tape::drop`'s leafs loop
-            // releases it (the ref_count decrement happens at the tail
-            // below).
-            let mut old_load_duplicates = 0usize;
-            if !old_kernel_id.is_null() {
-                // Live detach: this tensor is still alive (rc > 0), only its
-                // affiliation moves to the Leaf state. A kernel can
-                // be used by MULTIPLE tensors, so the old producer survives
-                // intact — just remove this tensor from its outputs. Its fate
-                // is settled later by whoever truly kills it (`release` →
-                // `on_rc_zero`); no death bookkeeping here.
-                let removed = self.kernels[old_kernel_id].outputs.remove(&tid);
-                debug_assert!(removed, "eagerify: tid {tid} not listed in outputs of producer {old_kernel_id:?}");
-                old_load_duplicates = self.kernels[old_kernel_id].loads.iter().filter(|&&t| t == tid).count();
+            TensorData::Graph { .. } => {
+                // Unrealized graph-only tensor: its value can only be
+                // recomputed by the (dropping) graph; keep it as a dead
+                // handle that panics on use.
+                return;
             }
-            let (rc, dtype) = match self.tensors[tid] {
-                TensorData::Graph { rc, dtype, .. } | TensorData::Promoted { rc, dtype, .. } => (rc, dtype),
-                ref t => unreachable!("eagerify: {t:?}"),
-            };
-            let _ = dtype;
-            self.tensors[tid] = TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: Dev::Auto, rc };
-            // Fully detach from the old producer: its load entries on tid are
-            // released. Without this the old kernel keeps a stale edge whose
-            // count pins tid above the death threshold forever.
-            if old_load_duplicates > 0 {
-                self.kernels[old_kernel_id].loads.retain(|&t| t != tid);
-                for _ in 0..old_load_duplicates {
-                    self.release(tid);
+            TensorData::Leaf { view_of, shape_id, dtype, buffer_id, rc }
+            | TensorData::PendingLeaf { depends_on, shape_id, dtype, dev, buffer_id, rc } => {
+                // Realized: the value lives in `buffer_map`. Under the Leaf design
+                // there is no eager producer kernel to rebuild — the tensor
+                // becomes a **Leaf** (no kernel, no load edge, so no retain). A
+                // Promoted detaches from its old producer first. The promotion's
+                // leaf-edge rc is NOT undone here: `Tape::drop`'s leafs loop
+                // releases it (the ref_count decrement happens at the tail
+                // below).
+                let mut old_load_duplicates = 0usize;
+                if !old_kernel_id.is_null() {
+                    // Live detach: this tensor is still alive (rc > 0), only its
+                    // affiliation moves to the Leaf state. A kernel can
+                    // be used by MULTIPLE tensors, so the old producer survives
+                    // intact — just remove this tensor from its outputs. Its fate
+                    // is settled later by whoever truly kills it (`release` →
+                    // `on_rc_zero`); no death bookkeeping here.
+                    let removed = self.kernels[old_kernel_id].outputs.remove(&tid);
+                    debug_assert!(removed, "eagerify: tid {tid} not listed in outputs of producer {old_kernel_id:?}");
+                    old_load_duplicates = self.kernels[old_kernel_id].loads.iter().filter(|&&t| t == tid).count();
                 }
-                if self.kernels[old_kernel_id].outputs.is_empty() && self.kernels[old_kernel_id].stores.is_empty() {
-                    // The old producer is dead wood: drop it and release its
-                    // remaining load edges (same recursion as release's
-                    // kernel-drop branch).
-                    for &t in &self.kernels[old_kernel_id].loads {
-                        if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
-                            &mut self.tensors[t]
-                        {
-                            if *k == old_kernel_id {
-                                *k = KernelId::NULL;
+                let (rc, dtype) = match self.tensors[tid] {
+                    TensorData::Graph { rc, dtype, .. } | TensorData::Promoted { rc, dtype, .. } => (rc, dtype),
+                    ref t => unreachable!("eagerify: {t:?}"),
+                };
+                let _ = dtype;
+                self.tensors[tid] = TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: Dev::Auto, rc };
+                // Fully detach from the old producer: its load entries on tid are
+                // released. Without this the old kernel keeps a stale edge whose
+                // count pins tid above the death threshold forever.
+                if old_load_duplicates > 0 {
+                    self.kernels[old_kernel_id].loads.retain(|&t| t != tid);
+                    for _ in 0..old_load_duplicates {
+                        self.release(tid);
+                    }
+                    if self.kernels[old_kernel_id].outputs.is_empty() && self.kernels[old_kernel_id].stores.is_empty() {
+                        // The old producer is dead wood: drop it and release its
+                        // remaining load edges (same recursion as release's
+                        // kernel-drop branch).
+                        for &t in &self.kernels[old_kernel_id].loads {
+                            if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
+                                &mut self.tensors[t]
+                            {
+                                if *k == old_kernel_id {
+                                    *k = KernelId::NULL;
+                                }
                             }
                         }
-                    }
-                    let loads = std::mem::take(&mut self.kernels[old_kernel_id].loads);
-                    self.kernels.remove(old_kernel_id);
-                    for t in loads {
-                        self.release(t);
+                        let loads = std::mem::take(&mut self.kernels[old_kernel_id].loads);
+                        self.kernels.remove(old_kernel_id);
+                        for t in loads {
+                            self.release(t);
+                        }
                     }
                 }
             }
+            ref t => unreachable!("eagerify: unexpected variant after affiliation match: {t:?}"),
         }
 
         self.graphs[graph_id].ref_count -= 1;

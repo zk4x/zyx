@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use std::sync::Arc;
 
-use crate::backend::{BufferId, DeviceInfo, LaunchArg, ProgramId};
+use crate::backend::{Buffer, DeviceInfo, LaunchArg, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::{ClassId, EClass, Node, NodeData};
@@ -28,7 +28,7 @@ use crate::kernel::{
     BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
     ops::TileDim,
 };
-use crate::runtime::{KernelId, Runtime, TensorData};
+use crate::runtime::{Runtime, TensorData};
 use crate::shape::UAxis;
 use crate::slab::{Slab, SlabId};
 use crate::tensor::TensorId;
@@ -1069,7 +1069,10 @@ impl Runtime {
             // `Graph::add_memory_ops`.
             let prog_pool = program.dev.pool();
             for &input in inputs {
-                if !self.is_graph(input) && self.buffer_map.contains_key(&input) && self.buffer_map[&input].pool != prog_pool {
+                if !self.is_graph(input)
+                    && let Some(buffer) = self.leaf_buffer(input)
+                    && buffer.pool != prog_pool
+                {
                     return Err(ZyxError::BackendError(BackendError {
                         status: crate::error::ErrorStatus::IncorrectKernelArg,
                         context: format!("custom kernel input tensor {input} is on a different device than the compiled kernel")
@@ -1172,31 +1175,26 @@ impl Runtime {
         let pool_id = device_id.pool();
         let mut input_args: Vec<LaunchArg> = Vec::with_capacity(inputs.len());
         let mut all_bufs = BTreeSet::new();
-        let mut event_wait_list = Vec::new();
         for &input in inputs {
             if let Some(value) = self.resolve_symbolic(input) {
                 input_args.push(LaunchArg::Variable(value));
                 continue;
             }
-            if !self.buffer_map.contains_key(&input) {
+            if self.leaf_buffer(input).is_none() {
                 self.add_store(input)?;
             }
-            let buf_id = self.buffer_map[&input];
-            if buf_id.pool != pool_id {
+            let buffer = self.leaf_buffer(input).unwrap();
+            if buffer.pool != pool_id {
                 return Err(ZyxError::BackendError(BackendError {
                     status: crate::error::ErrorStatus::IncorrectKernelArg,
                     context: format!("custom kernel input tensor {input} is on a different device than the compiled kernel")
                         .into(),
                 }));
             }
-            let keys: Vec<BTreeSet<BufferId>> = self.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
-            for key in keys {
-                event_wait_list.push(self.events.remove(&key).unwrap());
-            }
-            input_args.push(LaunchArg::Buffer(buf_id.buffer));
-            all_bufs.insert(buf_id);
+            input_args.push(LaunchArg::Buffer(buffer.buffer_id));
+            all_bufs.insert(buffer);
         }
-        debug_assert!(inputs.iter().all(|&input| self.buffer_map.contains_key(&input) || self.resolve_symbolic(input).is_some()));
+        debug_assert!(inputs.iter().all(|&input| self.leaf_buffer(input).is_some() || self.resolve_symbolic(input).is_some()));
 
         let mut dims: Vec<Vec<Dim>> = Vec::with_capacity(shapes.len());
         for shape in shapes.iter() {
@@ -1214,32 +1212,30 @@ impl Runtime {
         for (i, dtype) in output_dtypes.iter().enumerate() {
             let shape = &shapes[i];
             let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
-            let (buf, ev) = pool_id.allocate(bytes)?;
-            event_wait_list.push(ev);
-            let buf_id = BufferId { pool: pool_id, buffer: buf };
+            let buf = pool_id.allocate(bytes)?;
+            let buf_id = Buffer { pool: pool_id, buffer_id: buf };
             output_bufs.push(buf_id);
             all_bufs.insert(buf_id);
         }
 
         let mut args = input_args;
         for buf in &output_bufs {
-            args.push(LaunchArg::Buffer(buf.buffer));
+            args.push(LaunchArg::Buffer(buf.buffer_id));
         }
         let _launch_t = std::time::Instant::now();
-        let event = device_id.launch(program.program_id, &args, event_wait_list)?;
+        device_id.launch(program.program_id, &args)?;
         /*eprintln!(
             "[forward async] launch enqueue {}us total {}us (async, no sync)",
             _launch_t.elapsed().as_micros(),
             _fwd_start.elapsed().as_micros()
         );*/
-        self.events.insert(all_bufs, event);
 
         // Put to tensors. Each output becomes a **Leaf**: the launched buffer
         // is its backing store (set in buffer_map), no kernel is created.
         // Consumers mint their own load kernels (Runtime::leaf_load), so no
         // NULL op ids ever leak into eager ops built on the result.
         let mut tensors = Vec::new();
-        for ((dtype, buf_id), shape) in output_dtypes.iter().copied().zip(output_bufs).zip(shapes) {
+        for ((dtype, buffer_id), shape) in output_dtypes.iter().copied().zip(output_bufs).zip(shapes) {
             // Build the slab-side shape expression (constant dims) for the
             // new tensor before pushing it.
             let dim_tids: Vec<TensorId> =
@@ -1249,14 +1245,7 @@ impl Runtime {
             } else {
                 self.stack(&dim_tids).expect("custom kernel output: failed to build shape stack")
             };
-            let id = self.tensors.push(TensorData::Leaf {
-                depends_on: KernelId::NULL,
-                shape_id,
-                dtype,
-                device_id: program.dev,
-                rc: 1,
-            });
-            self.buffer_map.insert(id, buf_id);
+            let id = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer_id, rc: 1 });
             tensors.push(id);
         }
 

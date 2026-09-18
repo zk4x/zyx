@@ -13,7 +13,7 @@ use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
 use crate::runtime::ResolvedDim;
 use crate::scalar::{Float, Scalar};
-use crate::scalar::{bf16, f16, f8e4m3, f8e5m2};
+use crate::scalar::{bf16, f8e4m3, f8e5m2, f16};
 use crate::shape::{Dim, UAxis, into_axes, into_axis};
 use crate::slab::SlabId;
 use crate::{DebugMask, RT};
@@ -468,12 +468,6 @@ impl Tensor {
         let mut data = vec![T::zero(); numel];
         RT.lock().load(self.id, &mut data)?;
         Ok(data)
-    }
-
-    /// Block until this tensor's last launch completes (device sync, no host copy).
-    /// For benchmarking: `forward` is async, this waits.
-    pub fn sync(&self) -> Result<(), ZyxError> {
-        RT.lock().sync(self.id)
     }
 
     /// Assigns the value of `src` to this tensor in-place using StoreView.

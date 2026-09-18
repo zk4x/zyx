@@ -9,7 +9,7 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{DTypeCapability, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool};
+use super::{DTypeCapability, DeviceInfo, DeviceProgramId, LaunchArg, Pool};
 use crate::DType;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{Kernel, Op, RangeKind};
@@ -284,9 +284,8 @@ impl CDevice {
         program_id: DeviceProgramId,
         pool_handle: Pool,
         args: &[LaunchArg],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
-        let _ = event_wait_list; // sync not needed for sequential CPU
+    ) -> Result<(), BackendError> {
+        // Sequential CPU: the kernel runs to completion before returning.
         debug_assert_eq!(pool_handle, Pool::Host);
         let host = super::host::pool();
         let mut memory_pool = super::lock(pool_handle, &host);
@@ -322,6 +321,6 @@ impl CDevice {
             func(ptrs_raw.as_ptr(), ptrs_raw.len());
         }
 
-        Ok(Event::Host(super::host::HostEvent))
+        Ok(())
     }
 }

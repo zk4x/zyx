@@ -5,12 +5,13 @@
 use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
+#[cfg(windows)]
+use std::io;
 use std::{
     fs::File,
     path::{Path, PathBuf},
 };
 
-use super::Event;
 use super::PoolBufferId;
 use crate::{
     error::{BackendError, ErrorStatus},
@@ -47,9 +48,6 @@ struct DiskBuffer {
     offset_bytes: u64,
 }
 
-#[derive(Debug, Clone)]
-pub struct DiskEvent {}
-
 impl DiskMemoryPool {
     pub const fn free_bytes(&self) -> Dim {
         self.free_bytes
@@ -64,20 +62,10 @@ impl DiskMemoryPool {
         self.buffers[src].bytes
     }
 
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
-        //println!("Deallocate buffer={buffer_id:?} from the disk");
-        let _ = event_wait_list;
-        if self.buffers.contains_id(buffer_id) {
-            let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
-            self.free_bytes += buffer.bytes;
-        }
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
+    /// Read a slice of the file backing the buffer into host memory.
+    /// Synchronous — the disk pool never defers work.
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
-        let _ = event_wait_list;
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
         let buffer = &self.buffers[src];
         let f = File::open(&buffer.path).unwrap();
         #[cfg(unix)]
@@ -97,22 +85,5 @@ impl DiskMemoryPool {
             Ok(())
         })();
         result.map_err(|err| BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("{err}").into() })
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    #[allow(clippy::unnecessary_wraps)]
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
-        let _ = self;
-        let _ = events;
-        Ok(())
-    }
-
-    #[allow(unused)]
-    #[allow(clippy::needless_pass_by_value)]
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn release_events(&mut self, events: Vec<Event>) {
-        let _ = self;
-        let _ = events;
     }
 }

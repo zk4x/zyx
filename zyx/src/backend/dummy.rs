@@ -1,9 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use super::{
-    DTypeCapability, DeviceInfo, DeviceProgramId, Event, LaunchArg, Pool, PoolBufferId, opencl::OpenCLEvent,
-};
+use super::{DTypeCapability, DeviceInfo, DeviceProgramId, LaunchArg, Pool, PoolBufferId};
 use crate::{
     DType,
     error::{BackendError, ErrorStatus},
@@ -13,7 +11,7 @@ use crate::{
 };
 use nanoserde::DeJson;
 use std::sync::{Mutex, OnceLock};
-use std::{ptr, sync::Arc};
+use std::sync::Arc;
 
 #[derive(Default, Debug, DeJson)]
 #[nserde(default)]
@@ -22,9 +20,15 @@ pub struct DummyConfig {
 }
 
 #[derive(Debug)]
+pub struct DummyBuffer {
+    bytes: Dim,
+    rc: u16,
+}
+
+#[derive(Debug)]
 pub struct DummyMemoryPool {
     free_bytes: Dim,
-    buffers: Slab<PoolBufferId, Dim>,
+    buffers: Slab<PoolBufferId, DummyBuffer>,
 }
 
 #[derive(Debug)]
@@ -125,77 +129,52 @@ impl DummyMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM".into() });
         }
-        let id = self.buffers.push(bytes);
-        Ok((id, Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))
+        Ok(self.buffers.push(DummyBuffer { bytes, rc: 1 }))
     }
 
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
-        let _ = event_wait_list;
-        let bytes = self.buffers[buffer_id];
-        self.buffers.remove(buffer_id);
-        self.free_bytes += bytes;
+    /// Increment the buffer's reference count. Checked math: overflow panics.
+    pub fn retain(&mut self, buffer_id: PoolBufferId) {
+        match self.buffers.get_mut(buffer_id) {
+            Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("DummyBuffer rc overflow"),
+            None => debug_assert!(false, "retain of unknown dummy buffer {buffer_id:?}"),
+        }
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    /// Decrement the reference count. At zero the buffer is freed immediately:
+    /// the dummy pool is synchronous and holds no in-flight work — async
+    /// consumers elsewhere retain the buffer while they still need it.
+    pub fn release(&mut self, buffer_id: PoolBufferId) {
+        let Some(buffer) = self.buffers.get_mut(buffer_id) else {
+            debug_assert!(false, "release of unknown dummy buffer {buffer_id:?}");
+            return;
+        };
+        buffer.rc = buffer.rc.checked_sub(1).expect("DummyBuffer rc underflow");
+        if buffer.rc == 0 {
+            let DummyBuffer { bytes, .. } = unsafe { self.buffers.remove_and_return(buffer_id) };
+            self.free_bytes += bytes;
+        }
+    }
+
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
-        let _ = self;
-        let _ = src;
-        let _ = dst;
-        let _ = event_wait_list;
-        Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }))
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    #[allow(clippy::unnecessary_wraps)]
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_host(
-        &mut self,
-        src: PoolBufferId,
-        dst: &mut [u8],
-        event_wait_list: Vec<super::Event>,
-    ) -> Result<(), BackendError> {
-        let _ = self;
-        let _ = src;
-        let _ = dst;
-        let _ = event_wait_list;
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
+        // The dummy pool holds no data — nothing to read back.
+        let _ = (self, src, dst);
         Ok(())
     }
 
-    pub fn pool_to_pool(
-        &mut self,
-        src: Pool,
-        src_buf: PoolBufferId,
-        dst_buf: PoolBufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
-        let _ = (src, src_buf, dst_buf, event_wait_list);
-        todo!("copies into dummy pool")
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    #[allow(clippy::unnecessary_wraps)]
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
-        let _ = self;
-        let _ = events;
+    /// The dummy pool never moves data: the copy is instantaneous, so the
+    /// retained source is released right away.
+    pub fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, _dst_buf: PoolBufferId) -> Result<(), BackendError> {
+        src.retain(src_buf);
+        src.release(src_buf);
         Ok(())
-    }
-
-    #[allow(unused)]
-    #[allow(clippy::needless_pass_by_value)]
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn release_events(&mut self, events: Vec<Event>) {
-        let _ = self;
-        let _ = events;
     }
 }
 
@@ -231,12 +210,9 @@ impl DummyDevice {
         program_id: DeviceProgramId,
         pool_handle: Pool,
         args: &[LaunchArg],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    ) -> Result<(), BackendError> {
         debug_assert_eq!(pool_handle, self.memory_pool);
-        let _ = self;
         let _ = program_id;
-        let _ = event_wait_list;
         let memory_pool = pool()?;
         let memory_pool = super::lock(pool_handle, &memory_pool);
         for arg in args {
@@ -247,6 +223,6 @@ impl DummyDevice {
                 LaunchArg::Variable(_) => {}
             }
         }
-        Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }))
+        Ok(())
     }
 }

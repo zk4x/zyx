@@ -160,14 +160,6 @@ impl Dev {
         out
     }
 
-    /// Resolve the `Auto` selector to the first available device.
-    pub fn auto() -> Result<Dev, BackendError> {
-        Dev::all().into_iter().next().ok_or_else(|| BackendError {
-            status: ErrorStatus::Initialization,
-            context: "all devices failed to initialize or were configured out".into(),
-        })
-    }
-
     /// The memory pool belonging to this device. Pure function — the pool
     /// is always derived from the device, never the reverse.
     #[must_use]
@@ -220,6 +212,7 @@ impl Dev {
         }
     }
 
+    // TODO remove this somehow perhaps
     /// Whether this device only runs AOT (precompiled) kernels and cannot
     /// compile generic zyx kernels (e.g. the cblas backend). Such devices
     /// must be skipped by generic kernel autotuning.
@@ -229,7 +222,6 @@ impl Dev {
     }
 
     /// Human-readable device name (e.g. "CUDA", "OpenCL", "C").
-    #[cfg(feature = "viz")]
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -251,28 +243,13 @@ impl Dev {
     /// `launch` and `release`. The `debug_asm` flag controls whether the backend
     /// prints the compiled assembly/source (for `ZYX_DEBUG=16`).
     pub fn compile(self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let name = match self {
-            Dev::Auto => "auto",
-            Dev::C => "C",
-            Dev::Cblas => "cblas",
-            Dev::Dummy => "dummy",
-            Dev::Cuda(_) => "CUDA",
-            Dev::OpenCL(_) => "OPENCL",
-            #[cfg(feature = "tenstorrent")]
-            Dev::TT(_) => "tenstorrent",
-            Dev::Vulkan(_) => "Vulkan",
-            #[cfg(feature = "wgpu")]
-            Dev::WGPU(_) => "WGPU",
-        };
         let result = match self {
             Dev::Auto => panic!("Dev::Auto cannot compile; resolve it with Dev::auto() first"),
             Dev::C => c::device().expect("C device unavailable").lock().unwrap().compile(kernel, debug_asm),
             Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().compile(kernel, debug_asm),
             Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().compile(kernel, debug_asm),
             Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).compile(kernel, debug_asm),
-            Dev::OpenCL(id) => {
-                dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).compile(kernel, debug_asm)
-            }
+            Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).compile(kernel, debug_asm),
             #[cfg(feature = "tenstorrent")]
             Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).compile(kernel, debug_asm),
             Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).compile(kernel, debug_asm),
@@ -283,7 +260,7 @@ impl Dev {
             && let Ok(x) = x.parse::<u32>()
             && DebugMask(x).compile()
         {
-            println!("[{name}] compile kernel");
+            println!("[{}] compile kernel", self.name());
         }
         result
     }
@@ -332,12 +309,7 @@ impl Dev {
     /// passed here — each backend derives it at launch from the per-axis
     /// `GwsDim` it stored at compile, evaluating `Param(ordinal)` leaves
     /// against `args[ordinal]` (`LaunchArg::Variable` → `Constant::as_dim()`).
-    pub fn launch(
-        self,
-        program_id: DeviceProgramId,
-        args: &[LaunchArg],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    pub fn launch(self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<(), BackendError> {
         // A kernel always has at least one Param (its output); launching with
         // no args means buffer binding failed upstream — backends would pass
         // garbage param pointers to the driver.
@@ -345,24 +317,47 @@ impl Dev {
         let pool = self.pool();
         match self {
             Dev::Auto => panic!("Dev::Auto cannot launch; resolve it with Dev::auto() first"),
-            Dev::C => c::device().expect("C device unavailable").lock().unwrap().launch(program_id, pool, args, event_wait_list),
-            Dev::Cblas => {
-                cblas::device().expect("CBLAS device unavailable").lock().unwrap().launch(program_id, pool, args, event_wait_list)
+            Dev::C => c::device().expect("C device unavailable").lock().unwrap().launch(program_id, pool, args),
+            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().launch(program_id, pool, args),
+            Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().launch(program_id, pool, args),
+            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).launch(program_id, pool, args),
+            Dev::OpenCL(id) => {
+                dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).launch(program_id, pool, args)
             }
-            Dev::Dummy => {
-                dummy::device().expect("dummy device unavailable").lock().unwrap().launch(program_id, pool, args, event_wait_list)
-            }
-            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).launch(program_id, pool, args, event_wait_list),
-            Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable"))
-                .launch(program_id, pool, args, event_wait_list),
             #[cfg(feature = "tenstorrent")]
-            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable"))
-                .launch(program_id, pool, args, event_wait_list),
-            Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable"))
-                .launch(program_id, pool, args, event_wait_list),
+            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).launch(program_id, pool, args),
+            Dev::Vulkan(id) => {
+                dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).launch(program_id, pool, args)
+            }
             #[cfg(feature = "wgpu")]
-            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable"))
-                .launch(program_id, pool, args, event_wait_list),
+            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).launch(program_id, pool, args),
+        }
+    }
+
+    /// Timed launch for autotune: returns the kernel's run time in nanos.
+    /// The measurement is uncontended — the device's pending work is
+    /// submitted and drained before the timed kernel runs solo.
+    pub fn launch_timed(self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<u64, BackendError> {
+        // A kernel always has at least one Param (its output); launching with
+        // no args means buffer binding failed upstream — backends would pass
+        // garbage param pointers to the driver.
+        debug_assert!(!args.is_empty(), "launch_timed with empty args: buffer binding failed upstream");
+        match self {
+            Dev::Auto => panic!("Dev::Auto cannot launch; resolve it with Dev::auto() first"),
+            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).launch_timed(program_id, args),
+            Dev::OpenCL(id) => {
+                dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).launch_timed(program_id, args)
+            }
+            Dev::C => todo!("launch_timed not yet ported to the C device"),
+            Dev::Cblas => todo!("launch_timed not yet ported to the CBLAS device"),
+            Dev::Dummy => todo!("launch_timed not yet ported to the dummy device"),
+            Dev::Vulkan(id) => {
+                dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).launch_timed(program_id, args)
+            }
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(id) => todo!("launch_timed not yet ported to the TT device ({id})"),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).launch_timed(program_id, args),
         }
     }
 }
@@ -398,7 +393,7 @@ impl Pool {
     }
 
     /// Allocate a buffer. Lazily initializes the pool (and its device worker, if any).
-    pub fn allocate(self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
+    pub fn allocate(self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
         let bytes = bytes + 8; // for the extra element, why not
         let free = self.free_bytes();
         let (result, name) = match self {
@@ -444,49 +439,92 @@ impl Pool {
         }
     }
 
-    /// Free a buffer. The pool must already be initialized (a buffer id for it
-    /// cannot exist otherwise); panics loudly if it is not.
-    pub fn deallocate(self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
-        let name = match self {
-            Pool::Host => "host",
-            Pool::Disk => "disk",
-            Pool::Cuda(_) => "CUDA",
-            Pool::OpenCL(_) => "OPENCL",
-            Pool::Vulkan(_) => "Vulkan",
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => "tenstorrent",
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(id) => "WGPU",
-            Pool::Dummy => "dummy",
-        };
-        let free_before = self.free_bytes();
+    /// Increment the buffer's reference count (allocate starts it at 1).
+    /// Checked math: overflow panics.
+    pub fn retain(self, buffer_id: PoolBufferId) {
         match self {
-            Pool::Host => lock(self, &host::pool()).deallocate(buffer_id, event_wait_list),
-            Pool::Disk => lock(self, &disk::pool()).deallocate(buffer_id, event_wait_list),
             Pool::Cuda(id) => {
-                lock(self, &cuda::pool(id).expect("deallocate on unavailable CUDA pool")).deallocate(buffer_id, event_wait_list)
+                if let Ok(pool) = cuda::pool(id) {
+                    lock(self, &pool).retain(buffer_id);
+                }
             }
-            Pool::OpenCL(id) => lock(self, &opencl::pool(id).expect("deallocate on unavailable OpenCL pool"))
-                .deallocate(buffer_id, event_wait_list),
-            Pool::Vulkan(id) => lock(self, &vulkan::pool(id).expect("deallocate on unavailable Vulkan pool"))
-                .deallocate(buffer_id, event_wait_list),
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => lock(self, &tenstorrent::pool(id).expect("deallocate on unavailable TT pool"))
-                .deallocate(buffer_id, event_wait_list),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(id) => {
-                lock(self, &wgpu::pool(id).expect("deallocate on unavailable WGPU pool")).deallocate(buffer_id, event_wait_list)
+            Pool::Host => lock(self, &host::pool()).retain(buffer_id),
+            // Disk buffers are file mappings — nothing to free behind rc.
+            Pool::Disk => {}
+            Pool::OpenCL(id) => {
+                if let Ok(pool) = opencl::pool(id) {
+                    lock(self, &pool).retain(buffer_id);
+                }
+            }
+            Pool::Vulkan(id) => {
+                if let Ok(pool) = vulkan::pool(id) {
+                    lock(self, &pool).retain(buffer_id);
+                }
             }
             Pool::Dummy => {
-                lock(self, &dummy::pool().expect("deallocate on unavailable dummy pool")).deallocate(buffer_id, event_wait_list)
+                if let Ok(pool) = dummy::pool() {
+                    lock(self, &pool).retain(buffer_id);
+                }
+            }
+            #[cfg(feature = "tenstorrent")]
+            Pool::TT(id) => {
+                if let Ok(pool) = tenstorrent::pool(id) {
+                    lock(self, &pool).retain(buffer_id);
+                }
+            }
+            #[cfg(feature = "wgpu")]
+            Pool::WGPU(id) => {
+                if let Ok(pool) = wgpu::pool(id) {
+                    lock(self, &pool).retain(buffer_id);
+                }
             }
         }
-        if let Ok(x) = std::env::var("ZYX_DEBUG")
-            && let Ok(x) = x.parse::<u32>()
-            && DebugMask::new(x).memory()
-        {
-            let free_after = self.free_bytes();
-            println!("[{name}] deallocate -> free {free_after} B (freed {} B)", free_after - free_before);
+    }
+
+    /// Decrement the buffer's reference count. At zero the backend defers the
+    /// actual reclamation behind all in-flight work (release is a request;
+    /// freeing is backend-scheduled).
+    pub fn release(self, buffer_id: PoolBufferId) {
+        match self {
+            Pool::Cuda(id) => {
+                if let Ok(pool) = cuda::pool(id) {
+                    lock(self, &pool).release(buffer_id);
+                }
+            }
+            Pool::Host => lock(self, &host::pool()).release(buffer_id),
+            // Disk buffers are file mappings — nothing to free behind rc.
+            Pool::Disk => {}
+            Pool::OpenCL(id) => {
+                if let Ok(pool) = opencl::pool(id) {
+                    lock(self, &pool).release(buffer_id);
+                }
+            }
+            Pool::Vulkan(id) => {
+                if let Ok(pool) = vulkan::pool(id) {
+                    lock(self, &pool).release(buffer_id);
+                }
+            }
+            Pool::Dummy => {
+                if let Ok(pool) = dummy::pool() {
+                    lock(self, &pool).release(buffer_id);
+                }
+            }
+            #[cfg(feature = "tenstorrent")]
+            Pool::TT(id) => {
+                if let Ok(pool) = tenstorrent::pool(id) {
+                    lock(self, &pool).release(buffer_id);
+                }
+            }
+            #[cfg(feature = "wgpu")]
+            Pool::WGPU(id) => {
+                // Free must not race unsubmitted launches that still use the
+                // buffer.
+                if wgpu::flush_pending(id).is_ok()
+                    && let Ok(pool) = wgpu::pool(id)
+                {
+                    lock(self, &pool).release(buffer_id);
+                }
+            }
         }
     }
 
@@ -505,97 +543,44 @@ impl Pool {
         }
     }
 
-    pub fn host_to_pool(self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {        match self {
-            Pool::Host => lock(self, &host::pool()).host_to_pool(src, dst, event_wait_list),
-            Pool::Disk => todo!("host to disk copy"),
-            Pool::Cuda(id) => lock(self, &cuda::pool(id)?).host_to_pool(src, dst, event_wait_list),
-            Pool::OpenCL(id) => lock(self, &opencl::pool(id)?).host_to_pool(src, dst, event_wait_list),
-            Pool::Vulkan(id) => lock(self, &vulkan::pool(id)?).host_to_pool(src, dst, event_wait_list),
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => lock(self, &tenstorrent::pool(id)?).host_to_pool(src, dst, event_wait_list),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(id) => lock(self, &wgpu::pool(id)?).host_to_pool(src, dst, event_wait_list),
-            Pool::Dummy => lock(self, &dummy::pool()?).host_to_pool(src, dst, event_wait_list),
-        }
-    }
-
-    pub fn pool_to_host(self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
+    pub fn pool_to_host(self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
         match self {
-            Pool::Host => lock(self, &host::pool()).pool_to_host(src, dst, event_wait_list),
-            Pool::Disk => lock(self, &disk::pool()).pool_to_host(src, dst, event_wait_list),
-            Pool::Cuda(id) => lock(self, &cuda::pool(id)?).pool_to_host(src, dst, event_wait_list),
-            Pool::OpenCL(id) => lock(self, &opencl::pool(id)?).pool_to_host(src, dst, event_wait_list),
-            Pool::Vulkan(id) => lock(self, &vulkan::pool(id)?).pool_to_host(src, dst, event_wait_list),
+            Pool::Host => lock(self, &host::pool()).pool_to_host(src, dst),
+            Pool::Disk => lock(self, &disk::pool()).pool_to_host(src, dst),
+            Pool::Cuda(id) => lock(self, &cuda::pool(id)?).pool_to_host(src, dst),
+            Pool::OpenCL(id) => lock(self, &opencl::pool(id)?).pool_to_host(src, dst),
+            Pool::Vulkan(id) => lock(self, &vulkan::pool(id)?).pool_to_host(src, dst),
             #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => lock(self, &tenstorrent::pool(id)?).pool_to_host(src, dst, event_wait_list),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(id) => lock(self, &wgpu::pool(id)?).pool_to_host(src, dst, event_wait_list),
-            Pool::Dummy => lock(self, &dummy::pool()?).pool_to_host(src, dst, event_wait_list),
-        }
-    }
-
-    /// Copy data from `src` pool into `self` (dst). Lock order is always
-    /// dst-then-src; both are separate mutexes so this cannot deadlock as long
-    /// as no path locks them in the opposite order.
-    pub fn pool_to_pool(
-        self,
-        src: Pool,
-        src_buf: PoolBufferId,
-        dst_buf: PoolBufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
-        match self {
-            Pool::Host => lock(self, &host::pool()).pool_to_pool(src, src_buf, dst_buf, event_wait_list),
-            Pool::Disk => todo!("copies into disk pool"),
-            Pool::Cuda(id) => lock(self, &cuda::pool(id)?).pool_to_pool(src, src_buf, dst_buf, event_wait_list),
-            Pool::OpenCL(id) => lock(self, &opencl::pool(id)?).pool_to_pool(src, src_buf, dst_buf, event_wait_list),
-            Pool::Vulkan(id) => lock(self, &vulkan::pool(id)?).pool_to_pool(src, src_buf, dst_buf, event_wait_list),
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => lock(self, &tenstorrent::pool(id)?).pool_to_pool(src, src_buf, dst_buf, event_wait_list),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(id) => lock(self, &wgpu::pool(id)?).pool_to_pool(src, src_buf, dst_buf, event_wait_list),
-            Pool::Dummy => lock(self, &dummy::pool()?).pool_to_pool(src, src_buf, dst_buf, event_wait_list),
-        }
-    }
-
-    pub fn sync_events(self, events: Vec<Event>) -> Result<(), BackendError> {
-        match self {
-            Pool::Host => lock(self, &host::pool()).sync_events(events),
-            Pool::Disk => lock(self, &disk::pool()).sync_events(events),
-            Pool::Cuda(id) => lock(self, &cuda::pool(id)?).sync_events(events),
-            Pool::OpenCL(id) => lock(self, &opencl::pool(id)?).sync_events(events),
-            Pool::Vulkan(id) => lock(self, &vulkan::pool(id)?).sync_events(events),
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => lock(self, &tenstorrent::pool(id)?).sync_events(events),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(id) => lock(self, &wgpu::pool(id)?).sync_events(events),
-            Pool::Dummy => lock(self, &dummy::pool()?).sync_events(events),
-        }
-    }
-
-    #[allow(unused)]
-    pub fn release_events(self, events: Vec<Event>) {
-        match self {
-            Pool::Host => lock(self, &host::pool()).release_events(events),
-            Pool::Disk => lock(self, &disk::pool()).release_events(events),
-            Pool::Cuda(id) => {
-                lock(self, &cuda::pool(id).expect("release_events on unavailable CUDA pool")).release_events(events)
-            }
-            Pool::OpenCL(id) => {
-                lock(self, &opencl::pool(id).expect("release_events on unavailable OpenCL pool")).release_events(events)
-            }
-            Pool::Vulkan(id) => {
-                lock(self, &vulkan::pool(id).expect("release_events on unavailable Vulkan pool")).release_events(events)
-            }
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => {
-                lock(self, &tenstorrent::pool(id).expect("release_events on unavailable TT pool")).release_events(events)
-            }
+            Pool::TT(id) => lock(self, &tenstorrent::pool(id)?).pool_to_host(src, dst),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => {
-                lock(self, &wgpu::pool(id).expect("release_events on unavailable WGPU pool")).release_events(events)
+                wgpu::flush_pending(id)?;
+                lock(self, &wgpu::pool(id)?).pool_to_host(src, dst)
             }
-            Pool::Dummy => lock(self, &dummy::pool().expect("release_events on unavailable dummy pool")).release_events(events),
+            Pool::Dummy => lock(self, &dummy::pool()?).pool_to_host(src, dst),
+        }
+    }
+
+    /// Copy data from `src` pool into `self` (dst). The source buffer is
+    /// retained for the duration of the async copy and released by the
+    /// destination backend once the copy completes. Lock order is always
+    /// dst-then-src; both are separate mutexes so this cannot deadlock as long
+    /// as no path locks them in the opposite order.
+    pub fn pool_to_pool(self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
+        match self {
+            Pool::Host => lock(self, &host::pool()).pool_to_pool(src, src_buf, dst_buf),
+            Pool::Disk => todo!("copies into disk pool"),
+            Pool::Cuda(id) => lock(self, &cuda::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
+            Pool::OpenCL(id) => lock(self, &opencl::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
+            Pool::Vulkan(id) => lock(self, &vulkan::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
+            #[cfg(feature = "tenstorrent")]
+            Pool::TT(id) => lock(self, &tenstorrent::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
+            #[cfg(feature = "wgpu")]
+            Pool::WGPU(id) => {
+                wgpu::flush_pending(id)?;
+                lock(self, &wgpu::pool(id)?).pool_to_pool(src, src_buf, dst_buf)
+            }
+            Pool::Dummy => lock(self, &dummy::pool()?).pool_to_pool(src, src_buf, dst_buf),
         }
     }
 }
@@ -835,18 +820,18 @@ impl SlabId for DeviceProgramId {
 /// Globally unique buffer identifier: the owning global pool plus the
 /// buffer id within that pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BufferId {
+pub struct Buffer {
     pub pool: Pool,
-    pub buffer: PoolBufferId,
+    pub buffer_id: PoolBufferId,
 }
 
-impl BufferId {
-    pub const NULL: Self = Self { pool: Pool::Host, buffer: PoolBufferId(u32::MAX) };
+impl Buffer {
+    pub const NULL: Self = Self { pool: Pool::Host, buffer_id: PoolBufferId(u32::MAX) };
 }
 
-impl From<BufferId> for usize {
-    fn from(value: BufferId) -> Self {
-        value.buffer.0 as usize
+impl From<Buffer> for usize {
+    fn from(value: Buffer) -> Self {
+        value.buffer_id.0 as usize
     }
 }
 
@@ -872,21 +857,6 @@ impl From<libloading::Error> for BackendError {
     fn from(value: libloading::Error) -> Self {
         BackendError { status: ErrorStatus::Initialization, context: value.to_string().into() }
     }
-}
-
-#[derive(Debug)]
-#[allow(clippy::upper_case_acronyms)]
-pub enum Event {
-    #[allow(unused)]
-    Disk(disk::DiskEvent),
-    Host(host::HostEvent),
-    CUDA(cuda::CUDAEvent),
-    OpenCL(opencl::OpenCLEvent),
-    #[cfg(feature = "tenstorrent")]
-    TT(tenstorrent::TTEvent),
-    Vulkan(vulkan::VulkanEvent),
-    #[cfg(feature = "wgpu")]
-    WGPU(wgpu::WGPUEvent),
 }
 
 /// Device configuration

@@ -19,9 +19,7 @@
 // single-core launch uses `gidx0 = 0, gidx1 = 0` (also written `{0, 0}`
 // in CoreCoord notation).
 
-use super::{
-    DeviceInfo, DeviceProgramId, Event, GwsDim, Kernel, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
-};
+use super::{DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Pool, PoolBufferId, gws_from_kernel};
 use crate::{
     DType,
     backend::DTypeCapability,
@@ -110,6 +108,7 @@ pub struct TTConfig {
 pub(crate) struct TTBuffer {
     dev_index: u32,
     pub(crate) size: u64,
+    rc: u16,
 }
 
 // ---------------------------------------------------------------------------
@@ -165,9 +164,6 @@ pub struct TTMemoryPool {
     /// Real Tenstorrent chip id (from device_ids config). Not the pool ordinal.
     dev_id: u32,
 }
-
-#[derive(Debug, Clone)]
-pub struct TTEvent;
 
 pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Arc<Mutex<TTMemoryPool>>>, BackendError> {
     let mut pools: Vec<Arc<Mutex<TTMemoryPool>>> = Vec::new();
@@ -350,7 +346,7 @@ impl TTMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
         let bytes_u64: u64 = u64::try_from(bytes).map_err(|_| BackendError {
             status: ErrorStatus::MemoryAllocation,
             context: "allocation size exceeds 64-bit".into(),
@@ -361,21 +357,36 @@ impl TTMemoryPool {
         let rt = &self.runtime;
         let tile_bytes: u64 = 2048;
         let dev_index = rt.lock().unwrap().alloc_buf(bytes_u64, tile_bytes)?;
-        let buf = TTBuffer { dev_index, size: bytes_u64 };
-        let id = self.buffers.push(buf);
-        Ok((id, Event::TT(TTEvent)))
+        let buf = TTBuffer { dev_index, size: bytes_u64, rc: 1 };
+        Ok(self.buffers.push(buf))
     }
 
-    pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
-        let _ = event_wait_list;
-        if self.buffers.contains_id(buffer_id) {
+    /// Increment the buffer's reference count. Checked math: overflow panics.
+    pub fn retain(&mut self, buffer_id: PoolBufferId) {
+        match self.buffers.get_mut(buffer_id) {
+            Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("TTBuffer rc overflow"),
+            None => debug_assert!(false, "retain of unknown TT buffer {buffer_id:?}"),
+        }
+    }
+
+    /// Decrement the reference count. At zero the buffer is freed immediately:
+    /// the TT shim is synchronous and holds no in-flight work — async
+    /// consumers elsewhere retain the buffer while they still need it.
+    pub fn release(&mut self, buffer_id: PoolBufferId) {
+        let Some(buffer) = self.buffers.get_mut(buffer_id) else {
+            debug_assert!(false, "release of unknown TT buffer {buffer_id:?}");
+            return;
+        };
+        buffer.rc = buffer.rc.checked_sub(1).expect("TTBuffer rc underflow");
+        if buffer.rc == 0 {
             let buf = unsafe { self.buffers.remove_and_return(buffer_id) };
+            self.free_bytes += buf.size as Dim;
             let _ = self.runtime.lock().unwrap().free_buf(buf.dev_index);
         }
     }
 
-    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
-        let _ = event_wait_list;
+    /// Blocking shim upload (sync — the shim call runs to completion).
+    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId) -> Result<(), BackendError> {
         let rt = &self.runtime;
         let buf = self
             .buffers
@@ -390,11 +401,11 @@ impl TTMemoryPool {
             libc::munmap(shm_ptr as *mut libc::c_void, len as usize);
             libc::shm_unlink(cname.as_ptr());
         }
-        Ok(Event::TT(TTEvent))
+        Ok(())
     }
 
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
-        let _ = event_wait_list;
+    /// Blocking shim download (sync — the shim call runs to completion).
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
         let rt = &self.runtime;
         let buf = self
             .buffers
@@ -412,25 +423,20 @@ impl TTMemoryPool {
         Ok(())
     }
 
-    pub fn pool_to_pool(
-        &mut self,
-        src: Pool,
-        src_buf: PoolBufferId,
-        dst_buf: PoolBufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
-        eprintln!("[TT-MARK] pool_to_pool start");
+    /// Synchronous copy into this pool (the TT shim has no async queues): the
+    /// source is consumed within this call, so no retain is needed. Host
+    /// sources upload directly; every other pool stages through host memory.
+    pub fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
         match src {
             Pool::Host => {
-                eprintln!("[TT-MARK] pool_to_pool src=host");
                 let src_pool = super::host::pool();
                 let src_pool = super::lock(src, &src_pool);
-                let data = src_pool.get_buffer(src_buf);
-                self.host_to_pool(data, dst_buf, event_wait_list)
+                let data = src_pool.get_buffer(src_buf).to_vec();
+                drop(src_pool);
+                self.host_to_pool(&data, dst_buf)
             }
             // No P2P path in the tt-runtime shim yet — stage through host.
             _ => {
-                eprintln!("[TT-MARK] pool_to_pool src=other-pool, staging via host");
                 let len = {
                     let dst_ref = self.buffers.get(dst_buf).ok_or_else(|| BackendError {
                         status: ErrorStatus::MemoryCopyP2H,
@@ -439,21 +445,10 @@ impl TTMemoryPool {
                     dst_ref.size as usize
                 };
                 let mut staging = vec![0u8; len];
-                src.pool_to_host(src_buf, &mut staging, event_wait_list)?;
-                self.host_to_pool(&staging, dst_buf, Vec::new())
+                src.pool_to_host(src_buf, &mut staging)?;
+                self.host_to_pool(&staging, dst_buf)
             }
         }
-    }
-
-    pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
-        let _ = self;
-        let _ = events;
-        Ok(())
-    }
-
-    pub fn release_events(&mut self, events: Vec<Event>) {
-        let _ = self;
-        let _ = events;
     }
 
     pub fn dev_index(&self, buffer_id: PoolBufferId) -> Result<u32, BackendError> {
@@ -1008,10 +1003,8 @@ impl TTDevice {
         program_id: DeviceProgramId,
         pool_handle: Pool,
         args: &[LaunchArg],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    ) -> Result<(), BackendError> {
         debug_assert_eq!(pool_handle, self.memory_pool);
-        let _ = event_wait_list;
         let Pool::TT(id) = pool_handle else {
             unreachable!("TT launch with non-TT pool")
         };
@@ -1119,6 +1112,6 @@ impl TTDevice {
         let mut rt_guard = rt.lock().unwrap();
         rt_guard.run(program_id.0, &src_indices, &dst_indices, grid_dims, &vars)?;
 
-        Ok(Event::TT(TTEvent))
+        Ok(())
     }
 }

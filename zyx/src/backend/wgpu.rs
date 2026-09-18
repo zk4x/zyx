@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use super::{
-    BackendError, DeviceInfo, ErrorStatus, Event, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
+    BackendError, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
 };
 use crate::{
     DType,
     backend::{DTypeCapability, DeviceProgramId},
-    kernel::{Kernel, MemScope, Op, ParamKind, RangeKind},
+    kernel::{Kernel, Op, ParamKind, RangeKind},
     shape::Dim,
     slab::Slab,
 };
@@ -15,12 +15,9 @@ use nanoserde::DeJson;
 use pollster::FutureExt;
 use std::{
     sync::{Arc, Mutex, OnceLock},
-    time::Duration,
+    time::Instant,
 };
-use wgpu::{
-    BindGroupLayout, BufferDescriptor, BufferUsages, ComputePipeline, PowerPreference, ShaderModule, SubmissionIndex,
-    wgt::PollType,
-};
+use wgpu::{BindGroupLayout, BufferDescriptor, BufferUsages, ComputePipeline, PowerPreference, ShaderModule, wgt::PollType};
 
 #[derive(DeJson, Debug)]
 #[nserde(default)]
@@ -35,12 +32,19 @@ impl Default for WGPUConfig {
 }
 
 #[derive(Debug)]
+pub struct WGPUBuffer {
+    buffer: wgpu::Buffer,
+    bytes: Dim,
+    rc: u16,
+}
+
+#[derive(Debug)]
 pub struct WGPUMemoryPool {
     free_bytes: Dim,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     adapter: wgpu::Adapter,
-    buffers: Slab<PoolBufferId, wgpu::Buffer>,
+    buffers: Slab<PoolBufferId, WGPUBuffer>,
     dev_info: DeviceInfo,
 }
 
@@ -91,12 +95,16 @@ pub struct WGPUDevice {
     adapter: wgpu::Adapter,
     programs: Slab<DeviceProgramId, WGPUProgram>,
     queue: Arc<wgpu::Queue>,
+    /// Pending micro-batch window: launches accumulate here in program order
+    /// until MICRO_BATCH_WINDOW is reached (or a sync point arrives), then
+    /// the whole window is recorded into ONE command encoder and submitted
+    /// with a single `queue.submit` (the single in-order queue preserves
+    /// ordering — no waits are needed).
+    pending: Vec<(DeviceProgramId, Vec<LaunchArg>)>,
 }
 
-#[derive(Debug, Clone)]
-pub struct WGPUEvent {
-    submission_index: Option<SubmissionIndex>,
-}
+/// Pending commands accumulate until the micro-batch window is flushed.
+const MICRO_BATCH_WINDOW: usize = 100;
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -284,6 +292,7 @@ fn ensure_device_table(
             adapter: guard.adapter.clone(),
             programs: Slab::new(),
             queue: guard.queue.clone(),
+            pending: Vec::new(),
         })));
     }
     Ok(devs)
@@ -297,7 +306,7 @@ impl WGPUMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
         let align = wgpu::COPY_BUFFER_ALIGNMENT as Dim;
         let bytes = (bytes + align - 1) / align * align;
         if bytes > self.free_bytes {
@@ -311,95 +320,45 @@ impl WGPUMemoryPool {
             ),
             mapped_at_creation: false,
         });
-        let id = self.buffers.push(buffer);
-        let event = Event::WGPU(WGPUEvent { submission_index: None });
-        Ok((id, event))
+        self.free_bytes -= bytes;
+        Ok(self.buffers.push(WGPUBuffer { buffer, bytes, rc: 1 }))
     }
 
-    pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
-        drop(event_wait_list);
-        let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
-        buffer.destroy();
-    }
-
-    #[allow(clippy::unnecessary_wraps)]
-    pub fn host_to_pool(
-        &mut self,
-        src: &[u8],
-        dst: PoolBufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<super::Event, BackendError> {
-        // wgpu requires writes to be multiples of 4 bytes
-        const ALIGN: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
-        drop(event_wait_list);
-
-        let dst = &self.buffers[dst];
-
-        //let aligned_len = (src.len() + ALIGN - 1) / ALIGN * ALIGN;
-        let aligned_len = src.len().div_ceil(ALIGN);
-
-        // Use write_buffer for the aligned portion
-        if aligned_len > src.len() {
-            // If src.len() is not divisible by 4, we need a tiny slice with padding
-            // Here we can safely use `write_buffer` with padding without allocating a new Vec
-            // by creating a small stack buffer for the extra bytes
-            let mut padded: [u8; ALIGN] = [0; ALIGN];
-            let full_chunks = src.len() / ALIGN;
-            let remaining = src.len() % ALIGN;
-
-            // Write full 4-byte chunks directly
-            if full_chunks > 0 {
-                self.queue.write_buffer(dst, 0, &src[..full_chunks * ALIGN]);
-            }
-
-            // Write the remaining bytes padded with zeros
-            if remaining > 0 {
-                padded[..remaining].copy_from_slice(&src[full_chunks * ALIGN..]);
-                self.queue.write_buffer(dst, (full_chunks * ALIGN) as u64, &padded);
-            }
-        } else {
-            // Already aligned
-            self.queue.write_buffer(dst, 0, src);
+    /// Increment the buffer's reference count. Checked math: overflow panics.
+    pub fn retain(&mut self, buffer_id: PoolBufferId) {
+        match self.buffers.get_mut(buffer_id) {
+            Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("WGPUBuffer rc overflow"),
+            None => debug_assert!(false, "retain of unknown WGPU buffer {buffer_id:?}"),
         }
-
-        let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("GpuBuffer::write") });
-        self.queue.submit(Some(encoder.finish()));
-
-        Ok(Event::WGPU(WGPUEvent { submission_index: None }))
     }
 
-    /*pub fn pool_to_host(
-        &mut self,
-        src: PoolBufferId,
-        dst: &mut [u8],
-        event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError> {
-        let _ = event_wait_list;
-        let src = &self.buffers[src];
-        async {
-            let (tx, rx) = futures::channel::oneshot::channel();
-            DownloadBuffer::read_buffer(&self.device, &self.queue, &src.slice(..), move |result| {
-                tx.send(result).unwrap_or_else(|_| panic!("Failed to download buffer."));
-            });
-            self.device.poll(PollType::Wait { submission_index: None, timeout: None }).unwrap();
-            let download = rx.await.unwrap().unwrap();
-            dst.copy_from_slice(&download);
+    /// Decrement the buffer's reference count. At zero the buffer is
+    /// destroyed immediately: wgpu defers the driver-level destruction behind
+    /// all in-flight work itself, and async consumers elsewhere retain the
+    /// buffer while they still need it.
+    pub fn release(&mut self, buffer_id: PoolBufferId) {
+        let Some(buffer) = self.buffers.get_mut(buffer_id) else {
+            debug_assert!(false, "release of unknown WGPU buffer {buffer_id:?}");
+            return;
+        };
+        buffer.rc = buffer.rc.checked_sub(1).expect("WGPUBuffer rc underflow");
+        if buffer.rc == 0 {
+            let WGPUBuffer { buffer, bytes, .. } = unsafe { self.buffers.remove_and_return(buffer_id) };
+            self.free_bytes += bytes;
+            buffer.destroy();
         }
-        .block_on();
-        Ok(())
-    }*/
+    }
 
+    /// Blocking read-back (sync point: drains the queue via poll(Wait)).
     #[allow(clippy::unnecessary_box_returns)]
     #[allow(clippy::unnecessary_wraps)]
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
-        drop(event_wait_list); // You can eventually use events if needed
-
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
         // Get the source buffer
-        let src = &self.buffers[src];
+        let src = &self.buffers[src].buffer;
 
         // Create a temporary download buffer to receive data from the GPU
         let download_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("DownloadBuffer"), // You can try removing or adjusting the label if needed
+            label: Some("DownloadBuffer"),
             size: dst.len() as u64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, // Ensure proper usage flags
             mapped_at_creation: false,
@@ -451,38 +410,65 @@ impl WGPUMemoryPool {
         Ok(())
     }
 
-    #[allow(clippy::unnecessary_box_returns)]
-    #[allow(clippy::unnecessary_wraps)]
-    pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
-        for event in events {
-            if let Event::WGPU(event) = event {
-                _ = self
-                    .device
-                    .poll(PollType::Wait { submission_index: event.submission_index, timeout: Some(Duration::from_secs(300)) });
-            }
-        }
-        Ok(())
-    }
-
-    pub fn pool_to_pool(
-        &mut self,
-        src: Pool,
-        src_buf: PoolBufferId,
-        dst_buf: PoolBufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    /// Synchronous copy into this pool: `queue.write_buffer` stages the host
+    /// data immediately (the single in-order queue then executes it after all
+    /// previously submitted work), so the source is consumed within this call
+    /// and no retain is needed. Host sources copy directly; every other pool
+    /// stages through host memory.
+    pub fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
         match src {
             Pool::Host => {
-                let src_pool = super::host::pool();
-                let src_pool = super::lock(src, &src_pool);
-                self.host_to_pool(src_pool.get_buffer(src_buf), dst_buf, event_wait_list)
+                let data = {
+                    let src_pool = super::host::pool();
+                    let src_pool = super::lock(src, &src_pool);
+                    src_pool.get_buffer(src_buf).to_vec()
+                };
+                self.write_bytes(&data, dst_buf);
+                Ok(())
             }
-            _ => todo!("pool_to_pool from {src:?} to WGPU"),
+            Pool::Disk => {
+                let data = {
+                    let src_pool = super::disk::pool();
+                    let mut src_pool = super::lock(src, &src_pool);
+                    let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src_buf) as usize];
+                    let staged = src_pool.pool_to_host(src_buf, &mut byte_slice);
+                    staged.map(|()| byte_slice)
+                }?;
+                self.write_bytes(&data, dst_buf);
+                Ok(())
+            }
+            Pool::Cuda(_) => todo!("cross-pool copy from CUDA to WGPU"),
+            Pool::OpenCL(_) => todo!("cross-pool copy from OpenCL to WGPU"),
+            Pool::Vulkan(_) | Pool::Dummy => todo!("cross-pool copy from {src:?} to WGPU"),
+            Pool::WGPU(_) => {
+                // Same-pool copy: stage through host (map + read, then
+                // write_buffer). The mod.rs dispatch flushes the pending
+                // window first, so all launches writing src are submitted.
+                let mut data = vec![0u8; self.buffers[src_buf].bytes as usize];
+                self.pool_to_host(src_buf, &mut data)?;
+                self.write_bytes(&data, dst_buf);
+                Ok(())
+            }
+            #[cfg(feature = "tenstorrent")]
+            Pool::TT(_) => todo!("cross-pool copy from TT to WGPU"),
         }
     }
 
-    pub fn release_events(&mut self, events: Vec<Event>) {
-        drop(events);
+    /// wgpu requires writes to be multiples of 4 bytes; pad the tail with
+    /// zeros when the source length is unaligned.
+    fn write_bytes(&mut self, src: &[u8], dst: PoolBufferId) {
+        const ALIGN: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
+        let dst = &self.buffers[dst].buffer;
+        let full_chunks = src.len() / ALIGN;
+        let remaining = src.len() % ALIGN;
+        if full_chunks > 0 {
+            self.queue.write_buffer(dst, 0, &src[..full_chunks * ALIGN]);
+        }
+        if remaining > 0 {
+            let mut padded: [u8; 4] = [0; 4];
+            padded[..remaining].copy_from_slice(&src[full_chunks * ALIGN..]);
+            self.queue.write_buffer(dst, (full_chunks * ALIGN) as u64, &padded);
+        }
     }
 }
 
@@ -498,7 +484,7 @@ impl WGPUDevice {
         self.memory_pool
     }
 
-    pub const fn free_compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         self.dev_info.compute
     }
 
@@ -594,58 +580,105 @@ impl WGPUDevice {
         self.programs.remove(program_id);
     }
 
+    /// Fire-and-forget launch: appended to the micro-batch window; the whole
+    /// window is recorded into one command encoder and submitted with a
+    /// single `queue.submit` when it flushes.
     #[allow(clippy::unnecessary_wraps)]
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
         pool_handle: Pool,
         args: &[LaunchArg],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    ) -> Result<(), BackendError> {
         debug_assert_eq!(pool_handle, self.memory_pool);
-        drop(event_wait_list);
-        let Pool::WGPU(id) = pool_handle else { unreachable!("WGPU launch with non-WGPU pool") };
-        let pool_arc = pool(id).expect("launch on unavailable WGPU pool");
-        let memory_pool = super::lock(pool_handle, &pool_arc);
-        let program = &self.programs[program_id];
-        let binds: Vec<wgpu::BindGroupEntry> = args
-            .iter()
-            .enumerate()
-            .filter_map(|(bind_id, arg)| {
-                let LaunchArg::Buffer(buffer_id) = arg else { return None };
-                let buffer = &memory_pool.buffers[*buffer_id];
-                Some(wgpu::BindGroupEntry { binding: u32::try_from(bind_id).unwrap(), resource: buffer.as_entire_binding() })
-            })
-            .collect();
-
-        let set = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &program.bind_group_layout,
-            entries: &binds,
-        });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Kernel::enqueue") });
-        {
-            let mut cpass = encoder
-                .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("Kernel::enqueue"), timestamp_writes: None });
-            cpass.set_pipeline(&program.pipeline);
-            cpass.set_bind_group(0, &set, &[]);
-            cpass.insert_debug_marker(&program.name);
-            let default_gws = GwsDim::Const(1);
-            let grid = |gdim: &GwsDim| -> u32 {
-                gdim.eval(&mut |ordinal| match &args[ordinal] {
-                    LaunchArg::Variable(c) => c.as_dim().unwrap(),
-                    LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
-                })
-                .try_into()
-                .unwrap()
-            };
-            cpass.dispatch_workgroups(
-                grid(program.gws.first().unwrap_or(&default_gws)),
-                grid(program.gws.get(1).unwrap_or(&default_gws)),
-                grid(program.gws.get(2).unwrap_or(&default_gws)),
-            );
+        self.pending.push((program_id, args.to_vec()));
+        if self.pending.len() >= MICRO_BATCH_WINDOW {
+            self.flush_window()?;
         }
-        let submission_index = Some(self.queue.submit(Some(encoder.finish())));
-        Ok(Event::WGPU(WGPUEvent { submission_index }))
+        Ok(())
     }
+
+    /// Timed launch for autotune: the pending window is submitted first, then
+    /// the kernel runs solo and the wall-clock nanos are measured around
+    /// submit-to-poll(Wait).
+    pub fn launch_timed(&mut self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<u64, BackendError> {
+        self.flush_window()?;
+        let start = Instant::now();
+        let mut solo = vec![(program_id, args.to_vec())];
+        self.record_and_submit(&mut solo);
+        self.device
+            .poll(PollType::Wait { submission_index: None, timeout: None })
+            .map_err(|e| BackendError { status: ErrorStatus::KernelSync, context: format!("wgpu poll: {e:?}").into() })?;
+        Ok(start.elapsed().as_nanos() as u64)
+    }
+
+    /// Records every pending launch into ONE command encoder (one compute
+    /// pass each, program order) and submits with a single `queue.submit`.
+    fn flush_window(&mut self) -> Result<(), BackendError> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let mut pending = std::mem::take(&mut self.pending);
+        self.record_and_submit(&mut pending);
+        Ok(())
+    }
+
+    /// Locks this device's pool (device → pool, never the reverse) for the
+    /// buffer handles, records and submits the window.
+    fn record_and_submit(&mut self, pending: &mut Vec<(DeviceProgramId, Vec<LaunchArg>)>) {
+        let Pool::WGPU(id) = self.memory_pool else { unreachable!("WGPU device with non-WGPU pool") };
+        let pool_arc = pool(id).expect("flush on unavailable WGPU pool");
+        let memory_pool = super::lock(self.memory_pool, &pool_arc);
+        let mut encoder =
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Kernel::enqueue") });
+        for (program_id, args) in pending.drain(..) {
+            let program = &self.programs[program_id];
+            let binds: Vec<wgpu::BindGroupEntry> = args
+                .iter()
+                .enumerate()
+                .filter_map(|(bind_id, arg)| {
+                    let LaunchArg::Buffer(buffer_id) = arg else { return None };
+                    let buffer = &memory_pool.buffers[*buffer_id].buffer;
+                    Some(wgpu::BindGroupEntry { binding: u32::try_from(bind_id).unwrap(), resource: buffer.as_entire_binding() })
+                })
+                .collect();
+
+            let set = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &program.bind_group_layout,
+                entries: &binds,
+            });
+            {
+                let mut cpass = encoder
+                    .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("Kernel::enqueue"), timestamp_writes: None });
+                cpass.set_pipeline(&program.pipeline);
+                cpass.set_bind_group(0, &set, &[]);
+                cpass.insert_debug_marker(&program.name);
+                let default_gws = GwsDim::Const(1);
+                let grid = |gdim: &GwsDim| -> u32 {
+                    gdim.eval(&mut |ordinal| match &args[ordinal] {
+                        LaunchArg::Variable(c) => c.as_dim().unwrap(),
+                        LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+                    })
+                    .try_into()
+                    .unwrap()
+                };
+                cpass.dispatch_workgroups(
+                    grid(program.gws.first().unwrap_or(&default_gws)),
+                    grid(program.gws.get(1).unwrap_or(&default_gws)),
+                    grid(program.gws.get(2).unwrap_or(&default_gws)),
+                );
+            }
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+}
+
+/// Flushes the device's pending micro-batch window. Called by the `mod.rs`
+/// dispatch before every WGPU sync point (pool_to_host / pool_to_pool /
+/// release), so pool operations never race unsubmitted launches.
+pub(super) fn flush_pending(id: u16) -> Result<(), BackendError> {
+    let dev = device(id)?;
+    let mut dev = dev.lock().unwrap_or_else(|_| panic!("WGPU device lock poisoned"));
+    dev.flush_window()
 }
