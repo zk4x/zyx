@@ -211,6 +211,16 @@ impl Tape {
             }
 
             rt.execute_plan(cache_key, &mut class_buf, &class_vars)?;
+            // Two output tensors can share one class (CSE-identical grads,
+            // e.g. d(x+y)/dx and d(x+y)/dy): the plan allocates a single
+            // buffer for the class, so every receiver after the first must
+            // take its own rc reference or both drop-release the same buffer.
+            let mut handed_out: BTreeSet<Buffer> = BTreeSet::new();
+            for (_, &buf) in output_classes.iter().map(|cid| (cid, &class_buf[cid])) {
+                if !handed_out.insert(buf) {
+                    buf.pool.retain(buf.buffer_id);
+                }
+            }
             for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
                 rt.eagerify(tid, class_buf[&cid]);
             }
@@ -238,6 +248,14 @@ impl Tape {
         rt.plan_cache.insert(cache_key, plan);
 
         rt.execute_plan(cache_key, &mut class_buf, &class_vars)?;
+        // Same-class outputs share one plan buffer: every receiver after the
+        // first must take its own rc reference (see the cached-plan path).
+        let mut handed_out: BTreeSet<Buffer> = BTreeSet::new();
+        for &buf in output_classes.iter().map(|cid| &class_buf[cid]) {
+            if !handed_out.insert(buf) {
+                buf.pool.retain(buf.buffer_id);
+            }
+        }
         for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
             rt.eagerify(tid, class_buf[&cid]);
         }

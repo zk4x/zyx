@@ -165,7 +165,12 @@ impl Kernel {
         // Get shapes and dtypes for inputs and outputs
 
         let device_id = if self.dev == Dev::Auto {
-            Dev::all().into_iter().next().expect("no devices available")
+            // Resolve Auto to the fastest available device (highest
+            // free_compute, same ranking pick_device uses).
+            let mut devs: Vec<Dev> = Dev::all();
+            devs.sort_unstable_by_key(|&dev| dev.free_compute());
+            devs.reverse();
+            devs.into_iter().next().expect("no devices available")
         } else {
             self.dev
         };

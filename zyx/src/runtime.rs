@@ -1298,9 +1298,7 @@ impl Runtime {
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
             }
-            TensorData::GraphLeaf { shape_id, .. }
-            | TensorData::PendingLeaf { shape_id, .. }
-            | TensorData::Leaf { shape_id, .. } => {
+            TensorData::PendingLeaf { shape_id, .. } | TensorData::Leaf { shape_id, .. } => {
                 // A Leaf has no kernel to extend: mint a fresh load kernel
                 // for its buffer, then bitcast in it.
                 let (kernel_id, op_id) = self.new_kernel_from_leaf(x);
@@ -1313,7 +1311,8 @@ impl Runtime {
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
             }
-            TensorData::Graph { class_id, graph_id, shape_id, .. }
+            TensorData::GraphLeaf { class_id, graph_id, shape_id, .. }
+            | TensorData::Graph { class_id, graph_id, shape_id, .. }
             | TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
                 self.assert_graph_alive(graph_id);
                 let (_, class_id) = self.push_node(graph_id, Node::Bitcast { x: class_id, dtype });
@@ -2689,13 +2688,16 @@ impl Runtime {
             TensorData::Eager { shape_id, .. }
             | TensorData::Leaf { shape_id, .. }
             | TensorData::Graph { shape_id, .. }
+            | TensorData::GraphLeaf { shape_id, .. }
             | TensorData::Promoted { shape_id, .. } => shape_id,
             ref t => todo!("flip of pure-slab tensor {t:?}"),
         };
         if shape_id != ExprId::NULL {}
 
         match self.tensors[x] {
-            TensorData::Graph { class_id, graph_id, dtype, .. } | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
+            TensorData::Graph { class_id, graph_id, dtype, .. }
+            | TensorData::GraphLeaf { class_id, graph_id, dtype, .. }
+            | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
                 let (_, class_id) = self.push_node(graph_id, Node::Flip { x: class_id, axes: axes.into_boxed_slice() });
                 self.graphs[graph_id].ref_count += 1;

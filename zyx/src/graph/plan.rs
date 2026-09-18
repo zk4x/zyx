@@ -347,6 +347,10 @@ impl Runtime {
                     let src = class_buf[src_class];
                     let dst = class_buf[dst_class];
                     debug_assert_ne!(src.pool, dst.pool);
+                    // Cross-pool transfer. Event bookkeeping (barrier events
+                    // on the source, deferred foreign release) is handled
+                    // inside the receiving pool's worker.
+                    dst.pool.pool_to_pool(src.pool, src.buffer_id, dst.buffer_id)?;
                 }
                 ExecNode::Deallocate { class } => {
                     let buf = class_buf.remove(class).unwrap();
