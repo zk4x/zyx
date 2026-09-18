@@ -332,14 +332,14 @@ impl Drop for Tape {
                     if rc > 0 {
                         rt.graphs[graph_id].ref_count -= 1;
                         match &mut rt.tensors[tid] {
-                            TensorData::Graph { graph_id, class_id, .. } => {
+                            TensorData::GraphLeaf { graph_id, class_id, .. } => {
                                 *graph_id = GraphId::NULL;
                                 *class_id = ClassId::NULL;
                             }
                             _ => unreachable!(),
                         }
                         let (shape_id, dtype, rc) = match rt.tensors[tid] {
-                            TensorData::Graph { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
+                            TensorData::GraphLeaf { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
                             _ => unreachable!(),
                         };
                         rt.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer: buffer_id, rc };

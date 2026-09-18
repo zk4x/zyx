@@ -227,7 +227,7 @@ use crate::{
     backend::{Buffer, DTypeCapability, DeviceProgramId, LaunchArg, Pool, ProgramId},
     dtype::Constant,
     graph::{ClassId, ExecPlan, Graph, GraphId, Node},
-    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     rng::Rng,
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::{Dim, UAxis},
@@ -434,7 +434,7 @@ pub struct Runtime {
     programs: Map<KernelId, DeviceProgramId>,
     timings: Map<ProgramId, u64>,
     /// Hashcons table for [`Expr`]: structural equality is one [`ExprId`] compare.
-    expr_hash: Map<Expr, ExprId>,
+    pub(crate) expr_hash: Map<Expr, ExprId>,
     /// Append-only interned expressions. Ids are stable forever; nothing is freed.
     pub exprs: Slab<ExprId, Expr>,
     pub rng: Rng,
@@ -481,241 +481,6 @@ impl Runtime {
             #[cfg(feature = "viz")]
             viz: Viz::new(),
         }
-    }
-
-    /// Hashcons interning: returns the existing [`ExprId`] for a structurally
-    /// equal expression, or pushes and returns a fresh one. Append-only —
-    /// ids are stable forever and nothing is freed.
-    pub fn intern(&mut self, expr: Expr) -> ExprId {
-        if let Some(&id) = self.expr_hash.get(&expr) {
-            return id;
-        }
-        let id = self.exprs.push(expr.clone());
-        self.expr_hash.insert(expr, id);
-        id
-    }
-
-    /// Host-side evaluation of a scalar expression: folds the interned
-    /// expression tree (`Constant` / `Variable` / `Cast` / `Unary` /
-    /// `Binary`) into a single `Constant`, preserving dtype. Variables
-    /// evaluate to the value stored in their (immutable) node — a changed
-    /// value is a different node, so evaluation never reads anything
-    /// outside the expression table. Returns `None` for non-symbolic
-    /// tensors. Stack shapes are not scalars and return `None`.
-    pub(crate) fn resolve_symbolic(&self, x: TensorId) -> Option<Constant> {
-        match self.tensors[x] {
-            TensorData::Symbolic { expr, .. } => {
-                let mut memo: Map<ExprId, (Constant, bool)> = Map::with_hasher(BuildHasherDefault::new());
-                Some(self.fold_dim(expr, &mut memo).0)
-            }
-            _ => None,
-        }
-    }
-
-    /// Fold one scalar dim expression: returns the folded value AND whether
-    /// the tree contains a [`Expr::Variable`], in a single pass. One `memo`
-    /// shared across every dim of a shape means each interned node is
-    /// visited exactly once, no matter how many dims share subexpressions.
-    /// Variables fold to the value stored in their (immutable) node — a
-    /// changed value is a different node, so evaluation never reads
-    /// anything outside the expression table. Total over the scalar closed
-    /// set; stacks and anything else panic.
-    pub(crate) fn fold_dim(&self, root: ExprId, memo: &mut Map<ExprId, (Constant, bool)>) -> (Constant, bool) {
-        if let Some(&v) = memo.get(&root) {
-            return v;
-        }
-        let v = match self.exprs[root] {
-            Expr::Constant { value } => (value, false),
-            Expr::Variable { value } => (value, true),
-            Expr::Cast { x: a, dtype } => {
-                let (v, tainted) = self.fold_dim(a, memo);
-                (v.cast(dtype), tainted)
-            }
-            Expr::Unary { x: a, uop } => {
-                let (v, tainted) = self.fold_dim(a, memo);
-                (v.unary(uop), tainted)
-            }
-            Expr::Binary { x: a, y: b, bop } => {
-                let (va, ta) = self.fold_dim(a, memo);
-                let (vb, tb) = self.fold_dim(b, memo);
-                (Constant::binary(va, vb, bop), ta || tb)
-            }
-            ref e => panic!("dim expression {root:?} is not a scalar expression: {e:?}"),
-        };
-        memo.insert(root, v);
-        v
-    }
-
-    /// Dtype of an interned scalar expression: walks to the
-    /// `Constant`/`Variable`/`Cast` leaf that determines it. Stack shapes
-    /// have no dtype and panic.
-    pub(crate) fn expr_dtype(&self, root: ExprId) -> DType {
-        match self.exprs[root] {
-            Expr::Constant { value, .. } | Expr::Variable { value, .. } => value.dtype(),
-            Expr::Cast { dtype, .. } => dtype,
-            Expr::Unary { x, .. } => self.expr_dtype(x),
-            Expr::Binary { x, bop, .. } => {
-                if bop.returns_bool() {
-                    DType::Bool
-                } else {
-                    self.expr_dtype(x)
-                }
-            }
-            ref e => panic!("expression {root:?} has no scalar dtype: {e:?}"),
-        }
-    }
-
-    /// Dim expressions of a shape expression: a `Stack*` yields one dim per
-    /// element; a bare scalar expression (1d shapes skip the `Stack` node)
-    /// is a single dim; null is rank zero.
-    pub(crate) fn shape_expr_ids(&self, shape_id: ExprId) -> Vec<ExprId> {
-        if shape_id.is_null() {
-            return Vec::new();
-        }
-        match &self.exprs[shape_id] {
-            Expr::Stack { exprs } => exprs.to_vec(),
-            Expr::Stack2 { exprs } => exprs.to_vec(),
-            Expr::Stack3 { exprs } => exprs.to_vec(),
-            Expr::Stack4 { exprs } => exprs.to_vec(),
-            Expr::Stack5 { exprs } => exprs.to_vec(),
-            _ => vec![shape_id],
-        }
-    }
-
-    /// Dim expressions of tensor `x` without minting handles: unwraps the
-    /// tensor's `shape_id` via [`Runtime::shape_expr_ids`]. A `Symbolic`
-    /// tensor holding a `Stack` is a shape value — its elements are the dims.
-    /// Any other symbolic is a scalar VALUE (constant, variable, arithmetic)
-    /// with no dims — its own expression is never a dim.
-    pub(crate) fn tensor_shape_exprs(&self, x: TensorId) -> Vec<ExprId> {
-        let shape_id = match self.tensors[x] {
-            TensorData::Eager { shape_id, .. }
-            | TensorData::Graph { shape_id, .. }
-            | TensorData::Promoted { shape_id, .. }
-            | TensorData::PendingLeaf { shape_id, .. }
-            | TensorData::GraphLeaf { shape_id, .. }
-            | TensorData::Leaf { shape_id, .. } => shape_id,
-            TensorData::Symbolic { expr, .. } => match &self.exprs[expr] {
-                Expr::Stack { exprs } => return exprs.to_vec(),
-                Expr::Stack2 { exprs } => return exprs.to_vec(),
-                Expr::Stack3 { exprs } => return exprs.to_vec(),
-                Expr::Stack4 { exprs } => return exprs.to_vec(),
-                Expr::Stack5 { exprs } => return exprs.to_vec(),
-                _ => return Vec::new(),
-            },
-        };
-        self.shape_expr_ids(shape_id)
-    }
-
-    /// Concrete (resolved) shape of tensor `x`: evaluates every dim expression
-    /// to a `Dim` by folding the interned expression (variables evaluate to
-    /// the value stored in their node).
-    ///
-    /// # Convention
-    /// `shape` (the symbolic variant) should be used EVERYWHERE in kernel
-    /// construction — shapes must stay symbolic (variable-backed) so that
-    /// consumers sharing a dim reference the same op and symbolic dims survive
-    /// to launch time. `resolve_shape` is mostly for debug checks, assertions
-    /// and user-facing messages where a concrete value is genuinely needed;
-    /// resolving a variable into a const shape in kernel IR silently breaks
-    /// symbolic-dim consumers (they end up with a different op than the rest
-    /// of the graph for the same dim).
-    pub(crate) fn resolve_shape(&self, x: TensorId) -> Vec<Dim> {
-        // A Symbolic tensor whose expression is a Stack describes a shape
-        // value: its ACTUAL shape is [len] — not its elements' values. Dims
-        // described by a shape expression are `resolve_symbolic_dims`'s job.
-        if let TensorData::Symbolic { expr, .. } = self.tensors[x] {
-            match &self.exprs[expr] {
-                Expr::Stack { exprs } => return vec![exprs.len() as Dim],
-                Expr::Stack2 { exprs } => return vec![exprs.len() as Dim],
-                Expr::Stack3 { exprs } => return vec![exprs.len() as Dim],
-                Expr::Stack4 { exprs } => return vec![exprs.len() as Dim],
-                Expr::Stack5 { exprs } => return vec![exprs.len() as Dim],
-                _ => {}
-            }
-        }
-        self.tensor_shape_exprs(x)
-            .into_iter()
-            .map(|e| {
-                let mut memo = Map::default();
-                self.fold_dim(e, &mut memo).0.as_dim().expect("dim expression does not evaluate to an integer")
-            })
-            .collect()
-    }
-
-    /// Dims described by a SHAPE EXPRESSION (a `shape_id`): a `Stack` (any
-    /// arity) yields one dim per element; a bare dim expr is a single dim —
-    /// 1d shapes skip the Stack node, so their shape_id IS the dim expr.
-    /// Panics on data tensors: those are values, not shape expressions —
-    /// use [`Runtime::resolve_shape`] for their actual shape.
-    pub(crate) fn resolve_symbolic_dims(&self, shape_id: ExprId) -> Vec<Dim> {
-        self.shape_expr_ids(shape_id)
-            .into_iter()
-            .map(|e| {
-                let mut memo = Map::default();
-                self.fold_dim(e, &mut memo).0.as_dim().expect("dim expression does not evaluate to an integer")
-            })
-            .collect()
-    }
-
-    /// A dimension resolved for merge-compatibility checking (see
-    /// [`Runtime::resolve_shape_without_variables`]).
-    /// Shape of tensor `x` with variable-backed dims left symbolic: a dim
-    /// whose expression tree contains any [`TensorData::Variable`] resolves
-    /// to [`ResolvedDim::Symbolic`] (its root dim tensor), everything else
-    /// evaluates to [`ResolvedDim::Static`]. Unlike `resolve_shape`, variable
-    /// slots are never read — this is the PROVABILITY view of a shape: what
-    /// can be checked for equality without depending on the variable's
-    /// current bound value.
-    ///
-    /// Used by the merge-time compatibility checks in `binary` and `assign`:
-    /// two shapes may only merge if every dim is provably equal — same
-    /// constant, or the SAME symbolic dim tensor in both operands. If only
-    /// the bound values agree, the merge is rejected with an error instead.
-    ///
-    /// TODO: the same-TensorId identity rule is a conservative proxy for
-    /// algebraic equality of dim expressions. A factored normal form (split
-    /// each dim expr into a multiset of irreducible atoms — every additive
-    /// subexpression is one atom, constants folded — then cancel numerator
-    /// against denominator atoms) would make e.g. `numel / divisor` Div nodes
-    /// provably equal to the original symbolic dim, without requiring
-    /// construction sites to preserve the exact same TensorId (see the `-1`
-    /// inference in `Tensor::reshape` and llama's `repeat_kv`).
-    pub(crate) fn resolve_shape_without_variables(&self, x: TensorId) -> Vec<ResolvedDim> {
-        let mut dims = Vec::new();
-        let mut memo = Map::default();
-        for root in self.tensor_shape_exprs(x) {
-            let (value, tainted) = self.fold_dim(root, &mut memo);
-            if tainted {
-                dims.push(ResolvedDim::Symbolic(root));
-                continue;
-            }
-            dims.push(ResolvedDim::Static(value.as_dim().expect("dim expression does not evaluate to an integer")));
-        }
-        dims
-    }
-
-    /// Symbolic shape of tensor `x` as dim handles: one fresh
-    /// [`TensorData::Symbolic`] tensor (rc = 1, caller-owned) per dimension.
-    /// Scalar tensors (including scalar symbolic handles) have an empty
-    /// shape. A symbolic handle whose expression is a `Stack` describes a
-    /// shape value — its dims are the stack elements.
-    ///
-    /// # Convention
-    /// This is the DEFAULT way to read a shape when building kernels — use it
-    /// everywhere. `resolve_shape` (concrete evaluation) is mostly for debug
-    /// checks and messages; resolving dims to consts in kernel IR breaks
-    /// symbolic-dim consumers.
-    pub fn shape(&mut self, x: TensorId) -> Vec<TensorId> {
-        let exprs = self.tensor_shape_exprs(x);
-        // Scalars have no dims — but a Stack expression IS a shape value.
-        if let TensorData::Symbolic { expr, .. } = self.tensors[x] {
-            match &self.exprs[expr] {
-                Expr::Stack { .. } | Expr::Stack2 { .. } | Expr::Stack3 { .. } | Expr::Stack4 { .. } | Expr::Stack5 { .. } => {}
-                _ => return Vec::new(),
-            }
-        }
-        exprs.into_iter().map(|expr| self.tensors.push(TensorData::Symbolic { expr, rc: 1 })).collect()
     }
 
     pub fn dtype(&self, x: TensorId) -> DType {
@@ -845,11 +610,11 @@ impl Runtime {
             let desc: String = match &self.tensors[x] {
                 TensorData::Eager { kernel_id, op_id, .. } => format!("eager kernel={kernel_id:?} op={op_id:?}"),
                 TensorData::PendingLeaf { shape_id, .. } => format!("pending shape={shape_id:?}"),
-                TensorData::Leaf { shape_id, buffer_id, .. } => {
-                    format!("leaf shape={shape_id:?} buffer={buffer_id:?}")
+                TensorData::Leaf { shape_id, buffer, .. } => {
+                    format!("leaf shape={shape_id:?} buffer={buffer:?}")
                 }
-                TensorData::GraphLeaf { shape_id, buffer_id, .. } => {
-                    format!("graphleaf shape={shape_id:?} buffer={buffer_id:?}")
+                TensorData::GraphLeaf { shape_id, buffer, .. } => {
+                    format!("graphleaf shape={shape_id:?} buffer={buffer:?}")
                 }
                 TensorData::Graph { class_id, graph_id, .. } => format!("graph class={class_id:?} graph={graph_id:?}"),
                 TensorData::Promoted { kernel_id, class_id, graph_id, .. } => {
@@ -1296,427 +1061,6 @@ impl Runtime {
         );
     }
 
-    /// Push a symbolic scalar expression (a tensors-slab tree: Constant /
-    /// Variable / Unary / Binary / Stack) into `kernel` as concrete ops and
-    /// return its root `OpId` together with the variable tids the expression
-    /// loads (each retained once — the kernel now holds an edge to them).
-    /// Constants and variables keep their own dtype; linearize's autocast
-    /// handles mixing with the surrounding expression. Appends the expression's
-    /// variable loads to the kernel and retains each (the kernel holds an edge
-    /// to them). A null `shape` is a scalar: returns `OpId::NULL`.
-    /// Replay a symbolic scalar/shape expression (a tensors-slab tree) into
-    /// kernel IR, returning the root `OpId`.
-    ///
-    /// This is one third of the symbolic-shapes story; the other two live in
-    /// [`Runtime::replay_symbolic_into_graph`] (slab → egraph) and the
-    /// kernelizer's graph-side replay (egraph → kernel IR, see
-    /// `Graph::replay_symbolic_into_kernel`). All three follow the same laws,
-    /// which is what makes them interchangeable representations of the same
-    /// expression tree.
-    ///
-    /// # The symbolic closed set
-    ///
-    /// Every shape and every dimension everywhere in zyx is a value built
-    /// from exactly these slab variants — nothing else participates in a
-    /// shape expression, ever:
-    ///
-    /// - `Constant` — baked at construction; carries its own dtype and is
-    ///   emitted verbatim as `Op::Const` (linearize's autocast reconciles
-    ///   dtype mixing with surrounding expression ops).
-    /// - `Variable` — resolved at execution time from `variable_map`; each
-    ///   occurrence becomes a `Param { kind: Variable }` define registered in
-    ///   the owning kernel's `loads` under its originating `TensorId`.
-    /// - `Cast`, `Unary`, `Binary` over already-mapped operands — replayed as
-    ///   real kernel ops.
-    /// - `Stack`, `Stack2`–`Stack5` — grouped into a single `Op::Stack`
-    ///   (the fixed-arity `Stack2`–`Stack5` variants are the inline-storage
-    ///   forms for 2–5 element shapes).
-    ///
-    /// Anything else reaching this walk is a bug and panics loudly here. No
-    /// fallback, no fabricated dims, no folding: constants are NOT folded
-    /// into precomputed values because linearize and verify reason about the
-    /// symbolic structure itself.
-    ///
-    /// # Positional binding (the args law)
-    ///
-    /// All `Param` defines of a kernel — global buffers and scalar variables
-    /// alike — appear in flat head order in the kernel IR, and the launch-time
-    /// args slice binds positionally over exactly that sequence. Deduplicating
-    /// repeated variable tids via `op_map` therefore preserves correctness:
-    /// fewer defines, and each surviving define still maps to the same slot in
-    /// whatever positional binding the caller passes. See also
-    /// `kernel::verify`'s checks and the gws section of AGENTS.md.
-    ///
-    /// # Why registration rides on `loads`
-    ///
-    /// Each `Variable` leaf adds `tid` to `KernelData::loads` and takes an rc.
-    /// This is what ties an abstract define back to the pooled value at
-    /// launch time without any parallel bookkeeping structure: `n_params ==
-    /// loads.len()` remains an enforced invariant.
-    pub fn replay_symbolic_into_kernel(&mut self, kid: KernelId, shape: TensorId) -> OpId {
-        if shape.is_null() {
-            return OpId::NULL;
-        }
-        let root = match self.tensors[shape] {
-            TensorData::Symbolic { expr, .. } => expr,
-            ref t => panic!("replay_symbolic_into_kernel: tid {shape} is not symbolic: {t:?}"),
-        };
-
-        // Flatten the tree post-order: every node lands after its operands,
-        // so the flat emit loop below always finds children already mapped.
-        // Duplicated from `replay_expr` by design (no shared abstraction).
-        fn flatten(rt: &Runtime, x: ExprId, order: &mut Vec<ExprId>) {
-            if order.contains(&x) {
-                return;
-            }
-            match &rt.exprs[x] {
-                Expr::Constant { .. } | Expr::Variable { .. } => (),
-                Expr::Cast { x: a, .. } => flatten(rt, *a, order),
-                Expr::Unary { x: a, .. } => flatten(rt, *a, order),
-                Expr::Binary { x: a, y: b, .. } => {
-                    flatten(rt, *a, order);
-                    flatten(rt, *b, order);
-                }
-                Expr::Stack { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack2 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack3 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack4 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack5 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-            }
-            order.push(x);
-        }
-        let mut order = Vec::new();
-        flatten(self, root, &mut order);
-
-        let mut op_map: Map<ExprId, OpId> = Map::with_hasher(BuildHasherDefault::new());
-        let mut var_handles: Map<ExprId, TensorId> = Map::with_hasher(BuildHasherDefault::new());
-        let mut root_op = OpId::NULL;
-        for eid in order {
-            let node = self.exprs[eid].clone();
-            let op_id = match node {
-                Expr::Constant { value } => self.kernels[kid].kernel.push_back(Op::Const(value)),
-                Expr::Variable { value } => {
-                    let op_id = self.kernels[kid].kernel.variable(value.dtype());
-                    // Load-owned handle (rc = 1 is the load edge; no user
-                    // handle). Released with the kernel's loads.
-                    let tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
-                    self.kernels[kid].loads.push(tid);
-                    var_handles.insert(eid, tid);
-                    op_id
-                }
-                Expr::Cast { x, dtype } => {
-                    let a = op_map[&x];
-                    self.kernels[kid].kernel.cast(a, dtype)
-                }
-                Expr::Unary { x, uop } => {
-                    let a = op_map[&x];
-                    self.kernels[kid].kernel.unary(a, uop)
-                }
-                Expr::Binary { x, y, bop } => {
-                    let (a, b) = (op_map[&x], op_map[&y]);
-                    self.kernels[kid].kernel.binary(a, b, bop)
-                }
-                Expr::Stack { exprs } => {
-                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
-                    self.kernels[kid].kernel.stack(&ops)
-                }
-                Expr::Stack2 { exprs } => {
-                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
-                    self.kernels[kid].kernel.stack(&ops)
-                }
-                Expr::Stack3 { exprs } => {
-                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
-                    self.kernels[kid].kernel.stack(&ops)
-                }
-                Expr::Stack4 { exprs } => {
-                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
-                    self.kernels[kid].kernel.stack(&ops)
-                }
-                Expr::Stack5 { exprs } => {
-                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
-                    self.kernels[kid].kernel.stack(&ops)
-                }
-            };
-            op_map.insert(eid, op_id);
-            root_op = op_id;
-        }
-        root_op
-    }
-
-    /// Lower an interned symbolic expression into kernel ops (the `ExprId`
-    /// entry point; `replay_symbolic_into_kernel` is the `TensorId` wrapper).
-    /// Walk duplicated from `replay_symbolic_into_kernel` by design.
-    pub fn replay_expr(&mut self, kid: KernelId, root: ExprId) -> OpId {
-        if root.is_null() {
-            return OpId::NULL;
-        }
-
-        fn flatten(rt: &Runtime, x: ExprId, order: &mut Vec<ExprId>) {
-            if order.contains(&x) {
-                return;
-            }
-            match &rt.exprs[x] {
-                Expr::Constant { .. } | Expr::Variable { .. } => (),
-                Expr::Cast { x: a, .. } => flatten(rt, *a, order),
-                Expr::Unary { x: a, .. } => flatten(rt, *a, order),
-                Expr::Binary { x: a, y: b, .. } => {
-                    flatten(rt, *a, order);
-                    flatten(rt, *b, order);
-                }
-                Expr::Stack { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack2 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack3 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack4 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack5 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-            }
-            order.push(x);
-        }
-        let mut order = Vec::new();
-        flatten(self, root, &mut order);
-
-        let mut op_map: Map<ExprId, OpId> = Map::with_hasher(BuildHasherDefault::new());
-        let mut root_op = OpId::NULL;
-        for eid in order {
-            let node = self.exprs[eid].clone();
-            let op_id = match node {
-                Expr::Constant { value } => self.kernels[kid].kernel.push_back(Op::Const(value)),
-                Expr::Variable { value } => {
-                    let op_id = self.kernels[kid].kernel.variable(value.dtype());
-                    let tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
-                    self.kernels[kid].loads.push(tid);
-                    op_id
-                }
-                Expr::Cast { x, dtype } => {
-                    let a = op_map[&x];
-                    self.kernels[kid].kernel.cast(a, dtype)
-                }
-                Expr::Unary { x, uop } => {
-                    let a = op_map[&x];
-                    self.kernels[kid].kernel.unary(a, uop)
-                }
-                Expr::Binary { x, y, bop } => {
-                    let (a, b) = (op_map[&x], op_map[&y]);
-                    self.kernels[kid].kernel.binary(a, b, bop)
-                }
-                Expr::Stack { exprs } => {
-                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
-                    self.kernels[kid].kernel.stack(&ops)
-                }
-                Expr::Stack2 { exprs } => {
-                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
-                    self.kernels[kid].kernel.stack(&ops)
-                }
-                Expr::Stack3 { exprs } => {
-                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
-                    self.kernels[kid].kernel.stack(&ops)
-                }
-                Expr::Stack4 { exprs } => {
-                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
-                    self.kernels[kid].kernel.stack(&ops)
-                }
-                Expr::Stack5 { exprs } => {
-                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
-                    self.kernels[kid].kernel.stack(&ops)
-                }
-            };
-            op_map.insert(eid, op_id);
-            root_op = op_id;
-        }
-        root_op
-    }
-
-    /// Lower a symbolic scalar expression (a tensors-slab tree: Constant /
-    /// Variable / Unary / Binary / Stack) into graph nodes and return its
-    /// root class. Constants become `Const` classes, variables become
-    /// `IDX_T` leaves — the same lowering `promote_to_graph` uses for dim
-    /// expressions.
-    /// Replay a symbolic scalar/shape expression from the tensors slab into
-    /// egraph classes, returning its root class.
-    ///
-    /// Middle stage of the symbolic-shapes pipeline (see
-    /// [`Runtime::replay_symbolic_into_kernel`] for the full contract):
-    /// - `Constant` → `Const` class (merged by value — see [`Node::Const`]).
-    /// - `Variable` → a fresh `IDX_T` **dim-variable leaf**: a `Node::Leaf`
-    ///   with `shape == NULL`. Leaves hashcons but never merge (fresh
-    ///   `cons_id` every time), so the same logical variable appearing under
-    ///   two tensors' shapes yields two distinct classes. This duplication is
-    ///   deliberate for now: classes carry identity, not value identity, and
-    ///   execution-time binding resolves through `variable_map` outside the
-    ///   egraph entirely. TensorIds must NOT enter the egraph — that would
-    ///   poison graph hashing and cross-replay plan caching.
-    /// - `Cast` / `Unary` / `Binary` → corresponding nodes over operand
-    ///   classes (hashconsed normally).
-    /// - `Stack` / `Stack2`–`Stack5` → a `Stack` node (or folded away for
-    ///   len < 2).
-    ///
-    /// The same closed-set rule applies: anything else panics here.
-    pub(crate) fn replay_symbolic_into_graph(&mut self, graph_id: GraphId, shape: TensorId) -> ClassId {
-        // DFS post-order flatten: every node lands after its operands.
-        fn flatten(rt: &Runtime, x: ExprId, order: &mut Vec<ExprId>) {
-            if order.contains(&x) {
-                return;
-            }
-            match &rt.exprs[x] {
-                Expr::Constant { .. } | Expr::Variable { .. } => (),
-                Expr::Cast { x: a, .. } => flatten(rt, *a, order),
-                Expr::Unary { x: a, .. } => flatten(rt, *a, order),
-                Expr::Binary { x: a, y: b, .. } => {
-                    flatten(rt, *a, order);
-                    flatten(rt, *b, order);
-                }
-                Expr::Stack { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack2 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack3 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack4 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-                Expr::Stack5 { exprs } => {
-                    for &e in exprs.iter() {
-                        flatten(rt, e, order);
-                    }
-                }
-            }
-            order.push(x);
-        }
-        let root = match self.tensors[shape] {
-            TensorData::Symbolic { expr, .. } => expr,
-            ref t => panic!("replay_symbolic_into_graph: shape tid {shape} is not symbolic: {t:?}"),
-        };
-        let mut order = Vec::new();
-        flatten(self, root, &mut order);
-
-        let mut class_map: Map<ExprId, ClassId> = Map::with_hasher(BuildHasherDefault::new());
-        let mut root_class = ClassId::NULL;
-        for eid in order {
-            let class_id = match self.exprs[eid].clone() {
-                Expr::Constant { value } => self.push_const(graph_id, value),
-                Expr::Variable { .. } => {
-                    // A variable in a shape expression is an input, not
-                    // structure: register its leaf so the plan binds it via
-                    // the tensors slab and value changes never force
-                    // recompilation.
-                    let (_, cid) = self.push_leaf_node(graph_id, IDX_T, ClassId::NULL);
-                    let var_tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
-                    self.graphs[graph_id].leaf_map.insert(cid, var_tid);
-                    self.retain(var_tid);
-                    self.graphs[graph_id].leaf_classes.push(cid);
-                    self.graphs[graph_id].ref_count += 1;
-                    cid
-                }
-                Expr::Cast { x, dtype } => {
-                    let a = class_map[&x];
-                    self.push_node(graph_id, Node::Cast { x: a, dtype }).1
-                }
-                Expr::Unary { x, uop } => {
-                    let a = class_map[&x];
-                    self.push_node(graph_id, Node::Unary { x: a, uop }).1
-                }
-                Expr::Binary { x, y, bop } => {
-                    let a = class_map[&x];
-                    let b = class_map[&y];
-                    self.push_binary_node(graph_id, a, b, bop)
-                }
-                Expr::Stack { ref exprs } => {
-                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
-                    match ops.len() {
-                        0 => ClassId::NULL,
-                        1 => ops[0],
-                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
-                    }
-                }
-                Expr::Stack2 { ref exprs } => {
-                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
-                    match ops.len() {
-                        0 => ClassId::NULL,
-                        1 => ops[0],
-                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
-                    }
-                }
-                Expr::Stack3 { ref exprs } => {
-                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
-                    match ops.len() {
-                        0 => ClassId::NULL,
-                        1 => ops[0],
-                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
-                    }
-                }
-                Expr::Stack4 { ref exprs } => {
-                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
-                    match ops.len() {
-                        0 => ClassId::NULL,
-                        1 => ops[0],
-                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
-                    }
-                }
-                Expr::Stack5 { ref exprs } => {
-                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
-                    match ops.len() {
-                        0 => ClassId::NULL,
-                        1 => ops[0],
-                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
-                    }
-                }
-            };
-            class_map.insert(eid, class_id);
-            root_class = class_id;
-        }
-        root_class
-    }
-
     /// Creates a **LeafPending**: a tensor with no producing kernel and no
     /// buffer yet. The caller transitions it to a realized `Leaf` by storing
     /// its buffer on the variant (or it arrives later via a pending
@@ -1747,17 +1091,13 @@ impl Runtime {
     /// compute ops and owns the results. `x` gains one reference for the
     /// kernel's load edge (released when the kernel dies or materializes).
     pub(crate) fn new_kernel_from_leaf(&mut self, x: TensorId) -> (KernelId, OpId) {
-        debug_assert!(
-            matches!(self.tensors[x], TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } | TensorData::PendingLeaf { .. }),
-            "new_kernel_from_leaf: tensor {x} has no resolved shape: {:?}",
-            self.tensors[x]
-        );
-        let dtype = self.dtype(x);
-        let shape_id = match self.tensors[x] {
-            TensorData::Leaf { shape_id, .. }
-            | TensorData::GraphLeaf { shape_id, .. }
-            | TensorData::PendingLeaf { shape_id, .. } => shape_id,
-            ref t => unreachable!("new_kernel_from_leaf: {t:?}"),
+        let (shape_id, dtype) = match self.tensors[x] {
+            TensorData::Leaf { shape_id, dtype, .. }
+            | TensorData::GraphLeaf { shape_id, dtype, .. }
+            | TensorData::PendingLeaf { shape_id, dtype, .. } => (shape_id, dtype),
+            TensorData::Eager { .. } | TensorData::Graph { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                unreachable!("new_kernel_from_leaf: {:?}", self.tensors[x])
+            }
         };
         // Device comes from the Leaf's buffer pool (Host reports C, Disk
         // reports Auto — see `device`). Auto (unbound placeholder) gets no
@@ -2130,12 +1470,16 @@ impl Runtime {
         if x_is_graph || y_is_graph {
             let graph_id = if x_is_graph {
                 match self.tensors[x] {
-                    TensorData::Graph { graph_id, .. } | TensorData::Promoted { graph_id, .. } => graph_id,
+                    TensorData::Graph { graph_id, .. }
+                    | TensorData::Promoted { graph_id, .. }
+                    | TensorData::GraphLeaf { graph_id, .. } => graph_id,
                     ref t => unreachable!("{t:?}"),
                 }
             } else {
                 match self.tensors[y] {
-                    TensorData::Graph { graph_id, .. } | TensorData::Promoted { graph_id, .. } => graph_id,
+                    TensorData::Graph { graph_id, .. }
+                    | TensorData::Promoted { graph_id, .. }
+                    | TensorData::GraphLeaf { graph_id, .. } => graph_id,
                     ref t => unreachable!("{t:?}"),
                 }
             };
@@ -2147,7 +1491,9 @@ impl Runtime {
                 self.promote_to_graph(y, graph_id)?;
             }
             let cx = match self.tensors[x] {
-                TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                TensorData::Graph { class_id, .. }
+                | TensorData::Promoted { class_id, .. }
+                | TensorData::GraphLeaf { class_id, .. } => class_id,
                 TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
                     Expr::Constant { value } => self.push_const(graph_id, value),
                     ref e => todo!("promote symbolic scalar tid {x} ({e:?}) into a graph"),
@@ -2155,7 +1501,9 @@ impl Runtime {
                 ref t => unreachable!("unreachable after promote: {t:?}"),
             };
             let cy = match self.tensors[y] {
-                TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                TensorData::Graph { class_id, .. }
+                | TensorData::Promoted { class_id, .. }
+                | TensorData::GraphLeaf { class_id, .. } => class_id,
                 TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
                     Expr::Constant { value } => self.push_const(graph_id, value),
                     ref e => todo!("promote symbolic scalar tid {y} ({e:?}) into a graph"),
@@ -2223,13 +1571,17 @@ impl Runtime {
 
             let (mut kid_x, mut op_id_x) = match self.tensors[x] {
                 TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                TensorData::Leaf { .. } => self.new_kernel_from_leaf(x),
-                ref t => panic!("binary: operand tid {x} is not an eager tensor: {t:?}"),
+                TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(x),
+                TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                    panic!("binary: operand tid {x} is not an eager tensor: {:?}", self.tensors[x])
+                }
             };
             let (mut kid_y, mut op_id_y) = match self.tensors[y] {
                 TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                TensorData::Leaf { .. } => self.new_kernel_from_leaf(y),
-                ref t => panic!("binary: operand tid {y} is not an eager tensor: {t:?}"),
+                TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(y),
+                TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                    panic!("binary: operand tid {y} is not an eager tensor: {:?}", self.tensors[y])
+                }
             };
 
             let (kernel_id, op_id) = if kid_x == kid_y {
@@ -2251,13 +1603,19 @@ impl Runtime {
                 // stored operand is a buffer now) — re-resolve via new_kernel_from_leaf.
                 (kid_x, op_id_x) = match self.tensors[x] {
                     TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                    TensorData::Leaf { .. } => self.new_kernel_from_leaf(x),
-                    ref t => unreachable!("add_store turned operand into unexpected data: {t:?}"),
+                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(x),
+                    TensorData::Graph { .. }
+                    | TensorData::GraphLeaf { .. }
+                    | TensorData::Promoted { .. }
+                    | TensorData::Symbolic { .. } => unreachable!("add_store turned operand into unexpected data: {:?}", self.tensors[x]),
                 };
                 (kid_y, op_id_y) = match self.tensors[y] {
                     TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                    TensorData::Leaf { .. } => self.new_kernel_from_leaf(y),
-                    ref t => unreachable!("add_store turned operand into unexpected data: {t:?}"),
+                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(y),
+                    TensorData::Graph { .. }
+                    | TensorData::GraphLeaf { .. }
+                    | TensorData::Promoted { .. }
+                    | TensorData::Symbolic { .. } => unreachable!("add_store turned operand into unexpected data: {:?}", self.tensors[y]),
                 };
 
                 let swap = self.kernels[kid_y].kernel.is_reduce() && !self.kernels[kid_x].kernel.is_reduce();
@@ -2721,23 +2079,30 @@ impl Runtime {
         } else {
             let keep_kid = match self.tensors[tensors[0]] {
                 TensorData::Eager { kernel_id, .. } => kernel_id,
-                TensorData::Leaf { .. } => self.new_kernel_from_leaf(tensors[0]).0,
-                ref t => panic!("stack: operand tid {} is not an eager tensor: {t:?}", tensors[0]),
+                TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(tensors[0]).0,
+                TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                    panic!("stack: operand tid {} is not an eager tensor: {:?}", tensors[0], self.tensors[tensors[0]])
+                }
             };
             let mut ops = Vec::with_capacity(tensors.len());
             for &t in tensors {
                 let (mut kid, mut op) = match self.tensors[t] {
                     TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                    TensorData::Leaf { .. } => self.new_kernel_from_leaf(t),
-                    ref t => panic!("stack: operand is not an eager tensor: {t:?}"),
+                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
+                    TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                        panic!("stack: operand is not an eager tensor: {:?}", self.tensors[t])
+                    }
                 };
                 if kid != keep_kid {
                     if !self.kernels[kid].stores.is_empty() {
                         self.add_store(t)?;
                         (kid, op) = match self.tensors[t] {
                             TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                            TensorData::Leaf { .. } => self.new_kernel_from_leaf(t),
-                            ref t => unreachable!("{t:?}"),
+                            TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
+                            TensorData::Graph { .. }
+                            | TensorData::GraphLeaf { .. }
+                            | TensorData::Promoted { .. }
+                            | TensorData::Symbolic { .. } => unreachable!("{:?}", self.tensors[t]),
                         };
                     }
                     if kid != keep_kid {
@@ -2801,12 +2166,16 @@ impl Runtime {
         if self.is_graph(x) || self.is_graph(shape_id) {
             let graph_id = if self.is_graph(x) {
                 match self.tensors[x] {
-                    TensorData::Graph { graph_id, .. } | TensorData::Promoted { graph_id, .. } => graph_id,
+                    TensorData::Graph { graph_id, .. }
+                    | TensorData::GraphLeaf { graph_id, .. }
+                    | TensorData::Promoted { graph_id, .. } => graph_id,
                     ref t => unreachable!("{t:?}"),
                 }
             } else {
                 match self.tensors[shape_id] {
-                    TensorData::Graph { graph_id, .. } | TensorData::Promoted { graph_id, .. } => graph_id,
+                    TensorData::Graph { graph_id, .. }
+                    | TensorData::GraphLeaf { graph_id, .. }
+                    | TensorData::Promoted { graph_id, .. } => graph_id,
                     ref t => unreachable!("{t:?}"),
                 }
             };
@@ -2815,14 +2184,18 @@ impl Runtime {
                 self.promote_to_graph(x, graph_id)?;
             }
             let x_class = match self.tensors[x] {
-                TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                TensorData::Graph { class_id, .. }
+                | TensorData::GraphLeaf { class_id, .. }
+                | TensorData::Promoted { class_id, .. } => class_id,
                 ref t => unreachable!("{t:?}"),
             };
             // The target shape enters the graph: a graph-affiliated shape is
             // used directly (same scope asserted); a slab-side symbolic
             // expression is promoted node by node.
             let shape_class = match self.tensors[shape_id] {
-                TensorData::Graph { class_id, graph_id: g, .. } | TensorData::Promoted { class_id, graph_id: g, .. } => {
+                TensorData::Graph { class_id, graph_id: g, .. }
+                | TensorData::GraphLeaf { class_id, graph_id: g, .. }
+                | TensorData::Promoted { class_id, graph_id: g, .. } => {
                     assert!(g == graph_id, "reshape: shape belongs to a different tape scope");
                     class_id
                 }
@@ -3014,7 +2387,14 @@ impl Runtime {
                 let stacked = self.stack(&permuted).expect("permute: failed to build shape stack");
                 let expr = match self.tensors[stacked] {
                     TensorData::Symbolic { expr, .. } => expr,
-                    ref t => panic!("permute: shape tid {stacked} is not symbolic: {t:?}"),
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Graph { .. }
+                    | TensorData::GraphLeaf { .. }
+                    | TensorData::Promoted { .. } => {
+                        panic!("permute: shape tid {stacked} is not symbolic: {:?}", self.tensors[stacked])
+                    }
                 };
                 self.release(stacked);
                 expr
@@ -3022,7 +2402,9 @@ impl Runtime {
         };
 
         match self.tensors[x] {
-            TensorData::Graph { class_id, graph_id, dtype, .. } | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
+            TensorData::Graph { class_id, graph_id, dtype, .. }
+            | TensorData::GraphLeaf { class_id, graph_id, dtype, .. }
+            | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
                 let (_, class_id) = self.push_node(graph_id, Node::Permute { x: class_id, axes: axes.into_boxed_slice() });
                 self.graphs[graph_id].ref_count += 1;
@@ -3031,7 +2413,7 @@ impl Runtime {
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
                 tid
             }
-            TensorData::Eager { dtype, .. } | TensorData::Leaf { dtype, .. } => {
+            TensorData::Eager { dtype, .. } | TensorData::Leaf { dtype, .. } | TensorData::PendingLeaf { dtype, .. } => {
                 let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
                 let op_id = self.kernels[kernel_id]
                     .kernel
@@ -3043,7 +2425,7 @@ impl Runtime {
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
             }
-            ref t => todo!("permute of pure-slab tensor {t:?}"),
+            TensorData::Symbolic { .. } => todo!("permute of symbolic scalar"),
         }
     }
 
@@ -3205,21 +2587,33 @@ impl Runtime {
         };
 
         match self.tensors[x] {
-            TensorData::Graph { class_id, graph_id, dtype, .. } | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
+            TensorData::Graph { class_id, graph_id, dtype, .. }
+            | TensorData::GraphLeaf { class_id, graph_id, dtype, .. }
+            | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
                 let start_class = match self.tensors[start] {
-                    TensorData::Graph { class_id, graph_id: g, .. } | TensorData::Promoted { class_id, graph_id: g, .. } => {
+                    TensorData::Graph { class_id, graph_id: g, .. }
+                    | TensorData::GraphLeaf { class_id, graph_id: g, .. }
+                    | TensorData::Promoted { class_id, graph_id: g, .. } => {
                         assert!(g == graph_id, "narrow: start belongs to a different tape scope");
                         class_id
                     }
-                    _ => self.replay_symbolic_into_graph(graph_id, start),
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, start),
                 };
                 let len_class = match self.tensors[len] {
-                    TensorData::Graph { class_id, graph_id: g, .. } | TensorData::Promoted { class_id, graph_id: g, .. } => {
+                    TensorData::Graph { class_id, graph_id: g, .. }
+                    | TensorData::GraphLeaf { class_id, graph_id: g, .. }
+                    | TensorData::Promoted { class_id, graph_id: g, .. } => {
                         assert!(g == graph_id, "narrow: len belongs to a different tape scope");
                         class_id
                     }
-                    _ => self.replay_symbolic_into_graph(graph_id, len),
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, len),
                 };
                 let (_, class_id) =
                     self.push_node(graph_id, Node::Narrow { x: class_id, axis, start: start_class, len: len_class });
@@ -3229,7 +2623,7 @@ impl Runtime {
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
                 tid
             }
-            TensorData::Eager { dtype, .. } | TensorData::Leaf { dtype, .. } => {
+            TensorData::Eager { dtype, .. } | TensorData::Leaf { dtype, .. } | TensorData::PendingLeaf { dtype, .. } => {
                 let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
                 debug_assert_eq!(
                     self.kernels[kernel_id].outputs.len(),
@@ -3248,7 +2642,7 @@ impl Runtime {
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
             }
-            ref t => todo!("narrow of pure-slab tensor {t:?}"),
+            TensorData::Symbolic { .. } => todo!("narrow of symbolic scalar"),
         }
     }
 
@@ -3393,7 +2787,15 @@ impl Runtime {
                 // `kernel_id` flush below composes with that.
                 TensorData::Eager { .. } => KernelId::NULL,
                 TensorData::Graph { .. } => return Err(ZyxError::graph_tensor_not_realized(x)),
-                ref t => panic!("load: tensor {x} has no buffer and cannot be materialized: {t:?}"),
+                // Leaf and GraphLeaf always carry a buffer (`leaf_buffer`
+                // returns Some for both), so reaching this bufferless
+                // fallback with either is impossible.
+                TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } => {
+                    unreachable!("load: buffered tensor {x} has no buffer: {:?}", self.tensors[x])
+                }
+                TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                    panic!("load: tensor {x} has no buffer and cannot be materialized: {:?}", self.tensors[x])
+                }
             };
             if !pending.is_null() {
                 let outputs: Set<TensorId> = this.kernels[pending].outputs.iter().copied().collect();
@@ -3530,22 +2932,28 @@ impl Runtime {
                 return Err(ZyxError::ShapeError("assign: dst equals src (self-assign)".into()));
             }
             let (dst_cid, graph_id) = match self.tensors[dst] {
-                TensorData::Graph { class_id, graph_id, .. } | TensorData::Promoted { class_id, graph_id, .. } => {
-                    (class_id, graph_id)
+                TensorData::Graph { class_id, graph_id, .. }
+                | TensorData::GraphLeaf { class_id, graph_id, .. }
+                | TensorData::Promoted { class_id, graph_id, .. } => (class_id, graph_id),
+                TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. } => {
+                    unreachable!("assign: is_graph(dst) guaranteed a graph-affiliated tensor: {:?}", self.tensors[dst])
                 }
-                ref t => unreachable!("assign: is_graph(dst) guaranteed a graph-affiliated tensor: {t:?}"),
             };
             self.assert_graph_alive(graph_id);
-            if self.is_graph(src) {
-                let src_graph_id = match self.tensors[src] {
-                    TensorData::Graph { graph_id, .. } | TensorData::Promoted { graph_id, .. } => graph_id,
-                    ref t => unreachable!("{t:?}"),
-                };
-                if src_graph_id != graph_id {
-                    panic!("tensor belongs to a different tape scope");
+            match self.tensors[src] {
+                TensorData::Graph { graph_id: g, .. }
+                | TensorData::GraphLeaf { graph_id: g, .. }
+                | TensorData::Promoted { graph_id: g, .. } => {
+                    if g != graph_id {
+                        panic!("tensor belongs to a different tape scope");
+                    }
                 }
-            } else {
-                self.promote_to_graph(src, graph_id)?;
+                TensorData::Eager { .. }
+                | TensorData::Leaf { .. }
+                | TensorData::PendingLeaf { .. }
+                | TensorData::Symbolic { .. } => {
+                    self.promote_to_graph(src, graph_id)?;
+                }
             }
             let mut dst_leaf_cid = dst_cid;
             // Walk graph to find the source of the lvalue
@@ -3575,16 +2983,27 @@ impl Runtime {
             // output class cid is what any later use of dst or src resolves to,
             // so both tensors are re-pointed at it.
             let src_cid = match self.tensors[src] {
-                TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                ref t => unreachable!("{t:?}"),
+                TensorData::Graph { class_id, .. }
+                | TensorData::GraphLeaf { class_id, .. }
+                | TensorData::Promoted { class_id, .. } => class_id,
+                TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. } => {
+                    unreachable!("{:?}", self.tensors[src])
+                }
             };
             let (_node_id, assign_cid) = self.push_node(graph_id, Node::Assign { dst: dst_cid, src: src_cid });
             let leaf_class = self.push_node(graph_id, Node::After { x: dst_leaf_cid, dep: assign_cid }).1;
             let dst_class = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }).1;
             for (tid, class_id) in [(dst_leaf, leaf_class), (dst, dst_class)] {
                 match &mut self.tensors[tid] {
-                    TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
-                    ref t => panic!("assign: tensor {tid} has no graph class to re-point: {t:?}"),
+                    TensorData::Graph { class_id: c, .. }
+                    | TensorData::GraphLeaf { class_id: c, .. }
+                    | TensorData::Promoted { class_id: c, .. } => *c = class_id,
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Symbolic { .. } => {
+                        panic!("assign: tensor {tid} has no graph class to re-point: {:?}", self.tensors[tid])
+                    }
                 }
             }
             #[cfg(feature = "debug_tensor_op")]
@@ -3597,8 +3016,10 @@ impl Runtime {
         // placement the old load-kernel path produced.
         let (src_kid, src_op) = match self.tensors[src] {
             TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
-            TensorData::Leaf { .. } => self.new_kernel_from_leaf(src),
-            ref t => panic!("assign: src {src} is not an eager/promoted tensor: {t:?}"),
+            TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(src),
+            TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Symbolic { .. } => {
+                panic!("assign: src {src} is not an eager/promoted tensor: {:?}", self.tensors[src])
+            }
         };
         // A pending dst still owes its value to a live store kernel: run the
         // producer first so dst has a buffer, then take the Leaf path below.
@@ -3619,12 +3040,14 @@ impl Runtime {
         if let TensorData::Leaf { shape_id: dst_shape_id, buffer: dst_buf, rc: dst_rc, .. } = self.tensors[dst] {
             let dtype = self.dtype(dst);
             let (kernel_id, src_op) = match self.tensors[src] {
-                TensorData::Leaf { .. } => {
+                TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
                     let (kid, op) = self.new_kernel_from_leaf(src);
                     (kid, op)
                 }
                 TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
-                ref t => panic!("assign: src {src} is not an eager/promoted tensor: {t:?}"),
+                TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Symbolic { .. } => {
+                    panic!("assign: src {src} is not an eager/promoted tensor: {:?}", self.tensors[src])
+                }
             };
             let dst_shape_op = self.replay_expr(kernel_id, dst_shape_id);
             let mut_param =
@@ -3754,7 +3177,7 @@ impl Runtime {
                 Op::Move { x, .. } => {
                     dst_param = x;
                 }
-                Op::Storage { .. } => {
+                Op::Param { .. } => {
                     break;
                 }
                 _ => {}
@@ -3988,19 +3411,17 @@ impl Runtime {
     /// sharing: every load the fresh kernel reads (one `new_loads` entry per
     /// occurrence) gains one reference.
     fn duplicate_or_store(&mut self, x: TensorId, force_store: bool) -> Result<(KernelId, OpId), ZyxError> {
-        fn eager_ids(rt: &Runtime, x: TensorId) -> (KernelId, OpId) {
-            match rt.tensors[x] {
-                TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
-                ref t => panic!("duplicate_or_store: tensor {x} is not an eager/promoted tensor: {t:?}"),
-            }
-        }
         let (mut kid, mut op_id) = match self.tensors[x] {
-            TensorData::Leaf { .. } => {
-                // A Leaf has no kernel: mint a fresh load kernel for its
-                // (possibly pending) buffer — the clean placement contract.
+            TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
+            // A Leaf or PendingLeaf has no kernel: mint a fresh load kernel
+            // for its buffer — the clean placement contract. The load edge
+            // resolves a pending producer at launch via the recursive flush.
+            TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
                 return Ok(self.new_kernel_from_leaf(x));
             }
-            _ => eager_ids(self, x),
+            TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Symbolic { .. } => {
+                panic!("duplicate_or_store: tensor {x} is not an eager/promoted tensor: {:?}", self.tensors[x])
+            }
         };
 
         let contains_stores = self.kernels[kid].kernel.contains_stores();
@@ -4017,7 +3438,9 @@ impl Runtime {
                 TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::GraphLeaf { .. } => {
                     return Ok(self.new_kernel_from_leaf(x));
                 }
-                ref t => panic!("duplicate_or_store: tensor {x} is not an eager/promoted tensor: {t:?}"),
+                TensorData::Graph { .. } | TensorData::Symbolic { .. } => {
+                    panic!("duplicate_or_store: tensor {x} is not an eager/promoted tensor: {:?}", self.tensors[x])
+                }
             };
         }
 

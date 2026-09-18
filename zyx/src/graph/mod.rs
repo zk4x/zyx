@@ -1663,14 +1663,15 @@ impl Runtime {
         // A **Leaf** is a buffer-backed value with no kernel. It promotes as a
         // pure leaf: its shape class is replayed from the slab-side shape
         // expression, the class binds to the tid via `leaf_map` (the plan
-        // reads its buffer), and the tensor becomes `TensorData::Graph` —
+        // reads its buffer), and the tensor becomes `TensorData::GraphLeaf` —
         // affiliated with the graph (ref_count + rc incremented), so
-        // `Tape::drop`'s visit loop handles it; the buffer survives in
-        // `buffer_map` and the drop arm reverts buffer-backed Graph tensors
-        // back to `Leaf` (the value is preserved, not tombstoned).
+        // `Tape::drop`'s visit loop handles it; the buffer stays on the
+        // variant (a graph leaf is a leaf) and the drop/eagerify arms revert
+        // buffer-backed graph tensors back to `Leaf` (the value is preserved,
+        // not tombstoned).
         if matches!(self.tensors[tid], TensorData::Leaf { .. }) {
-            let (shape_id, dtype, rc) = match self.tensors[tid] {
-                TensorData::Leaf { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
+            let (shape_id, dtype, rc, buffer_id) = match self.tensors[tid] {
+                TensorData::Leaf { shape_id, dtype, rc, buffer, .. } => (shape_id, dtype, rc, buffer),
                 ref t => unreachable!("{t:?}"),
             };
             debug_assert!(
@@ -1694,7 +1695,8 @@ impl Runtime {
             self.retain(tid);
             self.graphs[graph_id].leaf_classes.push(class_id);
             self.graphs[graph_id].ref_count += 1;
-            self.tensors[tid] = TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: rc + 1 };
+            self.tensors[tid] =
+                TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, rc: rc + 1, buffer: buffer_id };
             return Ok(class_id);
         }
 
@@ -1965,6 +1967,7 @@ impl Runtime {
 
                         let load_is_leaf = match &self.tensors[load_tid] {
                             TensorData::Graph { class_id: c, graph_id: g, .. }
+                            | TensorData::GraphLeaf { class_id: c, graph_id: g, .. }
                             | TensorData::Promoted { class_id: c, graph_id: g, .. } => {
                                 !c.is_null() && *g == graph_id && !self.graphs[graph_id].dead
                             }
@@ -1973,7 +1976,9 @@ impl Runtime {
                         if load_is_leaf {
                             // load_tid is already a leaf of this graph: reuse its class.
                             match &self.tensors[load_tid] {
-                                TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c,
+                                TensorData::Graph { class_id: c, .. }
+                                | TensorData::GraphLeaf { class_id: c, .. }
+                                | TensorData::Promoted { class_id: c, .. } => *c,
                                 ref t => unreachable!("{t:?}"),
                             }
                         } else {
@@ -2092,16 +2097,24 @@ impl Runtime {
                                     // binds the leaf class to this tid,
                                     // nothing else to attach.
                                 }
-                                TensorData::Leaf { shape_id, dtype, rc, .. } => {
-                                    // A Leaf load becomes a **Graph** leaf:
+                                TensorData::Leaf { shape_id, dtype, rc, buffer, .. } => {
+                                    // A Leaf load becomes a **GraphLeaf**:
                                     // affiliated (ref_count + this rc edge),
-                                    // buffer preserved in `buffer_map`, class
-                                    // bound via `leaf_map`. Its death path
-                                    // decrements the affiliation — so a Leaf
-                                    // dropped before the tape still keeps the
+                                    // buffer carried on the variant (a graph
+                                    // leaf is a leaf), class bound via
+                                    // `leaf_map`. Its death path decrements
+                                    // the affiliation — so a Leaf dropped
+                                    // before the tape still keeps the
                                     // inventory consistent.
-                                    let (shape_id, dtype, rc) = (*shape_id, *dtype, *rc);
-                                    self.tensors[load_tid] = TensorData::Graph { class_id, graph_id, shape_id, dtype, rc };
+                                    let (shape_id, dtype, rc, buffer) = (*shape_id, *dtype, *rc, *buffer);
+                                    self.tensors[load_tid] = TensorData::GraphLeaf {
+                                        class_id,
+                                        graph_id,
+                                        shape_id,
+                                        dtype,
+                                        rc,
+                                        buffer,
+                                    };
                                 }
                                 ref t => panic!("promote_to_graph: cannot attach load tensor {load_tid} to the graph: {t:?}"),
                             }
@@ -2495,7 +2508,9 @@ impl Runtime {
                     "leaf {tid} not realized"
                 );
                 let affiliated = match self.tensors[tid] {
-                    TensorData::Graph { graph_id: g, .. } | TensorData::Promoted { graph_id: g, .. } => g == graph_id,
+                    TensorData::Graph { graph_id: g, .. }
+                    | TensorData::Promoted { graph_id: g, .. }
+                    | TensorData::GraphLeaf { graph_id: g, .. } => g == graph_id,
                     // A variable leaf is a shared input: it carries no graph
                     // affiliation in its TensorData — nothing to check.
                     TensorData::Symbolic { .. } => continue,
@@ -2627,10 +2642,20 @@ impl Runtime {
                 self.tensors[tid] = TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc };
                 graph_id
             }
-            // Unrealized graph-only tensor: its value can only be recomputed
-            // by the (dropping) graph; keep it as a dead handle that panics
-            // on use. No graph decref on this path.
-            TensorData::Graph { .. } => return,
+            // Realized graph output: the plan computed this class into
+            // `new_buffer_id` — leave the graph as a buffer-backed Leaf
+            // (normal plan execution; no special launch). Only reached
+            // from realize's output loop, which always passes a real
+            // buffer — drop never eagerifies Graph tensors.
+            TensorData::Graph { graph_id, shape_id, dtype, rc, .. } => {
+                debug_assert_ne!(
+                    new_buffer_id,
+                    Buffer::NULL,
+                    "eagerify: realized graph tensor {tid} given a null buffer"
+                );
+                self.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer: new_buffer_id, rc };
+                graph_id
+            }
             TensorData::GraphLeaf { graph_id, shape_id, dtype, rc, buffer: old, .. } => {
                 // Realized: release the previous buffer and re-point at the
                 // realization's buffer. No producer to detach from (GraphLeaf
@@ -2645,7 +2670,7 @@ impl Runtime {
                 unreachable!("eagerify: {tid} is already a realized leaf")
             }
             // Already eager or a pure-slab value: nothing to do.
-            _ => return,
+            TensorData::Eager { .. } | TensorData::Symbolic { .. } => return,
         };
 
         self.graphs[graph_id].ref_count -= 1;

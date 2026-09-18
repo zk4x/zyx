@@ -76,7 +76,9 @@ impl Kernel {
     /// kernel.store(out, doubled, gidx);
     /// ```
     pub fn new(dev: Dev) -> Self {
-        let dev_info = Some(dev.info());
+        // Auto is a late-bound placeholder: the device (and its info) is
+        // resolved at compile time (see compile); concrete devices bind now.
+        let dev_info = if dev == Dev::Auto { None } else { Some(dev.info()) };
         Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev, dev_info, shape_cache: Map::default() }
     }
 
@@ -1056,8 +1058,15 @@ impl Runtime {
                 .iter()
                 .find(|&&input| self.is_graph(input))
                 .map(|&input| match self.tensors[input] {
-                    TensorData::Graph { graph_id, .. } | TensorData::Promoted { graph_id, .. } => graph_id,
-                    ref t => unreachable!("{t:?}"),
+                    TensorData::Graph { graph_id, .. }
+                    | TensorData::GraphLeaf { graph_id, .. }
+                    | TensorData::Promoted { graph_id, .. } => graph_id,
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Symbolic { .. } => {
+                        unreachable!("forward: non-graph input {input} passed graph routing: {:?}", self.tensors[input])
+                    }
                 })
                 .unwrap();
             self.assert_graph_alive(graph_id);
@@ -1093,12 +1102,16 @@ impl Runtime {
                     self.promote_to_graph(input, graph_id)?;
                 }
                 input_classes.push(match self.tensors[input] {
-                    TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                    TensorData::Graph { class_id, .. }
+                    | TensorData::GraphLeaf { class_id, .. }
+                    | TensorData::Promoted { class_id, .. } => class_id,
                     TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
                         Expr::Constant { value } => self.push_const(graph_id, value),
                         ref e => todo!("forward: promote symbolic scalar tid {input} ({e:?}) into a graph"),
                     },
-                    ref t => todo!("forward: promote symbolic scalar tid {input} ({t:?}) into a graph"),
+                    TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
+                        todo!("forward: promote symbolic scalar tid {input} ({:?}) into a graph", self.tensors[input])
+                    }
                 });
             }
 
@@ -1118,18 +1131,22 @@ impl Runtime {
                 }
                 let sid = self.stack(shape)?;
                 let shape_class = match self.tensors[sid] {
-                    TensorData::Graph { class_id, .. } => class_id,
+                    TensorData::Graph { class_id, .. } | TensorData::GraphLeaf { class_id, .. } => class_id,
                     TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, sid),
-                    ref t => todo!("forward: output shape dim tid {sid} is neither slab nor graph ({t:?})"),
+                    TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Promoted { .. } => {
+                        todo!("forward: output shape dim tid {sid} is neither slab nor graph ({:?})", self.tensors[sid])
+                    }
                 };
                 // The slab shape lives in the append-only expr slab: store
                 // the ExprId, release the transient stack handle.
                 let shape_expr = match self.tensors[sid] {
-                    TensorData::Graph { shape_id, .. } => shape_id,
+                    TensorData::Graph { shape_id, .. } | TensorData::GraphLeaf { shape_id, .. } => shape_id,
                     TensorData::Symbolic { expr, .. } => expr,
-                    ref t => todo!("forward: output shape dim tid {sid} is neither slab nor graph ({t:?})"),
+                    TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Promoted { .. } => {
+                        todo!("forward: output shape dim tid {sid} is neither slab nor graph ({:?})", self.tensors[sid])
+                    }
                 };
-                if !matches!(self.tensors[sid], TensorData::Graph { .. }) {
+                if !matches!(self.tensors[sid], TensorData::Graph { .. } | TensorData::GraphLeaf { .. }) {
                     self.release(sid);
                 }
                 shape_classes.push(shape_class);
