@@ -2379,7 +2379,7 @@ impl Runtime {
                     continue;
                 }
                 let mut kernel = ek.kernel.clone();
-                kernel.device_id = dev_id;
+                kernel.dev = dev_id;
                 kernel.dev_info = Some(dev_id.info());
                 progress_bar.inc(1, &format!("autotune {} on dev={dev_id:?}", kernel.name()));
                 // Allocate fresh timing buffers in this device's pool for
@@ -2388,7 +2388,6 @@ impl Runtime {
                 let mut full_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
                 let mut full_mut: Vec<LaunchArg> = Vec::with_capacity(mut_lens.len());
                 let mut fresh: Vec<PoolBufferId> = Vec::new();
-                let mut events = Vec::new();
                 {
                     let (mut ri, mut rli, mut mli) = (0usize, 0usize, 0usize);
                     let mut p = kernel.head;
@@ -2426,7 +2425,9 @@ impl Runtime {
                                             DType::U64 | DType::I64 => 1i64.to_le_bytes().to_vec(),
                                         };
                                         let fill = one.repeat(len as usize);
-                                        pool_id.host_to_pool(&fill, buf)?;
+                                        let host_buf = Pool::Host.insert_host(fill.into());
+                                        pool_id.pool_to_pool(Pool::Host, host_buf, buf)?;
+                                        Pool::Host.release(host_buf);
                                     }
                                     if is_mut {
                                         full_mut.push(LaunchArg::Buffer(buf));
@@ -2588,8 +2589,14 @@ impl Runtime {
         // on different devices. Only the extracted path is considered: a
         // class holding kernels on several devices needs no transfer when
         // extraction chose the same-device producer.
-        // SAFETY: buffer_map borrow ends before the add call, rust is stupid
-        let nodes = self.graphs[graph_id].add_memory_ops(unsafe { &*buffer_map_ptr }, &nodes);
+        // Leaf buffers collected into an owned map so the immutable borrow
+        // ends before the &mut add call below.
+        let buffer_map: Map<TensorId, Buffer> = self.graphs[graph_id]
+            .leaf_map
+            .values()
+            .filter_map(|&tid| self.leaf_buffer(tid).map(|buf| (tid, buf)))
+            .collect();
+        let nodes = self.graphs[graph_id].add_memory_ops(&buffer_map, &nodes);
 
         // Leaf pools at compile time — the plan bakes the alias binding (and
         // any cross-pool copy) into its ExecNodes, so leaves must stay put.
@@ -2612,83 +2619,33 @@ impl Runtime {
     }
 
     pub fn eagerify(&mut self, tid: TensorId, new_buffer_id: Buffer) {
-        let (old_kernel_id, graph_id, shape_id) = match self.tensors[tid] {
-            TensorData::Graph { graph_id, shape_id, .. } => (KernelId::NULL, graph_id, shape_id),
-            TensorData::Promoted { kernel_id, graph_id, shape_id, .. } => (kernel_id, graph_id, shape_id),
-            // Already eager or a pure-slab value: nothing to do.
-            _ => return,
-        };
-
-        match self.tensors[tid] {
-            TensorData::Promoted { kernel_id, op_id, shape_id, rc, dtype, .. } => {
+        let graph_id = match self.tensors[tid] {
+            TensorData::Promoted { kernel_id, op_id, graph_id, shape_id, rc, dtype, .. } => {
                 // Unrealized promoted tensor: the eager producer kernel was
                 // never mutated, so just demote in place.
                 self.tensors[tid] = TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc };
+                graph_id
             }
-            TensorData::Graph { .. } => {
-                // Unrealized graph-only tensor: its value can only be
-                // recomputed by the (dropping) graph; keep it as a dead
-                // handle that panics on use.
-                return;
+            // Unrealized graph-only tensor: its value can only be recomputed
+            // by the (dropping) graph; keep it as a dead handle that panics
+            // on use. No graph decref on this path.
+            TensorData::Graph { .. } => return,
+            TensorData::GraphLeaf { graph_id, shape_id, dtype, rc, buffer_id: old, .. } => {
+                // Realized: release the previous buffer and re-point at the
+                // realization's buffer. No producer to detach from (GraphLeaf
+                // carries no kernel_id).
+                old.pool.release(old.buffer_id);
+                self.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer_id: new_buffer_id, rc };
+                graph_id
             }
-            TensorData::Leaf { view_of, shape_id, dtype, buffer_id, rc }
-            | TensorData::PendingLeaf { depends_on, shape_id, dtype, dev, buffer_id, rc } => {
-                // Realized: the value lives in `buffer_map`. Under the Leaf design
-                // there is no eager producer kernel to rebuild — the tensor
-                // becomes a **Leaf** (no kernel, no load edge, so no retain). A
-                // Promoted detaches from its old producer first. The promotion's
-                // leaf-edge rc is NOT undone here: `Tape::drop`'s leafs loop
-                // releases it (the ref_count decrement happens at the tail
-                // below).
-                let mut old_load_duplicates = 0usize;
-                if !old_kernel_id.is_null() {
-                    // Live detach: this tensor is still alive (rc > 0), only its
-                    // affiliation moves to the Leaf state. A kernel can
-                    // be used by MULTIPLE tensors, so the old producer survives
-                    // intact — just remove this tensor from its outputs. Its fate
-                    // is settled later by whoever truly kills it (`release` →
-                    // `on_rc_zero`); no death bookkeeping here.
-                    let removed = self.kernels[old_kernel_id].outputs.remove(&tid);
-                    debug_assert!(removed, "eagerify: tid {tid} not listed in outputs of producer {old_kernel_id:?}");
-                    old_load_duplicates = self.kernels[old_kernel_id].loads.iter().filter(|&&t| t == tid).count();
-                }
-                let (rc, dtype) = match self.tensors[tid] {
-                    TensorData::Graph { rc, dtype, .. } | TensorData::Promoted { rc, dtype, .. } => (rc, dtype),
-                    ref t => unreachable!("eagerify: {t:?}"),
-                };
-                let _ = dtype;
-                self.tensors[tid] = TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: Dev::Auto, rc };
-                // Fully detach from the old producer: its load entries on tid are
-                // released. Without this the old kernel keeps a stale edge whose
-                // count pins tid above the death threshold forever.
-                if old_load_duplicates > 0 {
-                    self.kernels[old_kernel_id].loads.retain(|&t| t != tid);
-                    for _ in 0..old_load_duplicates {
-                        self.release(tid);
-                    }
-                    if self.kernels[old_kernel_id].outputs.is_empty() && self.kernels[old_kernel_id].stores.is_empty() {
-                        // The old producer is dead wood: drop it and release its
-                        // remaining load edges (same recursion as release's
-                        // kernel-drop branch).
-                        for &t in &self.kernels[old_kernel_id].loads {
-                            if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
-                                &mut self.tensors[t]
-                            {
-                                if *k == old_kernel_id {
-                                    *k = KernelId::NULL;
-                                }
-                            }
-                        }
-                        let loads = std::mem::take(&mut self.kernels[old_kernel_id].loads);
-                        self.kernels.remove(old_kernel_id);
-                        for t in loads {
-                            self.release(t);
-                        }
-                    }
-                }
+            // Already-realized leaves carry no graph affiliation and eagerify
+            // is only called on graph tensors: reaching them is a bug.
+            TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
+                unreachable!("eagerify: {tid} is already a realized leaf")
             }
-            ref t => unreachable!("eagerify: unexpected variant after affiliation match: {t:?}"),
-        }
+            // Already eager or a pure-slab value: nothing to do.
+            _ => return,
+        };
 
         self.graphs[graph_id].ref_count -= 1;
     }

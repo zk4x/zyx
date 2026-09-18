@@ -210,21 +210,12 @@
 //! - `merge_kernel` requires the merge kernel to be store-free (callers must `add_store`
 //!   first if it isn't).
 
-// ----- ASYNC EVENT RULES -----
+// ----- ASYNC RULES -----
 //
-// host_to_pool is async: the host-side source buffer must stay valid
-// until the returned event is synced via sync_events.
-//
-// Kernel launch is async: ALL buffers used by the kernel (both loads
-// and stores) must stay valid until the kernel's event is consumed.
-//
-// Events are tracked in self.events: Map<BTreeSet<BufferId>, Event>.
-// The key set must include every buffer the kernel touches, so future
-// operations can find and wait on the event before reusing the buffer.
-//
-// When extracting a pending event for a buffer: iterate events.keys(),
-// find the set containing the buffer, remove the event, and add it to
-// the wait list passed to the next launch. A removed event is consumed.
+// Launches and cross-pool copies are fire-and-forget: the backend retains
+// every buffer a submission touches and releases it once the work completes.
+// pool_to_host is the sync point — it flushes all pending work first, so a
+// value read back is always up to date.
 // -----------------------------
 
 use std::{collections::BTreeSet, hash::BuildHasherDefault, path::Path};
@@ -233,7 +224,7 @@ use std::{collections::BTreeSet, hash::BuildHasherDefault, path::Path};
 use crate::viz::Viz;
 use crate::{
     DType, Dev, Map, Scalar, Set, ZyxError,
-    backend::{Buffer, DTypeCapability, DeviceProgramId, LaunchArg, Pool, PoolBufferId, ProgramId},
+    backend::{Buffer, DTypeCapability, DeviceProgramId, LaunchArg, Pool, ProgramId},
     dtype::Constant,
     graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
@@ -1862,7 +1853,7 @@ impl Runtime {
     /// its buffer on the variant (or it arrives later via a pending
     /// `depends_on` store). The Leaf carries no kernel and is never listed
     /// in any kernel's `outputs` — consumers mint their own load kernels via
-    /// [`Runtime::leaf_load`], which is why no self-referencing "tensor is
+    /// [`Runtime::new_kernel_from_leaf`], which is why no self-referencing "tensor is
     /// its own kernel's load" cycle can exist anymore (the old rc==2
     /// handle+self-load construction is gone).
     pub fn new_eager_tensor(&mut self, shape_id: TensorId, dtype: DType, buffer_id: Buffer) -> TensorId {
@@ -1876,12 +1867,21 @@ impl Runtime {
     /// `x`'s buffer. The kernel has empty `outputs` — the caller appends its
     /// compute ops and owns the results. `x` gains one reference for the
     /// kernel's load edge (released when the kernel dies or materializes).
-    pub(crate) fn leaf_load(&mut self, x: TensorId) -> (KernelId, OpId) {
-        debug_assert!(matches!(self.tensors[x], TensorData::Leaf { .. }), "leaf_load: tensor {x} is not a Leaf");
+    pub(crate) fn new_kernel_from_leaf(&mut self, x: TensorId) -> (KernelId, OpId) {
+        debug_assert!(
+            matches!(
+                self.tensors[x],
+                TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } | TensorData::PendingLeaf { .. }
+            ),
+            "new_kernel_from_leaf: tensor {x} has no resolved shape: {:?}",
+            self.tensors[x]
+        );
         let dtype = self.dtype(x);
         let shape_id = match self.tensors[x] {
-            TensorData::Leaf { shape_id, .. } => shape_id,
-            ref t => unreachable!("leaf_load: {t:?}"),
+            TensorData::Leaf { shape_id, .. }
+            | TensorData::GraphLeaf { shape_id, .. }
+            | TensorData::PendingLeaf { shape_id, .. } => shape_id,
+            ref t => unreachable!("new_kernel_from_leaf: {t:?}"),
         };
         // Device comes from the Leaf's buffer pool (Host reports C, Disk
         // reports Auto — see `device`). Auto (unbound placeholder) gets no
@@ -2033,7 +2033,7 @@ impl Runtime {
             TensorData::PendingLeaf { shape_id, .. } | TensorData::Leaf { shape_id, .. } => {
                 // A Leaf has no kernel to extend: mint a fresh load kernel
                 // for its buffer, then cast in it.
-                let (kernel_id, op_id) = self.leaf_load(x);
+                let (kernel_id, op_id) = self.new_kernel_from_leaf(x);
                 let op_id = self.kernels[kernel_id].kernel.cast(op_id, dtype);
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 self.kernels[kernel_id].outputs.insert(tid);
@@ -2043,7 +2043,8 @@ impl Runtime {
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
             }
-            TensorData::Graph { class_id, graph_id, shape_id, .. }
+            TensorData::GraphLeaf { class_id, graph_id, shape_id, .. }
+            | TensorData::Graph { class_id, graph_id, shape_id, .. }
             | TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
                 self.assert_graph_alive(graph_id);
                 let (_, class_id) = self.push_node(graph_id, Node::Cast { x: class_id, dtype });
@@ -2092,7 +2093,7 @@ impl Runtime {
             | TensorData::Leaf { shape_id, .. } => {
                 // A Leaf has no kernel to extend: mint a fresh load kernel
                 // for its buffer, then bitcast in it.
-                let (kernel_id, op_id) = self.leaf_load(x);
+                let (kernel_id, op_id) = self.new_kernel_from_leaf(x);
                 let op_id = self.kernels[kernel_id].kernel.bitcast(op_id, dtype);
                 // The bitcast shares the input's shape expression.
                 self.retain(shape_id);
@@ -2149,12 +2150,11 @@ impl Runtime {
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
             }
-            TensorData::GraphLeaf { shape_id, dtype, .. }
-            | PendingLeaf { shape_id, dtype, .. }
+            TensorData::PendingLeaf { shape_id, dtype, .. }
             | TensorData::Leaf { shape_id, dtype, .. } => {
                 // A Leaf has no kernel to extend: mint a fresh load kernel
                 // for its buffer, then apply the unary op in it.
-                let (kernel_id, op_id) = self.leaf_load(x);
+                let (kernel_id, op_id) = self.new_kernel_from_leaf(x);
                 let op_id = self.kernels[kernel_id].kernel.unary(op_id, uop);
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 self.kernels[kernel_id].outputs.insert(tid);
@@ -2164,7 +2164,8 @@ impl Runtime {
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
             }
-            TensorData::Graph { class_id, graph_id, shape_id, dtype, .. }
+            TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::Graph { class_id, graph_id, shape_id, dtype, .. }
             | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
                 let (_node_id, class_id) = self.push_node(graph_id, Node::Unary { x: class_id, uop });
@@ -2381,12 +2382,12 @@ impl Runtime {
             self.retain(shape_id);
             let (mut kid_x, mut op_id_x) = match self.tensors[x] {
                 TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                TensorData::Leaf { .. } => self.leaf_load(x),
+                TensorData::Leaf { .. } => self.new_kernel_from_leaf(x),
                 ref t => panic!("binary: operand tid {x} is not an eager tensor: {t:?}"),
             };
             let (mut kid_y, mut op_id_y) = match self.tensors[y] {
                 TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                TensorData::Leaf { .. } => self.leaf_load(y),
+                TensorData::Leaf { .. } => self.new_kernel_from_leaf(y),
                 ref t => panic!("binary: operand tid {y} is not an eager tensor: {t:?}"),
             };
 
@@ -2406,15 +2407,15 @@ impl Runtime {
                     (false, false) => {}
                 }
                 // add_store may have re-created the operands as Leafs (a
-                // stored operand is a buffer now) — re-resolve via leaf_load.
+                // stored operand is a buffer now) — re-resolve via new_kernel_from_leaf.
                 (kid_x, op_id_x) = match self.tensors[x] {
                     TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                    TensorData::Leaf { .. } => self.leaf_load(x),
+                    TensorData::Leaf { .. } => self.new_kernel_from_leaf(x),
                     ref t => unreachable!("add_store turned operand into unexpected data: {t:?}"),
                 };
                 (kid_y, op_id_y) = match self.tensors[y] {
                     TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                    TensorData::Leaf { .. } => self.leaf_load(y),
+                    TensorData::Leaf { .. } => self.new_kernel_from_leaf(y),
                     ref t => unreachable!("add_store turned operand into unexpected data: {t:?}"),
                 };
 
@@ -2469,32 +2470,17 @@ impl Runtime {
             };
         }
         match self.tensors[x] {
-            TensorData::Eager { kernel_id, .. } => self.kernels[kernel_id].kernel.device_id,
+            TensorData::Eager { kernel_id, .. } => self.kernels[kernel_id].kernel.dev,
+            TensorData::PendingLeaf { dev, .. } => dev,
             _ => Dev::Auto,
         }
-    }
-
-    /// Resolves a public [`Dev`] selector against the initialized devices.
-    ///
-    /// `Dev::Auto` picks the first initialized device.
-    ///
-    /// # Panics
-    ///
-    /// If no initialized device matches `dev`.
-    pub fn resolve_dev(&self, dev: Dev) -> Dev {
-        let found = match dev {
-            Dev::Auto => Dev::all().into_iter().next(),
-            dev => Dev::all().into_iter().find(|&d| d == dev),
-        };
-        found.unwrap_or_else(|| panic!("resolve_dev: no initialized device matches {dev:?}"))
     }
 
     #[allow(clippy::wrong_self_convention)] // naming convention from GPU API, not a conversion method
     pub fn to_device(&mut self, x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device={device:?})");
-        let device_id = self.resolve_dev(device);
-        let dst_pool = device_id.pool();
+        let dst_pool = device.pool();
         // Fast path: tensor already lives in the destination pool. Compares
         // pools (not devices via device(x)): the source pool may have no
         // devices attached at all (e.g. disk), which device(x) panics on.
@@ -2558,11 +2544,12 @@ impl Runtime {
                 println!("  -> tid={tid} (cross-pool copy {buf_id:?} -> {dst_id:?})");
                 Ok(tid)
             }
-            TensorData::Graph { class_id, graph_id, shape_id, .. }
+            TensorData::GraphLeaf { class_id, graph_id, shape_id, .. }
+            | TensorData::Graph { class_id, graph_id, shape_id, .. }
             | TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
                 assert!(!self.graphs[graph_id].dead, "tape scope has ended (tensor belongs to a dead tape scope");
                 // TODO measure actual time by running a test copy
-                let (_node_id, cid) = self.push_node(graph_id, Node::ToDevice { x: class_id, device: device_id, time: 0 });
+                let (_node_id, cid) = self.push_node(graph_id, Node::ToDevice { x: class_id, device, time: 0 });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression.
                 debug_assert!(!shape_id.is_null(), "to_device: input graph tensor {x} has no shape expression");
@@ -2872,14 +2859,14 @@ impl Runtime {
         } else {
             let keep_kid = match self.tensors[tensors[0]] {
                 TensorData::Eager { kernel_id, .. } => kernel_id,
-                TensorData::Leaf { .. } => self.leaf_load(tensors[0]).0,
+                TensorData::Leaf { .. } => self.new_kernel_from_leaf(tensors[0]).0,
                 ref t => panic!("stack: operand tid {} is not an eager tensor: {t:?}", tensors[0]),
             };
             let mut ops = Vec::with_capacity(tensors.len());
             for &t in tensors {
                 let (mut kid, mut op) = match self.tensors[t] {
                     TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                    TensorData::Leaf { .. } => self.leaf_load(t),
+                    TensorData::Leaf { .. } => self.new_kernel_from_leaf(t),
                     ref t => panic!("stack: operand is not an eager tensor: {t:?}"),
                 };
                 if kid != keep_kid {
@@ -2887,7 +2874,7 @@ impl Runtime {
                         self.add_store(t)?;
                         (kid, op) = match self.tensors[t] {
                             TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                            TensorData::Leaf { .. } => self.leaf_load(t),
+                            TensorData::Leaf { .. } => self.new_kernel_from_leaf(t),
                             ref t => unreachable!("{t:?}"),
                         };
                     }
@@ -2970,7 +2957,7 @@ impl Runtime {
             // If x is realized, the result is a **Leaf** sharing x's buffer:
             // a view is not an operation, so no kernel is created and nothing
             // is listed in any kernel's outputs — consumers mint their own
-            // load kernels via `leaf_load`. This avoids copying data for a
+            // load kernels via `new_kernel_from_leaf`. This avoids copying data for a
             // view-only reshape. The view retains x, so x (the owner)
             // outlives all its views and deallocates the buffer on death.
             if let Some(buf_id) = self.leaf_buffer(x) {
@@ -3531,16 +3518,6 @@ impl Runtime {
             let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
             let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
             let buffer_id = this.leaf_buffer(x).expect("load: tensor has no buffer after materialization");
-            for buffers in this.events.keys() {
-                if buffers.contains(&buffer_id) {
-                    let buffers = buffers.clone();
-                    let event = this.events.remove(&buffers).unwrap();
-                    buffer_id.pool.pool_to_host(buffer_id.buffer_id, byte_slice)?;
-                    #[cfg(feature = "debug_tensor_op")]
-                    println!("  -> x={x}, {:?}", self.tensors[x]);
-                    return Ok(());
-                }
-            }
             buffer_id.pool.pool_to_host(buffer_id.buffer_id, byte_slice)?;
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> x={x}, {:?}", self.tensors[x]);
@@ -3555,6 +3532,7 @@ impl Runtime {
             TensorData::PendingLeaf { depends_on, .. } => depends_on,
             ref t => panic!("load: pending store check on non-kernel tensor {x}: {t:?}"),
         };
+        debug_assert!(!kid.is_null(), "load: PendingLeaf {x} with null depends_on");
         if !kid.is_null() {
             let seen: Set<TensorId> = self.kernels[kid].outputs.iter().copied().collect();
             for tid in seen {
@@ -3566,17 +3544,7 @@ impl Runtime {
         }
         let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
         let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
-        for buffers in self.events.keys() {
-            if buffers.contains(&buffer_id) {
-                let buffers = buffers.clone();
-                let event = self.events.remove(&buffers).unwrap();
-                buffer_id.pool.pool_to_host(buffer_id.buffer_id, byte_slice, vec![event])?;
-                #[cfg(feature = "debug_tensor_op")]
-                println!("  -> x={x}, {:?}", self.tensors[x]);
-                return Ok(());
-            }
-        }
-        buffer_id.pool.pool_to_host(buffer_id.buffer_id, byte_slice, Vec::new())?;
+        buffer_id.pool.pool_to_host(buffer_id.buffer_id, byte_slice)?;
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> x={x}, {:?}", self.tensors[x]);
         Ok(())
@@ -3619,6 +3587,9 @@ impl Runtime {
     pub fn assign(&mut self, dst: TensorId, src: TensorId) -> Result<(), ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::assign(dst={dst}, src={src})");
+        if src == dst {
+            return Err(ZyxError::shape_error(format!("assign: src and dst are the same tensor {dst}").into()));
+        }
         self.verify_tensor_invariants();
 
         let dst_dtype = self.dtype(dst);
@@ -3725,9 +3696,20 @@ impl Runtime {
         // placement the old load-kernel path produced.
         let (src_kid, src_op) = match self.tensors[src] {
             TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
-            TensorData::Leaf { .. } => self.leaf_load(src),
+            TensorData::Leaf { .. } => self.new_kernel_from_leaf(src),
             ref t => panic!("assign: src {src} is not an eager/promoted tensor: {t:?}"),
         };
+        // A pending dst still owes its value to a live store kernel: run the
+        // producer first so dst has a buffer, then take the Leaf path below.
+        // depends_on is never null by state-machine invariant (a PendingLeaf
+        // is always created with and consumed by a live kernel).
+        if let TensorData::PendingLeaf { depends_on, .. } = self.tensors[dst] {
+            debug_assert!(!depends_on.is_null(), "assign: PendingLeaf {dst} with null depends_on");
+            let seen: Set<TensorId> = self.kernels[depends_on].outputs.iter().copied().collect();
+            for tid in seen {
+                self.add_store(tid)?;
+            }
+        }
         // A bare Leaf dst (realized buffer, no view kernel): write src's value
         // into dst's buffer in-place. A fresh kernel loads src (Leaf src) and
         // stores into a GlobalMut param bound to dst's buffer; an eager src
@@ -3737,7 +3719,7 @@ impl Runtime {
             let dtype = self.dtype(dst);
             let (kernel_id, src_op) = match self.tensors[src] {
                 TensorData::Leaf { .. } => {
-                    let (kid, op) = self.leaf_load(src);
+                    let (kid, op) = self.new_kernel_from_leaf(src);
                     (kid, op)
                 }
                 TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
@@ -3748,14 +3730,16 @@ impl Runtime {
                 self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: dst_shape_op });
             self.kernels[kernel_id].kernel.store(mut_param, src_op, OpId::NULL);
             self.kernels[kernel_id].stores.push(dst);
-            // dst becomes pending: same buffer, store owed into it.
-            let dev = self.kernels[kernel_id].kernel.device_id;
+            // dst becomes pending: the store kernel owns the value now. The old
+            // buffer is unobservable from here (load runs the producer
+            // first), so release it; materialize allocates the store target.
+            dst_buf.pool.release(dst_buf.buffer_id);
+            let dev = self.kernels[kernel_id].kernel.dev;
             self.tensors[dst] = TensorData::PendingLeaf {
                 depends_on: kernel_id,
                 shape_id: dst_shape_id,
                 dtype,
                 dev,
-                buffer_id: dst_buf.buffer_id,
                 rc: dst_rc,
             };
             return Ok(());
@@ -3970,7 +3954,7 @@ impl Runtime {
         // in loads (its buffer slot comes via `stores`). dst's kernel stays
         // alive and keeps its own load edges, so these are NEW edges on
         // src's kernel — each holds one rc (released when src's kernel dies
-        // or materializes), same convention as `leaf_load`.
+        // or materializes), same convention as `new_kernel_from_leaf`.
         for load in new_def_loads {
             debug_assert!(
                 matches!(
@@ -4098,7 +4082,7 @@ impl Runtime {
             TensorData::Leaf { .. } => {
                 // A Leaf has no kernel: mint a fresh load kernel for its
                 // (possibly pending) buffer — the clean placement contract.
-                return Ok(self.leaf_load(x));
+                return Ok(self.new_kernel_from_leaf(x));
             }
             _ => eager_ids(self, x),
         };
@@ -4112,7 +4096,7 @@ impl Runtime {
             // placement (store-free, outputs-empty), no duplication needed.
             (kid, op_id) = match self.tensors[x] {
                 TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
-                TensorData::Leaf { .. } => return Ok(self.leaf_load(x)),
+                TensorData::Leaf { .. } => return Ok(self.new_kernel_from_leaf(x)),
                 ref t => panic!("duplicate_or_store: tensor {x} is not an eager/promoted tensor: {t:?}"),
             };
         }
@@ -4264,7 +4248,7 @@ impl Runtime {
     /// becomes a `Leaf` — no load kernel is created. This is the canonical
     /// split point: a class that has been stored is no longer fused into a
     /// producer kernel — any subsequent consumer that would otherwise have to
-    /// materialize again loads the Leaf's buffer via [`Runtime::leaf_load`].
+    /// materialize again loads the Leaf's buffer via [`Runtime::new_kernel_from_leaf`].
     ///
     /// Called by `duplicate_or_store` (when the producer kernel already stores or its op is
     /// preceded by a reduce) and by `contiguous`'s cast-shim.
@@ -4314,7 +4298,7 @@ impl Runtime {
             }
             ref t => panic!("add_store: tensor {x} is not a kernel-backed tensor: {t:?}"),
         };
-        let dev = self.kernels[kid].kernel.device_id;
+        let dev = self.kernels[kid].kernel.dev;
         self.tensors[x] = TensorData::PendingLeaf { depends_on: pending, shape_id, dtype, dev, rc };
 
         if outputs_empty {
@@ -4334,7 +4318,7 @@ impl Runtime {
     pub fn get_or_autotune(&mut self, kernel: Kernel, buffers: &[LaunchArg]) -> Result<(DeviceProgramId, u64), ZyxError> {
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
-                let pid = ProgramId { dev: kernel.device_id, program_id };
+                let pid = ProgramId { dev: kernel.dev, program_id };
                 let timing = self.timings.get(&pid).copied().unwrap_or(10_000_000_000);
                 return Ok((program_id, timing));
             }
@@ -4352,7 +4336,7 @@ impl Runtime {
             kernel.debug();
         }
 
-        let device_id = kernel.device_id;
+        let device_id = kernel.dev;
         #[cfg(feature = "viz")]
         let sched_kernel = kernel.clone();
 
@@ -4456,6 +4440,38 @@ impl Runtime {
     }
 
     pub(crate) fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
+        // Flush pending loads first: a PendingLeaf's value is owed by a live
+        // kernel, so launch it (via add_store over its outputs, the runtime
+        // custom) before anything below touches buffers. Recursive: the owed
+        // kernel's own materialization flushes its pending loads the same way.
+        let pending_kids: Vec<KernelId> = self.kernels[kid]
+            .loads
+            .iter()
+            .filter_map(|&tid| match self.tensors[tid] {
+                TensorData::PendingLeaf { depends_on, .. } => {
+                    debug_assert!(!depends_on.is_null(), "materialize: PendingLeaf {tid} with null depends_on");
+                    Some(depends_on)
+                }
+                _ => None,
+            })
+            .collect();
+        for pending_kid in pending_kids {
+            let seen: Set<TensorId> = self.kernels[pending_kid].outputs.iter().copied().collect();
+            for tid in seen {
+                self.add_store(tid)?;
+            }
+        }
+        // Every non-scalar load now has a buffer.
+        for &tid in &self.kernels[kid].loads {
+            assert!(
+                matches!(
+                    self.tensors[tid],
+                    TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } | TensorData::Variable { .. }
+                ),
+                "materialize: load {tid} has no buffer after pending flush: {:?}",
+                self.tensors[tid]
+            );
+        }
         // Resolve the dtypes of the loads and stores now, while this kernel (and any
         // tensor whose dtype resolves through it) is still alive. After remove_and_return
         // below, self.dtype on those tensors would panic on the removed kernel.
@@ -4602,8 +4618,8 @@ impl Runtime {
         // A pinned device (kernel built with a concrete `Dev`) wins over
         // everything — when the user moves a tensor to a device, that has to
         // take effect. Only a `Dev::Auto` kernel gets auto-picked.
-        let (dev_id, pool_id) = if kernel.device_id != Dev::Auto {
-            let dev_id = kernel.device_id;
+        let (dev_id, pool_id) = if kernel.dev != Dev::Auto {
+            let dev_id = kernel.dev;
             if store_pools.len() > 1 || !store_pools.iter().all(|&pool| pool == dev_id.pool()) {
                 return Err(ZyxError::AllocationError(
                     format!(
@@ -4661,16 +4677,15 @@ impl Runtime {
                 format!("stores span multiple pools {store_pools:?}; a kernel can only touch memory of a single pool").into(),
             ));
         };
-        kernel.device_id = dev_id;
+        kernel.dev = dev_id;
         kernel.dev_info = Some(dev_id.info());
 
         // Ensure loads are in target pool. Variables and symbolic leaves are
         // not backed by any buffer — they bind at launch from `variable_map`.
-        let mut event_wait_list = Vec::new();
         for &tid in &loads {
             let Some(buf_id) = self.leaf_buffer(tid) else { continue };
             if buf_id.pool != pool_id {
-                let src = buf_id.buffer;
+                let src = buf_id.buffer_id;
                 let bytes =
                     (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
                 let alloc_bytes = bytes + dtypes[&tid].bit_size() as usize / 8;
@@ -4679,7 +4694,14 @@ impl Runtime {
                 let dst_global = Buffer { pool: pool_id, buffer_id: dst };
                 debug_assert_ne!(buf_id.pool, pool_id, "pool_to_pool across the same pool is disallowed");
                 pool_id.pool_to_pool(buf_id.pool, src, dst)?;
-                pool_id.release(src);
+                buf_id.pool.release(src);
+                // Record the new location in place: leaf_buffer reads the slab.
+                match &mut self.tensors[tid] {
+                    TensorData::Leaf { buffer_id, .. } | TensorData::GraphLeaf { buffer_id, .. } => {
+                        *buffer_id = dst_global;
+                    }
+                    ref t => panic!("materialize: moved load {tid} has no buffer field: {t:?}"),
+                }
             }
         }
 
@@ -4690,57 +4712,59 @@ impl Runtime {
                 continue;
             };
             if buf_id.pool != pool_id {
-                let src = buf_id.buffer;
+                let src = buf_id.buffer_id;
                 let bytes =
                     (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
                 let alloc_bytes = bytes as Dim + Dim::from(dtypes[&tid].bit_size() / 8);
-                let mut byte_slice = vec![0u8; bytes];
-
-                buf_id.pool.pool_to_host(src, &mut byte_slice)?;
-                buf_id.pool.release(src);
 
                 let dst = pool_id.allocate(alloc_bytes)?;
                 let dst_global = Buffer { pool: pool_id, buffer_id: dst };
-                pool_id.host_to_pool(&byte_slice, dst)?;
-                self.buffer_map.insert(tid, dst_global);
+                debug_assert_ne!(buf_id.pool, pool_id, "pool_to_pool across the same pool is disallowed");
+                pool_id.pool_to_pool(buf_id.pool, src, dst)?;
+                buf_id.pool.release(src);
+                // Record the new location in place: leaf_buffer reads the slab.
+                match &mut self.tensors[tid] {
+                    TensorData::Leaf { buffer_id, .. } | TensorData::GraphLeaf { buffer_id, .. } => {
+                        *buffer_id = dst_global;
+                    }
+                    ref t => panic!("materialize: moved store {tid} has no buffer field: {t:?}"),
+                }
             }
         }
 
         // Collect existing store buffers for already-realized store tensors,
-        // allocate new buffers for the rest.
+        // allocate new buffers for the rest. Fresh buffers are remembered for
+        // the post-launch Leaf conversion below.
         let mut kernel_buffers = BTreeSet::new();
+        let mut fresh_stores: Vec<(TensorId, Buffer)> = Vec::new();
         for &tid in &loads {
             // Scalars (`TensorData::Variable`) are launch-time values, not
-            // pool storage — they have no buffer and no event dependency.
+            // pool storage — they have no buffer.
             if matches!(self.tensors[tid], TensorData::Variable { .. }) {
                 continue;
             }
-            kernel_buffers.insert(self.buffer_map[&tid]);
+            kernel_buffers.insert(self.leaf_buffer(tid).expect("materialize: load without buffer after pending flush"));
         }
         for &tid in &stores {
-            if let Some(&buf_id) = self.buffer_map.get(&tid) {
+            if let Some(buf_id) = self.leaf_buffer(tid) {
                 kernel_buffers.insert(buf_id);
-                if let TensorData::Leaf { depends_on, .. } = &mut self.tensors[tid] {
-                    *depends_on = KernelId::NULL;
-                }
             } else {
                 let bytes =
                     (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
                 let alloc_bytes = bytes as Dim + Dim::from(dtypes[&tid].bit_size() / 8);
-                let (buf, event) = pool_id.allocate(alloc_bytes)?;
+                let buf = pool_id.allocate(alloc_bytes)?;
                 let global_id = Buffer { pool: pool_id, buffer_id: buf };
-                self.buffer_map.insert(tid, global_id);
-                if let TensorData::Leaf { depends_on, .. } = &mut self.tensors[tid] {
-                    *depends_on = KernelId::NULL;
-                }
                 kernel_buffers.insert(global_id);
-                event_wait_list.push(event);
+                fresh_stores.push((tid, global_id));
             }
         }
         // Materialization must realize EVERY store: stores are finished
         // tensors other kernels already use as loads.
         for &tid in &stores {
-            debug_assert!(self.buffer_map.contains_key(&tid), "materialize: store tid {tid} has no buffer after realization");
+            debug_assert!(
+                self.leaf_buffer(tid).is_some() || fresh_stores.iter().any(|&(t, _)| t == tid),
+                "materialize: store tid {tid} has no buffer after realization"
+            );
         }
 
         // Build args: load buffers/variables first, then store buffers.
@@ -4770,17 +4794,29 @@ impl Runtime {
                 // buffer or pool storage; the value is bound at launch.
                 buffers.push(LaunchArg::Variable(value));
             } else {
-                buffers.push(LaunchArg::Buffer(self.buffer_map[&tid].buffer));
+                buffers.push(LaunchArg::Buffer(self.leaf_buffer(tid).expect("materialize: load without buffer").buffer_id));
             }
         }
         for &tid in &stores {
-            buffers.push(LaunchArg::Buffer(self.buffer_map[&tid].buffer));
+            buffers.push(LaunchArg::Buffer(self.leaf_buffer(tid).expect("materialize: store without buffer").buffer_id));
         }
 
         // Compile and launch (caches in kernel_map / programs)
         let (dev_prog, _timing) = self.get_or_autotune(kernel, &buffers)?;
 
         dev_id.launch(dev_prog, &buffers)?;
+
+        // Stores are realized: fresh ones become Leafs pointing at their new
+        // buffers. Pre-existing buffered stores are already Leaf/GraphLeaf.
+        for (tid, buf) in fresh_stores {
+            let (shape_id, dtype, rc) = match self.tensors[tid] {
+                TensorData::Graph { shape_id, dtype, rc, .. }
+                | TensorData::Promoted { shape_id, dtype, rc, .. }
+                | TensorData::PendingLeaf { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
+                ref t => panic!("materialize: fresh store {tid} has unexpected variant: {t:?}"),
+            };
+            self.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer_id: buf, rc };
+        }
 
         // The kernel has consumed its loads. Release the load references so
         // dead load tensors and their buffers are reclaimed. Buffers still in

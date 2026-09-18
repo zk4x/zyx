@@ -296,8 +296,8 @@ impl BeamSearch {
         if seeds.is_empty() {
             return Err(ZyxError::kernel_error("autotune: no seeds".into()));
         }
-        let dev = seeds[0].device_id;
-        if seeds.iter().any(|seed| seed.device_id != dev) {
+        let dev = seeds[0].dev;
+        if seeds.iter().any(|seed| seed.dev != dev) {
             return Err(ZyxError::kernel_error("autotune: seeds span multiple devices".into()));
         }
 

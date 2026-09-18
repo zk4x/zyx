@@ -75,9 +75,8 @@ impl Kernel {
     /// kernel.store(out, doubled, gidx);
     /// ```
     pub fn new(dev: Dev) -> Self {
-        let device_id = crate::RT.lock().resolve_dev(dev);
-        let dev_info = Some(device_id.info());
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, dev_info, shape_cache: Map::default() }
+        let dev_info = Some(dev.info());
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev, dev_info, shape_cache: Map::default() }
     }
 
     /// Compile the kernel. Consumes `self`.
@@ -162,14 +161,14 @@ impl Kernel {
 
         // Get shapes and dtypes for inputs and outputs
 
-        let device_id = if self.device_id == Dev::Auto {
+        let device_id = if self.dev == Dev::Auto {
             Dev::all().into_iter().next().expect("no devices available")
         } else {
-            self.device_id
+            self.dev
         };
         // Bind the resolved device so codegen can read dev_info
         // (mirrors Kernel::new; from_device_id placeholders carry None).
-        self.device_id = device_id;
+        self.dev = device_id;
         self.dev_info = Some(device_id.info());
         if crate::debug_mask().ir() {
             self.debug();
@@ -1232,7 +1231,7 @@ impl Runtime {
 
         // Put to tensors. Each output becomes a **Leaf**: the launched buffer
         // is its backing store (set in buffer_map), no kernel is created.
-        // Consumers mint their own load kernels (Runtime::leaf_load), so no
+        // Consumers mint their own load kernels (Runtime::new_kernel_from_leaf), so no
         // NULL op ids ever leak into eager ops built on the result.
         let mut tensors = Vec::new();
         for ((dtype, buffer_id), shape) in output_dtypes.iter().copied().zip(output_bufs).zip(shapes) {

@@ -68,7 +68,6 @@ pub struct OpenCLDevice {
     tx: Sender<Command>,
     dev_info: Arc<DeviceInfo>,
     memory_pool: Pool,
-    pub(crate) device_idx: usize,
 }
 
 #[derive(Debug)]
@@ -874,7 +873,7 @@ fn ensure_device_table(config: &OpenCLConfig, debug_dev: bool) -> Result<Vec<Arc
         let tx = guard.tx.clone();
         let dev_info = guard.dev_info.clone();
         drop(guard);
-        devs.push(Arc::new(Mutex::new(OpenCLDevice { tx, dev_info: Arc::new(dev_info), memory_pool: pool_id, device_idx: idx })));
+        devs.push(Arc::new(Mutex::new(OpenCLDevice { tx, dev_info: Arc::new(dev_info), memory_pool: pool_id })));
     }
     Ok(devs)
 }

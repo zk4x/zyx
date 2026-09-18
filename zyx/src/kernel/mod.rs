@@ -203,7 +203,7 @@ pub struct Kernel {
     /// Tail of the operation linked list.
     pub(crate) tail: OpId,
     /// Target device for compilation.
-    pub(crate) device_id: Dev,
+    pub(crate) dev: Dev,
     /// Snapshot of the device's [`DeviceInfo`] taken when a device is bound —
     /// the warp size and limits live here so kernel passes never need to lock
     /// the RT (it is not reentrant). Shared via `Arc` so kernel clones
@@ -260,7 +260,7 @@ pub enum MemLayout {
 
 impl PartialEq for Kernel {
     fn eq(&self, other: &Self) -> bool {
-        self.ops == other.ops && self.head == other.head && self.device_id == other.device_id
+        self.ops == other.ops && self.head == other.head && self.dev == other.dev
     }
 }
 
@@ -287,7 +287,7 @@ impl Hash for Kernel {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.head.hash(state);
         self.ops.hash(state);
-        self.device_id.hash(state);
+        self.dev.hash(state);
     }
 }
 
@@ -302,8 +302,8 @@ impl Kernel {
     /// Takes the device info as an argument and never locks the RT: this
     /// constructor runs while callers already hold the RT lock (it is not
     /// reentrant). Pass `None` for late-bound placeholders (`Dev::Auto`).
-    pub(crate) fn from_device_id(device_id: Dev, dev_info: Option<Arc<DeviceInfo>>) -> Self {
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, dev_info, shape_cache: Map::default() }
+    pub(crate) fn from_device_id(dev: Dev, dev_info: Option<Arc<DeviceInfo>>) -> Self {
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev, dev_info, shape_cache: Map::default() }
     }
 
     /// The device info snapshot bound to this kernel.
@@ -1715,7 +1715,7 @@ impl Kernel {
         }
 
         // Build new kernel by cloning root's ops (in topo order) with remapped OpIds
-        let mut new_kernel = Kernel::from_device_id(self.device_id, self.dev_info.clone());
+        let mut new_kernel = Kernel::from_device_id(self.dev, self.dev_info.clone());
         let mut remap: Map<OpId, OpId> =
             Map::with_capacity_and_hasher(root_required.len(), core::hash::BuildHasherDefault::default());
         let mut new_root_op = OpId::NULL;
