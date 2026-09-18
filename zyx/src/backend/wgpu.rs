@@ -418,35 +418,59 @@ impl WGPUMemoryPool {
     pub fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
         match src {
             Pool::Host => {
-                let data = {
-                    let src_pool = super::host::pool();
-                    let src_pool = super::lock(src, &src_pool);
-                    src_pool.get_buffer(src_buf).to_vec()
-                };
-                self.write_bytes(&data, dst_buf);
+                let src_pool = super::host::pool();
+                let src_pool = super::lock(src, &src_pool);
+                let data = src_pool.get_buffer(src_buf);
+                self.write_bytes(data, dst_buf);
                 Ok(())
             }
             Pool::Disk => {
-                let data = {
+                // Stage through a HOST-POOL buffer (never a Vec: tensors can
+                // be tens of GB).
+                let bytes = {
+                    let src_pool = super::disk::pool();
+                    let src_pool = super::lock(src, &src_pool);
+                    let bytes = src_pool.buffer_bytes(src_buf);
+                    bytes
+                };
+                let tmp = Pool::Host.allocate(bytes)?;
+                {
+                    let host_pool = super::host::pool();
+                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
                     let src_pool = super::disk::pool();
                     let mut src_pool = super::lock(src, &src_pool);
-                    let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src_buf) as usize];
-                    let staged = src_pool.pool_to_host(src_buf, &mut byte_slice);
-                    staged.map(|()| byte_slice)
-                }?;
-                self.write_bytes(&data, dst_buf);
-                Ok(())
+                    src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) })?;
+                }
+                let result = {
+                    let host_pool = super::host::pool();
+                    let host_pool = super::lock(Pool::Host, &host_pool);
+                    self.write_bytes(host_pool.get_buffer(tmp), dst_buf);
+                    Pool::Host.release(tmp);
+                    Ok(())
+                };
+                result
             }
             Pool::Cuda(_) => todo!("cross-pool copy from CUDA to WGPU"),
             Pool::OpenCL(_) => todo!("cross-pool copy from OpenCL to WGPU"),
             Pool::Vulkan(_) | Pool::Dummy => todo!("cross-pool copy from {src:?} to WGPU"),
             Pool::WGPU(_) => {
-                // Same-pool copy: stage through host (map + read, then
-                // write_buffer). The mod.rs dispatch flushes the pending
-                // window first, so all launches writing src are submitted.
-                let mut data = vec![0u8; self.buffers[src_buf].bytes as usize];
-                self.pool_to_host(src_buf, &mut data)?;
-                self.write_bytes(&data, dst_buf);
+                // Same-pool copy: stage through a HOST-POOL buffer (never a
+                // Vec: tensors can be tens of GB). The mod.rs dispatch
+                // flushes the pending window first, so all launches writing
+                // src are submitted.
+                let bytes = self.buffers[src_buf].bytes;
+                let tmp = Pool::Host.allocate(bytes)?;
+                {
+                    let host_pool = super::host::pool();
+                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
+                    self.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) })?;
+                }
+                {
+                    let host_pool = super::host::pool();
+                    let host_pool = super::lock(Pool::Host, &host_pool);
+                    self.write_bytes(host_pool.get_buffer(tmp), dst_buf);
+                }
+                Pool::Host.release(tmp);
                 Ok(())
             }
             #[cfg(feature = "tenstorrent")]

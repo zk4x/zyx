@@ -571,7 +571,28 @@ impl Pool {
     /// as no path locks them in the opposite order.
     pub fn pool_to_pool(self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
         match self {
-            Pool::Host => lock(self, &host::pool()).pool_to_pool(src, src_buf, dst_buf),
+            Pool::Host => {
+                // Device->host: DMA straight into the destination buffer's
+                // memory — NO staging copy (staging would duplicate the whole
+                // tensor, which can be tens of GB). The host pool lock must
+                // also NOT be held while waiting on the device worker's
+                // reply: the worker takes the host lock at its sync point
+                // (sweep_dead releasing retained foreign host buffers), and
+                // holding it here deadlocks. Safe to write the dst buffer
+                // lock-free because plan execution is the single executor:
+                // the dst buffer is freshly allocated with its rc held by
+                // the plan, and no one touches it until the copy replies.
+                let Pool::Cuda(id) = src else {
+                    return lock(self, &host::pool()).pool_to_pool(src, src_buf, dst_buf);
+                };
+                let pool = host::pool();
+                let (dst_ptr, bytes) = {
+                    let mut p = lock(self, &pool);
+                    (p.buffer_ptr_mut(dst_buf), p.get_buffer(dst_buf).len())
+                };
+                let src_pool = cuda::pool(id)?;
+                lock(src, &src_pool).pool_to_host_ptr(src_buf, dst_ptr, bytes as i64)
+            }
             Pool::Disk => todo!("copies into disk pool"),
             Pool::Cuda(id) => lock(self, &cuda::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
             Pool::OpenCL(id) => lock(self, &opencl::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
@@ -586,9 +607,28 @@ impl Pool {
             Pool::Dummy => lock(self, &dummy::pool()?).pool_to_pool(src, src_buf, dst_buf),
         }
     }
+
+    /// Raw pointer to a pool buffer's memory, for writing staging data
+    /// directly into a buffer (host-pool staging buffers only).
+    pub fn buffer_ptr_mut(self, buffer_id: PoolBufferId) -> *mut u8 {
+        match self {
+            Pool::Host => lock(self, &host::pool()).buffer_ptr_mut(buffer_id),
+            // Device buffers are not CPU-addressable; staging writes go
+            // through Pool::Host buffers only.
+            Pool::Disk => todo!("disk buffers have no staging pointer"),
+            Pool::Cuda(_) => todo!("cuda buffers have no staging pointer"),
+            Pool::OpenCL(_) => todo!("opencl buffers have no staging pointer"),
+            Pool::Vulkan(_) => todo!("vulkan buffers have no staging pointer"),
+            #[cfg(feature = "tenstorrent")]
+            Pool::TT(_) => todo!("TT buffers have no staging pointer"),
+            #[cfg(feature = "wgpu")]
+            Pool::WGPU(_) => todo!("wgpu buffers have no staging pointer"),
+            Pool::Dummy => todo!("dummy buffers have no staging pointer"),
+        }
+    }
 }
 
-/// Process-wide backend config, parsed once from `$XDG_CONFIG_HOME/zyx/config.json`
+    /// Process-wide backend config, parsed once from `$XDG_CONFIG_HOME/zyx/config.json`
 /// (else `~/.config/zyx/config.json`) on first access. Missing or unparsable
 /// file means defaults.
 pub(crate) fn config() -> &'static Config {

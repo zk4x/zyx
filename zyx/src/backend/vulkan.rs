@@ -557,28 +557,41 @@ impl VulkanMemoryPool {
                 Ok(())
             }
             Pool::Disk => {
-                let src_pool = super::disk::pool();
-                let mut src_pool = super::lock(src, &src_pool);
-                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src_buf) as usize];
-                let staged = src_pool.pool_to_host(src_buf, &mut byte_slice);
-                drop(src_pool);
-                match staged {
-                    Ok(()) => {
-                        src.release(src_buf);
-                        let tmp = Pool::Host.insert_host(byte_slice.into_boxed_slice());
-                        let host_pool = super::host::pool();
-                        let host_pool = super::lock(Pool::Host, &host_pool);
-                        let bytes = host_pool.get_buffer(tmp).len();
-                        let src_ptr = host_pool.get_buffer(tmp).as_ptr();
-                        drop(host_pool);
-                        self.tx.send(VulkanCommand::Copy { src_pool: Pool::Host, src_buf: tmp, src_ptr, bytes, dst_buf }).unwrap();
-                        Ok(())
-                    }
-                    Err(err) => {
-                        src.release(src_buf);
-                        Err(err)
+                // Stage through a HOST-POOL buffer (never a Vec: tensors can
+                // be tens of GB): the disk mapping is read into it, then the
+                // copy proceeds like a host source; the worker releases the
+                // staging buffer on completion. The disk buffer is only read
+                // here, synchronously — its retain is balanced immediately.
+                let bytes = {
+                    let src_pool = super::disk::pool();
+                    let src_pool = super::lock(src, &src_pool);
+                    let bytes = src_pool.buffer_bytes(src_buf);
+                    bytes
+                };
+                let tmp = Pool::Host.allocate(bytes)?;
+                {
+                    let host_pool = super::host::pool();
+                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
+                    let src_pool = super::disk::pool();
+                    let mut src_pool = super::lock(src, &src_pool);
+                    let staged = src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
+                    drop(src_pool);
+                    match staged {
+                        Ok(()) => src.release(src_buf),
+                        Err(err) => {
+                            src.release(src_buf);
+                            Pool::Host.release(tmp);
+                            return Err(err);
+                        }
                     }
                 }
+                let (bytes, src_ptr) = {
+                    let host_pool = super::host::pool();
+                    let host_pool = super::lock(Pool::Host, &host_pool);
+                    (host_pool.get_buffer(tmp).len(), host_pool.get_buffer(tmp).as_ptr())
+                };
+                self.tx.send(VulkanCommand::Copy { src_pool: Pool::Host, src_buf: tmp, src_ptr, bytes, dst_buf }).unwrap();
+                Ok(())
             }
             Pool::Cuda(_) => todo!("cross-pool copy from CUDA to Vulkan"),
             Pool::OpenCL(_) => todo!("cross-pool copy from OpenCL to Vulkan"),

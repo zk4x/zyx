@@ -909,6 +909,10 @@ fn spawn_worker(
                         continue;
                     }
                     let src = &buffers[src];
+                    // Never read past the device buffer's allocation (the
+                    // requested length comes from the dst side, which may
+                    // carry a larger padded allocation).
+                    let bytes = bytes.min(src.bytes);
                     if let Err(err) = unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes as usize, streams[0].stream) }
                         .check(ErrorStatus::MemoryCopyP2H)
                     {
@@ -1387,6 +1391,16 @@ impl CUDAMemoryPool {
         reply_rx.recv().unwrap()
     }
 
+    /// Direct device->host DMA into caller-owned memory — NO staging buffer.
+    /// The caller must keep the destination allocation alive (and untouched)
+    /// until the reply arrives.
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn pool_to_host_ptr(&mut self, src: PoolBufferId, dst: *mut u8, bytes: i64) -> Result<(), BackendError> {
+        let (reply, reply_rx) = channel();
+        self.tx.send(CUDACommand::PoolToHost { src, dst: dst.cast(), bytes, reply }).unwrap();
+        reply_rx.recv().unwrap()
+    }
+
     /// Fire-and-forget copy into this pool (dst-owned). The source pool
     /// buffer is retained here and released by this device's worker once the
     /// copy completes — see `flush_window` / `sweep_dead`.
@@ -1406,33 +1420,40 @@ impl CUDAMemoryPool {
                 Ok(())
             }
             Pool::Disk => {
-                // Stage: read the file slice into a temporary host-pool buffer
-                // (rc 1) and copy from it like a host source; the worker
-                // releases the temp buffer on completion. The disk buffer is
-                // only read here, synchronously — its retain is balanced
-                // immediately.
-                let src_pool = super::disk::pool();
-                let mut src_pool = super::lock(src, &src_pool);
-                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src_buf) as usize];
-                let staged = src_pool.pool_to_host(src_buf, &mut byte_slice);
-                drop(src_pool);
-                match staged {
-                    Ok(()) => {
-                        src.release(src_buf);
-                        let tmp = Pool::Host.insert_host(byte_slice.into_boxed_slice());
-                        let host_pool = super::host::pool();
-                        let host_pool = super::lock(Pool::Host, &host_pool);
-                        let bytes = host_pool.get_buffer(tmp).len() as Dim;
-                        let src_ptr = host_pool.get_buffer(tmp).as_ptr() as u64;
-                        drop(host_pool);
-                        self.tx.send(CUDACommand::Copy { src_pool: Pool::Host, src_buf: tmp, src_ptr, bytes: Some(bytes), src_ctx: None, src_events: Vec::new(), dst_buf }).unwrap();
-                        Ok(())
-                    }
-                    Err(err) => {
-                        src.release(src_buf);
-                        Err(err)
+                // Stage through a HOST-POOL buffer (never a Vec: tensors can
+                // be tens of GB): the disk mapping is read into it, then the
+                // copy proceeds like a host source; the worker releases the
+                // staging buffer on completion. The disk buffer is only read
+                // here, synchronously — its retain is balanced immediately.
+                let bytes = {
+                    let src_pool = super::disk::pool();
+                    let mut src_pool = super::lock(src, &src_pool);
+                    src_pool.buffer_bytes(src_buf)
+                };
+                let tmp = Pool::Host.allocate(bytes)?;
+                {
+                    let host_pool = super::host::pool();
+                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
+                    let src_pool = super::disk::pool();
+                    let mut src_pool = super::lock(src, &src_pool);
+                    let staged = src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
+                    drop(src_pool);
+                    match staged {
+                        Ok(()) => src.release(src_buf),
+                        Err(err) => {
+                            src.release(src_buf);
+                            Pool::Host.release(tmp);
+                            return Err(err);
+                        }
                     }
                 }
+                let (bytes, src_ptr) = {
+                    let host_pool = super::host::pool();
+                    let host_pool = super::lock(Pool::Host, &host_pool);
+                    (host_pool.get_buffer(tmp).len() as Dim, host_pool.get_buffer(tmp).as_ptr() as u64)
+                };
+                self.tx.send(CUDACommand::Copy { src_pool: Pool::Host, src_buf: tmp, src_ptr, bytes: Some(bytes), src_ctx: None, src_events: Vec::new(), dst_buf }).unwrap();
+                Ok(())
             }
             Pool::Cuda(src_id) => {
                 // Dst-owned device-to-device copy (p2p writes beat reads): the

@@ -2424,7 +2424,13 @@ impl Runtime {
                                     let buf = pool_id.allocate(bytes_alloc)?;
                                     fresh.push(buf);
                                     if !is_mut {
-                                        let one: Vec<u8> = match dtype {
+                                        // Fill with dtype ONE, element by
+                                        // element, directly into a HOST-POOL
+                                        // staging buffer — never a Vec (tensors
+                                        // can be tens of GB). Doubling fill:
+                                        // write the pattern, then repeatedly
+                                        // copy the filled prefix over itself.
+                                        let elem: Vec<u8> = match dtype {
                                             DType::BF16 => bf16::ONE.to_le_bytes().to_vec(),
                                             DType::F16 => f16::ONE.to_le_bytes().to_vec(),
                                             DType::F32 => 1f32.to_le_bytes().to_vec(),
@@ -2436,8 +2442,21 @@ impl Runtime {
                                             DType::U32 | DType::I32 => 1u32.to_le_bytes().to_vec(),
                                             DType::U64 | DType::I64 => 1i64.to_le_bytes().to_vec(),
                                         };
-                                        let fill = one.repeat(len as usize);
-                                        let host_buf = Pool::Host.insert_host(fill.into());
+                                        let one_len = elem.len();
+                                        let fill_bytes = (dtype.bit_size() as usize / 8) * len as usize;
+                                        let host_buf = Pool::Host.allocate(fill_bytes as Dim)?;
+                                        {
+                                            let dst = Pool::Host.buffer_ptr_mut(host_buf);
+                                            unsafe {
+                                                std::ptr::copy_nonoverlapping(elem.as_ptr(), dst, one_len);
+                                                let mut filled = one_len;
+                                                while filled < fill_bytes {
+                                                    let chunk = filled.min(fill_bytes - filled);
+                                                    std::ptr::copy_nonoverlapping(dst, dst.add(filled), chunk);
+                                                    filled += chunk;
+                                                }
+                                            }
+                                        }
                                         pool_id.pool_to_pool(Pool::Host, host_buf, buf)?;
                                         Pool::Host.release(host_buf);
                                     }

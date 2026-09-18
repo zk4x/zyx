@@ -266,10 +266,9 @@ fn devices_with(config: &TTConfig, debug_dev: bool) -> Result<&'static Vec<Arc<M
     }
     let devs = ensure_device_table(config, debug_dev)?;
     let _ = TT_DEVICES.set(devs);
-    TT_DEVICES.get().ok_or_else(|| BackendError {
-        status: ErrorStatus::Initialization,
-        context: "TT device init failed".into(),
-    })
+    TT_DEVICES
+        .get()
+        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "TT device init failed".into() })
 }
 
 fn devices() -> Result<&'static Vec<Arc<Mutex<TTDevice>>>, BackendError> {
@@ -338,10 +337,6 @@ fn create_temp_shm(size: u64) -> Result<(CString, *mut u8, u64), BackendError> {
 }
 
 impl TTMemoryPool {
-    pub fn deinitialize(&mut self) {
-        let _ = self.runtime.lock().unwrap().exit();
-    }
-
     pub fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
@@ -431,11 +426,11 @@ impl TTMemoryPool {
             Pool::Host => {
                 let src_pool = super::host::pool();
                 let src_pool = super::lock(src, &src_pool);
-                let data = src_pool.get_buffer(src_buf).to_vec();
-                drop(src_pool);
-                self.host_to_pool(&data, dst_buf)
+                let data = src_pool.get_buffer(src_buf);
+                self.host_to_pool(data, dst_buf)
             }
-            // No P2P path in the tt-runtime shim yet — stage through host.
+            // No P2P path in the tt-runtime shim yet — stage through a
+            // HOST-POOL buffer (never a Vec: tensors can be tens of GB).
             _ => {
                 let len = {
                     let dst_ref = self.buffers.get(dst_buf).ok_or_else(|| BackendError {
@@ -444,9 +439,19 @@ impl TTMemoryPool {
                     })?;
                     dst_ref.size as usize
                 };
-                let mut staging = vec![0u8; len];
-                src.pool_to_host(src_buf, &mut staging)?;
-                self.host_to_pool(&staging, dst_buf)
+                let tmp = Pool::Host.allocate(len as _)?;
+                {
+                    let host_pool = super::host::pool();
+                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
+                    src.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, len) })?;
+                }
+                let result = {
+                    let host_pool = super::host::pool();
+                    let host_pool = super::lock(Pool::Host, &host_pool);
+                    self.host_to_pool(host_pool.get_buffer(tmp), dst_buf)
+                };
+                Pool::Host.release(tmp);
+                result
             }
         }
     }
@@ -852,8 +857,6 @@ pub struct TTDevice {
 }
 
 impl TTDevice {
-    pub fn deinitialize(&mut self) {}
-
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.device_info.clone()
     }
@@ -998,12 +1001,7 @@ impl TTDevice {
         }
     }
 
-    pub fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        pool_handle: Pool,
-        args: &[LaunchArg],
-    ) -> Result<(), BackendError> {
+    pub fn launch(&mut self, program_id: DeviceProgramId, pool_handle: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
         debug_assert_eq!(pool_handle, self.memory_pool);
         let Pool::TT(id) = pool_handle else {
             unreachable!("TT launch with non-TT pool")

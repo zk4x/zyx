@@ -1175,11 +1175,18 @@ impl Runtime {
             ));
         }
 
-        let mut buf = vec![0u8; alloc_bytes].into_boxed_slice();
-        let src = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), bytes) };
-        buf[..bytes].copy_from_slice(src);
-
-        let buffer_id = Buffer { pool: Pool::Host, buffer_id: Pool::Host.insert_host(buf) };
+        // Allocate the buffer in the host pool and write the data straight
+        // into its memory — no intermediate Vec, no zero-then-copy double
+        // pass. Only the small padding tail (trash element) is zeroed.
+        let buf_id = Pool::Host.allocate(alloc_bytes as Dim)?;
+        let buffer_id = Buffer { pool: Pool::Host, buffer_id: buf_id };
+        {
+            let dst = Pool::Host.buffer_ptr_mut(buf_id);
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr().cast::<u8>(), dst, bytes);
+                std::ptr::write_bytes(dst.add(bytes), 0, alloc_bytes - bytes);
+            }
+        }
 
         // The caller keeps its own handle on `shape`; the Leaf stores the
         // interned ExprId (append-only slab, no retain needed).

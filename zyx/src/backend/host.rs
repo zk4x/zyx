@@ -97,18 +97,6 @@ impl HostMemoryPool {
         }
     }
 
-    /// Memcpy into a host-pool buffer. Synchronous — the host pool never
-    /// defers work, so a plain borrow is safe.
-    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId) -> Result<(), BackendError> {
-        let buffer = self
-            .buffers
-            .get_mut(dst)
-            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
-        let len = src.len().min(buffer.data.len());
-        buffer.data[..len].copy_from_slice(&src[..len]);
-        Ok(())
-    }
-
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
         let buffer = &self.buffers[src];
         let len = dst.len().min(buffer.data.len());
@@ -120,38 +108,42 @@ impl HostMemoryPool {
         match src {
             Pool::Host => {
                 let len = self.buffers[src_buf].data.len().min(self.buffers[dst_buf].data.len());
-                let src_bytes = self.buffers[src_buf].data[..len].to_vec();
-                self.buffers[dst_buf].data[..len].copy_from_slice(&src_bytes);
+                // Disjoint buffers: copy via raw pointers — no intermediate Vec.
+                let src_ptr = self.buffers[src_buf].data.as_ptr();
+                let dst_ptr = self.buffers[dst_buf].data.as_mut_ptr();
+                unsafe { std::ptr::copy(src_ptr, dst_ptr, len) };
                 Ok(())
             }
             Pool::Disk => {
+                // File mapping read straight into the destination buffer —
+                // no staging copy (tensors can be tens of GB). The disk
+                // buffer may be smaller than the dst allocation (host
+                // buffers carry an extra trash element): copy the overlap.
                 let src_pool = super::disk::pool();
                 let mut src_pool = super::lock(src, &src_pool);
-                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src_buf) as usize];
-                src_pool.pool_to_host(src_buf, &mut byte_slice)?;
+                let bytes = (src_pool.buffer_bytes(src_buf) as usize).min(self.buffers[dst_buf].data.len());
+                let dst_ptr = self.buffer_ptr_mut(dst_buf);
+                src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes) })?;
                 drop(src_pool);
-                self.host_to_pool(&byte_slice, dst_buf)
+                Ok(())
             }
-            // CUDA -> host: download the device buffer into host bytes,
-            // then memcpy into the host buffer.
-            Pool::Cuda(id) => {
-                let src_pool = super::cuda::pool(id)?;
-                let mut src_pool = super::lock(src, &src_pool);
-                let mut byte_slice = vec![0u8; self.buffers[dst_buf].data.len()];
-                src_pool.pool_to_host(src_buf, &mut byte_slice)?;
-                drop(src_pool);
-                self.host_to_pool(&byte_slice, dst_buf)
-            }
-            // TT -> host: read the device DRAM buffer into host bytes via the
-            // runtime shim (read_buf), then memcpy into the host buffer.
+            // CUDA -> host is handled by `Pool::pool_to_pool` directly: the
+            // device worker DMAs into the destination buffer's memory (no
+            // staging copy — tensors can be tens of GB) and the host pool
+            // lock is not held during the wait. It must never reach here.
+            Pool::Cuda(_) => unreachable!("cuda pool_to_pool into host routed to direct DMA in Pool::pool_to_pool"),
+            // TT -> host: read the device DRAM buffer straight into the
+            // destination buffer via the runtime shim (read_buf) — no
+            // staging copy.
             #[cfg(feature = "tenstorrent")]
             Pool::TT(id) => {
                 let src_pool = super::tenstorrent::pool(id)?;
                 let mut src_pool = super::lock(src, &src_pool);
-                let mut byte_slice = vec![0u8; src_pool.buffers[src_buf].size as usize];
-                src_pool.pool_to_host(src_buf, &mut byte_slice)?;
+                let bytes = (src_pool.buffers[src_buf].size as usize).min(self.buffers[dst_buf].data.len());
+                let dst_ptr = self.buffer_ptr_mut(dst_buf);
+                src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes) })?;
                 drop(src_pool);
-                self.host_to_pool(&byte_slice, dst_buf)
+                Ok(())
             }
             Pool::OpenCL(_) | Pool::Vulkan(_) | Pool::Dummy => todo!("host pool_to_pool from {src:?}"),
             #[cfg(feature = "wgpu")]
