@@ -32,7 +32,7 @@
 - [ ] runtime
   - [x] fix event handling
   - [x] node deallocation after realization
-  - [x] clean up completed transfer events to free host staging buffers early
+  - [x] staging buffers fully removed — all pool_to_pool copies go directly into the destination buffer (file mapping read straight into dst, device DMA into dst host buffer, `Pool::Host` as the only staging pool); supersedes "clean up completed transfer events to free host staging buffers early" (transfer events were also removed — worker owns foreign-buffer lifetime)
   - [x] when promoting to graph, promote the whole kernel without materializing
   - [x] add contiguous op - it calls add_store and forces kernel fusion split, in egraph this works the same
   - [ ] add user ability to have custom assembly, cuda, spirv, ptx, tenstorrent, etc. kernels
@@ -202,31 +202,38 @@
   - [ ] llama
   - [ ] phi LLM
 
-- [ ] device/pool global handles (device-layer rewrite, RT/slab/TensorId/tape unchanged)
-  - [ ] add Copy `Pool` enum (Host, Disk(u16), Cuda(u16), TT(u16), ...) as the only way to access memory pools
-  - [ ] add Copy `Dev` enum as the only way to access devices, with `Dev::pool() -> Pool`
-  - [ ] wrap each concrete pool (HostMemoryPool, DiskMemoryPool, ...) in its own global `Arc<Mutex<>>`, one per ordinal (per-GPU separate globals), in per-variant `OnceLock` tables preserving arbitrary device counts
-  - [ ] lazy init on `Pool::alloc` / `Dev::compile` (no uninit access path, just initialize); `Dev::launch` and `Pool::copy`/`free` assume already-initialized devices
-  - [ ] device API (alloc, free, copy, compile, launch) as the only global lock takers; per-op tensor path touches no globals
-  - [ ] `pool_to_pool(dst, src)` lock order: dst then src
-  - [ ] change `BufferId` to hold `pool: Pool` + buffer id, stays `Copy`; `buffer_map` unchanged
-  - [ ] remove `MemoryPool` and `Device` dispatch enums, call concrete pool/device methods directly on resolved globals
-  - [ ] land always-compiled backends first, feature-gated (wgpu, tenstorrent) after
-- [ ] symbolic dims as thread-local hashconsed values (no rc, no reclamation, append-only table)
-  - [ ] add `Sym` enum (`Const(Constant)` inline, `Expr` for composite dims) as the per-dim slot type
-  - [ ] thread-local hashcons table for symbolic dim expressions, plain HashMap, no atomics
-  - [ ] debug-only thread-ownership guard on symbolic id resolution (wrong-thread id collision check)
+- [x] device/pool global handles (device-layer rewrite, RT/slab/TensorId/tape unchanged) — DONE (commits `1c9ef7bb` separate pool locks, `362f344f` device API refactor, `3343d4ea` backend rewrite)
+  - [x] add Copy `Pool` enum (Host, Disk(u16), Cuda(u16), TT(u16), ...) as the only way to access memory pools
+  - [x] add Copy `Dev` enum as the only way to access devices, with `Dev::pool() -> Pool`
+  - [x] wrap each concrete pool (HostMemoryPool, DiskMemoryPool, ...) in its own global `Arc<Mutex<>>`, one per ordinal (per-GPU separate globals), in per-variant `OnceLock` tables preserving arbitrary device counts
+  - [x] lazy init on `Pool::alloc` / `Dev::compile` (no uninit access path, just initialize); `Dev::launch` and `Pool::copy`/`free` assume already-initialized devices
+  - [x] device API (alloc, free, copy, compile, launch) as the only global lock takers; per-op tensor path touches no globals
+  - [x] `pool_to_pool(dst, src)` lock order: dst then src; host pool lock is outermost — never held while blocking on a device worker
+  - [x] change `BufferId` to hold `pool: Pool` + buffer id, stays `Copy`; `buffer_map` unchanged
+  - [x] remove `MemoryPool` and `Device` dispatch enums, call concrete pool/device methods directly on resolved globals
+  - [x] land always-compiled backends first, feature-gated (wgpu, tenstorrent) after
+- [x] symbolic dims — SUPERSEDED by a different design (`db19ea1e` hashconsed symbolic): instead of thread-local `Sym` slots, a runtime-owned **append-only `ExprTable`** interns every symbolic expression into a canonical `ExprId` (structural hashconsing, stable forever); `TensorData::Symbolic { expr, rc }` carries rc and holds no edges, so retain/release touch only the tensor's own rc
+  - [x] hashconsed interning of symbolic expressions (Const/Variable/Cast/Unary/Binary/Stack2–5) in an append-only slab
+  - [x] `Symbolic` tensors hold no edges — lifecycle is trivial
   - [ ] serialize symbolic expressions by value, never by id (disk backend, AOT, py bindings)
-- [ ] TensorData rewrite for hashconsed symbolics
-  - [ ] rewrite `TensorData` so shapes reference `Sym` slots (const dims inline, zero alloc, zero lock)
-  - [ ] keep compute tensors on per-thread slab with u32 ids and iterative rc (exact reclamation)
-- [ ] graph ownership via Rc (kills ambient RT for graph paths)
+- [x] TensorData rewrite for hashconsed symbolics — DONE, with one deviation: shapes reference interned `shape_id: ExprId` (consts interned in the ExprTable rather than inline per-dim slots); compute tensors live on the (process-global, not yet per-thread) slab with u32 ids and iterative rc (exact reclamation)
+- [ ] graph ownership via Rc (kills ambient RT for graph paths) — NOT started; graphs still live in the RT slab, referenced by `graph_id`, and the tape resolves through ambient RT
   - [ ] `TensorData::Graph(Rc<RefCell<Graph>>)` so `x + y` on two graph tensors resolves the shared graph from the operands (`Rc::ptr_eq`, else error)
   - [ ] mixed eager/graph binary ops promote the eager operand into the graph found on the other operand
   - [ ] `gradient` hangs off the graph itself (it already lives in class space); tape becomes a thin borrow of the graph from a tensor
   - [ ] one-directional Rc rule: graph never owns `Graph`-variant tensors back (leaves stored as non-graph variants only)
   - [ ] `RefCell` borrow discipline: realize is the only mutation while pushes are outstanding; debug_assert the contract
   - [ ] decide Drop-driven kernel materialization lock order, or keep explicit teardown like the current death path
+- [ ] tape: registered-state realize with verification (self-registration + checked explicitness)
+  - [ ] `Tape::with_outputs(&net, &optim)` as the (only) way to construct a tape; modules and optimizers self-register their persistent tensors with the tape at construction/`update`
+  - [ ] `tape.output(&loss)` materializes and returns an output — grads themselves are NEVER realized (they are graph intermediates consumed by `update` in-graph; strictly lazier than jax `value_and_grad`)
+  - [ ] `realize(...)` verification, asymmetric: every internally-registered tensor must be covered by the user-passed set (missing → loud error naming the owner, e.g. "momentum state for param X unrealized"); passed-but-unregistered args are fine (the registered set is a floor, not an equality)
+  - [ ] registrations are weak: they die with the tensor's rc via the existing death paths (no stale entries, no artificial lifetime extension)
+  - [ ] registration ties to the `update` call, not to `gradient` — forward+backward-only flows (gradient accumulation, eval-with-grad) register nothing and never trip the check
+  - [ ] jax/torch comparison: neither enforces this (jax drops opt_state silently; torch moves the ritual to optimizer construction and silently skips `grad: None` params) — zyx gets both self-registration (can't forget) and verification (convention becomes a checked invariant)
+- [ ] user-facing API polish (zyx-nn / examples)
+  - [ ] unify shape-argument types across nn constructors (`i64` in Linear vs `impl IntoIterator<Item = impl Into<Tensor>>` in LayerNorm vs array literals in reshape)
+  - [ ] training-step ergonomics ride on the registered-state tape above (no more `net.iter().chain(optim.iter()).chain([&loss])` ritual)
 - [ ] per-thread runtimes (later, after device layer)
   - [ ] per-thread Runtime (slab + kernels + rng/config as thread-locals), no cross-thread tensors
   - [ ] shared layer is only backends/devices/kernel cache behind `Arc<Mutex<>>`
