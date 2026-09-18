@@ -20,6 +20,7 @@ use crate::{
     DType, Map, Set, ZyxError,
     backend::{Buffer, Dev, LaunchArg, Pool, PoolBufferId, ProgramId},
     dtype::Constant,
+    expr::{Expr, ExprId},
     kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     runtime::{KernelId, Runtime, TensorData},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
@@ -1679,7 +1680,14 @@ impl Runtime {
             let shape_class = if shape_id.is_null() {
                 ClassId::NULL
             } else {
-                self.replay_symbolic_into_graph(graph_id, shape_id)
+                // replay_symbolic_into_graph takes a TensorId handle: mint a
+                // transient Symbolic handle for the shape expression and
+                // release it after the replay (the slab expr is append-only;
+                // only the handle has a refcount).
+                let shape_tid = self.tensors.push(TensorData::Symbolic { expr: shape_id, rc: 1 });
+                let shape_class = self.replay_symbolic_into_graph(graph_id, shape_tid);
+                self.release(shape_tid);
+                shape_class
             };
             let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_class);
             self.graphs[graph_id].leaf_map.insert(class_id, tid);
@@ -1698,48 +1706,32 @@ impl Runtime {
         // replay itself), and arithmetic replays as graph nodes. No buffer is
         // involved. NOTE: a tape dropped without `realize` cannot revert
         // these to their slab state — the drop arm panics loudly for them.
-        if matches!(
-            self.tensors[tid],
-            TensorData::Constant { .. }
-                | TensorData::Variable { .. }
-                | TensorData::Cast { .. }
-                | TensorData::Unary { .. }
-                | TensorData::Binary { .. }
-                | TensorData::Stack { .. }
-                | TensorData::Stack2 { .. }
-                | TensorData::Stack3 { .. }
-                | TensorData::Stack4 { .. }
-                | TensorData::Stack5 { .. }
-        ) {
-            let dtype = self.dtype(tid);
-            let rc = match self.tensors[tid] {
-                TensorData::Constant { rc, .. }
-                | TensorData::Variable { rc, .. }
-                | TensorData::Cast { rc, .. }
-                | TensorData::Unary { rc, .. }
-                | TensorData::Binary { rc, .. }
-                | TensorData::Stack { rc, .. }
-                | TensorData::Stack2 { rc, .. }
-                | TensorData::Stack3 { rc, .. }
-                | TensorData::Stack4 { rc, .. }
-                | TensorData::Stack5 { rc, .. } => rc,
+        if matches!(self.tensors[tid], TensorData::Symbolic { .. }) {
+            let (expr, dtype, rc) = match self.tensors[tid] {
+                TensorData::Symbolic { expr, rc, .. } => (expr, self.dtype(tid), rc),
                 ref t => unreachable!("{t:?}"),
             };
             // Rank: dim exprs are scalars; shape stacks are rank-1 with one
             // dim per element. A bare const is a valid 1d shape expression.
-            let rank = match &self.tensors[tid] {
-                TensorData::Stack { tensors, .. } => tensors.len(),
-                TensorData::Stack2 { .. } => 2,
-                TensorData::Stack3 { .. } => 3,
-                TensorData::Stack4 { .. } => 4,
-                TensorData::Stack5 { .. } => 5,
+            let rank = match &self.exprs[expr] {
+                Expr::Stack { exprs } => exprs.len(),
+                Expr::Stack2 { .. } => 2,
+                Expr::Stack3 { .. } => 3,
+                Expr::Stack4 { .. } => 4,
+                Expr::Stack5 { .. } => 5,
                 _ => 0,
             };
             let class_id = self.replay_symbolic_into_graph(graph_id, tid);
             let shape_id = if rank == 0 {
-                TensorId::NULL
+                ExprId::NULL
             } else {
-                self.new_constant_tensor(Constant::idx(rank as i64))
+                let stacked = self.new_constant_tensor(Constant::idx(rank as i64));
+                let shape_expr = match self.tensors[stacked] {
+                    TensorData::Symbolic { expr, .. } => expr,
+                    ref t => panic!("promote_to_graph: shape tid {stacked} is not symbolic: {t:?}"),
+                };
+                self.release(stacked);
+                shape_expr
             };
             self.graphs[graph_id].ref_count += 1;
             self.tensors[tid] = TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: rc + 1 };
@@ -1818,8 +1810,8 @@ impl Runtime {
                         // and value changes never force recompilation.
                         let var_tid = loads[load_of_param[&entry]];
                         debug_assert!(
-                            matches!(self.tensors[var_tid], TensorData::Variable { .. }),
-                            "promote_to_graph: dim variable {var_tid} is not a TensorData::Variable"
+                            matches!(self.tensors[var_tid], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. })),
+                            "promote_to_graph: dim variable {var_tid} is not a symbolic variable"
                         );
                         let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, ClassId::NULL);
                         self.graphs[graph_id].leaf_map.insert(dim_cid, var_tid);
@@ -1960,7 +1952,7 @@ impl Runtime {
                                 TensorData::Eager { .. }
                                 | TensorData::Graph { .. }
                                 | TensorData::Promoted { .. }
-                                | TensorData::Variable { .. } => KernelId::NULL,
+                                | TensorData::Symbolic { .. } => KernelId::NULL,
                                 ref t => panic!("promote_to_graph: load tid {load_tid} is not a kernel tensor: {t:?}"),
                             };
                             if !pending.is_null() {
@@ -2007,8 +1999,8 @@ impl Runtime {
                                         // and value changes never force recompilation.
                                         let var_tid = loads[load_of_param[&entry]];
                                         debug_assert!(
-                                            matches!(self.tensors[var_tid], TensorData::Variable { .. }),
-                                            "promote_to_graph: dim variable {var_tid} is not a TensorData::Variable"
+                                            matches!(self.tensors[var_tid], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. })),
+                                            "promote_to_graph: dim variable {var_tid} is not a symbolic variable"
                                         );
                                         let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, ClassId::NULL);
                                         self.graphs[graph_id].leaf_map.insert(dim_cid, var_tid);
@@ -2087,11 +2079,18 @@ impl Runtime {
                                         self.tensors[load_tid] = TensorData::Graph { class_id, graph_id, shape_id, dtype, rc };
                                     }
                                 }
-                                TensorData::Variable { .. } => {
-                                    // A scalar variable stays `Variable`: its
-                                    // value is read from the variable slots at
-                                    // launch — `leaf_map` binds the leaf class
-                                    // to this tid, nothing else to attach.
+                                TensorData::Symbolic { expr, .. } => {
+                                    let expr = *expr;
+                                    if !matches!(self.exprs[expr], Expr::Variable { .. }) {
+                                        panic!(
+                                            "promote_to_graph: symbolic load {load_tid} is not a variable: {:?}",
+                                            self.exprs[expr]
+                                        );
+                                    }
+                                    // A scalar variable stays `Symbolic`: its
+                                    // value is bound at launch — `leaf_map`
+                                    // binds the leaf class to this tid,
+                                    // nothing else to attach.
                                 }
                                 TensorData::Leaf { shape_id, dtype, rc, .. } => {
                                     // A Leaf load becomes a **Graph** leaf:
@@ -2491,14 +2490,15 @@ impl Runtime {
             // kernel (Eager state) — both carry a buffer.
             for &tid in self.graphs[graph_id].leaf_map.values() {
                 debug_assert!(
-                    self.leaf_buffer(tid).is_some() | matches!(self.tensors[tid], TensorData::Variable { .. }),
+                    self.leaf_buffer(tid).is_some()
+                        | matches!(self.tensors[tid], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. })),
                     "leaf {tid} not realized"
                 );
                 let affiliated = match self.tensors[tid] {
                     TensorData::Graph { graph_id: g, .. } | TensorData::Promoted { graph_id: g, .. } => g == graph_id,
                     // A variable leaf is a shared input: it carries no graph
                     // affiliation in its TensorData — nothing to check.
-                    TensorData::Variable { .. } => continue,
+                    TensorData::Symbolic { .. } => continue,
                     ref t => panic!("leaf {tid} is not a graph tensor: {t:?}"),
                 };
                 debug_assert!(affiliated, "leaf {tid} belongs to another graph");
@@ -2537,7 +2537,8 @@ impl Runtime {
             if has_leaf {
                 let &tid = self.graphs[graph_id].leaf_map.get(&cid).expect("class {cid:?} has Leaf node but not in leaf_map");
                 assert!(
-                    self.leaf_buffer(tid).is_some() || matches!(self.tensors[tid], TensorData::Variable { .. }),
+                    self.leaf_buffer(tid).is_some()
+                        || matches!(self.tensors[tid], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. })),
                     "leaf class {cid:?} tid {tid:?} neither in buffer_map nor a variable"
                 );
             } else {

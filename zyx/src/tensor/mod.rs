@@ -11,7 +11,7 @@ use crate::backend::DTypeCapability;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
-use crate::runtime::ResolvedDim;
+use crate::runtime::{ResolvedDim, TensorData};
 use crate::scalar::{Float, Scalar};
 use crate::scalar::{bf16, f8e4m3, f8e5m2, f16};
 use crate::shape::{Dim, UAxis, into_axes, into_axis};
@@ -619,7 +619,13 @@ impl Tensor {
         {
             let mut rt = RT.lock();
             let n: Dim = match &shape {
-                Some(s) => rt.resolve_symbolic_dims(s.id).into_iter().product(),
+                Some(s) => {
+                    let expr = match rt.tensors[s.id] {
+                        TensorData::Symbolic { expr, .. } => expr,
+                        ref t => panic!("rand: shape tid {} is not symbolic: {t:?}", s.id),
+                    };
+                    rt.resolve_symbolic_dims(expr).into_iter().product()
+                }
                 None => 1,
             };
             let shape_id = match &shape {
@@ -782,7 +788,11 @@ impl Tensor {
         }
         let shape = Tensor::stack(&dims)?;
         let mut rt = RT.lock();
-        let n: Dim = rt.resolve_symbolic_dims(shape.id).into_iter().product();
+        let shape_expr = match rt.tensors[shape.id] {
+            TensorData::Symbolic { expr, .. } => expr,
+            ref t => panic!("randint: shape tid {} is not symbolic: {t:?}", shape.id),
+        };
+        let n: Dim = rt.resolve_symbolic_dims(shape_expr).into_iter().product();
         let data: Vec<T> = (0..n).map(|_| rt.rng.range(range.clone())).collect();
         Ok(Tensor { id: rt.new_host_tensor(shape.id, data.into())? })
     }
@@ -797,7 +807,16 @@ impl Tensor {
         let shape_st = Tensor::stack(&dims).ok();
         let resolved: Vec<Dim> = {
             let rt = RT.lock();
-            shape_st.as_ref().map(|s| rt.resolve_symbolic_dims(s.id)).unwrap_or_default()
+            shape_st
+                .as_ref()
+                .map(|s| {
+                    let expr = match rt.tensors[s.id] {
+                        TensorData::Symbolic { expr, .. } => expr,
+                        ref t => panic!("kaiming_uniform: shape tid {} is not symbolic: {t:?}", s.id),
+                    };
+                    rt.resolve_symbolic_dims(expr)
+                })
+                .unwrap_or_default()
         };
         let n = T::from_i64(resolved.iter().skip(1).product::<Dim>().try_into().unwrap());
         let one = T::one();
@@ -819,7 +838,16 @@ impl Tensor {
         let shape_st = Tensor::stack(&dims).ok();
         let c = {
             let rt = RT.lock();
-            let resolved: Vec<Dim> = shape_st.as_ref().map(|s| rt.resolve_symbolic_dims(s.id)).unwrap_or_default();
+            let resolved: Vec<Dim> = shape_st
+                .as_ref()
+                .map(|s| {
+                    let expr = match rt.tensors[s.id] {
+                        TensorData::Symbolic { expr, .. } => expr,
+                        ref t => panic!("glorot_uniform: shape tid {} is not symbolic: {t:?}", s.id),
+                    };
+                    rt.resolve_symbolic_dims(expr)
+                })
+                .unwrap_or_default();
             6. / (resolved[0] + resolved.iter().skip(1).product::<Dim>()) as f32
         };
         let mut x = Tensor::uniform(dims, -1f32..1f32)?;

@@ -431,9 +431,9 @@ impl Runtime {
                 TensorData::Graph { shape_id, dtype, .. } | TensorData::Promoted { shape_id, dtype, .. } => (shape_id, dtype),
                 ref t => panic!("gradient source {tid} is not a graph tensor: {t:?}"),
             };
-            if !shape_id.is_null() {
-                self.retain(shape_id);
-            }
+            // Shape expressions live in the append-only expr slab: shared by
+            // reference, no retain needed.
+            let _ = shape_id;
             let grad_tid = match grads.get(&match self.tensors[tid] {
                 TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
                 ref t => unreachable!("{t:?}"),

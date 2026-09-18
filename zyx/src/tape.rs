@@ -49,6 +49,7 @@ use crate::{
     DType, Map, RT, Set, Tensor, ZyxError,
     backend::Buffer,
     dtype::Constant,
+    expr::Expr,
     graph::{ClassId, Graph, GraphId},
     runtime::{Runtime, TensorData},
     shape::Dim,
@@ -367,11 +368,16 @@ impl Drop for Tape {
                         rt.graphs[graph_id].ref_count -= 1;
                     }
                 }
-                TensorData::Variable { .. } => {
+                TensorData::Symbolic { expr, .. } => {
                     // A variable leaf carries no graph state in its
                     // TensorData — only its leaf edge (retain + ref_count).
                     // Drop the ref_count edge; the `leafs` loop below
                     // releases the retain.
+                    debug_assert!(
+                        matches!(rt.exprs[expr], Expr::Variable { .. }),
+                        "affiliated symbolic tensor is not a variable: {:?}",
+                        rt.exprs[expr]
+                    );
                     rt.graphs[graph_id].ref_count -= 1;
                 }
                 TensorData::Leaf { .. } => {

@@ -226,6 +226,7 @@ use crate::{
     DType, Dev, Map, Scalar, Set, ZyxError,
     backend::{Buffer, DTypeCapability, DeviceProgramId, LaunchArg, Pool, ProgramId},
     dtype::Constant,
+    expr::{Expr, ExprId},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     rng::Rng,
@@ -303,25 +304,25 @@ pub(crate) enum ResolvedDim {
     /// Concrete dimension: the expression contains no variables, so its
     /// value is a compile-time constant.
     Static(Dim),
-    /// Symbolic dimension: identified by the ROOT dim-expression tensor.
-    /// Two dims are provably equal ONLY if they are the same tensor —
-    /// different expressions over the same variable, or a variable whose
-    /// slot happens to hold the same value as a constant, are NOT proof
-    /// (the slot can change before launch).
-    Symbolic(TensorId),
+    /// Symbolic dimension: identified by the ROOT dim expression.
+    /// Two dims are provably equal ONLY if they are structurally identical
+    /// (same [`ExprId`] — hashconsing makes this canonical): different
+    /// expressions over equal-valued variables are NOT proof (a variable
+    /// node is immutable, but a later step may use a different node).
+    Symbolic(ExprId),
 }
 
 #[derive(Debug)]
 pub enum TensorData {
     Leaf {
-        shape_id: TensorId,
+        shape_id: ExprId,
         dtype: DType,
         buffer_id: Buffer,
         rc: u16,
     },
     PendingLeaf {
         depends_on: KernelId,
-        shape_id: TensorId,
+        shape_id: ExprId,
         dtype: DType,
         dev: Dev,
         rc: u16,
@@ -329,7 +330,7 @@ pub enum TensorData {
     GraphLeaf {
         class_id: ClassId,
         graph_id: GraphId,
-        shape_id: TensorId,
+        shape_id: ExprId,
         dtype: DType,
         rc: u16,
         buffer_id: Buffer,
@@ -344,7 +345,7 @@ pub enum TensorData {
     Eager {
         kernel_id: KernelId,
         op_id: OpId,
-        shape_id: TensorId,
+        shape_id: ExprId,
         dtype: DType,
         rc: u16,
     },
@@ -358,7 +359,7 @@ pub enum TensorData {
     Graph {
         class_id: ClassId,
         graph_id: GraphId,
-        shape_id: TensorId,
+        shape_id: ExprId,
         dtype: DType,
         rc: u16,
     },
@@ -374,57 +375,19 @@ pub enum TensorData {
         op_id: OpId,
         class_id: ClassId,
         graph_id: GraphId,
-        shape_id: TensorId,
+        shape_id: ExprId,
         dtype: DType,
         rc: u16,
     },
-    // Baked into kernel
-    Constant {
-        value: Constant,
-        rc: u16,
-    },
-    // Kernel argument
-    Variable {
-        value: Constant,
-        rc: u16,
-    },
-    // Symbolic on variables and constants
-    Cast {
-        x: TensorId,
-        dtype: DType,
-        rc: u16,
-    },
-    // Symbolic on variables and constants
-    Unary {
-        x: TensorId,
-        uop: UOp,
-        rc: u16,
-    },
-    // Symbolic on variables and constants
-    Binary {
-        x: TensorId,
-        y: TensorId,
-        bop: BOp,
-        rc: u16,
-    },
-    Stack {
-        tensors: Box<[TensorId]>,
-        rc: u16,
-    },
-    Stack2 {
-        tensors: [TensorId; 2],
-        rc: u16,
-    },
-    Stack3 {
-        tensors: [TensorId; 3],
-        rc: u16,
-    },
-    Stack4 {
-        tensors: [TensorId; 4],
-        rc: u16,
-    },
-    Stack5 {
-        tensors: [TensorId; 5],
+    /// Symbolic scalar, dim, or shape: an interned [`Expr`]. Replaces the old
+    /// Constant/Variable/Cast/Unary/Binary/Stack* tensor variants — shapes no
+    /// longer live in the tensors slab. The expression slab is append-only,
+    /// so a `Symbolic` holds no edges: retain/release touch only its own
+    /// `rc`, never expression children.
+    Symbolic {
+        /// The interned expression (stable forever).
+        expr: ExprId,
+        /// User handles + kernel load entries referencing this handle.
         rc: u16,
     },
 }
@@ -493,6 +456,10 @@ pub struct Runtime {
     kernel_map: Map<Kernel, KernelId>,
     programs: Map<KernelId, DeviceProgramId>,
     timings: Map<ProgramId, u64>,
+    /// Hashcons table for [`Expr`]: structural equality is one [`ExprId`] compare.
+    expr_hash: Map<Expr, ExprId>,
+    /// Append-only interned expressions. Ids are stable forever; nothing is freed.
+    pub exprs: Slab<ExprId, Expr>,
     pub rng: Rng,
     pub implicit_casts: bool,
     pub training: bool,
@@ -528,6 +495,8 @@ impl Runtime {
             kernel_map: Map::with_hasher(BuildHasherDefault::new()),
             programs: Map::with_hasher(BuildHasherDefault::new()),
             timings: Map::with_hasher(BuildHasherDefault::new()),
+            expr_hash: Map::with_hasher(BuildHasherDefault::new()),
+            exprs: Slab::new(),
             rng: Rng::seed_from_u64(42069),
             implicit_casts: true,
             training: false,
@@ -537,28 +506,124 @@ impl Runtime {
         }
     }
 
-    /// Concrete shape of tensor `x`, fully evaluated: every symbolic dimension
-    /// is resolved to a concrete `Dim` by folding const expressions and reading
-    /// variable slots. Panics if a dimension cannot be resolved (an unboundable
-    /// variable is a bug), never returns a sentinel.
-    /// Host-side evaluation of a scalar expression: folds the tensors-slab
-    /// tree (`Constant` / `Variable` / `Unary` / `Binary`) into a single
-    /// `Constant` using the same rules as `resolve_shape`, preserving
-    /// dtype. Returns `None` for non-symbolic tensors.
+    /// Hashcons interning: returns the existing [`ExprId`] for a structurally
+    /// equal expression, or pushes and returns a fresh one. Append-only —
+    /// ids are stable forever and nothing is freed.
+    pub fn intern(&mut self, expr: Expr) -> ExprId {
+        if let Some(&id) = self.expr_hash.get(&expr) {
+            return id;
+        }
+        let id = self.exprs.push(expr.clone());
+        self.expr_hash.insert(expr, id);
+        id
+    }
+
+    /// Host-side evaluation of a scalar expression: folds the interned
+    /// expression tree (`Constant` / `Variable` / `Cast` / `Unary` /
+    /// `Binary`) into a single `Constant`, preserving dtype. Variables
+    /// evaluate to the value stored in their (immutable) node — a changed
+    /// value is a different node, so evaluation never reads anything
+    /// outside the expression table. Returns `None` for non-symbolic
+    /// tensors. Stack shapes are not scalars and return `None`.
     pub(crate) fn resolve_symbolic(&self, x: TensorId) -> Option<Constant> {
-        match &self.tensors[x] {
-            TensorData::Constant { value, .. } | TensorData::Variable { value, .. } => Some(*value),
-            TensorData::Cast { x: a, dtype, .. } => self.resolve_symbolic(*a).map(|v| v.cast(*dtype)),
-            TensorData::Unary { x: a, uop, .. } => self.resolve_symbolic(*a).map(|v| v.unary(*uop)),
-            TensorData::Binary { x: a, y: b, bop, .. } => {
-                Some(Constant::binary(self.resolve_symbolic(*a)?, self.resolve_symbolic(*b)?, *bop))
+        match self.tensors[x] {
+            TensorData::Symbolic { expr, .. } => {
+                let mut memo: Map<ExprId, (Constant, bool)> = Map::with_hasher(BuildHasherDefault::new());
+                Some(self.fold_dim(expr, &mut memo).0)
             }
             _ => None,
         }
     }
 
+    /// Fold one scalar dim expression: returns the folded value AND whether
+    /// the tree contains a [`Expr::Variable`], in a single pass. One `memo`
+    /// shared across every dim of a shape means each interned node is
+    /// visited exactly once, no matter how many dims share subexpressions.
+    /// Variables fold to the value stored in their (immutable) node — a
+    /// changed value is a different node, so evaluation never reads
+    /// anything outside the expression table. Total over the scalar closed
+    /// set; stacks and anything else panic.
+    pub(crate) fn fold_dim(&self, root: ExprId, memo: &mut Map<ExprId, (Constant, bool)>) -> (Constant, bool) {
+        if let Some(&v) = memo.get(&root) {
+            return v;
+        }
+        let v = match self.exprs[root] {
+            Expr::Constant { value } => (value, false),
+            Expr::Variable { value } => (value, true),
+            Expr::Cast { x: a, dtype } => {
+                let (v, tainted) = self.fold_dim(a, memo);
+                (v.cast(dtype), tainted)
+            }
+            Expr::Unary { x: a, uop } => {
+                let (v, tainted) = self.fold_dim(a, memo);
+                (v.unary(uop), tainted)
+            }
+            Expr::Binary { x: a, y: b, bop } => {
+                let (va, ta) = self.fold_dim(a, memo);
+                let (vb, tb) = self.fold_dim(b, memo);
+                (Constant::binary(va, vb, bop), ta || tb)
+            }
+            ref e => panic!("dim expression {root:?} is not a scalar expression: {e:?}"),
+        };
+        memo.insert(root, v);
+        v
+    }
+
+    /// Dtype of an interned scalar expression: walks to the
+    /// `Constant`/`Variable`/`Cast` leaf that determines it. Stack shapes
+    /// have no dtype and panic.
+    pub(crate) fn expr_dtype(&self, root: ExprId) -> DType {
+        match self.exprs[root] {
+            Expr::Constant { value, .. } | Expr::Variable { value, .. } => value.dtype(),
+            Expr::Cast { dtype, .. } => dtype,
+            Expr::Unary { x, .. } => self.expr_dtype(x),
+            Expr::Binary { x, bop, .. } => {
+                if bop.returns_bool() {
+                    DType::Bool
+                } else {
+                    self.expr_dtype(x)
+                }
+            }
+            ref e => panic!("expression {root:?} has no scalar dtype: {e:?}"),
+        }
+    }
+
+    /// Dim expressions of a shape expression: a `Stack*` yields one dim per
+    /// element; a bare scalar expression (1d shapes skip the `Stack` node)
+    /// is a single dim; null is rank zero.
+    pub(crate) fn shape_expr_ids(&self, shape_id: ExprId) -> Vec<ExprId> {
+        if shape_id.is_null() {
+            return Vec::new();
+        }
+        match &self.exprs[shape_id] {
+            Expr::Stack { exprs } => exprs.to_vec(),
+            Expr::Stack2 { exprs } => exprs.to_vec(),
+            Expr::Stack3 { exprs } => exprs.to_vec(),
+            Expr::Stack4 { exprs } => exprs.to_vec(),
+            Expr::Stack5 { exprs } => exprs.to_vec(),
+            _ => vec![shape_id],
+        }
+    }
+
+    /// Dim expressions of tensor `x` without minting handles: unwraps the
+    /// tensor's `shape_id` via [`Runtime::shape_expr_ids`]. Symbolic tensors
+    /// are scalars — their own expression is the single dim.
+    pub(crate) fn tensor_shape_exprs(&self, x: TensorId) -> Vec<ExprId> {
+        let shape_id = match self.tensors[x] {
+            TensorData::Eager { shape_id, .. }
+            | TensorData::Graph { shape_id, .. }
+            | TensorData::Promoted { shape_id, .. }
+            | TensorData::PendingLeaf { shape_id, .. }
+            | TensorData::GraphLeaf { shape_id, .. }
+            | TensorData::Leaf { shape_id, .. } => shape_id,
+            TensorData::Symbolic { expr, .. } => return vec![expr],
+        };
+        self.shape_expr_ids(shape_id)
+    }
+
     /// Concrete (resolved) shape of tensor `x`: evaluates every dim expression
-    /// to a `Dim`, reading variable slots from `variable_map`.
+    /// to a `Dim` by folding the interned expression (variables evaluate to
+    /// the value stored in their node).
     ///
     /// # Convention
     /// `shape` (the symbolic variant) should be used EVERYWHERE in kernel
@@ -570,169 +635,47 @@ impl Runtime {
     /// symbolic-dim consumers (they end up with a different op than the rest
     /// of the graph for the same dim).
     pub(crate) fn resolve_shape(&self, x: TensorId) -> Vec<Dim> {
-        // A Stack node is a vector of len dim exprs: its ACTUAL shape is
-        // [len] — not its elements' values. Dims described by a shape
-        // expression are `resolve_symbolic_dims`'s job.
-        match &self.tensors[x] {
-            TensorData::Stack { tensors, .. } => return vec![tensors.len() as Dim],
-            TensorData::Stack2 { tensors, .. } => return vec![tensors.len() as Dim],
-            TensorData::Stack3 { tensors, .. } => return vec![tensors.len() as Dim],
-            TensorData::Stack4 { tensors, .. } => return vec![tensors.len() as Dim],
-            TensorData::Stack5 { tensors, .. } => return vec![tensors.len() as Dim],
-            _ => {}
-        }
-        // DFS post-order flatten (same traversal as replay_shape_into_kernel):
-        // every node lands after its operands, so one flat pass evaluates.
-        fn flatten(rt: &Runtime, x: TensorId, order: &mut Vec<TensorId>) {
-            match &rt.tensors[x] {
-                TensorData::Constant { .. } | TensorData::Variable { .. } => (),
-                TensorData::Cast { x: a, .. } => flatten(rt, *a, order),
-                TensorData::Unary { x: a, .. } => flatten(rt, *a, order),
-                TensorData::Binary { x: a, y: b, .. } => {
-                    flatten(rt, *a, order);
-                    flatten(rt, *b, order);
-                }
-                TensorData::Stack { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack2 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack3 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack4 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack5 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                t => panic!(
-                    "shape expression tid {x} contains non-symbolic tensor data {t:?}; shapes must be built from Dim constants, variables and dim ops"
-                ),
+        // A Symbolic tensor whose expression is a Stack describes a shape
+        // value: its ACTUAL shape is [len] — not its elements' values. Dims
+        // described by a shape expression are `resolve_symbolic_dims`'s job.
+        if let TensorData::Symbolic { expr, .. } = self.tensors[x] {
+            match &self.exprs[expr] {
+                Expr::Stack { exprs } => return vec![exprs.len() as Dim],
+                Expr::Stack2 { exprs } => return vec![exprs.len() as Dim],
+                Expr::Stack3 { exprs } => return vec![exprs.len() as Dim],
+                Expr::Stack4 { exprs } => return vec![exprs.len() as Dim],
+                Expr::Stack5 { exprs } => return vec![exprs.len() as Dim],
+                _ => {}
             }
-            order.push(x);
         }
-
-        let mut dims = Vec::new();
-        for root in self.shape(x) {
-            let mut order = Vec::new();
-            flatten(self, root, &mut order);
-            let mut vals: Map<TensorId, Constant> = Map::with_hasher(BuildHasherDefault::new());
-            let mut value = Constant::I64(0i64.to_le_bytes());
-            for tid in order {
-                value = match self.tensors[tid] {
-                    TensorData::Constant { value, .. } => value,
-                    TensorData::Variable { value, .. } => value,
-                    TensorData::Cast { x: a, dtype, .. } => vals[&a].cast(dtype),
-                    TensorData::Unary { x: a, uop, .. } => vals[&a].unary(uop),
-                    TensorData::Binary { x: a, y: b, bop, .. } => Constant::binary(vals[&a], vals[&b], bop),
-                    ref t => panic!("dimension tid {tid} is not a dim expression: {t:?}"),
-                };
-                vals.insert(tid, value);
-            }
-            dims.push(value.as_dim().expect("dim expression does not evaluate to an integer"));
-        }
-        dims
+        self.tensor_shape_exprs(x)
+            .into_iter()
+            .map(|e| {
+                let mut memo = Map::default();
+                self.fold_dim(e, &mut memo)
+                    .0
+                    .as_dim()
+                    .expect("dim expression does not evaluate to an integer")
+            })
+            .collect()
     }
 
     /// Dims described by a SHAPE EXPRESSION (a `shape_id`): a `Stack` (any
-    /// arity) yields one dim per element; a bare dim expr (`Constant`,
-    /// `Variable`, `Cast`, `Unary`, `Binary`) is a single dim — 1d shapes
-    /// skip the Stack node, so their shape_id IS the dim expr. Panics on
-    /// eager/graph/promoted tensors: those are data, not shape expressions —
+    /// arity) yields one dim per element; a bare dim expr is a single dim —
+    /// 1d shapes skip the Stack node, so their shape_id IS the dim expr.
+    /// Panics on data tensors: those are values, not shape expressions —
     /// use [`Runtime::resolve_shape`] for their actual shape.
-    pub(crate) fn resolve_symbolic_dims(&self, shape_id: TensorId) -> Vec<Dim> {
-        if shape_id.is_null() {
-            return Vec::new();
-        }
-        let roots: Vec<TensorId> = match &self.tensors[shape_id] {
-            TensorData::Stack { tensors, .. } => tensors.to_vec(),
-            TensorData::Stack2 { tensors, .. } => tensors.to_vec(),
-            TensorData::Stack3 { tensors, .. } => tensors.to_vec(),
-            TensorData::Stack4 { tensors, .. } => tensors.to_vec(),
-            TensorData::Stack5 { tensors, .. } => tensors.to_vec(),
-            TensorData::Constant { .. }
-            | TensorData::Variable { .. }
-            | TensorData::Cast { .. }
-            | TensorData::Unary { .. }
-            | TensorData::Binary { .. } => vec![shape_id],
-            t => panic!(
-                "resolve_symbolic_dims: tid {shape_id} is not a shape expression (use resolve_shape for data tensors): {t:?}"
-            ),
-        };
-        // Same DFS post-order flatten + evaluation as `resolve_shape`
-        // (duplicated by design — see STYLE).
-        fn flatten(rt: &Runtime, x: TensorId, order: &mut Vec<TensorId>) {
-            match &rt.tensors[x] {
-                TensorData::Constant { .. } | TensorData::Variable { .. } => (),
-                TensorData::Cast { x: a, .. } => flatten(rt, *a, order),
-                TensorData::Unary { x: a, .. } => flatten(rt, *a, order),
-                TensorData::Binary { x: a, y: b, .. } => {
-                    flatten(rt, *a, order);
-                    flatten(rt, *b, order);
-                }
-                TensorData::Stack { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack2 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack3 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack4 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack5 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                t => panic!(
-                    "shape expression tid {x} contains non-symbolic tensor data {t:?}; shapes must be built from Dim constants, variables and dim ops"
-                ),
-            }
-            order.push(x);
-        }
-        let mut dims = Vec::new();
-        for root in roots {
-            let mut order = Vec::new();
-            flatten(self, root, &mut order);
-            let mut vals: Map<TensorId, Constant> = Map::with_hasher(BuildHasherDefault::new());
-            let mut value = Constant::I64(0i64.to_le_bytes());
-            for tid in order {
-                value = match self.tensors[tid] {
-                    TensorData::Constant { value, .. } => value,
-                    TensorData::Variable { value, .. } => value,
-                    TensorData::Cast { x: a, dtype, .. } => vals[&a].cast(dtype),
-                    TensorData::Unary { x: a, uop, .. } => vals[&a].unary(uop),
-                    TensorData::Binary { x: a, y: b, bop, .. } => Constant::binary(vals[&a], vals[&b], bop),
-                    ref t => panic!("dimension tid {tid} is not a dim expression: {t:?}"),
-                };
-                vals.insert(tid, value);
-            }
-            dims.push(value.as_dim().expect("dim expression does not evaluate to an integer"));
-        }
-        dims
+    pub(crate) fn resolve_symbolic_dims(&self, shape_id: ExprId) -> Vec<Dim> {
+        self.shape_expr_ids(shape_id)
+            .into_iter()
+            .map(|e| {
+                let mut memo = Map::default();
+                self.fold_dim(e, &mut memo)
+                    .0
+                    .as_dim()
+                    .expect("dim expression does not evaluate to an integer")
+            })
+            .collect()
     }
 
     /// A dimension resolved for merge-compatibility checking (see
@@ -759,135 +702,49 @@ impl Runtime {
     /// construction sites to preserve the exact same TensorId (see the `-1`
     /// inference in `Tensor::reshape` and llama's `repeat_kv`).
     pub(crate) fn resolve_shape_without_variables(&self, x: TensorId) -> Vec<ResolvedDim> {
-        // Post-order check: does this dim expression contain a Variable anywhere?
-        fn contains_variable(rt: &Runtime, x: TensorId) -> bool {
-            match &rt.tensors[x] {
-                TensorData::Variable { .. } => true,
-                TensorData::Cast { x: a, .. } | TensorData::Unary { x: a, .. } => contains_variable(rt, *a),
-                TensorData::Binary { x: a, y: b, .. } => contains_variable(rt, *a) || contains_variable(rt, *b),
-                TensorData::Stack { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
-                TensorData::Stack2 { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
-                TensorData::Stack3 { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
-                TensorData::Stack4 { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
-                TensorData::Stack5 { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
-                TensorData::Constant { .. } => false,
-                t => panic!(
-                    "dim expression tid {x} contains non-symbolic tensor data {t:?}; shapes must be built from Dim constants, variables and dim ops"
-                ),
-            }
-        }
-
-        // Same DFS post-order flatten + evaluation as `resolve_shape`, but a
-        // variable-tainted root short-circuits to Symbolic (no slot reads).
-        fn flatten(rt: &Runtime, x: TensorId, order: &mut Vec<TensorId>) {
-            match &rt.tensors[x] {
-                TensorData::Constant { .. } | TensorData::Variable { .. } => (),
-                TensorData::Cast { x: a, .. } => flatten(rt, *a, order),
-                TensorData::Unary { x: a, .. } => flatten(rt, *a, order),
-                TensorData::Binary { x: a, y: b, .. } => {
-                    flatten(rt, *a, order);
-                    flatten(rt, *b, order);
-                }
-                TensorData::Stack { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack2 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack3 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack4 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                TensorData::Stack5 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
-                    }
-                }
-                t => panic!(
-                    "shape expression tid {x} contains non-symbolic tensor data {t:?}; shapes must be built from Dim constants, variables and dim ops"
-                ),
-            }
-            order.push(x);
-        }
-
         let mut dims = Vec::new();
-        for root in self.shape(x) {
-            if contains_variable(self, root) {
+        let mut memo = Map::default();
+        for root in self.tensor_shape_exprs(x) {
+            let (value, tainted) = self.fold_dim(root, &mut memo);
+            if tainted {
                 dims.push(ResolvedDim::Symbolic(root));
                 continue;
             }
-            let mut order = Vec::new();
-            flatten(self, root, &mut order);
-            let mut vals: Map<TensorId, Constant> = Map::with_hasher(BuildHasherDefault::new());
-            let mut value = Constant::I64(0i64.to_le_bytes());
-            for tid in order {
-                value = match self.tensors[tid] {
-                    TensorData::Constant { value, .. } => value,
-                    TensorData::Variable { .. } => unreachable!("variable inside a dim checked as variable-free"),
-                    TensorData::Cast { x: a, dtype, .. } => vals[&a].cast(dtype),
-                    TensorData::Unary { x: a, uop, .. } => vals[&a].unary(uop),
-                    TensorData::Binary { x: a, y: b, bop, .. } => Constant::binary(vals[&a], vals[&b], bop),
-                    ref t => panic!("dimension tid {tid} is not a dim expression: {t:?}"),
-                };
-                vals.insert(tid, value);
-            }
-            dims.push(ResolvedDim::Static(value.as_dim().expect("dim expression does not evaluate to an integer")));
+            dims.push(ResolvedDim::Static(
+                value.as_dim().expect("dim expression does not evaluate to an integer"),
+            ));
         }
         dims
     }
 
-    /// Symbolic shape of tensor `x` as dim tensors: one scalar IDX_T tensor
-    /// per dimension — a `Constant` for static dims, a variable-backed
-    /// expression for dynamic ones. Dim-expression tensors themselves are
-    /// scalars: their shape is empty.
+    /// Symbolic shape of tensor `x` as dim handles: one fresh
+    /// [`TensorData::Symbolic`] tensor (rc = 1, caller-owned) per dimension.
+    /// Scalar tensors (including scalar symbolic handles) have an empty
+    /// shape. A symbolic handle whose expression is a `Stack` describes a
+    /// shape value — its dims are the stack elements.
     ///
     /// # Convention
     /// This is the DEFAULT way to read a shape when building kernels — use it
     /// everywhere. `resolve_shape` (concrete evaluation) is mostly for debug
     /// checks and messages; resolving dims to consts in kernel IR breaks
     /// symbolic-dim consumers.
-    pub fn shape(&self, x: TensorId) -> Vec<TensorId> {
-        let shape_id = match self.tensors[x] {
-            TensorData::Eager { shape_id, .. }
-            | TensorData::Graph { shape_id, .. }
-            | TensorData::Promoted { shape_id, .. }
-            | TensorData::PendingLeaf { shape_id, .. }
-            | TensorData::GraphLeaf { shape_id, .. }
-            | TensorData::Leaf { shape_id, .. } => shape_id,
-            TensorData::Constant { .. }
-            | TensorData::Variable { .. }
-            | TensorData::Cast { .. }
-            | TensorData::Unary { .. }
-            | TensorData::Binary { .. } => {
-                return Vec::new();
+    pub fn shape(&mut self, x: TensorId) -> Vec<TensorId> {
+        let exprs = self.tensor_shape_exprs(x);
+        // Scalars have no dims — but a Stack expression IS a shape value.
+        if let TensorData::Symbolic { expr, .. } = self.tensors[x] {
+            match &self.exprs[expr] {
+                Expr::Stack { .. }
+                | Expr::Stack2 { .. }
+                | Expr::Stack3 { .. }
+                | Expr::Stack4 { .. }
+                | Expr::Stack5 { .. } => {}
+                _ => return Vec::new(),
             }
-            TensorData::Stack { ref tensors, .. } => return tensors.to_vec(),
-            TensorData::Stack2 { ref tensors, .. } => return tensors.to_vec(),
-            TensorData::Stack3 { ref tensors, .. } => return tensors.to_vec(),
-            TensorData::Stack4 { ref tensors, .. } => return tensors.to_vec(),
-            TensorData::Stack5 { ref tensors, .. } => return tensors.to_vec(),
-        };
-        if shape_id.is_null() {
-            return Vec::new();
         }
-        match &self.tensors[shape_id] {
-            TensorData::Stack { tensors, .. } => tensors.to_vec(),
-            TensorData::Stack2 { tensors, .. } => tensors.to_vec(),
-            TensorData::Stack3 { tensors, .. } => tensors.to_vec(),
-            TensorData::Stack4 { tensors, .. } => tensors.to_vec(),
-            TensorData::Stack5 { tensors, .. } => tensors.to_vec(),
-            _ => vec![shape_id],
-        }
+        exprs
+            .into_iter()
+            .map(|expr| self.tensors.push(TensorData::Symbolic { expr, rc: 1 }))
+            .collect()
     }
 
     pub fn dtype(&self, x: TensorId) -> DType {
@@ -902,22 +759,10 @@ impl Runtime {
             | TensorData::Graph { dtype, .. }
             | TensorData::PendingLeaf { dtype, .. }
             | TensorData::Leaf { dtype, .. }
-            | TensorData::GraphLeaf { dtype, .. }
-            | TensorData::Cast { dtype, .. } => dtype,
-            TensorData::Constant { value, .. } | TensorData::Variable { value, .. } => value.dtype(),
-            TensorData::Unary { x, .. } => self.dtype(x),
-            TensorData::Binary { x, bop, .. } => {
-                if bop.returns_bool() {
-                    DType::Bool
-                } else {
-                    self.dtype(x)
-                }
-            }
-            TensorData::Stack { .. }
-            | TensorData::Stack2 { .. }
-            | TensorData::Stack3 { .. }
-            | TensorData::Stack4 { .. }
-            | TensorData::Stack5 { .. } => IDX_T,
+            | TensorData::GraphLeaf { dtype, .. } => dtype,
+            // Symbolic dtype comes from the expression table: walk to the
+            // Constant/Variable/Cast leaf that determines it.
+            TensorData::Symbolic { expr, .. } => self.expr_dtype(expr),
         }
     }
 
@@ -937,16 +782,7 @@ impl Runtime {
             TensorData::Eager { .. }
             | TensorData::Leaf { .. }
             | TensorData::PendingLeaf { .. }
-            | TensorData::Constant { .. }
-            | TensorData::Variable { .. }
-            | TensorData::Cast { .. }
-            | TensorData::Unary { .. }
-            | TensorData::Binary { .. }
-            | TensorData::Stack { .. }
-            | TensorData::Stack2 { .. }
-            | TensorData::Stack3 { .. }
-            | TensorData::Stack4 { .. }
-            | TensorData::Stack5 { .. } => false,
+            | TensorData::Symbolic { .. } => false,
         }
     }
 
@@ -1010,16 +846,7 @@ impl Runtime {
                 | TensorData::GraphLeaf { rc, .. }
                 | TensorData::Graph { rc, .. }
                 | TensorData::Promoted { rc, .. }
-                | TensorData::Constant { rc, .. }
-                | TensorData::Variable { rc, .. }
-                | TensorData::Cast { rc, .. }
-                | TensorData::Unary { rc, .. }
-                | TensorData::Binary { rc, .. }
-                | TensorData::Stack { rc, .. }
-                | TensorData::Stack2 { rc, .. }
-                | TensorData::Stack3 { rc, .. }
-                | TensorData::Stack4 { rc, .. }
-                | TensorData::Stack5 { rc, .. } => {
+                | TensorData::Symbolic { rc, .. } => {
                     *rc += 1;
                     #[cfg(feature = "debug_tensor_op")]
                     println!("rc::retain({x}) -> {rc}");
@@ -1047,106 +874,70 @@ impl Runtime {
         {
             let desc: String = match &self.tensors[x] {
                 TensorData::Eager { kernel_id, op_id, .. } => format!("eager kernel={kernel_id:?} op={op_id:?}"),
+                TensorData::PendingLeaf { shape_id, .. } => format!("pending shape={shape_id:?}"),
+                TensorData::Leaf { shape_id, buffer_id, .. } => {
+                    format!("leaf shape={shape_id:?} buffer={buffer_id:?}")
+                }
+                TensorData::GraphLeaf { shape_id, buffer_id, .. } => {
+                    format!("graphleaf shape={shape_id:?} buffer={buffer_id:?}")
+                }
                 TensorData::Graph { class_id, graph_id, .. } => format!("graph class={class_id:?} graph={graph_id:?}"),
                 TensorData::Promoted { kernel_id, class_id, graph_id, .. } => {
                     format!("promoted kernel={kernel_id:?} class={class_id:?} graph={graph_id:?}")
                 }
-                TensorData::Constant { value, .. } => format!("constant {value:?}"),
-                TensorData::Variable { value, .. } => format!("variable {value:?}"),
-                TensorData::Unary { x: a, uop, .. } => format!("unary {uop:?}({a})"),
-                TensorData::Binary { x: a, y: b, bop, .. } => format!("binary {bop:?}({a},{b})"),
-                TensorData::Stack { tensors, .. } => format!("stack len={}", tensors.len()),
-                TensorData::Stack2 { tensors, .. } => format!("stack len={}", tensors.len()),
-                TensorData::Stack3 { tensors, .. } => format!("stack len={}", tensors.len()),
-                TensorData::Stack4 { tensors, .. } => format!("stack len={}", tensors.len()),
-                TensorData::Stack5 { tensors, .. } => format!("stack len={}", tensors.len()),
-                TensorData::Cast { x: a, dtype, .. } => format!("cast {a} -> {dtype:?}"),
-                TensorData::Leaf { view_of, buffer_id, .. } => {
-                    format!("leaf view_of={view_of} buffer={buffer_id:?}")
-                }
+                TensorData::Symbolic { expr, .. } => format!("symbolic {expr:?}"),
             };
             println!("runtime::release(tid={x}) kind={desc}");
         }
 
         // Drop one reference. Handles and edges (kernel loads, symbolic-node
-        // children) all count through here.
+        // children) all count through here. No disown/breaker logic: a kernel
+        // that both outputs and loads the same tensor is unconstructible (a
+        // pure-buffer value is a `Leaf`, which has no kernel), so every
+        // variant dies purely on its refcount.
+        let rc = {
+            match &mut self.tensors[x] {
+                TensorData::Promoted { rc, .. }
+                | TensorData::Eager { rc, .. }
+                | TensorData::Leaf { rc, .. }
+                | TensorData::PendingLeaf { rc, .. }
+                | TensorData::GraphLeaf { rc, .. }
+                | TensorData::Graph { rc, .. }
+                | TensorData::Symbolic { rc, .. } => {
+                    *rc -= 1;
+                    *rc
+                }
+            }
+        };
+
+        #[cfg(feature = "debug_tensor_op")]
+        println!("rc::release({x}) -> rc={rc}");
+        // A still-positive count means another live reference (handle, kernel
+        // load edge) keeps the entry alive.
+        if rc != 0 {
+            return;
+        }
 
         match self.tensors[x] {
-            TensorData::Constant { .. } => {
+            TensorData::Symbolic { .. } => {
+                // Append-only expr slab: no children, no edges. Drop the handle only.
                 self.tensors.remove(x);
             }
-            TensorData::Variable { .. } => {
-                self.tensors.remove(x);
-            }
-            TensorData::Cast { x: a, .. } => {
-                self.tensors.remove(x);
-                self.release(a);
-            }
-            TensorData::Unary { x: a, .. } => {
-                self.tensors.remove(x);
-                self.release(a);
-            }
-            TensorData::Binary { x: a, y: b, .. } => {
-                self.tensors.remove(x);
-                self.release(a);
-                self.release(b);
-            }
-            TensorData::Stack { ref tensors, .. } => {
-                let children: Vec<TensorId> = tensors.to_vec();
-                self.tensors.remove(x);
-                for t in children {
-                    self.release(t);
-                }
-            }
-            TensorData::Stack2 { ref tensors, .. } => {
-                let children: Vec<TensorId> = tensors.to_vec();
-                self.tensors.remove(x);
-                for t in children {
-                    self.release(t);
-                }
-            }
-            TensorData::Stack3 { ref tensors, .. } => {
-                let children: Vec<TensorId> = tensors.to_vec();
-                self.tensors.remove(x);
-                for t in children {
-                    self.release(t);
-                }
-            }
-            TensorData::Stack4 { ref tensors, .. } => {
-                let children: Vec<TensorId> = tensors.to_vec();
-                self.tensors.remove(x);
-                for t in children {
-                    self.release(t);
-                }
-            }
-            TensorData::Stack5 { ref tensors, .. } => {
-                let children: Vec<TensorId> = tensors.to_vec();
-                self.tensors.remove(x);
-                for t in children {
-                    self.release(t);
-                }
-            }
-            TensorData::GraphLeaf { shape_id, buffer_id, .. } => {
+            TensorData::GraphLeaf { buffer_id, .. } => {
                 // A realized Leaf owns a buffer (or borrows its `view_of`
                 // source's buffer). `free_buffer` deallocates owners and
                 // releases the source of views.
                 buffer_id.pool.release(buffer_id.buffer_id);
                 self.tensors.remove(x);
-                if !shape_id.is_null() {
-                    self.release(shape_id);
-                }
             }
-            TensorData::Leaf { shape_id, buffer_id, .. } => {
+            TensorData::Leaf { buffer_id, .. } => {
                 // A realized Leaf owns a buffer (or borrows its `view_of`
                 // source's buffer). `free_buffer` deallocates owners and
                 // releases the source of views.
                 buffer_id.pool.release(buffer_id.buffer_id);
                 self.tensors.remove(x);
-                if !shape_id.is_null() {
-                    self.release(shape_id);
-                }
             }
-            TensorData::PendingLeaf { depends_on, shape_id, .. } => {
+            TensorData::PendingLeaf { depends_on, .. } => {
                 // A pending Leaf owns no buffer yet, only a pending store in
                 // `depends_on`. When it dies, every consumer kernel holding a
                 // what brought rc to 0), so the buffer — and any pending
@@ -1249,11 +1040,8 @@ impl Runtime {
                     }
                 }
                 self.tensors.remove(x);
-                if !shape_id.is_null() {
-                    self.release(shape_id);
-                }
             }
-            TensorData::Graph { graph_id, shape_id, .. } => {
+            TensorData::Graph { graph_id, .. } => {
                 // A graph tensor normally never holds a buffer (pure graph
                 // tensors are unrealized by construction). The exception is a
                 // disowned tensor promoted as a graph leaf
@@ -1261,9 +1049,6 @@ impl Runtime {
                 // materialized by the promotion and no user handle exists, so
                 // the buffer dies with the tensor here.
                 self.tensors.remove(x);
-                if !shape_id.is_null() {
-                    self.release(shape_id);
-                }
                 if !graph_id.is_null() {
                     self.graphs[graph_id].ref_count -= 1;
                     if self.graphs[graph_id].ref_count == 0 {
@@ -1271,7 +1056,7 @@ impl Runtime {
                     }
                 }
             }
-            TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
+            TensorData::Eager { kernel_id, op_id, .. } => {
                 // Detach from the producer kernel (inlined; the former
                 // `detach_from_kernel`, duplicated per death arm by design).
                 if !kernel_id.is_null() {
@@ -1343,11 +1128,8 @@ impl Runtime {
                     }
                 }
                 self.tensors.remove(x);
-                if !shape_id.is_null() {
-                    self.release(shape_id);
-                }
             }
-            TensorData::Promoted { kernel_id, op_id, graph_id, shape_id, .. } => {
+            TensorData::Promoted { kernel_id, op_id, graph_id, .. } => {
                 // Detach from the producer kernel (inlined; the former
                 // `detach_from_kernel`, duplicated per death arm by design).
                 if !kernel_id.is_null() {
@@ -1419,9 +1201,6 @@ impl Runtime {
                     }
                 }
                 self.tensors.remove(x);
-                if !shape_id.is_null() {
-                    self.release(shape_id);
-                }
                 if !graph_id.is_null() {
                     self.graphs[graph_id].ref_count -= 1;
                     if self.graphs[graph_id].ref_count == 0 {
@@ -1601,105 +1380,212 @@ impl Runtime {
         if shape.is_null() {
             return OpId::NULL;
         }
+        let root = match self.tensors[shape] {
+            TensorData::Symbolic { expr, .. } => expr,
+            ref t => panic!("replay_symbolic_into_kernel: tid {shape} is not symbolic: {t:?}"),
+        };
 
         // Flatten the tree post-order: every node lands after its operands,
         // so the flat emit loop below always finds children already mapped.
-        fn flatten(rt: &Runtime, x: TensorId, order: &mut Vec<TensorId>) {
-            match &rt.tensors[x] {
-                TensorData::Constant { .. } | TensorData::Variable { .. } => (),
-                TensorData::Cast { x: a, .. } => flatten(rt, *a, order),
-                TensorData::Unary { x: a, .. } => flatten(rt, *a, order),
-                TensorData::Binary { x: a, y: b, .. } => {
+        // Duplicated from `replay_expr` by design (no shared abstraction).
+        fn flatten(rt: &Runtime, x: ExprId, order: &mut Vec<ExprId>) {
+            if order.contains(&x) {
+                return;
+            }
+            match &rt.exprs[x] {
+                Expr::Constant { .. } | Expr::Variable { .. } => (),
+                Expr::Cast { x: a, .. } => flatten(rt, *a, order),
+                Expr::Unary { x: a, .. } => flatten(rt, *a, order),
+                Expr::Binary { x: a, y: b, .. } => {
                     flatten(rt, *a, order);
                     flatten(rt, *b, order);
                 }
-                TensorData::Stack { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
+                Expr::Stack { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
                     }
                 }
-                TensorData::Stack2 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
+                Expr::Stack2 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
                     }
                 }
-                TensorData::Stack3 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
+                Expr::Stack3 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
                     }
                 }
-                TensorData::Stack4 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
+                Expr::Stack4 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
                     }
                 }
-                TensorData::Stack5 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
+                Expr::Stack5 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
                     }
                 }
-                t => panic!(
-                    "symbolic expression tid {x} contains non-symbolic tensor data {t:?}; scalars must be built from constants, variables and dim ops"
-                ),
             }
             order.push(x);
         }
         let mut order = Vec::new();
-        flatten(self, shape, &mut order);
+        flatten(self, root, &mut order);
 
-        let mut op_map: Map<TensorId, OpId> = Map::with_hasher(BuildHasherDefault::new());
-        let mut root = OpId::NULL;
-        for tid in order {
-            // Copy the node's fields out so the slab borrow ends before we
-            // touch the kernel.
-            let op_id = match self.tensors[tid] {
-                // Constants keep their own dtype; linearize's autocast handles
-                // mixing with the surrounding expression.
-                TensorData::Constant { value, .. } => self.kernels[kid].kernel.push_back(Op::Const(value)),
-                TensorData::Variable { value, .. } => {
+        let mut op_map: Map<ExprId, OpId> = Map::with_hasher(BuildHasherDefault::new());
+        let mut var_handles: Map<ExprId, TensorId> = Map::with_hasher(BuildHasherDefault::new());
+        let mut root_op = OpId::NULL;
+        for eid in order {
+            let node = self.exprs[eid].clone();
+            let op_id = match node {
+                Expr::Constant { value } => self.kernels[kid].kernel.push_back(Op::Const(value)),
+                Expr::Variable { value } => {
                     let op_id = self.kernels[kid].kernel.variable(value.dtype());
+                    // Load-owned handle (rc = 1 is the load edge; no user
+                    // handle). Released with the kernel's loads.
+                    let tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
                     self.kernels[kid].loads.push(tid);
-                    self.retain(tid);
+                    var_handles.insert(eid, tid);
                     op_id
                 }
-                TensorData::Cast { x, dtype, .. } => {
+                Expr::Cast { x, dtype } => {
                     let a = op_map[&x];
                     self.kernels[kid].kernel.cast(a, dtype)
                 }
-                TensorData::Unary { x, uop, .. } => {
+                Expr::Unary { x, uop } => {
                     let a = op_map[&x];
                     self.kernels[kid].kernel.unary(a, uop)
                 }
-                TensorData::Binary { x, y, bop, .. } => {
+                Expr::Binary { x, y, bop } => {
                     let (a, b) = (op_map[&x], op_map[&y]);
                     self.kernels[kid].kernel.binary(a, b, bop)
                 }
-                TensorData::Stack { ref tensors, .. } => {
-                    let ops: Vec<OpId> = tensors.iter().map(|t| op_map[t]).collect();
+                Expr::Stack { exprs } => {
+                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
                     self.kernels[kid].kernel.stack(&ops)
                 }
-                TensorData::Stack2 { ref tensors, .. } => {
-                    let ops: Vec<OpId> = tensors.iter().map(|t| op_map[t]).collect();
+                Expr::Stack2 { exprs } => {
+                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
                     self.kernels[kid].kernel.stack(&ops)
                 }
-                TensorData::Stack3 { ref tensors, .. } => {
-                    let ops: Vec<OpId> = tensors.iter().map(|t| op_map[t]).collect();
+                Expr::Stack3 { exprs } => {
+                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
                     self.kernels[kid].kernel.stack(&ops)
                 }
-                TensorData::Stack4 { ref tensors, .. } => {
-                    let ops: Vec<OpId> = tensors.iter().map(|t| op_map[t]).collect();
+                Expr::Stack4 { exprs } => {
+                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
                     self.kernels[kid].kernel.stack(&ops)
                 }
-                TensorData::Stack5 { ref tensors, .. } => {
-                    let ops: Vec<OpId> = tensors.iter().map(|t| op_map[t]).collect();
+                Expr::Stack5 { exprs } => {
+                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
                     self.kernels[kid].kernel.stack(&ops)
                 }
-                ref t => unreachable!("flatten rejected non-symbolic data {t:?}"),
             };
-            op_map.insert(tid, op_id);
-            root = op_id;
+            op_map.insert(eid, op_id);
+            root_op = op_id;
         }
-        root
+        root_op
+    }
+
+    /// Lower an interned symbolic expression into kernel ops (the `ExprId`
+    /// entry point; `replay_symbolic_into_kernel` is the `TensorId` wrapper).
+    /// Walk duplicated from `replay_symbolic_into_kernel` by design.
+    pub fn replay_expr(&mut self, kid: KernelId, root: ExprId) -> OpId {
+        if root.is_null() {
+            return OpId::NULL;
+        }
+
+        fn flatten(rt: &Runtime, x: ExprId, order: &mut Vec<ExprId>) {
+            if order.contains(&x) {
+                return;
+            }
+            match &rt.exprs[x] {
+                Expr::Constant { .. } | Expr::Variable { .. } => (),
+                Expr::Cast { x: a, .. } => flatten(rt, *a, order),
+                Expr::Unary { x: a, .. } => flatten(rt, *a, order),
+                Expr::Binary { x: a, y: b, .. } => {
+                    flatten(rt, *a, order);
+                    flatten(rt, *b, order);
+                }
+                Expr::Stack { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
+                    }
+                }
+                Expr::Stack2 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
+                    }
+                }
+                Expr::Stack3 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
+                    }
+                }
+                Expr::Stack4 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
+                    }
+                }
+                Expr::Stack5 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
+                    }
+                }
+            }
+            order.push(x);
+        }
+        let mut order = Vec::new();
+        flatten(self, root, &mut order);
+
+        let mut op_map: Map<ExprId, OpId> = Map::with_hasher(BuildHasherDefault::new());
+        let mut root_op = OpId::NULL;
+        for eid in order {
+            let node = self.exprs[eid].clone();
+            let op_id = match node {
+                Expr::Constant { value } => self.kernels[kid].kernel.push_back(Op::Const(value)),
+                Expr::Variable { value } => {
+                    let op_id = self.kernels[kid].kernel.variable(value.dtype());
+                    let tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
+                    self.kernels[kid].loads.push(tid);
+                    op_id
+                }
+                Expr::Cast { x, dtype } => {
+                    let a = op_map[&x];
+                    self.kernels[kid].kernel.cast(a, dtype)
+                }
+                Expr::Unary { x, uop } => {
+                    let a = op_map[&x];
+                    self.kernels[kid].kernel.unary(a, uop)
+                }
+                Expr::Binary { x, y, bop } => {
+                    let (a, b) = (op_map[&x], op_map[&y]);
+                    self.kernels[kid].kernel.binary(a, b, bop)
+                }
+                Expr::Stack { exprs } => {
+                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
+                    self.kernels[kid].kernel.stack(&ops)
+                }
+                Expr::Stack2 { exprs } => {
+                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
+                    self.kernels[kid].kernel.stack(&ops)
+                }
+                Expr::Stack3 { exprs } => {
+                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
+                    self.kernels[kid].kernel.stack(&ops)
+                }
+                Expr::Stack4 { exprs } => {
+                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
+                    self.kernels[kid].kernel.stack(&ops)
+                }
+                Expr::Stack5 { exprs } => {
+                    let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
+                    self.kernels[kid].kernel.stack(&ops)
+                }
+            };
+            op_map.insert(eid, op_id);
+            root_op = op_id;
+        }
+        root_op
     }
 
     /// Lower a symbolic scalar expression (a tensors-slab tree: Constant /
@@ -1729,123 +1615,129 @@ impl Runtime {
     /// The same closed-set rule applies: anything else panics here.
     pub(crate) fn replay_symbolic_into_graph(&mut self, graph_id: GraphId, shape: TensorId) -> ClassId {
         // DFS post-order flatten: every node lands after its operands.
-        fn flatten(rt: &Runtime, x: TensorId, order: &mut Vec<TensorId>) {
-            match &rt.tensors[x] {
-                TensorData::Constant { .. } | TensorData::Variable { .. } => (),
-                TensorData::Cast { x: a, .. } => flatten(rt, *a, order),
-                TensorData::Unary { x: a, .. } => flatten(rt, *a, order),
-                TensorData::Binary { x: a, y: b, .. } => {
+        fn flatten(rt: &Runtime, x: ExprId, order: &mut Vec<ExprId>) {
+            if order.contains(&x) {
+                return;
+            }
+            match &rt.exprs[x] {
+                Expr::Constant { .. } | Expr::Variable { .. } => (),
+                Expr::Cast { x: a, .. } => flatten(rt, *a, order),
+                Expr::Unary { x: a, .. } => flatten(rt, *a, order),
+                Expr::Binary { x: a, y: b, .. } => {
                     flatten(rt, *a, order);
                     flatten(rt, *b, order);
                 }
-                TensorData::Stack { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
+                Expr::Stack { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
                     }
                 }
-                TensorData::Stack2 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
+                Expr::Stack2 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
                     }
                 }
-                TensorData::Stack3 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
+                Expr::Stack3 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
                     }
                 }
-                TensorData::Stack4 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
+                Expr::Stack4 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
                     }
                 }
-                TensorData::Stack5 { tensors, .. } => {
-                    for &t in tensors.iter() {
-                        flatten(rt, t, order);
+                Expr::Stack5 { exprs } => {
+                    for &e in exprs.iter() {
+                        flatten(rt, e, order);
                     }
                 }
-                t => panic!("symbolic expression tid {x} contains non-symbolic tensor data {t:?}"),
             }
             order.push(x);
         }
+        let root = match self.tensors[shape] {
+            TensorData::Symbolic { expr, .. } => expr,
+            ref t => panic!("replay_symbolic_into_graph: shape tid {shape} is not symbolic: {t:?}"),
+        };
         let mut order = Vec::new();
-        flatten(self, shape, &mut order);
+        flatten(self, root, &mut order);
 
-        let mut class_map: Map<TensorId, ClassId> = Map::with_hasher(BuildHasherDefault::new());
-        let mut root = ClassId::NULL;
-        for tid in order {
-            let class_id = match self.tensors[tid] {
-                TensorData::Constant { value, .. } => self.push_const(graph_id, value),
-                TensorData::Variable { .. } => {
+        let mut class_map: Map<ExprId, ClassId> = Map::with_hasher(BuildHasherDefault::new());
+        let mut root_class = ClassId::NULL;
+        for eid in order {
+            let class_id = match self.exprs[eid].clone() {
+                Expr::Constant { value } => self.push_const(graph_id, value),
+                Expr::Variable { .. } => {
                     // A variable in a shape expression is an input, not
                     // structure: register its leaf so the plan binds it via
                     // the tensors slab and value changes never force
                     // recompilation.
                     let (_, cid) = self.push_leaf_node(graph_id, IDX_T, ClassId::NULL);
-                    self.graphs[graph_id].leaf_map.insert(cid, tid);
-                    self.retain(tid);
+                    let var_tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
+                    self.graphs[graph_id].leaf_map.insert(cid, var_tid);
+                    self.retain(var_tid);
                     self.graphs[graph_id].leaf_classes.push(cid);
                     self.graphs[graph_id].ref_count += 1;
                     cid
                 }
-                TensorData::Cast { x, dtype, .. } => {
+                Expr::Cast { x, dtype } => {
                     let a = class_map[&x];
                     self.push_node(graph_id, Node::Cast { x: a, dtype }).1
                 }
-                TensorData::Unary { x, uop, .. } => {
+                Expr::Unary { x, uop } => {
                     let a = class_map[&x];
                     self.push_node(graph_id, Node::Unary { x: a, uop }).1
                 }
-                TensorData::Binary { x, y, bop, .. } => {
+                Expr::Binary { x, y, bop } => {
                     let a = class_map[&x];
                     let b = class_map[&y];
                     self.push_binary_node(graph_id, a, b, bop)
                 }
-                TensorData::Stack { ref tensors, .. } => {
-                    let ops: Vec<ClassId> = tensors.iter().map(|t| class_map[t]).collect();
+                Expr::Stack { ref exprs } => {
+                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
                         0 => ClassId::NULL,
                         1 => ops[0],
                         _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
-                TensorData::Stack2 { ref tensors, .. } => {
-                    let ops: Vec<ClassId> = tensors.iter().map(|t| class_map[t]).collect();
+                Expr::Stack2 { ref exprs } => {
+                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
                         0 => ClassId::NULL,
                         1 => ops[0],
                         _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
-                TensorData::Stack3 { ref tensors, .. } => {
-                    let ops: Vec<ClassId> = tensors.iter().map(|t| class_map[t]).collect();
+                Expr::Stack3 { ref exprs } => {
+                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
                         0 => ClassId::NULL,
                         1 => ops[0],
                         _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
-                TensorData::Stack4 { ref tensors, .. } => {
-                    let ops: Vec<ClassId> = tensors.iter().map(|t| class_map[t]).collect();
+                Expr::Stack4 { ref exprs } => {
+                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
                         0 => ClassId::NULL,
                         1 => ops[0],
                         _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
-                TensorData::Stack5 { ref tensors, .. } => {
-                    let ops: Vec<ClassId> = tensors.iter().map(|t| class_map[t]).collect();
+                Expr::Stack5 { ref exprs } => {
+                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
                         0 => ClassId::NULL,
                         1 => ops[0],
                         _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
-                ref t => unreachable!("flatten rejected non-symbolic data {t:?}"),
             };
-            class_map.insert(tid, class_id);
-            root = class_id;
+            class_map.insert(eid, class_id);
+            root_class = class_id;
         }
-        root
+        root_class
     }
 
     /// Creates a **LeafPending**: a tensor with no producing kernel and no
@@ -1856,7 +1748,17 @@ impl Runtime {
     /// [`Runtime::new_kernel_from_leaf`], which is why no self-referencing "tensor is
     /// its own kernel's load" cycle can exist anymore (the old rc==2
     /// handle+self-load construction is gone).
-    pub fn new_eager_tensor(&mut self, shape_id: TensorId, dtype: DType, buffer_id: Buffer) -> TensorId {
+    pub fn new_eager_tensor(&mut self, shape: TensorId, dtype: DType, buffer_id: Buffer) -> TensorId {
+        // Shape handles are Symbolic (or NULL for scalar); the Leaf stores the
+        // interned ExprId (append-only slab, no retain needed).
+        let shape_id = if shape == TensorId::NULL {
+            ExprId::NULL
+        } else {
+            match self.tensors[shape] {
+                TensorData::Symbolic { expr, .. } => expr,
+                ref t => panic!("new_eager_tensor: shape tid {shape} is not symbolic: {t:?}"),
+            }
+        };
         let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer_id, rc: 1 });
         #[cfg(feature = "debug_tensor_op")]
         println!("rc::new_eager_tensor -> tid={tid} Leaf shape_id={shape_id} rc=1 (handle only)");
@@ -1899,7 +1801,7 @@ impl Runtime {
             stores: Vec::new(),
             kernel: Kernel::from_device_id(device_id, dev_info),
         });
-        let shape = self.replay_symbolic_into_kernel(kernel_id, shape_id);
+        let shape = self.replay_expr(kernel_id, shape_id);
         let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
         self.kernels[kernel_id].loads.push(x);
         self.retain(x);
@@ -1907,10 +1809,11 @@ impl Runtime {
     }
 
     pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
-        // Constants are pure slab entries: value lives in TensorData, no
-        // kernel is allocated. Consumers replay the value into their own
-        // kernels via Op::Const when needed.
-        self.tensors.push(TensorData::Constant { value, rc: 1 })
+        // Constants are pure slab entries: value lives in the interned
+        // expression slab, no kernel is allocated. Consumers replay the
+        // value into their own kernels via Op::Const when needed.
+        let expr = self.intern(Expr::Constant { value });
+        self.tensors.push(TensorData::Symbolic { expr, rc: 1 })
     }
 
     pub fn new_full(&mut self, shape: TensorId, value: Constant) -> TensorId {
@@ -1929,12 +1832,12 @@ impl Runtime {
 
     pub fn new_variable_tensor<T: Scalar>(&mut self, x: T) -> TensorId {
         // Variables are pure slab entries — the value lives in the
-        // `TensorData::Variable` itself; no kernel, no buffer_map entry.
+        // interned `Expr::Variable` itself; no kernel, no buffer_map entry.
         // Kernels replay them as Param { Variable } loads
         // (see replay_shape_into_kernel).
         let value = Constant::new(x);
-        let tid = self.tensors.push(TensorData::Variable { value, rc: 1 });
-        tid
+        let expr = self.intern(Expr::Variable { value });
+        self.tensors.push(TensorData::Symbolic { expr, rc: 1 })
     }
 
     // Creates new tensor in host memory
@@ -1970,10 +1873,13 @@ impl Runtime {
 
         let buffer_id = Buffer { pool: Pool::Host, buffer_id: Pool::Host.insert_host(buf) };
 
-        // The caller keeps its own handle on `shape`; the Leaf consumes one
-        // reference.
-        self.retain(shape);
-        let tid = self.tensors.push(TensorData::Leaf { shape_id: shape, dtype, buffer_id, rc: 1 });
+        // The caller keeps its own handle on `shape`; the Leaf stores the
+        // interned ExprId (append-only slab, no retain needed).
+        let shape_id = match self.tensors[shape] {
+            TensorData::Symbolic { expr, .. } => expr,
+            ref t => panic!("new_host_tensor: shape tid {shape} is not symbolic: {t:?}"),
+        };
+        let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer_id, rc: 1 });
 
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, shape={:?} dtype={}", self.shape(tid), self.dtype(tid));
@@ -1988,15 +1894,17 @@ impl Runtime {
         path: &Path,
         offset_bytes: u64,
     ) -> Result<TensorId, ZyxError> {
-        let resolved = self.resolve_symbolic_dims(shape);
+        // The caller keeps its own handle on `shape`; the Leaf stores the
+        // interned ExprId (append-only slab, no retain needed).
+        let shape_id = match self.tensors[shape] {
+            TensorData::Symbolic { expr, .. } => expr,
+            ref t => panic!("new_disk_tensor: shape tid {shape} is not symbolic: {t:?}"),
+        };
+        let resolved = self.resolve_symbolic_dims(shape_id);
         let bytes: Dim = ((resolved.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
 
         let buffer_id = Buffer { pool: Pool::Disk, buffer_id: Pool::Disk.disk_buffer_from_path(bytes, path, offset_bytes) };
-
-        // The caller keeps its own handle on `shape`; the Leaf consumes one
-        // reference.
-        self.retain(shape);
-        let tid = self.tensors.push(TensorData::Leaf { shape_id: shape, dtype, buffer_id, rc: 1 });
+        let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer_id, rc: 1 });
         Ok(tid)
     }
 
@@ -2005,27 +1913,30 @@ impl Runtime {
         println!("runtime::cast(x={x}, dtype={dtype:?})");
 
         match self.tensors[x] {
-            TensorData::Constant { value, .. } => self.new_constant_tensor(value.cast(dtype)),
-            TensorData::Variable { .. }
-            | TensorData::Cast { .. }
-            | TensorData::Unary { .. }
-            | TensorData::Binary { .. }
-            | TensorData::Stack { .. }
-            | TensorData::Stack2 { .. }
-            | TensorData::Stack3 { .. }
-            | TensorData::Stack4 { .. }
-            | TensorData::Stack5 { .. } => {
-                let tid = self.tensors.push(TensorData::Cast { x, dtype, rc: 1 });
-                // The cast node holds an edge to x.
-                self.retain(x);
-                tid
-            }
+            TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
+                Expr::Constant { value } => self.new_constant_tensor(value.cast(dtype)),
+                Expr::Variable { .. }
+                | Expr::Cast { .. }
+                | Expr::Unary { .. }
+                | Expr::Binary { .. }
+                | Expr::Stack { .. }
+                | Expr::Stack2 { .. }
+                | Expr::Stack3 { .. }
+                | Expr::Stack4 { .. }
+                | Expr::Stack5 { .. } => {
+                    let nested = self.intern(Expr::Cast { x: expr, dtype });
+                    let tid = self.tensors.push(TensorData::Symbolic { expr: nested, rc: 1 });
+                    // The cast node holds an edge to x.
+                    self.retain(x);
+                    tid
+                }
+            },
             TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
                 let op_id = self.kernels[kernel_id].kernel.cast(op_id, dtype);
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 self.kernels[kernel_id].outputs.insert(tid);
                 // The cast shares the input's shape expression.
-                self.retain(shape_id);
+
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
@@ -2038,7 +1949,7 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 self.kernels[kernel_id].outputs.insert(tid);
                 // The cast shares the input's shape expression.
-                self.retain(shape_id);
+
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
@@ -2051,7 +1962,7 @@ impl Runtime {
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
                 debug_assert!(!shape_id.is_null(), "cast: input graph tensor {x} has no shape expression");
-                self.retain(shape_id);
+
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
@@ -2066,22 +1977,13 @@ impl Runtime {
         debug_assert_eq!(self.dtype(x).bit_size(), dtype.bit_size(), "bitcast requires equal bit widths");
 
         match self.tensors[x] {
-            TensorData::Constant { .. }
-            | TensorData::Variable { .. }
-            | TensorData::Cast { .. }
-            | TensorData::Unary { .. }
-            | TensorData::Binary { .. }
-            | TensorData::Stack { .. }
-            | TensorData::Stack2 { .. }
-            | TensorData::Stack3 { .. }
-            | TensorData::Stack4 { .. }
-            | TensorData::Stack5 { .. } => {
+            TensorData::Symbolic { .. } => {
                 todo!("bitcast of pure-symbolic tensors")
             }
             TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
                 let op_id = self.kernels[kernel_id].kernel.bitcast(op_id, dtype);
                 // The bitcast shares the input's shape expression.
-                self.retain(shape_id);
+
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 self.kernels[kernel_id].outputs.insert(tid);
                 #[cfg(feature = "debug_tensor_op")]
@@ -2096,7 +1998,7 @@ impl Runtime {
                 let (kernel_id, op_id) = self.new_kernel_from_leaf(x);
                 let op_id = self.kernels[kernel_id].kernel.bitcast(op_id, dtype);
                 // The bitcast shares the input's shape expression.
-                self.retain(shape_id);
+
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 self.kernels[kernel_id].outputs.insert(tid);
                 #[cfg(feature = "debug_tensor_op")]
@@ -2110,7 +2012,7 @@ impl Runtime {
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
                 debug_assert!(!shape_id.is_null(), "bitcast: input graph tensor {x} has no shape expression");
-                self.retain(shape_id);
+
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
@@ -2125,27 +2027,19 @@ impl Runtime {
         self.verify_tensor_invariants();
 
         match self.tensors[x] {
-            TensorData::Constant { value, .. } => self.new_constant_tensor(value.unary(uop)),
-            TensorData::Variable { .. }
-            | TensorData::Cast { .. }
-            | TensorData::Unary { .. }
-            | TensorData::Binary { .. }
-            | TensorData::Stack { .. }
-            | TensorData::Stack2 { .. }
-            | TensorData::Stack3 { .. }
-            | TensorData::Stack4 { .. }
-            | TensorData::Stack5 { .. } => {
-                let tid = self.tensors.push(TensorData::Unary { x, uop, rc: 1 });
-                // The unary node holds an edge to x.
-                self.retain(x);
-                tid
-            }
+            TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
+                Expr::Constant { value } => self.new_constant_tensor(value.unary(uop)),
+                _ => {
+                    let root = self.intern(Expr::Unary { x: expr, uop });
+                    self.tensors.push(TensorData::Symbolic { expr: root, rc: 1 })
+                }
+            },
             TensorData::Eager { kernel_id, op_id, shape_id, dtype, .. } => {
                 let op_id = self.kernels[kernel_id].kernel.unary(op_id, uop);
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 self.kernels[kernel_id].outputs.insert(tid);
                 // The unary shares the input's shape expression.
-                self.retain(shape_id);
+
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
@@ -2159,7 +2053,7 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 self.kernels[kernel_id].outputs.insert(tid);
                 // The unary shares the input's shape expression.
-                self.retain(shape_id);
+
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
@@ -2172,7 +2066,7 @@ impl Runtime {
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
                 debug_assert!(!shape_id.is_null(), "unary: input graph tensor {x} has no shape expression");
-                self.retain(shape_id);
+
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, nid={_node_id:?}, cid={class_id:?}");
@@ -2200,37 +2094,19 @@ impl Runtime {
         }
         // Pure-slab operands: the result is a slab Binary node (symbolic
         // scalar computation), no kernel or graph involved.
-        let x_sym = matches!(
-            self.tensors[x],
-            TensorData::Constant { .. }
-                | TensorData::Variable { .. }
-                | TensorData::Cast { .. }
-                | TensorData::Unary { .. }
-                | TensorData::Binary { .. }
-                | TensorData::Stack { .. }
-                | TensorData::Stack2 { .. }
-                | TensorData::Stack3 { .. }
-                | TensorData::Stack4 { .. }
-                | TensorData::Stack5 { .. }
-        );
-        let y_sym = matches!(
-            self.tensors[y],
-            TensorData::Constant { .. }
-                | TensorData::Variable { .. }
-                | TensorData::Cast { .. }
-                | TensorData::Unary { .. }
-                | TensorData::Binary { .. }
-                | TensorData::Stack { .. }
-                | TensorData::Stack2 { .. }
-                | TensorData::Stack3 { .. }
-                | TensorData::Stack4 { .. }
-                | TensorData::Stack5 { .. }
-        );
+        let x_sym = matches!(self.tensors[x], TensorData::Symbolic { .. });
+        let y_sym = matches!(self.tensors[y], TensorData::Symbolic { .. });
         if x_sym && y_sym {
-            let tid = self.tensors.push(TensorData::Binary { x, y, bop, rc: 1 });
-            // The node holds an edge to both operands.
-            self.retain(x);
-            self.retain(y);
+            let ex = match self.tensors[x] {
+                TensorData::Symbolic { expr, .. } => expr,
+                ref t => panic!("binary: symbolic operand tid {x} is not Symbolic: {t:?}"),
+            };
+            let ey = match self.tensors[y] {
+                TensorData::Symbolic { expr, .. } => expr,
+                ref t => panic!("binary: symbolic operand tid {y} is not Symbolic: {t:?}"),
+            };
+            let root = self.intern(Expr::Binary { x: ex, y: ey, bop });
+            let tid = self.tensors.push(TensorData::Symbolic { expr: root, rc: 1 });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> symbolic: tid={tid}");
             return Ok(tid);
@@ -2239,20 +2115,20 @@ impl Runtime {
         // Result shape: NULL when both sides are scalar, otherwise the
         // non-scalar side's shape expression (x wins when both are non-scalar;
         // they are asserted equal above).
-        fn result_shape(rt: &Runtime, a: TensorId, b: TensorId) -> TensorId {
+        fn result_shape(rt: &Runtime, a: TensorId, b: TensorId) -> ExprId {
             let sa = match rt.tensors[a] {
                 TensorData::Eager { shape_id, .. }
                 | TensorData::Leaf { shape_id, .. }
                 | TensorData::Graph { shape_id, .. }
                 | TensorData::Promoted { shape_id, .. } => shape_id,
-                _ => TensorId::NULL,
+                _ => ExprId::NULL,
             };
             let sb = match rt.tensors[b] {
                 TensorData::Eager { shape_id, .. }
                 | TensorData::Leaf { shape_id, .. }
                 | TensorData::Graph { shape_id, .. }
                 | TensorData::Promoted { shape_id, .. } => shape_id,
-                _ => TensorId::NULL,
+                _ => ExprId::NULL,
             };
             if sa.is_null() { sb } else { sa }
         }
@@ -2280,45 +2156,18 @@ impl Runtime {
             }
             let cx = match self.tensors[x] {
                 TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                // Pure-slab scalars enter the graph as nodes.
-                TensorData::Constant { value, .. } => self.push_const(graph_id, value),
-                ref t
-                    if matches!(
-                        t,
-                        TensorData::Variable { .. }
-                            | TensorData::Cast { .. }
-                            | TensorData::Unary { .. }
-                            | TensorData::Binary { .. }
-                            | TensorData::Stack { .. }
-                            | TensorData::Stack2 { .. }
-                            | TensorData::Stack3 { .. }
-                            | TensorData::Stack4 { .. }
-                            | TensorData::Stack5 { .. }
-                    ) =>
-                {
-                    todo!("promote symbolic scalar tid {x} ({t:?}) into a graph")
-                }
+                TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
+                    Expr::Constant { value } => self.push_const(graph_id, value),
+                    ref e => todo!("promote symbolic scalar tid {x} ({e:?}) into a graph"),
+                },
                 ref t => unreachable!("unreachable after promote: {t:?}"),
             };
             let cy = match self.tensors[y] {
                 TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                TensorData::Constant { value, .. } => self.push_const(graph_id, value),
-                ref t
-                    if matches!(
-                        t,
-                        TensorData::Variable { .. }
-                            | TensorData::Cast { .. }
-                            | TensorData::Unary { .. }
-                            | TensorData::Binary { .. }
-                            | TensorData::Stack { .. }
-                            | TensorData::Stack2 { .. }
-                            | TensorData::Stack3 { .. }
-                            | TensorData::Stack4 { .. }
-                            | TensorData::Stack5 { .. }
-                    ) =>
-                {
-                    todo!("promote symbolic scalar tid {y} ({t:?}) into a graph")
-                }
+                TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
+                    Expr::Constant { value } => self.push_const(graph_id, value),
+                    ref e => todo!("promote symbolic scalar tid {y} ({e:?}) into a graph"),
+                },
                 ref t => unreachable!("unreachable after promote: {t:?}"),
             };
             let class_id = self.push_binary_node(graph_id, cx, cy, bop);
@@ -2326,7 +2175,7 @@ impl Runtime {
             {
                 let shape_id = result_shape(self, x, y);
                 debug_assert!(!shape_id.is_null(), "binary: non-scalar graph operands {x}/{y} have no shape expression");
-                self.retain(shape_id);
+
                 self.graphs[graph_id].ref_count += 1;
                 let dtype = if bop.returns_bool() { DType::Bool } else { self.dtype(x) };
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
@@ -2341,7 +2190,7 @@ impl Runtime {
             let shape_id = result_shape(self, x, y);
             // The result shares the operand's shape expression; take our own
             // reference instead of stealing the operand's.
-            self.retain(shape_id);
+
             let (kid, data_op) = match self.tensors[data] {
                 TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
                 ref t => panic!("binary: non-slab operand tid {data} is not an eager tensor: {t:?}"),
@@ -2379,7 +2228,7 @@ impl Runtime {
             let shape_id = result_shape(self, x, y);
             // The result shares the operand's shape expression; take our own
             // reference instead of stealing the operand's.
-            self.retain(shape_id);
+
             let (mut kid_x, mut op_id_x) = match self.tensors[x] {
                 TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
                 TensorData::Leaf { .. } => self.new_kernel_from_leaf(x),
@@ -2508,7 +2357,7 @@ impl Runtime {
                 // Drain pending events on the source buffer before the copy.
                 dst_pool.pool_to_pool(buf_id.pool, buf_id.buffer_id, dst_id.buffer_id)?;
                 debug_assert!(!shape_id.is_null(), "to_device: eager tensor {x} has no shape expression");
-                self.retain(shape_id);
+
                 let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer_id: dst_id, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid} (cross-pool copy {buf_id:?} -> {dst_id:?})");
@@ -2538,7 +2387,7 @@ impl Runtime {
                 // Drain pending events on the source buffer before the copy.
                 dst_pool.pool_to_pool(buf_id.pool, buf_id.buffer_id, dst_id.buffer_id)?;
                 debug_assert!(!shape_id.is_null(), "to_device: eager tensor {x} has no shape expression");
-                self.retain(shape_id);
+
                 let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer_id: dst_id, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid} (cross-pool copy {buf_id:?} -> {dst_id:?})");
@@ -2553,23 +2402,14 @@ impl Runtime {
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression.
                 debug_assert!(!shape_id.is_null(), "to_device: input graph tensor {x} has no shape expression");
-                self.retain(shape_id);
+
                 let dtype = self.dtype(x);
                 let tid = self.tensors.push(TensorData::Graph { class_id: cid, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={_node_id:?}, cid={cid:?}");
                 Ok(tid)
             }
-            TensorData::Constant { .. }
-            | TensorData::Variable { .. }
-            | TensorData::Cast { .. }
-            | TensorData::Unary { .. }
-            | TensorData::Binary { .. }
-            | TensorData::Stack { .. }
-            | TensorData::Stack2 { .. }
-            | TensorData::Stack3 { .. }
-            | TensorData::Stack4 { .. }
-            | TensorData::Stack5 { .. } => {
+            TensorData::Symbolic { .. } => {
                 self.retain(x);
                 Ok(x)
             }
@@ -2594,16 +2434,7 @@ impl Runtime {
         self.verify_tensor_invariants();
 
         match self.tensors[x] {
-            TensorData::Constant { .. }
-            | TensorData::Variable { .. }
-            | TensorData::Cast { .. }
-            | TensorData::Unary { .. }
-            | TensorData::Binary { .. }
-            | TensorData::Stack { .. }
-            | TensorData::Stack2 { .. }
-            | TensorData::Stack3 { .. }
-            | TensorData::Stack4 { .. }
-            | TensorData::Stack5 { .. }
+            TensorData::Symbolic { .. }
             | TensorData::Leaf { .. }
             | TensorData::GraphLeaf { .. }
             | TensorData::PendingLeaf { .. } => {
@@ -2619,7 +2450,7 @@ impl Runtime {
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression.
                 debug_assert!(!shape_id.is_null(), "contiguous: input graph tensor {x} has no shape expression");
-                self.retain(shape_id);
+
                 let tid = self.tensors.push(TensorData::Graph { class_id: cid, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={_node_id:?}, cid={cid:?}");
@@ -2668,14 +2499,25 @@ impl Runtime {
                     let one_const = self.new_constant_tensor(Constant::idx(1i64));
                     let stacked = self.stack(&[one_const])?;
                     self.release(one_const);
-                    stacked
+                    let expr = match self.tensors[stacked] {
+                        TensorData::Symbolic { expr, .. } => expr,
+                        ref t => panic!("reduce: shape tid {stacked} is not symbolic: {t:?}"),
+                    };
+                    self.release(stacked);
+                    expr
                 } else {
-                    self.stack(&dims)?
+                    let stacked = self.stack(&dims)?;
+                    let expr = match self.tensors[stacked] {
+                        TensorData::Symbolic { expr, .. } => expr,
+                        ref t => panic!("reduce: shape tid {stacked} is not symbolic: {t:?}"),
+                    };
+                    self.release(stacked);
+                    expr
                 };
                 let (_node_id, class_id) =
                     self.push_node(graph_id, Node::Reduce { x: class_id, rop, axes: axes.into_boxed_slice() });
                 self.graphs[graph_id].ref_count += 1;
-                self.retain(shape_id);
+
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 Ok(tid)
             }
@@ -2714,9 +2556,15 @@ impl Runtime {
                     let mut kept_dims = dims.clone();
                     kept_dims.remove(axis);
                     let shape_id = if kept_dims.is_empty() {
-                        TensorId::NULL
+                        ExprId::NULL
                     } else {
-                        self.stack(&kept_dims)?
+                        let stacked = self.stack(&kept_dims)?;
+                        let expr = match self.tensors[stacked] {
+                            TensorData::Symbolic { expr, .. } => expr,
+                            ref t => panic!("reduce: shape tid {stacked} is not symbolic: {t:?}"),
+                        };
+                        self.release(stacked);
+                        expr
                     };
 
                     let tid = self.tensors.push(TensorData::Eager { kernel_id: kid, op_id, shape_id, dtype, rc: 1 });
@@ -2739,8 +2587,13 @@ impl Runtime {
                     };
                     // Full reduction keeps a single dim of size 1.
                     let one_const = self.new_constant_tensor(Constant::idx(1i64));
-                    let shape_id = self.stack(&[one_const])?;
+                    let stacked = self.stack(&[one_const])?;
                     self.release(one_const);
+                    let shape_id = match self.tensors[stacked] {
+                        TensorData::Symbolic { expr, .. } => expr,
+                        ref t => panic!("reduce: shape tid {stacked} is not symbolic: {t:?}"),
+                    };
+                    self.release(stacked);
                     let one = self.kernels[kid].kernel.const_idx(1);
                     let op_id = self.kernels[kid].kernel.reshape(op_id, one);
                     match &mut self.tensors[cur] {
@@ -2779,16 +2632,7 @@ impl Runtime {
         if tensors.iter().all(|&t| {
             matches!(
                 self.tensors[t],
-                TensorData::Constant { .. }
-                    | TensorData::Variable { .. }
-                    | TensorData::Cast { .. }
-                    | TensorData::Unary { .. }
-                    | TensorData::Binary { .. }
-                    | TensorData::Stack { .. }
-                    | TensorData::Stack2 { .. }
-                    | TensorData::Stack3 { .. }
-                    | TensorData::Stack4 { .. }
-                    | TensorData::Stack5 { .. }
+                TensorData::Symbolic { .. }
             )
         }) {
             // 1d shapes skip the Stack node entirely: the shape_id IS the
@@ -2799,17 +2643,23 @@ impl Runtime {
                 println!("  -> symbolic: tid={} (1d shape, no stack node)", tensors[0]);
                 return Ok(tensors[0]);
             }
-            // Arity dispatch: 2-5 element shapes avoid the Box<[TensorId]>
+            // Arity dispatch: 2-5 element shapes avoid the Box<[ExprId]>
             // allocation of the generic Stack node.
-            let tid = match tensors.len() {
-                2 => self.tensors.push(TensorData::Stack2 { tensors: [tensors[0], tensors[1]], rc: 1 }),
-                3 => self.tensors.push(TensorData::Stack3 { tensors: [tensors[0], tensors[1], tensors[2]], rc: 1 }),
-                4 => self.tensors.push(TensorData::Stack4 { tensors: [tensors[0], tensors[1], tensors[2], tensors[3]], rc: 1 }),
-                5 => self
-                    .tensors
-                    .push(TensorData::Stack5 { tensors: [tensors[0], tensors[1], tensors[2], tensors[3], tensors[4]], rc: 1 }),
-                _ => self.tensors.push(TensorData::Stack { tensors: tensors.into(), rc: 1 }),
+            let exprs: Vec<ExprId> = tensors
+                .iter()
+                .map(|&t| match self.tensors[t] {
+                    TensorData::Symbolic { expr, .. } => expr,
+                    ref t => panic!("stack: operand tid is not symbolic: {t:?}"),
+                })
+                .collect();
+            let expr = match exprs.len() {
+                2 => self.intern(Expr::Stack2 { exprs: [exprs[0], exprs[1]] }),
+                3 => self.intern(Expr::Stack3 { exprs: [exprs[0], exprs[1], exprs[2]] }),
+                4 => self.intern(Expr::Stack4 { exprs: [exprs[0], exprs[1], exprs[2], exprs[3]] }),
+                5 => self.intern(Expr::Stack5 { exprs: [exprs[0], exprs[1], exprs[2], exprs[3], exprs[4]] }),
+                _ => self.intern(Expr::Stack { exprs: exprs.into_boxed_slice() }),
             };
+            let tid = self.tensors.push(TensorData::Symbolic { expr, rc: 1 });
             // The stack node holds an edge to every element.
             for &t in tensors {
                 self.retain(t);
@@ -2830,7 +2680,11 @@ impl Runtime {
                 .unwrap();
             self.assert_graph_alive(graph_id);
             for &t in tensors {
-                if !self.is_graph(t) && !matches!(self.tensors[t], TensorData::Constant { .. }) {
+                let is_pure_const = match self.tensors[t] {
+                    TensorData::Symbolic { expr, .. } => matches!(self.exprs[expr], Expr::Constant { .. }),
+                    _ => false,
+                };
+                if !self.is_graph(t) && !is_pure_const {
                     self.promote_to_graph(t, graph_id)?;
                 }
             }
@@ -2838,7 +2692,10 @@ impl Runtime {
             for &t in tensors {
                 ops.push(match self.tensors[t] {
                     TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                    TensorData::Constant { value, .. } => self.push_const(graph_id, value),
+                    TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
+                        Expr::Constant { value } => self.push_const(graph_id, value),
+                        ref e => todo!("stack: promote symbolic scalar tid {t} ({e:?}) into a graph"),
+                    },
                     ref t => todo!("stack: promote symbolic scalar tid {t:?} into a graph"),
                 });
             }
@@ -2850,8 +2707,13 @@ impl Runtime {
                 let mut shape_dims = Vec::with_capacity(tensors.len() + 1);
                 shape_dims.push(len_const);
                 shape_dims.extend(self.shape(tensors[0]));
-                let shape_id = self.stack(&shape_dims)?;
+                let stacked = self.stack(&shape_dims)?;
                 self.release(len_const);
+                let shape_id = match self.tensors[stacked] {
+                    TensorData::Symbolic { expr, .. } => expr,
+                    ref t => panic!("stack: shape tid {stacked} is not symbolic: {t:?}"),
+                };
+                self.release(stacked);
                 self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 Ok(tid)
@@ -2892,8 +2754,13 @@ impl Runtime {
             let mut shape_dims = Vec::with_capacity(tensors.len() + 1);
             shape_dims.push(len_const);
             shape_dims.extend(self.shape(tensors[0]));
-            let shape_id = self.stack(&shape_dims)?;
+            let stacked = self.stack(&shape_dims)?;
             self.release(len_const);
+            let shape_id = match self.tensors[stacked] {
+                TensorData::Symbolic { expr, .. } => expr,
+                ref t => panic!("stack: shape tid {stacked} is not symbolic: {t:?}"),
+            };
+            self.release(stacked);
 
             let tid = self.tensors.push(TensorData::Eager { kernel_id: keep_kid, op_id, shape_id, dtype, rc: 1 });
             self.kernels[keep_kid].outputs.insert(tid);
@@ -2906,11 +2773,26 @@ impl Runtime {
     pub(super) fn reshape(&mut self, x: TensorId, shape_id: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reshape(x={x}, shape={shape_id:?})");
+        // The shape operand is a TensorId handle; the result stores the
+        // interned ExprId (append-only slab, no retain needed).
+        let shape_expr = if shape_id == TensorId::NULL {
+            ExprId::NULL
+        } else {
+            match self.tensors[shape_id] {
+                TensorData::Symbolic { expr, .. } => expr,
+                TensorData::Eager { shape_id, .. }
+                | TensorData::Leaf { shape_id, .. }
+                | TensorData::PendingLeaf { shape_id, .. }
+                | TensorData::GraphLeaf { shape_id, .. }
+                | TensorData::Graph { shape_id, .. }
+                | TensorData::Promoted { shape_id, .. } => shape_id,
+            }
+        };
         // Shapes are always resolvable on the tensor side (closed expressions
         // over variable_map), so this is a total check.
         debug_assert_eq!(
             self.resolve_shape(x).iter().product::<Dim>(),
-            self.resolve_symbolic_dims(shape_id).iter().product::<Dim>(),
+            self.resolve_symbolic_dims(shape_expr).iter().product::<Dim>(),
             "reshape element count mismatch"
         );
 
@@ -2949,8 +2831,8 @@ impl Runtime {
             let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape: shape_class });
             {
                 self.graphs[graph_id].ref_count += 1;
-                self.retain(shape_id);
-                let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
+
+                let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id: shape_expr, dtype, rc: 1 });
                 Ok(tid)
             }
         } else {
@@ -2961,12 +2843,12 @@ impl Runtime {
             // view-only reshape. The view retains x, so x (the owner)
             // outlives all its views and deallocates the buffer on death.
             if let Some(buf_id) = self.leaf_buffer(x) {
-                if !shape_id.is_null() {
-                    self.retain(shape_id);
+                if !shape_expr.is_null() {
+
                 }
                 let dtype = self.dtype(x);
                 self.retain(x);
-                let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer_id: buf_id, rc: 1 });
+                let tid = self.tensors.push(TensorData::Leaf { shape_id: shape_expr, dtype, buffer_id: buf_id, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> eager: tid={tid} (Leaf, shares buffer with x={x})");
                 return Ok(tid);
@@ -2981,10 +2863,10 @@ impl Runtime {
             );
             let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
             let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op);
-            if !shape_id.is_null() {
-                self.retain(shape_id);
+            if !shape_expr.is_null() {
+
             }
-            let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
+            let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
             debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
             self.kernels[kernel_id].outputs.insert(tid);
@@ -2998,9 +2880,24 @@ impl Runtime {
     pub fn expand(&mut self, x: TensorId, shape_id: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::expand(x={x}, shape={shape_id:?})");
+        // The shape operand is a TensorId handle; the result stores the
+        // interned ExprId (append-only slab, no retain needed).
+        let shape_expr = if shape_id == TensorId::NULL {
+            ExprId::NULL
+        } else {
+            match self.tensors[shape_id] {
+                TensorData::Symbolic { expr, .. } => expr,
+                TensorData::Eager { shape_id, .. }
+                | TensorData::Leaf { shape_id, .. }
+                | TensorData::PendingLeaf { shape_id, .. }
+                | TensorData::GraphLeaf { shape_id, .. }
+                | TensorData::Graph { shape_id, .. }
+                | TensorData::Promoted { shape_id, .. } => shape_id,
+            }
+        };
         let dtype = self.dtype(x);
         let sh = self.resolve_shape(x);
-        let target = self.resolve_symbolic_dims(shape_id);
+        let target = self.resolve_symbolic_dims(shape_expr);
         debug_assert!(
             sh.len() <= target.len(),
             "expand: input rank {} > target rank {}: {:?} -> {:?}",
@@ -3036,23 +2933,11 @@ impl Runtime {
             let (_, class_id) = self.push_node(graph_id, Node::Expand { x: x_class, shape: shape_class });
             {
                 self.graphs[graph_id].ref_count += 1;
-                self.retain(shape_id);
-                let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
+
+                let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id: shape_expr, dtype, rc: 1 });
                 Ok(tid)
             }
-        } else if matches!(
-            self.tensors[x],
-            TensorData::Constant { .. }
-                | TensorData::Variable { .. }
-                | TensorData::Cast { .. }
-                | TensorData::Unary { .. }
-                | TensorData::Binary { .. }
-                | TensorData::Stack { .. }
-                | TensorData::Stack2 { .. }
-                | TensorData::Stack3 { .. }
-                | TensorData::Stack4 { .. }
-                | TensorData::Stack5 { .. }
-        ) {
+        } else if matches!(self.tensors[x], TensorData::Symbolic { .. }) {
             // Pure-slab operand (e.g. a broadcast scalar): materialize it into
             // a fresh eager kernel that replays the slab expression and
             // expands it to the target shape.
@@ -3065,10 +2950,10 @@ impl Runtime {
             let val_op = self.replay_symbolic_into_kernel(kid, x);
             let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);
             let op_id = self.kernels[kid].kernel.expand(val_op, shape_op);
-            if !shape_id.is_null() {
-                self.retain(shape_id);
+            if !shape_expr.is_null() {
+
             }
-            let tid = self.tensors.push(TensorData::Eager { kernel_id: kid, op_id, shape_id, dtype, rc: 1 });
+            let tid = self.tensors.push(TensorData::Eager { kernel_id: kid, op_id, shape_id: shape_expr, dtype, rc: 1 });
             self.kernels[kid].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("runtime::expand(x={x}) -> eager from slab: tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -3088,8 +2973,8 @@ impl Runtime {
             );
             let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
             let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape_op);
-            self.retain(shape_id);
-            let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
+
+            let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
             debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
             self.kernels[kernel_id].outputs.insert(tid);
@@ -3120,15 +3005,21 @@ impl Runtime {
             return x;
         }
 
-        // Result shape: x's dims in the new axis order. The stack's rc is
-        // transferred into the result tensor.
+        // Result shape: x's dims in the new axis order. The stack's expr is
+        // stored (append-only slab); the transient handle is released.
         let shape_id = {
             let dims = self.shape(x);
             let permuted = crate::shape::permute(&dims, &axes);
             if permuted.is_empty() {
-                TensorId::NULL
+                ExprId::NULL
             } else {
-                self.stack(&permuted).expect("permute: failed to build shape stack")
+                let stacked = self.stack(&permuted).expect("permute: failed to build shape stack");
+                let expr = match self.tensors[stacked] {
+                    TensorData::Symbolic { expr, .. } => expr,
+                    ref t => panic!("permute: shape tid {stacked} is not symbolic: {t:?}"),
+                };
+                self.release(stacked);
+                expr
             }
         };
 
@@ -3186,12 +3077,19 @@ impl Runtime {
         );
 
         // Result shape: x's dims with the padded axis replaced by `len`
-        // directly (total-length semantics).
+        // directly (total-length semantics). The stack's expr is stored
+        // (append-only slab); the transient handle is released.
         let shape_id = {
             let mut dims = self.shape(x);
             dims[axis as usize] = len;
             self.retain(len);
-            self.stack(&dims).expect("pad_zeros: failed to build shape stack")
+            let stacked = self.stack(&dims).expect("pad_zeros: failed to build shape stack");
+            let expr = match self.tensors[stacked] {
+                TensorData::Symbolic { expr, .. } => expr,
+                ref t => panic!("pad_zeros: shape tid {stacked} is not symbolic: {t:?}"),
+            };
+            self.release(stacked);
+            expr
         };
 
         match self.tensors[x] {
@@ -3293,11 +3191,19 @@ impl Runtime {
         debug_assert!(axis < sh.len() as UAxis, "narrow: axis {axis} out of range for rank {}", sh.len());
 
         // Result shape: x's dims with the narrowed axis replaced by `len`.
+        // The stack's expr is stored (append-only slab); the transient
+        // handle is released.
         let shape_id = {
             let mut dims = self.shape(x);
             dims[axis as usize] = len;
             self.retain(len);
-            self.stack(&dims).expect("narrow: failed to build shape stack")
+            let stacked = self.stack(&dims).expect("narrow: failed to build shape stack");
+            let expr = match self.tensors[stacked] {
+                TensorData::Symbolic { expr, .. } => expr,
+                ref t => panic!("narrow: shape tid {stacked} is not symbolic: {t:?}"),
+            };
+            self.release(stacked);
+            expr
         };
 
         match self.tensors[x] {
@@ -3377,8 +3283,7 @@ impl Runtime {
             | TensorData::Promoted { shape_id, .. } => shape_id,
             ref t => todo!("flip of pure-slab tensor {t:?}"),
         };
-        if shape_id != TensorId::NULL {
-            self.retain(shape_id);
+        if shape_id != ExprId::NULL {
         }
 
         match self.tensors[x] {
@@ -3725,7 +3630,7 @@ impl Runtime {
                 TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
                 ref t => panic!("assign: src {src} is not an eager/promoted tensor: {t:?}"),
             };
-            let dst_shape_op = self.replay_symbolic_into_kernel(kernel_id, dst_shape_id);
+            let dst_shape_op = self.replay_expr(kernel_id, dst_shape_id);
             let mut_param =
                 self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: dst_shape_op });
             self.kernels[kernel_id].kernel.store(mut_param, src_op, OpId::NULL);
@@ -3787,7 +3692,9 @@ impl Runtime {
         let dst_kernel_loads = self.kernels[dst_kid].loads.clone();
         let dst_org = {
             let mut buffer_loads =
-                dst_kernel_loads.iter().copied().filter(|&t| !matches!(self.tensors[t], TensorData::Variable { .. }));
+                dst_kernel_loads.iter().copied().filter(|&t| {
+                    !matches!(self.tensors[t], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. }))
+                });
             match (buffer_loads.next(), buffer_loads.next()) {
                 (Some(t), None) => t,
                 (None, _) => {
@@ -3829,7 +3736,8 @@ impl Runtime {
         let loads = self.kernels[dst_kid].loads.clone();
         for t in &loads {
             assert!(
-                *t == dst_org || matches!(self.tensors[*t], TensorData::Variable { .. }),
+                *t == dst_org
+                    || matches!(self.tensors[*t], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. })),
                 "assign: dst kernel load {t} is neither the buffer nor a known variable"
             );
         }
@@ -3959,9 +3867,11 @@ impl Runtime {
             debug_assert!(
                 matches!(
                     self.tensors[load],
-                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Variable { .. }
+                    TensorData::Leaf { .. }
+                        | TensorData::PendingLeaf { .. }
+                        | TensorData::Symbolic { .. }
                 ),
-                "assign: replayed load {load} is not a leaf/pending leaf/variable"
+                "assign: replayed load {load} is not a leaf/pending leaf/symbolic"
             );
             self.kernels[src_kid].loads.push(load);
             self.retain(load);
@@ -4466,7 +4376,7 @@ impl Runtime {
             assert!(
                 matches!(
                     self.tensors[tid],
-                    TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } | TensorData::Variable { .. }
+                    TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } | TensorData::Symbolic { .. }
                 ),
                 "materialize: load {tid} has no buffer after pending flush: {:?}",
                 self.tensors[tid]
@@ -4738,9 +4648,10 @@ impl Runtime {
         let mut kernel_buffers = BTreeSet::new();
         let mut fresh_stores: Vec<(TensorId, Buffer)> = Vec::new();
         for &tid in &loads {
-            // Scalars (`TensorData::Variable`) are launch-time values, not
-            // pool storage — they have no buffer.
-            if matches!(self.tensors[tid], TensorData::Variable { .. }) {
+            // Scalars (`Symbolic` handles over an `Expr::Variable`) are
+            // launch-time values, not pool storage — they have no buffer.
+            if matches!(self.tensors[tid], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. }))
+            {
                 continue;
             }
             kernel_buffers.insert(self.leaf_buffer(tid).expect("materialize: load without buffer after pending flush"));
@@ -4789,9 +4700,16 @@ impl Runtime {
         }
         let mut buffers: Vec<LaunchArg> = Vec::new();
         for &tid in &loads {
-            if let TensorData::Variable { value, .. } = self.tensors[tid] {
-                // Variables live only in the tensors slab — they never have a
-                // buffer or pool storage; the value is bound at launch.
+            // Variables live only in the expr slab — they never have a
+            // buffer or pool storage; the value is bound at launch.
+            let var_value = match self.tensors[tid] {
+                TensorData::Symbolic { expr, .. } => match self.exprs[expr] {
+                    Expr::Variable { value } => Some(value),
+                    ref e => panic!("materialize: symbolic load {tid} is not a variable: {e:?}"),
+                },
+                _ => None,
+            };
+            if let Some(value) = var_value {
                 buffers.push(LaunchArg::Variable(value));
             } else {
                 buffers.push(LaunchArg::Buffer(self.leaf_buffer(tid).expect("materialize: load without buffer").buffer_id));

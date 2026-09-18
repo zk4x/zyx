@@ -23,6 +23,7 @@ use std::sync::Arc;
 use crate::backend::{Buffer, DeviceInfo, LaunchArg, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
+use crate::expr::{Expr, ExprId};
 use crate::graph::{ClassId, EClass, Node, NodeData};
 use crate::kernel::{
     BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
@@ -1084,12 +1085,19 @@ impl Runtime {
             // a class (mirrors `Runtime::binary` / `stack`'s graph arm).
             let mut input_classes = Vec::with_capacity(inputs.len());
             for &input in inputs {
-                if !self.is_graph(input) && !matches!(self.tensors[input], TensorData::Constant { .. }) {
+                let is_pure_const = match self.tensors[input] {
+                    TensorData::Symbolic { expr, .. } => matches!(self.exprs[expr], Expr::Constant { .. }),
+                    _ => false,
+                };
+                if !self.is_graph(input) && !is_pure_const {
                     self.promote_to_graph(input, graph_id)?;
                 }
                 input_classes.push(match self.tensors[input] {
                     TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                    TensorData::Constant { value, .. } => self.push_const(graph_id, value),
+                    TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
+                        Expr::Constant { value } => self.push_const(graph_id, value),
+                        ref e => todo!("forward: promote symbolic scalar tid {input} ({e:?}) into a graph"),
+                    },
                     ref t => todo!("forward: promote symbolic scalar tid {input} ({t:?}) into a graph"),
                 });
             }
@@ -1105,26 +1113,27 @@ impl Runtime {
             for shape in shapes.iter() {
                 if shape.is_empty() {
                     shape_classes.push(ClassId::NULL);
-                    shape_ids.push(TensorId::NULL);
+                    shape_ids.push(ExprId::NULL);
                     continue;
                 }
                 let sid = self.stack(shape)?;
                 let shape_class = match self.tensors[sid] {
                     TensorData::Graph { class_id, .. } => class_id,
-                    TensorData::Constant { .. }
-                    | TensorData::Variable { .. }
-                    | TensorData::Cast { .. }
-                    | TensorData::Unary { .. }
-                    | TensorData::Binary { .. }
-                    | TensorData::Stack { .. }
-                    | TensorData::Stack2 { .. }
-                    | TensorData::Stack3 { .. }
-                    | TensorData::Stack4 { .. }
-                    | TensorData::Stack5 { .. } => self.replay_symbolic_into_graph(graph_id, sid),
+                    TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, sid),
                     ref t => todo!("forward: output shape dim tid {sid} is neither slab nor graph ({t:?})"),
                 };
+                // The slab shape lives in the append-only expr slab: store
+                // the ExprId, release the transient stack handle.
+                let shape_expr = match self.tensors[sid] {
+                    TensorData::Graph { shape_id, .. } => shape_id,
+                    TensorData::Symbolic { expr, .. } => expr,
+                    ref t => todo!("forward: output shape dim tid {sid} is neither slab nor graph ({t:?})"),
+                };
+                if !matches!(self.tensors[sid], TensorData::Graph { .. }) {
+                    self.release(sid);
+                }
                 shape_classes.push(shape_class);
-                shape_ids.push(sid);
+                shape_ids.push(shape_expr);
             }
 
             // Fresh output classes (empty until the Custom node joins them),
@@ -1202,7 +1211,11 @@ impl Runtime {
                 continue;
             }
             let sid = self.stack(shape)?;
-            dims.push(self.resolve_symbolic_dims(sid));
+            let shape_expr = match self.tensors[sid] {
+                TensorData::Symbolic { expr, .. } => expr,
+                ref t => panic!("forward: shape tid {sid} is not symbolic: {t:?}"),
+            };
+            dims.push(self.resolve_symbolic_dims(shape_expr));
             self.release(sid);
         }
         let shapes = dims;
@@ -1240,9 +1253,15 @@ impl Runtime {
             let dim_tids: Vec<TensorId> =
                 shape.iter().map(|&d| self.new_constant_tensor(crate::dtype::Constant::idx(d))).collect();
             let shape_id = if dim_tids.is_empty() {
-                TensorId::NULL
+                ExprId::NULL
             } else {
-                self.stack(&dim_tids).expect("custom kernel output: failed to build shape stack")
+                let stacked = self.stack(&dim_tids).expect("custom kernel output: failed to build shape stack");
+                let expr = match self.tensors[stacked] {
+                    TensorData::Symbolic { expr, .. } => expr,
+                    ref t => panic!("custom kernel output: shape tid {stacked} is not symbolic: {t:?}"),
+                };
+                self.release(stacked);
+                expr
             };
             let id = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer_id, rc: 1 });
             tensors.push(id);
