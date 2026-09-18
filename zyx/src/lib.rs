@@ -63,7 +63,7 @@ mod backend;
 mod codegen;
 mod dtype;
 mod error;
-pub(crate) mod expr;
+mod symbolic;
 mod graph;
 pub mod hashers;
 pub mod kernel;

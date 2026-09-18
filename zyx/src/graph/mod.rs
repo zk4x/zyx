@@ -20,7 +20,7 @@ use crate::{
     DType, Map, Set, ZyxError,
     backend::{Buffer, Dev, LaunchArg, Pool, PoolBufferId, ProgramId},
     dtype::Constant,
-    expr::{Expr, ExprId},
+    symbolic::{Expr, ExprId},
     kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     runtime::{KernelId, Runtime, TensorData},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
@@ -2631,7 +2631,7 @@ impl Runtime {
             // by the (dropping) graph; keep it as a dead handle that panics
             // on use. No graph decref on this path.
             TensorData::Graph { .. } => return,
-            TensorData::GraphLeaf { graph_id, shape_id, dtype, rc, buffer_id: old, .. } => {
+            TensorData::GraphLeaf { graph_id, shape_id, dtype, rc, buffer: old, .. } => {
                 // Realized: release the previous buffer and re-point at the
                 // realization's buffer. No producer to detach from (GraphLeaf
                 // carries no kernel_id).

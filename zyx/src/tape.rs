@@ -49,7 +49,7 @@ use crate::{
     DType, Map, RT, Set, Tensor, ZyxError,
     backend::Buffer,
     dtype::Constant,
-    expr::Expr,
+    symbolic::Expr,
     graph::{ClassId, Graph, GraphId},
     runtime::{Runtime, TensorData},
     shape::Dim,
@@ -323,7 +323,7 @@ impl Drop for Tape {
                         }
                     }
                 }
-                TensorData::GraphLeaf { buffer_id, rc, .. } => {
+                TensorData::GraphLeaf { buffer: buffer_id, rc, .. } => {
                     // A buffer-backed Graph tensor is a promoted **Leaf**:
                     // its value is computed and its buffer lives on —
                     // revert it to a Leaf instead of tombstoning, so the

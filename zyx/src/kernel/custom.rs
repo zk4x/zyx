@@ -23,7 +23,7 @@ use std::sync::Arc;
 use crate::backend::{Buffer, DeviceInfo, LaunchArg, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
-use crate::expr::{Expr, ExprId};
+use crate::symbolic::{Expr, ExprId};
 use crate::graph::{ClassId, EClass, Node, NodeData};
 use crate::kernel::{
     BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,

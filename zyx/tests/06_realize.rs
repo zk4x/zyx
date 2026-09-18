@@ -17,7 +17,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let n = 1024;
     let k = 1024;
 
-    let mut kernel = Kernel::new(Dev::Auto);
+    let mut kernel = Kernel::new(Dev::Cuda(0));
 
     //let m_c = kernel.const_idx(m as u32);
     //let n_c = kernel.const_idx(n as u32);
@@ -111,8 +111,8 @@ fn wmma_matmul() -> Result<(), ZyxError> {
         }
     };
 
-    let a = Tensor::rand([m, k], DType::F16)?;
-    let b = Tensor::rand([k, n], DType::F16)?;
+    let a = Tensor::rand([m, k], DType::F16)?.to(zyx::Dev::Cuda(0))?;
+    let b = Tensor::rand([k, n], DType::F16)?.to(zyx::Dev::Cuda(0))?;
     let a_host: Vec<f32> = a.clone().cast(DType::F32).try_into()?;
     let b_host: Vec<f32> = b.clone().cast(DType::F32).try_into()?;
 

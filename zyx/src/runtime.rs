@@ -226,13 +226,13 @@ use crate::{
     DType, Dev, Map, Scalar, Set, ZyxError,
     backend::{Buffer, DTypeCapability, DeviceProgramId, LaunchArg, Pool, ProgramId},
     dtype::Constant,
-    expr::{Expr, ExprId},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     rng::Rng,
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
+    symbolic::{Expr, ExprId},
     tensor::TensorId,
 };
 
@@ -310,7 +310,7 @@ pub enum TensorData {
         shape_id: ExprId,
         dtype: DType,
         rc: u16,
-        buffer_id: Buffer,
+        buffer: Buffer,
     },
     // Eager only
     //
@@ -638,10 +638,7 @@ impl Runtime {
             .into_iter()
             .map(|e| {
                 let mut memo = Map::default();
-                self.fold_dim(e, &mut memo)
-                    .0
-                    .as_dim()
-                    .expect("dim expression does not evaluate to an integer")
+                self.fold_dim(e, &mut memo).0.as_dim().expect("dim expression does not evaluate to an integer")
             })
             .collect()
     }
@@ -656,10 +653,7 @@ impl Runtime {
             .into_iter()
             .map(|e| {
                 let mut memo = Map::default();
-                self.fold_dim(e, &mut memo)
-                    .0
-                    .as_dim()
-                    .expect("dim expression does not evaluate to an integer")
+                self.fold_dim(e, &mut memo).0.as_dim().expect("dim expression does not evaluate to an integer")
             })
             .collect()
     }
@@ -696,9 +690,7 @@ impl Runtime {
                 dims.push(ResolvedDim::Symbolic(root));
                 continue;
             }
-            dims.push(ResolvedDim::Static(
-                value.as_dim().expect("dim expression does not evaluate to an integer"),
-            ));
+            dims.push(ResolvedDim::Static(value.as_dim().expect("dim expression does not evaluate to an integer")));
         }
         dims
     }
@@ -719,18 +711,11 @@ impl Runtime {
         // Scalars have no dims — but a Stack expression IS a shape value.
         if let TensorData::Symbolic { expr, .. } = self.tensors[x] {
             match &self.exprs[expr] {
-                Expr::Stack { .. }
-                | Expr::Stack2 { .. }
-                | Expr::Stack3 { .. }
-                | Expr::Stack4 { .. }
-                | Expr::Stack5 { .. } => {}
+                Expr::Stack { .. } | Expr::Stack2 { .. } | Expr::Stack3 { .. } | Expr::Stack4 { .. } | Expr::Stack5 { .. } => {}
                 _ => return Vec::new(),
             }
         }
-        exprs
-            .into_iter()
-            .map(|expr| self.tensors.push(TensorData::Symbolic { expr, rc: 1 }))
-            .collect()
+        exprs.into_iter().map(|expr| self.tensors.push(TensorData::Symbolic { expr, rc: 1 })).collect()
     }
 
     pub fn dtype(&self, x: TensorId) -> DType {
@@ -765,10 +750,9 @@ impl Runtime {
     pub(crate) fn is_graph(&self, x: TensorId) -> bool {
         match self.tensors[x] {
             TensorData::GraphLeaf { .. } | TensorData::Graph { .. } | TensorData::Promoted { .. } => true,
-            TensorData::Eager { .. }
-            | TensorData::Leaf { .. }
-            | TensorData::PendingLeaf { .. }
-            | TensorData::Symbolic { .. } => false,
+            TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. } => {
+                false
+            }
         }
     }
 
@@ -846,7 +830,7 @@ impl Runtime {
     /// not-yet-allocated pending tensors and non-Leaf tensors.
     pub(crate) fn leaf_buffer(&self, x: TensorId) -> Option<Buffer> {
         match self.tensors[x] {
-            TensorData::Leaf { buffer: buffer_id, .. } | TensorData::GraphLeaf { buffer_id, .. } => Some(buffer_id),
+            TensorData::Leaf { buffer, .. } | TensorData::GraphLeaf { buffer, .. } => Some(buffer),
             _ => None,
         }
     }
@@ -909,7 +893,7 @@ impl Runtime {
                 // Append-only expr slab: no children, no edges. Drop the handle only.
                 self.tensors.remove(x);
             }
-            TensorData::GraphLeaf { buffer_id, .. } => {
+            TensorData::GraphLeaf { buffer: buffer_id, .. } => {
                 // A realized Leaf owns a buffer (or borrows its `view_of`
                 // source's buffer). `free_buffer` deallocates owners and
                 // releases the source of views.
@@ -1764,10 +1748,7 @@ impl Runtime {
     /// kernel's load edge (released when the kernel dies or materializes).
     pub(crate) fn new_kernel_from_leaf(&mut self, x: TensorId) -> (KernelId, OpId) {
         debug_assert!(
-            matches!(
-                self.tensors[x],
-                TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } | TensorData::PendingLeaf { .. }
-            ),
+            matches!(self.tensors[x], TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } | TensorData::PendingLeaf { .. }),
             "new_kernel_from_leaf: tensor {x} has no resolved shape: {:?}",
             self.tensors[x]
         );
@@ -2037,8 +2018,7 @@ impl Runtime {
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
             }
-            TensorData::PendingLeaf { shape_id, dtype, .. }
-            | TensorData::Leaf { shape_id, dtype, .. } => {
+            TensorData::PendingLeaf { shape_id, dtype, .. } | TensorData::Leaf { shape_id, dtype, .. } => {
                 // A Leaf has no kernel to extend: mint a fresh load kernel
                 // for its buffer, then apply the unary op in it.
                 let (kernel_id, op_id) = self.new_kernel_from_leaf(x);
@@ -2654,12 +2634,7 @@ impl Runtime {
         // All pure-slab operands: the result is a slab Stack node (used both
         // for data-less symbolic stacks, e.g. shape expressions, and nothing
         // else — data stacking needs a kernel or graph below).
-        if tensors.iter().all(|&t| {
-            matches!(
-                self.tensors[t],
-                TensorData::Symbolic { .. }
-            )
-        }) {
+        if tensors.iter().all(|&t| matches!(self.tensors[t], TensorData::Symbolic { .. })) {
             // 1d shapes skip the Stack node entirely: the shape_id IS the
             // single dim tensor (shared, rc'd like any shape expression).
             if tensors.len() == 1 {
@@ -2868,11 +2843,13 @@ impl Runtime {
             // view-only reshape. The view retains x, so x (the owner)
             // outlives all its views and deallocates the buffer on death.
             if let Some(buf_id) = self.leaf_buffer(x) {
-                if !shape_expr.is_null() {
-
-                }
+                if !shape_expr.is_null() {}
                 let dtype = self.dtype(x);
                 self.retain(x);
+                // The view is a second owner of the pool buffer: pool-level
+                // retain pairs with the release in the Leaf death path, so a
+                // dying view never frees the owner's buffer early.
+                buf_id.pool.retain(buf_id.buffer_id);
                 let tid = self.tensors.push(TensorData::Leaf { shape_id: shape_expr, dtype, buffer: buf_id, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> eager: tid={tid} (Leaf, shares buffer with x={x})");
@@ -2888,9 +2865,7 @@ impl Runtime {
             );
             let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
             let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op);
-            if !shape_expr.is_null() {
-
-            }
+            if !shape_expr.is_null() {}
             let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
             debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
@@ -2975,9 +2950,7 @@ impl Runtime {
             let val_op = self.replay_symbolic_into_kernel(kid, x);
             let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);
             let op_id = self.kernels[kid].kernel.expand(val_op, shape_op);
-            if !shape_expr.is_null() {
-
-            }
+            if !shape_expr.is_null() {}
             let tid = self.tensors.push(TensorData::Eager { kernel_id: kid, op_id, shape_id: shape_expr, dtype, rc: 1 });
             self.kernels[kid].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
@@ -3308,8 +3281,7 @@ impl Runtime {
             | TensorData::Promoted { shape_id, .. } => shape_id,
             ref t => todo!("flip of pure-slab tensor {t:?}"),
         };
-        if shape_id != ExprId::NULL {
-        }
+        if shape_id != ExprId::NULL {}
 
         match self.tensors[x] {
             TensorData::Graph { class_id, graph_id, dtype, .. } | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
@@ -3889,9 +3861,7 @@ impl Runtime {
             debug_assert!(
                 matches!(
                     self.tensors[load],
-                    TensorData::Leaf { .. }
-                        | TensorData::PendingLeaf { .. }
-                        | TensorData::Symbolic { .. }
+                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. }
                 ),
                 "assign: replayed load {load} is not a leaf/pending leaf/symbolic"
             );
@@ -4045,7 +4015,7 @@ impl Runtime {
             (kid, op_id) = match self.tensors[x] {
                 TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
                 TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::GraphLeaf { .. } => {
-                    return Ok(self.new_kernel_from_leaf(x))
+                    return Ok(self.new_kernel_from_leaf(x));
                 }
                 ref t => panic!("duplicate_or_store: tensor {x} is not an eager/promoted tensor: {t:?}"),
             };
@@ -4413,10 +4383,7 @@ impl Runtime {
         // Every non-scalar load now has a buffer.
         for &tid in &self.kernels[kid].loads {
             assert!(
-                matches!(
-                    self.tensors[tid],
-                    TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } | TensorData::Symbolic { .. }
-                ),
+                matches!(self.tensors[tid], TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } | TensorData::Symbolic { .. }),
                 "materialize: load {tid} has no buffer after pending flush: {:?}",
                 self.tensors[tid]
             );
@@ -4655,7 +4622,7 @@ impl Runtime {
                 buf_id.pool.release(src);
                 // Record the new location in place: leaf_buffer reads the slab.
                 match &mut self.tensors[tid] {
-                    TensorData::Leaf { buffer: buffer_id, .. } | TensorData::GraphLeaf { buffer_id, .. } => {
+                    TensorData::Leaf { buffer: buffer_id, .. } | TensorData::GraphLeaf { buffer: buffer_id, .. } => {
                         *buffer_id = dst_global;
                     }
                     ref t => panic!("materialize: moved load {tid} has no buffer field: {t:?}"),
@@ -4712,8 +4679,7 @@ impl Runtime {
                 kernel_buffers.insert(buf);
                 continue;
             }
-            let bytes =
-                (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
+            let bytes = (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
             let alloc_bytes = bytes as Dim + Dim::from(dtypes[&tid].bit_size() / 8);
             let buf = pool_id.allocate(alloc_bytes)?;
             let global_id = Buffer { pool: pool_id, buffer_id: buf };
@@ -4788,9 +4754,7 @@ impl Runtime {
         // Leafs over their (kept or freshly allocated) buffer at once.
         for &tid in &stores {
             let (shape_id, dtype, rc, buf) = match self.tensors[tid] {
-                TensorData::PendingLeaf { shape_id, dtype, rc, old_buffer: Some(buf), .. } => {
-                    (shape_id, dtype, rc, buf)
-                }
+                TensorData::PendingLeaf { shape_id, dtype, rc, old_buffer: Some(buf), .. } => (shape_id, dtype, rc, buf),
                 ref t => panic!("materialize: store {tid} is not a realized pending leaf: {t:?}"),
             };
             self.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer: buf, rc };
