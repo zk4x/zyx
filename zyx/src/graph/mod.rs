@@ -20,12 +20,12 @@ use crate::{
     DType, Map, Set, ZyxError,
     backend::{Buffer, Dev, LaunchArg, Pool, PoolBufferId, ProgramId},
     dtype::Constant,
-    symbolic::{Expr, ExprId},
     kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     runtime::{KernelId, Runtime, TensorData},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
+    symbolic::{Expr, ExprId},
     tensor::TensorId,
 };
 
@@ -1695,8 +1695,7 @@ impl Runtime {
             self.retain(tid);
             self.graphs[graph_id].leaf_classes.push(class_id);
             self.graphs[graph_id].ref_count += 1;
-            self.tensors[tid] =
-                TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, rc: rc + 1, buffer: buffer_id };
+            self.tensors[tid] = TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, rc: rc + 1, buffer: buffer_id };
             return Ok(class_id);
         }
 
@@ -2107,14 +2106,8 @@ impl Runtime {
                                     // before the tape still keeps the
                                     // inventory consistent.
                                     let (shape_id, dtype, rc, buffer) = (*shape_id, *dtype, *rc, *buffer);
-                                    self.tensors[load_tid] = TensorData::GraphLeaf {
-                                        class_id,
-                                        graph_id,
-                                        shape_id,
-                                        dtype,
-                                        rc,
-                                        buffer,
-                                    };
+                                    self.tensors[load_tid] =
+                                        TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, rc, buffer };
                                 }
                                 ref t => panic!("promote_to_graph: cannot attach load tensor {load_tid} to the graph: {t:?}"),
                             }
@@ -2626,11 +2619,8 @@ impl Runtime {
         // extraction chose the same-device producer.
         // Leaf buffers collected into an owned map so the immutable borrow
         // ends before the &mut add call below.
-        let buffer_map: Map<TensorId, Buffer> = self.graphs[graph_id]
-            .leaf_map
-            .values()
-            .filter_map(|&tid| self.leaf_buffer(tid).map(|buf| (tid, buf)))
-            .collect();
+        let buffer_map: Map<TensorId, Buffer> =
+            self.graphs[graph_id].leaf_map.values().filter_map(|&tid| self.leaf_buffer(tid).map(|buf| (tid, buf))).collect();
         let nodes = self.graphs[graph_id].add_memory_ops(&buffer_map, &nodes);
 
         // Leaf pools at compile time — the plan bakes the alias binding (and
@@ -2667,11 +2657,7 @@ impl Runtime {
             // from realize's output loop, which always passes a real
             // buffer — drop never eagerifies Graph tensors.
             TensorData::Graph { graph_id, shape_id, dtype, rc, .. } => {
-                debug_assert_ne!(
-                    new_buffer_id,
-                    Buffer::NULL,
-                    "eagerify: realized graph tensor {tid} given a null buffer"
-                );
+                debug_assert_ne!(new_buffer_id, Buffer::NULL, "eagerify: realized graph tensor {tid} given a null buffer");
                 self.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer: new_buffer_id, rc };
                 graph_id
             }

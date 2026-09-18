@@ -416,13 +416,7 @@ impl Kernel {
                 continue;
             }
             let Op::Load { src, .. } = self.at(rest[i]) else { continue };
-            if !matches!(
-                self.at(*src),
-                Op::Storage {
-                    scope: MemScope::Circular,
-                    ..
-                }
-            ) {
+            if !matches!(self.at(*src), Op::Storage { scope: MemScope::Circular, .. }) {
                 continue;
             }
             for &(opener, closer) in &loop_bounds {

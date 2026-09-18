@@ -5,7 +5,7 @@
 
 #![allow(unused)]
 
-use crate::scalar::{bf16, f16, f8e4m3, f8e5m2};
+use crate::scalar::{bf16, f8e4m3, f8e5m2, f16};
 use crate::{
     Scalar, ZyxError,
     kernel::{BOp, IDX_T, UOp},
@@ -154,17 +154,16 @@ impl DType {
             I16 => matches!(dtype, I32 | I64 | U32 | U64 | F32 | F64),
             I32 => matches!(dtype, I64 | U64 | F64),
             I64 => false,
-            Bool => matches!(
-                dtype,
-                U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | F8E4M3 | F8E5M2 | F16 | BF16 | F32 | F64
-            ),
+            Bool => matches!(dtype, U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | F8E4M3 | F8E5M2 | F16 | BF16 | F32 | F64),
         }
     }
 
     pub(crate) fn least_upper_dtype(self, rhs: DType) -> DType {
         use DType::*;
         // define an ordered list of "widening" priority
-        let order = [Bool, U8, U16, U32, U64, I8, I16, I32, I64, F8E4M3, F8E5M2, BF16, F16, F32, F64];
+        let order = [
+            Bool, U8, U16, U32, U64, I8, I16, I32, I64, F8E4M3, F8E5M2, BF16, F16, F32, F64,
+        ];
 
         let i1 = order.iter().position(|&d| d == self).unwrap();
         let i2 = order.iter().position(|&d| d == rhs).unwrap();
@@ -653,7 +652,15 @@ impl Constant {
         }
         fn unary_func<T: Scalar>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::Reciprocal | UOp::Sqrt | UOp::Rsqrt | UOp::Sin | UOp::Cos | UOp::Floor | UOp::Trunc | UOp::Abs | UOp::Exp => {
+                UOp::Reciprocal
+                | UOp::Sqrt
+                | UOp::Rsqrt
+                | UOp::Sin
+                | UOp::Cos
+                | UOp::Floor
+                | UOp::Trunc
+                | UOp::Abs
+                | UOp::Exp => {
                     unreachable!()
                 }
                 UOp::BitNot => unreachable!(),
@@ -686,12 +693,8 @@ impl Constant {
             Constant::F16(x) => Constant::F16(unary_func_float(f16::from_le_bytes(x), uop).to_le_bytes()),
             Constant::F32(x) => Constant::F32(unary_func_float(f32::from_le_bytes(x), uop).to_le_bytes()),
             Constant::F64(x) => Constant::F64(unary_func_float(f64::from_le_bytes(x), uop).to_le_bytes()),
-            Constant::F8E4M3(x) => {
-                Constant::F8E4M3(unary_func_float(f8e4m3::from_bits(x), uop).to_bits())
-            }
-            Constant::F8E5M2(x) => {
-                Constant::F8E5M2(unary_func_float(f8e5m2::from_bits(x), uop).to_bits())
-            }
+            Constant::F8E4M3(x) => Constant::F8E4M3(unary_func_float(f8e4m3::from_bits(x), uop).to_bits()),
+            Constant::F8E5M2(x) => Constant::F8E5M2(unary_func_float(f8e5m2::from_bits(x), uop).to_bits()),
             Constant::U8(x) => Constant::U8(unary_func(x, uop)),
             Constant::U16(x) => Constant::U16(unary_func(x, uop)),
             Constant::U32(x) => Constant::U32(unary_func(x, uop)),

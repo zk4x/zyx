@@ -590,13 +590,16 @@ impl Runtime {
         }
     }
 
-    /// Buffer backing a realized `Leaf`, or a `LeafPending` whose buffer
-    /// already exists (assign-pending in-place write) — `None` for
-    /// not-yet-allocated pending tensors and non-Leaf tensors.
+    /// Buffer backing a realized `Leaf` or `GraphLeaf` — `None` for pending
+    /// tensors (a pending leaf has no buffer yet) and every other variant.
     pub(crate) fn leaf_buffer(&self, x: TensorId) -> Option<Buffer> {
         match self.tensors[x] {
             TensorData::Leaf { buffer, .. } | TensorData::GraphLeaf { buffer, .. } => Some(buffer),
-            _ => None,
+            TensorData::PendingLeaf { .. }
+            | TensorData::Eager { .. }
+            | TensorData::Graph { .. }
+            | TensorData::Promoted { .. }
+            | TensorData::Symbolic { .. } => None,
         }
     }
 
@@ -1015,7 +1018,7 @@ impl Runtime {
                         );
                     }
                 }
-                _ => {}
+                TensorData::GraphLeaf { .. } | TensorData::Graph { .. } | TensorData::Symbolic { .. } => {}
             }
         }
         for (kid, kd) in self.kernels.iter() {
@@ -1026,13 +1029,8 @@ impl Runtime {
             for &tid in &kd.loads {
                 assert!(!kd.stores.contains(&tid), "verify: kernel {kid:?} both loads and stores tid {tid}");
             }
-            if !kd.outputs.is_empty() {
-                match &kd.kernel.ops[kd.kernel.tail].op {
-                    Op::Param { .. } => {
-                        panic!("verify: kernel {kid:?} with outputs ends in a bare Param op (pure-load kernel — use a Leaf)");
-                    }
-                    _ => {}
-                }
+            if !kd.outputs.is_empty() && matches!(&kd.kernel.ops[kd.kernel.tail].op, Op::Param { .. }) {
+                panic!("verify: kernel {kid:?} with outputs ends in a bare Param op (pure-load kernel — use a Leaf)");
             }
         }
     }
@@ -1051,7 +1049,12 @@ impl Runtime {
                 TensorData::Graph { graph_id: g, rc, .. } | TensorData::Promoted { graph_id: g, rc, .. } if *g == graph_id => {
                     *rc > 0
                 }
-                _ => false,
+                TensorData::Graph { .. } | TensorData::Promoted { .. } => false,
+                TensorData::Eager { .. }
+                | TensorData::Leaf { .. }
+                | TensorData::PendingLeaf { .. }
+                | TensorData::GraphLeaf { .. }
+                | TensorData::Symbolic { .. } => false,
             })
             .count();
         assert_eq!(
@@ -1343,7 +1346,17 @@ impl Runtime {
         match self.tensors[x] {
             TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
                 Expr::Constant { value } => self.new_constant_tensor(value.unary(uop)),
-                _ => {
+                // Variable/Cast/Unary/Binary/Stack*: unary of any non-constant
+                // expression is itself a symbolic expression.
+                Expr::Variable { .. }
+                | Expr::Cast { .. }
+                | Expr::Unary { .. }
+                | Expr::Binary { .. }
+                | Expr::Stack { .. }
+                | Expr::Stack2 { .. }
+                | Expr::Stack3 { .. }
+                | Expr::Stack4 { .. }
+                | Expr::Stack5 { .. } => {
                     let root = self.intern(Expr::Unary { x: expr, uop });
                     self.tensors.push(TensorData::Symbolic { expr: root, rc: 1 })
                 }
@@ -1451,7 +1464,7 @@ impl Runtime {
                 | TensorData::GraphLeaf { shape_id, .. }
                 | TensorData::Graph { shape_id, .. }
                 | TensorData::Promoted { shape_id, .. } => shape_id,
-                _ => ExprId::NULL,
+                TensorData::Symbolic { .. } => ExprId::NULL,
             };
             let sb = match rt.tensors[b] {
                 TensorData::Eager { shape_id, .. }
@@ -1460,7 +1473,7 @@ impl Runtime {
                 | TensorData::GraphLeaf { shape_id, .. }
                 | TensorData::Graph { shape_id, .. }
                 | TensorData::Promoted { shape_id, .. } => shape_id,
-                _ => ExprId::NULL,
+                TensorData::Symbolic { .. } => ExprId::NULL,
             };
             if sa.is_null() { sb } else { sa }
         }
@@ -1572,14 +1585,20 @@ impl Runtime {
             let (mut kid_x, mut op_id_x) = match self.tensors[x] {
                 TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
                 TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(x),
-                TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                TensorData::Graph { .. }
+                | TensorData::GraphLeaf { .. }
+                | TensorData::Promoted { .. }
+                | TensorData::Symbolic { .. } => {
                     panic!("binary: operand tid {x} is not an eager tensor: {:?}", self.tensors[x])
                 }
             };
             let (mut kid_y, mut op_id_y) = match self.tensors[y] {
                 TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
                 TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(y),
-                TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                TensorData::Graph { .. }
+                | TensorData::GraphLeaf { .. }
+                | TensorData::Promoted { .. }
+                | TensorData::Symbolic { .. } => {
                     panic!("binary: operand tid {y} is not an eager tensor: {:?}", self.tensors[y])
                 }
             };
@@ -1607,7 +1626,9 @@ impl Runtime {
                     TensorData::Graph { .. }
                     | TensorData::GraphLeaf { .. }
                     | TensorData::Promoted { .. }
-                    | TensorData::Symbolic { .. } => unreachable!("add_store turned operand into unexpected data: {:?}", self.tensors[x]),
+                    | TensorData::Symbolic { .. } => {
+                        unreachable!("add_store turned operand into unexpected data: {:?}", self.tensors[x])
+                    }
                 };
                 (kid_y, op_id_y) = match self.tensors[y] {
                     TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
@@ -1615,7 +1636,9 @@ impl Runtime {
                     TensorData::Graph { .. }
                     | TensorData::GraphLeaf { .. }
                     | TensorData::Promoted { .. }
-                    | TensorData::Symbolic { .. } => unreachable!("add_store turned operand into unexpected data: {:?}", self.tensors[y]),
+                    | TensorData::Symbolic { .. } => {
+                        unreachable!("add_store turned operand into unexpected data: {:?}", self.tensors[y])
+                    }
                 };
 
                 let swap = self.kernels[kid_y].kernel.is_reduce() && !self.kernels[kid_x].kernel.is_reduce();
@@ -1648,8 +1671,8 @@ impl Runtime {
     /// Returns the device the tensor lives on.
     ///
     /// Realized tensors map through their buffer's pool to the owning device;
-    /// unrealized eager tensors use their kernel's device; graph/slab tensors
-    /// have no device and return [`Dev::Auto`](Dev::Auto).
+    /// unrealized eager and promoted tensors use their kernel's device; graph
+    /// and slab tensors have no device and return [`Dev::Auto`](Dev::Auto).
     ///
     /// # Panics
     ///
@@ -1669,7 +1692,7 @@ impl Runtime {
             };
         }
         match self.tensors[x] {
-            TensorData::Eager { kernel_id, .. } => self.kernels[kernel_id].kernel.dev,
+            TensorData::Eager { kernel_id, .. } | TensorData::Promoted { kernel_id, .. } => self.kernels[kernel_id].kernel.dev,
             // A kept buffer reports its pool's device, same mapping as
             // realized tensors above; otherwise the producer kernel's device.
             TensorData::PendingLeaf { old_buffer: Some(buf_id), .. } => match buf_id.pool {
@@ -1681,10 +1704,11 @@ impl Runtime {
                     )
                 }),
             },
-            TensorData::PendingLeaf { depends_on, .. } if !depends_on.is_null() => {
-                self.kernels[depends_on].kernel.dev
-            }
-            _ => Dev::Auto,
+            TensorData::PendingLeaf { depends_on, .. } if !depends_on.is_null() => self.kernels[depends_on].kernel.dev,
+            // Leaf/GraphLeaf always carry a buffer (handled by the early
+            // return above); a null-depends_on PendingLeaf is unparented.
+            TensorData::PendingLeaf { .. } => Dev::Auto,
+            TensorData::Leaf { .. } | TensorData::GraphLeaf { .. } | TensorData::Graph { .. } | TensorData::Symbolic { .. } => Dev::Auto,
         }
     }
 
@@ -2040,7 +2064,12 @@ impl Runtime {
             for &t in tensors {
                 let is_pure_const = match self.tensors[t] {
                     TensorData::Symbolic { expr, .. } => matches!(self.exprs[expr], Expr::Constant { .. }),
-                    _ => false,
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::GraphLeaf { .. }
+                    | TensorData::Graph { .. }
+                    | TensorData::Promoted { .. } => false,
                 };
                 if !self.is_graph(t) && !is_pure_const {
                     self.promote_to_graph(t, graph_id)?;
@@ -2080,7 +2109,10 @@ impl Runtime {
             let keep_kid = match self.tensors[tensors[0]] {
                 TensorData::Eager { kernel_id, .. } => kernel_id,
                 TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(tensors[0]).0,
-                TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                TensorData::Graph { .. }
+                | TensorData::GraphLeaf { .. }
+                | TensorData::Promoted { .. }
+                | TensorData::Symbolic { .. } => {
                     panic!("stack: operand tid {} is not an eager tensor: {:?}", tensors[0], self.tensors[tensors[0]])
                 }
             };
@@ -2089,7 +2121,10 @@ impl Runtime {
                 let (mut kid, mut op) = match self.tensors[t] {
                     TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
                     TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
-                    TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                    TensorData::Graph { .. }
+                    | TensorData::GraphLeaf { .. }
+                    | TensorData::Promoted { .. }
+                    | TensorData::Symbolic { .. } => {
                         panic!("stack: operand is not an eager tensor: {:?}", self.tensors[t])
                     }
                 };
@@ -2199,7 +2234,10 @@ impl Runtime {
                     assert!(g == graph_id, "reshape: shape belongs to a different tape scope");
                     class_id
                 }
-                _ => self.replay_symbolic_into_graph(graph_id, shape_id),
+                TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, shape_id),
+                TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
+                    panic!("reshape: shape operand {shape_id} is a data tensor, not a symbolic shape")
+                }
             };
             let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape: shape_class });
             {
@@ -2332,7 +2370,10 @@ impl Runtime {
                 let force_store = match self.tensors[x] {
                     TensorData::Eager { kernel_id, op_id, .. } => self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id),
                     TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => false,
-                    TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } | TensorData::Symbolic { .. } => {
+                    TensorData::Graph { .. }
+                    | TensorData::GraphLeaf { .. }
+                    | TensorData::Promoted { .. }
+                    | TensorData::Symbolic { .. } => {
                         panic!("expand: operand tid {x} is not an eager tensor: {:?}", self.tensors[x])
                     }
                 };
@@ -3034,7 +3075,8 @@ impl Runtime {
                 println!("  -> assign_cid={assign_cid:?}");
                 return Ok(());
             }
-            TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. } => {}
+            TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. } => {
+            }
         }
         // Merge dst's (movement-only) kernel ops into src's kernel, then store
         // src's value into dst's base buffer in-place. A Leaf src has no
@@ -3147,7 +3189,7 @@ impl Runtime {
                             .into(),
                     ));
                 }
-                _ => return Err(ZyxError::ShapeError(
+                (Some(_), Some(_)) => return Err(ZyxError::ShapeError(
                     "assign: dst kernel contains more than one buffer load; dst must be a movement-only view of exactly one base"
                         .into(),
                 )),
@@ -3206,8 +3248,20 @@ impl Runtime {
                 Op::Param { .. } => {
                     break;
                 }
-                _ => {}
+                ref op => {
+                    return Err(ZyxError::ShapeError(
+                        format!(
+                            "assign: dst movement chain contains a non-Move op {op:?}; the dst base must bottom out in a Param"
+                        )
+                        .into(),
+                    ));
+                }
             }
+        }
+        if !matches!(kernel.ops[dst_param].op, Op::Param { .. }) {
+            return Err(ZyxError::ShapeError(
+                "assign: dst movement chain exceeds 100 Move ops; the dst base does not bottom out in a Param".into(),
+            ));
         }
 
         // Replay dst's movement chain into src's kernel. The replayed base
@@ -3264,24 +3318,21 @@ impl Runtime {
                         op_map.get(p).copied().expect("assign replay: dependency was not copied before its user despite closure");
                 }
                 let mut new_def_load: Option<TensorId> = None;
-                match &mut op {
-                    Op::Param { kind, .. } => {
-                        // Assign turns dst's base from a load into a PURE
-                        // STORE: it must NOT register in loads — its buffer
-                        // slot comes via `stores` instead (see KernelData docs).
-                        if op_id == dst_param {
-                            *kind = ParamKind::GlobalMut;
-                        }
-                        assert!(
-                            matches!(kind, ParamKind::GlobalMut | ParamKind::Variable),
-                            "assign: unexpected param kind {kind:?} in dst movement kernel"
-                        );
-                        if *kind != ParamKind::GlobalMut {
-                            new_def_load = Some(loads[def_i]);
-                        }
-                        def_i += 1;
+                if let Op::Param { kind, .. } = &mut op {
+                    // Assign turns dst's base from a load into a PURE
+                    // STORE: it must NOT register in loads — its buffer
+                    // slot comes via `stores` instead (see KernelData docs).
+                    if op_id == dst_param {
+                        *kind = ParamKind::GlobalMut;
                     }
-                    _ => {}
+                    assert!(
+                        matches!(kind, ParamKind::GlobalMut | ParamKind::Variable),
+                        "assign: unexpected param kind {kind:?} in dst movement kernel"
+                    );
+                    if *kind != ParamKind::GlobalMut {
+                        new_def_load = Some(loads[def_i]);
+                    }
+                    def_i += 1;
                 }
                 let new_id = self.kernels[src_kid].kernel.push_back(op);
                 if let Some(load) = new_def_load {
@@ -3555,7 +3606,11 @@ impl Runtime {
         for (_tid, t_data) in self.tensors.iter_mut() {
             let (kernel_id, op_id) = match t_data {
                 TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
-                _ => continue,
+                TensorData::Leaf { .. }
+                | TensorData::PendingLeaf { .. }
+                | TensorData::GraphLeaf { .. }
+                | TensorData::Graph { .. }
+                | TensorData::Symbolic { .. } => continue,
             };
             if *kernel_id == merge_kid {
                 debug_assert_ne!(keep_kid, merge_kid);
@@ -3769,7 +3824,9 @@ impl Runtime {
                     device_label: device_id.name(),
                     cc: match device_id {
                         Dev::Cuda(_) => Some(dev_info.cc),
-                        _ => None,
+                        Dev::Auto | Dev::C | Dev::Cblas | Dev::Vulkan(_) | Dev::OpenCL(_) | Dev::WGPU(_) | Dev::Dummy => None,
+                        #[cfg(feature = "tenstorrent")]
+                        Dev::TT(_) => None,
                     },
                     has_openmp: dev_info.has_openmp,
                 }
@@ -3820,7 +3877,12 @@ impl Runtime {
                     debug_assert!(!depends_on.is_null(), "materialize: PendingLeaf {tid} with null depends_on");
                     Some(depends_on)
                 }
-                _ => None,
+                TensorData::Eager { .. }
+                | TensorData::Leaf { .. }
+                | TensorData::GraphLeaf { .. }
+                | TensorData::Graph { .. }
+                | TensorData::Promoted { .. }
+                | TensorData::Symbolic { .. } => None,
             })
             .collect();
         for pending_kid in pending_kids {
@@ -3933,7 +3995,12 @@ impl Runtime {
             // (add_store re-homed it without a kernel).
             let pending = match self.tensors[load] {
                 TensorData::PendingLeaf { depends_on, .. } => depends_on,
-                _ => KernelId::NULL,
+                TensorData::Eager { .. }
+                | TensorData::Leaf { .. }
+                | TensorData::GraphLeaf { .. }
+                | TensorData::Graph { .. }
+                | TensorData::Promoted { .. }
+                | TensorData::Symbolic { .. } => KernelId::NULL,
             };
             if pending.is_null() {
                 continue;
@@ -4178,7 +4245,12 @@ impl Runtime {
                     Expr::Variable { value } => Some(value),
                     ref e => panic!("materialize: symbolic load {tid} is not a variable: {e:?}"),
                 },
-                _ => None,
+                TensorData::Eager { .. }
+                | TensorData::Leaf { .. }
+                | TensorData::PendingLeaf { .. }
+                | TensorData::GraphLeaf { .. }
+                | TensorData::Graph { .. }
+                | TensorData::Promoted { .. } => None,
             };
             if let Some(value) = var_value {
                 buffers.push(LaunchArg::Variable(value));

@@ -738,11 +738,7 @@ impl Kernel {
                                 }
                             };
                             _ = writeln!(comp.body, "{indent}setp.eq.{t} %r{pred}, %r{x}, {zero};", indent = comp.indent);
-                            _ = writeln!(
-                                comp.body,
-                                "{indent}selp.{t} %r{reg}, {one}, {zero}, %r{pred};",
-                                indent = comp.indent
-                            );
+                            _ = writeln!(comp.body, "{indent}selp.{t} %r{reg}, {one}, {zero}, %r{pred};", indent = comp.indent);
                             comp.release_reg(pred);
                         }
                         UOp::BitNot => {

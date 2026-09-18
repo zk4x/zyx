@@ -598,8 +598,8 @@ impl Tensor {
             let end = rest.find(|c| c == ',' || c == '}').unwrap_or(rest.len());
             Some(rest[..end].trim().to_string())
         };
-        let descr = field("descr")
-            .ok_or_else(|| ZyxError::parse_error(format!("numpy header missing 'descr' in {path:?}").into()))?;
+        let descr =
+            field("descr").ok_or_else(|| ZyxError::parse_error(format!("numpy header missing 'descr' in {path:?}").into()))?;
         let descr = descr.trim_matches(|c| c == '\'' || c == '"').to_string();
         let fortran = field("fortran_order").unwrap_or_default();
         if fortran.contains("True") {
@@ -620,9 +620,9 @@ impl Tensor {
             .split(',')
             .filter(|d| !d.trim().is_empty())
             .map(|d| {
-                d.trim().parse::<Dim>().map_err(|e| {
-                    ZyxError::parse_error(format!("Cannot parse numpy shape '{shape_str}': {e} in {path:?}").into())
-                })
+                d.trim()
+                    .parse::<Dim>()
+                    .map_err(|e| ZyxError::parse_error(format!("Cannot parse numpy shape '{shape_str}': {e} in {path:?}").into()))
             })
             .collect::<Result<_, ZyxError>>()?;
         let dtype = match descr.as_str() {

@@ -303,12 +303,7 @@ impl FusedKind {
     /// only by the pattern (the single call transforms its slot in
     /// place). Anything else falls back to the plain composite —
     /// slower, never wrong.
-    fn match_pat(
-        kernel: &Kernel,
-        data: &SectionData,
-        consumers: &Map<OpId, Vec<OpId>>,
-        op: OpId,
-    ) -> Option<FusedPat> {
+    fn match_pat(kernel: &Kernel, data: &SectionData, consumers: &Map<OpId, Vec<OpId>>, op: OpId) -> Option<FusedPat> {
         let (dt, layout) = data.dtypes.get(&op).copied()?;
         if !matches!(layout, MemLayout::Tile { .. }) || !matches!(dt, DType::F32 | DType::BF16) {
             return None;
@@ -366,12 +361,7 @@ impl FusedKind {
     /// Silu shape at `op`: `mul(x, s)` (either side) with `s` a
     /// sigmoid shape fed by the mul's other side. `s` itself goes
     /// (its only consumer is the mul); the root stays.
-    fn silu_pat(
-        kernel: &Kernel,
-        data: &SectionData,
-        consumers: &Map<OpId, Vec<OpId>>,
-        op: OpId,
-    ) -> Option<FusedPat> {
+    fn silu_pat(kernel: &Kernel, data: &SectionData, consumers: &Map<OpId, Vec<OpId>>, op: OpId) -> Option<FusedPat> {
         let Op::Binary { x: a, y: b, bop: BOp::Mul } = kernel.at(op) else {
             return None;
         };
@@ -387,9 +377,7 @@ impl FusedKind {
             if !below.iter().all(|&inner| uses_within(consumers, inner, &allowed)) {
                 continue;
             }
-            let Some(&entry) =
-                below.iter().find(|&&o| matches!(kernel.at(o), Op::Unary { x: ix, .. } if *ix == x))
-            else {
+            let Some(&entry) = below.iter().find(|&&o| matches!(kernel.at(o), Op::Unary { x: ix, .. } if *ix == x)) else {
                 continue;
             };
             if !uses_exactly(consumers, x, &[entry, op]) {
@@ -404,20 +392,11 @@ impl FusedKind {
 
     /// Standalone sigmoid shape at `op`: the root stays, only the ops
     /// below it go.
-    fn sigmoid_pat(
-        kernel: &Kernel,
-        data: &SectionData,
-        consumers: &Map<OpId, Vec<OpId>>,
-        op: OpId,
-    ) -> Option<FusedPat> {
+    fn sigmoid_pat(kernel: &Kernel, data: &SectionData, consumers: &Map<OpId, Vec<OpId>>, op: OpId) -> Option<FusedPat> {
         let Some((x, below)) = Self::sigmoid_shape(kernel, data, op) else {
             return None;
         };
-        let entry = below
-            .iter()
-            .find(|&&o| matches!(kernel.at(o), Op::Unary { x: ix, .. } if *ix == x))
-            .copied()
-            .unwrap_or(x);
+        let entry = below.iter().find(|&&o| matches!(kernel.at(o), Op::Unary { x: ix, .. } if *ix == x)).copied().unwrap_or(x);
         let mut allowed = below.clone();
         allowed.push(op);
         if !below.iter().all(|&inner| uses_within(consumers, inner, &allowed)) {
@@ -3395,8 +3374,9 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         writeln!(src, "#include <cstdint>");
         writeln!(src, "#include \"api/compute/common.h\"");
         writeln!(src, "#include \"api/compute/compute_kernel_api.h\"");
-                writeln!(src, "#include \"api/compute/eltwise_binary_sfpu.h\"");
-        writeln!(src, "#include \"api/compute/eltwise_unary/binop_with_scalar.h\"");        writeln!(src, "#include \"api/compute/tile_move_copy.h\"");
+        writeln!(src, "#include \"api/compute/eltwise_binary_sfpu.h\"");
+        writeln!(src, "#include \"api/compute/eltwise_unary/binop_with_scalar.h\"");
+        writeln!(src, "#include \"api/compute/tile_move_copy.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/eltwise_unary.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/trigonometry.h\"");
         writeln!(src, "#include \"api/compute/eltwise_unary/exp.h\"");
@@ -3523,8 +3503,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         if let Some(pat) = self.tl.fused.get(&op_id).cloned() {
                             let tile = self.tl.tile_map.get(&pat.x).copied().ok_or_else(|| BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: fused op reads a value with no DST slot, op {op_id}")
-                                    .into(),
+                                context: format!("tenstorrent2: fused op reads a value with no DST slot, op {op_id}").into(),
                             })?;
                             self.tl.math_lock(&mut src, &indent);
                             debug_assert_eq!(self.tl.state, TileState::MathLock, "tenstorrent2: fused without MATH lock");
@@ -3563,8 +3542,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         if let Some(pat) = self.tl.fused.get(&op_id).cloned() {
                             let tile = self.tl.tile_map.get(&pat.x).copied().ok_or_else(|| BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!("tenstorrent2: fused op reads a value with no DST slot, op {op_id}")
-                                    .into(),
+                                context: format!("tenstorrent2: fused op reads a value with no DST slot, op {op_id}").into(),
                             })?;
                             self.tl.math_lock(&mut src, &indent);
                             debug_assert_eq!(self.tl.state, TileState::MathLock, "tenstorrent2: fused without MATH lock");
@@ -3584,105 +3562,114 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                             // CB-based broadcast form; otherwise the
                             // DST-register form.
                             let marker = |side: OpId| match kernel.ops[side].op {
-                            Op::BroadcastTile { x: mx, kind } => Some((kind, mx)),
-                            _ => None,
-                        };
-                        let plain_cb = |side: OpId| match kernel.ops[side].op {
-                            Op::Load { src: lsrc, .. } => self.cb.map.get(&lsrc).copied(),
-                            _ => None,
-                        };
-                        match (marker(x), marker(y)) {
-                            (Some((kind, mx)), None) => {
-                                let (Some(cb_b), Some(cb_a)) = (plain_cb(mx), plain_cb(y)) else {
-                                    return Err(BackendError {
-                                        status: ErrorStatus::KernelCompilation,
-                                        context: format!("tenstorrent2: broadcast op {op_id} side is no CB tile load").into(),
-                                    });
-                                };
-                                let rc = compute_data.rcs[&op_id];
-                                self.tl.bcast(&mut src, &indent, &mut self.cb, op_id, cb_a, cb_b, bop, kind, rc);
-                            }
-                            (None, Some((kind, my))) => {
-                                let (Some(cb_b), Some(cb_a)) = (plain_cb(my), plain_cb(x)) else {
-                                    return Err(BackendError {
-                                        status: ErrorStatus::KernelCompilation,
-                                        context: format!("tenstorrent2: broadcast op {op_id} side is no CB tile load").into(),
-                                    });
-                                };
-                                let rc = compute_data.rcs[&op_id];
-                                self.tl.bcast(&mut src, &indent, &mut self.cb, op_id, cb_a, cb_b, bop, kind, rc);
-                            }
-                            (Some(_), Some(_)) => {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: format!("tenstorrent2: broadcast op {op_id} marks both sides").into(),
-                                });
-                            }
-                            (None, None) => {
-                                // Const side folds into the immediate
-                                // form: (call name, tile side). Add/Mul
-                                // commute; Sub picks sub/rsub by side;
-                                // const-first Div has no call (loud).
-                                let xc = const_f32_bits(kernel, x);
-                                let yc = const_f32_bits(kernel, y);
-                                let scalar = match (xc, yc) {
-                                    (None, Some(bits)) => Some(("tile", bits, x)),
-                                    (Some(bits), None) => Some(("const", bits, y)),
-                                    _ => None,
-                                };
-                                if let Some((side, bits, tile_op)) = scalar {
-                                    let name = match (bop, side) {
-                                        (BOp::Add, _) => "add_unary_tile",
-                                        (BOp::Mul, _) => "mul_unary_tile",
-                                        (BOp::Sub, "tile") => "sub_unary_tile",
-                                        (BOp::Sub, _) => "rsub_unary_tile",
-                                        (BOp::Div, "tile") => "div_unary_tile",
-                                        _ => {
-                                            return Err(BackendError {
-                                                status: ErrorStatus::KernelCompilation,
-                                                context: format!("tenstorrent2: const-first {bop:?} has no scalar call, op {op_id}").into(),
-                                            });
-                                        }
-                                    };
-                                    let t = self.tl.tile_map.get(&tile_op).copied().ok_or_else(|| BackendError {
-                                        status: ErrorStatus::KernelCompilation,
-                                        context: format!("tenstorrent2: scalar binary reads a value with no DST slot, op {op_id}")
-                                            .into(),
-                                    })?;
-                                    // The scalar call mutates the operand's
-                                    // DST slot in place. A second consumer of
-                                    // the operand (e.g. `n = cv - 16*trunc(cv/16)`)
-                                    // would read the mutated value: Tenstorrent
-                                    // has no DST->DST copy, so multi-use operands
-                                    // must be duplicated in a dataflow fashion —
-                                    // pack the operand into a Circular storage
-                                    // and copy_tile it back per use.
-                                    if compute_data.rcs[&tile_op] != 1 {
+                                Op::BroadcastTile { x: mx, kind } => Some((kind, mx)),
+                                _ => None,
+                            };
+                            let plain_cb = |side: OpId| match kernel.ops[side].op {
+                                Op::Load { src: lsrc, .. } => self.cb.map.get(&lsrc).copied(),
+                                _ => None,
+                            };
+                            match (marker(x), marker(y)) {
+                                (Some((kind, mx)), None) => {
+                                    let (Some(cb_b), Some(cb_a)) = (plain_cb(mx), plain_cb(y)) else {
                                         return Err(BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!("tenstorrent2: broadcast op {op_id} side is no CB tile load").into(),
+                                        });
+                                    };
+                                    let rc = compute_data.rcs[&op_id];
+                                    self.tl.bcast(&mut src, &indent, &mut self.cb, op_id, cb_a, cb_b, bop, kind, rc);
+                                }
+                                (None, Some((kind, my))) => {
+                                    let (Some(cb_b), Some(cb_a)) = (plain_cb(my), plain_cb(x)) else {
+                                        return Err(BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!("tenstorrent2: broadcast op {op_id} side is no CB tile load").into(),
+                                        });
+                                    };
+                                    let rc = compute_data.rcs[&op_id];
+                                    self.tl.bcast(&mut src, &indent, &mut self.cb, op_id, cb_a, cb_b, bop, kind, rc);
+                                }
+                                (Some(_), Some(_)) => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: broadcast op {op_id} marks both sides").into(),
+                                    });
+                                }
+                                (None, None) => {
+                                    // Const side folds into the immediate
+                                    // form: (call name, tile side). Add/Mul
+                                    // commute; Sub picks sub/rsub by side;
+                                    // const-first Div has no call (loud).
+                                    let xc = const_f32_bits(kernel, x);
+                                    let yc = const_f32_bits(kernel, y);
+                                    let scalar = match (xc, yc) {
+                                        (None, Some(bits)) => Some(("tile", bits, x)),
+                                        (Some(bits), None) => Some(("const", bits, y)),
+                                        _ => None,
+                                    };
+                                    if let Some((side, bits, tile_op)) = scalar {
+                                        let name = match (bop, side) {
+                                            (BOp::Add, _) => "add_unary_tile",
+                                            (BOp::Mul, _) => "mul_unary_tile",
+                                            (BOp::Sub, "tile") => "sub_unary_tile",
+                                            (BOp::Sub, _) => "rsub_unary_tile",
+                                            (BOp::Div, "tile") => "div_unary_tile",
+                                            _ => {
+                                                return Err(BackendError {
+                                                    status: ErrorStatus::KernelCompilation,
+                                                    context: format!(
+                                                        "tenstorrent2: const-first {bop:?} has no scalar call, op {op_id}"
+                                                    )
+                                                    .into(),
+                                                });
+                                            }
+                                        };
+                                        let t = self.tl.tile_map.get(&tile_op).copied().ok_or_else(|| BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!(
+                                                "tenstorrent2: scalar binary reads a value with no DST slot, op {op_id}"
+                                            )
+                                            .into(),
+                                        })?;
+                                        // The scalar call mutates the operand's
+                                        // DST slot in place. A second consumer of
+                                        // the operand (e.g. `n = cv - 16*trunc(cv/16)`)
+                                        // would read the mutated value: Tenstorrent
+                                        // has no DST->DST copy, so multi-use operands
+                                        // must be duplicated in a dataflow fashion —
+                                        // pack the operand into a Circular storage
+                                        // and copy_tile it back per use.
+                                        if compute_data.rcs[&tile_op] != 1 {
+                                            return Err(BackendError {
                                             status: ErrorStatus::KernelCompilation,
                                             context: format!("tenstorrent2: scalar binary {op_id} reads a multi-use operand: the scalar call mutates the DST slot in place and Tenstorrent has no DST->DST copy, so spill the operand to a Circular storage and load it back once per use (load_circular/store_circular, dataflow style)")
                                                 .into(),
                                         });
+                                        }
+                                        self.tl.bin_scalar(&mut src, &indent, op_id, t, name, bits, compute_data.rcs[&op_id]);
+                                    } else {
+                                        // Tiled binary: three-operand form, inputs stay
+                                        // live, result in a fresh slot.
+                                        let ta = self.tl.tile_map.get(&x).copied().ok_or_else(|| BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!(
+                                                "tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}"
+                                            )
+                                            .into(),
+                                        })?;
+                                        let tb = self.tl.tile_map.get(&y).copied().ok_or_else(|| BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!(
+                                                "tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}"
+                                            )
+                                            .into(),
+                                        })?;
+                                        let rc = compute_data.rcs[&op_id];
+                                        self.tl.binary(&mut src, &indent, op_id, ta, tb, bop, rc);
                                     }
-                                    self.tl.bin_scalar(&mut src, &indent, op_id, t, name, bits, compute_data.rcs[&op_id]);
-                                } else {
-                                    // Tiled binary: three-operand form, inputs stay
-                                    // live, result in a fresh slot.
-                                    let ta = self.tl.tile_map.get(&x).copied().ok_or_else(|| BackendError {
-                                        status: ErrorStatus::KernelCompilation,
-                                        context: format!("tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}")
-                                            .into(),
-                                    })?;
-                                    let tb = self.tl.tile_map.get(&y).copied().ok_or_else(|| BackendError {
-                                        status: ErrorStatus::KernelCompilation,
-                                        context: format!("tenstorrent2: tiled binary reads a value with no DST slot, op {op_id}")
-                                            .into(),
-                                    })?;
-                                    let rc = compute_data.rcs[&op_id];
-                                    self.tl.binary(&mut src, &indent, op_id, ta, tb, bop, rc);
                                 }
                             }
-                        }
                         }
                     } else {
                         em.emit_op(&mut src, &indent, op_id, compute_data, &self.noc, scope_level)?;
@@ -3801,7 +3788,10 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
                         for &consumer in &compute_data.ops {
                             if kernel.ops[consumer].op.parameters().any(|p| p == op_id) {
                                 if match kernel.ops[consumer].op {
-                                    Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. } | Op::BroadcastTile { .. } => true,
+                                    Op::ReduceTile { .. }
+                                    | Op::MatmulTile { .. }
+                                    | Op::TransposeTile { .. }
+                                    | Op::BroadcastTile { .. } => true,
                                     Op::Binary { x, y, .. } => {
                                         matches!(kernel.ops[x].op, Op::BroadcastTile { .. })
                                             || matches!(kernel.ops[y].op, Op::BroadcastTile { .. })

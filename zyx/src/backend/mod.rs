@@ -628,7 +628,7 @@ impl Pool {
     }
 }
 
-    /// Process-wide backend config, parsed once from `$XDG_CONFIG_HOME/zyx/config.json`
+/// Process-wide backend config, parsed once from `$XDG_CONFIG_HOME/zyx/config.json`
 /// (else `~/.config/zyx/config.json`) on first access. Missing or unparsable
 /// file means defaults.
 pub(crate) fn config() -> &'static Config {

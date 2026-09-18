@@ -1,12 +1,12 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
+#[cfg(windows)]
+use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
-#[cfg(windows)]
-use std::io;
 use std::{
     fs::File,
     path::{Path, PathBuf},

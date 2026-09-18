@@ -1,9 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use super::{
-    BackendError, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
-};
+use super::{BackendError, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel};
 use crate::{
     DType,
     backend::{DTypeCapability, DeviceProgramId},
@@ -64,10 +62,9 @@ fn pools_with(config: &WGPUConfig, debug_dev: bool) -> Result<&'static Vec<Arc<M
     }
     let pools = ensure_pool_table(config, debug_dev)?;
     let _ = WGPU_POOLS.set(pools);
-    WGPU_POOLS.get().ok_or_else(|| BackendError {
-        status: ErrorStatus::Initialization,
-        context: "WGPU pool init failed".into(),
-    })
+    WGPU_POOLS
+        .get()
+        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "WGPU pool init failed".into() })
 }
 
 fn pools() -> Result<&'static Vec<Arc<Mutex<WGPUMemoryPool>>>, BackendError> {
@@ -117,10 +114,7 @@ pub(super) struct WGPUProgram {
     gws: Vec<GwsDim>,
 }
 
-pub(super) fn ensure_pool_table(
-    config: &WGPUConfig,
-    debug_dev: bool,
-) -> Result<Vec<Arc<Mutex<WGPUMemoryPool>>>, BackendError> {
+pub(super) fn ensure_pool_table(config: &WGPUConfig, debug_dev: bool) -> Result<Vec<Arc<Mutex<WGPUMemoryPool>>>, BackendError> {
     let mut pools: Vec<Arc<Mutex<WGPUMemoryPool>>> = Vec::new();
     if !config.enabled {
         if debug_dev {
@@ -255,10 +249,9 @@ fn devices_with(config: &WGPUConfig, debug_dev: bool) -> Result<&'static Vec<Arc
     }
     let devs = ensure_device_table(config, debug_dev)?;
     let _ = WGPU_DEVICES.set(devs);
-    WGPU_DEVICES.get().ok_or_else(|| BackendError {
-        status: ErrorStatus::Initialization,
-        context: "WGPU device init failed".into(),
-    })
+    WGPU_DEVICES
+        .get()
+        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "WGPU device init failed".into() })
 }
 
 fn devices() -> Result<&'static Vec<Arc<Mutex<WGPUDevice>>>, BackendError> {
@@ -276,10 +269,7 @@ pub(super) fn device_count() -> u16 {
     devices().map(|devs| devs.len() as u16).unwrap_or(0)
 }
 
-fn ensure_device_table(
-    config: &WGPUConfig,
-    debug_dev: bool,
-) -> Result<Vec<Arc<Mutex<WGPUDevice>>>, BackendError> {
+fn ensure_device_table(config: &WGPUConfig, debug_dev: bool) -> Result<Vec<Arc<Mutex<WGPUDevice>>>, BackendError> {
     let pools = pools_with(config, debug_dev)?;
     let mut devs = Vec::with_capacity(pools.len());
     for (idx, pool_arc) in pools.iter().enumerate() {
@@ -608,12 +598,7 @@ impl WGPUDevice {
     /// window is recorded into one command encoder and submitted with a
     /// single `queue.submit` when it flushes.
     #[allow(clippy::unnecessary_wraps)]
-    pub fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        pool_handle: Pool,
-        args: &[LaunchArg],
-    ) -> Result<(), BackendError> {
+    pub fn launch(&mut self, program_id: DeviceProgramId, pool_handle: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
         debug_assert_eq!(pool_handle, self.memory_pool);
         self.pending.push((program_id, args.to_vec()));
         if self.pending.len() >= MICRO_BATCH_WINDOW {
@@ -650,11 +635,12 @@ impl WGPUDevice {
     /// Locks this device's pool (device → pool, never the reverse) for the
     /// buffer handles, records and submits the window.
     fn record_and_submit(&mut self, pending: &mut Vec<(DeviceProgramId, Vec<LaunchArg>)>) {
-        let Pool::WGPU(id) = self.memory_pool else { unreachable!("WGPU device with non-WGPU pool") };
+        let Pool::WGPU(id) = self.memory_pool else {
+            unreachable!("WGPU device with non-WGPU pool")
+        };
         let pool_arc = pool(id).expect("flush on unavailable WGPU pool");
         let memory_pool = super::lock(self.memory_pool, &pool_arc);
-        let mut encoder =
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Kernel::enqueue") });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Kernel::enqueue") });
         for (program_id, args) in pending.drain(..) {
             let program = &self.programs[program_id];
             let binds: Vec<wgpu::BindGroupEntry> = args

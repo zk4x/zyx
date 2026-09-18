@@ -23,7 +23,6 @@ use std::sync::Arc;
 use crate::backend::{Buffer, DeviceInfo, LaunchArg, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
-use crate::symbolic::{Expr, ExprId};
 use crate::graph::{ClassId, EClass, Node, NodeData};
 use crate::kernel::{
     BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
@@ -32,6 +31,7 @@ use crate::kernel::{
 use crate::runtime::{Runtime, TensorData};
 use crate::shape::UAxis;
 use crate::slab::{Slab, SlabId};
+use crate::symbolic::{Expr, ExprId};
 use crate::tensor::TensorId;
 use crate::types::{TinyString, TinyVec};
 use crate::{DType, Tensor, ZyxError, bf16, f16, shape::Dim};
@@ -1138,7 +1138,10 @@ impl Runtime {
                 let shape_class = match self.tensors[sid] {
                     TensorData::Graph { class_id, .. } | TensorData::GraphLeaf { class_id, .. } => class_id,
                     TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, sid),
-                    TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Promoted { .. } => {
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Promoted { .. } => {
                         todo!("forward: output shape dim tid {sid} is neither slab nor graph ({:?})", self.tensors[sid])
                     }
                 };
@@ -1147,7 +1150,10 @@ impl Runtime {
                 let shape_expr = match self.tensors[sid] {
                     TensorData::Graph { shape_id, .. } | TensorData::GraphLeaf { shape_id, .. } => shape_id,
                     TensorData::Symbolic { expr, .. } => expr,
-                    TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Promoted { .. } => {
+                    TensorData::Eager { .. }
+                    | TensorData::Leaf { .. }
+                    | TensorData::PendingLeaf { .. }
+                    | TensorData::Promoted { .. } => {
                         todo!("forward: output shape dim tid {sid} is neither slab nor graph ({:?})", self.tensors[sid])
                     }
                 };

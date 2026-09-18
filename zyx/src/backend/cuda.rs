@@ -903,7 +903,15 @@ fn spawn_worker(
                             continue 'work_thread_loop;
                         }
                     }
-                    sweep_dead(&mut dead, &mut foreign_dead, &mut buffers, &free_bytes_atomic, cuEventQuery, cuEventDestroy, cuMemFree);
+                    sweep_dead(
+                        &mut dead,
+                        &mut foreign_dead,
+                        &mut buffers,
+                        &free_bytes_atomic,
+                        cuEventQuery,
+                        cuEventDestroy,
+                        cuMemFree,
+                    );
                     if let Some(err) = last_error.take() {
                         let _ = reply.send(Err(err));
                         continue;
@@ -1043,7 +1051,15 @@ fn spawn_worker(
                             continue 'work_thread_loop;
                         }
                     }
-                    sweep_dead(&mut dead, &mut foreign_dead, &mut buffers, &free_bytes_atomic, cuEventQuery, cuEventDestroy, cuMemFree);
+                    sweep_dead(
+                        &mut dead,
+                        &mut foreign_dead,
+                        &mut buffers,
+                        &free_bytes_atomic,
+                        cuEventQuery,
+                        cuEventDestroy,
+                        cuMemFree,
+                    );
                     if let Some(err) = last_error.take() {
                         let _ = reply.send(Err(err));
                         continue;
@@ -1416,7 +1432,17 @@ impl CUDAMemoryPool {
                 let bytes = src_pool.get_buffer(src_buf).len() as Dim;
                 let src_ptr = src_pool.get_buffer(src_buf).as_ptr() as u64;
                 drop(src_pool);
-                self.tx.send(CUDACommand::Copy { src_pool: Pool::Host, src_buf, src_ptr, bytes: Some(bytes), src_ctx: None, src_events: Vec::new(), dst_buf }).unwrap();
+                self.tx
+                    .send(CUDACommand::Copy {
+                        src_pool: Pool::Host,
+                        src_buf,
+                        src_ptr,
+                        bytes: Some(bytes),
+                        src_ctx: None,
+                        src_events: Vec::new(),
+                        dst_buf,
+                    })
+                    .unwrap();
                 Ok(())
             }
             Pool::Disk => {
@@ -1436,7 +1462,8 @@ impl CUDAMemoryPool {
                     let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
                     let src_pool = super::disk::pool();
                     let mut src_pool = super::lock(src, &src_pool);
-                    let staged = src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
+                    let staged =
+                        src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
                     drop(src_pool);
                     match staged {
                         Ok(()) => src.release(src_buf),
@@ -1452,7 +1479,17 @@ impl CUDAMemoryPool {
                     let host_pool = super::lock(Pool::Host, &host_pool);
                     (host_pool.get_buffer(tmp).len() as Dim, host_pool.get_buffer(tmp).as_ptr() as u64)
                 };
-                self.tx.send(CUDACommand::Copy { src_pool: Pool::Host, src_buf: tmp, src_ptr, bytes: Some(bytes), src_ctx: None, src_events: Vec::new(), dst_buf }).unwrap();
+                self.tx
+                    .send(CUDACommand::Copy {
+                        src_pool: Pool::Host,
+                        src_buf: tmp,
+                        src_ptr,
+                        bytes: Some(bytes),
+                        src_ctx: None,
+                        src_events: Vec::new(),
+                        dst_buf,
+                    })
+                    .unwrap();
                 Ok(())
             }
             Pool::Cuda(src_id) => {
@@ -1462,7 +1499,17 @@ impl CUDAMemoryPool {
                 // releases the retained source once the copy completes.
                 match export_for_copy(src_id, src_buf) {
                     Ok((src_ptr, src_ctx, src_events)) => {
-                        self.tx.send(CUDACommand::Copy { src_pool: Pool::Cuda(src_id), src_buf, src_ptr, bytes: None, src_ctx: Some(src_ctx), src_events, dst_buf }).unwrap();
+                        self.tx
+                            .send(CUDACommand::Copy {
+                                src_pool: Pool::Cuda(src_id),
+                                src_buf,
+                                src_ptr,
+                                bytes: None,
+                                src_ctx: Some(src_ctx),
+                                src_events,
+                                dst_buf,
+                            })
+                            .unwrap();
                         Ok(())
                     }
                     Err(err) => {
@@ -1874,7 +1921,14 @@ fn flush_window(
                     };
                     if enabled {
                         unsafe {
-                            (cuMemcpyPeerAsync)(buffers[dst].ptr, context, src_ptr as CUdeviceptr, src_ctx as CUcontext, bytes as usize, stream)
+                            (cuMemcpyPeerAsync)(
+                                buffers[dst].ptr,
+                                context,
+                                src_ptr as CUdeviceptr,
+                                src_ctx as CUcontext,
+                                bytes as usize,
+                                stream,
+                            )
                         }
                         .check(ErrorStatus::MemoryCopyP2P)
                     } else {

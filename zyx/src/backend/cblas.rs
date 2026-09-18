@@ -239,12 +239,7 @@ impl CblasDevice {
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    pub fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        pool_handle: Pool,
-        args: &[LaunchArg],
-    ) -> Result<(), BackendError> {
+    pub fn launch(&mut self, program_id: DeviceProgramId, pool_handle: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
         // Sequential CPU: the kernel runs to completion before returning.
         debug_assert_eq!(pool_handle, Pool::Host);
         let host = super::host::pool();

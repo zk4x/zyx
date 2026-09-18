@@ -357,7 +357,9 @@ impl Kernel {
                                         _ = writeln!(source, "{indent}{dst} = {}/{lane};", dtype.0.one_constant().c_code())
                                     }
                                     UOp::Sqrt => _ = writeln!(source, "{indent}{dst} = sqrt({lane});"),
-                                    UOp::Rsqrt => _ = writeln!(source, "{indent}{dst} = {}/sqrt({lane});", dtype.0.one_constant().c_code()),
+                                    UOp::Rsqrt => {
+                                        _ = writeln!(source, "{indent}{dst} = {}/sqrt({lane});", dtype.0.one_constant().c_code())
+                                    }
                                     UOp::Sin => _ = writeln!(source, "{indent}{dst} = sin({lane});"),
                                     UOp::Cos => _ = writeln!(source, "{indent}{dst} = cos({lane});"),
                                     UOp::Floor => _ = writeln!(source, "{indent}{dst} = floor({lane});"),
@@ -662,7 +664,8 @@ static inline unsigned char f32_to_f8e5m2(float v) {
 "
             .to_string()
         };
-        let bit_helpers = if !dtypes.values().any(|(dt, _)| matches!(dt, DType::F32 | DType::F64)) {            String::new()
+        let bit_helpers = if !dtypes.values().any(|(dt, _)| matches!(dt, DType::F32 | DType::F64)) {
+            String::new()
         } else {
             "static inline float u32tof32(unsigned int b) { union { unsigned int u; float f; } v; v.u = b; return v.f; }\n\
              static inline double u64tof64(unsigned long b) { union { unsigned long u; double f; } v; v.u = b; return v.f; }\n"

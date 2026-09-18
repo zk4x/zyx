@@ -527,13 +527,7 @@ impl Kernel {
             // a root like a store. Removing it would silently unbalance
             // CB push/pop traffic.
             if let Op::Load { src, .. } = op {
-                if matches!(
-                    self.at(*src),
-                    Op::Storage {
-                        scope: MemScope::Circular,
-                        ..
-                    }
-                ) {
+                if matches!(self.at(*src), Op::Storage { scope: MemScope::Circular, .. }) {
                     params.push(op_id);
                 }
             }

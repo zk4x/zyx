@@ -497,8 +497,10 @@ pub(super) fn ensure_pool_table(
                     // used it at all (WAR dependencies). These persist across
                     // windows: a consumer in window N+1 must still wait for a
                     // producer from window N if it lands on a different queue.
-                    let mut writer: Map<PoolBufferId, (usize, *mut c_void)> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
-                    let mut last_use: Map<PoolBufferId, (usize, *mut c_void)> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
+                    let mut writer: Map<PoolBufferId, (usize, *mut c_void)> =
+                        Map::with_hasher(BuildHasherDefault::<FHasher>::new());
+                    let mut last_use: Map<PoolBufferId, (usize, *mut c_void)> =
+                        Map::with_hasher(BuildHasherDefault::<FHasher>::new());
                     // Retained foreign source buffers of in-flight copies:
                     // (source pool, source buffer, completion event). Once the
                     // event completes, the source buffer is released back to
@@ -894,7 +896,10 @@ enum Pending {
 
 /// Reads/writes of a pending command. Launch args are in `Param` head order;
 /// programs carry their kinds from compile.
-fn pending_reads_writes(programs: &Slab<DeviceProgramId, OpenCLProgram>, cmd: &Pending) -> (Vec<PoolBufferId>, Vec<PoolBufferId>) {
+fn pending_reads_writes(
+    programs: &Slab<DeviceProgramId, OpenCLProgram>,
+    cmd: &Pending,
+) -> (Vec<PoolBufferId>, Vec<PoolBufferId>) {
     match cmd {
         Pending::Launch { program_id, args } => {
             let kinds: &[ParamKind] = &programs[*program_id].params;
@@ -974,7 +979,11 @@ fn submit_launch(
             g * *l
         })
         .collect();
-    let lws_ptr = if program.lws.is_empty() { ptr::null() } else { program.lws.as_ptr().cast() };
+    let lws_ptr = if program.lws.is_empty() {
+        ptr::null()
+    } else {
+        program.lws.as_ptr().cast()
+    };
     // Global work size is checked against the device grid limits before
     // enqueueing (same values the compile-time check in gws_from_kernel uses).
     let max_grid = [2_147_483_647i64, 65_535, 65_535];
@@ -996,7 +1005,11 @@ fn submit_launch(
             global_size.as_ptr().cast(),
             lws_ptr,
             u32::try_from(wait_events.len()).unwrap_or(0),
-            if wait_events.is_empty() { ptr::null() } else { wait_events.as_ptr() },
+            if wait_events.is_empty() {
+                ptr::null()
+            } else {
+                wait_events.as_ptr()
+            },
             &raw mut event,
         )
     }
@@ -1081,9 +1094,16 @@ fn flush_window(
             }
         }
         let result: Result<*mut c_void, BackendError> = match cmd {
-            Pending::Launch { program_id, args } => {
-                submit_launch(programs, buffers, program_id, &args, queues[chosen].queue, &waits, clEnqueueNDRangeKernel, clSetKernelArg)
-            }
+            Pending::Launch { program_id, args } => submit_launch(
+                programs,
+                buffers,
+                program_id,
+                &args,
+                queues[chosen].queue,
+                &waits,
+                clEnqueueNDRangeKernel,
+                clSetKernelArg,
+            ),
             Pending::Copy { src_pool, src_buf, src_ptr, bytes, dst } => {
                 let mut event: *mut c_void = ptr::null_mut();
                 let status = unsafe {
@@ -1257,7 +1277,8 @@ impl OpenCLMemoryPool {
                     let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
                     let src_pool = super::disk::pool();
                     let mut src_pool = super::lock(src, &src_pool);
-                    let staged = src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
+                    let staged =
+                        src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
                     drop(src_pool);
                     match staged {
                         Ok(()) => src.release(src_buf),
@@ -1272,7 +1293,8 @@ impl OpenCLMemoryPool {
                     let host_pool = super::host::pool();
                     let host_pool = super::lock(Pool::Host, &host_pool);
                     (host_pool.get_buffer(tmp).len() as Dim, host_pool.get_buffer(tmp).as_ptr())
-                };                self.tx.send(Command::Copy { src_pool: Pool::Host, src_buf: tmp, src_ptr, bytes, dst_buf }).unwrap();
+                };
+                self.tx.send(Command::Copy { src_pool: Pool::Host, src_buf: tmp, src_ptr, bytes, dst_buf }).unwrap();
                 Ok(())
             }
             Pool::Cuda(_) => todo!("cross-pool copy from CUDA to OpenCL"),
@@ -1343,12 +1365,7 @@ impl OpenCLDevice {
     /// Fire-and-forget launch: the command is queued to the device's worker,
     /// which appends it to the micro-batch window and submits it (with
     /// computed waits) when the window flushes.
-    pub fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        pool_handle: Pool,
-        args: &[LaunchArg],
-    ) -> Result<(), BackendError> {
+    pub fn launch(&mut self, program_id: DeviceProgramId, pool_handle: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
         debug_assert_eq!(pool_handle, self.memory_pool);
         self.tx.send(Command::Launch { program_id, args: args.to_vec() }).unwrap();
         Ok(())

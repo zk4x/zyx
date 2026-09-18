@@ -26,9 +26,7 @@ use crate::{
     slab::Slab,
 };
 
-use super::{
-    DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel,
-};
+use super::{DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel};
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
 
@@ -478,10 +476,9 @@ fn pools_with(config: &VulkanConfig, debug_dev: bool) -> Result<&'static Vec<Arc
     }
     let pools = ensure_pool_table(config, debug_dev)?;
     let _ = VULKAN_POOLS.set(pools);
-    VULKAN_POOLS.get().ok_or_else(|| BackendError {
-        status: ErrorStatus::Initialization,
-        context: "Vulkan pool init failed".into(),
-    })
+    VULKAN_POOLS
+        .get()
+        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "Vulkan pool init failed".into() })
 }
 
 fn pools() -> Result<&'static Vec<Arc<Mutex<VulkanMemoryPool>>>, BackendError> {
@@ -574,7 +571,8 @@ impl VulkanMemoryPool {
                     let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
                     let src_pool = super::disk::pool();
                     let mut src_pool = super::lock(src, &src_pool);
-                    let staged = src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
+                    let staged =
+                        src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
                     drop(src_pool);
                     match staged {
                         Ok(()) => src.release(src_buf),
@@ -713,9 +711,17 @@ fn submit_window(
     max_grid: &[Dim],
     inflight: &mut Vec<InFlight>,
     debug_dev: bool,
-    vkAllocateDescriptorSets: unsafe extern "system" fn(VkDevice, *const VkDescriptorSetAllocateInfo, *mut VkDescriptorSet) -> VkResult,
+    vkAllocateDescriptorSets: unsafe extern "system" fn(
+        VkDevice,
+        *const VkDescriptorSetAllocateInfo,
+        *mut VkDescriptorSet,
+    ) -> VkResult,
     vkUpdateDescriptorSets: unsafe extern "system" fn(VkDevice, u32, *const VkWriteDescriptorSet, u32, *const std::ffi::c_void),
-    vkAllocateCommandBuffers: unsafe extern "system" fn(VkDevice, *const VkCommandBufferAllocateInfo, *mut VkCommandBuffer) -> VkResult,
+    vkAllocateCommandBuffers: unsafe extern "system" fn(
+        VkDevice,
+        *const VkCommandBufferAllocateInfo,
+        *mut VkCommandBuffer,
+    ) -> VkResult,
     vkBeginCommandBuffer: unsafe extern "system" fn(VkCommandBuffer, *const VkCommandBufferBeginInfo) -> VkResult,
     vkEndCommandBuffer: unsafe extern "system" fn(VkCommandBuffer) -> VkResult,
     vkCmdBindPipeline: unsafe extern "system" fn(VkCommandBuffer, u32, VkPipeline),
@@ -731,7 +737,12 @@ fn submit_window(
         *const u32,
     ),
     vkCmdDispatch: unsafe extern "system" fn(VkCommandBuffer, u32, u32, u32),
-    vkCreateFence: unsafe extern "system" fn(VkDevice, *const VkFenceCreateInfo, *const std::ffi::c_void, *mut VkFence) -> VkResult,
+    vkCreateFence: unsafe extern "system" fn(
+        VkDevice,
+        *const VkFenceCreateInfo,
+        *const std::ffi::c_void,
+        *mut VkFence,
+    ) -> VkResult,
     vkQueueSubmit: unsafe extern "system" fn(VkQueue, u32, *const VkSubmitInfo, VkFence) -> VkResult,
 ) -> Result<(), BackendError> {
     if pending.is_empty() {
@@ -769,8 +780,11 @@ fn submit_window(
         for arg_id in &args {
             match arg_id {
                 LaunchArg::Variable(constant) => {
-                    let storage_bits =
-                        if constant.dtype() == crate::DType::Bool { 32 } else { constant.dtype().bit_size() };
+                    let storage_bits = if constant.dtype() == crate::DType::Bool {
+                        32
+                    } else {
+                        constant.dtype().bit_size()
+                    };
                     let size = storage_bits as u32 / 8;
                     let align = if size >= 8 { 8 } else { 4 };
                     push_off = push_off.next_multiple_of(align);
@@ -779,11 +793,7 @@ fn submit_window(
                     push_off += size;
                 }
                 LaunchArg::Buffer(buffer_id) => {
-                    buf_infos.push(VkDescriptorBufferInfo {
-                        buffer: buffers[*buffer_id].buf,
-                        offset: 0,
-                        range: VK_WHOLE_SIZE,
-                    });
+                    buf_infos.push(VkDescriptorBufferInfo { buffer: buffers[*buffer_id].buf, offset: 0, range: VK_WHOLE_SIZE });
                     batch_buffers.push(*buffer_id);
                 }
             }
@@ -888,10 +898,7 @@ fn submit_window(
 
         let res = unsafe { vkEndCommandBuffer(cmd) };
         if res != VK_SUCCESS {
-            return Err(BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("vkEndCommandBuffer: {res}").into(),
-            });
+            return Err(BackendError { status: ErrorStatus::KernelLaunch, context: format!("vkEndCommandBuffer: {res}").into() });
         }
 
         submit_infos.push(VkSubmitInfo {
@@ -2172,7 +2179,15 @@ pub(super) fn ensure_pool_table(
                                 match inflight.pop() {
                                     Some(batch) => {
                                         let r = unsafe { vkWaitForFences(device, 1, &batch.fence, 1, u64::MAX) };
-                                        destroy_batch(device, cmd_pool, desc_pool, batch, vkFreeCommandBuffers, vkFreeDescriptorSets, vkDestroyFence);
+                                        destroy_batch(
+                                            device,
+                                            cmd_pool,
+                                            desc_pool,
+                                            batch,
+                                            vkFreeCommandBuffers,
+                                            vkFreeDescriptorSets,
+                                            vkDestroyFence,
+                                        );
                                         if r == VK_SUCCESS {
                                             Ok(())
                                         } else {
@@ -2197,7 +2212,7 @@ pub(super) fn ensure_pool_table(
                                 unsafe {
                                     vkDestroyPipeline(device, prog.pipeline, std::ptr::null());
                                     vkDestroyPipelineLayout(device, prog.pipeline_layout, std::ptr::null());
-                                     vkDestroyDescriptorSetLayout(device, prog.desc_layout, std::ptr::null());
+                                    vkDestroyDescriptorSetLayout(device, prog.desc_layout, std::ptr::null());
                                 }
                             }
                         }
@@ -2248,11 +2263,7 @@ pub(super) fn ensure_pool_table(
             }
         });
 
-        pools.push(Arc::new(Mutex::new(VulkanMemoryPool {
-            tx,
-            free_bytes: Arc::clone(&free_bytes_atomic),
-            dev_info,
-        })));
+        pools.push(Arc::new(Mutex::new(VulkanMemoryPool { tx, free_bytes: Arc::clone(&free_bytes_atomic), dev_info })));
     }
 
     Ok(pools)
@@ -2274,10 +2285,9 @@ fn devices_with(config: &VulkanConfig, debug_dev: bool) -> Result<&'static Vec<A
     }
     let devs = ensure_device_table(config, debug_dev)?;
     let _ = VULKAN_DEVICES.set(devs);
-    VULKAN_DEVICES.get().ok_or_else(|| BackendError {
-        status: ErrorStatus::Initialization,
-        context: "Vulkan device init failed".into(),
-    })
+    VULKAN_DEVICES
+        .get()
+        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "Vulkan device init failed".into() })
 }
 
 fn devices() -> Result<&'static Vec<Arc<Mutex<VulkanDevice>>>, BackendError> {
@@ -2295,10 +2305,7 @@ pub(super) fn device_count() -> u16 {
     devices().map(|devs| devs.len() as u16).unwrap_or(0)
 }
 
-fn ensure_device_table(
-    config: &VulkanConfig,
-    debug_dev: bool,
-) -> Result<Vec<Arc<Mutex<VulkanDevice>>>, BackendError> {
+fn ensure_device_table(config: &VulkanConfig, debug_dev: bool) -> Result<Vec<Arc<Mutex<VulkanDevice>>>, BackendError> {
     let pools = pools_with(config, debug_dev)?;
     let mut devs = Vec::with_capacity(pools.len());
     for (idx, pool_arc) in pools.iter().enumerate() {

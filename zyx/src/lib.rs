@@ -63,7 +63,6 @@ mod backend;
 mod codegen;
 mod dtype;
 mod error;
-mod symbolic;
 mod graph;
 pub mod hashers;
 pub mod kernel;
@@ -77,6 +76,7 @@ mod runtime;
 mod scalar;
 mod shape;
 pub mod slab;
+mod symbolic;
 mod tape;
 mod tensor;
 mod types;
@@ -89,7 +89,7 @@ type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<c
 pub use dtype::DType;
 pub use error::ZyxError;
 pub use module::Module;
-pub use scalar::{Float, Scalar, bf16, f16, f8e4m3, f8e5m2};
+pub use scalar::{Float, Scalar, bf16, f8e4m3, f8e5m2, f16};
 pub use tape::{FrozenTape, Tape};
 pub use tensor::ReduceOp;
 pub use tensor::{Dev, Tensor};
@@ -174,7 +174,8 @@ pub(crate) fn debug_mask() -> DebugMask {
     if let Some(mask) = *guard {
         mask
     } else {
-        let mask = std::env::var("ZYX_DEBUG").ok().and_then(|x| x.parse::<u32>().ok()).map(DebugMask).unwrap_or(DebugMask::new(0));
+        let mask =
+            std::env::var("ZYX_DEBUG").ok().and_then(|x| x.parse::<u32>().ok()).map(DebugMask).unwrap_or(DebugMask::new(0));
         *guard = Some(mask);
         mask
     }

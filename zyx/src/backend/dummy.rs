@@ -10,8 +10,8 @@ use crate::{
     slab::{Slab, SlabId},
 };
 use nanoserde::DeJson;
-use std::sync::{Mutex, OnceLock};
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Default, Debug, DeJson)]
 #[nserde(default)]
@@ -205,12 +205,7 @@ impl DummyDevice {
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        pool_handle: Pool,
-        args: &[LaunchArg],
-    ) -> Result<(), BackendError> {
+    pub fn launch(&mut self, program_id: DeviceProgramId, pool_handle: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
         debug_assert_eq!(pool_handle, self.memory_pool);
         let _ = program_id;
         let memory_pool = pool()?;

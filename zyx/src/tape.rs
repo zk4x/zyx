@@ -49,11 +49,11 @@ use crate::{
     DType, Map, RT, Set, Tensor, ZyxError,
     backend::Buffer,
     dtype::Constant,
-    symbolic::Expr,
     graph::{ClassId, Graph, GraphId},
     runtime::{Runtime, TensorData},
     shape::Dim,
     slab::SlabId,
+    symbolic::Expr,
     tensor::TensorId,
 };
 
