@@ -22,6 +22,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{Arc, Mutex, OnceLock},
+    time::Instant,
 };
 
 #[derive(Debug, DeJson)]
@@ -322,5 +323,20 @@ impl CDevice {
         }
 
         Ok(())
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn launch_timed(
+        &mut self,
+        program_id: DeviceProgramId,
+        pool_handle: Pool,
+        args: &[LaunchArg],
+    ) -> Result<u64, BackendError> {
+        // Sequential CPU: no queues, no pending window — the kernel runs to
+        // completion before returning, so a wall-clock bracket is already an
+        // uncontended measurement.
+        let start = Instant::now();
+        self.launch(program_id, pool_handle, args)?;
+        Ok(start.elapsed().as_nanos() as u64)
     }
 }

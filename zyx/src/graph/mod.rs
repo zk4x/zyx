@@ -2636,7 +2636,7 @@ impl Runtime {
                 // realization's buffer. No producer to detach from (GraphLeaf
                 // carries no kernel_id).
                 old.pool.release(old.buffer_id);
-                self.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer_id: new_buffer_id, rc };
+                self.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer: new_buffer_id, rc };
                 graph_id
             }
             // Already-realized leaves carry no graph affiliation and eagerify

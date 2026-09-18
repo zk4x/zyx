@@ -342,7 +342,7 @@ impl Drop for Tape {
                             TensorData::Graph { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
                             _ => unreachable!(),
                         };
-                        rt.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer_id, rc };
+                        rt.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer: buffer_id, rc };
                     }
                 }
                 TensorData::Graph { rc, .. } => {

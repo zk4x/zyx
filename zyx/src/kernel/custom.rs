@@ -1263,7 +1263,7 @@ impl Runtime {
                 self.release(stacked);
                 expr
             };
-            let id = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer_id, rc: 1 });
+            let id = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer: buffer_id, rc: 1 });
             tensors.push(id);
         }
 

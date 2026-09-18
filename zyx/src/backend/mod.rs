@@ -348,7 +348,10 @@ impl Dev {
             Dev::OpenCL(id) => {
                 dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).launch_timed(program_id, args)
             }
-            Dev::C => todo!("launch_timed not yet ported to the C device"),
+            Dev::C => {
+                let pool = self.pool();
+                c::device().expect("C device unavailable").lock().unwrap().launch_timed(program_id, pool, args)
+            }
             Dev::Cblas => todo!("launch_timed not yet ported to the CBLAS device"),
             Dev::Dummy => todo!("launch_timed not yet ported to the dummy device"),
             Dev::Vulkan(id) => {
