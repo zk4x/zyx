@@ -850,7 +850,12 @@ fn deq_iq3_s(blocks: &Tensor) -> Result<Tensor, ZyxError> {
     let qh = col(blocks, 66, 8)?;
     let signs = col(blocks, 74, 32)?;
     let (slo, shi) = nibbles(&col(blocks, 106, 4)?)?;
-    let db8 = d * (Tensor::from(1f32) + Tensor::cat([&slo, &shi].into_iter(), 1)?.cast(DType::F32) * 2f32);
+    let mut sc_parts = Vec::with_capacity(8);
+    for i in 0..4i64 {
+        sc_parts.push(slo.narrow(1, i, 1i64)?);
+        sc_parts.push(shi.narrow(1, i, 1i64)?);
+    }
+    let db8 = d * (Tensor::from(1f32) + Tensor::cat(sc_parts.iter(), 1)?.cast(DType::F32) * 2f32);
     let grid = grid_tensor(IQ3_S_HEX, 3, &[1., 3., 5., 7., 9., 11., 13., 15.], 512, 4)?;
     let mut parts = Vec::with_capacity(8);
     for g in 0..8i64 {
