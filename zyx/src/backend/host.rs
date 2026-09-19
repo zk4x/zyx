@@ -7,7 +7,12 @@ use crate::{
     shape::Dim,
     slab::Slab,
 };
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
+
+// ── Global state ──────────────────────────────────────────────────────────────
+
+/// Process-wide global host pool. Owned here — `mod.rs` only holds the `Pool::Host` handle.
+static HOST_POOL: OnceLock<Mutex<HostMemoryPool>> = OnceLock::new();
 
 #[derive(Debug)]
 pub struct HostBuffer {
@@ -31,11 +36,8 @@ pub(super) fn ensure_pool() -> HostMemoryPool {
     HostMemoryPool { free_bytes: total_bytes as i64, buffers: Slab::new() }
 }
 
-/// Process-wide global host pool. Owned here — `mod.rs` only holds the `Pool::Host` handle.
-static HOST_POOL: OnceLock<Arc<Mutex<HostMemoryPool>>> = OnceLock::new();
-
-pub(super) fn pool() -> Arc<Mutex<HostMemoryPool>> {
-    HOST_POOL.get_or_init(|| Arc::new(Mutex::new(ensure_pool()))).clone()
+pub(super) fn pool() -> &'static Mutex<HostMemoryPool> {
+    HOST_POOL.get_or_init(|| Mutex::new(ensure_pool()))
 }
 
 fn detect_host_memory_bytes() -> u64 {
@@ -120,7 +122,7 @@ impl HostMemoryPool {
                 // buffer may be smaller than the dst allocation (host
                 // buffers carry an extra trash element): copy the overlap.
                 let src_pool = super::disk::pool();
-                let mut src_pool = super::lock(src, &src_pool);
+                let mut src_pool = super::lock(src, src_pool);
                 let bytes = (src_pool.buffer_bytes(src_buf) as usize).min(self.buffers[dst_buf].data.len());
                 let dst_ptr = self.buffer_ptr_mut(dst_buf);
                 src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes) })?;
@@ -138,7 +140,7 @@ impl HostMemoryPool {
             #[cfg(feature = "tenstorrent")]
             Pool::TT(id) => {
                 let src_pool = super::tenstorrent::pool(id)?;
-                let mut src_pool = super::lock(src, &src_pool);
+                let mut src_pool = super::lock(src, src_pool);
                 let bytes = (src_pool.buffers[src_buf].size as usize).min(self.buffers[dst_buf].data.len());
                 let dst_ptr = self.buffer_ptr_mut(dst_buf);
                 src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes) })?;

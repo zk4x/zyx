@@ -51,7 +51,7 @@ pub enum Pool {
 }
 ```
 
-Each variant owns its globals — one `Arc<Mutex<pool>>` per ordinal (singletons for `Host`/`Disk`/`Dummy`) — lazily initialized on first access. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.
+Each variant owns its globals — one `Mutex<pool>` per ordinal (`Host` is a `OnceLock<Mutex<_>>`, `Disk` is a const `Mutex` with no `OnceLock` at all, the rest are `OnceLock<Vec<Mutex<_>>>` with one `Mutex<()>` per backend serializing first construction where it matters — cheap backends have no init lock). All globals live at the top of each `backend/*.rs` file, so the process-wide state is visible before any logic. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.
 
 ## Lazy Initialization
 

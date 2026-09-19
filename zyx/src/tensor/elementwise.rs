@@ -15,19 +15,43 @@ impl Tensor {
         result
     }
 
-    /// Absolute value
+    /// Absolute value of each element.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-3.0f32, -1.0, 2.0]);
+    /// let y = t.abs();
+    /// ```
     #[must_use]
     pub fn abs(&self) -> Tensor {
         self.relu() + (-self).relu()
     }
 
-    /// Square
+    /// Element-wise square: `x * x`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, -2.0, 3.0]);
+    /// let y = t.square();
+    /// ```
     #[must_use]
     pub fn square(&self) -> Tensor {
         self.clone() * self.clone()
     }
 
-    /// Returns the sign of each element: -1 if negative, 1 if positive, 0 if zero.
+    /// Element-wise sign: -1 for negatives, 1 for positives, 0 for zero.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.0, 5.0]);
+    /// let y = t.sign();
+    /// ```
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn sign(&self) -> Tensor {
@@ -39,7 +63,15 @@ impl Tensor {
         self.nonzero().where_(&result, &zero).unwrap()
     }
 
-    /// Error function
+    /// Error function `erf(x)`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, 0.5, 1.0]);
+    /// let y = t.erf();
+    /// ```
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn erf(&self) -> Tensor {
@@ -50,15 +82,15 @@ impl Tensor {
         x.sign() * (1 - t * poly * (-x.clone() * x).exp())
     }
 
-    /// Inverse error function (erfinv) via the Winitzki approximation.
+    /// Inverse error function `erfinv(x)`, defined for `|x| < 1`
+    /// via the Winitzki approximation.
     ///
-    /// Computes `erfinv(x)` for `|x| < 1` using:
-    /// ```text
-    /// L = ln(1 - x²)
-    /// a = 0.147
-    /// A = 4/π + a·L
-    /// t = (sqrt(A² - 4a·L) - A) / (2a)
-    /// erfinv(x) = sign(x) * sqrt(t)
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, 0.5, -0.5]);
+    /// let y = t.erfinv();
     /// ```
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
@@ -77,22 +109,44 @@ impl Tensor {
         x.sign() * t.sqrt()
     }
 
-    /// Applies element-wise, CELU(x)=max⁡(0,x)+min⁡(0,α∗(exp⁡(x/α)−1)).
+    /// CELU activation: `max(0, x) + min(0, α*(exp(x/α) - 1))`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.celu(1.0f32);
+    /// ```
     #[must_use]
     pub fn celu(&self, alpha: impl Scalar) -> Tensor {
         self.relu() - (-((self / alpha).exp() - 1) * alpha).relu()
     }
 
-    /// Returns a new tensor with the cosine of the elements of self.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// Element-wise cosine.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, core::f32::consts::PI / 2.0]);
+    /// let y = t.cos();
+    /// ```
     #[must_use]
     pub fn cos(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         Tensor { id: RT.lock().unary(x.id, UOp::Cos) }
     }
 
-    /// `cosh(x) = (exp(x) + exp(-x)) / 2`.
+    /// Element-wise hyperbolic cosine: `cosh(x) = (exp(x) + exp(-x)) / 2`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, 1.0]);
+    /// let y = t.cosh();
+    /// ```
     #[must_use]
     pub fn cosh(&self) -> Tensor {
         // (e^x + e^-x) / 2
@@ -102,186 +156,206 @@ impl Tensor {
         (ex + enx) / 2
     }
 
-    /// Applies the Exponential Linear Unit function element-wise.
+    /// Exponential Linear Unit (ELU) activation: `x` for `x > 0`,
+    /// `α*(exp(x) - 1)` otherwise.
     ///
-    /// The ELU function is defined as:
-    /// ```text
-    /// f(x) = x if x > 0
-    ///       α(e^x - 1) otherwise
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.elu(1.0f32);
     /// ```
-    /// where `α` is a given scaling factor. This function helps mitigate the "dying `ReLU`" problem.
     #[must_use]
     pub fn elu(&self, alpha: impl Scalar) -> Tensor {
         self.relu() - (self.exp().neg() + 1).relu() * alpha
     }
 
-    /// Returns a new tensor with the exponential of 2 raised to the power of each element in self.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// Element-wise power of 2: `2^x`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, 1.0, 2.0]);
+    /// let y = t.exp2();
+    /// ```
     #[must_use]
     pub fn exp2(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         Tensor { id: RT.lock().unary(x.id, UOp::Exp2) }
     }
 
-    /// Returns a new floored tensor
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// Element-wise floor: greatest integer less than or equal to each element.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.2f32, -1.7, 3.0]);
+    /// let y = t.floor();
+    /// ```
     #[must_use]
     pub fn floor(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         Tensor { id: RT.lock().unary(x.id, UOp::Floor) }
     }
 
-    /// Returns a new tensor with each element truncated toward zero.
-    /// For positive numbers, this removes the fractional part (floor).
-    /// For negative numbers, this also removes the fractional part (ceiling).
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// Element-wise truncation toward zero (drops the fractional part).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.7f32, -2.3, 3.0]);
+    /// let y = t.trunc();
+    /// ```
     #[must_use]
     pub fn trunc(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         Tensor { id: RT.lock().unary(x.id, UOp::Trunc) }
     }
 
-    /// Computes the exponential of each element in the input tensor using base e.
+    /// Element-wise exponential: `e^x`.
     ///
-    /// This function returns a new tensor that is computed by taking the exponential of each
-    /// element in the input tensor. The output will have the same shape as the input tensor,
-    /// and its elements will be calculated as `e^input_element`.
+    /// # Example
     ///
-    /// @param self The input tensor.
-    /// @return A new tensor with the same shape as the input, but with each element computed
-    ///         as `e^input_element`.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, 1.0, -1.0]);
+    /// let y = t.exp();
+    /// ```
     #[must_use]
     pub fn exp(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         Tensor { id: RT.lock().unary(x.id, UOp::Exp) }
     }
 
-    /// Returns a new tensor with the Gelu activation function applied to each element of self.
+    /// Gaussian Error Linear Unit (Gelu) activation:
+    /// `gelu(x) = x * 0.5 * (1 + tanh(sqrt(2/π) * (x + x³ * 0.044715)))`.
     ///
-    /// The Gelu activation function is defined as:
-    /// `gelu(x) = x * 0.5 * (1 + tanh(sqrt(2 / π) * (x + x^3 * 0.044715)))`.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.gelu();
+    /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn gelu(&self) -> Tensor {
         self * 0.5f32 * (((self + self * self * self * 0.044_715f32) * (2f32 / core::f32::consts::PI).sqrt()).tanh() + 1f32)
     }
 
-    /// Applies the Leaky `ReLU` activation function element-wise.
+    /// Leaky ReLU activation: `max(0, x) + neg_slope * min(0, x)`.
     ///
-    /// This function computes the Leaky `ReLU` of each element in the input tensor. If the element is greater than
-    /// or equal to zero, it returns the element itself; otherwise, it returns `neg_slope * element`.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    /// * `neg_slope`: The negative slope coefficient (`α` in the formula) for the Leaky `ReLU` function.
-    ///
-    /// **Returns:**
-    ///
-    /// A new tensor with the same shape as the input, but with each element computed as `max(0., x) + neg_slope * min(0., x)`.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.leaky_relu(0.01f32);
+    /// ```
     #[must_use]
     pub fn leaky_relu(&self, neg_slope: impl Scalar) -> Tensor {
         self.relu() - (self * (-Tensor::from(neg_slope))).relu()
     }
 
-    /// Computes the base-2 logarithm of each element in the input tensor.
+    /// Element-wise base-2 logarithm: `log2(x)`.
     ///
-    /// This function returns a new tensor that is computed by taking the base-2 logarithm of each
-    /// element in the input tensor. The output will have the same shape as the input tensor,
-    /// and its elements will be calculated as `log2(input_element)`.
+    /// # Example
     ///
-    /// @param self The input tensor.
-    /// @return A new tensor with the same shape as the input, but with each element computed
-    ///         as `log2(input_element)`.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 4.0]);
+    /// let y = t.log2();
+    /// ```
     #[must_use]
     pub fn log2(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         return Tensor { id: RT.lock().unary(x.id, UOp::Log2) };
     }
 
-    /// Computes the natural logarithm (ln) of each element in the input tensor.
+    /// Element-wise natural logarithm: `ln(x)`.
     ///
-    /// This function returns a new tensor that is computed by taking the natural logarithm of each
-    /// element in the input tensor. The output will have the same shape as the input tensor,
-    /// and its elements will be calculated as `ln(input_element)`.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:**
-    ///
-    /// A new tensor with the same shape as the input, but with each element computed as `ln(input_element)`.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.718, 10.0]);
+    /// let y = t.ln();
+    /// ```
     #[must_use]
     pub fn ln(&self) -> Tensor {
         self.log2() * core::f64::consts::LN_2
     }
 
-    /// Compute logarithm with any base
+    /// Element-wise logarithm with an arbitrary base: `log_base(x)`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 10.0, 100.0]);
+    /// let y = t.log(Tensor::from(10.0f32));
+    /// ```
     #[must_use]
     #[allow(clippy::suboptimal_flops)]
     pub fn log(&self, base: impl Into<Tensor>) -> Tensor {
         self.log2() / base.into().log2()
     }
 
-    /// Computes the Mish activation function for each element in the input tensor.
+    /// Mish activation: `x * tanh(softplus(x))`.
     ///
-    /// The Mish activation function is a continuous, non-monotonic function that behaves like `ReLU` for positive inputs and like sigmoid for negative inputs. It is defined as `x * tanh(softplus(x))`.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `Mish(input_element)`.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.mish();
+    /// ```
     #[must_use]
     pub fn mish(&self) -> Tensor {
         self * self.softplus(1., 20.).tanh()
     }
 
-    /// Computes the quick GELU activation function for each element in the input tensor.
+    /// QuickGELU activation: `x * sigmoid(1.702 * x)`.
     ///
-    /// The `QuickGELU` activation function is an approximation of the Gaussian Error Linear Unit (GELU) function that uses a sigmoid function to compute the approximation. It is defined as `x * sigmoid(1.702 * x)`.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `QuickGELU(input_element)`.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.quick_gelu();
+    /// ```
     #[must_use]
     pub fn quick_gelu(&self) -> Tensor {
         self * (1.702f32 * self).sigmoid()
     }
 
-    /// Computes the multiplicative inverse of each element in the input tensor, 1/x.
+    /// Element-wise reciprocal: `1 / x`.
     ///
-    /// This function returns a new tensor with the same shape as the input, where each element is the multiplicative inverse (i.e., reciprocal) of the corresponding element in the input tensor. This implementation uses `1.0 / self` which is generally faster than calling the `inv()` method directly.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, where each element is the multiplicative inverse (reciprocal) of the corresponding element in the input tensor using a faster implementation.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.5f32, 1.0, 2.0]);
+    /// let y = t.reciprocal();
+    /// ```
     #[must_use]
     pub fn reciprocal(&self) -> Tensor {
         return Tensor { id: RT.lock().unary(self.id, UOp::Reciprocal) };
     }
 
-    /// Applies the Rectified Linear Unit (`ReLU`) activation function to each element in the input tensor.
+    /// Rectified Linear Unit (ReLU) activation: `max(0, x)`.
     ///
-    /// The `ReLU` function returns `max(0, x)`, i.e., it replaces negative values with zero and leaves positive values unchanged. This makes it a popular choice for use in hidden layers of neural networks due to its simplicity and effectiveness.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `max(0, input_element)`.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.relu();
+    /// ```
     #[must_use]
     #[track_caller]
     #[allow(clippy::missing_panics_doc)]
@@ -289,30 +363,30 @@ impl Tensor {
         self.cmpgt(0f32).unwrap() * self
     }
 
-    /// Computes the reciprocal square root of each element in the input tensor.
+    /// Element-wise reciprocal square root: `1 / sqrt(x)`.
     ///
-    /// This function returns a new tensor with the same shape as the input, where each element is the reciprocal square root (i.e., `1 / sqrt(x)`) of the corresponding element in the input tensor. This operation can be useful for scaling and stabilizing certain types of computations.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, where each element is the reciprocal square root (i.e., `1 / sqrt(x)`) of the corresponding element in the input tensor.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 4.0, 9.0]);
+    /// let y = t.rsqrt();
+    /// ```
     #[must_use]
     pub fn rsqrt(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         Tensor { id: RT.lock().unary(x.id, UOp::Rsqrt) }
     }
 
-    /// Applies the Self-Normalized Linear Unit (Selu) activation function to each element in the input tensor.
+    /// Self-Normalized Linear Unit (SELU) activation.
     ///
-    /// The Selu activation function is designed to maintain the mean and variance of the activations approximately constant when training deep neural networks with residual connections. It combines the benefits of both `ReLU` and sigmoid functions, making it a good choice for certain types of problems.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `Selu(input_element)`.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.selu();
+    /// ```
     #[must_use]
     pub fn selu(&self) -> Tensor {
         1.050_701_f32 * (self.relu() - (1.673_263_2_f32 * (self.exp().neg() + 1)).relu())

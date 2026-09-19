@@ -32,6 +32,10 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+// ── Global state ──────────────────────────────────────────────────────────────
+
+static CBLAS_DEVICE: OnceLock<Mutex<CblasDevice>> = OnceLock::new();
+
 /// `cblas_sgemm(Order, TransA, TransB, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc)`
 type SgemmFn = unsafe extern "C" fn(
     order: i32,
@@ -120,18 +124,9 @@ pub struct CblasDevice {
     programs: Slab<DeviceProgramId, CblasProgram>,
 }
 
-/// Process-wide CBLAS device. Owned here — `mod.rs` only holds the
-/// `Dev::Cblas` handle. `CBLAS_INIT` serializes first construction only.
-static CBLAS_DEVICE: OnceLock<Arc<Mutex<CblasDevice>>> = OnceLock::new();
-static CBLAS_INIT: Mutex<()> = Mutex::new(());
-
-fn device_with(config: &CblasConfig, debug_dev: bool) -> Result<Arc<Mutex<CblasDevice>>, BackendError> {
+fn device_with(config: &CblasConfig, debug_dev: bool) -> Result<&'static Mutex<CblasDevice>, BackendError> {
     if let Some(dev) = CBLAS_DEVICE.get() {
-        return Ok(dev.clone());
-    }
-    let _init = CBLAS_INIT.lock().unwrap_or_else(|_| panic!("cblas device init lock poisoned"));
-    if let Some(dev) = CBLAS_DEVICE.get() {
-        return Ok(dev.clone());
+        return Ok(dev);
     }
     if !config.enabled {
         if debug_dev {
@@ -148,7 +143,7 @@ fn device_with(config: &CblasConfig, debug_dev: bool) -> Result<Arc<Mutex<CblasD
     let mut kernels = Slab::new();
     kernels.push(CblasKernel { sgemm });
 
-    let dev = Arc::new(Mutex::new(CblasDevice {
+    let dev = Mutex::new(CblasDevice {
         // Tiny compute and no dtype capabilities: this device never gets picked
         // for generic (eager) kernels, it only runs matched AOT matmuls.
         device_info: Arc::new(DeviceInfo {
@@ -176,15 +171,15 @@ fn device_with(config: &CblasConfig, debug_dev: bool) -> Result<Arc<Mutex<CblasD
         lib,
         kernels,
         programs: Slab::new(),
-    }));
+    });
     if debug_dev {
         println!("[cblas] initialized from {OPENBLAS_PATH}");
     }
-    let _ = CBLAS_DEVICE.set(dev.clone());
-    Ok(dev)
+    let _ = CBLAS_DEVICE.set(dev);
+    Ok(CBLAS_DEVICE.get().unwrap())
 }
 
-pub(super) fn device() -> Result<Arc<Mutex<CblasDevice>>, BackendError> {
+pub(super) fn device() -> Result<&'static Mutex<CblasDevice>, BackendError> {
     device_with(&super::config().cblas, super::debug_backends())
 }
 
@@ -243,7 +238,7 @@ impl CblasDevice {
         // Sequential CPU: the kernel runs to completion before returning.
         debug_assert_eq!(pool_handle, Pool::Host);
         let host = super::host::pool();
-        let mut memory_pool = super::lock(pool_handle, &host);
+        let mut memory_pool = super::lock(pool_handle, host);
 
         let program = &self.programs[program_id];
         let kernel = &self.kernels[program.kernel];

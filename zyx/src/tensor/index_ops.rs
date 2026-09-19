@@ -23,65 +23,24 @@ impl<I> std::ops::Index<I> for Tensor {
 }
 
 impl Tensor {
-    /// Indexes into a tensor using flexible and expressive range-based access.
+    /// Slice the tensor using integers, ranges, or tuples of each.
+    /// Negative indices wrap to the end; omitted dimensions are preserved.
+    /// Returns a new view tensor of the selected region.
     ///
-    /// This function provides ergonomic slicing capabilities for tensors,
-    /// supporting various index types such as integers, ranges, tuples, vectors,
-    /// and slices. It returns a new tensor that is a view of the original tensor
-    /// based on the provided indices.
-    ///
-    /// # Arguments
-    ///
-    /// * `index` - such as:
-    ///   - A single integer (e.g., `0`, `-1`)
-    ///   - A `Range` (e.g., `0..3`, `2..`, `..5`, `..`)
-    ///   - A tuple of integers/ranges for multi-dimensional access (e.g., `(0, 1..3, -1, ..)`), up to 8D
-    ///   - A `Vec<Range<i32>>` for dynamic indexing
-    ///   - A slice `&[impl IntoRange]` for general-purpose indexing
-    ///
-    /// # Returns
-    ///
-    /// * `Result<Tensor, ZyxError>` — The sliced tensor view if indexing is valid,
-    ///   or a [`ZyxError::ShapeError`] if any index is out of bounds or mismatched.
-    ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
     /// # use zyx::{Tensor, DType};
     /// let x = Tensor::randn([3, 4, 5], DType::F32)?;
-    ///
-    /// // Select first item from first dimension
     /// let a = x.slice(0)?;
-    ///
-    /// // Select last element along the last axis
     /// let b = x.slice((.., .., -1))?;
-    ///
-    /// // Slice second dimension between index 1 and 3
-    /// let c = x.slice((0, 1..3, ..))?;
-    ///
-    /// // Chain indexing calls
-    /// let d = x.slice((0, .., -1))?.slice(0)?;
-    ///
-    /// // Use a slice of ranges
-    /// let slice = [0..2, 1..4];
-    /// let e = x.slice(slice)?;
-    ///
-    /// // Use a vector of ranges dynamically
-    /// let ranges = vec![0..2, 0..4, 1..5];
-    /// let f = x.slice(ranges)?;
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Notes
-    ///
-    /// - Negative indexing is supported (e.g., `-1` is the last element).
-    /// - Omitted dimensions are preserved in the output.
-    /// - Useful for flexible slicing, batching, and masking operations.
-    ///
     /// # Errors
     ///
-    /// Returns a [`ZyxError::ShapeError`] if the indices are invalid, out of bounds,
-    /// or don't match the tensor's dimensionality.
+    /// Returns a shape error if an index is out of bounds, a range is empty,
+    /// or the index count exceeds the tensor rank.
     pub fn slice(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
         let shape = self.resolve_shape();
         let rank = shape.len();
@@ -161,11 +120,21 @@ impl Tensor {
         Ok(result)
     }
 
-    /// Same as [[`Tensor::slice`]], but instead of indexing from first dimensions, it indexes from last dimensions.
+    /// Same as [`Tensor::slice`], but the indices are applied from the last
+    /// dimensions instead of the first.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let x = Tensor::randn([3, 4, 5], DType::F32)?;
+    /// let y = x.rslice((.., .., -1))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the index is invalid for the tensor shape.
+    /// Returns a shape error if the index is invalid for the tensor shape.
     #[allow(clippy::missing_panics_doc)]
     pub fn rslice(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
         let shape = self.resolve_shape();
@@ -247,20 +216,13 @@ impl Tensor {
         Ok(result)
     }
 
-    /// Returns a tensor containing only the diagonal elements of this tensor.
+    /// Returns a 1-D tensor of the diagonal elements of the last two
+    /// dimensions (e.g. `[i, i]` of a 2-D `[n, n]` matrix).
     ///
-    /// The diagonal is obtained by flattening the input tensor, padding it with zeros to make its last dimension size equal
-    /// to the number of rows or columns in the original tensor, reshaping it into a 2D matrix, and then extracting the diagonal.
+    /// # Example
     ///
-    /// # Returns
-    ///
-    /// * A new tensor containing only the diagonal elements of this tensor.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
+    /// ```rust
+    /// # use zyx::Tensor;
     /// let arr = Tensor::from(vec![1, 2, 3, 4, 5, 6, 7, 8, 9]).reshape([3, 3])?;
     /// assert_eq!(arr.diagonal(), [1, 5, 9]);
     /// # Ok::<(), zyx::ZyxError>(())
@@ -281,16 +243,24 @@ impl Tensor {
             .unwrap()
     }
 
-    /// Narrow tensor along an axis, is essentially just padding
-    /// ```
+    /// Extract a contiguous window along `axis`: from index `start` for
+    /// `length` elements, padding the omitted region with zeros. `start` and
+    /// `length` must be I64 (IDX_T) tensors or integers.
+    ///
+    /// # Example
+    ///
+    /// ```rust
     /// # use zyx::Tensor;
     /// let x = Tensor::from([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
     /// assert_eq!(x.narrow(0, 0i64, 2i64)?, [[1, 2, 3], [4, 5, 6]]);
     /// assert_eq!(x.narrow(1, 1i64, 2i64)?, [[2, 3], [5, 6], [8, 9]]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    ///
     /// # Errors
-    /// Returns error if self cannot be narrowed.
+    ///
+    /// Returns a shape error if `start`/`length` are not I64, if `start + length`
+    /// exceeds the dim size, or if the bounds cannot be resolved.
     #[allow(clippy::missing_panics_doc)]
     pub fn narrow(&self, axis: Axis, start: impl Into<Tensor>, length: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let rank = self.rank() as usize;
@@ -334,16 +304,23 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// Gather
+    /// Gather elements along `axis` using integer `indices`. Negative indices
+    /// wrap to the end; out-of-bounds indices read 0. The result has the
+    /// shape of `indices`.
     ///
-    /// Gathers values along axis based on indices.
+    /// # Example
     ///
-    /// Negative indices are wrapped (e.g., -1 → last element).
-    /// Out-of-bounds indices return 0 (zya doesn't check bounds, returns 0 for OOB).
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let x = Tensor::from(vec![1.0f32; 4]);
+    /// let y = x.gather(0, Tensor::from(vec![2i32, 0, 3, 1]))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the shapes are incompatible.
+    /// Returns a shape error if the ranks differ or a non-gather dim of `self`
+    /// is smaller than the corresponding dim of `indices`.
     pub fn gather(&self, axis: Axis, indices: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let indices = indices.into();
 
@@ -389,19 +366,23 @@ impl Tensor {
         Ok(result)
     }
 
-    /// Scatter
+    /// Add values from `src` into a copy of `self` along `axis` per `indices`;
+    /// indices mapping to the same output position are summed. Negative
+    /// indices wrap to the end.
     ///
-    /// Scatters values from `src` into `self` along `axis` according to `indices`.
+    /// # Example
     ///
-    /// For each position in `indices`, the value from `src` at the same position
-    /// is added to `self` at the output position `indices[i, j, ...]` along `axis`.
-    /// Multiple indices mapping to the same output position are summed.
-    ///
-    /// Negative indices are wrapped (e.g., -1 → last element).
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let x = Tensor::zeros([4], DType::F32);
+    /// let y = x.scatter(0, Tensor::from(vec![1i32, 1]), Tensor::from(vec![5.0f32, 2.0]))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the shapes are incompatible.
+    /// Returns a shape error if the `indices`/`src` shapes mismatch, or a
+    /// non-scatter dim of `self` is smaller than the corresponding dim.
     pub fn scatter(&self, axis: Axis, indices: impl Into<Tensor>, src: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let indices = indices.into();
         let src = src.into();
@@ -455,11 +436,22 @@ impl Tensor {
         Ok(result)
     }
 
-    /// Index select
+    /// Select rows along `dim` at the rows named by `index` (a 1-D integer
+    /// tensor). The result has `self`'s shape with `dim` replaced by the number
+    /// of indices.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let x = Tensor::from(vec![1i32; 6]);
+    /// let y = x.index_select(0, Tensor::from(vec![1i32, 3, 5]))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the dimension is out of bounds.
+    /// Returns a shape error if `dim` is out of range or `index` is not 1-D.
     pub fn index_select(&self, dim: Axis, index: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let index = index.into();
         let mut shape = self.resolve_shape();

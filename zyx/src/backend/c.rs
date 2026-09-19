@@ -25,6 +25,10 @@ use std::{
     time::Instant,
 };
 
+// ── Global state ──────────────────────────────────────────────────────────────
+
+static C_DEVICE: OnceLock<Mutex<CDevice>> = OnceLock::new();
+
 #[derive(Debug, DeJson)]
 #[nserde(default)]
 pub struct CConfig {
@@ -51,19 +55,9 @@ pub struct CDevice {
     pub has_openmp: bool,
 }
 
-/// Process-wide C device. Owned here — `mod.rs` only holds the `Dev::C`
-/// handle. `C_INIT` serializes first construction only; compile/launch
-/// take the device lock, never the init lock.
-static C_DEVICE: OnceLock<Arc<Mutex<CDevice>>> = OnceLock::new();
-static C_INIT: Mutex<()> = Mutex::new(());
-
-fn device_with(config: &CConfig, debug_dev: bool) -> Result<Arc<Mutex<CDevice>>, BackendError> {
+fn device_with(config: &CConfig, debug_dev: bool) -> Result<&'static Mutex<CDevice>, BackendError> {
     if let Some(dev) = C_DEVICE.get() {
-        return Ok(dev.clone());
-    }
-    let _init = C_INIT.lock().unwrap_or_else(|_| panic!("c device init lock poisoned"));
-    if let Some(dev) = C_DEVICE.get() {
-        return Ok(dev.clone());
+        return Ok(dev);
     }
     if !config.enabled {
         if debug_dev {
@@ -118,7 +112,7 @@ fn device_with(config: &CConfig, debug_dev: bool) -> Result<Arc<Mutex<CDevice>>,
         })
         .map(|s| s.success())
         .unwrap_or(false);
-    let dev = Arc::new(Mutex::new(CDevice {
+    let dev = Mutex::new(CDevice {
         device_info: Arc::new(DeviceInfo {
             compute: 10 * 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![Dim::from(1_000_000_000); 3],
@@ -142,20 +136,20 @@ fn device_with(config: &CConfig, debug_dev: bool) -> Result<Arc<Mutex<CDevice>>,
         }),
         programs: Slab::new(),
         has_openmp,
-    }));
+    });
     if debug_dev {
         println!("[c] vector extensions: {has_vector_exts}");
         println!("[c] OpenMP: {has_openmp}");
     }
-    let _ = C_DEVICE.set(dev.clone());
-    Ok(dev)
+    let _ = C_DEVICE.set(dev);
+    Ok(C_DEVICE.get().unwrap())
 }
 
 fn configured_out() -> BackendError {
     BackendError { status: ErrorStatus::Initialization, context: "C backend configured out".into() }
 }
 
-pub(super) fn device() -> Result<Arc<Mutex<CDevice>>, BackendError> {
+pub(super) fn device() -> Result<&'static Mutex<CDevice>, BackendError> {
     device_with(&super::config().c, super::debug_backends())
 }
 
@@ -284,7 +278,7 @@ impl CDevice {
         // Sequential CPU: the kernel runs to completion before returning.
         debug_assert_eq!(pool_handle, Pool::Host);
         let host = super::host::pool();
-        let mut memory_pool = super::lock(pool_handle, &host);
+        let mut memory_pool = super::lock(pool_handle, host);
 
         let program = &self.programs[program_id];
 

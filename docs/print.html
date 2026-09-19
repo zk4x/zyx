@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6bf26d3d.js";
+            window.path_to_searchindex_js = "searchindex-450aa6e1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-58fb2f25.js"></script>
@@ -741,7 +741,7 @@ r19: i32 = r18[r1]  // 0..=3 load
     /// Testing dummy pool (config-gated).
     Dummy,
 }</code></pre>
-<p>Each variant owns its globals — one <code>Arc&lt;Mutex&lt;pool&gt;&gt;</code> per ordinal (singletons for <code>Host</code>/<code>Disk</code>/<code>Dummy</code>) — lazily initialized on first access. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.</p>
+<p>Each variant owns its globals — one <code>Mutex&lt;pool&gt;</code> per ordinal (<code>Host</code> is a <code>OnceLock&lt;Mutex&lt;_&gt;&gt;</code>, <code>Disk</code> is a const <code>Mutex</code> with no <code>OnceLock</code> at all, the rest are <code>OnceLock&lt;Vec&lt;Mutex&lt;_&gt;&gt;&gt;</code> with one <code>Mutex&lt;()&gt;</code> per backend serializing first construction where it matters — cheap backends have no init lock). All globals live at the top of each <code>backend/*.rs</code> file, so the process-wide state is visible before any logic. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.</p>
 <h2 id="lazy-initialization"><a class="header" href="#lazy-initialization">Lazy Initialization</a></h2>
 <p>There is no upfront backend-initialization phase. <code>Dev::all()</code> triggers lazy init of every backend; backends that are configured out, whose driver is missing, or whose hardware is absent contribute nothing to the returned list. This keeps startup free and makes device discovery idempotent:</p>
 <pre><code class="language-rust ignore">impl Dev {

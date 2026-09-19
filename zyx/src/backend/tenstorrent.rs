@@ -37,6 +37,11 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+// ── Global state ──────────────────────────────────────────────────────────────
+
+static TT_POOLS: OnceLock<Vec<Mutex<TTMemoryPool>>> = OnceLock::new();
+static TT_DEVICES: OnceLock<Vec<Mutex<TTDevice>>> = OnceLock::new();
+
 // ---------------------------------------------------------------------------
 // DRAM size lookup
 // ---------------------------------------------------------------------------
@@ -117,38 +122,44 @@ pub(crate) struct TTBuffer {
 // The pool shares the runtime IPC channel with TTDevice via Arc<Mutex>.
 // ---------------------------------------------------------------------------
 
-/// Process-wide per-device pools. Owned here — `mod.rs` only holds
-/// `Pool::TT(i)` handles. `TT_INIT` serializes first construction only;
-/// the alloc/free path never takes it. The pool carries its `DeviceInfo`
-/// for later device registration.
-static TT_POOLS: OnceLock<Vec<Arc<Mutex<TTMemoryPool>>>> = OnceLock::new();
-static TT_INIT: Mutex<()> = Mutex::new(());
-
-fn pools_with(config: &TTConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<TTMemoryPool>>>, BackendError> {
-    if let Some(pools) = TT_POOLS.get() {
-        return Ok(pools);
+/// Single backend initializer: builds pools + devices together in one pass,
+/// publishes both tables. Reads config directly; no init locks.
+fn backend() -> Result<(&'static Vec<Mutex<TTMemoryPool>>, &'static Vec<Mutex<TTDevice>>), BackendError> {
+    if let Some(pools) = TT_POOLS.get()
+        && let Some(devs) = TT_DEVICES.get()
+    {
+        return Ok((pools, devs));
     }
-    let _init = TT_INIT.lock().unwrap_or_else(|_| panic!("tt pool init lock poisoned"));
-    if let Some(pools) = TT_POOLS.get() {
-        return Ok(pools);
+    let config = super::config();
+    let debug_dev = super::debug_backends();
+    let pools = ensure_pool_table(&config.tenstorrent, debug_dev)?;
+    let mut devs = Vec::with_capacity(pools.len());
+    for (idx, pool) in pools.iter().enumerate() {
+        let pool_id = Pool::TT(u16::try_from(idx).expect("So many Tenstorrent devices..."));
+        let guard = super::lock(pool_id, pool);
+        devs.push(Mutex::new(TTDevice {
+            device_info: Arc::new(guard.dev_info.clone()),
+            dev_id: guard.dev_id,
+            memory_pool: pool_id,
+            runtime: guard.runtime.clone(),
+            programs: Slab::new(),
+        }));
+        drop(guard);
     }
-    let pools = ensure_pool_table(config, debug_dev)?;
     let _ = TT_POOLS.set(pools);
-    TT_POOLS
-        .get()
-        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "TT pool init failed".into() })
+    let _ = TT_DEVICES.set(devs);
+    match (TT_POOLS.get(), TT_DEVICES.get()) {
+        (Some(pools), Some(devs)) => Ok((pools, devs)),
+        _ => Err(BackendError { status: ErrorStatus::Initialization, context: "TT init failed".into() }),
+    }
 }
 
-fn pools() -> Result<&'static Vec<Arc<Mutex<TTMemoryPool>>>, BackendError> {
-    pools_with(&TTConfig::default(), false)
-}
-
-pub(super) fn pool(id: u16) -> Result<Arc<Mutex<TTMemoryPool>>, BackendError> {
-    pools()?.get(id as usize).cloned().ok_or_else(|| no_pool(id))
+pub(super) fn pool(id: u16) -> Result<&'static Mutex<TTMemoryPool>, BackendError> {
+    backend()?.0.get(id as usize).ok_or_else(|| no_pool(id))
 }
 
 pub(super) fn pool_count() -> u16 {
-    pools().map(|pools| pools.len() as u16).unwrap_or(0)
+    backend().map(|(pools, _)| pools.len() as u16).unwrap_or(0)
 }
 
 fn no_pool(id: u16) -> BackendError {
@@ -165,8 +176,8 @@ pub struct TTMemoryPool {
     dev_id: u32,
 }
 
-pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Arc<Mutex<TTMemoryPool>>>, BackendError> {
-    let mut pools: Vec<Arc<Mutex<TTMemoryPool>>> = Vec::new();
+pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Mutex<TTMemoryPool>>, BackendError> {
+    let mut pools: Vec<Mutex<TTMemoryPool>> = Vec::new();
     if let Some(device_ids) = &config.device_ids
         && device_ids.is_empty()
     {
@@ -217,7 +228,7 @@ pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Ve
     // F8E5M2 has no Blackhole DataFormat: not a capable dtype, codegen rejects it.
     let mut dtype_capability = [DTypeCapability::all(); DType::N_DTYPES];
     dtype_capability[DType::F8E5M2 as usize] = DTypeCapability::ZERO;
-    pools.push(Arc::new(Mutex::new(TTMemoryPool {
+    pools.push(Mutex::new(TTMemoryPool {
         buffers: Slab::new(),
         runtime: runtime.clone(),
         free_bytes: Dim::from(dram_bytes as i64),
@@ -245,62 +256,20 @@ pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Ve
             has_openmp: false,
         },
         dev_id: u32::try_from(dev_id).unwrap(),
-    })));
+    }));
 
     Ok(pools)
 }
 
-/// Process-wide per-chip Tenstorrent devices. Owned here — `mod.rs` only holds
-/// `Dev::TT(i)` handles. `TT_DEV_INIT` serializes first construction
-/// only; compile/launch take the device lock, never the init lock.
-static TT_DEVICES: OnceLock<Vec<Arc<Mutex<TTDevice>>>> = OnceLock::new();
-static TT_DEV_INIT: Mutex<()> = Mutex::new(());
-
-fn devices_with(config: &TTConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<TTDevice>>>, BackendError> {
-    if let Some(devs) = TT_DEVICES.get() {
-        return Ok(devs);
-    }
-    let _init = TT_DEV_INIT.lock().unwrap_or_else(|_| panic!("tt device init lock poisoned"));
-    if let Some(devs) = TT_DEVICES.get() {
-        return Ok(devs);
-    }
-    let devs = ensure_device_table(config, debug_dev)?;
-    let _ = TT_DEVICES.set(devs);
-    TT_DEVICES
-        .get()
-        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "TT device init failed".into() })
-}
-
-fn devices() -> Result<&'static Vec<Arc<Mutex<TTDevice>>>, BackendError> {
-    devices_with(&super::config().tenstorrent, super::debug_backends())
-}
-
-pub(super) fn device(id: u16) -> Result<Arc<Mutex<TTDevice>>, BackendError> {
-    devices()?.get(id as usize).cloned().ok_or_else(|| BackendError {
+pub(super) fn device(id: u16) -> Result<&'static Mutex<TTDevice>, BackendError> {
+    backend()?.1.get(id as usize).ok_or_else(|| BackendError {
         status: ErrorStatus::Initialization,
         context: format!("Dev::TT({id}) is not available").into(),
     })
 }
 
 pub(super) fn device_count() -> u16 {
-    devices().map(|devs| devs.len() as u16).unwrap_or(0)
-}
-
-fn ensure_device_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Arc<Mutex<TTDevice>>>, BackendError> {
-    let pools = pools_with(config, debug_dev)?;
-    let mut devs = Vec::with_capacity(pools.len());
-    for (idx, pool_arc) in pools.iter().enumerate() {
-        let pool_id = Pool::TT(u16::try_from(idx).expect("So many Tenstorrent devices..."));
-        let guard = super::lock(pool_id, pool_arc);
-        devs.push(Arc::new(Mutex::new(TTDevice {
-            device_info: Arc::new(guard.dev_info.clone()),
-            dev_id: guard.dev_id,
-            memory_pool: pool_id,
-            runtime: guard.runtime.clone(),
-            programs: Slab::new(),
-        })));
-    }
-    Ok(devs)
+    backend().map(|(_, devs)| devs.len() as u16).unwrap_or(0)
 }
 
 fn create_temp_shm(size: u64) -> Result<(CString, *mut u8, u64), BackendError> {

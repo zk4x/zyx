@@ -400,16 +400,16 @@ impl Pool {
         let bytes = bytes + 8; // for the extra element, why not
         let free = self.free_bytes();
         let (result, name) = match self {
-            Pool::Host => (lock(self, &host::pool()).allocate(bytes), "host"),
+            Pool::Host => (lock(self, host::pool()).allocate(bytes), "host"),
             Pool::Disk => todo!("disk is not allocatable"),
-            Pool::Cuda(id) => (lock(self, &cuda::pool(id)?).allocate(bytes), "cuda"),
-            Pool::OpenCL(id) => (lock(self, &opencl::pool(id)?).allocate(bytes), "opencl"),
-            Pool::Vulkan(id) => (lock(self, &vulkan::pool(id)?).allocate(bytes), "vulkan"),
+            Pool::Cuda(id) => (lock(self, cuda::pool(id)?).allocate(bytes), "cuda"),
+            Pool::OpenCL(id) => (lock(self, opencl::pool(id)?).allocate(bytes), "opencl"),
+            Pool::Vulkan(id) => (lock(self, vulkan::pool(id)?).allocate(bytes), "vulkan"),
             #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => (lock(self, &tenstorrent::pool(id)?).allocate(bytes), "tenstorrent"),
+            Pool::TT(id) => (lock(self, tenstorrent::pool(id)?).allocate(bytes), "tenstorrent"),
             #[cfg(feature = "wgpu")]
-            Pool::WGPU(id) => (lock(self, &wgpu::pool(id)?).allocate(bytes), "wgpu"),
-            Pool::Dummy => (lock(self, &dummy::pool()?).allocate(bytes), "dummy"),
+            Pool::WGPU(id) => (lock(self, wgpu::pool(id)?).allocate(bytes), "wgpu"),
+            Pool::Dummy => (lock(self, dummy::pool()?).allocate(bytes), "dummy"),
         };
         if result.is_ok() {
             if let Ok(x) = std::env::var("ZYX_DEBUG")
@@ -428,7 +428,7 @@ impl Pool {
     /// [`Pool::Host`]; any other pool is a programming error and panics.
     pub fn insert_host(self, buf: Box<[u8]>) -> PoolBufferId {
         match self {
-            Pool::Host => lock(self, &host::pool()).insert(buf),
+            Pool::Host => lock(self, host::pool()).insert(buf),
             _ => unreachable!("Pool::insert is only valid for the host pool, got {self:?}"),
         }
     }
@@ -437,7 +437,7 @@ impl Pool {
     /// [`Pool::Disk`]; any other pool is a programming error and panics.
     pub fn disk_buffer_from_path(self, bytes: Dim, path: &std::path::Path, offset_bytes: u64) -> PoolBufferId {
         match self {
-            Pool::Disk => lock(self, &disk::pool()).buffer_from_path(bytes, path, offset_bytes),
+            Pool::Disk => lock(self, disk::pool()).buffer_from_path(bytes, path, offset_bytes),
             _ => unreachable!("Pool::disk_buffer_from_path is only valid for the disk pool, got {self:?}"),
         }
     }
@@ -451,7 +451,7 @@ impl Pool {
                     lock(self, &pool).retain(buffer_id);
                 }
             }
-            Pool::Host => lock(self, &host::pool()).retain(buffer_id),
+            Pool::Host => lock(self, host::pool()).retain(buffer_id),
             // Disk buffers are file mappings — nothing to free behind rc.
             Pool::Disk => {}
             Pool::OpenCL(id) => {
@@ -494,7 +494,7 @@ impl Pool {
                     lock(self, &pool).release(buffer_id);
                 }
             }
-            Pool::Host => lock(self, &host::pool()).release(buffer_id),
+            Pool::Host => lock(self, host::pool()).release(buffer_id),
             // Disk buffers are file mappings — nothing to free behind rc.
             Pool::Disk => {}
             Pool::OpenCL(id) => {
@@ -533,8 +533,8 @@ impl Pool {
 
     pub fn free_bytes(self) -> Dim {
         match self {
-            Pool::Host => lock(self, &host::pool()).free_bytes(),
-            Pool::Disk => lock(self, &disk::pool()).free_bytes(),
+            Pool::Host => lock(self, host::pool()).free_bytes(),
+            Pool::Disk => lock(self, disk::pool()).free_bytes(),
             Pool::Cuda(id) => cuda::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
             Pool::OpenCL(id) => opencl::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
             Pool::Vulkan(id) => vulkan::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
@@ -548,19 +548,19 @@ impl Pool {
 
     pub fn pool_to_host(self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
         match self {
-            Pool::Host => lock(self, &host::pool()).pool_to_host(src, dst),
-            Pool::Disk => lock(self, &disk::pool()).pool_to_host(src, dst),
-            Pool::Cuda(id) => lock(self, &cuda::pool(id)?).pool_to_host(src, dst),
-            Pool::OpenCL(id) => lock(self, &opencl::pool(id)?).pool_to_host(src, dst),
-            Pool::Vulkan(id) => lock(self, &vulkan::pool(id)?).pool_to_host(src, dst),
+            Pool::Host => lock(self, host::pool()).pool_to_host(src, dst),
+            Pool::Disk => lock(self, disk::pool()).pool_to_host(src, dst),
+            Pool::Cuda(id) => lock(self, cuda::pool(id)?).pool_to_host(src, dst),
+            Pool::OpenCL(id) => lock(self, opencl::pool(id)?).pool_to_host(src, dst),
+            Pool::Vulkan(id) => lock(self, vulkan::pool(id)?).pool_to_host(src, dst),
             #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => lock(self, &tenstorrent::pool(id)?).pool_to_host(src, dst),
+            Pool::TT(id) => lock(self, tenstorrent::pool(id)?).pool_to_host(src, dst),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => {
                 wgpu::flush_pending(id)?;
-                lock(self, &wgpu::pool(id)?).pool_to_host(src, dst)
+                lock(self, wgpu::pool(id)?).pool_to_host(src, dst)
             }
-            Pool::Dummy => lock(self, &dummy::pool()?).pool_to_host(src, dst),
+            Pool::Dummy => lock(self, dummy::pool()?).pool_to_host(src, dst),
         }
     }
 
@@ -583,7 +583,7 @@ impl Pool {
                 // the dst buffer is freshly allocated with its rc held by
                 // the plan, and no one touches it until the copy replies.
                 let Pool::Cuda(id) = src else {
-                    return lock(self, &host::pool()).pool_to_pool(src, src_buf, dst_buf);
+                    return lock(self, host::pool()).pool_to_pool(src, src_buf, dst_buf);
                 };
                 let pool = host::pool();
                 let (dst_ptr, bytes) = {
@@ -594,17 +594,17 @@ impl Pool {
                 lock(src, &src_pool).pool_to_host_ptr(src_buf, dst_ptr, bytes as i64)
             }
             Pool::Disk => todo!("copies into disk pool"),
-            Pool::Cuda(id) => lock(self, &cuda::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
-            Pool::OpenCL(id) => lock(self, &opencl::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
-            Pool::Vulkan(id) => lock(self, &vulkan::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
+            Pool::Cuda(id) => lock(self, cuda::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
+            Pool::OpenCL(id) => lock(self, opencl::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
+            Pool::Vulkan(id) => lock(self, vulkan::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
             #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => lock(self, &tenstorrent::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
+            Pool::TT(id) => lock(self, tenstorrent::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => {
                 wgpu::flush_pending(id)?;
-                lock(self, &wgpu::pool(id)?).pool_to_pool(src, src_buf, dst_buf)
+                lock(self, wgpu::pool(id)?).pool_to_pool(src, src_buf, dst_buf)
             }
-            Pool::Dummy => lock(self, &dummy::pool()?).pool_to_pool(src, src_buf, dst_buf),
+            Pool::Dummy => lock(self, dummy::pool()?).pool_to_pool(src, src_buf, dst_buf),
         }
     }
 
@@ -612,7 +612,7 @@ impl Pool {
     /// directly into a buffer (host-pool staging buffers only).
     pub fn buffer_ptr_mut(self, buffer_id: PoolBufferId) -> *mut u8 {
         match self {
-            Pool::Host => lock(self, &host::pool()).buffer_ptr_mut(buffer_id),
+            Pool::Host => lock(self, host::pool()).buffer_ptr_mut(buffer_id),
             // Device buffers are not CPU-addressable; staging writes go
             // through Pool::Host buffers only.
             Pool::Disk => todo!("disk buffers have no staging pointer"),

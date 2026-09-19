@@ -18,7 +18,11 @@ use crate::{
     shape::Dim,
     slab::Slab,
 };
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Mutex;
+
+// ── Global state ──────────────────────────────────────────────────────────────
+
+static DISK_POOL: Mutex<DiskMemoryPool> = Mutex::new(DiskMemoryPool { free_bytes: 0, buffers: Slab::new() });
 
 #[derive(Debug)]
 pub struct DiskMemoryPool {
@@ -26,19 +30,8 @@ pub struct DiskMemoryPool {
     buffers: Slab<PoolBufferId, DiskBuffer>,
 }
 
-/// Constructs the global disk pool. Infallible — `Disk` is always available.
-pub(super) fn ensure_pool() -> DiskMemoryPool {
-    if super::debug_backends() {
-        println!("[disk] initialized");
-    }
-    DiskMemoryPool { free_bytes: 0, buffers: Slab::new() }
-}
-
-/// Process-wide global disk pool. Owned here — `mod.rs` only holds the `Pool::Disk` handle.
-static DISK_POOL: OnceLock<Arc<Mutex<DiskMemoryPool>>> = OnceLock::new();
-
-pub(super) fn pool() -> Arc<Mutex<DiskMemoryPool>> {
-    DISK_POOL.get_or_init(|| Arc::new(Mutex::new(ensure_pool()))).clone()
+pub(super) fn pool() -> &'static Mutex<DiskMemoryPool> {
+    &DISK_POOL
 }
 
 #[derive(Debug)]

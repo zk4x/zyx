@@ -10,8 +10,12 @@ use crate::{
     slab::{Slab, SlabId},
 };
 use nanoserde::DeJson;
-use std::sync::Arc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+
+// ── Global state ──────────────────────────────────────────────────────────────
+
+static DUMMY_POOL: OnceLock<Mutex<DummyMemoryPool>> = OnceLock::new();
+static DUMMY_DEVICE: OnceLock<Mutex<DummyDevice>> = OnceLock::new();
 
 #[derive(Default, Debug, DeJson)]
 #[nserde(default)]
@@ -37,23 +41,13 @@ pub struct DummyDevice {
     memory_pool: Pool,
 }
 
-/// Process-wide global dummy pool. Owned here — `mod.rs` only holds the
-/// `Pool::Dummy` handle. `INIT` serializes first construction only; the
-/// alloc/free path never takes it.
-static DUMMY_POOL: OnceLock<Arc<Mutex<DummyMemoryPool>>> = OnceLock::new();
-static DUMMY_INIT: Mutex<()> = Mutex::new(());
-
-pub(super) fn pool() -> Result<Arc<Mutex<DummyMemoryPool>>, BackendError> {
+pub(super) fn pool() -> Result<&'static Mutex<DummyMemoryPool>, BackendError> {
     if let Some(pool) = DUMMY_POOL.get() {
-        return Ok(pool.clone());
+        return Ok(pool);
     }
-    let _init = DUMMY_INIT.lock().unwrap_or_else(|_| panic!("dummy pool init lock poisoned"));
-    if let Some(pool) = DUMMY_POOL.get() {
-        return Ok(pool.clone());
-    }
-    let pool = Arc::new(Mutex::new(ensure_pool()?));
-    DUMMY_POOL.set(pool.clone()).expect("dummy pool set twice under init lock");
-    Ok(pool)
+    let pool = Mutex::new(ensure_pool()?);
+    let _ = DUMMY_POOL.set(pool);
+    DUMMY_POOL.get().ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "dummy pool init failed".into() })
 }
 
 /// Constructs the global dummy pool. Fails when dummy is configured out.
@@ -72,18 +66,9 @@ fn ensure_pool() -> Result<DummyMemoryPool, BackendError> {
     Ok(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() })
 }
 
-/// Process-wide global dummy device. Owned here — `mod.rs` only holds the
-/// `Dev::Dummy` handle. Lazy like the dummy pool; fails when configured out.
-static DUMMY_DEVICE: OnceLock<Arc<Mutex<DummyDevice>>> = OnceLock::new();
-static DUMMY_DEV_INIT: Mutex<()> = Mutex::new(());
-
-pub(super) fn device() -> Result<Arc<Mutex<DummyDevice>>, BackendError> {
+pub(super) fn device() -> Result<&'static Mutex<DummyDevice>, BackendError> {
     if let Some(dev) = DUMMY_DEVICE.get() {
-        return Ok(dev.clone());
-    }
-    let _init = DUMMY_DEV_INIT.lock().unwrap_or_else(|_| panic!("dummy device init lock poisoned"));
-    if let Some(dev) = DUMMY_DEVICE.get() {
-        return Ok(dev.clone());
+        return Ok(dev);
     }
     let config = super::config();
     if !config.dummy.enabled {
@@ -95,7 +80,7 @@ pub(super) fn device() -> Result<Arc<Mutex<DummyDevice>>, BackendError> {
     if super::debug_backends() {
         println!("[dummy] initialized");
     }
-    let dev = Arc::new(Mutex::new(DummyDevice {
+    let dev = Mutex::new(DummyDevice {
         device_info: Arc::new(DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![Dim::from(u32::MAX); 3],
@@ -118,9 +103,9 @@ pub(super) fn device() -> Result<Arc<Mutex<DummyDevice>>, BackendError> {
             has_openmp: false,
         }),
         memory_pool: Pool::Dummy,
-    }));
-    DUMMY_DEVICE.set(dev.clone()).expect("dummy device set twice under init lock");
-    Ok(dev)
+    });
+    let _ = DUMMY_DEVICE.set(dev);
+    Ok(DUMMY_DEVICE.get().unwrap())
 }
 
 impl DummyMemoryPool {
@@ -209,7 +194,7 @@ impl DummyDevice {
         debug_assert_eq!(pool_handle, self.memory_pool);
         let _ = program_id;
         let memory_pool = pool()?;
-        let memory_pool = super::lock(pool_handle, &memory_pool);
+        let memory_pool = super::lock(pool_handle, memory_pool);
         for arg in args {
             match arg {
                 LaunchArg::Buffer(buffer_id) => {

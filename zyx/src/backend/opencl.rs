@@ -32,6 +32,11 @@ use std::{
     time::Instant,
 };
 
+// ── Global state ──────────────────────────────────────────────────────────────
+
+static OPENCL_POOLS: OnceLock<Vec<Mutex<OpenCLMemoryPool>>> = OnceLock::new();
+static OPENCL_DEVICES: OnceLock<Vec<Mutex<OpenCLDevice>>> = OnceLock::new();
+
 #[derive(Debug, Default, DeJson)]
 #[nserde(default)]
 pub struct OpenCLConfig {
@@ -149,38 +154,48 @@ enum Command {
 
 unsafe impl Send for Command {}
 
-/// Process-wide per-device pools. Owned here — `mod.rs` only holds
-/// `Pool::OpenCL(i)` handles. `OPENCL_INIT` serializes first construction
-/// only; the alloc/free path never takes it. Each pool owns one device:
-/// one context and one worker thread per device.
-static OPENCL_POOLS: OnceLock<Vec<Arc<Mutex<OpenCLMemoryPool>>>> = OnceLock::new();
-static OPENCL_INIT: Mutex<()> = Mutex::new(());
-
-fn pools_with(config: &OpenCLConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<OpenCLMemoryPool>>>, BackendError> {
-    if let Some(pools) = OPENCL_POOLS.get() {
-        return Ok(pools);
+/// Single backend initializer: builds pools + devices together in one pass,
+/// publishes both tables. Reads config directly; no init locks.
+fn backend() -> Result<
+    (&'static Vec<Mutex<OpenCLMemoryPool>>, &'static Vec<Mutex<OpenCLDevice>>),
+    BackendError,
+> {
+    if let Some(pools) = OPENCL_POOLS.get()
+        && let Some(devs) = OPENCL_DEVICES.get()
+    {
+        return Ok((pools, devs));
     }
-    let _init = OPENCL_INIT.lock().unwrap_or_else(|_| panic!("opencl pool init lock poisoned"));
-    if let Some(pools) = OPENCL_POOLS.get() {
-        return Ok(pools);
-    }
-    let pools = ensure_pool_table(config, debug_dev)?;
+    let (pools, devs) = initialize_backend()?;
     let _ = OPENCL_POOLS.set(pools);
-    OPENCL_POOLS
-        .get()
-        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "OpenCL pool init failed".into() })
+    let _ = OPENCL_DEVICES.set(devs);
+    match (OPENCL_POOLS.get(), OPENCL_DEVICES.get()) {
+        (Some(pools), Some(devs)) => Ok((pools, devs)),
+        _ => Err(BackendError { status: ErrorStatus::Initialization, context: "OpenCL init failed".into() }),
+    }
 }
 
-fn pools() -> Result<&'static Vec<Arc<Mutex<OpenCLMemoryPool>>>, BackendError> {
-    pools_with(&OpenCLConfig::default(), false)
+fn initialize_backend() -> Result<(Vec<Mutex<OpenCLMemoryPool>>, Vec<Mutex<OpenCLDevice>>), BackendError> {
+    let config = super::config();
+    let debug_dev = super::debug_backends();
+    let pools = ensure_pool_table(&config.opencl, debug_dev)?;
+    let mut devs = Vec::with_capacity(pools.len());
+    for (idx, pool) in pools.iter().enumerate() {
+        let pool_id = Pool::OpenCL(u16::try_from(idx).expect("So many OpenCL devices..."));
+        let guard = super::lock(pool_id, pool);
+        let tx = guard.tx.clone();
+        let dev_info = guard.dev_info.clone();
+        drop(guard);
+        devs.push(Mutex::new(OpenCLDevice { tx, dev_info: Arc::new(dev_info), memory_pool: pool_id }));
+    }
+    Ok((pools, devs))
 }
 
-pub(super) fn pool(id: u16) -> Result<Arc<Mutex<OpenCLMemoryPool>>, BackendError> {
-    pools()?.get(id as usize).cloned().ok_or_else(|| no_pool(id))
+pub(super) fn pool(id: u16) -> Result<&'static Mutex<OpenCLMemoryPool>, BackendError> {
+    backend()?.0.get(id as usize).ok_or_else(|| no_pool(id))
 }
 
 pub(super) fn pool_count() -> u16 {
-    pools().map(|pools| pools.len() as u16).unwrap_or(0)
+    backend().map(|(pools, _)| pools.len() as u16).unwrap_or(0)
 }
 
 fn no_pool(id: u16) -> BackendError {
@@ -188,13 +203,10 @@ fn no_pool(id: u16) -> BackendError {
 }
 
 /// Builds the per-device pool table: loads the ICD, enumerates platforms and
-/// devices, and spawns one worker (one context) per device. Runs once under
-/// `OPENCL_INIT`.
-pub(super) fn ensure_pool_table(
-    config: &OpenCLConfig,
-    debug_dev: bool,
-) -> Result<Vec<Arc<Mutex<OpenCLMemoryPool>>>, BackendError> {
-    let mut pools: Vec<Arc<Mutex<OpenCLMemoryPool>>> = Vec::new();
+/// devices, and spawns one worker (one context) per device. Pure builder,
+/// called once from `backend()`.
+pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Result<Vec<Mutex<OpenCLMemoryPool>>, BackendError> {
+    let mut pools: Vec<Mutex<OpenCLMemoryPool>> = Vec::new();
     if let Some(device_ids) = &config.platform_ids
         && device_ids.is_empty()
     {
@@ -817,12 +829,7 @@ pub(super) fn ensure_pool_table(
                 }
             });
 
-            pools.push(Arc::new(Mutex::new(OpenCLMemoryPool {
-                tx: tx.clone(),
-                total_bytes,
-                free_bytes: free_bytes_atomic,
-                dev_info,
-            })));
+            pools.push(Mutex::new(OpenCLMemoryPool { tx: tx.clone(), total_bytes, free_bytes: free_bytes_atomic, dev_info }));
         }
     }
     #[allow(unused)]
@@ -830,54 +837,15 @@ pub(super) fn ensure_pool_table(
     Ok(pools)
 }
 
-/// Process-wide per-device OpenCL devices. Owned here — `mod.rs` only holds
-/// `Dev::OpenCL(i)` handles. `OPENCL_DEV_INIT` serializes first construction
-/// only; compile/launch take the device lock, never the init lock.
-static OPENCL_DEVICES: OnceLock<Vec<Arc<Mutex<OpenCLDevice>>>> = OnceLock::new();
-static OPENCL_DEV_INIT: Mutex<()> = Mutex::new(());
-
-fn devices_with(config: &OpenCLConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<OpenCLDevice>>>, BackendError> {
-    if let Some(devs) = OPENCL_DEVICES.get() {
-        return Ok(devs);
-    }
-    let _init = OPENCL_DEV_INIT.lock().unwrap_or_else(|_| panic!("opencl device init lock poisoned"));
-    if let Some(devs) = OPENCL_DEVICES.get() {
-        return Ok(devs);
-    }
-    let devs = ensure_device_table(config, debug_dev)?;
-    let _ = OPENCL_DEVICES.set(devs);
-    OPENCL_DEVICES
-        .get()
-        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "OpenCL device init failed".into() })
-}
-
-fn devices() -> Result<&'static Vec<Arc<Mutex<OpenCLDevice>>>, BackendError> {
-    devices_with(&super::config().opencl, super::debug_backends())
-}
-
-pub(super) fn device(id: u16) -> Result<Arc<Mutex<OpenCLDevice>>, BackendError> {
-    devices()?.get(id as usize).cloned().ok_or_else(|| BackendError {
+pub(super) fn device(id: u16) -> Result<&'static Mutex<OpenCLDevice>, BackendError> {
+    backend()?.1.get(id as usize).ok_or_else(|| BackendError {
         status: ErrorStatus::Initialization,
         context: format!("Dev::OpenCL({id}) is not available").into(),
     })
 }
 
 pub(super) fn device_count() -> u16 {
-    devices().map(|devs| devs.len() as u16).unwrap_or(0)
-}
-
-fn ensure_device_table(config: &OpenCLConfig, debug_dev: bool) -> Result<Vec<Arc<Mutex<OpenCLDevice>>>, BackendError> {
-    let pools = pools_with(config, debug_dev)?;
-    let mut devs = Vec::with_capacity(pools.len());
-    for (idx, pool_arc) in pools.iter().enumerate() {
-        let pool_id = Pool::OpenCL(u16::try_from(idx).expect("So many OpenCL devices..."));
-        let guard = super::lock(pool_id, pool_arc);
-        let tx = guard.tx.clone();
-        let dev_info = guard.dev_info.clone();
-        drop(guard);
-        devs.push(Arc::new(Mutex::new(OpenCLDevice { tx, dev_info: Arc::new(dev_info), memory_pool: pool_id })));
-    }
-    Ok(devs)
+    backend().map(|(_, devs)| devs.len() as u16).unwrap_or(0)
 }
 
 enum Pending {

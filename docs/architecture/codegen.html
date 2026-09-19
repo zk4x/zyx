@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Introduction</title>
+        <title>Codegen and the Physical IR</title>
 
 
         <!-- Custom HTML head -->
@@ -12,33 +12,33 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
-        <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-e96d0476.css">
-        <link rel="stylesheet" href="css/chrome-d279d366.css">
-        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
-        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
-        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-450aa6e1.js";
+            window.path_to_searchindex_js = "../searchindex-450aa6e1.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-58fb2f25.js"></script>
+        <script src="../toc-58fb2f25.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -105,7 +105,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -140,7 +140,7 @@
                     <h1 class="menu-title"></h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
                         </a>
 
@@ -174,62 +174,80 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p>This book documents the internals of zyx — a machine learning library and compiler.</p>
-<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> — but only inside a <code>Tape</code> scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a <code>Tape</code>, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~20 node types.</p>
-<h2 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who This is For</a></h2>
-<p>This book is for developers who want to understand how zyx works under the hood: the architecture decisions, the optimization passes, the backend system, and how pieces fit together.</p>
-<h2 id="two-execution-modes"><a class="header" href="#two-execution-modes">Two Execution Modes</a></h2>
-<p>Zyx operates in two modes:</p>
+                        <h1 id="codegen-and-the-physical-ir"><a class="header" href="#codegen-and-the-physical-ir">Codegen and the Physical IR</a></h1>
+<p>The kernel IR’s two jobs are both value-shaped: lower movement ops into index arithmetic, and be the space the autotuner searches over — tens of thousands of variants, measured time decides. Everything decision-shaped happens before codegen. What remains for the backend is purely machine-shaped: registers, sync, placement, then bytes.</p>
+<p>This chapter describes how codegen is organized, and the Tenstorrent physical IR (TTIR) that exists because that hardware needs more than a straight lowering.</p>
+<h2 id="the-two-boundary-tests"><a class="header" href="#the-two-boundary-tests">The Two Boundary Tests</a></h2>
+<p>Two tests compose into the full boundary between kernel IR and backend code:</p>
+<h3 id="the-search-test--which-ir-holds-an-op"><a class="header" href="#the-search-test--which-ir-holds-an-op">The search test — which IR holds an op</a></h3>
+<blockquote>
+<p>An op belongs in the kernel IR iff the autotuner should ever enumerate over it — iff there exists a variant of the program where it is placed or structured differently, and the hardware decides between them.</p>
+</blockquote>
+<p>Movement lowering, loop structure, split/coarsen/register blocking, MAD fusion: search dimensions, kernel IR. Locks, syncs, reconfigs: their placement is invariant under restructuring, nothing to search — they cost the search nothing and belong to the physical IR, placed by derivation from loop structure and checked by verify.</p>
+<p>Consequences:</p>
 <ul>
-<li>
-<p><strong>Eager-ish (default)</strong>: Tensor operations fuse into kernels as you write them. When no more fusion is possible, the kernel executes immediately. No separate realize step. Ideal for one-off work like data preprocessing and initialization.</p>
-</li>
-<li>
-<p><strong>Tape</strong>: Wrap loops in a <code>Tape</code> to enable lazy graph building, autograd, and complex optimization (egraph-based fusion comparison, device allocation search, plan caching across structurally identical iterations). Think of it as <code>torch.compile</code>, but less strict. Kernel caching (compiled program reuse) is shared across both modes.</p>
-</li>
+<li><strong>The search space is closed.</strong> The autotuner never sees a physical IR, and no backend can smuggle a decision out of the search. If a backend-specific dimension is ever worth searching, it enters as a kernel IR config + <code>MakeOpt</code>, keeping the cost model measured-time-only and backend-agnostic.</li>
+<li><strong>The physical IR’s no-restructuring rule is a definition, not a discipline.</strong> Restructuring is a search dimension; search lives in the kernel IR; a physical-IR op that wants restructuring failed the search test and is in the wrong IR.</li>
+<li><strong>Criterion for future disputes:</strong> “would the autotuner enumerate over this?” Yes → kernel IR + <code>MakeOpt</code>. No → physical IR, derived placement, structural verify.</li>
 </ul>
-<h2 id="the-architecture-at-a-glance"><a class="header" href="#the-architecture-at-a-glance">The Architecture at a Glance</a></h2>
-<p>Every tensor operation creates a graph node. What happens next depends on the mode:</p>
-<p><strong>Eager-ish (default) — direct fusion, no graph:</strong></p>
-<pre><code class="language-text">Tensor op ──► append to kernel ──► compile + execute (if fusion not possible)
+<h3 id="the-subject-test--where-a-pass-lives"><a class="header" href="#the-subject-test--where-a-pass-lives">The subject test — where a pass lives</a></h3>
+<blockquote>
+<p>A pass belongs in an IR only if its subject exists in that IR.</p>
+</blockquote>
+<p>If a pass reasons about values, it belongs in the kernel IR (or above). SSA machinery — rewrites, solvers, def-use analysis — is never duplicated in a physical IR. When a physical-IR pass needs a dataflow fact (e.g. “is this operand’s last use?”), it queries the kernel IR through the origin op recorded at lowering time.</p>
+<p>The search test decides where an <em>op</em> lives; the subject test decides where a <em>pass</em> lives.</p>
+<h2 id="straight-codegen-is-the-default"><a class="header" href="#straight-codegen-is-the-default">Straight Codegen Is the Default</a></h2>
+<p>For most backends (C, CUDA, OpenCL, Vulkan, HIP, WGPU), codegen is trivial by design: deSSA, then one linear pass over the kernel IR emitting target code. No further optimizations, no backend-specific lowering. The hard work happened in the optimization passes; the IR was deliberately shaped so backends stay thin.</p>
+<h2 id="ttir--the-tenstorrent-physical-ir"><a class="header" href="#ttir--the-tenstorrent-physical-ir">TTIR — the Tenstorrent Physical IR</a></h2>
+<p>The Tenstorrent (Wormhole) compute model — three RISC-V threads (reader, math, writer), circular buffers with FIFO semantics, DST tile slots with lock/commit protocol, SFPU LREGs, unpacker/packer format state — cannot be expressed as a straight per-op lowering. The legacy codegen fused lowering, scheduling, and text emission into one walk with emergent state machines (CB accounting, init placement, format trackers). TTIR makes that state explicit: a typed, ordered, physical instruction stream that passes rewrite and a verifier checks, so invalid programs never reach the JIT.</p>
+<h3 id="representation"><a class="header" href="#representation">Representation</a></h3>
+<p>One program = one <code>Vec&lt;TTOp&gt;</code> covering all three RISC-V kernel sources. Section boundaries are ops in the stream:</p>
+<pre><code class="language-text">[reader ops] EndReader [compute ops] EndCompute [writer ops] EndWriter
 </code></pre>
-<p>Each op is appended directly to the kernel that produced its inputs. When a new op can’t fuse (different device, incompatible data flow), the pending kernel compiles and executes. No graph, no separate realize step.</p>
-<p><strong>Tape — lazy graph, egraph exploration:</strong></p>
-<pre><code class="language-text">Tensor op ──► graph node (accumulates) ──► Autograd (reverse-mode on same graph)
-                                  │
-                                  ▼
-                           Tape::realize()
-                                  │
-                                  ▼
-                    Kernelizer (batch, egraph explores
-                     fusion variants + device allocations)
-                                  │
-                                  ▼
-                    Kernel IR ──► Opt ──► Codegen ──► Execute
-</code></pre>
-<p>Inside a tape, graph nodes accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph nodes — the tape prevents their deletion so the backward pass can traverse them.</p>
-<h2 id="why-this-design"><a class="header" href="#why-this-design">Why This Design</a></h2>
-<p>Most deep learning libraries use two separate graphs:</p>
+<ul>
+<li>The barriers that today exist only as scan positions become first-class ops; verify walks one stream and checks cross-section facts (CB push/pop totals settled at each boundary).</li>
+<li>The renderer splits at the markers — one stream in, three kernel files out.</li>
+<li>Ids are typed and distinct — <code>VId</code> (virtual, kernel <code>OpId</code>s at lowering), <code>LRegId</code> (SFPU LREGs), <code>DstId</code> (DST slots), <code>VarId</code> (scalar C registers), <code>CBId</code> (circular buffers) — so misuse is a compile error in the IR’s own definitions.</li>
+<li>Not SSA: value ops carry their target (<code>z: OpId</code>); SSA-ness holds as an asserted invariant (single definition, in order) only until a pass rewrites it.</li>
+<li>Every variant carries a <strong>static signature</strong> — which CB it moves (produce/consume, n tiles), DST lock effects, arg reads, which thread executes it. <code>CopyTile</code> and its <code>Unpacr</code> expansion carry the same signature, so swapping between levels is sound by construction.</li>
+<li>No catch-all <code>Raw(String)</code> variant. Every line the backend emits is an enum variant; anything opaque is an explicit variant (including inline assembly with a typed operand list).</li>
+</ul>
+<h3 id="pipeline"><a class="header" href="#pipeline">Pipeline</a></h3>
+<p>Fixed order, one pass per concern, each pass TT-specific:</p>
 <ol>
-<li>A compute graph for eager execution</li>
-<li>An autograd graph for backpropagation</li>
+<li><strong>Convert + materialize</strong> — 1:1 kernel IR → TTOp, then duplicate cross-section values per section (each section is a separate kernel with its own registers and runtime args; arg ordinals stay global; CBs are one hardware object and never duplicated). SSA dedups globally, physical duplicates locally.</li>
+<li><strong>Sync insertion</strong> — <code>ReserveBack</code>/<code>WaitFront</code>/<code>PushBack</code>/<code>PopFront</code> per traffic op.</li>
+<li><strong>Lock insertion</strong> — <code>Acquire</code> placed directly at the LICM position (preheader of the outermost loop containing a pack): the lowering derives the same placement kernel LICM would compute, because the TTIR stream mirrors kernel loop structure 1:1. No effect ops enter the kernel IR for this — the placement is derivable, so there is nothing to search over.</li>
+<li><strong>Reconfig/init insertion</strong> — naive full reconfig before every copy/pack; correctness first, redundancy is safe.</li>
+<li><strong>Hoist + dedup</strong> — adjacent same-config reconfigs collapse; effect ops hoist out of constant-trip loops with trip-count accounting (FIFO depth × trip). Runs on the fully-placed stream: place first, then clean.</li>
+<li><strong>Regalloc + coalesce</strong> — late; linear scan over the linear stream, producing in-place forms.</li>
+<li><strong>Verify</strong> — structural: budgets per id class, CB balance and traffic correspondence, lock pairing, section termination, and the materialization invariant (every value consumed in a section is defined in that section).</li>
+<li><strong>Render</strong> — a table walk, not synthesis.</li>
 </ol>
-<p>Zyx uses <strong>one graph</strong> for both. This means:</p>
+<p>Each pass rebuilds the stream (drain → push), states which phase it expects (all-virtual → mixed → all-physical), and fails loudly at the exact op it cannot place. Verify guards the composition: whatever the passes did, the final stream must be launchable.</p>
+<h3 id="why-no-effect-ops-in-the-kernel-ir"><a class="header" href="#why-no-effect-ops-in-the-kernel-ir">Why no effect ops in the kernel IR</a></h3>
+<p>Hoisting the math lock out of the tile loop looks like a job for kernel LICM. It isn’t: the acquire is operand-free, so LICM would trivially hoist it maximally every time — the result is a fixed, derivable position, and the lowering can place the acquire exactly there at insertion time. Adding an effect op to the SSA IR would instead mean auditing CSE (which must never merge two identical acquires straddling a release), DCE, and every restructuring pass — new machinery in the shared IR for zero searchable freedom. Effects whose placement genuinely interacts with state (FIFO trips × loop trip counts, format configs with adjacency) are expressed in TTIR, where the hardware semantics live.</p>
+<h3 id="what-the-physical-ir-is-not-for"><a class="header" href="#what-the-physical-ir-is-not-for">What the physical IR is not for</a></h3>
 <ul>
-<li>The autograd system doesn’t need its own graph infrastructure — it reuses the same nodes</li>
-<li>Kernel fusion works across operation boundaries without special handling</li>
-<li>The implementation is debuggable (one graph to inspect, not two)</li>
-<li>Memory overhead is minimal: tensor handles are <code>u32</code> (4 bytes)</li>
+<li>No SSA machinery of any kind (subject test).</li>
+<li>No fused-composite matching: at instruction level the chain <em>is</em> the fusion — exp/add/reciprocal sequences share LREGs inside one walk, and the register allocator subsumes the containment analysis. There is no dedicated <code>elu</code> op and none is needed: the decomposition is the only spelling, and it is the fast path.</li>
+<li>No scalar optimization: kernel IR folds all scalar SSA work before lowering; scalar variants render dumbly.</li>
+<li>No restructuring: restructuring is a search dimension, and search lives in the kernel IR.</li>
 </ul>
-<p>The trade-off in tape mode is that evaluation is lazy — you must call <code>realize()</code> to trigger computation (dropping the tape only cleans up graph state — no computation is performed). But this laziness enables optimizations that eager execution cannot: egraph exploration of fusion variants, device allocation search, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is appropriate for one-off ops. Kernel caching (compiled program reuse) is shared across both modes.</p>
+<h3 id="migration"><a class="header" href="#migration">Migration</a></h3>
+<p>The high-level variants are pure abbreviations — macros over lower-level variants with identical signatures. A variant like <code>BinaryTileAdd</code> emits today’s output; when its decomposition into raw instructions is proven, the variant is deleted and nothing is lost. Rust’s exhaustive matches make deletion a compile event that walks through every site, so a half-removed variant cannot exist. The differential test does the proving: the pre- and post-deletion streams must render identically for the whole test corpus. The variant set is the migration ledger — the distance to “no LLK” is countable at any moment by listing the remaining high-level variants.</p>
+<h3 id="other-backends"><a class="header" href="#other-backends">Other backends</a></h3>
+<p>Each backend gets its own physical IR if and when it needs one. The differences between machines are structural (SIMT warps and shared-memory barriers vs FIFOs and DST locks), so a shared physical IR would degenerate into a lowest-common-denominator enum that expresses neither honestly. What <em>is</em> shared: the kernel IR above the boundary, the backend-facing input contract (linear SSA, epilogue-cleaned, arg ordering), and the methodology (typed variants, signature table, phase invariants, rebuild-per-pass, verify, render, differential gate). If two backend physical IRs later converge on the same variants for a machine-independent concept, a shared sub-IR can be extracted then — convergence-discovered unification is sound; designed-upfront unification is a layer nobody asked for.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/backends.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
 
-                            <a rel="next prefetch" href="architecture/overview.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../architecture/autograd.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -239,8 +257,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/backends.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
 
-                    <a rel="next prefetch" href="architecture/overview.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../architecture/autograd.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -260,13 +281,13 @@
         </script>
 
 
-        <script src="elasticlunr-ef4e11c1.min.js"></script>
-        <script src="mark-09e88c2c.min.js"></script>
-        <script src="searcher-09f2665d.js"></script>
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
 
-        <script src="clipboard-1626706a.min.js"></script>
-        <script src="highlight-abc7f01d.js"></script>
-        <script src="book-609e4cb8.js"></script>
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 
