@@ -392,31 +392,15 @@ impl Tensor {
         1.050_701_f32 * (self.relu() - (1.673_263_2_f32 * (self.exp().neg() + 1)).relu())
     }
 
-    /// Rounds each element of the input tensor to the nearest integer.
+    /// Rounds each element to the nearest integer (half to even).
     ///
-    /// For values exactly halfway between two integers, this function rounds to the nearest even integer
-    /// (banker's rounding). This is consistent with Python's `round()` behavior and IEEE 754 standards.
-    ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:**
-    ///
-    /// A new tensor with the same shape as the input, containing rounded values.
-    ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    ///
+    /// # use zyx::Tensor;
     /// let t = Tensor::from([1.2f32, 2.7, 3.5, -1.5, -2.3]);
-    /// // Rounds to [1.0, 3.0, 4.0, -2.0, -2.0]
-    /// let rounded = t.round();
+    /// let y = t.round();
     /// ```
-    ///
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn round(&self) -> Tensor {
         let x = self.float_cast().unwrap();
@@ -438,32 +422,15 @@ impl Tensor {
         rounded.cast(original_dtype)
     }
 
-    /// Returns the fractional part of each element in the input tensor.
+    /// Element-wise fractional part: `x - floor(x)`, always non-negative.
     ///
-    /// The fractional part is defined as x - floor(x), which gives the part of the number
-    /// after the decimal point. For positive numbers, this is straightforward. For negative
-    /// numbers, the fractional part is positive (e.g., frac(-1.7) = 0.3).
-    ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:**
-    ///
-    /// A new tensor with the same shape as the input, containing fractional parts.
-    ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    ///
+    /// # use zyx::Tensor;
     /// let t = Tensor::from([1.2f32, 2.7, 3.5, -1.7, -2.3]);
-    /// // Fractional parts: [0.2, 0.7, 0.5, 0.3, 0.7]
-    /// let fractional = t.frac();
+    /// let y = t.frac();
     /// ```
-    ///
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn frac(&self) -> Tensor {
         let x = self.float_cast().unwrap();
@@ -479,31 +446,16 @@ impl Tensor {
         fractional_positive.cast(original_dtype)
     }
 
-    /// Rounds each element of the input tensor up to the nearest integer.
+    /// Element-wise ceiling: smallest integer greater than or equal to each
+    /// element.
     ///
-    /// The ceiling function returns the smallest integer greater than or equal to x.
-    /// For example, ceil(1.2) = 2, ceil(-1.7) = -1, ceil(3.0) = 3.
-    ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:**
-    ///
-    /// A new tensor with the same shape as the input, containing ceiling values.
-    ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    ///
+    /// # use zyx::Tensor;
     /// let t = Tensor::from([1.2f32, 2.7, 3.0, -1.7, -2.3]);
-    /// // Ceil to [2.0, 3.0, 3.0, -1.0, -2.0]
-    /// let ceiled = t.ceil();
+    /// let y = t.ceil();
     /// ```
-    ///
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn ceil(&self) -> Tensor {
         let x = self.float_cast().unwrap();
@@ -516,55 +468,59 @@ impl Tensor {
         ceiled.cast(original_dtype)
     }
 
-    /// Applies the sigmoid activation function to each element in the input tensor.
+    /// Element-wise sigmoid: `1 / (1 + exp(-x))`, in [0, 1].
     ///
-    /// The sigmoid function returns `1 / (1 + exp(-x))`, i.e., it maps any real-valued input onto a value between 0 and 1. This function is commonly used for binary classification problems or as an activation function in neural networks.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `sigmoid(input_element)`.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.sigmoid();
+    /// ```
     #[must_use]
     pub fn sigmoid(&self) -> Tensor {
         let exp_x = self.exp();
         exp_x.clone() / (exp_x + 1)
     }
 
-    /// Applies the hard sigmoid activation function to each element in the input tensor.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// Element-wise hard sigmoid: `clamp(x/6 + 0.5, 0, 1)` for `x > -3`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-4.0f32, -3.0, 0.0, 3.0, 4.0]);
+    /// let y = t.hard_sigmoid();
+    /// ```
     #[must_use]
     pub fn hard_sigmoid(&self) -> Tensor {
         (self.cmpgt(-3).unwrap() * (self / 6 + 0.5)).minimum(1).unwrap()
     }
 
-    /// Applies the sine function to each element in the input tensor.
+    /// Element-wise sine.
     ///
-    /// This function returns a new tensor with the same shape as the input, where each element is the sine of the corresponding element in the input tensor. The sine function is useful for various mathematical and scientific computations involving angles or periodic phenomena.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, where each element is the sine of the corresponding element in the input tensor.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, core::f32::consts::PI / 2.0, core::f32::consts::PI]);
+    /// let y = t.sin();
+    /// ```
     #[must_use]
     pub fn sin(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         Tensor { id: RT.lock().unary(x.id, UOp::Sin) }
     }
 
-    /// Applies the hyperbolic sine function to each element in the input tensor.
+    /// Element-wise hyperbolic sine: `sinh(x) = (exp(x) - exp(-x)) / 2`.
     ///
-    /// The hyperbolic sine function returns `(e^x - e^-x) / 2`, i.e., it maps any real-valued input onto a value that grows exponentially. This function is useful for computations involving exponential growth or decay, such as in physics and engineering applications.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `sinh(input_element)`.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, 1.0]);
+    /// let y = t.sinh();
+    /// ```
     #[must_use]
     pub fn sinh(&self) -> Tensor {
         // (e^x - e^-x) / 2
@@ -574,17 +530,16 @@ impl Tensor {
         (ex - enx) / 2
     }
 
-    /// Applies the softplus function to each element in the input tensor with a given beta and threshold.
+    /// Softplus activation: `log(exp(beta * x) / beta)` for `beta * x > threshold`,
+    /// `beta * x` otherwise.
     ///
-    /// The softplus function returns `log(exp(x) + 1)` for inputs greater than the threshold, and x otherwise. This function is useful for bounding outputs between zero and infinity when applying the `ReLU` function.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    /// * beta: A scalar multiplier applied to each element of the input tensor before comparison with the threshold.
-    /// * threshold: The threshold value below which the input is returned unchanged, and above which the softplus function is applied.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the softplus function with the given beta and threshold.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.softplus(1.0f32, 0.0);
+    /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn softplus(&self, beta: impl Float, threshold: impl Float) -> Tensor {
@@ -592,84 +547,94 @@ impl Tensor {
         x.cmplt(threshold).unwrap().where_(((x).exp() + 1).ln() * beta.reciprocal(), x).unwrap()
     }
 
-    /// Applies the square root function to each element in the input tensor.
+    /// Element-wise square root: `sqrt(x)`.
     ///
-    /// This function returns a new tensor with the same shape as the input, where each element is the square root of the corresponding element in the input tensor. The square root function is useful for various mathematical computations involving squares or square roots.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, where each element is the square root of the corresponding element in the input tensor.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 4.0, 9.0]);
+    /// let y = t.sqrt();
+    /// ```
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         Tensor { id: RT.lock().unary(x.id, UOp::Sqrt) }
     }
 
-    /// Applies the Swish activation function to each element in the input tensor.
+    /// Swish activation: `x * sigmoid(x)`.
     ///
-    /// The Swish function returns `x * sigmoid(x)`, where `sigmoid(x) = 1 / (1 + exp(-x))`. This function is useful for various deep learning applications, as it has been shown to improve convergence speed and generalization performance compared to other activation functions like `ReLU`.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the Swish function.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([-2.0f32, -0.5, 0.5, 2.0]);
+    /// let y = t.swish();
+    /// ```
     #[must_use]
     pub fn swish(&self) -> Tensor {
         self * self.sigmoid()
     }
 
-    /// Applies the tangent function to each element in the input tensor.
+    /// Element-wise tangent: `sin(x) / cos(x)`.
     ///
-    /// The tangent function returns the sine of the input divided by the cosine of the input. This function is useful for various mathematical computations involving angles and trigonometry.
+    /// # Example
     ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the tangent function.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, core::f32::consts::PI / 4.0, core::f32::consts::PI]);
+    /// let y = t.tan();
+    /// ```
     #[must_use]
     pub fn tan(&self) -> Tensor {
         self.sin() / self.cos()
     }
 
-    /// Returns the hyperbolic tangent of each element in the tensor.
+    /// Element-wise hyperbolic tangent: `tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)`.
     ///
-    /// The hyperbolic tangent is calculated as `(exp(2x) + 1) / (exp(2x) - 1)`, where `exp` is the exponential function and `x` is an element of the input tensor. This function applies the hyperbolic tangent element-wise to the input tensor.
-    ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    ///
+    /// # use zyx::Tensor;
     /// let t = Tensor::from(vec![0.5f32, 1.0]);
     /// assert_eq!(t.tanh(), [0.46211715738221946f32, 0.761594166564993]);
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if the input tensor is empty.
     #[must_use]
     pub fn tanh(&self) -> Tensor {
         let exp2x = (self + self).exp();
         (exp2x.clone() - 1) / (exp2x + 1)
     }
 
-    /// Converts angles from degrees to radians.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// Element-wise conversion of angles from degrees to radians.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, 90.0, 180.0]);
+    /// let y = t.deg2rad();
+    /// ```
     #[must_use]
     pub fn deg2rad(&self) -> Tensor {
         self * (core::f32::consts::PI / 180.0)
     }
 
-    /// Returns a boolean tensor where elements are close within a tolerance.
+    /// Boolean tensor true where `self` and `other` are within
+    /// `atol + rtol * |other|` of each other.
+    ///
+    /// # Example
+    ///
+    /// ```rust no_run
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([0.1f32, 0.2, 0.3]);
+    /// let b = Tensor::from([0.1f32, 0.200001, 0.4]);
+    /// let y = a.isclose(b, Tensor::from(1e-5f32), Tensor::from(1e-8f32))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
+    ///
     /// # Errors
-    /// Returns error if the tensors have non broadcasteable shapes.
+    ///
+    /// Returns an error if the tensors have non-broadcastable shapes.
     pub fn isclose(
         &self,
         other: impl Into<Tensor>,
@@ -685,105 +650,169 @@ impl Tensor {
         diff.cmplt(tolerance)
     }
 
-    /// Returns a boolean tensor where elements are infinite.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// Boolean tensor true where elements are infinite.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, f32::INFINITY, f32::NEG_INFINITY]);
+    /// let y = t.isinf();
+    /// ```
     #[must_use]
     pub fn isinf(&self) -> Tensor {
         self.equal(f32::INFINITY).unwrap()
     }
 
-    /// Returns a boolean tensor where elements are NaN.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// Boolean tensor true where elements are NaN.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, f32::NAN, 0.0]);
+    /// let y = t.isnan();
+    /// ```
     #[must_use]
     pub fn isnan(&self) -> Tensor {
         self.equal(f32::NAN).unwrap()
     }
 
-    /// Returns the base-10 logarithm of each element in the tensor.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// Element-wise base-10 logarithm: `log10(x)`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 10.0, 100.0]);
+    /// let y = t.log10();
+    /// ```
     #[must_use]
     pub fn log10(&self) -> Tensor {
         (self.log(10)).cast(self.dtype())
     }
 
-    /// Converts angles from radians to degrees.
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    /// Element-wise conversion of angles from radians to degrees.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0.0f32, core::f32::consts::PI / 2.0, core::f32::consts::PI]);
+    /// let y = t.rad2deg();
+    /// ```
     #[must_use]
     pub fn rad2deg(&self) -> Tensor {
         self * (180.0 / core::f32::consts::PI)
     }
 
-    /// Bitnot
+    /// Element-wise bitwise NOT.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0u8, 255, 170, 85]);
+    /// let y = t.bitnot();
+    /// ```
     #[must_use]
     pub fn bitnot(&self) -> Tensor {
         Tensor { id: RT.lock().unary(self.id, UOp::BitNot) }
     }
 
-    /// Clamps the elements of this tensor within a specified range.
+    /// Clamp elements to the range `[min, max]`, broadcastable.
     ///
-    /// Each element in the tensor is constrained to lie between the corresponding
-    /// elements in the `min` and `max` tensors. Values below the minimum are set to
-    /// the minimum value, and values above the maximum are set to the maximum value.
+    /// # Example
     ///
-    /// # Arguments
-    ///
-    /// * `min`: A tensor representing the lower bound for clamping.
-    /// * `max`: A tensor representing the upper bound for clamping.
-    ///
-    /// # Returns
-    ///
-    /// A new tensor with its elements clamped within the range defined by `min` and `max`.
+    /// ```rust no_run
+    /// # use zyx::{Tensor, DType};
+    /// let x = Tensor::from([0.5f32, 2.0, 3.5]);
+    /// let y = x.clamp(Tensor::from(1.0f32), Tensor::from(3.0f32))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non-broadcastable shapes.
+    /// Returns an error if `min`/`max` are non-broadcastable with `self`.
     #[allow(clippy::missing_panics_doc)]
     pub fn clamp(&self, min: impl Into<Tensor>, max: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         self.maximum(min.into())?.minimum(max.into())
     }
 
-    /// Compare less than
+    /// Element-wise `self < rhs` (broadcastable), as a bool tensor.
+    ///
+    /// # Example
+    ///
+    /// ```rust no_run
+    /// # use zyx::{Tensor, DType};
+    /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = a.cmplt(Tensor::from([2.0f32, 2.0, 3.0]))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns an error if the tensors are non-broadcastable.
     pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Cmplt)?;
         Ok(Tensor { id })
     }
 
-    /// Compare greater than
+    /// Element-wise `self > rhs` (broadcastable), as a bool tensor.
+    ///
+    /// # Example
+    ///
+    /// ```rust no_run
+    /// # use zyx::{Tensor, DType};
+    /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = a.cmpgt(Tensor::from([2.0f32, 2.0, 3.0]))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns an error if the tensors are non-broadcastable.
     pub fn cmpgt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Cmpgt)?;
         Ok(Tensor { id })
     }
 
-    /// Elementwise maximum between two tensors
+    /// Element-wise `max(self, rhs)` (broadcastable).
+    ///
+    /// # Example
+    ///
+    /// ```rust no_run
+    /// # use zyx::{Tensor, DType};
+    /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = a.maximum(Tensor::from([2.0f32, 1.0, 3.0]))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns an error if the tensors are non-broadcastable.
     pub fn maximum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Max)?;
         Ok(Tensor { id })
     }
 
-    /// Elementwise minimum between two tensors
+    /// Element-wise `min(self, rhs)` (broadcastable).
+    ///
+    /// # Example
+    ///
+    /// ```rust no_run
+    /// # use zyx::{Tensor, DType};
+    /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = a.minimum(Tensor::from([2.0f32, 1.0, 3.0]))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns an error if the tensors are non-broadcastable.
     pub fn minimum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         Ok(-(-self).maximum(-rhs.into())?)
     }
