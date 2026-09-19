@@ -116,12 +116,12 @@ pub enum Dev {
     Dummy,
 }
 
-pub(super) fn lock<'a, T>(pool: Pool, arc: &'a Arc<Mutex<T>>) -> std::sync::MutexGuard<'a, T> {
-    arc.lock().unwrap_or_else(|_| panic!("{pool:?} pool lock poisoned by a panicking holder"))
+pub(super) fn lock<'a, T>(pool: Pool, mutex: &'a Mutex<T>) -> std::sync::MutexGuard<'a, T> {
+    mutex.lock().unwrap_or_else(|_| panic!("{pool:?} pool lock poisoned by a panicking holder"))
 }
 
-pub(super) fn dlock<'a, T>(dev: Dev, arc: &'a Arc<Mutex<T>>) -> std::sync::MutexGuard<'a, T> {
-    arc.lock().unwrap_or_else(|_| panic!("{dev:?} device lock poisoned by a panicking holder"))
+pub(super) fn dlock<'a, T>(dev: Dev, mutex: &'a Mutex<T>) -> std::sync::MutexGuard<'a, T> {
+    mutex.lock().unwrap_or_else(|_| panic!("{dev:?} device lock poisoned by a panicking holder"))
 }
 
 impl Dev {

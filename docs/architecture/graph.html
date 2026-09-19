@@ -15,8 +15,8 @@
         <link rel="icon" href="../favicon-de23e50b.svg">
         <link rel="shortcut icon" href="../favicon-8114d1fc.png">
         <link rel="stylesheet" href="../css/variables-8adf115d.css">
-        <link rel="stylesheet" href="../css/general-0392ca55.css">
-        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
         <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f4414656.js";
+            window.path_to_searchindex_js = "../searchindex-6bf26d3d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-e7c93a4e.js"></script>
+        <script src="../toc-58fb2f25.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -194,19 +194,27 @@
 <p>The graph opset is derived from tinygrad. By stacking these types, zyx can express ALL linear algebra operations and ALL PyTorch ops:</p>
 <pre><code class="language-rust ignore">enum Node {
     Const(Constant),
-    Leaf { dtype: DType, leaf_id: u32 },
-    Expand { x: ClassId, shape: ShapeId },
+    Leaf { cons_id: u32, dtype: DType, shape: ClassId },
+    Expand { x: ClassId, shape: ClassId },
     Permute { x: ClassId, axes: Box&lt;[UAxis]&gt; },
-    Reshape { x: ClassId, shape: ShapeId },
-    PadZeros { x: ClassId, padding: Box&lt;[(i64, i64)]&gt; },
-    Reduce { x: ClassId, bop: BOp, axes: Box&lt;[UAxis]&gt; },
+    Reshape { x: ClassId, shape: ClassId },
+    Pad { x: ClassId, axis: UAxis, lp: ClassId, len: ClassId },
+    Flip { x: ClassId, axes: Box&lt;[UAxis]&gt; },
+    Narrow { x: ClassId, axis: UAxis, start: ClassId, len: ClassId },
+    Stack { ops: Box&lt;[ClassId]&gt; },
+    Reduce { x: ClassId, rop: BOp, axes: Box&lt;[UAxis]&gt; },
     Cast { x: ClassId, dtype: DType },
+    Bitcast { x: ClassId, dtype: DType },
     Unary { x: ClassId, uop: UOp },
     Binary { x: ClassId, y: ClassId, bop: BOp },
-    ToDevice { x: ClassId, device: DeviceId, time: u64 },
+    Assign { dst: ClassId, src: ClassId },
+    After { x: ClassId, dep: ClassId },
+    ToDevice { x: ClassId, device: Dev, time: u64 },
+    Contiguous { x: ClassId },
     Kernel { inputs: Box&lt;[ClassId]&gt;, outputs: Box&lt;[ClassId]&gt;, program_id: ProgramId, time: u64 },
+    Custom { inputs: Box&lt;[ClassId]&gt;, outputs: Box&lt;[(ClassId, ClassId, DType)]&gt;, /* ... */ },
 }</code></pre>
-<p>All inputs reference <code>ClassId</code> rather than <code>TensorId</code> — nodes operate on equivalence classes, not specific tensors.</p>
+<p>All inputs reference <code>ClassId</code> rather than <code>TensorId</code> — nodes operate on equivalence classes, not specific tensors. View nodes (<code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code>) are per-axis and stackable; <code>Stack</code> builds vectors; <code>Bitcast</code> reinterprets bits without value conversion; <code>Assign</code> models in-place updates; <code>After</code> orders side-effecting nodes; <code>Contiguous</code> materializes a layout; <code>Custom</code> wraps opaque custom kernels.</p>
 <h2 id="lifecycle-with-tape"><a class="header" href="#lifecycle-with-tape">Lifecycle with Tape</a></h2>
 <p>There is no graph outside a tape — ops are fused directly into kernels.</p>
 <p>Inside a tape, nodes accumulate until <code>Tape::realize()</code> or drop. The graph supports rewrites that produce equivalent forms of a computation:</p>
@@ -216,9 +224,9 @@
 <li><strong>Layout rewrites</strong>: matmul can be realized as transposed or un-transposed</li>
 <li><strong>Shape rewrites</strong>: reshape and padding can be fused or split</li>
 </ul>
-<p>A cost model selects the cheapest extraction from each equivalence class for kernel compilation. Realized nodes that the tape references are preserved for autograd; unreferenced nodes are released.</p>
+<p>There is no cost model: each fusion variant is individually autotuned, and <code>Graph::extract</code> picks by measured timing. Realized nodes that the tape references are preserved for autograd; unreferenced nodes are released.</p>
 <h2 id="graph-size"><a class="header" href="#graph-size">Graph Size</a></h2>
-<p>The graph is designed to stay small. Each node is ~16 bytes, and a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped, the graph shrinks back to baseline.</p>
+<p>The graph is designed to stay small. Tensor handles are <code>u32</code> (4 bytes), so 10,000 handles cost ~40 kB. When the tape is dropped, the graph shrinks back to baseline.</p>
 
                     </main>
 
@@ -268,7 +276,7 @@
 
         <script src="../clipboard-1626706a.min.js"></script>
         <script src="../highlight-abc7f01d.js"></script>
-        <script src="../book-c22b7243.js"></script>
+        <script src="../book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

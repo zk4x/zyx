@@ -15,8 +15,8 @@
         <link rel="icon" href="../favicon-de23e50b.svg">
         <link rel="shortcut icon" href="../favicon-8114d1fc.png">
         <link rel="stylesheet" href="../css/variables-8adf115d.css">
-        <link rel="stylesheet" href="../css/general-0392ca55.css">
-        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
         <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f4414656.js";
+            window.path_to_searchindex_js = "../searchindex-6bf26d3d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-e7c93a4e.js"></script>
+        <script src="../toc-58fb2f25.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,9 +177,10 @@
                         <h1 id="the-kernelizer"><a class="header" href="#the-kernelizer">The Kernelizer</a></h1>
 <p>The kernelizer (<code>kernelize.rs</code>) fuses tensor operations into kernels. In eager mode, ops are appended directly to kernels. In tape mode, it traverses the accumulated graph and fuses compatible nodes into kernels.</p>
 <h2 id="when-the-kernelizer-runs"><a class="header" href="#when-the-kernelizer-runs">When the Kernelizer Runs</a></h2>
-<p>Outside a tape, the kernelizer runs incrementally as each op is added — fusing compatible nodes and executing when a fusion boundary is hit. Inside a tape, the kernelizer runs once during <code>Tape::realize()</code> or on tape drop:</p>
-<pre><code class="language-rust ignore">// Tape mode — kernelizer runs at realize/drop
-let tape = Tape::new()?;
+<p>Outside a tape, the kernelizer runs incrementally as each op is added — fusing compatible nodes and executing when a fusion boundary is hit. Inside a tape, the kernelizer runs once during <code>Tape::realize()</code> (dropping only cleans up graph state):</p>
+<pre><code class="language-rust ignore">// Tape mode — kernelizer runs at realize
+let x = Tensor::randn([4], DType::F32)?;
+let tape = Tape::new([&amp;x])?;
 let y = x.relu();
 let z = y * 2.0;
 // at this point: no computation done yet
@@ -299,7 +300,7 @@ tape.realize([&amp;z])?;
 
         <script src="../clipboard-1626706a.min.js"></script>
         <script src="../highlight-abc7f01d.js"></script>
-        <script src="../book-c22b7243.js"></script>
+        <script src="../book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

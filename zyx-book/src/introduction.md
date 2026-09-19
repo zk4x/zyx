@@ -2,7 +2,7 @@
 
 This book documents the internals of zyx — a machine learning library and compiler.
 
-Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a **single unified graph** — but only inside a `Tape` scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a tape, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~10 node types.
+Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a **single unified graph** — but only inside a `Tape` scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a `Tape`, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~20 node types.
 
 ## Who This is For
 

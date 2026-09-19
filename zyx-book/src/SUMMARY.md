@@ -8,6 +8,7 @@
 - [The Kernel IR](./architecture/kernel_ir.md)
 - [Optimization Passes](./architecture/optimizations.md)
 - [Backend System](./architecture/backends.md)
+- [Codegen and the Physical IR](./architecture/codegen.md)
 - [Autograd](./architecture/autograd.md)
 - [Module System](./architecture/modules.md)
 - [Runtime & Scheduler](./architecture/runtime.md)

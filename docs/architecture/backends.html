@@ -15,8 +15,8 @@
         <link rel="icon" href="../favicon-de23e50b.svg">
         <link rel="shortcut icon" href="../favicon-8114d1fc.png">
         <link rel="stylesheet" href="../css/variables-8adf115d.css">
-        <link rel="stylesheet" href="../css/general-0392ca55.css">
-        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
         <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f4414656.js";
+            window.path_to_searchindex_js = "../searchindex-6bf26d3d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-e7c93a4e.js"></script>
+        <script src="../toc-58fb2f25.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,63 +175,64 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="backend-system"><a class="header" href="#backend-system">Backend System</a></h1>
-<p>Zyx supports multiple hardware backends through an enum dispatch system. All backends are compiled into the library and selected at runtime.</p>
-<h2 id="enum-dispatch"><a class="header" href="#enum-dispatch">Enum Dispatch</a></h2>
-<p>Backends use enums instead of trait objects (<code>dyn Backend</code>). Trait objects would require downcasting to access backend-specific functionality, which is ugly in Rust.</p>
-<pre><code class="language-rust ignore">pub enum Device {
-    C(CDevice),
-    CUDA(CUDADevice),
-    OpenCL(OpenCLDevice),
-    Vulkan(VulkanDevice),
-    WGPU(WGPUDevice),
-    HIP(HIPDevice),
-    Dummy(DummyDevice),
-}
-
-pub enum MemoryPool {
-    Host(HostMemoryPool),
-    Disk(DiskMemoryPool),
-    C(CMemoryPool),
-    CUDA(CUDAMemoryPool),
-    OpenCL(OpenCLMemoryPool),
-    Vulkan(VulkanMemoryPool),
-    WGPU(WGPUMemoryPool),
-    HIP(HIPMemoryPool),
-    Dummy(DummyMemoryPool),
+<p>Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (feature gates aside), and selected at runtime through a lightweight <code>Copy</code> handle.</p>
+<h2 id="dev--device-handle-and-selector"><a class="header" href="#dev--device-handle-and-selector"><code>Dev</code> — Device Handle and Selector</a></h2>
+<p>There is no <code>dyn Backend</code> and no device ids separate from the devices: <code>Dev</code> is both the selector and the handle — a <code>Copy</code> enum naming the backend plus the hardware ordinal.</p>
+<pre><code class="language-rust ignore">pub enum Dev {
+    /// Auto-select: resolves to the first available device (Dev::all).
+    Auto,
+    /// CPU backend (runs on Pool::Host).
+    C,
+    /// CBLAS backend for AOT matmuls (runs on Pool::Host).
+    Cblas,
+    /// CUDA GPU with the given driver ordinal.
+    Cuda(u16),
+    /// Tenstorrent chip with the given id.
+    TT(u16),          // feature = "tenstorrent"
+    /// Vulkan physical device with the given index.
+    Vulkan(u16),
+    /// OpenCL device with the given index.
+    OpenCL(u16),
+    /// WGPU device with the given index.
+    WGPU(u16),        // feature = "wgpu"
+    /// Testing dummy device (config-gated).
+    Dummy,
 }</code></pre>
-<p>Each method matches on the variant and delegates:</p>
-<pre><code class="language-rust ignore">impl Device {
-    pub fn compile(&amp;self, kernel: &amp;Kernel, debug: DebugMask) -&gt; Result&lt;ProgramId, ZyxError&gt; {
-        match self {
-            Device::C(dev) =&gt; dev.compile(kernel, debug),
-            Device::CUDA(dev) =&gt; dev.compile(kernel, debug),
-            // ...
-        }
+<p>Trait objects would require downcasting to reach backend-specific functionality; the enum makes every method an exhaustive match instead. <code>Dev::Auto</code> is the scheduling placeholder — it is resolved by the scheduler before placement, so the device API never sees it. The <code>panic!</code> arms for <code>Auto</code> in methods like <code>info()</code> and <code>free_compute()</code> are guards on that invariant, not behavior; and the device’s memory pool is always derived from the device via <code>Dev::pool()</code> — never the reverse.</p>
+<h2 id="pool--memory"><a class="header" href="#pool--memory"><code>Pool</code> — Memory</a></h2>
+<p>Memory belongs to pools, and pools are process-wide: they outlive any <code>Runtime</code> and are never deinitialized.</p>
+<pre><code class="language-rust ignore">pub enum Pool {
+    /// Host RAM. Shared by the C and CBLAS devices, which own no pool.
+    Host,
+    /// Disk-backed tensors (paths, not bytes).
+    Disk,
+    Cuda(u16),
+    OpenCL(u16),
+    Vulkan(u16),
+    TT(u16),          // feature = "tenstorrent"
+    WGPU(u16),        // feature = "wgpu"
+    /// Testing dummy pool (config-gated).
+    Dummy,
+}</code></pre>
+<p>Each variant owns its globals — one <code>Arc&lt;Mutex&lt;pool&gt;&gt;</code> per ordinal (singletons for <code>Host</code>/<code>Disk</code>/<code>Dummy</code>) — lazily initialized on first access. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.</p>
+<h2 id="lazy-initialization"><a class="header" href="#lazy-initialization">Lazy Initialization</a></h2>
+<p>There is no upfront backend-initialization phase. <code>Dev::all()</code> triggers lazy init of every backend; backends that are configured out, whose driver is missing, or whose hardware is absent contribute nothing to the returned list. This keeps startup free and makes device discovery idempotent:</p>
+<pre><code class="language-rust ignore">impl Dev {
+    pub fn all() -&gt; Vec&lt;Dev&gt; {
+        // C, CBLAS, Dummy: single devices, included if init succeeds.
+        // CUDA / TT / Vulkan / OpenCL / WGPU: one entry per detected device.
     }
 }</code></pre>
-<h2 id="backend-codegen-is-trivial"><a class="header" href="#backend-codegen-is-trivial">Backend Codegen is Trivial</a></h2>
-<p>The optimization passes do the hard work. Backend codegen is:</p>
-<ol>
-<li><strong>deSSA</strong> — resolve SSA references to physical registers or memory locations</li>
-<li><strong>Linear pass</strong> — walk the op linked list once, emitting target instructions</li>
-</ol>
-<p>No further optimizations, no complex backend-specific lowering. The IR emits directly to the target language.</p>
-<h2 id="initialization"><a class="header" href="#initialization">Initialization</a></h2>
-<p>Backends are initialized at startup via <code>initialize_backends()</code>:</p>
-<pre><code class="language-rust ignore">pub fn initialize_backends(config, memory_pools, devices, debug) {
-    host::initialize_pool(memory_pools, debug);
-    disk::initialize_pool(memory_pools, debug);
-    dummy::initialize_device(&amp;config.dummy, ...);
-    c::initialize_device(&amp;config.c, ...);
-    cuda::initialize_device(&amp;config.cuda, ...);
-    opencl::initialize_device(&amp;config.opencl, ...);
-    hip::initialize_device(&amp;config.hip, ...);
-    vulkan::initialize_device(&amp;config.vulkan, ...);
-    wgpu::initialize_device(&amp;config.wgpu, ...);
-    #[cfg(feature = "tenstorrent")]
-    tenstorrent::initialize_device(&amp;config.tenstorrent, ...);
-}</code></pre>
-<p>Each backend tries to initialize. Failure (missing driver, no hardware) causes it to be skipped silently. If all backends fail, the program exits with an error.</p>
+<p>Device selection happens at schedule time: <code>Auto</code> resolves to the first available device; a kernel is placed on a device whose pool has enough free bytes, skipping AOT-only devices (see below) for generic kernels.</p>
+<h2 id="device-api"><a class="header" href="#device-api">Device API</a></h2>
+<p>Every backend implements the same surface, dispatched by the enum:</p>
+<pre><code class="language-rust ignore">pub fn compile(self, kernel: &amp;Kernel, debug_asm: bool) -&gt; Result&lt;DeviceProgramId, BackendError&gt;;
+pub fn launch(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -&gt; Result&lt;(), BackendError&gt;;
+pub fn launch_timed(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -&gt; Result&lt;u64, BackendError&gt;;</code></pre>
+<p>plus pool operations (<code>alloc</code>, <code>free</code>, <code>retain</code>/<code>release</code>, <code>pool_to_host</code>, <code>pool_to_pool</code>) and <code>info()</code>. One backend-specific concept lives in the shared API: <strong><code>GwsDim</code></strong> — the per-axis global work size. Each gws dim is a <code>Group</code> index length, either a constant or a <code>Param</code>-backed dynamic length resolved from launch args; how it maps to a launch grid (CUDA grid, OpenCL global size, …) is each backend’s own business, derived from its <code>Op::Range</code> ops at compile time.</p>
+<h2 id="codegen-mostly-trivial-by-construction"><a class="header" href="#codegen-mostly-trivial-by-construction">Codegen: Mostly Trivial, by Construction</a></h2>
+<p>For most backends, codegen is a straight line: deSSA, then one linear pass over the kernel IR emitting target code. This is not an accident — the kernel IR is optimized until nothing searchable remains (see <a href="./codegen.html#the-search-test-which-ir-holds-an-op">the search test</a>): everything the autotuner could enumerate over has already been decided, measured, and frozen before codegen runs.</p>
+<p>What is left for a backend is exactly the <strong>non-searchable, non-SSA residue</strong>: registers, sync and placement concerns, launch-argument conventions, format configs — machine-shaped facts the value-level IR cannot and should not express. For simple targets that residue is small enough to absorb into the single lowering pass. For hardware whose compute model needs explicit physical state (Tenstorrent: three RISC-V threads, CB FIFOs, DST locks, SFPU LREGs), the residue becomes its own typed physical IR — see <a href="./codegen.html">Codegen and the Physical IR</a>.</p>
 <h2 id="current-backends"><a class="header" href="#current-backends">Current Backends</a></h2>
 <div class="table-wrapper">
 <table>
@@ -240,34 +241,24 @@ pub enum MemoryPool {
 </thead>
 <tbody>
 <tr><td>C</td><td><code>c.rs</code></td><td>C99 (compiled to .so)</td><td>Clang/GCC</td></tr>
-<tr><td>CUDA</td><td><code>cuda.rs</code></td><td>CUDA C (compiled to SASS)</td><td>CUDA driver via <code>libloading</code></td></tr>
+<tr><td>CBLAS</td><td><code>cblas.rs</code></td><td>AOT matmul calls</td><td>Host BLAS (shares <code>Pool::Host</code>)</td></tr>
+<tr><td>CUDA</td><td><code>cuda.rs</code></td><td>CUDA C → SASS, cuDNN for AOT matmul</td><td>CUDA driver via <code>libloading</code></td></tr>
 <tr><td>HIP</td><td><code>hip.rs</code></td><td>HIP</td><td>ROCm via <code>libloading</code></td></tr>
 <tr><td>OpenCL</td><td><code>opencl.rs</code></td><td>OpenCL C</td><td>OpenCL runtime via <code>libloading</code></td></tr>
 <tr><td>Vulkan</td><td><code>vulkan.rs</code></td><td>SPIR-V</td><td>Vulkan via <code>ash</code> crate</td></tr>
 <tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>SPIR-V</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
+<tr><td>Tenstorrent</td><td><code>tenstorrent.rs</code></td><td>C++ RISC-V kernels</td><td>TT-Metalium (feature: <code>tenstorrent</code>)</td></tr>
 <tr><td>Dummy</td><td><code>dummy.rs</code></td><td>—</td><td>No hardware needed (fake device)</td></tr>
 </tbody>
 </table>
 </div>
-<p>All backends except WGPU and Tenstorrent are compiled in by default. WGPU requires <code>--features wgpu</code>. Tenstorrent requires <code>--features tenstorrent</code>.</p>
-<h2 id="device-configuration-in-config-file"><a class="header" href="#device-configuration-in-config-file">Device Configuration in Config File</a></h2>
-<p>Each backend can be enabled/disabled and configured:</p>
-<pre><code class="language-json">{
-    "c": { "enabled": true },
-    "cuda": { "device_ids": [0] },
-    "opencl": { "platform_ids": [] },
-    "dummy": { "enabled": false }
-}
-</code></pre>
-<p>If a section is missing or the config file doesn’t exist, defaults are used (most backends enabled).</p>
-<h2 id="device-selection"><a class="header" href="#device-selection">Device Selection</a></h2>
-<p>The scheduler picks a device at realize time:</p>
-<ol>
-<li>If <code>DeviceId::AUTO</code>, sort devices by free compute capacity (descending)</li>
-<li>If a specific device is requested, try it first</li>
-<li>Pick the first device with enough free memory for all required tensors</li>
-<li>If no device has enough memory, return an allocation error</li>
-</ol>
+<p>All backends except WGPU and Tenstorrent are compiled in by default; those two require <code>--features wgpu</code> / <code>--features tenstorrent</code>.</p>
+<h3 id="cblas"><a class="header" href="#cblas">CBLAS</a></h3>
+<p>The CBLAS device runs <strong>only AOT (precompiled) matmul kernels</strong> and cannot compile generic zyx kernels. <code>Dev::aot_only()</code> marks it, and generic kernel autotuning skips it — it competes only where a precompiled BLAS call is an option.</p>
+<h3 id="cuda-micro-batched-submission"><a class="header" href="#cuda-micro-batched-submission">CUDA: micro-batched submission</a></h3>
+<p>Each CUDA device is owned by a worker thread behind a command channel. Launches accumulate in a pending window (<code>MICRO_BATCH_WINDOW = 100</code>); the <strong>batched-submission algorithm</strong> then distributes the whole window over per-device hardware queues (CUDA streams, default 12, config <code>cuda.queues</code>) with stream-wait dependencies computed between them, and submits the window at once. Events exist only inside this worker — for queue dependencies and timing (<code>launch_timed</code>) — never as user-facing or runtime-level objects. Buffers carry a host-side refcount and are freed behind all their in-flight work.</p>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<p>Backends are configured through the process-wide config file — see <a href="./config.html">Configuration</a>. Each backend has its own section; missing sections mean that backend’s defaults.</p>
 
                     </main>
 
@@ -277,7 +268,7 @@ pub enum MemoryPool {
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../architecture/autograd.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../architecture/codegen.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -291,7 +282,7 @@ pub enum MemoryPool {
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../architecture/autograd.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../architecture/codegen.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -317,7 +308,7 @@ pub enum MemoryPool {
 
         <script src="../clipboard-1626706a.min.js"></script>
         <script src="../highlight-abc7f01d.js"></script>
-        <script src="../book-c22b7243.js"></script>
+        <script src="../book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

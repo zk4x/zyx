@@ -404,25 +404,25 @@ struct CudaDriver {
     cuMemcpyPeerAsync: unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize, CUstream) -> CUDAStatus,
 }
 
-static CUDA_DRIVER: OnceLock<Arc<CudaDriver>> = OnceLock::new();
+static CUDA_DRIVER: OnceLock<CudaDriver> = OnceLock::new();
 
 /// Process-wide per-GPU pools. Owned here — `mod.rs` only holds `Pool::Cuda(i)`
 /// handles. `CUDA_INIT` serializes first construction only (driver load +
 /// worker spawn); the alloc/free path never takes it.
-static CUDA_POOLS: OnceLock<Vec<Arc<Mutex<CUDAMemoryPool>>>> = OnceLock::new();
+static CUDA_POOLS: OnceLock<Vec<Mutex<CUDAMemoryPool>>> = OnceLock::new();
 static CUDA_INIT: Mutex<()> = Mutex::new(());
 
-pub(super) fn pool(id: u16) -> Result<Arc<Mutex<CUDAMemoryPool>>, BackendError> {
+pub(super) fn pool(id: u16) -> Result<&'static Mutex<CUDAMemoryPool>, BackendError> {
     if let Some(pool) = CUDA_POOLS.get().and_then(|pools| pools.get(id as usize)) {
-        return Ok(pool.clone());
+        return Ok(pool);
     }
     let _init = CUDA_INIT.lock().unwrap_or_else(|_| panic!("cuda pool init lock poisoned"));
     if let Some(pool) = CUDA_POOLS.get().and_then(|pools| pools.get(id as usize)) {
-        return Ok(pool.clone());
+        return Ok(pool);
     }
     let table = ensure_pool_table()?;
     CUDA_POOLS.set(table).ok();
-    CUDA_POOLS.get().and_then(|pools| pools.get(id as usize)).cloned().ok_or_else(|| no_pool(id))
+    CUDA_POOLS.get().and_then(|pools| pools.get(id as usize)).ok_or_else(|| no_pool(id))
 }
 
 pub(super) fn pool_count() -> u16 {
@@ -450,9 +450,9 @@ impl std::fmt::Debug for CudaDriver {
     }
 }
 
-fn ensure_driver_locked() -> Result<Arc<CudaDriver>, BackendError> {
+fn ensure_driver_locked() -> Result<&'static CudaDriver, BackendError> {
     if let Some(driver) = CUDA_DRIVER.get() {
-        return Ok(driver.clone());
+        return Ok(driver);
     }
     let debug_dev = super::debug_backends();
     let config = super::config();
@@ -584,7 +584,7 @@ fn ensure_driver_locked() -> Result<Arc<CudaDriver>, BackendError> {
             (driver_version - (driver_version / 1000 * 1000)) / 10
         );
     }
-    let driver = Arc::new(CudaDriver {
+    let driver = CudaDriver {
         _lib: cuda,
         cudnn,
         device_ids,
@@ -617,14 +617,14 @@ fn ensure_driver_locked() -> Result<Arc<CudaDriver>, BackendError> {
         cuEventDestroy,
         cuCtxEnablePeerAccess,
         cuMemcpyPeerAsync,
-    });
-    CUDA_DRIVER.set(driver.clone()).expect("cuda driver set twice under init lock");
-    Ok(driver)
+    };
+    CUDA_DRIVER.set(driver).expect("cuda driver set twice under init lock");
+    Ok(CUDA_DRIVER.get().expect("cuda driver just set"))
 }
 
-fn ensure_driver() -> Result<Arc<CudaDriver>, BackendError> {
+fn ensure_driver() -> Result<&'static CudaDriver, BackendError> {
     if let Some(driver) = CUDA_DRIVER.get() {
-        return Ok(driver.clone());
+        return Ok(driver);
     }
     let _init = CUDA_INIT.lock().unwrap_or_else(|_| panic!("cuda pool init lock poisoned"));
     ensure_driver_locked()
@@ -1188,7 +1188,7 @@ fn spawn_worker(
 /// (the CUDA context is created on the worker, never on the calling thread),
 /// and the pool struct. Pure constructor — the table itself lives in `mod.rs`.
 /// Callers must hold the pool init lock (all `mod.rs` resolution paths do).
-pub(super) fn ensure_pool_table() -> Result<Vec<Arc<Mutex<CUDAMemoryPool>>>, BackendError> {
+pub(super) fn ensure_pool_table() -> Result<Vec<Mutex<CUDAMemoryPool>>, BackendError> {
     let driver = ensure_driver_locked()?;
     let debug_dev = super::debug_backends();
     let mut pools = Vec::new();
@@ -1224,8 +1224,8 @@ pub(super) fn ensure_pool_table() -> Result<Vec<Arc<Mutex<CUDAMemoryPool>>>, Bac
         }
         let (tx, rx): (Sender<CUDACommand>, Receiver<CUDACommand>) = channel();
         let free_bytes_atomic = Arc::new(AtomicU64::new(free_bytes as u64));
-        spawn_worker(&driver, device, dev_ordinal, debug_dev, rx, Arc::clone(&free_bytes_atomic));
-        pools.push(Arc::new(Mutex::new(CUDAMemoryPool { tx, free_bytes: free_bytes_atomic, device, dev_ordinal })));
+        spawn_worker(driver, device, dev_ordinal, debug_dev, rx, Arc::clone(&free_bytes_atomic));
+        pools.push(Mutex::new(CUDAMemoryPool { tx, free_bytes: free_bytes_atomic, device, dev_ordinal }));
     }
     Ok(pools)
 }
@@ -1233,10 +1233,10 @@ pub(super) fn ensure_pool_table() -> Result<Vec<Arc<Mutex<CUDAMemoryPool>>>, Bac
 /// Process-wide per-GPU CUDA devices. Owned here — `mod.rs` only holds
 /// `Dev::Cuda(i)` handles. `CUDA_DEV_INIT` serializes first construction
 /// only; compile/launch take the device lock, never the init lock.
-static CUDA_DEVICES: OnceLock<Vec<Arc<Mutex<CUDADevice>>>> = OnceLock::new();
+static CUDA_DEVICES: OnceLock<Vec<Mutex<CUDADevice>>> = OnceLock::new();
 static CUDA_DEV_INIT: Mutex<()> = Mutex::new(());
 
-fn devices_with(config: &CUDAConfig, debug_dev: bool) -> Result<&'static Vec<Arc<Mutex<CUDADevice>>>, BackendError> {
+fn devices_with(config: &CUDAConfig, debug_dev: bool) -> Result<&'static Vec<Mutex<CUDADevice>>, BackendError> {
     if let Some(devs) = CUDA_DEVICES.get() {
         return Ok(devs);
     }
@@ -1251,12 +1251,12 @@ fn devices_with(config: &CUDAConfig, debug_dev: bool) -> Result<&'static Vec<Arc
         .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "CUDA device init failed".into() })
 }
 
-fn devices() -> Result<&'static Vec<Arc<Mutex<CUDADevice>>>, BackendError> {
+fn devices() -> Result<&'static Vec<Mutex<CUDADevice>>, BackendError> {
     devices_with(&super::config().cuda, super::debug_backends())
 }
 
-pub(super) fn device(id: u16) -> Result<Arc<Mutex<CUDADevice>>, BackendError> {
-    devices()?.get(id as usize).cloned().ok_or_else(|| BackendError {
+pub(super) fn device(id: u16) -> Result<&'static Mutex<CUDADevice>, BackendError> {
+    devices()?.get(id as usize).ok_or_else(|| BackendError {
         status: ErrorStatus::Initialization,
         context: format!("Dev::Cuda({id}) is not available").into(),
     })
@@ -1266,7 +1266,7 @@ pub(super) fn device_count() -> u16 {
     devices().map(|devs| devs.len() as u16).unwrap_or(0)
 }
 
-fn ensure_device_table(config: &CUDAConfig, debug_dev: bool) -> Result<Vec<Arc<Mutex<CUDADevice>>>, BackendError> {
+fn ensure_device_table(config: &CUDAConfig, debug_dev: bool) -> Result<Vec<Mutex<CUDADevice>>, BackendError> {
     let _ = config;
     let _ = debug_dev;
     let driver = ensure_driver()?;
@@ -1359,7 +1359,7 @@ fn ensure_device_table(config: &CUDAConfig, debug_dev: bool) -> Result<Vec<Arc<M
             has_openmp: false,
         });
         let cuda_id = devs.len();
-        devs.push(Arc::new(Mutex::new(dev)));
+        devs.push(Mutex::new(dev));
         let _ = cuda_id;
     }
     Ok(devs)

@@ -4,6 +4,6 @@ mod c;
 mod cuda;
 mod opencl;
 mod ptx;
-pub mod spirv;
-#[cfg(feature = "tenstorrent")]
-pub(crate) mod tenstorrent;
+mod spirv;
+pub mod tenstorrent;
+pub mod tenstorrent2;

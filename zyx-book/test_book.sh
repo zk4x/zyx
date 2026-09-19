@@ -13,6 +13,11 @@ mdbook build 2>&1
 
 echo ""
 echo "=== Testing code examples from markdown ==="
+# Build into a book-local target dir: the shared cache holds many stale
+# duplicate rlibs per crate and rustdoc fails on multiple candidates.
+export CARGO_TARGET_DIR=target
+cargo build 2>&1
+
 # Find rlibs and build --extern flags
 RUSTDOCFLAGS=""
 for rlib in target/debug/deps/libzyx-*.rlib target/debug/deps/libzyx_nn-*.rlib target/debug/deps/libzyx_optim-*.rlib; do

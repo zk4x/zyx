@@ -29,45 +29,61 @@ The IR is in SSA form, except for `Loop`, `If`, and `Define` ops (which can carr
 
 ## Op Variants
 
+### Parameters
+```rust,ignore
+Op::Param { dtype, kind: ParamKind, shape: OpId }
+// ParamKind::Variable — scalar launch argument (e.g. dynamic dim, IDX_T)
+// ParamKind::Global / GlobalMut — read-only / read-write buffer argument
+```
+
 ### Arithmetic
 ```rust,ignore
 Op::Cast { x: OpId, dtype: DType }
+Op::Bitcast { x: OpId, dtype: DType }
 Op::Unary { x: OpId, uop: UOp }
 Op::Binary { x: OpId, y: OpId, bop: BOp }
 Op::Mad { x: OpId, y: OpId, z: OpId }
+Op::Stack { ops: Box<[OpId]> }
 ```
 
 ### Memory
 ```rust,ignore
-Op::Define { dtype, scope, ro, len }
+Op::Storage { dtype, scope: MemScope, len: Dim }  // kernel-internal memory
 Op::Load { src, index, layout }
-Op::Store { dst, x, index, layout }
+Op::Store { dst, src, index, layout }
 Op::Const(Constant)
 ```
 
+`Op::Param` and `Op::Storage` are the SSA escape hatches: the mutable
+stuff values are read from and written to across the linear order.
+
 ### Control Flow
 ```rust,ignore
-Op::Loop { len: Dim }
+Op::Loop { len: OpId }
 Op::EndLoop
 Op::If { condition: OpId }
 Op::EndIf
-Op::Barrier { scope }
+Op::Barrier
 ```
 
 ### Indexing
 ```rust,ignore
-Op::Range { axis, kind: RangeKind }  // Group / Local / Warp
+Op::Range { axis, kind: RangeKind }  // Group / Local / Scalar
+Op::Index { vec: OpId, idx }         // select a value from a Stack
 ```
 
-### Hardware Accelerators
+### Hardware Accelerators / Tiles
 ```rust,ignore
 Op::Wmma { dims, layout, dtype, a, b, c }
+Op::ReduceTile { x, .. }
+Op::MatmulTile { a, b, .. }
+Op::TransposeTile { x, .. }
+Op::BroadcastTile { x, .. }
 ```
 
-### Vectorization
+### Backend-Specific
 ```rust,ignore
-Op::Vectorize { ops: Vec<OpId> }
-Op::Index { vec: OpId, idx }  // select a single value from a vector
+Op::Asm { .. }  // inline assembly for backends with JIT asm (e.g. Tenstorrent)
 ```
 
 ### View (before unfolding)
@@ -85,10 +101,12 @@ pub enum MemLayout {
     Tile { x, y, stride },
 }
 
-pub enum Scope {
+pub enum MemScope {
     Global,
     Local,
     Register,
+    Variable,
+    Circular,
 }
 ```
 
@@ -99,7 +117,10 @@ Because the IR is designed for it, backend codegen is trivial:
 1. **deSSA** — resolve SSA references to physical registers/memory
 2. **Linear pass** — walk the op linked list once, emitting instructions
 
-No further optimizations, no complex lowering.
+No further optimizations, no complex lowering. Backends whose compute
+model needs explicit physical state (Tenstorrent) get an additional
+physical IR below the kernel IR — see
+[Codegen and the Physical IR](./codegen.md).
 
 ## Debugging
 

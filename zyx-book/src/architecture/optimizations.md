@@ -6,17 +6,26 @@ The design goal of the small opset is that new passes are easy to write. There i
 
 ## Always-On Optimizations
 
-These run in a fixed pipeline before every kernel compilation:
+These run in a fixed pipeline (`default_epilogue`) on every kernel state during autotuning and before compilation:
 
 ```rust,ignore
-pub fn run_always_on_optimizations(&mut self) {
+pub fn default_epilogue(&mut self) {
+    self.unroll_len1_loops();
     self.constant_folding();
     self.move_constants_to_beginning();
     self.loop_invariant_code_motion();
-    self.common_subexpression_elimination();
     self.fold_accs();
-    self.delete_empty_loops();
-    self.dead_code_elimination();
+    self.delete_zero_len_indices();
+    self.delete_zero_len_loops();
+    self.unfold_pows();
+    self.algebraic_simplifications();
+    self.simplify_accumulating_loop();
+    self.swap_commutative();
+    self.common_subexpression_elimination();
+    self.instruction_schedule();
+    self.dead_code_elimination();          // must stay last
+    // + exp ↔ exp2 conversion (per device capability)
+    // + tenstorrent tile lowering when targeting TT
 }
 ```
 
@@ -32,70 +41,85 @@ Moves all constant definitions to the start of the kernel. This creates better f
 
 Hoists operations that produce the same value on every iteration to before the loop.
 
-### Common Subexpression Elimination (CSE)
+### Algebraic Simplifications / Unfold Pows / Swap Commutative
 
-Reuses results of identical subexpressions by detecting them through hashing.
+Rewrites like `x*1 → x`, `x+0 → x`, exponentiation unfolding, and normalizing commutative operand order so CSE's hashing sees identical forms.
 
-### Accumulator Folding
+### Accumulator Folding / Simplify Accumulating Loop
 
-Simplifies accumulator update patterns for more efficient reduction code generation.
+Simplifies accumulator update patterns and loop-carried reductions for more efficient code generation.
 
-### Delete Empty Loops
+### Instruction Scheduling
 
-Removes loops with zero iterations.
+Orders ops within basic blocks to improve ILP before codegen.
 
 ### Dead Code Elimination
 
-Removes ops whose results are never used. This is always the final pass — it ensures backends never receive unreferenced ops.
+Removes ops whose results are never used. This is always the final pass — backends fail on unreferenced ops.
 
 ## Autotuned Passes
 
-The autotune system clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate **thousands of variants per second**.
+The autotune system (`BeamSearch`) clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate **thousands of variants per second**.
 
 ```rust,ignore
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 6] = [
-    Kernel::opt_reassociate_commutative,
-    Kernel::opt_split_global_to_local,
-    Kernel::opt_upcast,
-    Kernel::opt_register_blocking,
-    Kernel::opt_tiled_reduce,
-    Kernel::opt_split_loop,
-];
+pub const fn default_optimizations() -> [MakeOpt; 8] {
+    [
+        Kernel::opt_split_global_to_local,
+        Kernel::opt_reassociate_commutative,
+        Kernel::opt_coarsen,
+        Kernel::opt_register_blocking,
+        Kernel::opt_local_reduce,
+        Kernel::opt_split_loop,
+        Kernel::opt_merge_nested_loops,
+        Kernel::opt_fuse_mad,
+    ]
+}
 ```
-
-### Reassociation
-
-Reorders commutative operations to create more fusion opportunities.
 
 ### Split Global to Local
 
 Adjusts block and thread dimensions for better memory access patterns. For example, a kernel with `block_dim = 1024, thread_dim = 1` becomes `block_dim = 32, thread_dim = 32`. This enables coalesced memory access on GPU.
 
-### Upcast Vectorization
+### Reassociation
 
-Expands scalar operations to vector operations (e.g., 4-wide SIMD on CPU, wider on GPU).
+Reorders commutative operations to create more fusion opportunities.
+
+### Coarsen
+
+Merges parallel work per thread so each thread handles multiple elements (the inverse of splitting).
 
 ### Register Blocking
 
 Unrolls tree reductions and coarsens global threads so each thread processes multiple elements, increasing computational intensity and register reuse.
 
-### Tiled Reduction
+### Local Reduce
 
-Implements multi-stage reduction: threads reduce into registers, workgroups reduce into local memory, then global atomics.
+Reduces within a thread's local data before hitting global or shared memory.
 
 ### Loop Splitting
 
 Splits large loops into chunks for better register pressure and instruction-level parallelism.
 
+### Merge Nested Loops
+
+Collapses nested loop nests into a single loop where semantics allow.
+
+### Fuse Multiply-Add
+
+Fuses `mul` + `add` chains into `Op::Mad`.
+
+## Performance Budget
+
+Every pass must stay fast — tens of microseconds is the ceiling, single-digit microseconds the norm. Passes run once per autotune variant and per compiled kernel, so slow passes compound into seconds of autotuning.
 
 ## How Autotuning Searches
 
-1. Start with the initial kernel and run always-on optimizations
-2. Apply ONE optimization variant and run always-on optimizations
+1. Start with the initial kernel and run the epilogue
+2. Apply ONE optimization variant and run the epilogue
 3. Hash the kernel — skip if already visited
-4. Evaluate with cost function (or launch and time)
+4. Launch and measure, or evaluate with the cost function
 5. Repeat by combining with existing optimization sequences
-6. Select the best variant based on actual timing or cost estimate
+6. Select the best variant; only the top variants are compiled and launched
 
 ## Correctness Guarantee
 

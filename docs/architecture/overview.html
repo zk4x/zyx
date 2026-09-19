@@ -15,8 +15,8 @@
         <link rel="icon" href="../favicon-de23e50b.svg">
         <link rel="shortcut icon" href="../favicon-8114d1fc.png">
         <link rel="stylesheet" href="../css/variables-8adf115d.css">
-        <link rel="stylesheet" href="../css/general-0392ca55.css">
-        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
         <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f4414656.js";
+            window.path_to_searchindex_js = "../searchindex-6bf26d3d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-e7c93a4e.js"></script>
+        <script src="../toc-58fb2f25.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -207,18 +207,28 @@ let z = y * 2.0;
 <tr><td><code>Expand</code></td><td>Broadcast a dimension</td></tr>
 <tr><td><code>Permute</code></td><td>Transpose axes</td></tr>
 <tr><td><code>Reshape</code></td><td>Change shape without changing data</td></tr>
-<tr><td><code>Pad</code></td><td>Pad with zeros</td></tr>
+<tr><td><code>Pad</code></td><td>Pad one axis with zeros</td></tr>
+<tr><td><code>Flip</code></td><td>Reverse one or more axes</td></tr>
+<tr><td><code>Narrow</code></td><td>Slice one axis</td></tr>
+<tr><td><code>Stack</code></td><td>Build a vector from operands</td></tr>
 <tr><td><code>Reduce</code></td><td>Sum, max, etc.</td></tr>
 <tr><td><code>Cast</code></td><td>Change dtype</td></tr>
+<tr><td><code>Bitcast</code></td><td>Reinterpret raw bits</td></tr>
 <tr><td><code>Unary</code></td><td>Element-wise: relu, exp, sin, etc.</td></tr>
 <tr><td><code>Binary</code></td><td>Element-wise: add, mul, etc.</td></tr>
+<tr><td><code>Assign</code></td><td>In-place update</td></tr>
+<tr><td><code>After</code></td><td>Ordering for side-effecting nodes</td></tr>
+<tr><td><code>ToDevice</code></td><td>Move data between devices</td></tr>
+<tr><td><code>Contiguous</code></td><td>Materialize a layout</td></tr>
+<tr><td><code>Kernel</code></td><td>A compiled kernel boundary</td></tr>
+<tr><td><code>Custom</code></td><td>An opaque custom kernel</td></tr>
 </tbody>
 </table>
 </div>
-<p>Each node is ~16 bytes, plus a 4-byte reference count and slab metadata overhead. Still small enough that 10,000 nodes cost ~200 KB.</p>
+<p>Tensor handles are <code>u32</code> (4 bytes) into the slab. Still small enough that 10,000 handles cost ~40 kB.</p>
 <p>The graph is stored in a <code>Slab</code> — a dense array with free-list tracking. <code>TensorId</code> is a <code>u32</code> index into this slab, making tensor handles 4 bytes.</p>
 <h3 id="3-the-kernelizer"><a class="header" href="#3-the-kernelizer">3. The Kernelizer</a></h3>
-<p>The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when <code>Tape::realize()</code> is called or the tape is dropped. The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
+<p>The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when <code>Tape::realize()</code> is called (dropping only cleans up graph state). The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
 <p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming “free” — they don’t create separate operations.</p>
 <h3 id="4-the-kernel-ir"><a class="header" href="#4-the-kernel-ir">4. The Kernel IR</a></h3>
 <p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). Each <code>OpNode</code> is <strong>32 bytes</strong> stored inline in the arena — no <code>Box</code>, no vtables, no indirection.</p>
@@ -238,7 +248,7 @@ let z = y * 2.0;
 </ol>
 <p>There is no fixed number of optimization passes zyx aims to have. The design goal was a small opset in the graph and IR so that passes are easy to write. More passes will be added over time.</p>
 <h3 id="6-backend-codegen"><a class="header" href="#6-backend-codegen">6. Backend Codegen</a></h3>
-<p>Each backend converts the stabilized kernel IR into target code. Since the IR is designed for this, codegen is a straight line: deSSA, then one pass over the ops emitting instructions. No further optimizations, no complex lowering.</p>
+<p>Each backend converts the stabilized kernel IR into target code. Since the IR is designed for this, codegen is a straight line: deSSA, then one pass over the ops emitting instructions. No further optimizations, no complex lowering. Hardware whose compute model can’t be expressed this way (Tenstorrent) gets an explicit <strong>physical IR</strong> — see <a href="./codegen.html">Codegen and the Physical IR</a>.</p>
 <p>Backends are dispatch via enums (no <code>dyn Backend</code> — that would require downcasting, which is ugly in Rust):</p>
 <pre><code class="language-rust ignore">pub enum Device {
     C(CDevice),
@@ -252,8 +262,7 @@ let z = y * 2.0;
 }</code></pre>
 <p>All backends are compiled into the library and selected at runtime.</p>
 <h3 id="7-runtime-and-scheduler-current"><a class="header" href="#7-runtime-and-scheduler-current">7. Runtime and Scheduler (Current)</a></h3>
-<p>The scheduler picks a device based on free memory and compute capacity. It handles cross-device data transfers and tracks async execution via events.</p>
-<p><strong>Note</strong>: A new scheduler is under development in <code>search.rs</code> and <code>search2.rs</code>. It will use an e-graph-like budget-guided exhaustive fusion enumeration, including costs for memory movement. The current <code>schedule.rs</code> will be replaced with something much more powerful.</p>
+<p>The scheduler picks a device based on free memory and compute capacity. Cross-device data transfers are scheduled as kernels; asynchronous execution is managed per backend (e.g. CUDA’s micro-batched submission over hardware queues — see <a href="./backends.html">Backend System</a>).</p>
 <h2 id="debugging-the-pipeline"><a class="header" href="#debugging-the-pipeline">Debugging the Pipeline</a></h2>
 <div class="table-wrapper">
 <table>
@@ -261,22 +270,26 @@ let z = y * 2.0;
 <tr><th><code>ZYX_DEBUG</code></th><th>Output</th></tr>
 </thead>
 <tbody>
-<tr><td>1</td><td>Backend selection and hardware info</td></tr>
-<tr><td>2</td><td>Performance info during realize</td></tr>
-<tr><td>4</td><td>Kernels generated by the kernelizer</td></tr>
-<tr><td>8</td><td>Kernel IR (before GPU execution)</td></tr>
-<tr><td>16</td><td>Generated backend code (PTX, OpenCL C, etc.)</td></tr>
-<tr><td>32</td><td>Autotune exploration</td></tr>
+<tr><td>1</td><td>Devices + configuration, kernel launches</td></tr>
+<tr><td>2</td><td>Egraph print (after realize)</td></tr>
+<tr><td>4</td><td>Scheduler kernels — IR before linearization</td></tr>
+<tr><td>8</td><td>Kernel IR after linearization + optimization</td></tr>
+<tr><td>16</td><td>Generated assembly/code</td></tr>
+<tr><td>32</td><td>Launch + memory movement</td></tr>
+<tr><td>64</td><td>Alloc/dealloc</td></tr>
+<tr><td>128</td><td>Kernel compilation</td></tr>
+<tr><td>256</td><td>Autotune exploration</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="key-design-decisions"><a class="header" href="#key-design-decisions">Key Design Decisions</a></h2>
 <ul>
 <li><strong>One graph for everything</strong> — autograd and computation share the same graph. No need to specify which tensors require gradients.</li>
+<li><strong>Symbolic dims everywhere</strong> — the eager path and the graph path BOTH work with symbolic dimensions, always. Every symbolic dim bottoms out in a <code>Param { Variable }</code> scalar (<code>IDX_T</code>) whose value lives in a backend pool’s variable slot, so any dim expression can be fully evaluated to a concrete constant at any time: walk the tree, fold <code>Const</code> leaves via <code>Constant::unary</code> / <code>Constant::binary</code>, and read variable slots at <code>Param { Variable }</code> leaves. Consumers must evaluate dims this way instead of fabricating placeholder values (<code>0</code>, <code>-1</code>, …) where evaluation can produce the real value.</li>
 <li><strong>Inline ops</strong> — all ops live in the arena as flat 32-byte entries. No <code>Box</code>, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.</li>
 <li><strong>Linear IR</strong> — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.</li>
 <li><strong>Backend codegen is trivial</strong> — the hard work is in the IR-level optimization passes.</li>
-<li><strong>Explicit GradientTape</strong> — prevents graph node deletion instead of building a separate graph.</li>
+<li><strong>Tape-scoped lazy graph</strong> — ops inside a tape build graph nodes instead of executing eagerly. Enables egraph fusion, device allocation search, and plan caching across iterations.</li>
 </ul>
 
                     </main>
@@ -327,7 +340,7 @@ let z = y * 2.0;
 
         <script src="../clipboard-1626706a.min.js"></script>
         <script src="../highlight-abc7f01d.js"></script>
-        <script src="../book-c22b7243.js"></script>
+        <script src="../book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

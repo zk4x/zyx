@@ -30,21 +30,29 @@ The graph opset is derived from tinygrad. By stacking these types, zyx can expre
 ```rust,ignore
 enum Node {
     Const(Constant),
-    Leaf { dtype: DType, leaf_id: u32 },
-    Expand { x: ClassId, shape: ShapeId },
+    Leaf { cons_id: u32, dtype: DType, shape: ClassId },
+    Expand { x: ClassId, shape: ClassId },
     Permute { x: ClassId, axes: Box<[UAxis]> },
-    Reshape { x: ClassId, shape: ShapeId },
-    PadZeros { x: ClassId, padding: Box<[(i64, i64)]> },
-    Reduce { x: ClassId, bop: BOp, axes: Box<[UAxis]> },
+    Reshape { x: ClassId, shape: ClassId },
+    Pad { x: ClassId, axis: UAxis, lp: ClassId, len: ClassId },
+    Flip { x: ClassId, axes: Box<[UAxis]> },
+    Narrow { x: ClassId, axis: UAxis, start: ClassId, len: ClassId },
+    Stack { ops: Box<[ClassId]> },
+    Reduce { x: ClassId, rop: BOp, axes: Box<[UAxis]> },
     Cast { x: ClassId, dtype: DType },
+    Bitcast { x: ClassId, dtype: DType },
     Unary { x: ClassId, uop: UOp },
     Binary { x: ClassId, y: ClassId, bop: BOp },
-    ToDevice { x: ClassId, device: DeviceId, time: u64 },
+    Assign { dst: ClassId, src: ClassId },
+    After { x: ClassId, dep: ClassId },
+    ToDevice { x: ClassId, device: Dev, time: u64 },
+    Contiguous { x: ClassId },
     Kernel { inputs: Box<[ClassId]>, outputs: Box<[ClassId]>, program_id: ProgramId, time: u64 },
+    Custom { inputs: Box<[ClassId]>, outputs: Box<[(ClassId, ClassId, DType)]>, /* ... */ },
 }
 ```
 
-All inputs reference `ClassId` rather than `TensorId` — nodes operate on equivalence classes, not specific tensors.
+All inputs reference `ClassId` rather than `TensorId` — nodes operate on equivalence classes, not specific tensors. View nodes (`Expand`, `Permute`, `Reshape`, `Pad`, `Flip`, `Narrow`) are per-axis and stackable; `Stack` builds vectors; `Bitcast` reinterprets bits without value conversion; `Assign` models in-place updates; `After` orders side-effecting nodes; `Contiguous` materializes a layout; `Custom` wraps opaque custom kernels.
 
 ## Lifecycle with Tape
 
@@ -57,7 +65,7 @@ Inside a tape, nodes accumulate until `Tape::realize()` or drop. The graph suppo
 - **Layout rewrites**: matmul can be realized as transposed or un-transposed
 - **Shape rewrites**: reshape and padding can be fused or split
 
-A cost model selects the cheapest extraction from each equivalence class for kernel compilation. Realized nodes that the tape references are preserved for autograd; unreferenced nodes are released.
+There is no cost model: each fusion variant is individually autotuned, and `Graph::extract` picks by measured timing. Realized nodes that the tape references are preserved for autograd; unreferenced nodes are released.
 
 ## Graph Size
 

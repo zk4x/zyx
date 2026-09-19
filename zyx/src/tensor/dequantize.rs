@@ -480,18 +480,23 @@ fn sign_bits(byte: &Tensor) -> Result<Tensor, ZyxError> {
 }
 
 impl Tensor {
-    /// Dequantizes GGUF super-blocks to dense floats with plain tensor ops.
+    /// Dequantizes GGUF super-blocks to a flat dense float tensor with plain
+    /// tensor ops. `self` must be the raw `[num_blocks, block_bytes]` U8
+    /// tensor from [`Tensor::load_gguf`]; output is `[num_blocks * elems_per_block]`
+    /// in `dtype` (typically F32). All 20 [`QDType`] variants are supported.
     ///
-    /// `self` is a raw `[num_blocks, block_bytes]` [`DType::U8`] tensor as
-    /// produced by [`Tensor::load_gguf`](crate::Tensor::load_gguf) for `q`,
-    /// and the result is a flat `[num_blocks * elems_per_block]` tensor in
-    /// `dtype` (typically [`DType::F32`]); the caller reshapes it to the
-    /// stored tensor shape. All 20 [`QDType`] variants are supported.
+    /// # Example
+    ///
+    /// ```rust no_run
+    /// use zyx::{DType, QDType, Tensor};
+    /// let blocks = Tensor::from_vec(vec![1u8; 36], [2i64, 18i64])?;
+    /// let x = blocks.dequantize(QDType::Q4_0, DType::F32)?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
-    /// Returns a dtype error if `self` is not [`DType::U8`] or `dtype` is not
-    /// a float, and a shape error if `self` is not rank 2 or its last dim is
-    /// not `q.block_bytes()`.
+    /// Returns a dtype error if `self` is not U8 or `dtype` is not a float,
+    /// or a shape error if `self` is not rank 2 with last dim `q.block_bytes()`.
     pub fn dequantize(&self, q: QDType, dtype: DType) -> Result<Tensor, ZyxError> {
         if self.dtype() != DType::U8 {
             return Err(ZyxError::dtype_error(

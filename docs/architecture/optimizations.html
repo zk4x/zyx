@@ -15,8 +15,8 @@
         <link rel="icon" href="../favicon-de23e50b.svg">
         <link rel="shortcut icon" href="../favicon-8114d1fc.png">
         <link rel="stylesheet" href="../css/variables-8adf115d.css">
-        <link rel="stylesheet" href="../css/general-0392ca55.css">
-        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
         <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f4414656.js";
+            window.path_to_searchindex_js = "../searchindex-6bf26d3d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-e7c93a4e.js"></script>
+        <script src="../toc-58fb2f25.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,15 +178,24 @@
 <p>Optimization passes operate on the linear kernel IR. They are divided into <strong>always-on passes</strong> (run before every compilation) and <strong>autotuned passes</strong> (searched at runtime for the best variant).</p>
 <p>The design goal of the small opset is that new passes are easy to write. There is no fixed number zyx aims to have — passes will be added over time as performance opportunities are identified.</p>
 <h2 id="always-on-optimizations"><a class="header" href="#always-on-optimizations">Always-On Optimizations</a></h2>
-<p>These run in a fixed pipeline before every kernel compilation:</p>
-<pre><code class="language-rust ignore">pub fn run_always_on_optimizations(&amp;mut self) {
+<p>These run in a fixed pipeline (<code>default_epilogue</code>) on every kernel state during autotuning and before compilation:</p>
+<pre><code class="language-rust ignore">pub fn default_epilogue(&amp;mut self) {
+    self.unroll_len1_loops();
     self.constant_folding();
     self.move_constants_to_beginning();
     self.loop_invariant_code_motion();
-    self.common_subexpression_elimination();
     self.fold_accs();
-    self.delete_empty_loops();
-    self.dead_code_elimination();
+    self.delete_zero_len_indices();
+    self.delete_zero_len_loops();
+    self.unfold_pows();
+    self.algebraic_simplifications();
+    self.simplify_accumulating_loop();
+    self.swap_commutative();
+    self.common_subexpression_elimination();
+    self.instruction_schedule();
+    self.dead_code_elimination();          // must stay last
+    // + exp ↔ exp2 conversion (per device capability)
+    // + tenstorrent tile lowering when targeting TT
 }</code></pre>
 <h3 id="constant-folding"><a class="header" href="#constant-folding">Constant Folding</a></h3>
 <p>Evaluates expressions where all inputs are constants. For example, <code>2 + 3</code> becomes <code>5</code> and <code>sin(0.0)</code> becomes <code>0.0</code>.</p>
@@ -194,44 +203,54 @@
 <p>Moves all constant definitions to the start of the kernel. This creates better fusion opportunities and simplifies register allocation.</p>
 <h3 id="loop-invariant-code-motion-licm"><a class="header" href="#loop-invariant-code-motion-licm">Loop-Invariant Code Motion (LICM)</a></h3>
 <p>Hoists operations that produce the same value on every iteration to before the loop.</p>
-<h3 id="common-subexpression-elimination-cse"><a class="header" href="#common-subexpression-elimination-cse">Common Subexpression Elimination (CSE)</a></h3>
-<p>Reuses results of identical subexpressions by detecting them through hashing.</p>
-<h3 id="accumulator-folding"><a class="header" href="#accumulator-folding">Accumulator Folding</a></h3>
-<p>Simplifies accumulator update patterns for more efficient reduction code generation.</p>
-<h3 id="delete-empty-loops"><a class="header" href="#delete-empty-loops">Delete Empty Loops</a></h3>
-<p>Removes loops with zero iterations.</p>
+<h3 id="algebraic-simplifications--unfold-pows--swap-commutative"><a class="header" href="#algebraic-simplifications--unfold-pows--swap-commutative">Algebraic Simplifications / Unfold Pows / Swap Commutative</a></h3>
+<p>Rewrites like <code>x*1 → x</code>, <code>x+0 → x</code>, exponentiation unfolding, and normalizing commutative operand order so CSE’s hashing sees identical forms.</p>
+<h3 id="accumulator-folding--simplify-accumulating-loop"><a class="header" href="#accumulator-folding--simplify-accumulating-loop">Accumulator Folding / Simplify Accumulating Loop</a></h3>
+<p>Simplifies accumulator update patterns and loop-carried reductions for more efficient code generation.</p>
+<h3 id="instruction-scheduling"><a class="header" href="#instruction-scheduling">Instruction Scheduling</a></h3>
+<p>Orders ops within basic blocks to improve ILP before codegen.</p>
 <h3 id="dead-code-elimination"><a class="header" href="#dead-code-elimination">Dead Code Elimination</a></h3>
-<p>Removes ops whose results are never used. This is always the final pass — it ensures backends never receive unreferenced ops.</p>
+<p>Removes ops whose results are never used. This is always the final pass — backends fail on unreferenced ops.</p>
 <h2 id="autotuned-passes"><a class="header" href="#autotuned-passes">Autotuned Passes</a></h2>
-<p>The autotune system clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate <strong>thousands of variants per second</strong>.</p>
-<pre><code class="language-rust ignore">const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 6] = [
-    Kernel::opt_reassociate_commutative,
-    Kernel::opt_split_global_to_local,
-    Kernel::opt_upcast,
-    Kernel::opt_register_blocking,
-    Kernel::opt_tiled_reduce,
-    Kernel::opt_split_loop,
-];</code></pre>
-<h3 id="reassociation"><a class="header" href="#reassociation">Reassociation</a></h3>
-<p>Reorders commutative operations to create more fusion opportunities.</p>
+<p>The autotune system (<code>BeamSearch</code>) clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate <strong>thousands of variants per second</strong>.</p>
+<pre><code class="language-rust ignore">pub const fn default_optimizations() -&gt; [MakeOpt; 8] {
+    [
+        Kernel::opt_split_global_to_local,
+        Kernel::opt_reassociate_commutative,
+        Kernel::opt_coarsen,
+        Kernel::opt_register_blocking,
+        Kernel::opt_local_reduce,
+        Kernel::opt_split_loop,
+        Kernel::opt_merge_nested_loops,
+        Kernel::opt_fuse_mad,
+    ]
+}</code></pre>
 <h3 id="split-global-to-local"><a class="header" href="#split-global-to-local">Split Global to Local</a></h3>
 <p>Adjusts block and thread dimensions for better memory access patterns. For example, a kernel with <code>block_dim = 1024, thread_dim = 1</code> becomes <code>block_dim = 32, thread_dim = 32</code>. This enables coalesced memory access on GPU.</p>
-<h3 id="upcast-vectorization"><a class="header" href="#upcast-vectorization">Upcast Vectorization</a></h3>
-<p>Expands scalar operations to vector operations (e.g., 4-wide SIMD on CPU, wider on GPU).</p>
+<h3 id="reassociation"><a class="header" href="#reassociation">Reassociation</a></h3>
+<p>Reorders commutative operations to create more fusion opportunities.</p>
+<h3 id="coarsen"><a class="header" href="#coarsen">Coarsen</a></h3>
+<p>Merges parallel work per thread so each thread handles multiple elements (the inverse of splitting).</p>
 <h3 id="register-blocking"><a class="header" href="#register-blocking">Register Blocking</a></h3>
 <p>Unrolls tree reductions and coarsens global threads so each thread processes multiple elements, increasing computational intensity and register reuse.</p>
-<h3 id="tiled-reduction"><a class="header" href="#tiled-reduction">Tiled Reduction</a></h3>
-<p>Implements multi-stage reduction: threads reduce into registers, workgroups reduce into local memory, then global atomics.</p>
+<h3 id="local-reduce"><a class="header" href="#local-reduce">Local Reduce</a></h3>
+<p>Reduces within a thread’s local data before hitting global or shared memory.</p>
 <h3 id="loop-splitting"><a class="header" href="#loop-splitting">Loop Splitting</a></h3>
 <p>Splits large loops into chunks for better register pressure and instruction-level parallelism.</p>
+<h3 id="merge-nested-loops"><a class="header" href="#merge-nested-loops">Merge Nested Loops</a></h3>
+<p>Collapses nested loop nests into a single loop where semantics allow.</p>
+<h3 id="fuse-multiply-add"><a class="header" href="#fuse-multiply-add">Fuse Multiply-Add</a></h3>
+<p>Fuses <code>mul</code> + <code>add</code> chains into <code>Op::Mad</code>.</p>
+<h2 id="performance-budget"><a class="header" href="#performance-budget">Performance Budget</a></h2>
+<p>Every pass must stay fast — tens of microseconds is the ceiling, single-digit microseconds the norm. Passes run once per autotune variant and per compiled kernel, so slow passes compound into seconds of autotuning.</p>
 <h2 id="how-autotuning-searches"><a class="header" href="#how-autotuning-searches">How Autotuning Searches</a></h2>
 <ol>
-<li>Start with the initial kernel and run always-on optimizations</li>
-<li>Apply ONE optimization variant and run always-on optimizations</li>
+<li>Start with the initial kernel and run the epilogue</li>
+<li>Apply ONE optimization variant and run the epilogue</li>
 <li>Hash the kernel — skip if already visited</li>
-<li>Evaluate with cost function (or launch and time)</li>
+<li>Launch and measure, or evaluate with the cost function</li>
 <li>Repeat by combining with existing optimization sequences</li>
-<li>Select the best variant based on actual timing or cost estimate</li>
+<li>Select the best variant; only the top variants are compiled and launched</li>
 </ol>
 <h2 id="correctness-guarantee"><a class="header" href="#correctness-guarantee">Correctness Guarantee</a></h2>
 <blockquote>
@@ -287,7 +306,7 @@
 
         <script src="../clipboard-1626706a.min.js"></script>
         <script src="../highlight-abc7f01d.js"></script>
-        <script src="../book-c22b7243.js"></script>
+        <script src="../book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

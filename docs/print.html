@@ -16,8 +16,8 @@
         <link rel="icon" href="favicon-de23e50b.svg">
         <link rel="shortcut icon" href="favicon-8114d1fc.png">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-0392ca55.css">
-        <link rel="stylesheet" href="css/chrome-fc474251.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
         <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f4414656.js";
+            window.path_to_searchindex_js = "searchindex-6bf26d3d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-e7c93a4e.js"></script>
+        <script src="toc-58fb2f25.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,7 +177,7 @@
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
 <p>This book documents the internals of zyx — a machine learning library and compiler.</p>
-<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> — but only inside a <code>Tape</code> scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a tape, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~10 node types.</p>
+<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> — but only inside a <code>Tape</code> scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a <code>Tape</code>, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~20 node types.</p>
 <h2 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who This is For</a></h2>
 <p>This book is for developers who want to understand how zyx works under the hood: the architecture decisions, the optimization passes, the backend system, and how pieces fit together.</p>
 <h2 id="two-execution-modes"><a class="header" href="#two-execution-modes">Two Execution Modes</a></h2>
@@ -200,7 +200,7 @@
 <pre><code class="language-text">Tensor op ──► graph node (accumulates) ──► Autograd (reverse-mode on same graph)
                                   │
                                   ▼
-                          Tape::realize() / drop
+                           Tape::realize()
                                   │
                                   ▼
                     Kernelizer (batch, egraph explores
@@ -209,7 +209,7 @@
                                   ▼
                     Kernel IR ──► Opt ──► Codegen ──► Execute
 </code></pre>
-<p>Inside a tape, graph nodes accumulate lazily. At realize/drop time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph nodes — the tape prevents their deletion so the backward pass can traverse them.</p>
+<p>Inside a tape, graph nodes accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph nodes — the tape prevents their deletion so the backward pass can traverse them.</p>
 <h2 id="why-this-design"><a class="header" href="#why-this-design">Why This Design</a></h2>
 <p>Most deep learning libraries use two separate graphs:</p>
 <ol>
@@ -221,9 +221,9 @@
 <li>The autograd system doesn’t need its own graph infrastructure — it reuses the same nodes</li>
 <li>Kernel fusion works across operation boundaries without special handling</li>
 <li>The implementation is debuggable (one graph to inspect, not two)</li>
-<li>Memory overhead is minimal: each graph node is ~16 bytes</li>
+<li>Memory overhead is minimal: tensor handles are <code>u32</code> (4 bytes)</li>
 </ul>
-<p>The trade-off in tape mode is that evaluation is lazy — you must call <code>realize()</code> or drop the tape to trigger computation. But this laziness enables optimizations that eager execution cannot: egraph exploration of fusion variants, device allocation search, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is appropriate for one-off ops. Kernel caching (compiled program reuse) is shared across both modes.</p>
+<p>The trade-off in tape mode is that evaluation is lazy — you must call <code>realize()</code> to trigger computation (dropping the tape only cleans up graph state — no computation is performed). But this laziness enables optimizations that eager execution cannot: egraph exploration of fusion variants, device allocation search, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is appropriate for one-off ops. Kernel caching (compiled program reuse) is shared across both modes.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h1>
 <p>The zyx pipeline transforms high-level tensor operations into device-specific machine code.</p>
@@ -258,18 +258,28 @@ let z = y * 2.0;
 <tr><td><code>Expand</code></td><td>Broadcast a dimension</td></tr>
 <tr><td><code>Permute</code></td><td>Transpose axes</td></tr>
 <tr><td><code>Reshape</code></td><td>Change shape without changing data</td></tr>
-<tr><td><code>Pad</code></td><td>Pad with zeros</td></tr>
+<tr><td><code>Pad</code></td><td>Pad one axis with zeros</td></tr>
+<tr><td><code>Flip</code></td><td>Reverse one or more axes</td></tr>
+<tr><td><code>Narrow</code></td><td>Slice one axis</td></tr>
+<tr><td><code>Stack</code></td><td>Build a vector from operands</td></tr>
 <tr><td><code>Reduce</code></td><td>Sum, max, etc.</td></tr>
 <tr><td><code>Cast</code></td><td>Change dtype</td></tr>
+<tr><td><code>Bitcast</code></td><td>Reinterpret raw bits</td></tr>
 <tr><td><code>Unary</code></td><td>Element-wise: relu, exp, sin, etc.</td></tr>
 <tr><td><code>Binary</code></td><td>Element-wise: add, mul, etc.</td></tr>
+<tr><td><code>Assign</code></td><td>In-place update</td></tr>
+<tr><td><code>After</code></td><td>Ordering for side-effecting nodes</td></tr>
+<tr><td><code>ToDevice</code></td><td>Move data between devices</td></tr>
+<tr><td><code>Contiguous</code></td><td>Materialize a layout</td></tr>
+<tr><td><code>Kernel</code></td><td>A compiled kernel boundary</td></tr>
+<tr><td><code>Custom</code></td><td>An opaque custom kernel</td></tr>
 </tbody>
 </table>
 </div>
-<p>Each node is ~16 bytes, plus a 4-byte reference count and slab metadata overhead. Still small enough that 10,000 nodes cost ~200 KB.</p>
+<p>Tensor handles are <code>u32</code> (4 bytes) into the slab. Still small enough that 10,000 handles cost ~40 kB.</p>
 <p>The graph is stored in a <code>Slab</code> — a dense array with free-list tracking. <code>TensorId</code> is a <code>u32</code> index into this slab, making tensor handles 4 bytes.</p>
 <h3 id="3-the-kernelizer"><a class="header" href="#3-the-kernelizer">3. The Kernelizer</a></h3>
-<p>The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when <code>Tape::realize()</code> is called or the tape is dropped. The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
+<p>The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when <code>Tape::realize()</code> is called (dropping only cleans up graph state). The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
 <p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming “free” — they don’t create separate operations.</p>
 <h3 id="4-the-kernel-ir"><a class="header" href="#4-the-kernel-ir">4. The Kernel IR</a></h3>
 <p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). Each <code>OpNode</code> is <strong>32 bytes</strong> stored inline in the arena — no <code>Box</code>, no vtables, no indirection.</p>
@@ -289,7 +299,7 @@ let z = y * 2.0;
 </ol>
 <p>There is no fixed number of optimization passes zyx aims to have. The design goal was a small opset in the graph and IR so that passes are easy to write. More passes will be added over time.</p>
 <h3 id="6-backend-codegen"><a class="header" href="#6-backend-codegen">6. Backend Codegen</a></h3>
-<p>Each backend converts the stabilized kernel IR into target code. Since the IR is designed for this, codegen is a straight line: deSSA, then one pass over the ops emitting instructions. No further optimizations, no complex lowering.</p>
+<p>Each backend converts the stabilized kernel IR into target code. Since the IR is designed for this, codegen is a straight line: deSSA, then one pass over the ops emitting instructions. No further optimizations, no complex lowering. Hardware whose compute model can’t be expressed this way (Tenstorrent) gets an explicit <strong>physical IR</strong> — see <a href="#codegen-and-the-physical-ir">Codegen and the Physical IR</a>.</p>
 <p>Backends are dispatch via enums (no <code>dyn Backend</code> — that would require downcasting, which is ugly in Rust):</p>
 <pre><code class="language-rust ignore">pub enum Device {
     C(CDevice),
@@ -303,8 +313,7 @@ let z = y * 2.0;
 }</code></pre>
 <p>All backends are compiled into the library and selected at runtime.</p>
 <h3 id="7-runtime-and-scheduler-current"><a class="header" href="#7-runtime-and-scheduler-current">7. Runtime and Scheduler (Current)</a></h3>
-<p>The scheduler picks a device based on free memory and compute capacity. It handles cross-device data transfers and tracks async execution via events.</p>
-<p><strong>Note</strong>: A new scheduler is under development in <code>search.rs</code> and <code>search2.rs</code>. It will use an e-graph-like budget-guided exhaustive fusion enumeration, including costs for memory movement. The current <code>schedule.rs</code> will be replaced with something much more powerful.</p>
+<p>The scheduler picks a device based on free memory and compute capacity. Cross-device data transfers are scheduled as kernels; asynchronous execution is managed per backend (e.g. CUDA’s micro-batched submission over hardware queues — see <a href="#backend-system">Backend System</a>).</p>
 <h2 id="debugging-the-pipeline"><a class="header" href="#debugging-the-pipeline">Debugging the Pipeline</a></h2>
 <div class="table-wrapper">
 <table>
@@ -312,22 +321,26 @@ let z = y * 2.0;
 <tr><th><code>ZYX_DEBUG</code></th><th>Output</th></tr>
 </thead>
 <tbody>
-<tr><td>1</td><td>Backend selection and hardware info</td></tr>
-<tr><td>2</td><td>Performance info during realize</td></tr>
-<tr><td>4</td><td>Kernels generated by the kernelizer</td></tr>
-<tr><td>8</td><td>Kernel IR (before GPU execution)</td></tr>
-<tr><td>16</td><td>Generated backend code (PTX, OpenCL C, etc.)</td></tr>
-<tr><td>32</td><td>Autotune exploration</td></tr>
+<tr><td>1</td><td>Devices + configuration, kernel launches</td></tr>
+<tr><td>2</td><td>Egraph print (after realize)</td></tr>
+<tr><td>4</td><td>Scheduler kernels — IR before linearization</td></tr>
+<tr><td>8</td><td>Kernel IR after linearization + optimization</td></tr>
+<tr><td>16</td><td>Generated assembly/code</td></tr>
+<tr><td>32</td><td>Launch + memory movement</td></tr>
+<tr><td>64</td><td>Alloc/dealloc</td></tr>
+<tr><td>128</td><td>Kernel compilation</td></tr>
+<tr><td>256</td><td>Autotune exploration</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="key-design-decisions"><a class="header" href="#key-design-decisions">Key Design Decisions</a></h2>
 <ul>
 <li><strong>One graph for everything</strong> — autograd and computation share the same graph. No need to specify which tensors require gradients.</li>
+<li><strong>Symbolic dims everywhere</strong> — the eager path and the graph path BOTH work with symbolic dimensions, always. Every symbolic dim bottoms out in a <code>Param { Variable }</code> scalar (<code>IDX_T</code>) whose value lives in a backend pool’s variable slot, so any dim expression can be fully evaluated to a concrete constant at any time: walk the tree, fold <code>Const</code> leaves via <code>Constant::unary</code> / <code>Constant::binary</code>, and read variable slots at <code>Param { Variable }</code> leaves. Consumers must evaluate dims this way instead of fabricating placeholder values (<code>0</code>, <code>-1</code>, …) where evaluation can produce the real value.</li>
 <li><strong>Inline ops</strong> — all ops live in the arena as flat 32-byte entries. No <code>Box</code>, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.</li>
 <li><strong>Linear IR</strong> — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.</li>
 <li><strong>Backend codegen is trivial</strong> — the hard work is in the IR-level optimization passes.</li>
-<li><strong>Explicit GradientTape</strong> — prevents graph node deletion instead of building a separate graph.</li>
+<li><strong>Tape-scoped lazy graph</strong> — ops inside a tape build graph nodes instead of executing eagerly. Enables egraph fusion, device allocation search, and plan caching across iterations.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-tensor"><a class="header" href="#the-tensor">The Tensor</a></h1>
@@ -358,7 +371,7 @@ let z = y.tanh();     // appended to same kernel
 // at some point the kernel compiles and executes
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>Inside a tape, operations build graph nodes lazily and execute when the tape is realized or dropped. The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.</p>
+<p>Inside a tape, operations build graph nodes lazily and execute when the tape is realized (dropping only cleans up graph state — no computation is performed). The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.</p>
 <h3 id="construction-methods"><a class="header" href="#construction-methods">Construction Methods</a></h3>
 <p>Tensors can be created from:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
@@ -403,19 +416,27 @@ let x_plus_one = &amp;x + 1.0;  // new tensor, no mutation
 <p>The graph opset is derived from tinygrad. By stacking these types, zyx can express ALL linear algebra operations and ALL PyTorch ops:</p>
 <pre><code class="language-rust ignore">enum Node {
     Const(Constant),
-    Leaf { dtype: DType, leaf_id: u32 },
-    Expand { x: ClassId, shape: ShapeId },
+    Leaf { cons_id: u32, dtype: DType, shape: ClassId },
+    Expand { x: ClassId, shape: ClassId },
     Permute { x: ClassId, axes: Box&lt;[UAxis]&gt; },
-    Reshape { x: ClassId, shape: ShapeId },
-    PadZeros { x: ClassId, padding: Box&lt;[(i64, i64)]&gt; },
-    Reduce { x: ClassId, bop: BOp, axes: Box&lt;[UAxis]&gt; },
+    Reshape { x: ClassId, shape: ClassId },
+    Pad { x: ClassId, axis: UAxis, lp: ClassId, len: ClassId },
+    Flip { x: ClassId, axes: Box&lt;[UAxis]&gt; },
+    Narrow { x: ClassId, axis: UAxis, start: ClassId, len: ClassId },
+    Stack { ops: Box&lt;[ClassId]&gt; },
+    Reduce { x: ClassId, rop: BOp, axes: Box&lt;[UAxis]&gt; },
     Cast { x: ClassId, dtype: DType },
+    Bitcast { x: ClassId, dtype: DType },
     Unary { x: ClassId, uop: UOp },
     Binary { x: ClassId, y: ClassId, bop: BOp },
-    ToDevice { x: ClassId, device: DeviceId, time: u64 },
+    Assign { dst: ClassId, src: ClassId },
+    After { x: ClassId, dep: ClassId },
+    ToDevice { x: ClassId, device: Dev, time: u64 },
+    Contiguous { x: ClassId },
     Kernel { inputs: Box&lt;[ClassId]&gt;, outputs: Box&lt;[ClassId]&gt;, program_id: ProgramId, time: u64 },
+    Custom { inputs: Box&lt;[ClassId]&gt;, outputs: Box&lt;[(ClassId, ClassId, DType)]&gt;, /* ... */ },
 }</code></pre>
-<p>All inputs reference <code>ClassId</code> rather than <code>TensorId</code> — nodes operate on equivalence classes, not specific tensors.</p>
+<p>All inputs reference <code>ClassId</code> rather than <code>TensorId</code> — nodes operate on equivalence classes, not specific tensors. View nodes (<code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code>) are per-axis and stackable; <code>Stack</code> builds vectors; <code>Bitcast</code> reinterprets bits without value conversion; <code>Assign</code> models in-place updates; <code>After</code> orders side-effecting nodes; <code>Contiguous</code> materializes a layout; <code>Custom</code> wraps opaque custom kernels.</p>
 <h2 id="lifecycle-with-tape"><a class="header" href="#lifecycle-with-tape">Lifecycle with Tape</a></h2>
 <p>There is no graph outside a tape — ops are fused directly into kernels.</p>
 <p>Inside a tape, nodes accumulate until <code>Tape::realize()</code> or drop. The graph supports rewrites that produce equivalent forms of a computation:</p>
@@ -425,16 +446,17 @@ let x_plus_one = &amp;x + 1.0;  // new tensor, no mutation
 <li><strong>Layout rewrites</strong>: matmul can be realized as transposed or un-transposed</li>
 <li><strong>Shape rewrites</strong>: reshape and padding can be fused or split</li>
 </ul>
-<p>A cost model selects the cheapest extraction from each equivalence class for kernel compilation. Realized nodes that the tape references are preserved for autograd; unreferenced nodes are released.</p>
+<p>There is no cost model: each fusion variant is individually autotuned, and <code>Graph::extract</code> picks by measured timing. Realized nodes that the tape references are preserved for autograd; unreferenced nodes are released.</p>
 <h2 id="graph-size"><a class="header" href="#graph-size">Graph Size</a></h2>
-<p>The graph is designed to stay small. Each node is ~16 bytes, and a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped, the graph shrinks back to baseline.</p>
+<p>The graph is designed to stay small. Tensor handles are <code>u32</code> (4 bytes), so 10,000 handles cost ~40 kB. When the tape is dropped, the graph shrinks back to baseline.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-kernelizer"><a class="header" href="#the-kernelizer">The Kernelizer</a></h1>
 <p>The kernelizer (<code>kernelize.rs</code>) fuses tensor operations into kernels. In eager mode, ops are appended directly to kernels. In tape mode, it traverses the accumulated graph and fuses compatible nodes into kernels.</p>
 <h2 id="when-the-kernelizer-runs"><a class="header" href="#when-the-kernelizer-runs">When the Kernelizer Runs</a></h2>
-<p>Outside a tape, the kernelizer runs incrementally as each op is added — fusing compatible nodes and executing when a fusion boundary is hit. Inside a tape, the kernelizer runs once during <code>Tape::realize()</code> or on tape drop:</p>
-<pre><code class="language-rust ignore">// Tape mode — kernelizer runs at realize/drop
-let tape = Tape::new()?;
+<p>Outside a tape, the kernelizer runs incrementally as each op is added — fusing compatible nodes and executing when a fusion boundary is hit. Inside a tape, the kernelizer runs once during <code>Tape::realize()</code> (dropping only cleans up graph state):</p>
+<pre><code class="language-rust ignore">// Tape mode — kernelizer runs at realize
+let x = Tensor::randn([4], DType::F32)?;
+let tape = Tape::new([&amp;x])?;
 let y = x.relu();
 let z = y * 2.0;
 // at this point: no computation done yet
@@ -526,29 +548,41 @@ pub struct OpNode {
 <p>Before any optimization passes run, the kernel IR is <strong>unfolded</strong> — <code>LoadView</code>, <code>StoreView</code>, and <code>Move</code> ops are converted to direct index arithmetic (<code>Load</code>, <code>Store</code> with computed indices). After unfolding, all ops are fixed-size inline entries in the arena — no <code>Box</code>, no vtables, no per-op indirection.</p>
 <p>The IR is in SSA form, except for <code>Loop</code>, <code>If</code>, and <code>Define</code> ops (which can carry mutable state).</p>
 <h2 id="op-variants"><a class="header" href="#op-variants">Op Variants</a></h2>
+<h3 id="parameters"><a class="header" href="#parameters">Parameters</a></h3>
+<pre><code class="language-rust ignore">Op::Param { dtype, kind: ParamKind, shape: OpId }
+// ParamKind::Variable — scalar launch argument (e.g. dynamic dim, IDX_T)
+// ParamKind::Global / GlobalMut — read-only / read-write buffer argument</code></pre>
 <h3 id="arithmetic"><a class="header" href="#arithmetic">Arithmetic</a></h3>
 <pre><code class="language-rust ignore">Op::Cast { x: OpId, dtype: DType }
+Op::Bitcast { x: OpId, dtype: DType }
 Op::Unary { x: OpId, uop: UOp }
 Op::Binary { x: OpId, y: OpId, bop: BOp }
-Op::Mad { x: OpId, y: OpId, z: OpId }</code></pre>
+Op::Mad { x: OpId, y: OpId, z: OpId }
+Op::Stack { ops: Box&lt;[OpId]&gt; }</code></pre>
 <h3 id="memory"><a class="header" href="#memory">Memory</a></h3>
-<pre><code class="language-rust ignore">Op::Define { dtype, scope, ro, len }
+<pre><code class="language-rust ignore">Op::Storage { dtype, scope: MemScope, len: Dim }  // kernel-internal memory
 Op::Load { src, index, layout }
-Op::Store { dst, x, index, layout }
+Op::Store { dst, src, index, layout }
 Op::Const(Constant)</code></pre>
+<p><code>Op::Param</code> and <code>Op::Storage</code> are the SSA escape hatches: the mutable
+stuff values are read from and written to across the linear order.</p>
 <h3 id="control-flow"><a class="header" href="#control-flow">Control Flow</a></h3>
-<pre><code class="language-rust ignore">Op::Loop { len: Dim }
+<pre><code class="language-rust ignore">Op::Loop { len: OpId }
 Op::EndLoop
 Op::If { condition: OpId }
 Op::EndIf
-Op::Barrier { scope }</code></pre>
+Op::Barrier</code></pre>
 <h3 id="indexing"><a class="header" href="#indexing">Indexing</a></h3>
-<pre><code class="language-rust ignore">Op::Index { len, scope, axis }</code></pre>
-<h3 id="hardware-accelerators"><a class="header" href="#hardware-accelerators">Hardware Accelerators</a></h3>
-<pre><code class="language-rust ignore">Op::Wmma { dims, layout, dtype, a, b, c }</code></pre>
-<h3 id="vectorization"><a class="header" href="#vectorization">Vectorization</a></h3>
-<pre><code class="language-rust ignore">Op::Vectorize { ops: Vec&lt;OpId&gt; }
-Op::Devectorize { vec: OpId, idx }</code></pre>
+<pre><code class="language-rust ignore">Op::Range { axis, kind: RangeKind }  // Group / Local / Scalar
+Op::Index { vec: OpId, idx }         // select a value from a Stack</code></pre>
+<h3 id="hardware-accelerators--tiles"><a class="header" href="#hardware-accelerators--tiles">Hardware Accelerators / Tiles</a></h3>
+<pre><code class="language-rust ignore">Op::Wmma { dims, layout, dtype, a, b, c }
+Op::ReduceTile { x, .. }
+Op::MatmulTile { a, b, .. }
+Op::TransposeTile { x, .. }
+Op::BroadcastTile { x, .. }</code></pre>
+<h3 id="backend-specific"><a class="header" href="#backend-specific">Backend-Specific</a></h3>
+<pre><code class="language-rust ignore">Op::Asm { .. }  // inline assembly for backends with JIT asm (e.g. Tenstorrent)</code></pre>
 <h3 id="view-before-unfolding"><a class="header" href="#view-before-unfolding">View (before unfolding)</a></h3>
 <pre><code class="language-rust ignore">Op::Move { x: OpId, mop: Box&lt;MoveOp&gt; }
 Op::Reduce { x: OpId, rop, n_axes }</code></pre>
@@ -559,10 +593,12 @@ Op::Reduce { x: OpId, rop, n_axes }</code></pre>
     Tile { x, y, stride },
 }
 
-pub enum Scope {
+pub enum MemScope {
     Global,
     Local,
     Register,
+    Variable,
+    Circular,
 }</code></pre>
 <h2 id="backend-codegen"><a class="header" href="#backend-codegen">Backend Codegen</a></h2>
 <p>Because the IR is designed for it, backend codegen is trivial:</p>
@@ -570,7 +606,10 @@ pub enum Scope {
 <li><strong>deSSA</strong> — resolve SSA references to physical registers/memory</li>
 <li><strong>Linear pass</strong> — walk the op linked list once, emitting instructions</li>
 </ol>
-<p>No further optimizations, no complex lowering.</p>
+<p>No further optimizations, no complex lowering. Backends whose compute
+model needs explicit physical state (Tenstorrent) get an additional
+physical IR below the kernel IR — see
+<a href="#codegen-and-the-physical-ir">Codegen and the Physical IR</a>.</p>
 <h2 id="debugging"><a class="header" href="#debugging">Debugging</a></h2>
 <p>Set <code>ZYX_DEBUG=8</code> to print the kernel IR:</p>
 <pre><code class="language-text">r18: i32 = def global, len=4
@@ -582,15 +621,24 @@ r19: i32 = r18[r1]  // 0..=3 load
 <p>Optimization passes operate on the linear kernel IR. They are divided into <strong>always-on passes</strong> (run before every compilation) and <strong>autotuned passes</strong> (searched at runtime for the best variant).</p>
 <p>The design goal of the small opset is that new passes are easy to write. There is no fixed number zyx aims to have — passes will be added over time as performance opportunities are identified.</p>
 <h2 id="always-on-optimizations"><a class="header" href="#always-on-optimizations">Always-On Optimizations</a></h2>
-<p>These run in a fixed pipeline before every kernel compilation:</p>
-<pre><code class="language-rust ignore">pub fn run_always_on_optimizations(&amp;mut self) {
+<p>These run in a fixed pipeline (<code>default_epilogue</code>) on every kernel state during autotuning and before compilation:</p>
+<pre><code class="language-rust ignore">pub fn default_epilogue(&amp;mut self) {
+    self.unroll_len1_loops();
     self.constant_folding();
     self.move_constants_to_beginning();
     self.loop_invariant_code_motion();
-    self.common_subexpression_elimination();
     self.fold_accs();
-    self.delete_empty_loops();
-    self.dead_code_elimination();
+    self.delete_zero_len_indices();
+    self.delete_zero_len_loops();
+    self.unfold_pows();
+    self.algebraic_simplifications();
+    self.simplify_accumulating_loop();
+    self.swap_commutative();
+    self.common_subexpression_elimination();
+    self.instruction_schedule();
+    self.dead_code_elimination();          // must stay last
+    // + exp ↔ exp2 conversion (per device capability)
+    // + tenstorrent tile lowering when targeting TT
 }</code></pre>
 <h3 id="constant-folding"><a class="header" href="#constant-folding">Constant Folding</a></h3>
 <p>Evaluates expressions where all inputs are constants. For example, <code>2 + 3</code> becomes <code>5</code> and <code>sin(0.0)</code> becomes <code>0.0</code>.</p>
@@ -598,44 +646,54 @@ r19: i32 = r18[r1]  // 0..=3 load
 <p>Moves all constant definitions to the start of the kernel. This creates better fusion opportunities and simplifies register allocation.</p>
 <h3 id="loop-invariant-code-motion-licm"><a class="header" href="#loop-invariant-code-motion-licm">Loop-Invariant Code Motion (LICM)</a></h3>
 <p>Hoists operations that produce the same value on every iteration to before the loop.</p>
-<h3 id="common-subexpression-elimination-cse"><a class="header" href="#common-subexpression-elimination-cse">Common Subexpression Elimination (CSE)</a></h3>
-<p>Reuses results of identical subexpressions by detecting them through hashing.</p>
-<h3 id="accumulator-folding"><a class="header" href="#accumulator-folding">Accumulator Folding</a></h3>
-<p>Simplifies accumulator update patterns for more efficient reduction code generation.</p>
-<h3 id="delete-empty-loops"><a class="header" href="#delete-empty-loops">Delete Empty Loops</a></h3>
-<p>Removes loops with zero iterations.</p>
+<h3 id="algebraic-simplifications--unfold-pows--swap-commutative"><a class="header" href="#algebraic-simplifications--unfold-pows--swap-commutative">Algebraic Simplifications / Unfold Pows / Swap Commutative</a></h3>
+<p>Rewrites like <code>x*1 → x</code>, <code>x+0 → x</code>, exponentiation unfolding, and normalizing commutative operand order so CSE’s hashing sees identical forms.</p>
+<h3 id="accumulator-folding--simplify-accumulating-loop"><a class="header" href="#accumulator-folding--simplify-accumulating-loop">Accumulator Folding / Simplify Accumulating Loop</a></h3>
+<p>Simplifies accumulator update patterns and loop-carried reductions for more efficient code generation.</p>
+<h3 id="instruction-scheduling"><a class="header" href="#instruction-scheduling">Instruction Scheduling</a></h3>
+<p>Orders ops within basic blocks to improve ILP before codegen.</p>
 <h3 id="dead-code-elimination"><a class="header" href="#dead-code-elimination">Dead Code Elimination</a></h3>
-<p>Removes ops whose results are never used. This is always the final pass — it ensures backends never receive unreferenced ops.</p>
+<p>Removes ops whose results are never used. This is always the final pass — backends fail on unreferenced ops.</p>
 <h2 id="autotuned-passes"><a class="header" href="#autotuned-passes">Autotuned Passes</a></h2>
-<p>The autotune system clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate <strong>thousands of variants per second</strong>.</p>
-<pre><code class="language-rust ignore">const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 6] = [
-    Kernel::opt_reassociate_commutative,
-    Kernel::opt_split_global_to_local,
-    Kernel::opt_upcast,
-    Kernel::opt_register_blocking,
-    Kernel::opt_tiled_reduce,
-    Kernel::opt_split_loop,
-];</code></pre>
-<h3 id="reassociation"><a class="header" href="#reassociation">Reassociation</a></h3>
-<p>Reorders commutative operations to create more fusion opportunities.</p>
+<p>The autotune system (<code>BeamSearch</code>) clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate <strong>thousands of variants per second</strong>.</p>
+<pre><code class="language-rust ignore">pub const fn default_optimizations() -&gt; [MakeOpt; 8] {
+    [
+        Kernel::opt_split_global_to_local,
+        Kernel::opt_reassociate_commutative,
+        Kernel::opt_coarsen,
+        Kernel::opt_register_blocking,
+        Kernel::opt_local_reduce,
+        Kernel::opt_split_loop,
+        Kernel::opt_merge_nested_loops,
+        Kernel::opt_fuse_mad,
+    ]
+}</code></pre>
 <h3 id="split-global-to-local"><a class="header" href="#split-global-to-local">Split Global to Local</a></h3>
 <p>Adjusts block and thread dimensions for better memory access patterns. For example, a kernel with <code>block_dim = 1024, thread_dim = 1</code> becomes <code>block_dim = 32, thread_dim = 32</code>. This enables coalesced memory access on GPU.</p>
-<h3 id="upcast-vectorization"><a class="header" href="#upcast-vectorization">Upcast Vectorization</a></h3>
-<p>Expands scalar operations to vector operations (e.g., 4-wide SIMD on CPU, wider on GPU).</p>
+<h3 id="reassociation"><a class="header" href="#reassociation">Reassociation</a></h3>
+<p>Reorders commutative operations to create more fusion opportunities.</p>
+<h3 id="coarsen"><a class="header" href="#coarsen">Coarsen</a></h3>
+<p>Merges parallel work per thread so each thread handles multiple elements (the inverse of splitting).</p>
 <h3 id="register-blocking"><a class="header" href="#register-blocking">Register Blocking</a></h3>
 <p>Unrolls tree reductions and coarsens global threads so each thread processes multiple elements, increasing computational intensity and register reuse.</p>
-<h3 id="tiled-reduction"><a class="header" href="#tiled-reduction">Tiled Reduction</a></h3>
-<p>Implements multi-stage reduction: threads reduce into registers, workgroups reduce into local memory, then global atomics.</p>
+<h3 id="local-reduce"><a class="header" href="#local-reduce">Local Reduce</a></h3>
+<p>Reduces within a thread’s local data before hitting global or shared memory.</p>
 <h3 id="loop-splitting"><a class="header" href="#loop-splitting">Loop Splitting</a></h3>
 <p>Splits large loops into chunks for better register pressure and instruction-level parallelism.</p>
+<h3 id="merge-nested-loops"><a class="header" href="#merge-nested-loops">Merge Nested Loops</a></h3>
+<p>Collapses nested loop nests into a single loop where semantics allow.</p>
+<h3 id="fuse-multiply-add"><a class="header" href="#fuse-multiply-add">Fuse Multiply-Add</a></h3>
+<p>Fuses <code>mul</code> + <code>add</code> chains into <code>Op::Mad</code>.</p>
+<h2 id="performance-budget"><a class="header" href="#performance-budget">Performance Budget</a></h2>
+<p>Every pass must stay fast — tens of microseconds is the ceiling, single-digit microseconds the norm. Passes run once per autotune variant and per compiled kernel, so slow passes compound into seconds of autotuning.</p>
 <h2 id="how-autotuning-searches"><a class="header" href="#how-autotuning-searches">How Autotuning Searches</a></h2>
 <ol>
-<li>Start with the initial kernel and run always-on optimizations</li>
-<li>Apply ONE optimization variant and run always-on optimizations</li>
+<li>Start with the initial kernel and run the epilogue</li>
+<li>Apply ONE optimization variant and run the epilogue</li>
 <li>Hash the kernel — skip if already visited</li>
-<li>Evaluate with cost function (or launch and time)</li>
+<li>Launch and measure, or evaluate with the cost function</li>
 <li>Repeat by combining with existing optimization sequences</li>
-<li>Select the best variant based on actual timing or cost estimate</li>
+<li>Select the best variant; only the top variants are compiled and launched</li>
 </ol>
 <h2 id="correctness-guarantee"><a class="header" href="#correctness-guarantee">Correctness Guarantee</a></h2>
 <blockquote>
@@ -644,63 +702,64 @@ r19: i32 = r18[r1]  // 0..=3 load
 <p>If an optimization breaks a test, the optimization is buggy — not the sequence ordering. The verify pass (<code>verify.rs</code>) checks internal IR consistency in debug mode.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="backend-system"><a class="header" href="#backend-system">Backend System</a></h1>
-<p>Zyx supports multiple hardware backends through an enum dispatch system. All backends are compiled into the library and selected at runtime.</p>
-<h2 id="enum-dispatch"><a class="header" href="#enum-dispatch">Enum Dispatch</a></h2>
-<p>Backends use enums instead of trait objects (<code>dyn Backend</code>). Trait objects would require downcasting to access backend-specific functionality, which is ugly in Rust.</p>
-<pre><code class="language-rust ignore">pub enum Device {
-    C(CDevice),
-    CUDA(CUDADevice),
-    OpenCL(OpenCLDevice),
-    Vulkan(VulkanDevice),
-    WGPU(WGPUDevice),
-    HIP(HIPDevice),
-    Dummy(DummyDevice),
-}
-
-pub enum MemoryPool {
-    Host(HostMemoryPool),
-    Disk(DiskMemoryPool),
-    C(CMemoryPool),
-    CUDA(CUDAMemoryPool),
-    OpenCL(OpenCLMemoryPool),
-    Vulkan(VulkanMemoryPool),
-    WGPU(WGPUMemoryPool),
-    HIP(HIPMemoryPool),
-    Dummy(DummyMemoryPool),
+<p>Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (feature gates aside), and selected at runtime through a lightweight <code>Copy</code> handle.</p>
+<h2 id="dev--device-handle-and-selector"><a class="header" href="#dev--device-handle-and-selector"><code>Dev</code> — Device Handle and Selector</a></h2>
+<p>There is no <code>dyn Backend</code> and no device ids separate from the devices: <code>Dev</code> is both the selector and the handle — a <code>Copy</code> enum naming the backend plus the hardware ordinal.</p>
+<pre><code class="language-rust ignore">pub enum Dev {
+    /// Auto-select: resolves to the first available device (Dev::all).
+    Auto,
+    /// CPU backend (runs on Pool::Host).
+    C,
+    /// CBLAS backend for AOT matmuls (runs on Pool::Host).
+    Cblas,
+    /// CUDA GPU with the given driver ordinal.
+    Cuda(u16),
+    /// Tenstorrent chip with the given id.
+    TT(u16),          // feature = "tenstorrent"
+    /// Vulkan physical device with the given index.
+    Vulkan(u16),
+    /// OpenCL device with the given index.
+    OpenCL(u16),
+    /// WGPU device with the given index.
+    WGPU(u16),        // feature = "wgpu"
+    /// Testing dummy device (config-gated).
+    Dummy,
 }</code></pre>
-<p>Each method matches on the variant and delegates:</p>
-<pre><code class="language-rust ignore">impl Device {
-    pub fn compile(&amp;self, kernel: &amp;Kernel, debug: DebugMask) -&gt; Result&lt;ProgramId, ZyxError&gt; {
-        match self {
-            Device::C(dev) =&gt; dev.compile(kernel, debug),
-            Device::CUDA(dev) =&gt; dev.compile(kernel, debug),
-            // ...
-        }
+<p>Trait objects would require downcasting to reach backend-specific functionality; the enum makes every method an exhaustive match instead. <code>Dev::Auto</code> is the scheduling placeholder — it is resolved by the scheduler before placement, so the device API never sees it. The <code>panic!</code> arms for <code>Auto</code> in methods like <code>info()</code> and <code>free_compute()</code> are guards on that invariant, not behavior; and the device’s memory pool is always derived from the device via <code>Dev::pool()</code> — never the reverse.</p>
+<h2 id="pool--memory"><a class="header" href="#pool--memory"><code>Pool</code> — Memory</a></h2>
+<p>Memory belongs to pools, and pools are process-wide: they outlive any <code>Runtime</code> and are never deinitialized.</p>
+<pre><code class="language-rust ignore">pub enum Pool {
+    /// Host RAM. Shared by the C and CBLAS devices, which own no pool.
+    Host,
+    /// Disk-backed tensors (paths, not bytes).
+    Disk,
+    Cuda(u16),
+    OpenCL(u16),
+    Vulkan(u16),
+    TT(u16),          // feature = "tenstorrent"
+    WGPU(u16),        // feature = "wgpu"
+    /// Testing dummy pool (config-gated).
+    Dummy,
+}</code></pre>
+<p>Each variant owns its globals — one <code>Arc&lt;Mutex&lt;pool&gt;&gt;</code> per ordinal (singletons for <code>Host</code>/<code>Disk</code>/<code>Dummy</code>) — lazily initialized on first access. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.</p>
+<h2 id="lazy-initialization"><a class="header" href="#lazy-initialization">Lazy Initialization</a></h2>
+<p>There is no upfront backend-initialization phase. <code>Dev::all()</code> triggers lazy init of every backend; backends that are configured out, whose driver is missing, or whose hardware is absent contribute nothing to the returned list. This keeps startup free and makes device discovery idempotent:</p>
+<pre><code class="language-rust ignore">impl Dev {
+    pub fn all() -&gt; Vec&lt;Dev&gt; {
+        // C, CBLAS, Dummy: single devices, included if init succeeds.
+        // CUDA / TT / Vulkan / OpenCL / WGPU: one entry per detected device.
     }
 }</code></pre>
-<h2 id="backend-codegen-is-trivial"><a class="header" href="#backend-codegen-is-trivial">Backend Codegen is Trivial</a></h2>
-<p>The optimization passes do the hard work. Backend codegen is:</p>
-<ol>
-<li><strong>deSSA</strong> — resolve SSA references to physical registers or memory locations</li>
-<li><strong>Linear pass</strong> — walk the op linked list once, emitting target instructions</li>
-</ol>
-<p>No further optimizations, no complex backend-specific lowering. The IR emits directly to the target language.</p>
-<h2 id="initialization"><a class="header" href="#initialization">Initialization</a></h2>
-<p>Backends are initialized at startup via <code>initialize_backends()</code>:</p>
-<pre><code class="language-rust ignore">pub fn initialize_backends(config, memory_pools, devices, debug) {
-    host::initialize_pool(memory_pools, debug);
-    disk::initialize_pool(memory_pools, debug);
-    dummy::initialize_device(&amp;config.dummy, ...);
-    c::initialize_device(&amp;config.c, ...);
-    cuda::initialize_device(&amp;config.cuda, ...);
-    opencl::initialize_device(&amp;config.opencl, ...);
-    hip::initialize_device(&amp;config.hip, ...);
-    vulkan::initialize_device(&amp;config.vulkan, ...);
-    wgpu::initialize_device(&amp;config.wgpu, ...);
-    #[cfg(feature = "tenstorrent")]
-    tenstorrent::initialize_device(&amp;config.tenstorrent, ...);
-}</code></pre>
-<p>Each backend tries to initialize. Failure (missing driver, no hardware) causes it to be skipped silently. If all backends fail, the program exits with an error.</p>
+<p>Device selection happens at schedule time: <code>Auto</code> resolves to the first available device; a kernel is placed on a device whose pool has enough free bytes, skipping AOT-only devices (see below) for generic kernels.</p>
+<h2 id="device-api"><a class="header" href="#device-api">Device API</a></h2>
+<p>Every backend implements the same surface, dispatched by the enum:</p>
+<pre><code class="language-rust ignore">pub fn compile(self, kernel: &amp;Kernel, debug_asm: bool) -&gt; Result&lt;DeviceProgramId, BackendError&gt;;
+pub fn launch(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -&gt; Result&lt;(), BackendError&gt;;
+pub fn launch_timed(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -&gt; Result&lt;u64, BackendError&gt;;</code></pre>
+<p>plus pool operations (<code>alloc</code>, <code>free</code>, <code>retain</code>/<code>release</code>, <code>pool_to_host</code>, <code>pool_to_pool</code>) and <code>info()</code>. One backend-specific concept lives in the shared API: <strong><code>GwsDim</code></strong> — the per-axis global work size. Each gws dim is a <code>Group</code> index length, either a constant or a <code>Param</code>-backed dynamic length resolved from launch args; how it maps to a launch grid (CUDA grid, OpenCL global size, …) is each backend’s own business, derived from its <code>Op::Range</code> ops at compile time.</p>
+<h2 id="codegen-mostly-trivial-by-construction"><a class="header" href="#codegen-mostly-trivial-by-construction">Codegen: Mostly Trivial, by Construction</a></h2>
+<p>For most backends, codegen is a straight line: deSSA, then one linear pass over the kernel IR emitting target code. This is not an accident — the kernel IR is optimized until nothing searchable remains (see <a href="#the-search-test-which-ir-holds-an-op">the search test</a>): everything the autotuner could enumerate over has already been decided, measured, and frozen before codegen runs.</p>
+<p>What is left for a backend is exactly the <strong>non-searchable, non-SSA residue</strong>: registers, sync and placement concerns, launch-argument conventions, format configs — machine-shaped facts the value-level IR cannot and should not express. For simple targets that residue is small enough to absorb into the single lowering pass. For hardware whose compute model needs explicit physical state (Tenstorrent: three RISC-V threads, CB FIFOs, DST locks, SFPU LREGs), the residue becomes its own typed physical IR — see <a href="#codegen-and-the-physical-ir">Codegen and the Physical IR</a>.</p>
 <h2 id="current-backends"><a class="header" href="#current-backends">Current Backends</a></h2>
 <div class="table-wrapper">
 <table>
@@ -709,34 +768,89 @@ pub enum MemoryPool {
 </thead>
 <tbody>
 <tr><td>C</td><td><code>c.rs</code></td><td>C99 (compiled to .so)</td><td>Clang/GCC</td></tr>
-<tr><td>CUDA</td><td><code>cuda.rs</code></td><td>CUDA C (compiled to SASS)</td><td>CUDA driver via <code>libloading</code></td></tr>
+<tr><td>CBLAS</td><td><code>cblas.rs</code></td><td>AOT matmul calls</td><td>Host BLAS (shares <code>Pool::Host</code>)</td></tr>
+<tr><td>CUDA</td><td><code>cuda.rs</code></td><td>CUDA C → SASS, cuDNN for AOT matmul</td><td>CUDA driver via <code>libloading</code></td></tr>
 <tr><td>HIP</td><td><code>hip.rs</code></td><td>HIP</td><td>ROCm via <code>libloading</code></td></tr>
 <tr><td>OpenCL</td><td><code>opencl.rs</code></td><td>OpenCL C</td><td>OpenCL runtime via <code>libloading</code></td></tr>
 <tr><td>Vulkan</td><td><code>vulkan.rs</code></td><td>SPIR-V</td><td>Vulkan via <code>ash</code> crate</td></tr>
 <tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>SPIR-V</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
+<tr><td>Tenstorrent</td><td><code>tenstorrent.rs</code></td><td>C++ RISC-V kernels</td><td>TT-Metalium (feature: <code>tenstorrent</code>)</td></tr>
 <tr><td>Dummy</td><td><code>dummy.rs</code></td><td>—</td><td>No hardware needed (fake device)</td></tr>
 </tbody>
 </table>
 </div>
-<p>All backends except WGPU and Tenstorrent are compiled in by default. WGPU requires <code>--features wgpu</code>. Tenstorrent requires <code>--features tenstorrent</code>.</p>
-<h2 id="device-configuration-in-config-file"><a class="header" href="#device-configuration-in-config-file">Device Configuration in Config File</a></h2>
-<p>Each backend can be enabled/disabled and configured:</p>
-<pre><code class="language-json">{
-    "c": { "enabled": true },
-    "cuda": { "device_ids": [0] },
-    "opencl": { "platform_ids": [] },
-    "dummy": { "enabled": false }
-}
+<p>All backends except WGPU and Tenstorrent are compiled in by default; those two require <code>--features wgpu</code> / <code>--features tenstorrent</code>.</p>
+<h3 id="cblas"><a class="header" href="#cblas">CBLAS</a></h3>
+<p>The CBLAS device runs <strong>only AOT (precompiled) matmul kernels</strong> and cannot compile generic zyx kernels. <code>Dev::aot_only()</code> marks it, and generic kernel autotuning skips it — it competes only where a precompiled BLAS call is an option.</p>
+<h3 id="cuda-micro-batched-submission"><a class="header" href="#cuda-micro-batched-submission">CUDA: micro-batched submission</a></h3>
+<p>Each CUDA device is owned by a worker thread behind a command channel. Launches accumulate in a pending window (<code>MICRO_BATCH_WINDOW = 100</code>); the <strong>batched-submission algorithm</strong> then distributes the whole window over per-device hardware queues (CUDA streams, default 12, config <code>cuda.queues</code>) with stream-wait dependencies computed between them, and submits the window at once. Events exist only inside this worker — for queue dependencies and timing (<code>launch_timed</code>) — never as user-facing or runtime-level objects. Buffers carry a host-side refcount and are freed behind all their in-flight work.</p>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<p>Backends are configured through the process-wide config file — see <a href="#configuration-1">Configuration</a>. Each backend has its own section; missing sections mean that backend’s defaults.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="codegen-and-the-physical-ir"><a class="header" href="#codegen-and-the-physical-ir">Codegen and the Physical IR</a></h1>
+<p>The kernel IR’s two jobs are both value-shaped: lower movement ops into index arithmetic, and be the space the autotuner searches over — tens of thousands of variants, measured time decides. Everything decision-shaped happens before codegen. What remains for the backend is purely machine-shaped: registers, sync, placement, then bytes.</p>
+<p>This chapter describes how codegen is organized, and the Tenstorrent physical IR (TTIR) that exists because that hardware needs more than a straight lowering.</p>
+<h2 id="the-two-boundary-tests"><a class="header" href="#the-two-boundary-tests">The Two Boundary Tests</a></h2>
+<p>Two tests compose into the full boundary between kernel IR and backend code:</p>
+<h3 id="the-search-test--which-ir-holds-an-op"><a class="header" href="#the-search-test--which-ir-holds-an-op">The search test — which IR holds an op</a></h3>
+<blockquote>
+<p>An op belongs in the kernel IR iff the autotuner should ever enumerate over it — iff there exists a variant of the program where it is placed or structured differently, and the hardware decides between them.</p>
+</blockquote>
+<p>Movement lowering, loop structure, split/coarsen/register blocking, MAD fusion: search dimensions, kernel IR. Locks, syncs, reconfigs: their placement is invariant under restructuring, nothing to search — they cost the search nothing and belong to the physical IR, placed by derivation from loop structure and checked by verify.</p>
+<p>Consequences:</p>
+<ul>
+<li><strong>The search space is closed.</strong> The autotuner never sees a physical IR, and no backend can smuggle a decision out of the search. If a backend-specific dimension is ever worth searching, it enters as a kernel IR config + <code>MakeOpt</code>, keeping the cost model measured-time-only and backend-agnostic.</li>
+<li><strong>The physical IR’s no-restructuring rule is a definition, not a discipline.</strong> Restructuring is a search dimension; search lives in the kernel IR; a physical-IR op that wants restructuring failed the search test and is in the wrong IR.</li>
+<li><strong>Criterion for future disputes:</strong> “would the autotuner enumerate over this?” Yes → kernel IR + <code>MakeOpt</code>. No → physical IR, derived placement, structural verify.</li>
+</ul>
+<h3 id="the-subject-test--where-a-pass-lives"><a class="header" href="#the-subject-test--where-a-pass-lives">The subject test — where a pass lives</a></h3>
+<blockquote>
+<p>A pass belongs in an IR only if its subject exists in that IR.</p>
+</blockquote>
+<p>If a pass reasons about values, it belongs in the kernel IR (or above). SSA machinery — rewrites, solvers, def-use analysis — is never duplicated in a physical IR. When a physical-IR pass needs a dataflow fact (e.g. “is this operand’s last use?”), it queries the kernel IR through the origin op recorded at lowering time.</p>
+<p>The search test decides where an <em>op</em> lives; the subject test decides where a <em>pass</em> lives.</p>
+<h2 id="straight-codegen-is-the-default"><a class="header" href="#straight-codegen-is-the-default">Straight Codegen Is the Default</a></h2>
+<p>For most backends (C, CUDA, OpenCL, Vulkan, HIP, WGPU), codegen is trivial by design: deSSA, then one linear pass over the kernel IR emitting target code. No further optimizations, no backend-specific lowering. The hard work happened in the optimization passes; the IR was deliberately shaped so backends stay thin.</p>
+<h2 id="ttir--the-tenstorrent-physical-ir"><a class="header" href="#ttir--the-tenstorrent-physical-ir">TTIR — the Tenstorrent Physical IR</a></h2>
+<p>The Tenstorrent (Wormhole) compute model — three RISC-V threads (reader, math, writer), circular buffers with FIFO semantics, DST tile slots with lock/commit protocol, SFPU LREGs, unpacker/packer format state — cannot be expressed as a straight per-op lowering. The legacy codegen fused lowering, scheduling, and text emission into one walk with emergent state machines (CB accounting, init placement, format trackers). TTIR makes that state explicit: a typed, ordered, physical instruction stream that passes rewrite and a verifier checks, so invalid programs never reach the JIT.</p>
+<h3 id="representation"><a class="header" href="#representation">Representation</a></h3>
+<p>One program = one <code>Vec&lt;TTOp&gt;</code> covering all three RISC-V kernel sources. Section boundaries are ops in the stream:</p>
+<pre><code class="language-text">[reader ops] EndReader [compute ops] EndCompute [writer ops] EndWriter
 </code></pre>
-<p>If a section is missing or the config file doesn’t exist, defaults are used (most backends enabled).</p>
-<h2 id="device-selection"><a class="header" href="#device-selection">Device Selection</a></h2>
-<p>The scheduler picks a device at realize time:</p>
+<ul>
+<li>The barriers that today exist only as scan positions become first-class ops; verify walks one stream and checks cross-section facts (CB push/pop totals settled at each boundary).</li>
+<li>The renderer splits at the markers — one stream in, three kernel files out.</li>
+<li>Ids are typed and distinct — <code>VId</code> (virtual, kernel <code>OpId</code>s at lowering), <code>LRegId</code> (SFPU LREGs), <code>DstId</code> (DST slots), <code>VarId</code> (scalar C registers), <code>CBId</code> (circular buffers) — so misuse is a compile error in the IR’s own definitions.</li>
+<li>Not SSA: value ops carry their target (<code>z: OpId</code>); SSA-ness holds as an asserted invariant (single definition, in order) only until a pass rewrites it.</li>
+<li>Every variant carries a <strong>static signature</strong> — which CB it moves (produce/consume, n tiles), DST lock effects, arg reads, which thread executes it. <code>CopyTile</code> and its <code>Unpacr</code> expansion carry the same signature, so swapping between levels is sound by construction.</li>
+<li>No catch-all <code>Raw(String)</code> variant. Every line the backend emits is an enum variant; anything opaque is an explicit variant (including inline assembly with a typed operand list).</li>
+</ul>
+<h3 id="pipeline"><a class="header" href="#pipeline">Pipeline</a></h3>
+<p>Fixed order, one pass per concern, each pass TT-specific:</p>
 <ol>
-<li>If <code>DeviceId::AUTO</code>, sort devices by free compute capacity (descending)</li>
-<li>If a specific device is requested, try it first</li>
-<li>Pick the first device with enough free memory for all required tensors</li>
-<li>If no device has enough memory, return an allocation error</li>
+<li><strong>Convert + materialize</strong> — 1:1 kernel IR → TTOp, then duplicate cross-section values per section (each section is a separate kernel with its own registers and runtime args; arg ordinals stay global; CBs are one hardware object and never duplicated). SSA dedups globally, physical duplicates locally.</li>
+<li><strong>Sync insertion</strong> — <code>ReserveBack</code>/<code>WaitFront</code>/<code>PushBack</code>/<code>PopFront</code> per traffic op.</li>
+<li><strong>Lock insertion</strong> — <code>Acquire</code> placed directly at the LICM position (preheader of the outermost loop containing a pack): the lowering derives the same placement kernel LICM would compute, because the TTIR stream mirrors kernel loop structure 1:1. No effect ops enter the kernel IR for this — the placement is derivable, so there is nothing to search over.</li>
+<li><strong>Reconfig/init insertion</strong> — naive full reconfig before every copy/pack; correctness first, redundancy is safe.</li>
+<li><strong>Hoist + dedup</strong> — adjacent same-config reconfigs collapse; effect ops hoist out of constant-trip loops with trip-count accounting (FIFO depth × trip). Runs on the fully-placed stream: place first, then clean.</li>
+<li><strong>Regalloc + coalesce</strong> — late; linear scan over the linear stream, producing in-place forms.</li>
+<li><strong>Verify</strong> — structural: budgets per id class, CB balance and traffic correspondence, lock pairing, section termination, and the materialization invariant (every value consumed in a section is defined in that section).</li>
+<li><strong>Render</strong> — a table walk, not synthesis.</li>
 </ol>
+<p>Each pass rebuilds the stream (drain → push), states which phase it expects (all-virtual → mixed → all-physical), and fails loudly at the exact op it cannot place. Verify guards the composition: whatever the passes did, the final stream must be launchable.</p>
+<h3 id="why-no-effect-ops-in-the-kernel-ir"><a class="header" href="#why-no-effect-ops-in-the-kernel-ir">Why no effect ops in the kernel IR</a></h3>
+<p>Hoisting the math lock out of the tile loop looks like a job for kernel LICM. It isn’t: the acquire is operand-free, so LICM would trivially hoist it maximally every time — the result is a fixed, derivable position, and the lowering can place the acquire exactly there at insertion time. Adding an effect op to the SSA IR would instead mean auditing CSE (which must never merge two identical acquires straddling a release), DCE, and every restructuring pass — new machinery in the shared IR for zero searchable freedom. Effects whose placement genuinely interacts with state (FIFO trips × loop trip counts, format configs with adjacency) are expressed in TTIR, where the hardware semantics live.</p>
+<h3 id="what-the-physical-ir-is-not-for"><a class="header" href="#what-the-physical-ir-is-not-for">What the physical IR is not for</a></h3>
+<ul>
+<li>No SSA machinery of any kind (subject test).</li>
+<li>No fused-composite matching: at instruction level the chain <em>is</em> the fusion — exp/add/reciprocal sequences share LREGs inside one walk, and the register allocator subsumes the containment analysis. There is no dedicated <code>elu</code> op and none is needed: the decomposition is the only spelling, and it is the fast path.</li>
+<li>No scalar optimization: kernel IR folds all scalar SSA work before lowering; scalar variants render dumbly.</li>
+<li>No restructuring: restructuring is a search dimension, and search lives in the kernel IR.</li>
+</ul>
+<h3 id="migration"><a class="header" href="#migration">Migration</a></h3>
+<p>The high-level variants are pure abbreviations — macros over lower-level variants with identical signatures. A variant like <code>BinaryTileAdd</code> emits today’s output; when its decomposition into raw instructions is proven, the variant is deleted and nothing is lost. Rust’s exhaustive matches make deletion a compile event that walks through every site, so a half-removed variant cannot exist. The differential test does the proving: the pre- and post-deletion streams must render identically for the whole test corpus. The variant set is the migration ledger — the distance to “no LLK” is countable at any moment by listing the remaining high-level variants.</p>
+<h3 id="other-backends"><a class="header" href="#other-backends">Other backends</a></h3>
+<p>Each backend gets its own physical IR if and when it needs one. The differences between machines are structural (SIMT warps and shared-memory barriers vs FIFOs and DST locks), so a shared physical IR would degenerate into a lowest-common-denominator enum that expresses neither honestly. What <em>is</em> shared: the kernel IR above the boundary, the backend-facing input contract (linear SSA, epilogue-cleaned, arg ordering), and the methodology (typed variants, signature table, phase invariants, rebuild-per-pass, verify, render, differential gate). If two backend physical IRs later converge on the same variants for a machine-independent concept, a shared sub-IR can be extracted then — convergence-discovered unification is sound; designed-upfront unification is a layer nobody asked for.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="autograd"><a class="header" href="#autograd">Autograd</a></h1>
 <p>Zyx implements automatic differentiation through an explicit <code>Tape</code>. Unlike other frameworks, there is no separate autograd graph — it uses the <strong>same graph</strong> as computation.</p>
@@ -746,9 +860,9 @@ pub enum MemoryPool {
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
 </span><span class="boring">use zyx::{DType, Tape, Tensor, ZyxError};
 </span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
-</span>let tape = Tape::new()?;
-let x = Tensor::randn([2, 3], DType::F32)?;
+</span>let x = Tensor::randn([2, 3], DType::F32)?;
 let y = Tensor::randn([2, 3], DType::F32)?;
+let tape = Tape::new([&amp;x, &amp;y])?;
 let z = x.relu() * y.tanh();
 
 let grads = tape.gradient(&amp;z, vec![&amp;x, &amp;y]);
@@ -761,22 +875,29 @@ let grads = tape.gradient(&amp;z, vec![&amp;x, &amp;y]);
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
 </span><span class="boring">use zyx::{DType, Tape, Tensor, ZyxError};
 </span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
-</span>let tape = Tape::new()?;
-let x = Tensor::randn([2, 3], DType::F32)?;
+</span>let x = Tensor::randn([2, 3], DType::F32)?;
 let y = Tensor::randn([2, 3], DType::F32)?;
+let tape = Tape::new([&amp;x, &amp;y])?;
 let z = y.exp();
 
-let grads = tape.gradient(&amp;z, vec![&amp;x]);  // None — z doesn't depend on x
+let grads = tape.gradient(&amp;z, vec![&amp;x, &amp;y]);  // grads[0] is zero — z doesn't depend on x
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>This is more flexible — you don’t need to decide at tensor creation time which tensors will be differentiated.</p>
+<p>This is more flexible — you don’t need to decide at tensor creation time which tensors will be differentiated. Gradient sources must be part of the tape’s graph: tensors registered via <code>Tape::new</code> or produced by ops inside the tape.</p>
 <h2 id="higher-order-derivatives"><a class="header" href="#higher-order-derivatives">Higher-Order Derivatives</a></h2>
-<p>The tape stays alive after <code>gradient()</code> for higher-order derivatives:</p>
-<pre><code class="language-rust ignore">let tape = Tape::new()?;
-let x = Tensor::randn([2, 3], DType::F32)?;
+<p>Autograd is an <strong>append-only transform on the tape</strong>: <code>gradient()</code> doesn’t consume or rewrite anything — it appends backward ops to the same graph, and the gradients it produces are ordinary tensors on the tape. Higher-order derivatives are just another append: differentiate the gradient like any other tensor.</p>
+<pre><code class="language-rust ignore">let x = Tensor::randn([2, 3], DType::F32)?;
+let tape = Tape::new([&amp;x])?;
 let z = x.relu();
 let g = tape.gradient(&amp;z, vec![&amp;x]);
 let h = tape.gradient(&amp;g[0], vec![&amp;x]);  // second derivative</code></pre>
+<p>Many properties of the autograd system fall out of this fact:</p>
+<ul>
+<li><strong>No separate backward graph</strong> — backward ops live in the same graph as forward ops, so they get the same treatment: CSE, fusion, and kernel caching apply to backward code for free.</li>
+<li><strong>Gradients are first-class tensors</strong> — they can feed further computation, be stored, or be differentiated again.</li>
+<li><strong>Nothing is snapshotted or frozen</strong> — since the transform only appends, the tape needs no copy of the forward graph and no special “backward mode”.</li>
+<li><strong>Memory behavior is uniform</strong> — graph nodes accumulate until <code>realize()</code> or drop, whether they came from forward ops or backward ops.</li>
+</ul>
 <h2 id="memory-efficiency"><a class="header" href="#memory-efficiency">Memory Efficiency</a></h2>
 <p>Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only <code>TensorId</code> values — not the actual data. When the tape is dropped, all tape-preserved nodes are released.</p>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -814,12 +935,12 @@ struct SimpleNet {
 }
 
 fn train_step(model: &amp;mut SimpleNet, optim: &amp;mut SGD, x: &amp;Tensor, target: &amp;Tensor) -&gt; f32 {
-    let tape = Tape::new()?;
+    let tape = Tape::new(&amp;*model)?;
     let output = model.forward(x);
     let loss = output.mse_loss(target)?;
-    let grads = tape.gradient(&amp;loss, &amp;model);
+    let grads = tape.gradient(&amp;loss, &amp;*model);
     optim.update(model, grads);
-    // tape drop realizes and caches
+    // tape drop cleans up graph state; next iteration reuses cached plan
     loss.item()
 }</code></pre>
 <p>The <code>tape.gradient(&amp;loss, &amp;model)</code> call passes the model itself as the sources. The autograd system iterates over <code>model.iter()</code> to get all parameters.</p>
@@ -868,7 +989,7 @@ model.set_params(&amp;mut params);</code></pre>
 <pre><code class="language-rust ignore">let t = Tensor::from_safetensors("model.safetensors", "layer.weight")?;</code></pre>
 <p>The disk pool keeps file offset information. Data is loaded lazily when the tensor needs to be realized on a compute device.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="configuration"><a class="header" href="#configuration">Configuration</a></h1>
+<h1 id="configuration-1"><a class="header" href="#configuration-1">Configuration</a></h1>
 <p>Zyx is configured through a JSON file, environment variables, and API calls.</p>
 <h2 id="config-file"><a class="header" href="#config-file">Config File</a></h2>
 <p>The runtime reads <code>$XDG_CONFIG_HOME/zyx/config.json</code> (or <code>~/.config/zyx/config.json</code> by default):</p>
@@ -906,12 +1027,15 @@ model.set_params(&amp;mut params);</code></pre>
 <tr><th>Value</th><th>Output</th></tr>
 </thead>
 <tbody>
-<tr><td>1</td><td>Backend selection and hardware info</td></tr>
-<tr><td>2</td><td>Performance info during realize</td></tr>
-<tr><td>4</td><td>Kernels generated by the kernelizer</td></tr>
-<tr><td>8</td><td>Kernel IR (before GPU execution)</td></tr>
-<tr><td>16</td><td>Generated backend code</td></tr>
-<tr><td>32</td><td>Autotune exploration</td></tr>
+<tr><td>1</td><td>Devices + configuration, kernel launches</td></tr>
+<tr><td>2</td><td>Egraph print (after realize)</td></tr>
+<tr><td>4</td><td>Scheduler kernels — IR before linearization</td></tr>
+<tr><td>8</td><td>Kernel IR after linearization + optimization</td></tr>
+<tr><td>16</td><td>Generated assembly/code</td></tr>
+<tr><td>32</td><td>Launch + memory movement</td></tr>
+<tr><td>64</td><td>Alloc/dealloc</td></tr>
+<tr><td>128</td><td>Kernel compilation</td></tr>
+<tr><td>256</td><td>Autotune exploration</td></tr>
 </tbody>
 </table>
 </div>
@@ -962,7 +1086,7 @@ Tensor::set_training(false);        // disable training mode</code></pre>
 
         <script src="clipboard-1626706a.min.js"></script>
         <script src="highlight-abc7f01d.js"></script>
-        <script src="book-c22b7243.js"></script>
+        <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

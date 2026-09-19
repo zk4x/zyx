@@ -15,8 +15,8 @@
         <link rel="icon" href="../favicon-de23e50b.svg">
         <link rel="shortcut icon" href="../favicon-8114d1fc.png">
         <link rel="stylesheet" href="../css/variables-8adf115d.css">
-        <link rel="stylesheet" href="../css/general-0392ca55.css">
-        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
         <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f4414656.js";
+            window.path_to_searchindex_js = "../searchindex-6bf26d3d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-e7c93a4e.js"></script>
+        <script src="../toc-58fb2f25.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -194,29 +194,41 @@ pub struct OpNode {
 <p>Before any optimization passes run, the kernel IR is <strong>unfolded</strong> — <code>LoadView</code>, <code>StoreView</code>, and <code>Move</code> ops are converted to direct index arithmetic (<code>Load</code>, <code>Store</code> with computed indices). After unfolding, all ops are fixed-size inline entries in the arena — no <code>Box</code>, no vtables, no per-op indirection.</p>
 <p>The IR is in SSA form, except for <code>Loop</code>, <code>If</code>, and <code>Define</code> ops (which can carry mutable state).</p>
 <h2 id="op-variants"><a class="header" href="#op-variants">Op Variants</a></h2>
+<h3 id="parameters"><a class="header" href="#parameters">Parameters</a></h3>
+<pre><code class="language-rust ignore">Op::Param { dtype, kind: ParamKind, shape: OpId }
+// ParamKind::Variable — scalar launch argument (e.g. dynamic dim, IDX_T)
+// ParamKind::Global / GlobalMut — read-only / read-write buffer argument</code></pre>
 <h3 id="arithmetic"><a class="header" href="#arithmetic">Arithmetic</a></h3>
 <pre><code class="language-rust ignore">Op::Cast { x: OpId, dtype: DType }
+Op::Bitcast { x: OpId, dtype: DType }
 Op::Unary { x: OpId, uop: UOp }
 Op::Binary { x: OpId, y: OpId, bop: BOp }
-Op::Mad { x: OpId, y: OpId, z: OpId }</code></pre>
+Op::Mad { x: OpId, y: OpId, z: OpId }
+Op::Stack { ops: Box&lt;[OpId]&gt; }</code></pre>
 <h3 id="memory"><a class="header" href="#memory">Memory</a></h3>
-<pre><code class="language-rust ignore">Op::Define { dtype, scope, ro, len }
+<pre><code class="language-rust ignore">Op::Storage { dtype, scope: MemScope, len: Dim }  // kernel-internal memory
 Op::Load { src, index, layout }
-Op::Store { dst, x, index, layout }
+Op::Store { dst, src, index, layout }
 Op::Const(Constant)</code></pre>
+<p><code>Op::Param</code> and <code>Op::Storage</code> are the SSA escape hatches: the mutable
+stuff values are read from and written to across the linear order.</p>
 <h3 id="control-flow"><a class="header" href="#control-flow">Control Flow</a></h3>
-<pre><code class="language-rust ignore">Op::Loop { len: Dim }
+<pre><code class="language-rust ignore">Op::Loop { len: OpId }
 Op::EndLoop
 Op::If { condition: OpId }
 Op::EndIf
-Op::Barrier { scope }</code></pre>
+Op::Barrier</code></pre>
 <h3 id="indexing"><a class="header" href="#indexing">Indexing</a></h3>
-<pre><code class="language-rust ignore">Op::Index { len, scope, axis }</code></pre>
-<h3 id="hardware-accelerators"><a class="header" href="#hardware-accelerators">Hardware Accelerators</a></h3>
-<pre><code class="language-rust ignore">Op::Wmma { dims, layout, dtype, a, b, c }</code></pre>
-<h3 id="vectorization"><a class="header" href="#vectorization">Vectorization</a></h3>
-<pre><code class="language-rust ignore">Op::Vectorize { ops: Vec&lt;OpId&gt; }
-Op::Devectorize { vec: OpId, idx }</code></pre>
+<pre><code class="language-rust ignore">Op::Range { axis, kind: RangeKind }  // Group / Local / Scalar
+Op::Index { vec: OpId, idx }         // select a value from a Stack</code></pre>
+<h3 id="hardware-accelerators--tiles"><a class="header" href="#hardware-accelerators--tiles">Hardware Accelerators / Tiles</a></h3>
+<pre><code class="language-rust ignore">Op::Wmma { dims, layout, dtype, a, b, c }
+Op::ReduceTile { x, .. }
+Op::MatmulTile { a, b, .. }
+Op::TransposeTile { x, .. }
+Op::BroadcastTile { x, .. }</code></pre>
+<h3 id="backend-specific"><a class="header" href="#backend-specific">Backend-Specific</a></h3>
+<pre><code class="language-rust ignore">Op::Asm { .. }  // inline assembly for backends with JIT asm (e.g. Tenstorrent)</code></pre>
 <h3 id="view-before-unfolding"><a class="header" href="#view-before-unfolding">View (before unfolding)</a></h3>
 <pre><code class="language-rust ignore">Op::Move { x: OpId, mop: Box&lt;MoveOp&gt; }
 Op::Reduce { x: OpId, rop, n_axes }</code></pre>
@@ -227,10 +239,12 @@ Op::Reduce { x: OpId, rop, n_axes }</code></pre>
     Tile { x, y, stride },
 }
 
-pub enum Scope {
+pub enum MemScope {
     Global,
     Local,
     Register,
+    Variable,
+    Circular,
 }</code></pre>
 <h2 id="backend-codegen"><a class="header" href="#backend-codegen">Backend Codegen</a></h2>
 <p>Because the IR is designed for it, backend codegen is trivial:</p>
@@ -238,7 +252,10 @@ pub enum Scope {
 <li><strong>deSSA</strong> — resolve SSA references to physical registers/memory</li>
 <li><strong>Linear pass</strong> — walk the op linked list once, emitting instructions</li>
 </ol>
-<p>No further optimizations, no complex lowering.</p>
+<p>No further optimizations, no complex lowering. Backends whose compute
+model needs explicit physical state (Tenstorrent) get an additional
+physical IR below the kernel IR — see
+<a href="./codegen.html">Codegen and the Physical IR</a>.</p>
 <h2 id="debugging"><a class="header" href="#debugging">Debugging</a></h2>
 <p>Set <code>ZYX_DEBUG=8</code> to print the kernel IR:</p>
 <pre><code class="language-text">r18: i32 = def global, len=4
@@ -294,7 +311,7 @@ r19: i32 = r18[r1]  // 0..=3 load
 
         <script src="../clipboard-1626706a.min.js"></script>
         <script src="../highlight-abc7f01d.js"></script>
-        <script src="../book-c22b7243.js"></script>
+        <script src="../book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

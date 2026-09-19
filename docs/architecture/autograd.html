@@ -15,8 +15,8 @@
         <link rel="icon" href="../favicon-de23e50b.svg">
         <link rel="shortcut icon" href="../favicon-8114d1fc.png">
         <link rel="stylesheet" href="../css/variables-8adf115d.css">
-        <link rel="stylesheet" href="../css/general-0392ca55.css">
-        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
         <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f4414656.js";
+            window.path_to_searchindex_js = "../searchindex-6bf26d3d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-e7c93a4e.js"></script>
+        <script src="../toc-58fb2f25.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -182,9 +182,9 @@
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
 </span><span class="boring">use zyx::{DType, Tape, Tensor, ZyxError};
 </span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
-</span>let tape = Tape::new()?;
-let x = Tensor::randn([2, 3], DType::F32)?;
+</span>let x = Tensor::randn([2, 3], DType::F32)?;
 let y = Tensor::randn([2, 3], DType::F32)?;
+let tape = Tape::new([&amp;x, &amp;y])?;
 let z = x.relu() * y.tanh();
 
 let grads = tape.gradient(&amp;z, vec![&amp;x, &amp;y]);
@@ -197,22 +197,29 @@ let grads = tape.gradient(&amp;z, vec![&amp;x, &amp;y]);
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
 </span><span class="boring">use zyx::{DType, Tape, Tensor, ZyxError};
 </span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
-</span>let tape = Tape::new()?;
-let x = Tensor::randn([2, 3], DType::F32)?;
+</span>let x = Tensor::randn([2, 3], DType::F32)?;
 let y = Tensor::randn([2, 3], DType::F32)?;
+let tape = Tape::new([&amp;x, &amp;y])?;
 let z = y.exp();
 
-let grads = tape.gradient(&amp;z, vec![&amp;x]);  // None — z doesn't depend on x
+let grads = tape.gradient(&amp;z, vec![&amp;x, &amp;y]);  // grads[0] is zero — z doesn't depend on x
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>This is more flexible — you don’t need to decide at tensor creation time which tensors will be differentiated.</p>
+<p>This is more flexible — you don’t need to decide at tensor creation time which tensors will be differentiated. Gradient sources must be part of the tape’s graph: tensors registered via <code>Tape::new</code> or produced by ops inside the tape.</p>
 <h2 id="higher-order-derivatives"><a class="header" href="#higher-order-derivatives">Higher-Order Derivatives</a></h2>
-<p>The tape stays alive after <code>gradient()</code> for higher-order derivatives:</p>
-<pre><code class="language-rust ignore">let tape = Tape::new()?;
-let x = Tensor::randn([2, 3], DType::F32)?;
+<p>Autograd is an <strong>append-only transform on the tape</strong>: <code>gradient()</code> doesn’t consume or rewrite anything — it appends backward ops to the same graph, and the gradients it produces are ordinary tensors on the tape. Higher-order derivatives are just another append: differentiate the gradient like any other tensor.</p>
+<pre><code class="language-rust ignore">let x = Tensor::randn([2, 3], DType::F32)?;
+let tape = Tape::new([&amp;x])?;
 let z = x.relu();
 let g = tape.gradient(&amp;z, vec![&amp;x]);
 let h = tape.gradient(&amp;g[0], vec![&amp;x]);  // second derivative</code></pre>
+<p>Many properties of the autograd system fall out of this fact:</p>
+<ul>
+<li><strong>No separate backward graph</strong> — backward ops live in the same graph as forward ops, so they get the same treatment: CSE, fusion, and kernel caching apply to backward code for free.</li>
+<li><strong>Gradients are first-class tensors</strong> — they can feed further computation, be stored, or be differentiated again.</li>
+<li><strong>Nothing is snapshotted or frozen</strong> — since the transform only appends, the tape needs no copy of the forward graph and no special “backward mode”.</li>
+<li><strong>Memory behavior is uniform</strong> — graph nodes accumulate until <code>realize()</code> or drop, whether they came from forward ops or backward ops.</li>
+</ul>
 <h2 id="memory-efficiency"><a class="header" href="#memory-efficiency">Memory Efficiency</a></h2>
 <p>Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only <code>TensorId</code> values — not the actual data. When the tape is dropped, all tape-preserved nodes are released.</p>
 
@@ -220,7 +227,7 @@ let h = tape.gradient(&amp;g[0], vec![&amp;x]);  // second derivative</code></pr
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../architecture/backends.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../architecture/codegen.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -234,7 +241,7 @@ let h = tape.gradient(&amp;g[0], vec![&amp;x]);  // second derivative</code></pr
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../architecture/backends.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../architecture/codegen.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
@@ -264,7 +271,7 @@ let h = tape.gradient(&amp;g[0], vec![&amp;x]);  // second derivative</code></pr
 
         <script src="../clipboard-1626706a.min.js"></script>
         <script src="../highlight-abc7f01d.js"></script>
-        <script src="../book-c22b7243.js"></script>
+        <script src="../book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

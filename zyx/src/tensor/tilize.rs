@@ -15,16 +15,20 @@ use crate::{Tensor, ZyxError, dtype::DType, scalar::Scalar, shape::Dim};
 
 impl Tensor {
     /// Permutes the last two dims into Tenstorrent tilized face order
-    /// (host-side). Outer dims are zero-padded up to multiples of 32,
-    /// so the returned shape is `[*batch, ceil32(rows), ceil32(cols)]`.
-    /// Dtype is preserved. Tilize weights once at load; tilize inputs
-    /// once per forward; on-device kernels then chain with no conversion.
-    /// Method form (chainable): `Tensor::from_vec(..)?.tilize()?`.
+    /// (host-side), zero-padding them to multiples of 32; dtype is preserved.
+    ///
+    /// # Example
+    ///
+    /// ```rust no_run
+    /// use zyx::{Tensor, DType};
+    /// let t = Tensor::zeros([32, 48], DType::F32);
+    /// let til = t.tilize()?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
-    ///
-    /// Returns [`ZyxError`] if the tensor cannot be read to host or the
-    /// result cannot be allocated.
+    /// Returns a device error if the tensor cannot be read to host, or
+    /// [`ZyxError::AllocationError`] if the result cannot be allocated.
     pub fn tilize(&self) -> Result<Tensor, ZyxError> {
         fn ceil32(d: i64) -> i64 {
             debug_assert!(d >= 0, "tilize needs a concrete non-negative dim, got {d}");
@@ -91,14 +95,21 @@ impl Tensor {
         }
     }
 
-    /// Inverse of [`Tensor::tilize`] (host-side). `rows`/`cols` are the
-    /// true (unpadded) outer dims; padding is stripped. Method form
-    /// (chainable): `tilized.untilize(rows, cols)?`.
+    /// Inverse of [`Tensor::tilize`]: strips the 32-aligned padding from the
+    /// last two dims, restoring the true `rows` and `cols` shape.
+    ///
+    /// # Example
+    ///
+    /// ```rust no_run
+    /// use zyx::{Tensor, DType};
+    /// let til = Tensor::zeros([64, 64], DType::F32);
+    /// let back = til.untilize(32, 48)?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     ///
     /// # Errors
-    ///
-    /// Returns [`ZyxError`] if the tensor cannot be read to host or the
-    /// result cannot be allocated.
+    /// Returns a device error if the tensor cannot be read to host, or
+    /// [`ZyxError::AllocationError`] if the result cannot be allocated.
     pub fn untilize(&self, rows: i64, cols: i64) -> Result<Tensor, ZyxError> {
         fn permute<T: Scalar>(input: &[T], batches: usize, pr: i64, pc: i64, rows: i64, cols: i64) -> Vec<T> {
             let ntc = pc / 32;
