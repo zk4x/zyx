@@ -124,21 +124,39 @@ pub trait Module {
     }
 }
 
-/// GGUF metadata
+/// GGUF metadata value.
+///
+/// Maps one-to-one onto the GGUF file format metadata types
+/// (`TYPE_INT8` .. `TYPE_UINT64`, `TYPE_F32`, `TYPE_F64`, `TYPE_BOOL`,
+/// `TYPE_STRING`), plus `GGUF_ARRAY`, whose elements are recursively
+/// `GGUFMetadataValue`s.
 #[allow(unused)]
 pub enum GGUFMetadataValue {
+    /// Unsigned 8-bit integer
     Uint8(u8),
+    /// Signed 8-bit integer
     Int8(i8),
+    /// Unsigned 16-bit integer
     Uint16(u16),
+    /// Signed 16-bit integer
     Int16(i16),
+    /// Unsigned 32-bit integer
     Uint32(u32),
+    /// Signed 32-bit integer
     Int32(i32),
+    /// Unsigned 64-bit integer
     Uint64(u64),
+    /// Signed 64-bit integer
     Int64(i64),
+    /// 32-bit floating-point number
     Float32(f32),
+    /// 64-bit floating-point number
     Float64(f64),
+    /// Boolean value
     Bool(bool),
+    /// UTF-8 string
     String(String),
+    /// Array of arbitrary metadata values
     Array(Box<[GGUFMetadataValue]>),
 }
 

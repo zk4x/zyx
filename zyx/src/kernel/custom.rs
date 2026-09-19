@@ -1035,6 +1035,20 @@ impl CompiledKernel {
         )?;
         Ok(ids.into_iter().map(Tensor::from_id).collect())
     }
+
+    /// Execute the compiled kernel with new input tensors, taking the
+    /// single output. Shorthand for [`CompiledKernel::forward`] for
+    /// kernels with exactly one output: the `debug_assert_eq!` inside
+    /// `forward` fires in debug builds when the kernel does not have
+    /// exactly one output, so misuse panics instead of silently
+    /// dropping outputs.
+    pub fn forward1(
+        &self,
+        inputs: &[&Tensor],
+        shape: impl IntoIterator<Item = impl Into<Tensor>>,
+    ) -> Result<Tensor, ZyxError> {
+        Ok(self.forward(inputs, vec![shape])?.remove(0))
+    }
 }
 
 impl Runtime {
