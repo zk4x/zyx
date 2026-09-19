@@ -11,7 +11,7 @@ use super::tenstorrent::CBId;
 use crate::{
     DType,
     dtype::Constant,
-    kernel::{BOp, Kernel, MemLayout, MemScope, OpId, ParamKind, RangeKind, TileDim, UOp},
+    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TileDim, UOp},
     shape::Dim,
     types::{TinyString, TinyVec},
 };
@@ -182,7 +182,12 @@ pub enum TTOp {
     //    Only ops Tenstorrent lowers (`Wmma` excluded; `Move`/`Reduce`
     //    never survive linearization so they never reach conversion). --
     /// Constant value.
-    SSAConst(Constant),
+    SSAConst {
+        /// Constant value.
+        value: Constant,
+        /// Result value (this op's own id).
+        z: OpId,
+    },
     /// Kernel parameter (launch argument or buffer).
     SSAParam {
         /// Element type.
@@ -191,9 +196,13 @@ pub enum TTOp {
         kind: ParamKind,
         /// Shape operand.
         shape: OpId,
+        /// Result value (this op's own id).
+        z: OpId,
     },
     /// Value cast.
     SSACast {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Source value.
         x: OpId,
         /// Target type.
@@ -201,6 +210,8 @@ pub enum TTOp {
     },
     /// Bitcast (no value conversion, equal bit widths).
     SSABitcast {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Source value.
         x: OpId,
         /// Target type.
@@ -228,11 +239,15 @@ pub enum TTOp {
     },
     /// Vector pack.
     SSAStack {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Element values.
         ops: Box<[OpId]>,
     },
     /// Kernel-internal memory (accumulators, circular buffers, ...).
     SSAStorage {
+        /// Result handle (this op's own id).
+        z: OpId,
         /// Element type.
         dtype: DType,
         /// Memory scope.
@@ -253,6 +268,8 @@ pub enum TTOp {
     },
     /// Indexed load from storage.
     SSALoad {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Source storage.
         src: OpId,
         /// Index value.
@@ -262,6 +279,8 @@ pub enum TTOp {
     },
     /// Parallel range (group/local/warp).
     SSARange {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Axis.
         axis: u32,
         /// Range kind.
@@ -269,6 +288,8 @@ pub enum TTOp {
     },
     /// Loop with trip count value.
     SSALoop {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Number of iterations.
         len: OpId,
     },
@@ -289,9 +310,13 @@ pub enum TTOp {
         y: OpId,
         /// Addend.
         z: OpId,
+        /// Result value (this op's own id).
+        w: OpId,
     },
     /// Single value out of a vector.
     SSAIndex {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Source vector.
         vec: OpId,
         /// Element position.
@@ -301,6 +326,8 @@ pub enum TTOp {
     SSABarrier,
     /// Hardware tile reduce into accumulator tile.
     SSAReduceTile {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Input tile.
         x: OpId,
         /// LLK scale tile.
@@ -314,6 +341,8 @@ pub enum TTOp {
     },
     /// Hardware tile matmul into accumulator tile.
     SSAMatmulTile {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Left tile.
         x: OpId,
         /// Right tile.
@@ -323,6 +352,8 @@ pub enum TTOp {
     },
     /// Hardware tile transpose.
     SSATransposeTile {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Input tile.
         x: OpId,
     },
@@ -335,6 +366,8 @@ pub enum TTOp {
     },
     /// Backend-specific assembly escape hatch.
     SSAAsm {
+        /// Result value (this op's own id).
+        z: OpId,
         /// Assembly template.
         asm: TinyString,
         /// Operand values.
@@ -342,8 +375,54 @@ pub enum TTOp {
     },
 }
 
+struct Compiler {
+    ops: Vec<TTOp>,
+}
+
+impl Compiler {
+    fn new(kernel: &Kernel) -> Self {
+        let mut ops = Vec::new();
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            let op = match kernel.ops[op_id].op {
+                Op::Const(constant) => TTOp::SSAConst { value: constant, z: op_id },
+                Op::Param { dtype, kind, shape } => TTOp::SSAParam { dtype, kind, shape, z: op_id },
+                Op::Cast { x, dtype } => TTOp::SSACast { z: op_id, x, dtype },
+                Op::Bitcast { x, dtype } => TTOp::SSABitcast { z: op_id, x, dtype },
+                Op::Unary { x, uop } => TTOp::SSAUnary { z: op_id, x, uop },
+                Op::Binary { x, y, bop } => TTOp::SSABinary { z: op_id, x, y, bop },
+                Op::Stack { ref ops } => TTOp::SSAStack { z: op_id, ops: ops.clone() },
+                Op::Storage { dtype, scope, len } => TTOp::SSAStorage { z: op_id, dtype, scope, len },
+                Op::Store { dst, src, index, layout } => TTOp::SSAStore { dst, src, index, layout },
+                Op::Load { src, index, layout } => TTOp::SSALoad { z: op_id, src, index, layout },
+                Op::Range { axis, kind } => TTOp::SSARange { z: op_id, axis, kind },
+                Op::Loop { len } => TTOp::SSALoop { z: op_id, len },
+                Op::EndLoop => TTOp::SSAEndLoop,
+                Op::If { condition } => TTOp::SSAIf { condition },
+                Op::EndIf => TTOp::SSAEndIf,
+                Op::Mad { x, y, z } => TTOp::SSAMad { x, y, z, w: op_id },
+                Op::Index { vec, idx } => TTOp::SSAIndex { z: op_id, vec, idx },
+                Op::Barrier => TTOp::SSABarrier,
+                Op::Wmma { .. } => unreachable!("tenstorrent2: Wmma has no Tenstorrent lowering"),
+                Op::ReduceTile { x, scaler, acc, rop, kind } => TTOp::SSAReduceTile { z: op_id, x, scaler, acc, rop, kind },
+                Op::MatmulTile { x, y, acc } => TTOp::SSAMatmulTile { z: op_id, x, y, acc },
+                Op::TransposeTile { x } => TTOp::SSATransposeTile { z: op_id, x },
+                Op::BroadcastTile { x, kind } => TTOp::SSABroadcastTile { x, kind },
+                Op::Asm { ref asm, ref ops } => TTOp::SSAAsm { z: op_id, asm: asm.clone(), ops: ops.clone() },
+                Op::Move { .. } => unreachable!("tenstorrent2: Move never survives linearization"),
+                Op::Reduce { .. } => unreachable!("tenstorrent2: Reduce never survives linearization"),
+            };
+            ops.push(op);
+            op_id = kernel.next_op(op_id);
+        }
+        Self { ops }
+    }
+}
+
 impl Kernel {
-    fn generate_tenstorrent2() {
+    fn generate_tenstorrent2(kernel: &Kernel) {
+        let mut compiler = Compiler::new(kernel);
+
         todo!()
     }
 }
