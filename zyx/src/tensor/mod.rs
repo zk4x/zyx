@@ -25,8 +25,10 @@ use std::path::Path;
 #[cfg(feature = "py")]
 pub use index_ops::DimIndex;
 pub use reduce_ops::ReduceOp;
-
 mod binary_ops;
+
+mod dequantize;
+
 mod elementwise;
 mod index_ops;
 mod reduce_ops;

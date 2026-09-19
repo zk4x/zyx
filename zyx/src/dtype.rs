@@ -869,3 +869,198 @@ impl Debug for Constant {
         f.write_fmt(format_args!("{self}"))
     }
 }
+
+/// Quantized data type of a GGUF super-block.
+///
+/// The numeric codes match the `ggml_type` enum (`ggml.h`): the same codes
+/// [`Tensor::load_gguf`](crate::Tensor::load_gguf) matches on. Every variant
+/// loads as raw `[num_blocks, block_bytes]` [`DType::U8`] via `load_gguf` and
+/// decodes to dense floats via
+/// [`Tensor::dequantize`](crate::Tensor::dequantize).
+// Variant names mirror `ggml.h` (`Q4_0`, `Q4_K`, ...) instead of UpperCamelCase
+// so they stay grep-compatible with the ggml docs and error messages.
+#[allow(non_camel_case_types)]
+#[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum QDType {
+    /// 4-bit, 32 elements in 18 bytes (`block_q4_0`).
+    Q4_0,
+    /// 4-bit, 32 elements in 20 bytes (`block_q4_1`).
+    Q4_1,
+    /// 5-bit, 32 elements in 22 bytes (`block_q5_0`).
+    Q5_0,
+    /// 5-bit, 32 elements in 24 bytes (`block_q5_1`).
+    Q5_1,
+    /// 8-bit, 32 elements in 34 bytes (`block_q8_0`).
+    Q8_0,
+    /// 8-bit, 32 elements in 36 bytes (`block_q8_1`).
+    Q8_1,
+    /// 2-bit super-block, 256 elements in 84 bytes (`block_q2_K`).
+    Q2_K,
+    /// 3-bit super-block, 256 elements in 110 bytes (`block_q3_K`).
+    Q3_K,
+    /// 4-bit super-block, 256 elements in 144 bytes (`block_q4_K`).
+    Q4_K,
+    /// 5-bit super-block, 256 elements in 176 bytes (`block_q5_K`).
+    Q5_K,
+    /// 6-bit super-block, 256 elements in 210 bytes (`block_q6_K`).
+    Q6_K,
+    /// 8-bit super-block, 256 elements in 292 bytes (`block_q8_K`).
+    Q8_K,
+    /// Improved 2-bit, 256 elements in 66 bytes (`block_iq2_xxs`).
+    IQ2_XXS,
+    /// Improved 2-bit, 256 elements in 74 bytes (`block_iq2_xs`).
+    IQ2_XS,
+    /// Improved 2-bit, 256 elements in 82 bytes (`block_iq2_s`).
+    IQ2_S,
+    /// Improved 3-bit, 256 elements in 98 bytes (`block_iq3_xxs`).
+    IQ3_XXS,
+    /// Improved 3-bit, 256 elements in 110 bytes (`block_iq3_s`).
+    IQ3_S,
+    /// Improved 1-bit, 256 elements in 50 bytes (`block_iq1_s`).
+    IQ1_S,
+    /// Improved 1-bit, 256 elements in 56 bytes (`block_iq1_m`).
+    IQ1_M,
+    /// Non-linear 4-bit, 32 elements in 18 bytes (`block_iq4_nl`).
+    IQ4_NL,
+    /// Non-linear 4-bit, 256 elements in 136 bytes (`block_iq4_xs`).
+    IQ4_XS,
+}
+
+impl QDType {
+    /// GGUF type code of this quant (`ggml.h` numbering).
+    #[must_use]
+    pub const fn gguf_code(self) -> u32 {
+        match self {
+            Self::Q4_0 => 2,
+            Self::Q4_1 => 3,
+            Self::Q5_0 => 6,
+            Self::Q5_1 => 7,
+            Self::Q8_0 => 8,
+            Self::Q8_1 => 9,
+            Self::Q2_K => 10,
+            Self::Q3_K => 11,
+            Self::Q4_K => 12,
+            Self::Q5_K => 13,
+            Self::Q6_K => 14,
+            Self::Q8_K => 15,
+            Self::IQ2_XXS => 16,
+            Self::IQ2_XS => 17,
+            Self::IQ3_XXS => 18,
+            Self::IQ1_S => 19,
+            Self::IQ4_NL => 20,
+            Self::IQ3_S => 21,
+            Self::IQ2_S => 22,
+            Self::IQ4_XS => 23,
+            Self::IQ1_M => 29,
+        }
+    }
+
+    /// Number of elements one super-block decodes to.
+    #[must_use]
+    pub const fn elems_per_block(self) -> i64 {
+        match self {
+            Self::Q4_0 | Self::Q4_1 | Self::Q5_0 | Self::Q5_1 | Self::Q8_0 | Self::Q8_1 | Self::IQ4_NL => 32,
+            Self::Q2_K
+            | Self::Q3_K
+            | Self::Q4_K
+            | Self::Q5_K
+            | Self::Q6_K
+            | Self::Q8_K
+            | Self::IQ2_XXS
+            | Self::IQ2_XS
+            | Self::IQ2_S
+            | Self::IQ3_XXS
+            | Self::IQ3_S
+            | Self::IQ1_S
+            | Self::IQ1_M
+            | Self::IQ4_XS => 256,
+        }
+    }
+
+    /// Size in bytes of one super-block on disk.
+    #[must_use]
+    pub const fn block_bytes(self) -> i64 {
+        match self {
+            Self::Q4_0 => 18,
+            Self::Q4_1 => 20,
+            Self::Q5_0 => 22,
+            Self::Q5_1 => 24,
+            Self::Q8_0 => 34,
+            Self::Q8_1 => 36,
+            Self::Q2_K => 84,
+            Self::Q3_K => 110,
+            Self::Q4_K => 144,
+            Self::Q5_K => 176,
+            Self::Q6_K => 210,
+            Self::Q8_K => 292,
+            Self::IQ2_XXS => 66,
+            Self::IQ2_XS => 74,
+            Self::IQ2_S => 82,
+            Self::IQ3_XXS => 98,
+            Self::IQ3_S => 110,
+            Self::IQ1_S => 50,
+            Self::IQ1_M => 56,
+            Self::IQ4_NL => 18,
+            Self::IQ4_XS => 136,
+        }
+    }
+
+    /// Maps a GGUF type code to a [`QDType`], or `None` for dense codes
+    /// (`F32`, `F16`, ints) and removed/unsupported codes.
+    #[must_use]
+    pub const fn from_code(code: u32) -> Option<Self> {
+        match code {
+            2 => Some(Self::Q4_0),
+            3 => Some(Self::Q4_1),
+            6 => Some(Self::Q5_0),
+            7 => Some(Self::Q5_1),
+            8 => Some(Self::Q8_0),
+            9 => Some(Self::Q8_1),
+            10 => Some(Self::Q2_K),
+            11 => Some(Self::Q3_K),
+            12 => Some(Self::Q4_K),
+            13 => Some(Self::Q5_K),
+            14 => Some(Self::Q6_K),
+            15 => Some(Self::Q8_K),
+            16 => Some(Self::IQ2_XXS),
+            17 => Some(Self::IQ2_XS),
+            18 => Some(Self::IQ3_XXS),
+            19 => Some(Self::IQ1_S),
+            20 => Some(Self::IQ4_NL),
+            21 => Some(Self::IQ3_S),
+            22 => Some(Self::IQ2_S),
+            23 => Some(Self::IQ4_XS),
+            29 => Some(Self::IQ1_M),
+            _ => None,
+        }
+    }
+}
+
+impl Display for QDType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Q4_0 => "q4_0",
+            Self::Q4_1 => "q4_1",
+            Self::Q5_0 => "q5_0",
+            Self::Q5_1 => "q5_1",
+            Self::Q8_0 => "q8_0",
+            Self::Q8_1 => "q8_1",
+            Self::Q2_K => "q2_K",
+            Self::Q3_K => "q3_K",
+            Self::Q4_K => "q4_K",
+            Self::Q5_K => "q5_K",
+            Self::Q6_K => "q6_K",
+            Self::Q8_K => "q8_K",
+            Self::IQ2_XXS => "iq2_xxs",
+            Self::IQ2_XS => "iq2_xs",
+            Self::IQ2_S => "iq2_s",
+            Self::IQ3_XXS => "iq3_xxs",
+            Self::IQ3_S => "iq3_s",
+            Self::IQ1_S => "iq1_s",
+            Self::IQ1_M => "iq1_m",
+            Self::IQ4_NL => "iq4_nl",
+            Self::IQ4_XS => "iq4_xs",
+        })
+    }
+}

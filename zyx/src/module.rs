@@ -221,17 +221,22 @@ impl Tensor {
     ///
     /// # Errors
     ///
-    /// Errors if loading from disk failed or if loaded tensors could not be allocated to device.
-    #[allow(clippy::missing_panics_doc)]
+    /// Errors if the path has no or an unknown extension, if loading from disk failed
+    /// or if loaded tensors could not be allocated to device.
     pub fn load(path: impl AsRef<Path>) -> Result<HashMap<String, Tensor>, ZyxError>
     where
         Self: Sized,
     {
-        let e = path.as_ref().extension().and_then(OsStr::to_str).unwrap();
+        let e = path.as_ref().extension().and_then(OsStr::to_str);
         match e {
-            "safetensors" => Self::load_safetensors(path),
-            "gguf" => Ok(Self::load_gguf(path)?.1),
-            _ => panic!("Unknown file extension. Zyx currently supports only safetensors, gguf and npy formats."),
+            Some("safetensors") => Self::load_safetensors(path),
+            Some("gguf") => Ok(Self::load_gguf(path)?.1),
+            Some(other) => Err(ZyxError::parse_error(
+                format!("Unknown file extension '{other}'. Zyx currently supports only safetensors and gguf formats.").into(),
+            )),
+            None => Err(ZyxError::parse_error(
+                format!("Cannot determine file type: '{}' has no extension. Zyx currently supports only safetensors and gguf formats.", path.as_ref().display()).into(),
+            )),
         }
     }
 
@@ -527,6 +532,86 @@ impl Tensor {
                     let numel: Dim = shape.iter().product();
                     debug_assert!(numel % 256 == 0, "IQ4_XS tensor {tensor_name} has {numel} elements, not a multiple of 256");
                     (DType::U8, vec![numel / 256, 136])
+                }
+                // Q4_0 (gguf type 2) loads as raw super-blocks: [num_blocks, 18]
+                // U8. Each 18B block holds 32 weights (half d + 16B of nibbles,
+                // llama.cpp `block_q4_0`).
+                2 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 32 == 0, "Q4_0 tensor {tensor_name} has {numel} elements, not a multiple of 32");
+                    (DType::U8, vec![numel / 32, 18])
+                }
+                // Q4_1 (gguf type 3): block_q4_1, 20B per 32 (2*half + 16B nibbles).
+                3 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 32 == 0, "Q4_1 tensor {tensor_name} has {numel} elements, not a multiple of 32");
+                    (DType::U8, vec![numel / 32, 20])
+                }
+                // Q5_0 (gguf type 6): block_q5_0, 22B per 32 (half + 4B qh + 16B qs).
+                6 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 32 == 0, "Q5_0 tensor {tensor_name} has {numel} elements, not a multiple of 32");
+                    (DType::U8, vec![numel / 32, 22])
+                }
+                // Q5_1 (gguf type 7): block_q5_1, 24B per 32 (2*half + 4B qh + 16B qs).
+                7 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 32 == 0, "Q5_1 tensor {tensor_name} has {numel} elements, not a multiple of 32");
+                    (DType::U8, vec![numel / 32, 24])
+                }
+                // Q8_1 (gguf type 9): block_q8_1, 36B per 32 (2*half + 32B qs).
+                9 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 32 == 0, "Q8_1 tensor {tensor_name} has {numel} elements, not a multiple of 32");
+                    (DType::U8, vec![numel / 32, 36])
+                }
+                // Q2_K (gguf type 10): block_q2_K, 84B per 256 (2*half + 16B scales + 64B qs).
+                10 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "Q2_K tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 84])
+                }
+                // Q8_K (gguf type 15): block_q8_K, 292B per 256 (float + 256B qs + 16 i16 sums).
+                15 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "Q8_K tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 292])
+                }
+                // IQ2_XXS (gguf type 16): block_iq2_xxs, 66B per 256 (half + 32 u16 qs).
+                16 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "IQ2_XXS tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 66])
+                }
+                // IQ2_XS (gguf type 17): block_iq2_xs, 74B per 256 (half + 64B qs + 8B scales).
+                17 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "IQ2_XS tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 74])
+                }
+                // IQ3_XXS (gguf type 18): block_iq3_xxs, 98B per 256 (half + 96B qs).
+                18 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "IQ3_XXS tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 98])
+                }
+                // IQ1_S (gguf type 19): block_iq1_s, 50B per 256 (half + 32B qs + 16B qh).
+                19 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "IQ1_S tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 50])
+                }
+                // IQ2_S (gguf type 22): block_iq2_s, 82B per 256 (half + 64B qs + 8B qh + 8B scales).
+                22 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "IQ2_S tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 82])
+                }
+                // IQ1_M (gguf type 29): block_iq1_m, 56B per 256 (32B qs + 16B qh + 8B scales, no fp scale).
+                29 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "IQ1_M tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 56])
                 }
                 x => todo!("GGUF dtype {x} is not supported by zyx yet."),
             };

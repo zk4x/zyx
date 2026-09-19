@@ -1,69 +1,50 @@
-# ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
-# ⚠️  "pre-existing" IS FORBIDDEN. NEVER USE IT.  ⚠️
-# ⚠️  "Builds clean" / similar                    ⚠️
-# ⚠️  IS FORBIDDEN. BUILD SILENTLY.               ⚠️
-# ⚠️  "git checkout" IS FORBIDDEN. NEVER USE.     ⚠️
-# ⚠️  Use "git restore" instead.                   ⚠️
-# ⚠️  python/sed/awk/heredoc SCRIPTS FOR FILE      ⚠️
-# ⚠️  EDITS ARE FORBIDDEN. USE THE edit TOOL.      ⚠️
-# ⚠️  VIOLATIONS = BROKEN. REPEATEDLY. FOREVER.   ⚠️
-# ⚠️  SCRIPTS DESTROYED FILES TWICE ALREADY.      ⚠️
-# ⚠️  READ FIRST, THEN ASK OR EDIT.                ⚠️
-# ⚠️  ("I haven't read it" is never an answer;     ⚠️
-# ⚠️   open the files before any claim or question)⚠️
-# ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
+# ⚠️ FORBIDDEN, ABSOLUTELY: "pre-existing" (never use it) · "builds clean" (build silently) · "git checkout" (use `git restore`) · python/sed/awk/heredoc scripts for file edits (use the edit tool — scripts destroyed files twice already). READ FIRST, THEN ASK OR EDIT. ⚠️
 
 # Agent Guidelines for zyx
 
 ## Know Your Limits
 
-- **ALWAYS run `rust_analyzer_rust_analyzer_set_workspace` (workspace: `/home/x/Dev/rust/zyx/zyx`) as the FIRST tool call of every session**, before any other work.
-- **READ CODE FIRST. ALWAYS.** Before asking any question, forming any claim, or writing any code, open the relevant files and read them. "I haven't read it" is never a valid response — reading is the job. Most questions answer themselves from source; a question asked without reading first wastes the user's time.
-- **When the user gives you guidance/a hint, go read the implicated code first, then report what you found.** Do not ask the user to explain what the code already states. Only ask after reading, and only about genuine design decisions the code cannot settle.
-- If a task is hardware-specific, deeply subtle, or keeps failing, SAY SO plainly up front. "I can't solve this" beats two days of guesses.
+- **FIRST tool call of every session:** `rust_analyzer_rust_analyzer_set_workspace` (workspace: `/home/x/Dev/rust/zyx/zyx`).
+- **READ CODE FIRST. ALWAYS.** Before any question, claim, or edit, open the relevant files. "I haven't read it" is never an answer. Reading is ITERATIVE: every newly raised detail gets investigated in source first; internal "questions" are research prompts. Only STOP and ask when the code genuinely underdetermines the answer (multiple valid designs, missing spec, intended semantics). Never ask what the code can answer; never implement on top of a guess.
+- **On a hint from the user: read the implicated code, then report findings.** If a task references a `todo!()`/stub, read surrounding code before asking.
+- **Design vs implementation.** The user owns design. When asked to analyze or compare, do it thoroughly; when implementing, do NOT pick implementation choices — ask.
 - When the user says they'll do it themselves, stop. Only act when asked for a specific edit.
-- **Ask only what the code cannot answer — design decisions, intended semantics, missing values.** HOW something currently works is settled by reading, never by asking. If the task references a `todo!()` or a stub, read the surrounding code first; ask only if intent stays undetermined after reading. Questions are for genuine underdetermination, not for skipping reading.
-- **Reading is ITERATIVE, not one-shot.** Every newly raised detail gets investigated in source first — open files, grep, follow callers. If between two edits a question appears ("which callers change?", "what should X return here?"), resolve it by reading. Only STOP and ask when the code genuinely underdetermines the answer (multiple valid designs, missing spec). Never let a time budget make you skip reading.
-- **Design vs implementation.** The user owns design; analysis on request is fine. When asked to analyze, compare options, or recommend, do it thoroughly. When implementing, do NOT pick implementation choices yourself — ask the user and they will tell you. Ask what the user wants done; they supply the decisions, you type them in.
-- **Do not implement on top of your own guesses.** Reading the code before any question or edit is mandatory; implementing code to "find out" what should happen is not. Read first, ask about what survives reading, implement after the answer.
-- **Investigate the answer yourself; ask the user only what survives reading.** When you catch yourself forming a question in your reasoning, open the files and answer it from source first. Your internal "questions" are research prompts, not user questions. Only genuine design choices, intended semantics, and missing specs go to the user — they own those, and source cannot supply them.
-- **Reconsidering = ask.** Whenever the word "reconsider"/"reconsidering"/"on reflection" appears in your thinking about a design, spec, or your own plan, immediately ask the user what to do — do not keep reasoning through it on your own. Every instance of reconsidering is a question you are deciding not to ask.
-- **Confirm whether values are symbolic or numeric before touching them.** Dims, shapes, lengths, and strides are usually `OpId`s (symbolic IR nodes), not `Dim`s you can multiply directly. If a computation would need numeric values (e.g. `index_len`/`as_dim` to multiply), that is a sign the design may intend symbolic ops instead — ASK which is intended, and how strides/shapes are meant to be expressed, before writing code.
-- **FORBIDDEN WORDS** — never say these (in responses AND in your reasoning AND in your inner monologue): "Actually", "wait", "key insight", "let me", "Hmm", "But wait". The rule is absolute, applies to every token you emit (including tool call parameters, file contents, and planning), and violations are never excused by "it was in reasoning" or "I was thinking out loud".
+- If a task is hardware-specific, deeply subtle, or keeps failing, SAY SO plainly up front.
+- **Reconsidering = ask.** If "reconsider"/"on reflection" appears in your thinking about a design or plan, immediately ask the user instead of reasoning onward.
+- **Symbolic vs numeric:** dims/shapes/lengths/strides are usually `OpId`s (symbolic IR nodes), not `Dim`s. If a computation needs numeric values, that may signal the design intends symbolic ops — ask before writing code.
+- **FORBIDDEN WORDS** (responses AND reasoning AND inner monologue, every token): "Actually", "wait", "key insight", "let me", "Hmm", "But wait". No exception for "it was in reasoning".
 
 ## Reasoning Discipline
 
-- Maintain an explicit distinction between premises, deductions, and assumptions. Never promote an inference into a premise without stating it. If the premises are insufficient to determine an answer, report the underdetermination rather than resolving it by plausibility.
+- Keep premises, deductions, and assumptions explicit. Never promote an inference into a premise without stating it. If premises underdetermine the answer, report the underdetermination — don't resolve it by plausibility.
 
 ## No Workarounds
 
-- **NO WORKAROUNDS.** Never paper over a real bug by rerouting the caller away from the buggy code path (e.g. swapping `index_select` for `slice`, or dropping an API the user asked for) instead of reproducing and fixing the bug. A workaround hides the bug and shifts the symptom somewhere else, making it far harder to find later. When you find a bug, **reproduce it in a test** (e.g. in `zyx/tests/`) and report it — do not route around it. If avoiding the path seems necessary, STOP and ask the user first.
+- Never paper over a bug by rerouting the caller away from the buggy path (e.g. swapping `index_select` for `slice`, dropping an API). Reproduce it in a test (e.g. `zyx/tests/`) and report it. If avoiding the path seems necessary, STOP and ask first.
 
 ## Optimization Pass Performance Budget
 
-- **NO optimization pass may take longer than 30 microseconds (µs) on a single invocation.** Most passes run well under that (single-digit µs); 30µs is a generous ceiling, not a target. This applies to every pass in `zyx/src/kernel/` (algebraic, verify/compute_bounds, fold_*, autotune driver `BeamSearch`, etc.) and to `default_epilogue` / `default_optimizations` as a whole.
-- A pass that blows this budget is a **performance bug**, not an acceptable cost: it runs once per autotune variant and once per compiled kernel, so even a few hundred µs compounds into seconds across a run. Such a pass is almost always doing redundant or quadratic work (e.g. re-walking the whole IR per `If`, recomputing bounds many times). Fix the algorithmic cost — do NOT paper over it.
-- **Add timings to measure.** Wrap each pass in a `time_pass!`/`Instant` measurement (printing to stderr) so per-pass cost is observable, then keep it under 30µs. Verify with a targeted test, not the full suite, when measuring.
-- `compute_bounds` (verify.rs) is the usual suspect: it walks the whole IR and is called repeatedly. It must stay linear in the number of ops; never re-derive or re-scan the IR per-`If` (that is O(K·N)). Remember `compute_bounds` only guarantees **conservative (never too tight)** bounds — see its docs.
+- **No pass in `zyx/src/kernel/` may exceed 30µs per invocation** (most run in single digits; 30µs is a ceiling, not a target). Applies to every pass and to `default_epilogue`/`default_optimizations` as a whole.
+- A pass that blows this budget is a **performance bug** — it runs once per autotune variant and per compiled kernel, so hundreds of µs compound into seconds. It is almost always redundant or quadratic work (e.g. re-walking the IR per `If`, recomputing bounds — `compute_bounds` in verify.rs is the usual suspect; it must stay linear in op count and only guarantees conservative bounds). Fix the algorithmic cost; don't paper over it.
+- Wrap passes in `time_pass!`/`Instant` measurement (stderr) to keep them observable; verify with a targeted test, not the full suite.
 
 ## Key Commands
 
-The repo root has **no `Cargo.toml`** — crates (`zyx`, `zyx-nn`, ...) are independent packages. **Always run cargo from the `zyx/` subdirectory.**
+Repo root has **no `Cargo.toml`** — crates are independent packages; **always run cargo from `zyx/`**.
 
 ```bash
-cd zyx && cargo build                      # build
-cd zyx && AGENT=1 cargo test               # test (AGENT=1 strips ANSI colors)
-cd zyx && AGENT=1 cargo test <name>        # single test
-cd zyx && AGENT=1 cargo test --test <file> <name>  # one test in one file
-cd zyx && AGENT=1 cargo test -- --nocapture   # with output (ALWAYS add -- --nocapture when capturing debug/env-var output, e.g. ZYX_DEBUG)
-cd zyx && AGENT=1 cargo test --doc         # doc tests
-cd zyx && cargo fmt                        # format
+cd zyx && cargo build
+cd zyx && AGENT=1 cargo test               # AGENT=1 strips ANSI colors
+cd zyx && AGENT=1 cargo test --test <file> <name>
+cd zyx && AGENT=1 cargo test -- --nocapture   # ALWAYS add for ZYX_DEBUG/debug output
+cd zyx && AGENT=1 cargo test --doc
+cd zyx && cargo fmt
 ```
 
 - Tenstorrent: `TT_METAL_ROOT=/home/x/Dev/cpp/tt-metal cargo build --features tenstorrent`
-- Clippy is NOT a gate (lint `#![deny(...)]` block in `src/lib.rs` is commented out). Don't run it.
-- Tests live in `zyx/tests/`, named `{number}_{category}.rs` (e.g. `1_unary.rs`) plus `mnist.rs` (`mnist.py` + `.safetensors` are fixtures). Tests return `Result<(), ZyxError>` and use `assert!` / `is_equal()` for floats.
-- Python: use `python3.12` for everything.
+- Clippy is NOT a gate — don't run it.
+- Tests live in `zyx/tests/` as `{number}_{category}.rs` (+ `mnist.rs` with `mnist.py`/`.safetensors` fixtures). They return `Result<(), ZyxError>` and use `assert!`/`is_equal()` for floats.
+- Python: use `python3.12`.
 
 ## Layout
 
@@ -74,317 +55,140 @@ zyx/           core tensor library (all the real work)
   src/kernel/    kernel IR, codegen, and ALL optimization passes
   tests/         integration tests
 zyx-nn, zyx-optim, zyx-onnx, zyx-fuzzy, zyx-py, zyx-bench, zyx-book
-examples/      virtual workspace; each model is its own crate (mnist, rnn, phi, llama, ...)
-                examples/data/ holds datasets, examples/models/ holds weights/gguf/configs
+examples/      virtual workspace; each model is its own crate
+               (examples/data/ = datasets, examples/models/ = weights/gguf/configs)
 ```
 
-Root docs worth reading: `ENV_VARS.md` (ZYX_DEBUG), `CONFIG.md` (backend config), `STYLE.md`, `ADDING_BACKENDS.md`.
+Root docs: `ENV_VARS.md` (ZYX_DEBUG), `CONFIG.md`, `STYLE.md`, `ADDING_BACKENDS.md`.
 
-## The Graph
+## The Graph & Egraph
 
-Zyx is all about the graph. Lazy (no compute until `Tensor::realize`), dynamic, and **one graph serves both laziness and autograd**. TensorId is a `u32`.
+Lazy, dynamic, **one graph serves both laziness and autograd**; TensorId is `u32`. `Node` (`src/graph/mod.rs`) has 14 variants: Const, Leaf, Expand, Permute, Reshape, PadZeros, Flip, Reduce, Cast, Unary, Binary, Assign, ToDevice, Kernel.
 
-`Node` (`src/graph/mod.rs`) has 14 variants: Const, Leaf, Expand, Permute, Reshape, PadZeros, Flip, Reduce, Cast, Unary, Binary, Assign, ToDevice, Kernel.
+The egraph lives in `src/graph/` and is **entirely OUTSIDE `src/kernel/`** — no imports or calls in either direction. Interface: the egraph picks among fusion variants of tensor ops; each chosen fusion compiles to a `Kernel` (linear-SSA seed) and goes to the autotuner; measured timings flow back for extraction. Everything in `kernel/` sees only plain kernels.
 
-## The Egraph
-
-Lives in `zyx/src/graph/`. **The egraph is entirely OUTSIDE of `src/kernel/`** — `kernel/` (IR, passes, autotune, codegen) never imports, references, or calls into the egraph, and the egraph is not used *inside* kernels. There is no reverse dependency in either direction at the code level. The interface is one-directional and small: the egraph picks among different **fusions of tensor ops**; each chosen fusion is compiled into a `Kernel` (a linear-SSA seed) and handed to the autotuner; the measured timing flows back to the egraph for extraction. Everything inside `kernel/` sees only plain kernels and knows nothing about where they came from:
-- `mod.rs` — the equivalence graph. Heuristics generate a **few fusion variants** of each subgraph (CSE via hashconsing, algebraic rewrites, layout rewrites, shape rewrites). The egraph itself has **NO cost model** — it does not rank or pick a form statically. Each fusion variant is individually **autotuned** (see Optimization Passes); the egraph then uses the measured **timings** returned by the autotuner to extract the fastest path (`Graph::extract`).
-- **Vendor kernels**: a vendor can contribute a kernel for a subgraph written either in any backend language (CUDA, SPIR-V, ...) **or** in the zyx kernel IR API. Kernels built via the kernel IR API go through all the usual optimizations, including autotuning. Vendor kernels **compete alongside** the heuristics-based fusion variants in the egraph — they are extracted by the same timing-driven path, so the fastest measured variant (heuristic or vendor) wins.
- - **Custom kernels BYPASS the egraph AND autotune.** A hand-written kernel (builder API `Kernel::new` → `CompiledKernel::compile` in `kernel/custom.rs`) is a **pre-fused block** — linear SSA, fully mutable, no egraph inside it and no egraph rewriting it. `CompiledKernel::compile` does only `linearize` → `instruction_schedule` → `constant_folding` → `dead_code_elimination` → `verify` → `device.compile`; it does **NOT** run `BeamSearch`, `default_optimizations`, `default_epilogue`, or any cost/timing search. `device.compile` itself runs the backend **codegen** (e.g. `generate_tenstorrent` for TT, producing reader/compute/writer sources) and then compiles those sources — so custom kernels *do* go through codegen, just not through the autotune-driven optimization passes. The user has full control: a custom kernel runs exactly as written (those passes + verify + codegen). If the user wants autotuning on a custom kernel they must call `BeamSearch::run_` themselves — nothing is automatic. The egraph also treats custom kernels as opaque fused units and cannot split, re-fuse, or optimize across their boundary. (Future possibility, not now: egraph-side auto-epilogue fusion with custom kernels.)
-- `kernelizer.rs` — pattern-matches subgraphs and replaces them with custom JIT kernels
-- `autograd.rs` — gradients on the same graph
-- `plan.rs` — execution plans from compiled graphs
-
-How to work with it:
-- `ZYX_DEBUG=2` prints the egraph (class structure) after realize — the starting point for graph debugging.
-- To replace a graph pattern with a custom kernel, add the match in `kernelizer.rs`.
-- Rewrites must preserve semantic equivalence. The egraph does **NOT** pick a form by cost — it relies on the autotuner's measured timings to extract the fastest path. A wrong rewrite therefore surfaces as a WRONG (not slow) kernel, so every rewrite must be semantically exact.
+- `mod.rs` — the egraph. Heuristics generate a few fusion variants (CSE via hashconsing, algebraic/layout/shape rewrites). It has **NO cost model**: each variant is individually autotuned and `Graph::extract` picks by measured timing. Rewrites must be semantically exact — a wrong rewrite surfaces as a WRONG (not slow) kernel.
+- **Vendor kernels** (backend language or zyx IR API) compete alongside heuristic variants and are extracted by the same timing-driven path.
+- **Custom kernels BYPASS the egraph AND autotune.** Builder API (`Kernel::new` → `CompiledKernel::compile`, `kernel/custom.rs`) runs only `linearize` → `instruction_schedule` → `constant_folding` → `dead_code_elimination` → `verify` → `device.compile` (codegen runs; autotune passes don't). `BeamSearch::run_` must be called explicitly for autotuning. The egraph treats custom kernels as opaque fused units.
+- `kernelizer.rs` — pattern-matches subgraphs → custom JIT kernels (add matches there); `autograd.rs` — gradients on the same graph; `plan.rs` — execution plans.
+- `ZYX_DEBUG=2` prints the egraph after realize.
 
 ## Symbolic Dims
 
-- **Eager and graph must BOTH work with symbolic dims — always and everywhere.** No path may assume concrete shapes. A dim that is not statically known is symbolic, and EVERY consumer (load kernels, autograd, optimization passes, backends) must handle it correctly.
-- Every symbolic dim bottoms out in `Param { Variable }` scalars (`IDX_T`) whose actual values live in the backend pools' variable slots. `IDX_T` is `DType::I64` (i64) — **never `u32`**. Dimension/index values must NEVER be cast to `u32`: they overflow above 4.29×10⁹ (e.g. `60000·120000` wraps to `2905032704`), which silently corrupts downstream codegen. `TensorId`/`OpId`/`ClassId` are `u32` only as compact identifiers, never as dimension values. Because of that, ANY dim expression can be evaluated to a concrete `Constant` at any time: walk the expression tree, take `Const` leaves as-is, fold `Unary`/`Binary` via `Constant::unary` / `Constant::binary`, and read the variable slot wherever a leaf is a `Param { Variable }`.
-- NEVER fabricate sentinel or fallback values (`-1`, `0`, `42`, ...) for unknown behaviour anywhere — not in resolution failures, not in match arms, not as defaults. If code cannot determine a value, that is either a bug or a missing design decision: fail loudly (`debug_assert!` / `expect` / `todo!()`) at the exact spot, or STOP and ask the user what the value should be. No `unwrap_or(<number>)`, no default-value arms, no silent substitutes.
-- Load kernels (e.g. the fresh loader in `Runtime::add_store`) must NEVER emit fabricated consts (`Const(-1)` etc.) as group lengths: evaluate the dim to its concrete value first.
+- **Eager AND graph must both work with symbolic dims everywhere.** No path may assume concrete shapes; every consumer (load kernels, autograd, passes, backends) handles them.
+- Symbolic dims bottom out in `Param { Variable }` scalars (`IDX_T` = `DType::I64`). **Never cast dim/index values to `u32`** (overflow above 4.29×10⁹ silently corrupts codegen); `TensorId`/`OpId`/`ClassId` are `u32` only as identifiers. Any dim expression can be evaluated to a concrete `Constant`: walk the tree, fold via `Constant::unary`/`binary`, read variable slots at `Param { Variable }` leaves.
+- NEVER fabricate sentinels or fallbacks (`-1`, `0`, `42`, ...) for unknown values — fail loudly (`debug_assert!`/`expect`/`todo!()`) at the exact spot, or ask. No `unwrap_or(<number>)`, no default arms. Load kernels must never emit fabricated consts as group lengths: evaluate the dim first.
 
 ## Code Style
 
-- **Simplicity/debuggability > "clean"**: duplicate code first, abstract later. Use enums, not `dyn Trait`. Explicit returns. Minimize Arc/Rc.
-- **Better `todo!()` than silent failures**: an explicit unimplemented panic beats a wrong result or garbage output. Leave `todo!()` in for unimplemented paths rather than faking them.
-- **No assumptions without a `debug_assert`**: never rely on an invariant (e.g. "this kernel is store-free", "this value is non-negative", "this tensor is contiguous") unless the code asserts it with a `debug_assert!`. Every unchecked assumption is a latent bug. **If there are no asserts, there are no assumptions** — claiming an invariant without an `assert!`/`debug_assert!` backing it in the code is meaningless. Do not state "it's safe because X is assumed" unless that X is actually asserted; either add the assert or stop claiming the assumption. This applies to user-guaranteed properties too: if the user says "you can assume X" (e.g. "reduce axes are unique"), the code must still carry a `debug_assert!` for it.
-- **NEVER implement a bug knowingly. THE SINGLE WORST SIN IS adding a variant/arm that produces a semantically WRONG result on purpose** — e.g. aliasing `BOp::Cmpge` to emit `>` (that is `Cmpge == Cmpgt`). This has been the most serious failure on this repo. Every newly-added `BOp`/`UOp` variant MUST get a correct implementation in EVERY exhaustive match (kernel IR, all codegen backends, constant-folding, autodiff, verify/range analysis, debug/string maps). If you cannot implement a match correctly right now, write `todo!()` in that arm — NEVER a wrong result, NEVER an alias to a different op, NEVER a silent no-op that changes semantics. `todo!()` panics loudly; a wrong result is a silent, insidious bug that may go unnoticed forever. If you are ever tempted to "make it compile" with an incorrect arm, STOP and ask the user instead — it is always preferable to ask.
-- **Adding a new op/variant is not complete until `cargo build` passes AND every exhaustive match over that type has been audited for semantic correctness — not just compilation.** Compiling is the floor, not the bar. A wrong semantic (e.g. `>=` lowered to `>`) compiles fine and is still a bug. After adding a variant, grep for every `match` over that type and check each arm's emitted semantics.
-- **When you fail to find something, look harder.** If you go searching for a method/function/symbol you assumed exists and it isn't where you expected, widen the search first (name variants, glob, follow imports and callers) before concluding anything. Only ask the user after a genuine exhaustive search has failed — never ask the user to locate code you have not searched for. The decision of WHICH method/API to use still belongs to the user when multiple valid options exist; present what you found and ask them to pick.
-- Keep ~1000 LOC per module; add new files only when necessary.
-- License header on every new file: `// Copyright (C) 2025 zk4x` / `// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0`
-- Public items need docs (`#![warn(missing_docs)]` is active). Error constructors use `#[track_caller]` and embed file:line:column. Use `From` for conversions.
-- Import order: `crate::` → `super::` → external crates.
+- **Simplicity/debuggability > "clean"**: duplicate first, abstract later. Enums, not `dyn Trait`. Explicit returns. Minimize Arc/Rc. ~1000 LOC per module; new files only when necessary. Import order: `crate::` → `super::` → external.
+- **Better `todo!()` than silent failure.**
+- **No assumptions without a `debug_assert!`** — including user-guaranteed properties. No asserts = no assumption.
+- **NEVER implement a bug knowingly — the single worst sin.** Every new `BOp`/`UOp` variant gets a CORRECT implementation in EVERY exhaustive match (IR, all codegen backends, constant-folding, autodiff, verify, string maps). Wrong semantics (e.g. `Cmpge` aliased to `>`) compiles fine and is still a bug. If you can't implement an arm correctly now, write `todo!()` — never an alias, never a silent no-op — or stop and ask. Adding a variant is complete only after `cargo build` AND an audit of every `match` over that type.
+- When a symbol you assumed exists isn't found, widen the search (name variants, glob, callers) before concluding; only ask after a genuine exhaustive search. WHICH API to use is the user's call when options exist.
+- New files: license header `// Copyright (C) 2025 zk4x` / `// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0`. Public items need docs; error constructors use `#[track_caller]` + file:line:column; use `From`.
 
 ## Backends
 
-- Most backends are **always compiled in**, selected at runtime via the zyx config file.
-- **NEVER touch `~/.config/zyx/config.json`** (never read/write/create/modify/delete it). Backends are chosen by the user. If a test needs a specific backend, ask the user to configure it.
-- Only two backends need cargo features: `--features wgpu` and `--features tenstorrent`.
-- Defaults with no config: C on, Dummy off, CUDA/HIP/Vulkan/OpenCL try to init and silently skip if the driver is missing, HIP always tries (ignores config; skipped only if `libamdhip64.so` is missing). If all backends fail, tests print nothing.
+- Most backends are always compiled in, selected at runtime via config. **NEVER touch `~/.config/zyx/config.json`** (user-owned). Only `--features wgpu` and `--features tenstorrent` exist.
+- Defaults with no config: C on, Dummy off, CUDA/HIP/Vulkan/OpenCL try to init and silently skip if the driver is missing; HIP always tries (skipped only without `libamdhip64.so`). If all fail, tests print nothing.
 
-### HARDWARE SAFETY — the Tenstorrent board (READ THIS BEFORE ANYTHING TT-RELATED)
+### HARDWARE SAFETY — the Tenstorrent board (READ BEFORE ANYTHING TT-RELATED)
 
-**The board is HALF A YEAR of the user's income. It is not replaceable. Losing it = destroying the user's savings. Every rule here exists because on 2026-09-02 an agent chained `tt-smi -r` with a device-init test in ONE command; the board's mid-wedge reset hard-rebooted the whole PC (empty kernel log = power-level event) and flipped the board into its fallback firmware slot.**
+**The board is HALF A YEAR of the user's income. Irreplaceable.** Every rule exists because an agent chained `tt-smi -r` with a device-init test (2026-09-02): the mid-wedge reset hard-rebooted the PC (power-level event) and flipped the board into fallback firmware.
 
-- **Tests are allowed.** The agent may run `cargo test` (including tests that init TT devices) as often as needed. Only reset-class operations stay in the user's hands.
-- **ONE ACTION PER STEP.** NEVER chain a board reset with anything else (`tt-smi -r && test` is FORBIDDEN forever). Resets are the user's action alone (see below) — the agent never issues one, so there is nothing to chain.
-- **The agent NEVER resets the board, ever.** `tt-smi -r`, `tt-flash`, anything writing/reading firmware or driving reinit are commands the agent does not run — not on approval, not on request, not in any circumstance. If a reset is needed, suggest it in one line and wait for the user to do it. Reason is physical, not procedural: a reset can cause a power surge that hard-shuts-down the PC's power supply (verified: whole PC rebooted, board firmware slot flipped).
-- **A failed device init WEDGES the board** (all later access reads 0xffffffff, "board should be reset"). A reset applied to a wedged board can hard-reset the whole platform (verified: whole PC rebooted, board firmware slot flipped). After a failed init: STOP, report the error, ASK. NEVER retry-loop inits.
-- **Aborting a TT test does NOT stop the board.** Killing the host (`timeout`, Ctrl-C) strands any launched kernel: spinning cores stay powered (full fans, heat) and the board is wedged. After ANY aborted or hung TT run, make NO further device access — not even compile-only runs, they init the device too. Suggest the reset in one line and wait.
-- **Custom kernels bypass BeamSearch.** Kernels built with the builder API (`Kernel::new` → `CompiledKernel::compile`) run `linearize` → `instruction_schedule` → `constant_folding` → `dead_code_elimination` → `verify` → `device.compile` only — NO BeamSearch, NO `default_optimizations`, NO `default_epilogue`, NO cost/timing search. Observation runs for custom-kernel tests should complete in seconds (compile-only). If a custom-kernel test runs >60s, it's hung (not slow) — abort and check.
-- **ALL invalid IR must be REJECTED at compile time.** The codegen must not generate faulty kernels that wedge the board at runtime. If the IR is invalid (e.g., CB overflow, OOB index, negative loop length), the codegen must error at compile time. No trust in user input — every IR path that could wedge the board must be caught by verify/codegen, never by a runtime hang.
-- **Never power/flash/reset anything to "fix" a wedged state autonomously.** Suggest the action, in one line, and wait.
-- If any task touches the board's power, firmware, PCIe link, or reset state: treat it as irreversible until proven otherwise. Half a year of the user's income rides on this card.
-- **Launch policy for Tenstorrent kernels (loosened 2026-09-15).** The codegen now machine-checks traffic correspondence at compile time (sections, CB count/pages, per-CB push/pop totals, unpacker inputs trafficked, DRAM untouched from compute) and rejects invalid IR loudly instead of hanging the board — several such rejections have fired correctly in practice. So: a passing compile (all validity checks green) is sufficient gate to launch; no per-launch eye review and no per-launch permission needed. The agent may launch TT tests freely, including new/changed kernels. A dry run (`ZYX_TT_DUMP_ONLY=1`) still proves little (host-side compile does not JIT the C++, so undeclared identifiers/type mismatches pass silently) — but a wrong kernel that slips through now costs at most a wedged board, which is acceptable. Eye-reviewing the dump (`ZYX_DEBUG=16`) before launch remains good practice for brand-new kernel shapes, just not mandatory. Unchanged: after a hung/wedged run make no further device access (reads return garbage); suggest the reset in one line and wait — reset stays exclusively the user's action, never the agent's. History: on 2026-09-12 a compute-only review launched a mismatched kernel, hung the board, and left it spinning at full fans after the host was killed; the compile-time correspondence checks above were built in response.
+- `cargo test` (including TT device init) is allowed freely. **Reset-class operations are the user's alone: the agent NEVER resets, flashes, or reinits the board** (`tt-smi -r`, `tt-flash`, firmware access) — not on approval, not ever. If a reset is needed, suggest it in one line and wait.
+- **A failed device init WEDGES the board** (later reads return 0xffffffff). After a failed init: STOP, report, ASK — never retry-loop, never touch the device again.
+- **Aborting a TT run does NOT stop the board**: killing the host strands spinning cores (heat) and wedges it. After ANY aborted/hung TT run, make NO further device access (not even compile-only runs — they init the device too).
+- **ALL invalid IR must be REJECTED at compile time** (CB overflow, OOB index, negative loop length, ...) — codegen must never emit kernels that wedge the board at runtime.
+- **Launch policy (2026-09-15):** compile-time traffic-correspondence checks (sections, CB count/pages, push/pop totals, unpacker inputs, DRAM untouched from compute) reject invalid IR loudly; several have fired correctly. A passing compile is a sufficient gate to launch — no per-launch permission. `ZYX_TT_DUMP_ONLY=1` proves little (no C++ JIT); eye-reviewing `ZYX_DEBUG=16` dumps is good practice for brand-new kernel shapes. Custom-kernel tests should finish in seconds; >60s = hung, abort and check.
 
 ## gws (Global Work Size)
 
-`gws` is **not** a launch argument and is **not** a kernel concept. It is purely
-backend-specific (`GwsDim` lives in `src/backend/mod.rs`). Dynamic (`Param`-backed)
-group lengths MUST work — this is not a future nicety.
-
-- Each gws dimension is a `Group` index length. Its length `op_id` is either
-  `Op::Param { kind: Variable }` (dtype `IDX_T`) or `Op::Const`; **anything else is
-  unreachable**.
-- Backends walk their own `Op::Range` ops themselves — **no kernel helpers**. For each
-  `RangeKind::Group(op_id)`:
-  - `Op::Const(c)` → `GwsDim::Const(size)`
-  - `Op::Param { Variable }` → `GwsDim::Param(ordinal)`
-- At compile each backend stores one `GwsDim` per gws axis in its program struct.
-- At launch each backend derives the actual grid from the stored `GwsDim` + `args`:
-  `Const(size)` uses the size directly; `Param(ordinal)` reads `args[ordinal]` from the
-  pool (a scalar `Variable`, via `get_variable` → `Constant::as_dim()`).
-- **Arg-ordering guarantee:** `args` passed to launch are in the SAME order as `Param`
-  defines in the kernel IR given to compile — flat, head order, all kinds
-  (`Variable`/`Global`/`GlobalMut`). `Op::Storage` is NOT a kernel parameter. A `Param`'s
-  ordinal is its position counting every `Op::Param` from head.
+`gws` is backend-specific only (`GwsDim` in `src/backend/mod.rs`), not a launch arg or kernel concept. Dynamic (`Param`-backed) group lengths MUST work. Each gws dim is a `Group` index length: `Op::Const` → `GwsDim::Const(size)`; `Op::Param { Variable }` (dtype `IDX_T`) → `GwsDim::Param(ordinal)`; anything else is unreachable. Backends walk their own `Op::Range` ops — no kernel helpers. Compile stores one `GwsDim` per axis; launch derives the grid from it + args (`Param` reads `args[ordinal]` via `get_variable` → `Constant::as_dim()`). **Arg-order guarantee:** `args` at launch are in the same flat, head order as `Param` defines in the compiled IR (all kinds; `Op::Storage` is not a parameter; a `Param`'s ordinal counts every `Op::Param` from head).
 
 ## Optimization Passes
 
-All kernel optimizations live in `zyx/src/kernel/` (`autotune.rs` driver + one file per pass: `algebraic.rs`, `verify.rs`/`compute_bounds`, `fold_constants.rs`, `fold_loops.rs`, `licm.rs`, `split_loops.rs`, `coarsen.rs`, `vectorize.rs`, `local_reduce.rs`, `mma.rs`, `fuse.rs`, `instr_sched.rs`, `tenstorrent.rs`, ...).
+All passes live in `zyx/src/kernel/` (`autotune.rs` driver + one file per pass). If a sequence breaks correctness, the pass that produced invalid IR is BUGGY — fix or disable it. Run full `cargo test` after touching any pass. Kernels are NOT guaranteed to work with zero optimizations: backend-specific epilogue passes are required before codegen can consume the IR on complex hardware (intended — keeps things in the IR, simplifies codegen).
 
-**Correctness is critical**: if a sequence breaks correctness, the pass that produced invalid IR from valid code is BUGGY — fix or disable it. Run the full `cargo test` after touching any pass; a single failing integration test means the pass produces wrong results. Note: kernels are NOT guaranteed to work with zero optimizations — on more complex hardware, backend-specific passes (part of the epilogue) are required before codegen can even consume the IR. This is intended and keeps things inside the IR as long as possible, to make the codegen as simple as possible.
-
-### The autotuner
-
-The autotuner (`zyx/src/kernel/autotune.rs` `BeamSearch`) runs **per graph kernel** and is **egraph-agnostic** — it knows nothing about which graph fusion it came from; its world is linear SSA. It is **NOT used for custom kernels** (`Kernel::new` → `CompiledKernel::compile`): there `compile` does only the minimal 3-pass + verify path (see above). If the user wants autotuning on a custom kernel they call `BeamSearch::run_` explicitly. Otherwise the autotuner is invoked only from the graph path (`compile_graph`). Its inputs are: a **seed** iterator (already linearized kernels with `default_epilogue` applied), `default_optimizations` (make fns), an **epilogue** closure (`default_epilogue`) run on every state after each optimization step, and a **cost** closure (`base_cost`). For a given kernel it generates **thousands of variants** via `MakeOpt` (`fn(&Kernel) -> Box<dyn Optimization>` with `nconfigs()` / `apply(&mut Kernel, config)`). Variant selection uses cost + measured timings: candidates are ranked by `cost`, only top `n_launches` (default 1) are actually compiled+launched via `launch_with_timings`; measured `nanos` picks the winner for `Graph::extract`. Inside a single kernel, many tilings/vectorizations/coarsenings are explored but NOT all launched.
-
-### Two pipelines (real names)
-
-- `Kernel::default_epilogue()` (`autotune.rs:80`) — **always-on** fixed order, run on every seed and after every optimization step: `unroll_len1_loops` → `constant_folding` → `move_constants_to_beginning` → `loop_invariant_code_motion` → `fold_accs` → `delete_zero_len_indices` → `delete_zero_len_loops` → `unfold_pows` → `algebraic_simplifications` → `simplify_accumulating_loop` → `swap_commutative` → `common_subexpression_elimination` → `instruction_schedule` → `dead_code_elimination` (**must stay last**; backends fail on unused ops), then `exp_to_exp2`/`ln_to_log2` (or inverse) and `opt_tenstorrent_tile` if `tenstorrent`. Always-on IR after this has flat loops; loop-splitting/coarsening only happens via autotune.
-- `Kernel::default_optimizations()` (`autotune.rs:61`) — **8 make fns** (9th `opt_vectorize` currently disabled) the autotuner tries in combination to generate thousands of per-kernel variants: `opt_split_global_to_local`, `opt_reassociate_commutative`, `opt_coarsen`, `opt_register_blocking`, `opt_local_reduce`, `opt_split_loop`, `opt_merge_nested_loops`, `opt_fuse_mad`.
-
-### Adding an optimization
-
-1. Define `Optimization` (`nconfigs() -> u64`, `apply(&mut Kernel, config: u64)`) and a `MakeOpt` fn: `pub fn opt_my_pass(kernel: &Kernel) -> Box<dyn Optimization>` that scans the kernel at a stable state (may embed `OpId`s; no other pass runs between make and apply).
-2. Add the make fn to `Kernel::default_optimizations()` array.
-3. The pass must preserve semantics; if it can produce invalid IR, gate it or leave `todo!()` — never alias to a wrong op (e.g. `Cmpge` → `Cmpgt`).
-
-### Key gotchas
-
-- Pipeline order matters: `default_epilogue` always runs; autotune passes run only during `BeamSearch` exploration (`apply_seq` = `opt.apply` → `epilogue`), so loop-splitting/coarsening variants are epilogue-cleaned.
-- After unfolding, loop indices flow through `Mad`→Cast→Binary chains — `check_loop` must trace the chain to the loop var.
-- Pattern matchers must handle interleaved op ordering (accumulate computation can sit between `load(acc)` and `Add`).
-- **Buffer allocation in autotune**: `alloc_buffers` walks `Param` defines in head order, splits read-only vs `GlobalMut`; in `BeamSearch::run_` buffers are allocated once per launch set and deallocated after; never alloc inside the variant loop.
-- Hashing (`get_hash` via `AHasher`) avoids re-launching duplicates; `verify()` is called on every seed.
+- **Autotuner** (`autotune.rs` `BeamSearch`): runs per graph kernel, egraph-agnostic (world = linear SSA). NOT used for custom kernels. Inputs: seed iterator (linearized, `default_epilogue`-applied), `default_optimizations` make fns, epilogue closure, cost closure. Generates thousands of variants via `MakeOpt` (`nconfigs()`/`apply(&mut Kernel, config)`); ranked by `cost`, only top `n_launches` (default 1) compiled+launched; measured `nanos` picks the winner for `Graph::extract`.
+- **`default_epilogue()`** (`autotune.rs:80`) — always-on fixed order on every seed and after every step: `unroll_len1_loops` → `constant_folding` → `move_constants_to_beginning` → `loop_invariant_code_motion` → `fold_accs` → `delete_zero_len_indices` → `delete_zero_len_loops` → `unfold_pows` → `algebraic_simplifications` → `simplify_accumulating_loop` → `swap_commutative` → `common_subexpression_elimination` → `instruction_schedule` → `dead_code_elimination` (**must stay last**; backends fail on unused ops), then `exp_to_exp2`/`ln_to_log2` (or inverse) and `opt_tenstorrent_tile` if tenstorrent. Result has flat loops; splitting/coarsening only via autotune.
+- **`default_optimizations()`** (`autotune.rs:61`) — 8 make fns (9th `opt_vectorize` disabled): `opt_split_global_to_local`, `opt_reassociate_commutative`, `opt_coarsen`, `opt_register_blocking`, `opt_local_reduce`, `opt_split_loop`, `opt_merge_nested_loops`, `opt_fuse_mad`.
+- **Adding one:** define `Optimization` + a `MakeOpt` fn scanning at a stable state (may embed `OpId`s; nothing runs between make and apply); add it to `default_optimizations()`. Must preserve semantics; if it can produce invalid IR, gate it or `todo!()` — never alias to a wrong op.
+- **Gotchas:** `apply_seq` = `opt.apply` → `epilogue`, so variants are epilogue-cleaned. After unfolding, loop indices flow through `Mad`→Cast→Binary chains — `check_loop` must trace to the loop var. Pattern matchers must handle interleaved op ordering. `alloc_buffers` walks `Param` defines in head order, splits read-only vs `GlobalMut`; in `BeamSearch::run_` buffers are allocated once per launch set — never inside the variant loop. `get_hash` (AHasher) avoids re-launching duplicates; `verify()` runs on every seed.
 
 ## Debugging
 
-### First steps
+1. Run the failing test in isolation: `cd zyx && AGENT=1 cargo test --test <file> <name>`.
+2. Read the backtrace and the named code; follow callers outward until the violation is found. Add `eprintln` markers where reading doesn't localize (allowed WITHOUT asking; remove before finishing). `kernel.debug()` prints IR at any pipeline point.
+3. Ask the user only what the code cannot settle (intended semantics, fix direction) — in plain text, before touching files.
+- **Architecture-first debugging:** for non-trivial bugs (lifecycle, ref-counting, tape/eager boundary, graph state) the user provides architecture + invariants up front — write them as a summary block, verify each claim against source, treat the user's design as ground truth. The block is a candidate for permanent placement in AGENTS.md.
+- **DO NOT silently iterate edit → test → edit → test while a feature is broken.** Each failure after your change is a NEW task: stop, report exactly what panicked and where, ask before touching files again. One fix per question. Debug instrumentation is allowed during this loop (remove it before finishing).
+- In `cargo test`, output only shows with `-- --nocapture`. When reading debug output do NOT pipe through `rg`/`grep`/`head` — run with `-- --nocapture` and view the full output.
+- **GPU launch failures** (CUDA_ERROR_ILLEGAL_ADDRESS etc.): capture IR (`ZYX_DEBUG=8`) + code (`ZYX_DEBUG=16`); compare kernel signature arg count/order vs buffers passed. CUDA signature = `MemScope::Global`/`Variable` defines in head order (`codegen/cuda.rs`); `alloc_buffers` counts the same; `device.launch` maps each arg to a param (`backend/cuda.rs` ~713 — add an `eprintln!` printing `args.len()` vs define count to confirm). Check whether eager still works (`tests/3_movement.rs`) to isolate graph-specific bugs. `plan.debug()` (`graph/plan.rs`) shows pool/class bindings.
+- **Broken optimization pass:** identify bad kernel (`ZYX_DEBUG=16`, O(N²) loops), capture IR (`ZYX_DEBUG=8` → `/tmp/ir.txt`), write a unit test reconstructing that IR exactly, assert the pass does NOT optimize it (reproduced), fix the pattern matching, assert it now does, run all tests.
+- **Crashes (segfault):** minimal reproducer + `panic!("A")`, `panic!("B")`, ... markers along the path (panics flush; `eprintln!` may not before SIGSEGV).
+- **Hangs:** `println!` markers + `-- --nocapture` + `timeout N` — the LAST marker localizes it.
+- **Lock watchdog:** `src/mutex.rs` has a commented-out watchdog (panics ~lines 88/107 when `RT.lock()` is held too long). It is NOT a reentrancy deadlock detector — a panic means some path holds the lock excessively (e.g. slow autotune). Uncomment it when a hang appears to name the holder.
 
-1. Run the failing test in isolation, pointing at its test file so the other tests aren't recompiled:
-   `cd zyx && AGENT=1 cargo test --test <file> <name>`
-2. Use `ZYX_DEBUG` (below) to see the graph, kernel IR, and generated code instead of guessing.
-
-### Architecture-first debugging
-
-For non-trivial bugs (lifecycle, ref-counting, ownership across tape/eager boundary, graph state), the user provides the architecture and invariants up front — write them into the conversation as a short summary (a doc-like block). That crystallizes the issue: invariants the code violates, transitions that aren't handled, states the code doesn't model. The agent then verifies each claim against source by reading; the user knows the design, the code shows the violation. When the user says "the architecture is X, the invariant is Y, and it breaks because Z", treat that as ground truth, confirm it in code, then reproduce. The summary block is also a candidate for permanent placement in AGENTS.md under the relevant topic (Tape Design, Backends, ...).
-
-### Read First, Then Ask — debug from SOURCE
-
-The fastest path to a fix is reading the implicated code with the backtrace/IR in hand — not asking the user to narrate what the code already states. Follow this exact order:
-
-1. Reproduce with a test run (produces the backtrace).
-2. Read the **backtrace and the named code**. If the backtrace names a call chain (X calls Y at known lines), open those lines and read them, then read outward to callers until the violation is found. Dig as deep as needed; add `eprintln` markers where reading alone does not localize it.
-3. **Ask the user** only about what the code cannot settle (intended semantics, which fix direction they prefer), in plain text, before touching any file.
-4. Iterate: read, reproduce, and bring source-backed findings; the user corrects design misunderstandings, not code facts.
-
-"I haven't read the file" is never an answer at any step.
-
-EXCEPTION — debug prints: adding temporary `eprintln!`/`println!` debug instrumentation does NOT require asking. Just add it, run, and bring the output. Remember to remove temporary prints before finishing (never leave debug code behind).
-
-**Never ask the user a question the code can answer.** Asking without reading first IS the failure.
-
-**DO NOT SILENTLY ITERATE edit → test → edit → test while a feature is broken.** This is the failure from the reshape debugging: the test panicked, I patched, it panicked somewhere new, I patched again, on and on with no question in between — a whole session of unrequested surgery. The rules are:
-- Every time the test fails after you made a change, that failure is a **NEW task**. Stop. Report exactly what panicked and where. Ask the user how to proceed before touching any file again.
-- One fix per question. You may NOT run the test again and patch whatever breaks next without a question in between.
-- If you are about to run the test a second time in a row to see "what happens next", you are chaining fixes — stop and ask.
-- Adding any `eprintln`/`println` debug instrumentation during this loop is allowed WITHOUT asking (see exception above); just remember to remove it before finishing.
-
-### ZYX_DEBUG (bitmask, `ENV_VARS.md`)
+### ZYX_DEBUG (bitmask, `ENV_VARS.md`; combine by summing)
 
 | Value | Output |
 |-------|--------|
-| 1 | hardware devices + kernel launches |
+| 1 | devices + kernel launches |
 | 2 | egraph print (after realize) |
-| 4 | kernels created by scheduler — IR BEFORE linearization (tensor graph, no loops/indices/loads/stores) |
-| 8 | kernel IR AFTER linearization + optimization (loops, indices, loads, stores) |
+| 4 | scheduler kernels — IR BEFORE linearization (DAG of buffer ops, consts, expands; no loops) |
+| 8 | IR AFTER linearization + optimization (flat loops, loads/stores) — printed during compile, before any GPU run |
 | 16 | generated assembly/code |
-| 32 | kernel launch + memory movement |
-| 64 | memory alloc/dealloc |
+| 32 | launch + memory movement |
+| 64 | alloc/dealloc |
 | 128 | kernel compilation |
 | 256 | autotune exploration |
 
-Combine by summing (`24` = ir + asm). The two IR views show different stages: `ZYX_DEBUG=4` prints the kernel as it comes out of the scheduler (a DAG of buffer ops, scalar consts, expands — no loops yet), `ZYX_DEBUG=8` prints the same kernel after linearization and the optimization passes (flat loops over element indices, per-op loads/stores). `ZYX_DEBUG=8` prints IR during compilation, BEFORE any GPU kernel runs — use `timeout 10 bash -c 'ZYX_DEBUG=8 cargo run 2>&1' > /tmp/ir.txt` to capture it without a GPU hang.
+Capture without a GPU hang: `timeout 10 bash -c 'ZYX_DEBUG=8 cargo run 2>&1' > /tmp/ir.txt`.
 
-In `cargo test`, library `eprintln!` output only shows with `-- --nocapture` (`AGENT=1 cargo test -- --nocapture`), otherwise it's hidden by the test harness.
+## Tape Design (`src/tape.rs`)
 
-### Inspecting kernel IR
+Training-loop API around the graph.
 
-Add `kernel.debug()` temporarily in code to print the IR (op IDs, args, loop scopes) at any pipeline point. `AGENT=1` strips ANSI colors; `AGENT=0` keeps them.
+- `Tape::realize` takes **persistent state only** (params + optimizer internals); intermediates don't need it.
+- **Promotion to graph happens in only TWO cases:** (1) registered via `Tape::new`/`Tape::add`, or (2) a binary op with one graph-tensor operand. No temporal "tape scope" — routing is per-op by operands; all-eager operands run eagerly even mid-forward (optimizer momentum buffers carry via case 2).
+- Training step: `Tape::new(&net)` → forward/loss → `tape.gradient(&loss, &net)` → `optim.update(&mut net, grads)` → `tape.realize(net.iter().chain(optim.iter()))`. Fixed control flow: `tape.freeze(&outputs)` once, then `frozen.replay(&inputs)` per step.
 
-### Debugging GPU launch failures (CUDA_ERROR_ILLEGAL_ADDRESS etc.)
+### Eager vs graph paths
 
-1. Run the failing test in isolation (see First steps).
-2. Capture the failing kernel's IR (`ZYX_DEBUG=8`) and generated code (`ZYX_DEBUG=16`). Compare the kernel signature arg count/order against the buffers passed at launch:
-   - CUDA codegen builds the kernel signature from `MemScope::Global` and `MemScope::Variable` defines in head order (`codegen/cuda.rs`).
-   - `alloc_buffers` in `kernel/autotune.rs` counts the same defines (stops at first non-Define op) and allocates a fresh buffer per define.
-   - `device.launch` in the CUDA backend maps each arg buffer to a kernel param (`backend/cuda.rs`); a `CUDABuffer::Buffer` passes a pointer, `CUDABuffer::Variable` passes the scalar value.
-3. A mismatch between the signature arg count and the number of buffers passed causes ILLEGAL_ADDRESS. Add an `eprintln!` in the CUDA `launch` (backend/cuda.rs ~713) printing `args.len()` and the compiled signature's define count to confirm. Print the kernel IR too.
-4. To test whether a change broke the graph path but not eager, run the equivalent eager test (`tests/3_movement.rs`) — if it passes, the bug is graph-specific.
-5. Print the ExecPlan (`plan.debug()` in `graph/plan.rs`) to see which classes are bound to which pools and how `Launch` binds `load_classes`/`store_classes`.
-6. When reading debug output, do NOT pipe through `rg`/`grep`/`head` — `plan.debug()` output may be swallowed by the test harness; run with `-- --nocapture` and view the full output. Debug output must be visible in the actual run.
+Every op has two paths, chosen per op by operands. **Eager:** `Runtime::{pad_zeros, unary, binary, ...}` pushes the `Op` into the tensor's current kernel (`eager_ids`, e.g. `runtime.rs:1221`) using the custom-kernel API; the kernel launches automatically once no further fusion is possible — the launch IS the realization. **Graph:** the op pushes a `Node` into the egraph (`push_node`, e.g. `graph/mod.rs:1238`); kernels appear only at `compile_graph` via the kernelizer. Changing an `Op` means changing it in **both** places unless they share a construction point. Inside a `Tape` there is **no launch at all**: the ONLY execution is `Tape::realize(states)`, which **consumes the tape** — no partial realization (`loss.item::<f32>()` works only after `realize`).
 
-### Fixing a broken optimization pass
+### Forcing execution / shape conventions
 
-1. Identify the bad kernel: `ZYX_DEBUG=16` → look for O(N²) loops that should have folded.
-2. Capture its IR (`ZYX_DEBUG=8` to `/tmp/ir.txt`). The last kernel printed is usually the one compiled before a hang.
-3. Write a unit test that reconstructs that IR **exactly** (copy the debug output op by op — `Kernel::new()`, `k.define()`, `k.loop_()`, ...); assert the pass does NOT optimize it, confirming you've reproduced the failure.
-4. Fix the pass's pattern matching (small, targeted), assert the test now DOES optimize, then run all tests.
-
-### Crashes (segfault etc.)
-
-Write a minimal reproducer test, then add `panic!("A")`, `panic!("B")`, ... along the suspect path (panics flush; `eprintln!` may not before a SIGSEGV). Narrow down from the last printed marker.
-
-### Lock watchdog (src/mutex.rs)
-
-`mutex.rs` contains a **commented-out watchdog** that panics (at lines ~88/107) when `RT.lock()` is held for too long. It is NOT a deadlock detector in the reentrancy sense — a "deadlock" panic from it means some path holds the RT lock for an excessive time (e.g. a slow autotune run starving everything else), not a real deadlock. Re-enable it (uncomment in `mutex.rs`) when a hang appears: the panic prints a backtrace naming the code path that holds the lock too long.
-
-
-### Hangs
-
-Add `println!` markers along the suspect path and run with `-- --nocapture`: the LAST printed marker localizes the hang. Combine with `timeout N` so the run terminates on its own, then read the tail of the output.
-
-## Tape Design
-
-`src/tape.rs` — the training-loop API around the graph.
-
-- `Tape::realize` takes **persistent state only** (params + optimizer internals). Intermediates don't need realization.
-- **Eager tensors are promoted to graph (`promote_to_graph`) in only TWO cases**: (1) registered explicitly via `Tape::new`/`Tape::add`, or (2) used in a binary op where one operand is a graph tensor and the other is a tensor. There is no temporal "tape scope" that sweeps up ops — routing is decided per op by its operands. An op whose operands are all eager runs eagerly even mid-forward. Optimizer momentum buffers carry across steps via case (2) binary ops, not automatic promotion.
-- Training step: `Tape::new(&net)` → forward/loss → `tape.gradient(&loss, &net)` → `optim.update(&mut net, grads)` → `tape.realize(net.iter().chain(optim.iter()))`. After drop, realized tensors become eager again.
-- Fixed control flow: `tape.freeze(&outputs)` once, then `frozen.replay(&inputs)` per step.
-
-### Two execution paths: eager vs graph
-
-Every tensor op has **two** possible paths, chosen per op by its operands — NOT by any
-temporal "scope": an op takes the graph path iff one of its operands is a graph tensor of
-the current tape (or it is registered via `Tape::new`/`Tape::add`); ops whose operands are
-all eager run eagerly:
-
-- **Eager path** (no tape): `Runtime::{pad_zeros, unary, binary, ...}` directly pushes the
-  `Op` (a `MoveOp`, or a compute op like `Unary`/`Binary`/`Reduce`) into the tensor's
-  current kernel (`eager_ids`, e.g. `runtime.rs:1221` for pad). No graph nodes are
-  created. The kernel is built with the custom-kernel API (`Kernel::new`/`define`/
-  `pad`/`add`/... in `kernel/custom.rs`).
-- **Graph path** (inside `Tape`): the same op pushes a `Node` into the egraph
-  (`push_node`, e.g. `Node::PadZeros` at `graph/mod.rs:1238`). Only at `compile_graph`
-  does the kernelizer (`kernelizer.rs`) turn those nodes into `Op`s.
-
-This dual path applies to **every op** — unary, binary, reduce, pad, cast, etc. all either push an `Op` into an eager kernel (`runtime.rs`) or push a
-`Node` into the egraph (`graph/mod.rs`) depending purely on whether one of the op's
-operands is a graph tensor of the current tape. When reasoning about kernel identity / recompilation (e.g. the kv-cache
-`narrow(0, start, len)` case), consider which path the consumer actually runs, and
-note that changing an `Op` means changing it in **both** places unless the two share a
-construction point.
-
-**When execution actually happens on each path:**
-
-- **No tape (eager):** ops are recorded directly into a kernel. The kernel is **launched (executed)** automatically once no further fusion is possible (or for any other reason the runtime flushes it). There is no separate "realize" step — the launch *is* the realization. A bare `Tensor` op outside a tape computes as soon as its kernel is flushed.
-- **Inside a `Tape`:** there is **no launch at all** — everything stays lazy in the egraph. The ONLY way to execute is `Tape::realize(states)`, and calling it **consumes the tape**. There is therefore **no partial realization**: you cannot realize some tensors while keeping the tape alive; `realize` runs the whole tape graph and then the tape is gone. (`loss.item::<f32>()` only works *after* `realize` because `realize` already executed the graph.)
-
-### Forcing execution of a lazy `Tensor`
-
-Tensors are lazy: an op builds a graph/eager kernel but does **not** compute until forced. To actually run a value (e.g. in a reproducer test), use:
-
-- `tensor.item::<T>()` — returns `T` **directly** (NOT `Result`, NOT `Option`); valid only on a **scalar** (1-element) tensor.
-- `tensor.sum([axes]).item::<T>()` — reduce to a scalar, then `item`.
-- Inside a `Tape`: `Tape::realize(states)` realizes the whole graph; `loss.item::<f32>()` after `realize` also triggers it.
-- **There is NO `Tensor::realize()` method** — `realize` exists only on `Tape`. Do not call it on a `Tensor`.
-- `Tensor::shape()` is lazy (returns the symbolic/output shape WITHOUT computing) — it will NOT reveal a `-1` dimension that only appears INSIDE a kernel at execution time. A bug whose only symptom is an internal `-1` dimension (→ a ~4.29×10⁹-element kernel loop / hang) is invisible to `shape()`; it only shows up under `ZYX_DEBUG=8` (kernel IR) or when the kernel actually executes.
-- **Do NOT treat "shape() doesn't show the bug" as a blocker.** If a bug only manifests at execution (e.g. an internal `-1` dimension, a hang, a wrong value), write the reproducer test to **force execution** (`item`/`sum`/`to_vec`) and let it reproduce the hang/failure. A test that currently hangs or fails *because it documents a bug* is a valid outcome (see Interaction Rules).
-
-### Kernel IR `shape` conventions (what `NULL` / `-1` mean — common misconceptions)
-
-- **`NULL` `shape` in the IR means SCALAR (rank 0).** It is a display convention, not "missing shape" and not a bug. Do not read a NULL shape as an error.
-- **`ZYX_DEBUG=4` (pre-linearize / scheduler output):** every *non-scalar* tensor's `shape` is a real, non-NULL shape. Only scalars have a NULL shape (even here).
-- **`ZYX_DEBUG=8` (post-linearize):** the `shape` field on ops is NULL for **everything** — shapes have been lowered into loop bounds and index arithmetic, so a NULL `shape` here is expected and does NOT mean scalar.
-- **Buffer dimensions are NOT stored in the post-linearize `shape` field.** Pre-linearize they live in the `shape` field on the `Param` (input) op. After linearization that dimension becomes a loop bound / group-index length.
-- **A negative dimension (`-1`, printed as `r4294967295` / ~4.29×10⁹) on a `Param` shape (pre-linearize) or as a loop bound / group-index length (post-linearize) is a BUG.** It is NOT "scalar" and NOT "infer a dimension" — it produces a ~4.29×10⁹-element loop and hangs. `kernel::verify` must catch it loudly (panic on a resolvable negative loop/group length), not let it hang.
-- **To resolve an `OpId` to a concrete `Dim` constant in kernel code, use `self.resolve_const(op).and_then(Constant::as_dim)`.** There is NO `Kernel::resolve_dim` method (the name `resolve_dim` refers to the private `resolve_dim_op` in `runtime.rs`). A `Loop`'s `len` and a `RangeKind::Group(len)`'s `len` are `OpId`s; resolve them this way and, if the result is a constant, assert it is `>= 0`.
+- Tensors are lazy. Force with `tensor.item::<T>()` (direct, NOT `Result`; scalars only) or `sum([axes]).item::<T>()`; inside a tape via `Tape::realize`. **There is NO `Tensor::realize()`** — only `Tape::realize`.
+- `Tensor::shape()` is lazy (symbolic/output shape, no compute) and will NOT reveal a `-1` dim that appears only inside a kernel at execution. Do NOT treat "shape() looks fine" as a blocker — write the reproducer to force execution (`item`/`sum`/`to_vec`). A test that hangs or fails because it documents a bug is valid.
+- **NULL `shape` in IR = SCALAR (rank 0)** — a display convention, not an error. At `ZYX_DEBUG=4` non-scalars have real shapes; at `ZYX_DEBUG=8` shape is NULL for everything (lowered into loop bounds/index arithmetic). Post-linearize, buffer dims live in loop bounds/group-index lengths, not `shape`.
+- **A negative dimension (`-1`, `r4294967295`, ~4.29×10⁹) on a `Param` shape or as a loop/group length is a BUG** — it makes a ~4.29×10⁹-element loop and hangs. `kernel::verify` must catch it loudly, not let it hang.
+- Resolve an `OpId` to a concrete dim via `self.resolve_const(op).and_then(Constant::as_dim)` — there is NO `Kernel::resolve_dim` (that name is the private `resolve_dim_op` in `runtime.rs`). `Loop.len` and `RangeKind::Group(len)` are `OpId`s; resolve and assert `>= 0` if constant.
 
 ## Interaction Rules
 
-- **ALWAYS ASK BEFORE ADDING ANY FUNCTION OR CHANGING A SIGNATURE.** You are NOT allowed to add new functions, methods, or helper functions without the user's approval — this includes private/`pub(crate)` helpers and backend-side free functions. Changing the signature of an existing function or method (adding/removing parameters, changing the return type, adding a generic/trait bound, changing a return type to `Result`) is ALSO a design change and must be approved first — do NOT "just refactor" to thread a new capability through. Only the user decides whether and how to add/extend an API. If an edit needs a helper that doesn't exist yet, stop and ask whether the user wants it added (and where), or whether the result should be computed another way.
-- Every user message: if it contains a `?`, **answer the question and stop** — do not edit/write files. Otherwise proceed.
-- **READ as your default first move.** For any task involving a `todo!()` stub, an ambiguous value, or a design decision, first open the relevant files and read them — never via the `question` tool, and never bare questions before reading. Do not implement until the code is understood and design answers are in. When in doubt, read — don't guess specs/values; hunt through source first, and ask only what source cannot settle.
-- **Before accessing an external resource (reference repo, docs, tool, download, clone, etc.), ASK how the user wants you to get it** — whether there is a local checkout, a preferred path, a URL, or whether to fetch it at all. Do NOT assume a source (e.g. `git clone` from GitHub) or download/fetch on your own. Ask first.
-- **Follow the literal ask exactly — quantity included.** "A test" means exactly ONE test; "add a test for X" means just that test, not a family of tests. Deliver what was asked and stop. Extras (more tests, renames, refactors, extra fixes) are unrequested work.
-- **Never start implementing anything beyond the literal ask without asking first.** If a requested change turns out to require fixing/modifying other parts of the code (e.g. a test exposes a library bug), STOP and ask the user how to proceed before writing any fix. Do not debug-and-fix your way down a rabbit hole unprompted. A single simple question ("want me to fix that too?") beats an hour of unrequested surgery.
-- **NEVER chain fixes across modules/passes without asking between steps.** The forbidden pattern: `test fails → fix pass A → test fails → fix pass B → test fails → ...` with no question in between. You fix the literal ask, THEN the test's next failure is a NEW task — stop, report it, and ask whether to fix it before touching that file. Continuing to run the test and patching whatever breaks next (without a question) is the exact failure that keeps happening. One fix per question.
-- A test's pass/fail status is not the deliverable unless the user says so. Adding a test that currently fails (because it documents a bug) is a valid outcome — do not "fix" the code underneath it unprompted.
-- **Never leave temporary debug code behind** (eprintln!/println! debug blocks, commented-out scaffolding). If you add debug output while investigating, remove it before finishing. When reverting, revert completely — no stray debug prints, no leftover comments.
-- **Never commit unless explicitly asked.** When asked, `git add` + `git commit` a concise message matching repo style and produce zero extra commentary.
-- Never use `git stash` or `git checkout --`; use `git restore`. Never discard or hide changes.
-- No silent fixes. No commentary after doing something ("Done.", "X lines changed."). Don't dump git diffs verbatim.
-- Test failures are test failures. You don't need to fix them unless I tell you to fix them.
+- **ALWAYS ASK BEFORE ADDING ANY FUNCTION OR CHANGING A SIGNATURE** — including private/`pub(crate)` helpers and backend free functions. Signature changes (params, return type, generics, `Result`) are design changes too. Don't "just refactor" to thread a capability through; if an edit needs a new helper, ask whether/where to add it or compute differently.
+- If a message contains `?`, **answer and stop** — no file edits.
+- **Before accessing an external resource** (repo, docs, download, clone), ASK how to get it — never assume a source or fetch on your own.
+- **Follow the literal ask exactly — quantity included.** "A test" = ONE test. Extras (more tests, renames, refactors, extra fixes) are unrequested work.
+- **Never implement beyond the literal ask.** If the change requires fixing other code (e.g. a test exposes a library bug), STOP and ask before writing any fix.
+- **NEVER chain fixes without asking between steps.** `fix A → fails → fix B → ...` is the forbidden pattern; one fix per question. Test failures are test failures — you don't fix them unless told.
+- A test's pass/fail is not the deliverable unless the user says so; a test that currently fails because it documents a bug is valid.
+- **Never leave temporary debug code behind**; when reverting, revert completely.
+- **Never commit unless explicitly asked** (`git add` + concise commit, zero extra commentary). Never `git stash` or `git checkout --` — use `git restore`. Never discard or hide changes.
+- No silent fixes, no post-hoc commentary ("Done.", "X lines changed."), no verbatim git diffs.
 - Edit precisely, don't cascade: change only what was referenced; propose (don't do) anything else.
 
 ## Defensive Programming: Good vs Evil
 
-GOOD — fail loudly at the exact spot the invariant breaks (`graph/autograd.rs`, expand backward):
-```rust
-let out_shape: Vec<Dim> = out_dims
-    .iter()
-    .map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim"))
-    .collect();
-```
-This `expect` turned a silent wrong-gradient bug into an instant, pinpointed panic. It named
-the site, so the fix (symbolic-dim broadcast) was obvious in minutes.
+GOOD — fail loudly at the exact spot the invariant breaks (`graph/autograd.rs` expand backward): `expect("expand backward with symbolic dim")` turned a silent wrong-gradient bug into a pinpointed panic, making the fix obvious.
 
-EVIL — launder failure into a fake value and let it explode somewhere else entirely:
-```rust
-// kernel/mod.rs, Kernel::shape (removed)
-Op::Const(c) => c.as_dim().unwrap_or(0),   // fabricated 0 dims
-_ => -1,                                    // matched only Const, missed const EXPRESSIONS
-```
-The fabricated values flowed into `dot()`'s reshape dims, became real tensors, and the
-symptom appeared three kernels away from the cause. Tracing it cost a whole session.
+EVIL — launder failure into a fake value (`kernel/mod.rs` `Kernel::shape`): `Op::Const(c) => c.as_dim().unwrap_or(0)` + `_ => -1` fabricated dims that flowed into `dot()`'s reshapes and exploded three kernels away; tracing cost a whole session.
 
 Rules:
-- Never `unwrap_or(<number>)` on resolution of dims/values. Use `expect("context")` / `todo!()`.
-- NEVER use sentinels or fallback values for unknown behaviour. If a value cannot be
-  determined, that is either a bug or a missing design decision: fail loudly at the exact
-  spot, or ask the user. No `-1`-means-symbolic boundaries, no default arms.
-- Don't pattern-match only the trivial case (`Op::Const`) when full resolution exists
-  (`resolve_const`); "can't resolve" must mean genuinely unresolvable, not "didn't try".
-- NEVER use a `_ =>` catch-all arm when matching an enum. Every variant gets an
-  EXPLICIT arm. A `_ =>` silently swallows newly added variants; an exhaustive
-  match is a compile error that forces you to decide each case. (Exception: the
-  final `unreachable!()`/`todo!()` arm in an eval match after all real variants
-  are named.)
+- Never `unwrap_or(<number>)` on resolution; use `expect("context")`/`todo!()`.
+- No sentinels/fallbacks for unknown behaviour; fail loudly at the spot or ask. No `-1`-means-symbolic, no default arms.
+- Don't pattern-match only the trivial case (`Op::Const`) when full resolution exists (`resolve_const`); "can't resolve" must mean genuinely unresolvable.
+- NEVER use `_ =>` catch-alls on enums — every variant gets an EXPLICIT arm (exception: the final `unreachable!()`/`todo!()` in an eval match after all real variants are named).

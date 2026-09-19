@@ -5,6 +5,7 @@
 
 use crate::DebugMask;
 use crate::Dev;
+use crate::GGUFMetadataValue;
 use crate::kernel::{CompiledKernel, Kernel, MemScope, OpId};
 use crate::shape::Dim;
 use crate::tape::FrozenTape;
@@ -18,7 +19,7 @@ use pyo3::{
     Bound, PyAny, PyErr, PyResult,
     exceptions::{PyOSError, PyTypeError},
     pymethods,
-    types::{PyAnyMethods, PyIterator, PyList, PyModule, PyModuleMethods, PyTuple},
+    types::{PyAnyMethods, PyDict, PyIterator, PyList, PyModule, PyModuleMethods, PyTuple},
 };
 
 impl From<ZyxError> for PyErr {
@@ -129,6 +130,28 @@ fn extract_tensor_or_scalar(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         return Ok(Tensor::from(v));
     }
     Err(PyTypeError::new_err("expected Tensor or numeric"))
+}
+
+fn gguf_metadata_to_py(py: Python<'_>, value: &GGUFMetadataValue) -> Py<PyAny> {
+    use pyo3::conversion::IntoPyObject;
+    match value {
+        GGUFMetadataValue::Uint8(v) => (*v).into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Int8(v) => (*v).into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Uint16(v) => (*v).into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Int16(v) => (*v).into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Uint32(v) => (*v).into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Int32(v) => (*v).into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Uint64(v) => (*v).into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Int64(v) => (*v).into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Float32(v) => (*v).into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Float64(v) => (*v).into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Bool(v) => pyo3::types::PyBool::new(py, *v).to_owned().into_any().unbind(),
+        GGUFMetadataValue::String(v) => v.into_pyobject(py).unwrap().into_any().unbind(),
+        GGUFMetadataValue::Array(items) => {
+            let elems: Vec<Py<PyAny>> = items.iter().map(|v| gguf_metadata_to_py(py, v)).collect();
+            PyList::new(py, elems).unwrap().into_any().unbind()
+        }
+    }
 }
 
 #[pymethods]
@@ -1663,6 +1686,49 @@ impl Tensor {
     #[pyo3(name = "to_le_bytes")]
     pub fn to_le_bytes_py(&self) -> Result<Vec<u8>, ZyxError> {
         self.to_le_bytes()
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "load_gguf")]
+    pub fn load_gguf_py<'py>(py: Python<'py>, path: &str) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyDict>)> {
+        let (metadata, tensors) = Tensor::load_gguf(path)?;
+        let meta_dict = PyDict::new(py);
+        for (k, v) in &metadata {
+            meta_dict.set_item(k, gguf_metadata_to_py(py, v))?;
+        }
+        let tensor_dict = PyDict::new(py);
+        for (k, v) in tensors {
+            tensor_dict.set_item(k, v)?;
+        }
+        Ok((meta_dict, tensor_dict))
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "load_safetensors")]
+    pub fn load_safetensors_py<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
+        let tensors = Tensor::load_safetensors(path)?;
+        let tensor_dict = PyDict::new(py);
+        for (k, v) in tensors {
+            tensor_dict.set_item(k, v)?;
+        }
+        Ok(tensor_dict)
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "load_numpy")]
+    pub fn load_numpy_py(path: &str) -> Result<Tensor, ZyxError> {
+        Tensor::load_numpy(path)
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "load")]
+    pub fn load_py<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
+        let tensors = Tensor::load(path)?;
+        let tensor_dict = PyDict::new(py);
+        for (k, v) in tensors {
+            tensor_dict.set_item(k, v)?;
+        }
+        Ok(tensor_dict)
     }
 }
 

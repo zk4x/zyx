@@ -2494,3 +2494,133 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
     assert_eq!(bad3, 0);
     Ok(())
 }
+
+/// `Op::Asm` SFPU microcode dequant probe: plane-interleaved U16 page (4
+/// planes x 1024 slots) + per-row BF16 scales/mins, dequantized by raw
+/// hand-written microcode emitted through `Kernel::asm` — per plane k:
+/// `v = ((w >> 4k) & 0xF) * scale - min`, all inside one asm block
+/// (LO16 load, SFPSHFT, SFPAND, SFPCAST, SFPMAD, SFPSTORE, walking dst_reg
+/// face by face like the vendor quant LLKs). Replaces the F32
+/// divide/trunc carry arithmetic of the q4k probes; no carry/scratch CBs.
+/// Golden is host-computed from the same words/values (all exact in F32).
+#[test]
+fn tenstorrent_probe_q4k_asm_dequant() -> Result<(), ZyxError> {
+    const NTILES: i64 = 4;
+    let mut k = Kernel::new(Dev::TT(0));
+    let packed = k.param(DType::U16);
+    let sc = k.param(DType::BF16);
+    let mn = k.param(DType::BF16);
+    let out = k.param_mut(DType::F32);
+    // Packed page popped once per plane; sidecars popped once per tile.
+    let cu16 = k.circular_storage(DType::U16, NTILES);
+    let csc = k.circular_storage(DType::BF16, NTILES);
+    let cmn = k.circular_storage(DType::BF16, NTILES);
+    let cout = k.circular_storage(DType::F32, NTILES);
+    let _g = k.group_range(0, 1);
+    let c0 = k.const_idx(0);
+    let c1024 = k.const_idx(1024i64);
+
+    // Reader: page pushed once per plane, scales/mins per tile.
+    let u = k.load_global_tile(packed, c0);
+    for _ in 0..4 {
+        k.store_circular(cu16, u, c0);
+    }
+    for t in 0..4i64 {
+        let ct = k.const_idx(t);
+        let sbase = k.mad(ct, c1024, c0);
+        let s = k.load_global_tile(sc, sbase);
+        k.store_circular(csc, s, c0);
+        let m = k.load_global_tile(mn, sbase);
+        k.store_circular(cmn, m, c0);
+    }
+    k.barrier();
+
+    // Compute: one asm block per plane, in place on the packed tile's
+    // DST slot; {0} packed word tile, {1} scale tile, {2} min tile.
+    for t in 0..4i64 {
+        let w = k.load_circular(cu16, c0);
+        let s = k.load_circular(csc, c0);
+        let sf = k.cast(s, DType::F32);
+        let m = k.load_circular(cmn, c0);
+        let mf = k.cast(m, DType::F32);
+        let tpl = format!(
+            r#"math::clear_dst_reg_addr();
+for (int face = 0; face < 4; face++) {{
+    for (int d = 0; d < 8; d++) {{
+        TT_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::LO16, ADDR_MOD_3, {{0}} * 64);
+        _sfpu_load_imm32_(p_sfpu::LREG2, {shift});
+        TT_SFPSHFT(0, p_sfpu::LREG2, p_sfpu::LREG0, 0);
+        _sfpu_load_imm32_(p_sfpu::LREG3, 15);
+        TT_SFPAND(0, p_sfpu::LREG3, p_sfpu::LREG0, 0);
+        TT_SFPCAST(p_sfpu::LREG0, p_sfpu::LREG0, sfpi::SFPCAST_MOD1_INT32_TO_FP32_RNE);
+        TT_SFPLOAD(p_sfpu::LREG1, InstrModLoadStore::FP32, ADDR_MOD_3, {{1}} * 64);
+        TT_SFPLOAD(p_sfpu::LREG4, InstrModLoadStore::FP32, ADDR_MOD_3, {{2}} * 64);
+        TT_SFPIADD(0, p_sfpu::LCONST_0, p_sfpu::LREG4, 6);
+        TT_SFPMAD(p_sfpu::LREG0, p_sfpu::LREG1, p_sfpu::LREG4, p_sfpu::LREG0, 0);
+        TT_SFPNOP;
+        TT_SFPSTORE(p_sfpu::LREG0, InstrModLoadStore::FP32, ADDR_MOD_2, {{0}} * 64);
+    }}
+    _llk_math_eltwise_sfpu_inc_dst_face_addr_();
+}}"#,
+            shift = 4 * t
+        );
+        let v = k.asm(&tpl, &[w, sf, mf]);
+        k.store_circular(cout, v, c0);
+    }
+    k.barrier();
+
+    // Writer: 4 dequantized tiles to DRAM.
+    for t in 0..4i64 {
+        let ct = k.const_idx(t);
+        let obase = k.mad(ct, c1024, c0);
+        let v = k.load_circular(cout, c0);
+        k.store_global_tile(out, v, obase);
+    }
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    // Deterministic words; plane k nibble = (w >> 4k) & 0xF. Scales/mins
+    // are k/32 and k/16 grids — exactly representable in BF16, so the
+    // host golden is bit-exact F32 arithmetic.
+    let words = probe_words();
+    let mut sc_flat = Vec::with_capacity(4 * 1024);
+    let mut mn_flat = Vec::with_capacity(4 * 1024);
+    let mut expected = Vec::with_capacity(4 * 1024);
+    for t in 0..4usize {
+        for s in 0..1024usize {
+            let r = s / 32;
+            let scv = ((r % 13) as f32 + 1.0) / 32.0;
+            let mnv = ((r % 7) as f32) / 16.0;
+            for _ in 0..32 {
+                sc_flat.push(scv);
+                mn_flat.push(mnv);
+            }
+            let n = ((words[s] >> (4 * t)) & 0xF) as f32;
+            expected.push(n * scv - mnv);
+        }
+    }
+    let packed_t = Tensor::from_vec(words, [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
+    let sc_t = Tensor::from_vec(sc_flat, [64i64, 64])?.cast(DType::BF16)?.tilize()?.to(Dev::TT(0))?;
+    let mn_t = Tensor::from_vec(mn_flat, [64i64, 64])?.cast(DType::BF16)?.tilize()?.to(Dev::TT(0))?;
+
+    let out_bufs = compiled.forward(&[&packed_t, &sc_t, &mn_t], vec![[64, 64]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(64, 64)?.to_vec()?;
+    assert_eq!(z.len(), 4096);
+    let mut bad = 0;
+    for (j, (&zv, &ev)) in z.iter().zip(expected.iter()).enumerate() {
+        if (zv - ev).abs() >= 1e-4 {
+            if bad < 10 {
+                println!("z[{j}] = {zv}, expected {ev}");
+            }
+            bad += 1;
+        }
+    }
+    println!("q4k asm dequant bad: {bad} / 4096");
+    assert_eq!(bad, 0);
+    Ok(())
+}
