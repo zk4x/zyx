@@ -3869,7 +3869,7 @@ impl Runtime {
         // kernel, so launch it (via add_store over its outputs, the runtime
         // custom) before anything below touches buffers. Recursive: the owed
         // kernel's own materialization flushes its pending loads the same way.
-        let pending_kids: Vec<KernelId> = self.kernels[kid]
+        let mut pending_kids: Vec<KernelId> = self.kernels[kid]
             .loads
             .iter()
             .filter_map(|&tid| match self.tensors[tid] {
@@ -3885,6 +3885,11 @@ impl Runtime {
                 | TensorData::Symbolic { .. } => None,
             })
             .collect();
+        // One entry per pending load: several loads may owe the same
+        // producer. Flushing launches (and removes) the producer kernel,
+        // so dedup — a second occurrence would index a deleted slab entry.
+        pending_kids.sort();
+        pending_kids.dedup();
         for pending_kid in pending_kids {
             let seen: Set<TensorId> = self.kernels[pending_kid].outputs.iter().copied().collect();
             for tid in seen {

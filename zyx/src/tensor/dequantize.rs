@@ -640,8 +640,8 @@ fn deq_q3_k(blocks: &Tensor) -> Result<Tensor, ZyxError> {
         let qhb = col(&qs, hlf * 32, 32)?;
         for (si, s) in [0u8, 2, 4, 6].iter().enumerate() {
             let low2 = ((&qhb >> *s) & 3u8).cast(DType::F32);
-            let m: u8 = 1u8 << (hlf * 4 + si as i64) as u8;
-            let bit = ((hm.clone() >> m) & 1u8).cast(DType::F32);
+            let pos: u8 = (hlf * 4 + si as i64) as u8;
+            let bit = ((hm.clone() >> pos) & 1u8).cast(DType::F32);
             let qv = low2 - (Tensor::from(1f32) - bit) * 4f32;
             let g = hlf * 8 + si as i64 * 2;
             parts.push(qv.narrow(1, 0i64, 16i64)? * dl.narrow(1, g, 1i64)?);
@@ -746,7 +746,8 @@ fn deq_iq2_xxs(blocks: &Tensor) -> Result<Tensor, ZyxError> {
         let mut gp = Vec::with_capacity(4);
         let mut sp = Vec::with_capacity(4);
         for b in 0..4i64 {
-            gp.push(lut_row(&grid, &u_lo.narrow(1, b, 1i64)?, 8)?);
+            let idx = ((u_lo.clone() >> (8 * b) as u32) & 255u32).cast(DType::U8);
+            gp.push(lut_row(&grid, &idx, 8)?);
         }
         for k in 0..4i64 {
             let sk = ((u_hi.clone() >> (7 * k) as u32) & 127u32).cast(DType::U8);
@@ -764,7 +765,12 @@ fn deq_iq2_xs(blocks: &Tensor) -> Result<Tensor, ZyxError> {
     let grid = grid_tensor(IQ2_XS_HEX, 2, &[8., 25., 43.], 512, 8)?;
     let ksigns = Tensor::from_vec(hex_bytes(KSIGNS_HEX)?, [128i64])?;
     let (slo, shi) = nibbles(&col(blocks, 66, 8)?)?;
-    let sc16 = Tensor::cat([&slo, &shi].into_iter(), 1)?.cast(DType::F32);
+    let mut sc_parts = Vec::with_capacity(16);
+    for i in 0..8i64 {
+        sc_parts.push(slo.narrow(1, i, 1i64)?);
+        sc_parts.push(shi.narrow(1, i, 1i64)?);
+    }
+    let sc16 = Tensor::cat(sc_parts.iter(), 1)?.cast(DType::F32);
     let mut parts = Vec::with_capacity(32);
     for g in 0..16i64 {
         let db = d.clone() * (Tensor::from(0.5f32) + sc16.narrow(1, g, 1i64)?) * 0.25f32;
@@ -788,7 +794,12 @@ fn deq_iq2_s(blocks: &Tensor) -> Result<Tensor, ZyxError> {
     let signs = col(blocks, 34, 32)?;
     let qh = col(blocks, 66, 8)?;
     let (slo, shi) = nibbles(&col(blocks, 74, 8)?)?;
-    let sc16 = Tensor::cat([&slo, &shi].into_iter(), 1)?.cast(DType::F32);
+    let mut sc_parts = Vec::with_capacity(16);
+    for i in 0..8i64 {
+        sc_parts.push(slo.narrow(1, i, 1i64)?);
+        sc_parts.push(shi.narrow(1, i, 1i64)?);
+    }
+    let sc16 = Tensor::cat(sc_parts.iter(), 1)?.cast(DType::F32);
     let db16 = d * (Tensor::from(0.5f32) + sc16) * 0.25f32;
     let grid = grid_tensor(IQ2_S_HEX, 2, &[8., 25., 43.], 1024, 8)?;
     let mut parts = Vec::with_capacity(32);
@@ -909,7 +920,7 @@ fn deq_iq1_m(blocks: &Tensor) -> Result<Tensor, ZyxError> {
             let qh_b = col(&qh, e, 1)?;
             for t in 0..2i64 {
                 let l = 2 * s + t;
-                let shift: u8 = if l % 2 == 0 { 8 } else { 4 };
+                let shift: u8 = if l % 2 == 0 { 0 } else { 4 };
                 let f = ((qh_b.clone() >> shift) & 7u8).cast(DType::U16);
                 let qb = col(&qs, 4 * big + l, 1)?.cast(DType::U16);
                 let grid_v = lut_row(&grid, &(qb | (f << 8u16)), 8)?;
