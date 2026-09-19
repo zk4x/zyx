@@ -1067,10 +1067,20 @@ impl Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, axes, None, correction)
     }
 
-    /// Computes the variance reduction along `axes`, casting to `dtype`, with `correction`.
+    /// Compute the variance reduction along `axes`, cast the result to
+    /// `dtype`, and apply a `correction` factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.var_dtype_correction([1], DType::F64, 0).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn var_dtype_correction(
         &self,
         axes: impl IntoIterator<Item = Axis>,
@@ -1080,17 +1090,37 @@ impl Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, axes, Some(dtype), correction)
     }
 
-    /// Computes the variance reduction over all elements, keeping reduced dimensions, casting to `dtype`, with `correction`.
+    /// Compute the variance reduction over all elements, keeping reduced
+    /// dimensions, cast the result to `dtype`, and apply a `correction`
+    /// factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.var_all_keepdim_dtype_correction(DType::F64, 0);
+    /// ```
     #[must_use]
     pub fn var_all_keepdim_dtype_correction(&self, dtype: DType, correction: Dim) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, [], Some(dtype), correction).unwrap()
     }
 
-    /// Computes the variance reduction along `axes`, keeping reduced dimensions, casting to `dtype`.
-    /// Includes `correction` if specified.
+    /// Compute the variance reduction along `axes`, keeping reduced
+    /// dimensions, cast the result to `dtype`, and apply a `correction`
+    /// factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.var_keepdim_dtype_correction([1], DType::F64, 0).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn var_keepdim_dtype_correction(
         &self,
         axes: impl IntoIterator<Item = Axis>,
@@ -1106,114 +1136,234 @@ impl Tensor {
 // ---------------------------------------------------------------------------
 
 impl Tensor {
-    /// Computes the [std] reduction over **all elements**.
+    /// Compute the standard deviation reduction over all elements.
     ///
-    /// # Returns
-    /// A scalar tensor containing the reduction result.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.std_all();
+    /// ```
     #[must_use]
     pub fn std_all(&self) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Std, [], None, 1).unwrap()
     }
 
-    /// Computes the [std] reduction over all elements, keeping reduced dimensions.
+    /// Compute the standard deviation reduction over all elements, keeping
+    /// reduced dimensions with length 1.
     ///
-    /// Reduced axes are retained with length 1.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.std_all_keepdim();
+    /// ```
     #[must_use]
     pub fn std_all_keepdim(&self) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Std, [], None, 1).unwrap()
     }
 
-    /// Computes the [std] reduction over all elements, casting the result to `dtype`.
+    /// Compute the standard deviation reduction over all elements and cast
+    /// the result to `dtype`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.std_all_dtype(DType::F64);
+    /// ```
     #[must_use]
     pub fn std_all_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Std, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the [std] reduction along specified `axes`.
+    /// Compute the standard deviation reduction along the given `axes`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.std([1]).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn std(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Std, axes, None, 1)
     }
 
-    /// Computes the [std] reduction along specified `axes`, keeping reduced dimensions.
+    /// Compute the standard deviation reduction along the given `axes`,
+    /// keeping reduced dimensions with length 1.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.std_keepdim([1]).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn std_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Std, axes, None, 1)
     }
 
-    /// Computes the [std] reduction along specified `axes`, casting the result to `dtype`.
+    /// Compute the standard deviation reduction along the given `axes` and
+    /// cast the result to `dtype`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.std_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn std_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Std, axes, Some(dtype), 1)
     }
 
-    /// Computes the [std] reduction along specified `axes` with a `correction` factor.
+    /// Compute the standard deviation reduction along the given `axes` with
+    /// a `correction` factor.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `correction` — Bias correction to apply.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.std_correction([1], 0).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn std_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Std, axes, None, correction)
     }
 
-    /// All correction
+    /// Compute the standard deviation reduction over all elements with a
+    /// `correction` factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.std_all_correction(0).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When correction is out of range.
+    ///
+    /// Returns an error when the correction is out of range.
     pub fn std_all_correction(&self, correction: Dim) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Std, [], None, correction)
     }
 
-    /// Computes the [std] reduction over all elements, keeping reduced dimensions and casting to `dtype`.
+    /// Compute the standard deviation reduction over all elements, keeping
+    /// reduced dimensions, and cast the result to `dtype`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.std_keepdim_dtype(DType::F64);
+    /// ```
     #[must_use]
     pub fn std_keepdim_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Std, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the [std] reduction over all elements, keeping reduced dimensions, with `correction`.
+    /// Compute the standard deviation reduction over all elements, keeping
+    /// reduced dimensions, with a `correction` factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.std_all_keepdim_correction(0);
+    /// ```
     #[must_use]
     pub fn std_all_keepdim_correction(&self, correction: Dim) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Std, [], None, correction).unwrap()
     }
 
-    /// Computes the [std] reduction over all elements, casting to `dtype`, with `correction`.
+    /// Compute the standard deviation reduction over all elements, cast the
+    /// result to `dtype`, with a `correction` factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.std_all_dtype_correction(DType::F64, 0);
+    /// ```
     #[must_use]
     pub fn std_all_dtype_correction(&self, dtype: DType, correction: Dim) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Std, [], Some(dtype), correction).unwrap()
     }
 
-    /// Computes the [std] reduction along `axes`, keeping reduced dimensions, casting to `dtype`.
+    /// Compute the standard deviation reduction along `axes`, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.std_axes_keepdim_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn std_axes_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Std, axes, Some(dtype), 1)
     }
 
-    /// Computes the [std] reduction along `axes`, keeping reduced dimensions, with `correction`.
+    /// Compute the standard deviation reduction along `axes`, keeping reduced
+    /// dimensions, with a `correction` factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.std_keepdim_correction([1], 0).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn std_keepdim_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Std, axes, None, correction)
     }
 
-    /// Computes the [std] reduction along `axes`, casting to `dtype`, with `correction`.
+    /// Compute the standard deviation reduction along `axes`, cast the result
+    /// to `dtype`, with a `correction` factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.std_dtype_correction([1], DType::F64, 0).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn std_dtype_correction(
         &self,
         axes: impl IntoIterator<Item = Axis>,
@@ -1223,17 +1373,36 @@ impl Tensor {
         self.reduce_impl::<false>(ReduceOp::Std, axes, Some(dtype), correction)
     }
 
-    /// Computes the [std] reduction over all elements, keeping reduced dimensions, casting to `dtype`, with `correction`.
+    /// Compute the standard deviation reduction over all elements, keeping
+    /// reduced dimensions, cast the result to `dtype`, with a `correction`
+    /// factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.std_all_keepdim_dtype_correction(DType::F64, 0);
+    /// ```
     #[must_use]
     pub fn std_all_keepdim_dtype_correction(&self, dtype: DType, correction: Dim) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Std, [], Some(dtype), correction).unwrap()
     }
 
-    /// Computes the [std] reduction along `axes`, keeping reduced dimensions, casting to `dtype`.
-    /// Includes `correction` if specified.
+    /// Compute the standard deviation reduction along `axes`, keeping reduced
+    /// dimensions, cast the result to `dtype`, with a `correction` factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.std_keepdim_dtype_correction([1], DType::F64, 0).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn std_keepdim_dtype_correction(
         &self,
         axes: impl IntoIterator<Item = Axis>,
@@ -1243,31 +1412,55 @@ impl Tensor {
         self.reduce_impl::<true>(ReduceOp::Std, axes, Some(dtype), correction)
     }
 
-    /// Comulative sum along axis.
+    /// Compute the cumulative sum reduction along the given `axis`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.cumsum(0).unwrap();
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if axis is out of range.
+    /// Returns an error when the axis is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn cumsum(&self, axis: Axis) -> Result<Tensor, ZyxError> {
         self.cum_reduce(axis, BOp::Add)
     }
 
-    /// Comulative max along axis.
+    /// Compute the cumulative max reduction along the given `axis`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.cummax(0).unwrap();
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if axis is out of range.
+    /// Returns an error when the axis is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn cummax(&self, axis: Axis) -> Result<Tensor, ZyxError> {
         self.cum_reduce(axis, BOp::Max)
     }
 
-    /// Comulative product along axis.
+    /// Compute the cumulative product reduction along the given `axis`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.cumprod(0).unwrap();
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if axis is out of range.
+    /// Returns an error when the axis is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn cumprod(&self, axis: Axis) -> Result<Tensor, ZyxError> {
         self.cum_reduce(axis, BOp::Mul)

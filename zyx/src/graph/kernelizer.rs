@@ -121,20 +121,20 @@ impl Graph {
             if inputs.contains(&cid) {
                 continue;
             }
-            for nid in &self.classes[cid].nodes {
+            for nid in self.class_nodes(cid) {
                 // Kernel nodes added by pattern matching (e.g. cblas) are never
                 // consumed here — kernelize only processes structural nodes.
                 // The same holds for user custom kernels (`Node::Custom` and its
                 // lowered `Node::Kernel` twin): their inputs are materialized via
                 // `kernel_inputs` in `fill_gaps`, not via reference counting here.
-                if matches!(&self.nodes[*nid].node, Node::Kernel { .. } | Node::Custom { .. }) {
+                if matches!(&self.nodes[nid].node, Node::Kernel { .. } | Node::Custom { .. }) {
                     continue;
                 }
                 // Everything counts — data operands and descriptor fields
                 // (Reshape/Expand shape, Pad lp/len, Narrow start/len, Leaf
                 // shape) alike. Symbolic classes never materialize; their
                 // consumers replay them on demand and decrement inline.
-                let data_slots: Vec<ClassId> = match &self.nodes[*nid].node {
+                let data_slots: Vec<ClassId> = match &self.nodes[nid].node {
                     Node::Const { .. } => vec![],
                     Node::Leaf { shape, .. } => {
                         if shape.is_null() {
@@ -183,7 +183,7 @@ impl Graph {
                 continue;
             }
 
-            let nid = self.classes[cid].nodes[0];
+            let nid = self.classes[cid].first;
 
             if inputs.contains(&cid) {
                 // Boundary input: load the class from storage, same as a leaf.
@@ -526,7 +526,7 @@ impl Graph {
                         // exist — trace it instead of assuming a position,
                         // fail loud otherwise.
                         let dst_loads = self.jit_kernels[dst_kid].loads.clone();
-                        let is_var_class = |g: &Self, c: ClassId| matches!(&g.nodes[g.classes[c].nodes[0]].node, Node::Leaf { dtype, shape, .. } if *dtype == IDX_T && shape.is_null());
+                        let is_var_class = |g: &Self, c: ClassId| matches!(&g.nodes[g.classes[c].first].node, Node::Leaf { dtype, shape, .. } if *dtype == IDX_T && shape.is_null());
                         let mut buffer_classes = dst_loads.iter().copied().filter(|&c| !is_var_class(self, c));
                         let dst_leaf = match (buffer_classes.next(), buffer_classes.next()) {
                             (Some(c), None) => c,
@@ -549,10 +549,8 @@ impl Graph {
                         let n_after_dst: usize = order
                             .iter()
                             .map(|&c| {
-                                self.classes[c]
-                                    .nodes
-                                    .iter()
-                                    .filter(|&&nid| matches!(&self.nodes[nid].node, Node::After { x, .. } if *x == dst))
+                                self.class_nodes(c)
+                                    .filter(|&nid| matches!(&self.nodes[nid].node, Node::After { x, .. } if *x == dst))
                                     .count()
                             })
                             .sum();
@@ -887,7 +885,7 @@ impl Graph {
             // storage and hand off to a fresh load kernel, so downstream ops (e.g.
             // relu) start from the stored class instead of fusing into this kernel.
             if !inputs.contains(&cid)
-                && self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Kernel { .. }))
+                && self.class_nodes(cid).any(|nid| matches!(&self.nodes[nid].node, Node::Kernel { .. }))
             {
                 let (kid, op_id) = visited[&cid];
                 let _ = self.add_store(cid, kid, op_id, &mut visited, &rcs);
@@ -915,10 +913,8 @@ impl Graph {
                 // fresh-buffer store. AOT kernel classes are already materialized
                 // into storage by the backend kernel — storing the load kernel
                 // again would produce a self-copying kernel.
-                if !self.classes[cid]
-                    .nodes
-                    .iter()
-                    .any(|&nid| matches!(&self.nodes[nid].node, Node::After { .. } | Node::Kernel { .. }))
+                if !self.class_nodes(cid)
+                    .any(|nid| matches!(&self.nodes[nid].node, Node::After { .. } | Node::Kernel { .. }))
                 {
                     (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs);
                 }
@@ -1035,12 +1031,11 @@ impl Graph {
                 for load in &kernel.loads {
                     let stored = self.jit_kernels.values().any(|k| k.stores.contains(load));
                     let in_outputs = self.jit_kernels.values().any(|k| k.outputs.contains(load));
-                    let is_input =
-                        inputs.contains(load) || matches!(self.nodes[self.classes[*load].nodes[0]].node, Node::Leaf { .. });
+                    let is_input = inputs.contains(load) || matches!(self.nodes[self.classes[*load].first].node, Node::Leaf { .. });
                     if !stored && !is_input {
                         panic!(
                             "DEBUG kernelize: load class {load:?} (node {:?}) of kernel {kid:?} is not stored anywhere (in_outputs={in_outputs}) and is not an input",
-                            self.nodes[self.classes[*load].nodes[0]].node
+                            self.nodes[self.classes[*load].first].node
                         );
                     }
                 }
@@ -1231,7 +1226,7 @@ impl Graph {
                 "DOS child={child:?} kid={kid:?} n_out={} force_store={force_store} preced_red={} node={:?}",
                 self.jit_kernels[kid].outputs.len(),
                 self.jit_kernels[kid].kernel.is_preceded_by_reduce(op_id),
-                self.nodes[*self.classes[child].nodes.last().unwrap()].node
+                self.nodes[self.class_nodes(child).last().unwrap()].node
             );
         }
         if self.jit_kernels[kid].outputs.len() > 1 || force_store {
@@ -1356,9 +1351,10 @@ impl Graph {
                 let knid = self.nodes.push(NodeData {
                     node: Node::Kernel { inputs, outputs: outputs.clone().into(), program_id, time: 10 },
                     class_of,
+                    next_in_class: NodeId::NULL,
                 });
                 for &ocid in &outputs {
-                    self.classes[ocid].nodes.push(knid);
+                    self.class_push(ocid, knid);
                 }
             }
         }
@@ -1383,8 +1379,8 @@ impl Graph {
         // stored so the backend kernel can read them.
         let mut kernel_inputs: Set<ClassId> = Set::default();
         for &cid in active_outputs {
-            for nid in &self.classes[cid].nodes {
-                if let Node::Kernel { inputs: kin, .. } = &self.nodes[*nid].node {
+            for nid in self.class_nodes(cid) {
+                if let Node::Kernel { inputs: kin, .. } = &self.nodes[nid].node {
                     kernel_inputs.extend(kin.iter().copied());
                 }
             }
@@ -1404,8 +1400,8 @@ impl Graph {
             i
         }
         for (i, &cid) in structural.iter().enumerate() {
-            for nid in &self.classes[cid].nodes {
-                for p in self.nodes[*nid].node.class_params() {
+            for nid in self.class_nodes(cid) {
+                for p in self.nodes[nid].node.class_params() {
                     if let Some(&j) = idx.get(&p) {
                         let (a, b) = (find(&mut parent, i), find(&mut parent, j));
                         parent[a.max(b)] = a.min(b);
@@ -1425,8 +1421,8 @@ impl Graph {
         // dimension is a result of a kernel now and loaded into a new one").
         let mut cross_region_outputs: Map<usize, BTreeSet<ClassId>> = Map::default();
         for (i, &cid) in structural.iter().enumerate() {
-            for nid in &self.classes[cid].nodes {
-                for p in self.nodes[*nid].node.class_params() {
+            for nid in self.class_nodes(cid) {
+                for p in self.nodes[nid].node.class_params() {
                     if producer_boundaries.contains(&p) {
                         continue;
                     }
@@ -1444,8 +1440,8 @@ impl Graph {
 
             let mut region_inputs: Set<ClassId> = Set::default();
             for &cid in &region {
-                for nid in &self.classes[cid].nodes {
-                    for p in self.nodes[*nid].node.class_params() {
+                for nid in self.class_nodes(cid) {
+                    for p in self.nodes[nid].node.class_params() {
                         if producer_boundaries.contains(&p) {
                             region_inputs.insert(p);
                         }

@@ -811,7 +811,7 @@ impl Kernel {
     /// and the input/output dtypes.
     #[allow(unused_must_use)]
     pub(crate) fn generate_tenstorrent(&self) -> Result<TTCompiler, BackendError> {
-        super::tenstorrent2::generate_tenstorrent2(self);
+        //super::tenstorrent2::generate_tenstorrent2(self);
         // DST mode is a type-level constant but only known at runtime:
         // 32-bit iff the kernel touches F32 tiles (F32 storage, e.g.
         // matmul accumulation into an F32 circular acc/output tile).

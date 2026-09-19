@@ -201,20 +201,20 @@ where
 }
 
 impl Tensor {
-    /// Shape of the tensor as concrete dimensions.
+    /// Return the shape of the tensor as concrete dimensions.
     ///
-    /// A pure host-side read: static dims come from the IR, dynamic (symbolic)
-    /// dims resolve through their variables' current values. Emits nothing and
-    /// never touches device execution. For per-dim symbolic tensors use
-    /// [`Tensor::dims`].
+    /// A host-side read only: static dims come from the IR and dynamic (symbolic)
+    /// dims resolve through their variables' current values. Never touches
+    /// device execution. For per-dim symbolic tensors use [`Tensor::shape`].
     ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    ///
-    /// let t = Tensor::from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]);
-    /// assert_eq!(t.shape(), [2, 4]);
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let dims = t.resolve_shape();
+    /// assert_eq!(dims.len(), 2);
+    /// assert_eq!(dims[0], 2);
     /// ```
     #[must_use]
     pub fn resolve_shape(&self) -> Vec<Dim> {
@@ -222,24 +222,16 @@ impl Tensor {
     }
 
     /// Symbolic shape of this tensor: one scalar IDX_T [`Tensor`] per
-    /// dimension — a constant tensor for static dims, a variable-backed
-    /// expression for dynamic ones.
+    /// dimension. Static dims are constant tensors, dynamic ones are
+    /// variable-backed expressions. Use this to CONSTRUCT shapes (reshape,
+    /// expand, broadcast); use [`Tensor::resolve_shape`] only to DECIDE
+    /// (checks, display).
     ///
-    /// Unlike [`Tensor::resolve_shape`] (which resolves variable slots into
-    /// concrete `Dim`s), this keeps dynamic dims symbolic. Use it EVERYWHERE a
-    /// shape is used to CONSTRUCT another tensor (reshape/expand/broadcast/
-    /// narrow targets) — rebuilding shapes from resolved `Dim`s bakes variables
-    /// into fresh constants and breaks the merge-time provability checks in
-    /// `runtime::binary`/`assign`, which require the same dim tensor in both
-    /// operands. Use [`Tensor::resolve_shape`] only to DECIDE (checks, drop
-    /// decisions, display).
-    ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    ///
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
     /// let dims = t.shape();
     /// assert_eq!(dims.len(), 2);
     /// assert_eq!(dims[0].item::<i64>(), 2);
@@ -257,46 +249,55 @@ impl Tensor {
         tids.into_iter().map(|tid| Tensor { id: tid }).collect()
     }
 
-    /// Is realized
+    /// Return whether this tensor's data is currently materialized on a
+    /// device.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32]);
+    /// let realized = t.is_realized();
+    /// ```
+    #[must_use]
     pub fn is_realized(&self) -> bool {
         RT.lock().is_realized(self.id)
     }
 
-    /// Returns true if the device supports the given dtype.
+    /// Return the device's capability for the given dtype.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let cap = Tensor::dtype_capability(DType::F32);
+    /// ```
     #[must_use]
     pub fn dtype_capability(dtype: DType) -> DTypeCapability {
         RT.lock().supports_dtype(dtype)
     }
 
-    /// Returns the first N dimensions of this tensor as dim tensors.
+    /// Return the first N dimensions of this tensor as scalar IDX_T dim
+    /// tensors.
     ///
-    /// Unlike [`Tensor::shape`] (which reports symbolic dims as `0`), each
-    /// returned entry is a scalar IDX_T tensor backed by the IR node computing
-    /// that dimension: a constant for static dims, a runtime variable for
-    /// dynamic ones. Use `.item()` on an entry when a concrete integer is
-    /// needed; use the tensor directly in `narrow`/`expand`/arithmetic to stay
+    /// Each entry is backed by the IR node computing that dimension: a
+    /// constant for static dims, a runtime variable for dynamic ones. Use
+    /// `.item()` for a concrete integer; pass the tensor directly to stay
     /// symbolic.
     ///
-    /// # Parameters
+    /// # Example
     ///
-    /// * `const N: usize` - The number of dimensions to return.
-    ///
-    /// # Errors
-    ///
-    /// This function will return a `ZyxError` if:
-    ///
-    /// * `N` is greater than the number of dimensions in this tensor,
-    ///   resulting in a `ShapeError` with a message indicating the mismatch.
-    ///
-    /// # Examples
-    ///
-    /// ```
+    /// ```rust
     /// # use zyx::Tensor;
     /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
     /// let [d1, d2] = t.dims().unwrap();
     /// assert_eq!(d1.item::<i64>(), 2);
     /// assert_eq!(d2.item::<i64>(), 3);
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ShapeError` when N exceeds the number of dimensions.
     #[allow(clippy::missing_panics_doc)]
     pub fn dims<const N: usize>(&self) -> Result<[Tensor; N], ZyxError> {
         let symbolic = self.shape();
@@ -308,27 +309,20 @@ impl Tensor {
         }
     }
 
-    /// Returns a slice of the last N dimensions of this tensor.
+    /// Return the last N dimensions of this tensor as scalar IDX_T dim tensors.
     ///
-    /// # Parameters
+    /// # Example
     ///
-    /// * `const N: usize` - The number of dimensions to return.
-    ///
-    /// # Errors
-    ///
-    /// This function will return a `ZyxError` if:
-    ///
-    /// * `N` is greater than the number of dimensions in this tensor,
-    ///   resulting in a `ShapeError` with a message indicating the mismatch.
-    ///
-    /// # Examples
-    ///
-    /// ```
+    /// ```rust
     /// # use zyx::Tensor;
     /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
     /// let [d2] = t.rdims().unwrap();
     /// assert_eq!(d2.item::<i64>(), 3);
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ShapeError` when N exceeds the number of dimensions.
     pub fn rdims<const N: usize>(&self) -> Result<[Tensor; N], ZyxError> {
         let shape = self.shape();
 
@@ -343,25 +337,19 @@ impl Tensor {
         Ok(res.map(|d| d.unwrap()))
     }
 
-    /// Returns the total number of elements in the tensor.
+    /// Return the total number of elements as a scalar tensor.
     ///
-    /// This method calculates the product of all dimensions of the tensor, effectively
-    /// giving you the total number of elements it contains. Fully symbolic:
-    /// built from this tensor's dim tensors via binary multiplication, so a
+    /// Fully symbolic: built by multiplying this tensor's dim tensors, so a
     /// dynamic shape yields an expression, not a concrete number. Use
-    /// [`Tensor::item`] when a concrete integer is needed.
+    /// [`Tensor::item`] for a concrete integer.
     ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
+    /// # use zyx::Tensor;
     /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
     /// assert_eq!(t.numel().item::<i32>(), 6);
     /// ```
-    ///
-    /// # Returns
-    ///
-    /// A scalar tensor representing the total number of elements in the tensor.
     #[must_use]
     pub fn numel(&self) -> Tensor {
         let dims = self.shape();
@@ -378,73 +366,109 @@ impl Tensor {
         n
     }
 
-    /// Returns the number of dimensions (rank) of the tensor.
+    /// Return the number of dimensions (rank) of the tensor.
     ///
-    /// The rank is equivalent to the number of elements in the shape vector.
-    ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
+    /// # use zyx::Tensor;
     /// let t = Tensor::from([[2, 3], [4, 1]]);
     /// assert_eq!(t.rank(), 2);
     /// ```
-    ///
-    /// # Returns
-    ///
-    /// The rank of the tensor as a `Dim`.
     #[must_use]
     pub fn rank(&self) -> Dim {
         self.resolve_shape().len() as i64
     }
 
-    /// Returns the data type of the tensor.
+    /// Return the data type of the tensor.
     ///
-    /// This method retrieves the dtype information for the tensor, which determines
-    /// the kind of data stored in the tensor (e.g., float32, int64).
-    /// See [`DType`](crate::DType) for available datatypes.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32]);
+    /// assert_eq!(t.dtype(), DType::F32);
+    /// ```
     #[must_use]
     pub fn dtype(&self) -> DType {
         RT.lock().dtype(self.id)
     }
 
-    /// Returns the device of the tensor.
+    /// Return the device on which the tensor lives.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32]);
+    /// let dev = t.device();
+    /// ```
     #[must_use]
     pub fn device(&self) -> Dev {
         RT.lock().device(self.id)
     }
 
-    /// Is zyx in training mode?
+    /// Return whether zyx is currently in training mode.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let training = Tensor::training();
+    /// ```
     #[must_use]
     pub fn training() -> bool {
         RT.lock().training
     }
 
-    /// Set training mode
+    /// Set the training mode.
     pub fn set_training(training: bool) {
         RT.lock().training = training;
     }
 
-    /// Is implicit casting enabled?
+    /// Return whether implicit casting is enabled.
+    ///
     /// Implicit casts are enabled by default.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let casts = Tensor::implicit_casts();
+    /// ```
     #[must_use]
     pub fn implicit_casts() -> bool {
         RT.lock().implicit_casts
     }
 
-    /// Set implicit casts.
-    /// Implicit casts are enabled by default.
+    /// Set implicit casting.
     pub fn set_implicit_casts(implicit_casts: bool) {
         RT.lock().implicit_casts = implicit_casts;
     }
 
-    /// Create a tensor with single scalar not baked into kernel (dynamic)
+    /// Create a dynamic scalar tensor from a scalar value, not baked into the
+    /// kernel.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let v = Tensor::variable(3.14f32);
+    /// ```
     pub fn variable(x: impl Scalar) -> Tensor {
         let id = RT.lock().new_variable_tensor(x);
         Tensor { id }
     }
 
-    /// Item
+    /// Extract the scalar value from a scalar tensor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from(2.5f32);
+    /// assert_eq!(t.item::<f32>(), 2.5);
+    /// ```
     #[allow(clippy::missing_panics_doc)]
     pub fn item<T: Scalar>(&self) -> T {
         let mut rt = RT.lock();
@@ -453,18 +477,23 @@ impl Tensor {
         data[0]
     }
 
-    /// Copies the tensor's data to the host as a `Vec<T>`.
+    /// Copy the tensor's data to the host as a `Vec<T>`.
     ///
-    /// Dtype-strict, mirroring `Runtime::load`: returns
-    /// [`ZyxError::DTypeError`] if the tensor's dtype is not `T::dtype()`
-    /// (cast explicitly with [`Tensor::cast`] first for conversion).
+    /// Dtype-strict: returns a `DTypeError` if the tensor's dtype is not
+    /// `T` (cast explicitly with [`Tensor::cast`] first for conversion).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let v: Vec<f32> = t.to_vec().unwrap();
+    /// assert_eq!(v, vec![1.0, 2.0, 3.0]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns [`ZyxError::DTypeError`] if the tensor dtype is not `T`.
-    ///
-    /// Returns [`ZyxError::AllocationError`] if the tensor has more elements
-    /// than the host can hold or the read buffer would overflow the tensor.
+    /// Returns a `DTypeError` when the tensor dtype is not `T`.
     pub fn to_vec<T: Scalar>(&self) -> Result<Vec<T>, ZyxError> {
         let numel = self.numel().item::<Dim>() as usize;
         let mut data = vec![T::zero(); numel];
@@ -472,44 +501,50 @@ impl Tensor {
         Ok(data)
     }
 
-    /// Assigns the value of `src` to this tensor in-place using StoreView.
+    /// Assign the value of `src` to this tensor in-place via a StoreView.
     ///
-    /// A StoreView is added to `src`'s kernel that writes into this
-    /// tensor's existing buffer. Materialization happens naturally
-    /// when `src`'s kernel is released.
+    /// A StoreView is added to `src`'s kernel writing into this tensor's
+    /// buffer; materialization happens when `src`'s kernel is released.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([1.0f32]);
+    /// let b = Tensor::from([1.0f32]);
+    /// a.assign(b).unwrap();
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns [`ZyxError::DTypeError`] if the dtypes do not match.
-    ///
-    /// Returns [`ZyxError::ShapeError`] if the shapes do not match.
-    ///
-    /// Returns [`ZyxError::GraphTensorNotRealized`] if this tensor is a
-    /// graph tensor that has not been realized yet.
+    /// Returns a `DTypeError` if dtypes differ, a `ShapeError` if shapes
+    /// differ, or `GraphTensorNotRealized` if this is an unrealized graph
+    /// tensor.
     pub fn assign(self, src: impl Into<Tensor>) -> Result<(), ZyxError> {
         let src = src.into();
         RT.lock().assign(self.id, src.id)
     }
 
-    /// Detaches tensor from graph.
-    /// This function returns a new tensor with the same data as the previous one,
-    /// but drops it's backpropagation graph. This is usefull for recurrent networks:
+    /// Detach the tensor from the backpropagation graph.
+    ///
+    /// Returns a new tensor with the same data but without the graph, so the
+    /// graph does not grow each iteration of a recurrent loop.
+    ///
+    /// # Example
+    ///
     /// ```rust no_run
-    /// use zyx::{Tensor, DType};
+    /// # use zyx::{Tensor, DType};
     /// let mut x = Tensor::randn([8, 8], DType::F32)?;
     /// let z = Tensor::randn([8], DType::F32)?;
     /// for _ in 0..100 {
-    ///     // Without detach the graph would grow bigger with every iteration
     ///     x = x.detach()? + &z;
     /// }
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
-    /// [`Tape`](crate::Tape) limits scope of backpropagation graph, therefore detach
-    /// is only required in very advanced cases, not in simple RNNs.
     ///
     /// # Errors
-    /// If function needs to realize tensor, it may return device error if the device
-    /// fails to realize self.
+    ///
+    /// May return a device error if realizing the tensor fails.
     pub fn detach(self) -> Result<Tensor, ZyxError> {
         // TODO remove realization from here
         let dims: Vec<Tensor> = self.resolve_shape().iter().map(|&d| Tensor::from(d)).collect();
@@ -583,10 +618,10 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// Create debug guard at the beginning of the block to debug that block.
-    /// Once the guard is dropped, debug gets reset to global state,
-    /// the one set `by ZYX_DEBUG` env variable.
-    /// For more look at `ENV_VARS.md`
+    /// Create a debug guard that raises the debug mask within a block.
+    ///
+    /// When the guard is dropped, the mask is reset to the global state set
+    /// by the `ZYX_DEBUG` env variable.
     #[must_use]
     pub fn with_debug(debug: DebugMask) -> DebugGuard {
         let guard = DebugGuard { debug: crate::debug_mask() };
@@ -594,16 +629,28 @@ impl Tensor {
         guard
     }
 
-    /// Manually sets the seed for the random number generator.
-    /// This function is only available if the `rand` feature is enabled.
+    /// Manually set the seed for the random number generator.
+    ///
+    /// Only available when the `rand` feature is enabled.
     pub fn manual_seed(seed: u64) {
         RT.lock().manual_seed(seed);
     }
 
-    /// Create random value in range 0f..1f with float dtype
-    /// or 0..`{integer}::MAX` if it is integer
+    /// Create a tensor with the given shape filled with uniform random values
+    /// in [0, 1) for float dtypes, or in [0, integer max] for integer dtypes.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::rand([2, 3], DType::F32).unwrap();
+    /// assert_eq!(t.dtype(), DType::F32);
+    /// ```
+    ///
     /// # Errors
-    /// Returns device error if the device fails to allocate memory for tensor.
+    ///
+    /// Returns a device error if the device cannot allocate memory for the
+    /// tensor.
     #[allow(clippy::missing_panics_doc, reason = "all panics are checked ahead")]
     pub fn rand(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Result<Tensor, ZyxError> {
         let tensors = Self::cast_to_shape(shape);
@@ -715,9 +762,21 @@ impl Tensor {
     }
 
     // Initializers
-    /// Create tensor sampled from standard distribution.
+    /// Create a tensor of the given shape sampled from a standard normal
+    /// distribution.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::randn([2, 3], DType::F32).unwrap();
+    /// assert_eq!(t.dtype(), DType::F32);
+    /// ```
+    ///
     /// # Errors
-    /// Retuns device error if device fails to allocate memory for given tensor.
+    ///
+    /// Returns a device error if the device cannot allocate memory for the
+    /// tensor.
     pub fn randn(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
         let dims = Self::cast_to_shape(shape);
@@ -736,9 +795,20 @@ impl Tensor {
         Ok((x1 * x2).cast(dtype))
     }
 
-    /// Multinomial function
+    /// Sample from the multinomial distribution defined by this tensor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([0.5f32, 0.5]);
+    /// let s = t.multinomial(10, true).unwrap();
+    /// assert_eq!(s.dtype(), DType::I32);
+    /// ```
+    ///
     /// # Errors
-    /// Returns device error if the device fails to allocate memory for tensor.
+    ///
+    /// Returns a device error if the device cannot allocate memory.
     #[allow(clippy::missing_panics_doc, reason = "TODO disallow panicking")]
     pub fn multinomial(&self, num_samples: Dim, replacement: bool) -> Result<Tensor, ZyxError> {
         let sh = self.resolve_shape();
@@ -754,10 +824,20 @@ impl Tensor {
         Ok((if rank == 1 { indices.squeeze([0]) } else { indices }).cast(DType::I32))
     }
 
-    /// Create tensor sampled from uniform distribution
-    /// Start of the range must be less than the end of the range.
+    /// Create a tensor of the given shape sampled from a uniform distribution
+    /// over the range, cast to `T`. The range start must be less than the end.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::uniform([4, 4], 0.0f32..1.0);
+    /// assert_eq!(t.dtype(), DType::F32);
+    /// ```
+    ///
     /// # Errors
-    /// Returns device error if the device fails to allocate memory for tensor.
+    ///
+    /// Returns a device error if the device cannot allocate memory.
     pub fn uniform<T: Scalar>(
         shape: impl IntoIterator<Item = impl Into<Tensor>>,
         range: impl core::ops::RangeBounds<T>,
@@ -774,9 +854,20 @@ impl Tensor {
         Ok((Tensor::rand(shape, DType::F32)? * high.sub(low) + low).cast(T::dtype()))
     }
 
-    /// Create tensor of discrete uniform integers in range [low, high).
+    /// Create a tensor of the given shape of discrete uniform integers in the
+    /// range [low, high).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::randint([4, 4], 0..10).unwrap();
+    /// assert_eq!(t.dtype(), DType::I32);
+    /// ```
+    ///
     /// # Errors
-    /// Returns device error if the device fails to allocate memory for tensor.
+    ///
+    /// Returns a device error if the device cannot allocate memory.
     pub fn randint<T: Scalar>(
         shape: impl IntoIterator<Item = impl Into<Tensor>>,
         range: impl core::ops::RangeBounds<T> + Clone,
@@ -799,9 +890,20 @@ impl Tensor {
         Ok(Tensor { id: rt.new_host_tensor(shape.id, data.into())? })
     }
 
-    /// Create tensor sampled from kaiming uniform distribution.
+    /// Create a tensor of the given shape sampled from the Kaiming uniform
+    /// distribution, parameterized by `a`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::kaiming_uniform([4, 4], 0.01f32).unwrap();
+    /// assert_eq!(t.dtype(), DType::F32);
+    /// ```
+    ///
     /// # Errors
-    /// Returns device error if the device fails to allocate memory for tensor.
+    ///
+    /// Returns a device error if the device cannot allocate memory.
     #[allow(clippy::missing_panics_doc)]
     pub fn kaiming_uniform<T: Float>(shape: impl IntoIterator<Item = impl Into<Tensor>>, a: T) -> Result<Tensor, ZyxError> {
         let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
@@ -830,9 +932,20 @@ impl Tensor {
         Tensor::uniform(dims, bound.neg()..bound)
     }
 
-    /// Create tensor sampled from glorot uniform distribution.
+    /// Create a tensor of the given shape sampled from the Glorot uniform
+    /// distribution in the given dtype.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::glorot_uniform([4, 4], DType::F32).unwrap();
+    /// assert_eq!(t.dtype(), DType::F32);
+    /// ```
+    ///
     /// # Errors
-    /// Returns device error if the device fails to allocate memory for tensor.
+    ///
+    /// Returns a device error if the device cannot allocate memory.
     #[allow(clippy::cast_precision_loss)]
     pub fn glorot_uniform(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Result<Tensor, ZyxError> {
         let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
@@ -857,7 +970,15 @@ impl Tensor {
         Ok(x.cast(dtype))
     }
 
-    /// Create tensor filled with zeros.
+    /// Create a tensor of the given shape filled with zeros in the given dtype.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::zeros([2, 2], DType::F32);
+    /// assert_eq!(t.to_vec::<f32>().unwrap(), vec![0.0f32, 0.0, 0.0, 0.0]);
+    /// ```
     #[must_use]
     pub fn zeros(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Tensor {
         let dims = Self::cast_to_shape(shape);
@@ -880,14 +1001,32 @@ impl Tensor {
         Tensor { id }
     }
 
-    /// Create tensor filled with zeros with the same shape and dtype as input.
+    /// Create a tensor filled with zeros with the same shape and dtype as
+    /// `input`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0]);
+    /// let z = Tensor::zeros_like(t);
+    /// assert_eq!(z.to_vec::<f32>().unwrap(), vec![0.0f32, 0.0]);
+    /// ```
     #[must_use]
     pub fn zeros_like(input: impl Into<Tensor>) -> Tensor {
         let input = input.into();
         Tensor::zeros(input.resolve_shape(), input.dtype())
     }
 
-    /// Create tensor filled with ones.
+    /// Create a tensor of the given shape filled with ones in the given dtype.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::ones([2], DType::F32);
+    /// assert_eq!(t.to_vec::<f32>().unwrap(), vec![1.0f32, 1.0]);
+    /// ```
     #[must_use]
     pub fn ones(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Tensor {
         let dims = Self::cast_to_shape(shape);
@@ -910,16 +1049,36 @@ impl Tensor {
         Tensor { id }
     }
 
-    /// Create tensor filled with ones with the same shape and dtype as input.
+    /// Create a tensor filled with ones with the same shape and dtype as
+    /// `input`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0]);
+    /// let o = Tensor::ones_like(t);
+    /// assert_eq!(o.to_vec::<f32>().unwrap(), vec![1.0f32, 1.0]);
+    /// ```
     #[must_use]
     pub fn ones_like(input: impl Into<Tensor>) -> Tensor {
         let input = input.into();
         Tensor::ones(input.resolve_shape(), input.dtype())
     }
 
-    /// Create tensor filled with value.
+    /// Create a tensor of the given shape filled with `value`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::full([2], 3.14f32);
+    /// assert_eq!(t.to_vec::<f32>().unwrap(), vec![3.14f32, 3.14]);
+    /// ```
+    ///
     /// # Errors
-    /// Returns device error if the device failed to allocate memory for tensor.
+    ///
+    /// Returns a device error if the device cannot allocate memory.
     #[allow(clippy::missing_panics_doc)]
     pub fn full(shape: impl IntoIterator<Item = impl Into<Tensor>>, value: impl Scalar) -> Tensor {
         let dims = Self::cast_to_shape(shape);
@@ -942,7 +1101,17 @@ impl Tensor {
         Tensor { id }
     }
 
-    /// Create square tensor with ones on the main diagonal and all other values set to zero.
+    /// Create a square tensor with ones on the main diagonal and zeros
+    /// elsewhere, in the given dtype.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::eye(3, DType::F32);
+    /// assert_eq!(t.to_vec::<f32>().unwrap(),
+    ///     vec![1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn eye(n: Dim, dtype: DType) -> Tensor {
@@ -955,9 +1124,20 @@ impl Tensor {
             .unwrap()
     }
 
-    /// Arange method, create range from start, stop, step
+    /// Create a tensor of range values from `start` up to (but not including)
+    /// `stop`, incrementing by `step`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::arange(0f32, 5.0, 1.0).unwrap();
+    /// assert_eq!(t.to_vec::<f32>().unwrap(), vec![0.0f32, 1.0, 2.0, 3.0, 4.0]);
+    /// ```
+    ///
     /// # Errors
-    /// Returns device error if the device failed to allocate memory for tensor.
+    ///
+    /// Returns a device error if the device cannot allocate memory.
     #[allow(clippy::missing_panics_doc)]
     pub fn arange<T: Scalar>(start: T, stop: T, step: T) -> Result<Tensor, ZyxError> {
         // if (stop-start)/step <= 0: return Tensor([], dtype=dtype, **kwargs)
@@ -969,9 +1149,19 @@ impl Tensor {
         Ok(x + start - step)
     }
 
-    /// Create tensor from vec and shape
+    /// Create a tensor from a flat vector and the given shape.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], [2, 2]).unwrap();
+    /// assert_eq!(t.to_vec::<f32>().unwrap(), vec![1.0f32, 2.0, 3.0, 4.0]);
+    /// ```
+    ///
     /// # Errors
-    /// Returns allocation failure or backend initialization failure
+    ///
+    /// Returns an allocation or backend initialization error.
     pub fn from_vec<T: Scalar>(data: Vec<T>, shape: impl IntoIterator<Item = impl Into<Tensor>>) -> Result<Tensor, ZyxError> {
         let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
         let shape = Tensor::stack(&dims)?;
@@ -980,22 +1170,40 @@ impl Tensor {
     }
 
     // unary
-    /// Casts self to [dtype](crate::DType).
+    /// Cast the tensor to a new dtype.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32]);
+    /// let u = t.cast(DType::F64);
+    /// assert_eq!(u.to_vec::<f64>().unwrap(), vec![1.0f64]);
+    /// ```
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor {
         let id = RT.lock().cast(self.id, dtype);
         return Tensor { id };
     }
 
-    /// Reinterprets the raw bits of the tensor as `dtype` without a value
-    /// conversion. Requires equal bit widths of the current dtype and `dtype`.
-    /// Safe: every bit pattern is a valid int/float value. Reinterpreting
-    /// *to* `Bool` is rejected with an error instead, since arbitrary bits
-    /// are not valid `bool` values.
+    /// Reinterpret the tensor's raw bits as `dtype` without a value conversion.
+    ///
+    /// The current dtype and `dtype` must have equal bit widths; interpreting
+    /// to `Bool` is rejected since arbitrary bit patterns are not valid `bool`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32]);
+    /// let u = t.bitcast(DType::U32).unwrap();
+    /// assert_eq!(u.to_vec::<u32>().unwrap(), vec![0x3f800000u32]);
+    /// ```
     ///
     /// # Errors
-    /// Returns [`ZyxError::DTypeError`] if the bit widths differ, if `dtype`
-    /// is `Bool`, or a device error if the device failed to allocate memory.
+    ///
+    /// Returns a `DTypeError` when bit widths differ or `dtype` is `Bool`, or
+    /// a device error on allocation failure.
     #[allow(clippy::missing_panics_doc)]
     pub fn bitcast(&self, dtype: DType) -> Result<Tensor, ZyxError> {
         if self.dtype().bit_size() != dtype.bit_size() {
@@ -1019,11 +1227,18 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// Applies dropout to the tensor with a given probability.
+    /// Apply dropout to the tensor with the given probability.
     ///
-    /// This function randomly sets elements of the input tensor to zero based on the provided probability.
-    /// The output tensor has the same shape as the input tensor. Elements are preserved with probability `1 - probability`
-    /// and set to zero with probability `probability`.
+    /// During training, elements are randomly zeroed with the given
+    /// probability; in inference the input is returned scaled by 1/(1-p).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0]);
+    /// let d = t.dropout(0.5f32);
+    /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn dropout<P: Scalar + Float>(&self, probability: P) -> Tensor {
@@ -1034,36 +1249,20 @@ impl Tensor {
         }
     }
 
-    /// Linearly interpolates between input and target tensors.
+    /// Linearly interpolate between this tensor and `target` by a `weight`.
     ///
-    /// Performs linear interpolation between two tensors with a given weight factor.
-    /// The interpolation formula is: result = input * (1 - weight) + target * weight
-    /// This is commonly used for transitions between tensors.
-    /// Returns the same dtype as the input tensors.
+    /// Computes `input * (1 - weight) + target * weight`, returning a tensor
+    /// with the same dtype as the input.
     ///
-    /// **Parameters:**
-    ///
-    /// * self: Input tensor
-    /// * target: Target tensor to interpolate towards
-    /// * weight: Interpolation weight between 0.0 and 1.0. 0.0 returns input, 1.0 returns target.
-    ///
-    /// **Returns:**
-    ///
-    /// A new tensor containing the interpolated values with the same shape as input.
-    ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    ///
+    /// # use zyx::Tensor;
     /// let input = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let target = Tensor::from([2.0, 4.0, 6.0]);
-    /// let interpolated = input.interpolate(&target, 0.5);  // Midway point
-    /// // Result: [1.5, 3.0, 4.5] (average of input and target)
+    /// let r = input.interpolate(&target, 0.5);
+    /// assert_eq!(r.to_vec::<f32>().unwrap(), vec![1.5f32, 3.0, 4.5]);
     /// ```
-    ///
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn interpolate(&self, target: &Tensor, weight: f32) -> Tensor {
         let input = self.float_cast().unwrap();
@@ -1076,44 +1275,20 @@ impl Tensor {
         result.cast(original_dtype)
     }
 
-    /// Computes the Smooth L1 loss between input and target tensors.
+    /// Compute the Smooth L1 loss between this tensor and `target`.
     ///
-    /// The Smooth L1 loss is a robust loss function that combines L1 and L2 loss. It uses L2 loss
-    /// for small values (close to zero) and L1 loss for large values, providing a smooth transition
-    /// that is less sensitive to outliers than pure L1 loss while avoiding the large gradients of L2
-    /// loss for very large errors.
-    /// Returns the same dtype as the input tensors.
+    /// Combines L1 and L2 loss: `0.5 * (x - y)^2` when `|x - y| <= 1`, otherwise
+    /// `|x - y| - 0.5`. Returns the same dtype as the input.
     ///
-    /// Formula:
-    /// ```text
-    /// smooth_l1_loss(x, y) = {
-    ///     0.5 * (x - y)*(x - y),          if |x - y| <= 1
-    ///     |x - y| - 0.5,                   otherwise
-    /// }
-    /// ```
-    ///
-    /// **Parameters:**
-    ///
-    /// * self: Input tensor (predictions)
-    /// * target: Target tensor (ground truth)
-    ///
-    /// **Returns:**
-    ///
-    /// A new tensor with the same shape as the input, containing the Smooth L1 loss values.
-    ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    ///
-    /// let predictions = Tensor::from([1.0, 2.0, 3.0]);
-    /// let targets = Tensor::from([1.5, 2.5, 2.8]);
-    /// let loss = predictions.smooth_l1_loss(&targets);
-    /// // Smooth L1 loss will be quadratic for differences ≤ 1.0 and linear for differences > 1.0
+    /// # use zyx::Tensor;
+    /// let p = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let t = Tensor::from([1.5, 2.5, 2.8]);
+    /// let loss = p.smooth_l1_loss(&t);
+    /// assert_eq!(loss.to_vec::<f32>().unwrap(), vec![0.125f32, 0.125, 0.02]);
     /// ```
-    ///
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn smooth_l1_loss(&self, target: &Tensor) -> Tensor {
         let input = self.float_cast().unwrap();
@@ -1139,40 +1314,20 @@ impl Tensor {
         total_loss.cast(original_dtype)
     }
 
-    /// Computes the Huber loss between input and target tensors.
+    /// Compute the Huber loss between this tensor and `target` with threshold
+    /// `delta`.
     ///
-    /// The Huber loss is a robust loss function that is less sensitive to outliers than squared error loss.
-    /// It combines the best properties of L2 squared loss and L1 absolute loss by being quadratic for small
-    /// values and linear for large values.
-    /// Returns the same dtype as the input tensors.
+    /// `0.5 * (x - y)^2` when `|x - y| <= delta`, otherwise `delta * |x - y|
+    /// - 0.5 * delta^2`. Returns the same dtype as the input.
     ///
-    /// Formula:
-    /// ```text
-    /// huber_loss(x, y) = {
-    ///     0.5 * (x - y)*(x - y),          if |x - y| <= delta
-    ///     delta * |x - y| - 0.5 * delta*delta,  otherwise
-    /// }
-    /// ```
-    ///
-    /// **Parameters:**
-    ///
-    /// * self: Input tensor (predictions)
-    /// * target: Target tensor (ground truth)
-    /// * delta: Threshold value (δ) for switching between quadratic and linear regions (default: 1.0)
-    ///
-    /// **Returns:**
-    ///
-    /// A new tensor with the same shape as the input, containing the Huber loss values.
-    ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    ///
-    /// let predictions = Tensor::from([1.0f32, 2.0, 3.0]);
-    /// let targets = Tensor::from([1.5f32, 2.5, 2.8]);
-    /// let loss = predictions.huber_loss(&targets, 1.0f32);
-    /// // Huber loss will be quadratic for differences ≤ 1.0 and linear for differences > 1.0
+    /// # use zyx::Tensor;
+    /// let p = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let t = Tensor::from([1.5, 2.5, 2.8]);
+    /// let loss = p.huber_loss(&t, 1.0f32);
+    /// assert_eq!(loss.to_vec::<f32>().unwrap(), vec![0.125f32, 0.125, 0.02]);
     /// ```
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
@@ -1212,21 +1367,23 @@ impl Tensor {
     }
 
     // movement
-    /// Expands this tensor by adding singleton dimensions at the front until its rank matches that of the target shape.
+    /// Expand this tensor to the given shape by broadcasting singleton
+    /// dimensions.
     ///
-    /// If the target shape has a higher rank than the current tensor, singleton dimensions are added to the front of the tensor's shape.
-    /// If any dimension in the target shape does not match the corresponding dimension in the expanded tensor's shape,
-    /// an assertion failure occurs unless the expanded dimension is 1 (in which case it is ignored).
+    /// A dimension of `1` in `self` is broadcast to any target size; matching
+    /// non-1 dimensions must be equal. Returns a view with the target shape.
     ///
-    /// # Examples
+    /// # Example
     ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::zeros([2, 3], DType::F32);
+    /// assert_eq!(t.expand([4, 2, 3]).unwrap().shape(), [4, 2, 3]);
     /// ```
-    /// let t = zyx::Tensor::zeros([2, 3], zyx::DType::U8);
-    /// assert_eq!(t.expand([4, 2, 3])?.shape(), [4, 2, 3]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
+    ///
     /// # Errors
-    /// Returns error if self cannot be expanded into shape.
+    ///
+    /// Returns a shape error if `self` cannot be expanded into the shape.
     pub fn expand<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
         let mut tensors = Self::cast_to_shape(shape);
         // Shape/dim tensors must be IDX_T (i64) after normalization.
@@ -1274,27 +1431,22 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// Expands the tensor along a given axis to a new dimension.
+    /// Expand the tensor along `axis` to the new size `dim`.
     ///
-    /// # Arguments
-    /// * `axis` – The axis to expand, integer index..
-    /// * `dim`  – The new size that the chosen axis should have.
+    /// Replaces the given axis with `dim`, broadcasting a singleton dimension.
     ///
-    /// # Returns
-    /// A new `Tensor` with the expanded shape on success, or a `ZyxError` if the
-    /// expansion fails (e.g., out‑of‑range axis, runtime error).
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[2.0f32], [3.0]]);
+    /// let t2 = t.expand_axis(1, 5).unwrap();
+    /// assert_eq!(t2.shape(), [2, 5]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the axis is out of bounds.
-    ///
-    /// # Example
-    /// ```
-    /// let t = zyx::Tensor::from([[2], [3]]);
-    /// let t2 = t.expand_axis(1, 5)?;
-    /// assert_eq!(t2.shape(), [2, 5]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
+    /// Returns a shape error if the axis is out of bounds.
     pub fn expand_axis(&self, axis: Axis, dim: Dim) -> Result<Tensor, ZyxError> {
         let rank = self.resolve_shape().len();
         let axis = into_axis(axis, rank)?;
@@ -1307,21 +1459,22 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// Permutes the axes of this tensor.
+    /// Permute the axes of this tensor according to `axes`.
     ///
-    /// This function rearranges the dimensions of the tensor according to the provided axes. The axes must be a permutation of the original axes, i.e., they must contain each index once and only once. If the axes have a different length than the rank of the tensor, a panic will occur with an appropriate error message.
+    /// The axes must be a permutation of the original axes.
     ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::{Tensor, DType};
+    /// # use zyx::{Tensor, DType};
     /// let t = Tensor::rand([3, 4], DType::I64).unwrap();
-    /// let p = [1, 0];
-    /// let permuted_t = t.permute(p); // Results in a tensor with axes (4, 3)
+    /// let p = t.permute([1, 0]).unwrap();
+    /// assert_eq!(p.shape(), [4, 3]);
     /// ```
     ///
     /// # Errors
-    /// Returns error if self cannot be permute by axes.
+    ///
+    /// Returns a shape error if the axes do not match the tensor's rank.
     pub fn permute(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes = into_axes(axes, rank as usize)?;
@@ -1334,21 +1487,22 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// Flips tensor along the given axes, reversing the order of elements.
-    /// Works the same way as `torch.flip`.
+    /// Flip the tensor along the given axes, reversing the order of elements.
     ///
-    /// # Examples
+    /// Works the same as `torch.flip`.
+    ///
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([1, 2, 3]);
-    /// let flipped = t.flip([0])?;
-    /// assert_eq!(flipped, [3, 2, 1]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1i32, 2, 3]);
+    /// let flipped = t.flip([0]).unwrap();
+    /// assert_eq!(flipped.to_vec::<i32>().unwrap(), vec![3i32, 2, 1]);
     /// ```
     ///
     /// # Errors
-    /// Returns error if the axes list is empty, or an axis is out of range.
+    ///
+    /// Returns a shape error if the axes list is empty or an axis is out of range.
     pub fn flip(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let mut axes: Vec<UAxis> = axes.into_iter().map(|a| into_axis(a, rank as usize)).collect::<Result<_, _>>()?;
@@ -1361,12 +1515,22 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// Pads a single axis with zeros: `lp` zeros on the left, up to total
-    /// length `len`; right padding is
-    /// `len - lp - orig_len`). `lp` and `len` are scalar tensors.
+    /// Pad a single axis with zeros: `lp` zeros on the left, up to total
+    /// length `len` (right padding is `len - lp - orig_len`). `lp` and `len`
+    /// are scalar tensors.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::zeros([2, 3], DType::F32);
+    /// let p = t.pad_zeros_axis(0, Tensor::from(1i64), Tensor::from(6i64)).unwrap();
+    /// assert_eq!(p.shape(), [6, 3]);
+    /// ```
     ///
     /// # Errors
-    /// Returns error if the axis is out of range or the padding is invalid.
+    ///
+    /// Returns a shape error if the axis is out of range or the padding is invalid.
     #[track_caller]
     pub fn pad_zeros_axis(&self, axis: UAxis, lp: Tensor, len: Tensor) -> Result<Tensor, ZyxError> {
         let lp = lp.cast_to_dim();
@@ -1392,25 +1556,22 @@ impl Tensor {
         self.pad_zeros_axis(axis, lp, len)
     }
 
-    /// Creates a new tensor by padding zeros around this tensor based on the specified padding configuration.
-    /// First padding tuple pads first dimension, second pads second dimension, etc.
+    /// Pad this tensor with zeros using per-dimension `(left, right)` padding
+    /// tuples (missing higher dims are front-padded).
     ///
-    /// # Examples
+    /// # Example
     ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let t = Tensor::from([1, 2, 3]);
-    /// let padded = t.pad_zeros([(1, 1)])?.reshape([5])?;
-    /// assert_eq!(padded, [0, 1, 2, 3, 0]);
-    ///
-    /// let padded = t.pad_zeros([(1, 2)])?;
-    /// assert_eq!(padded.shape(), &[6]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1i32, 2, 3]);
+    /// let p = t.pad_zeros([(1, 2)]).unwrap();
+    /// assert_eq!(p.to_vec::<i32>().unwrap(), vec![0i32, 0, 1, 2, 3, 0]);
     /// ```
     ///
     /// # Errors
-    /// Returns error if self cannot be padded by padding.
+    ///
+    /// Returns a shape error if the padding exceeds the tensor's rank or is
+    /// invalid.
     #[allow(clippy::missing_panics_doc)]
     #[track_caller]
     pub fn pad_zeros(&self, padding: impl IntoIterator<Item = (i64, i64)>) -> Result<Tensor, ZyxError> {
@@ -1433,25 +1594,22 @@ impl Tensor {
         Ok(cur)
     }
 
-    /// Creates a new tensor by padding zeros around this tensor based on the specified padding configuration.
-    /// This is reverse padding. First padding tuple pads last dimension, second pads second last dimension, etc.
+    /// Pad this tensor with zeros using per-dimension `(left, right)` padding
+    /// tuples, applied in reverse order (last dim first).
     ///
-    /// # Examples
+    /// # Example
     ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let t = Tensor::from([1, 2, 3]);
-    /// let padded = t.pad_zeros([(1, 1)])?.reshape([5])?;
-    /// assert_eq!(padded, [0, 1, 2, 3, 0]);
-    ///
-    /// let padded = t.pad_zeros([(1, 2)])?;
-    /// assert_eq!(padded.shape(), &[6]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1i32, 2, 3]);
+    /// let p = t.rpad_zeros([(1, 2)]).unwrap();
+    /// assert_eq!(p.to_vec::<i32>().unwrap(), vec![0i32, 0, 1, 2, 3, 0]);
     /// ```
     ///
     /// # Errors
-    /// Returns error if self cannot be padded by padding.
+    ///
+    /// Returns a shape error if the padding exceeds the tensor's rank or is
+    /// invalid.
     #[allow(clippy::missing_panics_doc)]
     #[track_caller]
     pub fn rpad_zeros(&self, padding: impl IntoIterator<Item = (i64, i64)>) -> Result<Tensor, ZyxError> {
@@ -1476,38 +1634,22 @@ impl Tensor {
         Ok(cur)
     }
 
-    /// Constant padding
+    /// Pad this tensor by a constant value, given per-dimension `(left,
+    /// right)` padding tuples (negative values crop).
     ///
-    /// This can both add and remove values from tensor. Negative padding removes values, positive padding
-    /// adds values.
+    /// # Example
     ///
-    /// Pad last dimension by (1, 2)
-    /// ```rust
-    /// use zyx::Tensor;
-    /// let x = Tensor::from([[2i32, 3],
-    ///                       [4, 1]]);
-    /// println!("{:?}\n{x}", x.shape());
-    /// let z = x.pad([(0, 0), (1, 2)], 0i32)?;
-    /// println!("{:?}\n{z}", z.shape());
-    /// assert_eq!(z, [[0i32, 2, 3, 0, 0],
-    ///                [0, 4, 1, 0, 0]]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    /// Pad last dimension by (2, -1) and second last dimension by (1, 1)
     /// ```rust
     /// # use zyx::Tensor;
-    /// # let x = Tensor::from([[2i32, 3],
-    /// #                       [4, 1]]);
-    /// let z = x.pad([(1, 1), (2, -1)], 0i32)?;
-    /// assert_eq!(z, [[0i32, 0, 0],
-    ///                [0, 0, 2],
-    ///                [0, 0, 4],
-    ///                [0, 0, 0]]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// let x = Tensor::from([[2i32, 3], [4, 1]]);
+    /// let z = x.pad([(0, 0), (1, 2)], 0i32).unwrap();
+    /// assert_eq!(z.to_vec::<i32>().unwrap(),
+    ///     vec![0i32, 2, 3, 0, 0, 0, 4, 1, 0, 0]);
     /// ```
     ///
     /// # Errors
-    /// Returns error if self cannot be padded by padding.
+    ///
+    /// Returns a shape error if the padding is invalid.
     #[allow(clippy::missing_panics_doc)]
     pub fn pad(&self, padding: impl IntoIterator<Item = (i64, i64)>, value: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let dtype = self.dtype();
@@ -1546,28 +1688,24 @@ impl Tensor {
         shape.into_iter().map(|x| x.into().cast_to_dim()).collect()
     }
 
-    /// Applies a new shape to this tensor while preserving its total number of elements.
+    /// Reshape this tensor to the given shape while preserving its total
+    /// number of elements.
     ///
-    /// A single `-1` in the shape will be inferred automatically, like in
-    /// torch. Inference requires all other dimensions to be statically
-    /// known; otherwise an error is returned. All other dimensions must
-    /// be >= 1.
+    /// A single `-1` in the shape infers that dimension automatically. All
+    /// other dimensions must be >= 1 and the total element count must match.
     ///
-    /// # Examples
+    /// # Example
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(t.reshape([2, 2])?, [[1, 2], [3, 4]]);
-    ///
-    /// // Infer dimension automatically
-    /// let t = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(t.reshape([2, -1])?, [[1, 2], [3, 4]]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1i32, 2, 3, 4]);
+    /// let r = t.reshape([2, 2]).unwrap();
+    /// assert_eq!(r.to_vec::<i32>().unwrap(), vec![1, 2, 3, 4]);
     /// ```
     ///
     /// # Errors
-    /// Returns error if self cannot be reshaped to shape.
+    ///
+    /// Returns a shape error if the new shape is incompatible.
     pub fn reshape<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
         let mut tensors = Self::cast_to_shape(shape);
         // Shape/dim tensors must be IDX_T (i64) after normalization.
@@ -1653,21 +1791,13 @@ impl Tensor {
 
     /// Transpose (swap) the last two dimensions of this tensor.
     ///
-    /// If the rank is 1, the method reshapes the tensor to shape `[n, 1]`.
+    /// A rank-1 tensor is reshaped to shape `[n, 1]`.
     ///
-    /// # Returns
+    /// # Example
     ///
-    /// A new `Tensor` where the last two dimensions have been swapped.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// assert_eq!(t.t().shape(), &[3, 1]);
-    ///
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
     /// assert_eq!(t.t().shape(), &[2, 2]);
     /// ```
     #[must_use]
@@ -1683,16 +1813,20 @@ impl Tensor {
         self.permute(axes).unwrap()
     }
 
-    /// Transpose two arbitrary dimensions
+    /// Transpose the two dimensions `dim0` and `dim1` of this tensor.
+    ///
+    /// # Example
+    ///
     /// ```rust
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[[1, 2]], [[3, 4]]]);
-    /// assert_eq!(t.transpose(0, -1)?, [[[1, 3]], [[2, 4]]]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[[1i32, 2]], [[3, 4]]]);
+    /// let tr = t.transpose(0, -1).unwrap();
+    /// assert_eq!(tr.to_vec::<i32>().unwrap(), vec![1, 3, 2, 4]);
     /// ```
     ///
     /// # Errors
-    /// Returns error if self cannot be transposed by dim0 and dim1.
+    ///
+    /// Returns a shape error if an axis is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn transpose(&self, dim0: Axis, dim1: Axis) -> Result<Tensor, ZyxError> {
         let rank = self.rank();

@@ -819,7 +819,7 @@ impl Compiler {
 }
 
 impl Kernel {
-    pub(crate) fn generate_tenstorrent2(kernel: &Kernel) {
+    pub fn generate_tenstorrent2(kernel: &Kernel) {
         let mut compiler = Compiler::new(kernel);
         compiler.sectioning();
         compiler.assign_cbs();
