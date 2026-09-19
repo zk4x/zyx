@@ -6,7 +6,8 @@
 //! (s=S=6, m=M_PAD=16, d=VAL_DIM=6144) for normed.
 
 use qwen3_8_27b::{
-    pad_cast_tt, pad_copy_tt, pad_kernel, pad_move_mc, pad_move_sym, pad_mul_tt, HIDDEN, M_PAD, S, VAL_DIM,
+    pad_cast_tt, pad_copy_tt, pad_kernel, pad_move_mc, pad_move_sym, pad_mul_tt, HIDDEN, M_PAD, S,
+    VAL_DIM,
 };
 use zyx::kernel::Dev;
 use zyx::{Tensor, ZyxError};
@@ -18,23 +19,8 @@ fn pad_input() -> Result<(), ZyxError> {
     let input = goldens["input"].to(dev)?;
     let expected = &goldens["output"];
     let kk = pad_kernel(S, M_PAD, HIDDEN);
-    let (flops, read, write) = kk.flop_mem_rw();
     let k = kk.compile()?;
-    let t0 = std::time::Instant::now();
     let out = k.forward(&[&input], vec![[M_PAD, HIDDEN]])?;
-    out[0].sync()?;
-    let total_us = t0.elapsed().as_micros() as f64;
-    let tflops = if total_us > 0.0 {
-        flops as f64 / total_us / 1e3
-    } else {
-        0.0
-    };
-    let gbs = if total_us > 0.0 {
-        (read + write) as f64 / total_us / 1e3
-    } else {
-        0.0
-    };
-    eprintln!("pad_input forward+sync {total_us:.0}us, {tflops:.2} TFLOPS, {gbs:.1} GB/s");
     let v: Vec<zyx::f16> = out[0].to_vec()?;
     let v: Vec<f32> = v.iter().map(|&x| x.to_f32()).collect();
     let exp: Vec<zyx::f16> = expected.to_vec()?;
@@ -53,23 +39,8 @@ fn pad_normed() -> Result<(), ZyxError> {
     let input = goldens["input"].to(dev)?;
     let expected = &goldens["output"];
     let kk = pad_kernel(S, M_PAD, VAL_DIM);
-    let (flops, read, write) = kk.flop_mem_rw();
     let k = kk.compile()?;
-    let t0 = std::time::Instant::now();
     let out = k.forward(&[&input], vec![[M_PAD, VAL_DIM]])?;
-    out[0].sync()?;
-    let total_us = t0.elapsed().as_micros() as f64;
-    let tflops = if total_us > 0.0 {
-        flops as f64 / total_us / 1e3
-    } else {
-        0.0
-    };
-    let gbs = if total_us > 0.0 {
-        (read + write) as f64 / total_us / 1e3
-    } else {
-        0.0
-    };
-    eprintln!("pad_normed forward+sync {total_us:.0}us, {tflops:.2} TFLOPS, {gbs:.1} GB/s");
     let v: Vec<zyx::f16> = out[0].to_vec()?;
     let v: Vec<f32> = v.iter().map(|&x| x.to_f32()).collect();
     let exp: Vec<zyx::f16> = expected.to_vec()?;
@@ -112,30 +83,13 @@ fn pad_input_tt() -> Result<(), ZyxError> {
     // supported path (mode-unaware typecast addressing).
     let kk1 = pad_mul_tt(S, M_PAD, HIDDEN);
     let kk2 = pad_cast_tt(S, M_PAD, HIDDEN);
-    let (flops1, read1, write1) = kk1.flop_mem_rw();
-    let (flops2, read2, write2) = kk2.flop_mem_rw();
-    let (flops, read, write) = (flops1 + flops2, read1 + read2, write1 + write2);
     let k1 = kk1.compile()?;
     let k2 = kk2.compile()?;
     // Tilized [32, 5120] = 160 tiles in a single launch.
     const TILES: i64 = 160;
-    let t0 = std::time::Instant::now();
     let mid = k1.forward(&[&data_t, &mask_t], vec![[TILES * 1024]])?;
     let out = k2.forward(&[&mid[0]], vec![[TILES * 1024]])?;
-    out[0].sync()?;
     let chunks: Vec<zyx::f16> = out[0].to_vec()?;
-    let total_us = t0.elapsed().as_micros() as f64;
-    let tflops = if total_us > 0.0 {
-        flops as f64 / total_us / 1e3
-    } else {
-        0.0
-    };
-    let gbs = if total_us > 0.0 {
-        (read + write) as f64 / total_us / 1e3
-    } else {
-        0.0
-    };
-    eprintln!("pad_input_tt forward+sync {total_us:.0}us, {tflops:.2} TFLOPS, {gbs:.1} GB/s");
     let til = Tensor::from_vec(chunks, [32, HIDDEN])?;
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
     let v: Vec<zyx::f16> = back.to_vec()?;
@@ -197,7 +151,6 @@ fn pad_passthrough_tt_run() -> Result<(), ZyxError> {
     const TILES: i64 = 160;
     let mid = k1.forward(&[&data_t], vec![[TILES * 1024]])?;
     let out = k2.forward(&[&mid[0]], vec![[TILES * 1024]])?;
-    out[0].sync()?;
     let chunks: Vec<zyx::f16> = out[0].to_vec()?;
     let til = Tensor::from_vec(chunks, [32, HIDDEN])?;
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
@@ -255,7 +208,6 @@ fn pad_move_tt_run() -> Result<(), ZyxError> {
     }
     const TILES: i64 = 160;
     let out = k.forward(&[&data_t], vec![[TILES * 1024]])?;
-    out[0].sync()?;
     let moved: Vec<f32> = out[0].to_vec()?;
     let til = Tensor::from_vec(moved, [32, HIDDEN])?;
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
@@ -301,7 +253,6 @@ fn pad_move_tt_mc_run() -> Result<(), ZyxError> {
         return Ok(());
     }
     let out = k.forward(&[&data_t], vec![[TILES * 1024]])?;
-    out[0].sync()?;
     let moved: Vec<f32> = out[0].to_vec()?;
     let til = Tensor::from_vec(moved, [32, HIDDEN])?;
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
@@ -347,7 +298,6 @@ fn pad_move_tt_sym_run() -> Result<(), ZyxError> {
         return Ok(());
     }
     let out = k.forward(&[&data_t, &n_t], vec![[TILES * 1024]])?;
-    out[0].sync()?;
     let moved: Vec<f32> = out[0].to_vec()?;
     let til = Tensor::from_vec(moved, [32, HIDDEN])?;
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
@@ -391,7 +341,6 @@ fn pad_copy_tt_run() -> Result<(), ZyxError> {
     }
     const TILES: i64 = 160;
     let out = k.forward(&[&data_t], vec![[TILES * 1024]])?;
-    out[0].sync()?;
     let moved: Vec<f32> = out[0].to_vec()?;
     let til = Tensor::from_vec(moved, [32, HIDDEN])?;
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;

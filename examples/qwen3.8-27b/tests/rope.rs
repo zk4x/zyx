@@ -23,15 +23,8 @@ fn rope() -> Result<(), ZyxError> {
     let sin = goldens["sin"].to(dev)?;
     let expected = &goldens["output"];
     let kk = rope_kernel(S, HEADS, HEAD_DIM, ROT_DIM);
-    let (flops, read, write) = kk.flop_mem_rw();
     let k = kk.compile()?;
-    let t0 = std::time::Instant::now();
     let out = k.forward(&[&x, &cos, &sin], vec![[HEADS * S, HEAD_DIM]])?;
-    out[0].sync()?;
-    let total_us = t0.elapsed().as_micros() as f64;
-    let tflops = if total_us > 0.0 { flops as f64 / total_us / 1e3 } else { 0.0 };
-    let gbs = if total_us > 0.0 { (read + write) as f64 / total_us / 1e3 } else { 0.0 };
-    eprintln!("rope forward+sync {total_us:.0}us, {tflops:.2} TFLOPS, {gbs:.1} GB/s");
     let v: Vec<f32> = out[0].to_vec()?;
     let exp: Vec<f32> = expected.to_vec()?;
     assert_eq!(v.len(), exp.len());

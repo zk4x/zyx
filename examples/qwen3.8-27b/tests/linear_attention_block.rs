@@ -34,7 +34,6 @@ fn linear_attention_block() -> Result<(), ZyxError> {
     // 1. Pad input [S, HIDDEN] F32 -> [M_PAD, HIDDEN] F16
     let pad_in = pad_kernel(S, M_PAD, HIDDEN).compile()?;
     let pinned = pad_in.forward(&[&input], vec![[M_PAD, HIDDEN]])?.remove(0);
-    pinned.sync()?;
 
     // 2. QKV/Z/B/A projections (gemm takes F16, but pinned is F16)
     let qkv = gemm_kernel(M_PAD, HIDDEN, CONV_DIM).compile()?;
@@ -44,26 +43,21 @@ fn linear_attention_block() -> Result<(), ZyxError> {
     let qkv_out = qkv
         .forward(&[&pinned, &w_qkv], vec![[M_PAD, CONV_DIM]])?
         .remove(0);
-    qkv_out.sync()?;
     let z_out = z
         .forward(&[&pinned, &w_z], vec![[M_PAD, VAL_DIM]])?
         .remove(0);
-    z_out.sync()?;
     let b_out = ba
         .forward(&[&pinned, &w_b], vec![[M_PAD, DT_RANK]])?
         .remove(0);
-    b_out.sync()?;
     let a_out = ba
         .forward(&[&pinned, &w_a], vec![[M_PAD, DT_RANK]])?
         .remove(0);
-    a_out.sync()?;
 
     // 3. Conv + SiLU on qkv (F32)
     let cs = conv_silu_kernel().compile()?;
     let mixed = cs
         .forward(&[&qkv_out, &conv_w], vec![[M_PAD, CONV_DIM]])?
         .remove(0);
-    mixed.sync()?;
 
     // 4. Delta core: mixed + b + a + ealog + dtb -> [VH, S, VD] (F32)
     let dc = delta_core_kernel().compile()?;
@@ -73,28 +67,24 @@ fn linear_attention_block() -> Result<(), ZyxError> {
             vec![[VH, S, VD]],
         )?
         .remove(0);
-    core.sync()?;
 
     // 5. Gated RMSNorm: core + z + nw -> [S, VAL_DIM] (F32)
     let rn = rmsnorm_kernel().compile()?;
     let normed = rn
         .forward(&[&core, &z_out, &ss_norm_w], vec![[S, VAL_DIM]])?
         .remove(0);
-    normed.sync()?;
 
     // 6. Pad normed [S, VAL_DIM] -> [M_PAD, VAL_DIM] F16
     let pad_norm = pad_kernel(S, M_PAD, VAL_DIM).compile()?;
     let normed_p = pad_norm
         .forward(&[&normed], vec![[M_PAD, VAL_DIM]])?
         .remove(0);
-    normed_p.sync()?;
 
     // 7. Output projection: gemm(M_PAD, VAL_DIM, HIDDEN)
     let go = gemm_kernel(M_PAD, VAL_DIM, HIDDEN).compile()?;
     let out_padded = go
         .forward(&[&normed_p, &w_o], vec![[M_PAD, HIDDEN]])?
         .remove(0);
-    out_padded.sync()?;
 
     // 8. Take first S rows as final output
     let out_full: Vec<f32> = out_padded.to_vec()?;

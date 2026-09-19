@@ -4,7 +4,7 @@
 //! `gemm_kernel(M_PAD, HIDDEN, CONV_DIM)`: qkv projection
 //! out [M_PAD, CONV_DIM] = A [M_PAD, HIDDEN] @ B [CONV_DIM, HIDDEN].T  (F16, F32 accum).
 
-use qwen3_8_27b::{CONV_DIM, HIDDEN, M_PAD, gemm_kernel, gemm_tt};
+use qwen3_8_27b::{gemm_kernel, gemm_tt, CONV_DIM, HIDDEN, M_PAD};
 use zyx::kernel::Dev;
 use zyx::{Tensor, ZyxError};
 
@@ -16,22 +16,18 @@ fn gemm_qkv() -> Result<(), ZyxError> {
     let w = goldens["weight"].to(dev)?;
     let expected = &goldens["output"];
     let kk = gemm_kernel(M_PAD, HIDDEN, CONV_DIM);
-    let (flops, read, write) = kk.flop_mem_rw();
     let k = kk.compile()?;
-    let t0 = std::time::Instant::now();
     let out = k.forward(&[&a, &w], vec![[M_PAD, CONV_DIM]])?;
-    out[0].sync()?;
-    let total_us = t0.elapsed().as_micros() as f64;
-    let tflops = if total_us > 0.0 { flops as f64 / total_us / 1e3 } else { 0.0 };
-    let gbs = if total_us > 0.0 { (read + write) as f64 / total_us / 1e3 } else { 0.0 };
-    eprintln!("gemm_qkv forward+sync {total_us:.0}us, {tflops:.2} TFLOPS, {gbs:.1} GB/s");
     let v: Vec<f32> = out[0].to_vec()?;
     let exp: Vec<f32> = expected.to_vec()?;
     assert_eq!(v.len(), exp.len());
     let mut max_err = 0f32;
     for (i, (&a, &b)) in v.iter().zip(exp.iter()).enumerate() {
         max_err = max_err.max((a - b).abs());
-        assert!((a - b).abs() < 1e-2, "gemm_qkv[{i}] = {a}, expected {b}, max_err {max_err}");
+        assert!(
+            (a - b).abs() < 1e-2,
+            "gemm_qkv[{i}] = {a}, expected {b}, max_err {max_err}"
+        );
     }
     eprintln!("gemm_qkv max_err {max_err}");
     Ok(())
@@ -64,8 +60,12 @@ fn gemm_qkv_tt() -> Result<(), ZyxError> {
         }
     }
     let a_t = Tensor::from_vec(a_pad, [M32, HIDDEN])?.tilize()?.to(dev)?;
-    let w_t = Tensor::from_vec(wt, [HIDDEN, CONV_DIM])?.tilize()?.to(dev)?;
-    let z_t = Tensor::from_vec(vec![0.0f32; 1024], [32, 32])?.tilize()?.to(dev)?;
+    let w_t = Tensor::from_vec(wt, [HIDDEN, CONV_DIM])?
+        .tilize()?
+        .to(dev)?;
+    let z_t = Tensor::from_vec(vec![0.0f32; 1024], [32, 32])?
+        .tilize()?
+        .to(dev)?;
 
     let kk = gemm_tt(M32, HIDDEN, CONV_DIM);
     let (flops, read, write) = kk.flop_mem_rw();
@@ -78,10 +78,17 @@ fn gemm_qkv_tt() -> Result<(), ZyxError> {
     }
     let t0 = std::time::Instant::now();
     let out = k.forward(&[&a_t, &w_t, &z_t], vec![[NT * 1024]])?;
-    out[0].sync()?;
     let total_us = t0.elapsed().as_micros() as f64;
-    let tflops = if total_us > 0.0 { flops as f64 / total_us / 1e3 } else { 0.0 };
-    let gbs = if total_us > 0.0 { (read + write) as f64 / total_us / 1e3 } else { 0.0 };
+    let tflops = if total_us > 0.0 {
+        flops as f64 / total_us / 1e3
+    } else {
+        0.0
+    };
+    let gbs = if total_us > 0.0 {
+        (read + write) as f64 / total_us / 1e3
+    } else {
+        0.0
+    };
     eprintln!("gemm_qkv_tt forward+sync {total_us:.0}us, {tflops:.2} TFLOPS, {gbs:.1} GB/s");
     let flat: Vec<f32> = out[0].to_vec()?;
     let back = Tensor::from_vec(flat, [M32, CONV_DIM])?.untilize(M32, CONV_DIM)?;
@@ -91,7 +98,12 @@ fn gemm_qkv_tt() -> Result<(), ZyxError> {
     let mut max_err = 0f32;
     for i in 0..exp.len() {
         max_err = max_err.max((v[i] - exp[i]).abs());
-        assert!((v[i] - exp[i]).abs() < 1e-2, "gemm_qkv_tt[{i}] = {}, expected {}, max_err {max_err}", v[i], exp[i]);
+        assert!(
+            (v[i] - exp[i]).abs() < 1e-2,
+            "gemm_qkv_tt[{i}] = {}, expected {}, max_err {max_err}",
+            v[i],
+            exp[i]
+        );
     }
     let mut max_zero = 0f32;
     for i in exp.len()..v.len() {
@@ -129,11 +141,14 @@ fn gemm_qkv_tt_mt2() -> Result<(), ZyxError> {
         }
     }
     let a_t = Tensor::from_vec(a_pad, [M64, HIDDEN])?.tilize()?.to(dev)?;
-    let w_t = Tensor::from_vec(wt, [HIDDEN, CONV_DIM])?.tilize()?.to(dev)?;
-    let z_t = Tensor::from_vec(vec![0.0f32; 1024], [32, 32])?.tilize()?.to(dev)?;
+    let w_t = Tensor::from_vec(wt, [HIDDEN, CONV_DIM])?
+        .tilize()?
+        .to(dev)?;
+    let z_t = Tensor::from_vec(vec![0.0f32; 1024], [32, 32])?
+        .tilize()?
+        .to(dev)?;
 
     let kk = gemm_tt(M64, HIDDEN, CONV_DIM);
-    let (flops, read, write) = kk.flop_mem_rw();
     let k = kk.compile()?;
     // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
     // compile so generated sources (ZYX_DEBUG=16) can be compared against
@@ -141,13 +156,7 @@ fn gemm_qkv_tt_mt2() -> Result<(), ZyxError> {
     if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
         return Ok(());
     }
-    let t0 = std::time::Instant::now();
     let out = k.forward(&[&a_t, &w_t, &z_t], vec![[(MT * NT * 1024)]])?;
-    out[0].sync()?;
-    let total_us = t0.elapsed().as_micros() as f64;
-    let tflops = if total_us > 0.0 { flops as f64 / total_us / 1e3 } else { 0.0 };
-    let gbs = if total_us > 0.0 { (read + write) as f64 / total_us / 1e3 } else { 0.0 };
-    eprintln!("gemm_qkv_tt_mt2 forward+sync {total_us:.0}us, {tflops:.2} TFLOPS, {gbs:.1} GB/s");
     let flat: Vec<f32> = out[0].to_vec()?;
     let back = Tensor::from_vec(flat, [M64, CONV_DIM])?.untilize(M64, CONV_DIM)?;
     let v: Vec<f32> = back.to_vec()?;
@@ -156,7 +165,12 @@ fn gemm_qkv_tt_mt2() -> Result<(), ZyxError> {
     let mut max_err = 0f32;
     for i in 0..exp.len() {
         max_err = max_err.max((v[i] - exp[i]).abs());
-        assert!((v[i] - exp[i]).abs() < 1e-2, "gemm_qkv_tt_mt2[{i}] = {}, expected {}, max_err {max_err}", v[i], exp[i]);
+        assert!(
+            (v[i] - exp[i]).abs() < 1e-2,
+            "gemm_qkv_tt_mt2[{i}] = {}, expected {}, max_err {max_err}",
+            v[i],
+            exp[i]
+        );
     }
     let mut max_zero = 0f32;
     for i in exp.len()..v.len() {

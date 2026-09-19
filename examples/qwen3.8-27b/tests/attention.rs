@@ -24,20 +24,13 @@ fn attention() -> Result<(), ZyxError> {
     let gate = goldens["gate"].to(dev)?;
     let expected = &goldens["output"];
     let kk = attention_kernel(S, H, KV, D);
-    let (flops, read, write) = kk.flop_mem_rw();
     let ck = kk.compile()?;
-    let t0 = std::time::Instant::now();
     let out = ck.forward(&[&q, &k, &v, &gate], vec![[S, H * D]])?;
-    out[0].sync()?;
-    let total_us = t0.elapsed().as_micros() as f64;
-    let tflops = if total_us > 0.0 { flops as f64 / total_us / 1e3 } else { 0.0 };
-    let gbs = if total_us > 0.0 { (read + write) as f64 / total_us / 1e3 } else { 0.0 };
-    eprintln!("attention forward+sync {total_us:.0}us, {tflops:.2} TFLOPS, {gbs:.1} GB/s");
     let v: Vec<f32> = out[0].to_vec()?;
     let exp: Vec<f32> = expected.to_vec()?;
     assert_eq!(v.len(), exp.len());
     let mut max_err = 0f32;
-    for (i, (&a, &b)) in v.iter().zip(exp.iter()).enumerate() {
+    for (&a, &b) in v.iter().zip(exp.iter()) {
         max_err = max_err.max((a - b).abs());
     }
     eprintln!("attention max_err {max_err}");
