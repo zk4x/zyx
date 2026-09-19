@@ -173,118 +173,132 @@ impl Tensor {
 // ---------------------------------------------------------------------------
 
 impl Tensor {
-    /// Computes the `sum` reduction over all elements.
+    /// Compute the `sum` reduction over all elements.
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// let result = t.sum_all();
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.sum_all();
     /// ```
     #[must_use]
     pub fn sum_all(&self) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Sum, [], None, 1).unwrap()
     }
 
-    /// Computes the `sum` reduction over all elements, keeping reduced dimensions.
+    /// Compute the `sum` reduction over all elements, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// Reduced axes are retained with length 1.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.sum_all_keepdim();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.sum_all_keepdim();
     /// ```
     #[must_use]
     pub fn sum_all_keepdim(&self) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Sum, [], None, 1).unwrap()
     }
 
-    /// Computes the `sum` reduction along the specified `axes`.
+    /// Compute the `sum` reduction along the given `axes`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.sum([0]).unwrap();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.sum([0]).unwrap();
     /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn sum(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Sum, axes, None, 1)
     }
 
-    /// Computes the `sum` reduction along the specified `axes`, keeping reduced dimensions.
+    /// Compute the `sum` reduction along the given `axes`, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * Keeps reduced dimensions with length 1.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.sum_keepdim([1]).unwrap();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.sum_keepdim([1]).unwrap();
     /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn sum_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Sum, axes, None, 1)
     }
 
-    /// Computes the `sum` reduction over all elements and casts the result to `dtype`.
+    /// Compute the `sum` reduction over all elements and cast the result to
+    /// `dtype`.
     ///
-    /// # Arguments
-    /// * `dtype` — Desired output data type.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::{Tensor, DType};
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// let result = t.sum_all_dtype(DType::F64);
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.sum_all_dtype(DType::F64);
     /// ```
     #[must_use]
     pub fn sum_all_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Sum, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the `sum` reduction over all elements, keeping reduced dimensions,
-    /// and casts the result to `dtype`.
+    /// Compute the `sum` reduction over all elements, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
     ///
-    /// # Arguments
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.sum_all_keepdim_dtype(DType::F64);
+    /// ```
     #[must_use]
     pub fn sum_all_keepdim_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Sum, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the `sum` reduction along specified `axes`, casting the result to `dtype`.
+    /// Compute the `sum` reduction along the given `axes` and cast the
+    /// result to `dtype`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.sum_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn sum_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Sum, axes, Some(dtype), 1)
     }
 
-    /// Computes the `sum` reduction along specified `axes`, keeping reduced dimensions,
-    /// and casts the result to `dtype`.
+    /// Compute the `sum` reduction along the given `axes`, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.sum_keepdim_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn sum_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Sum, axes, Some(dtype), 1)
     }
@@ -295,118 +309,132 @@ impl Tensor {
 // ---------------------------------------------------------------------------
 
 impl Tensor {
-    /// Computes the `mean` reduction over all elements.
+    /// Compute the `mean` reduction over all elements.
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// let result = t.mean_all();
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.mean_all();
     /// ```
     #[must_use]
     pub fn mean_all(&self) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Mean, [], None, 1).unwrap()
     }
 
-    /// Computes the `mean` reduction over all elements, keeping reduced dimensions.
+    /// Compute the `mean` reduction over all elements, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// Reduced axes are retained with length 1.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.mean_all_keepdim();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.mean_all_keepdim();
     /// ```
     #[must_use]
     pub fn mean_all_keepdim(&self) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Mean, [], None, 1).unwrap()
     }
 
-    /// Computes the `mean` reduction along the specified `axes`.
+    /// Compute the `mean` reduction along the given `axes`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.mean([0]).unwrap();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.mean([0]).unwrap();
     /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn mean(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Mean, axes, None, 1)
     }
 
-    /// Computes the `mean` reduction along the specified `axes`, keeping reduced dimensions.
+    /// Compute the `mean` reduction along the given `axes`, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * Keeps reduced dimensions with length 1.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.mean_keepdim([1]).unwrap();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.mean_keepdim([1]).unwrap();
     /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn mean_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Mean, axes, None, 1)
     }
 
-    /// Computes the `mean` reduction over all elements and casts the result to `dtype`.
+    /// Compute the `mean` reduction over all elements and cast the result to
+    /// `dtype`.
     ///
-    /// # Arguments
-    /// * `dtype` — Desired output data type.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::{Tensor, DType};
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// let result = t.mean_all_dtype(DType::F64);
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.mean_all_dtype(DType::F64);
     /// ```
     #[must_use]
     pub fn mean_all_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Mean, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the `mean` reduction over all elements, keeping reduced dimensions,
-    /// and casts the result to `dtype`.
+    /// Compute the `mean` reduction over all elements, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
     ///
-    /// # Arguments
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.mean_all_keepdim_dtype(DType::F64);
+    /// ```
     #[must_use]
     pub fn mean_all_keepdim_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Mean, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the `mean` reduction along specified `axes`, casting the result to `dtype`.
+    /// Compute the `mean` reduction along the given `axes` and cast the
+    /// result to `dtype`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.mean_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn mean_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Mean, axes, Some(dtype), 1)
     }
 
-    /// Computes the `mean` reduction along specified `axes`, keeping reduced dimensions,
-    /// and casts the result to `dtype`.
+    /// Compute the `mean` reduction along the given `axes`, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.mean_keepdim_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn mean_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Mean, axes, Some(dtype), 1)
     }
@@ -417,118 +445,132 @@ impl Tensor {
 // ---------------------------------------------------------------------------
 
 impl Tensor {
-    /// Computes the `max` reduction over all elements.
+    /// Compute the `max` reduction over all elements.
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// let result = t.max_all();
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.max_all();
     /// ```
     #[must_use]
     pub fn max_all(&self) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Max, [], None, 1).unwrap()
     }
 
-    /// Computes the `max` reduction over all elements, keeping reduced dimensions.
+    /// Compute the `max` reduction over all elements, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// Reduced axes are retained with length 1.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.max_all_keepdim();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.max_all_keepdim();
     /// ```
     #[must_use]
     pub fn max_all_keepdim(&self) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Max, [], None, 1).unwrap()
     }
 
-    /// Computes the `max` reduction along the specified `axes`.
+    /// Compute the `max` reduction along the given `axes`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.max([0]).unwrap();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.max([0]).unwrap();
     /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn max(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Max, axes, None, 1)
     }
 
-    /// Computes the `max` reduction along the specified `axes`, keeping reduced dimensions.
+    /// Compute the `max` reduction along the given `axes`, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * Keeps reduced dimensions with length 1.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.max_keepdim([1]).unwrap();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.max_keepdim([1]).unwrap();
     /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn max_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Max, axes, None, 1)
     }
 
-    /// Computes the `max` reduction over all elements and casts the result to `dtype`.
+    /// Compute the `max` reduction over all elements and cast the result to
+    /// `dtype`.
     ///
-    /// # Arguments
-    /// * `dtype` — Desired output data type.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::{Tensor, DType};
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// let result = t.max_all_dtype(DType::F64);
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.max_all_dtype(DType::F64);
     /// ```
     #[must_use]
     pub fn max_all_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Max, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the `max` reduction over all elements, keeping reduced dimensions,
-    /// and casts the result to `dtype`.
+    /// Compute the `max` reduction over all elements, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
     ///
-    /// # Arguments
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.max_all_keepdim_dtype(DType::F64);
+    /// ```
     #[must_use]
     pub fn max_all_keepdim_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Max, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the `max` reduction along specified `axes`, casting the result to `dtype`.
+    /// Compute the `max` reduction along the given `axes` and cast the
+    /// result to `dtype`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.max_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn max_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Max, axes, Some(dtype), 1)
     }
 
-    /// Computes the `max` reduction along specified `axes`, keeping reduced dimensions,
-    /// and casts the result to `dtype`.
+    /// Compute the `max` reduction along the given `axes`, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.max_keepdim_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn max_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Max, axes, Some(dtype), 1)
     }
@@ -539,118 +581,132 @@ impl Tensor {
 // ---------------------------------------------------------------------------
 
 impl Tensor {
-    /// Computes the `min` reduction over all elements.
+    /// Compute the `min` reduction over all elements.
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// let result = t.min_all();
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.min_all();
     /// ```
     #[must_use]
     pub fn min_all(&self) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Min, [], None, 1).unwrap()
     }
 
-    /// Computes the `min` reduction over all elements, keeping reduced dimensions.
+    /// Compute the `min` reduction over all elements, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// Reduced axes are retained with length 1.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.min_all_keepdim();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.min_all_keepdim();
     /// ```
     #[must_use]
     pub fn min_all_keepdim(&self) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Min, [], None, 1).unwrap()
     }
 
-    /// Computes the `min` reduction along the specified `axes`.
+    /// Compute the `min` reduction along the given `axes`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.min([0]).unwrap();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.min([0]).unwrap();
     /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn min(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Min, axes, None, 1)
     }
 
-    /// Computes the `min` reduction along the specified `axes`, keeping reduced dimensions.
+    /// Compute the `min` reduction along the given `axes`, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * Keeps reduced dimensions with length 1.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.min_keepdim([1]).unwrap();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.min_keepdim([1]).unwrap();
     /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn min_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Min, axes, None, 1)
     }
 
-    /// Computes the `min` reduction over all elements and casts the result to `dtype`.
+    /// Compute the `min` reduction over all elements and cast the result to
+    /// `dtype`.
     ///
-    /// # Arguments
-    /// * `dtype` — Desired output data type.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::{Tensor, DType};
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// let result = t.min_all_dtype(DType::F64);
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.min_all_dtype(DType::F64);
     /// ```
     #[must_use]
     pub fn min_all_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Min, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the `min` reduction over all elements, keeping reduced dimensions,
-    /// and casts the result to `dtype`.
+    /// Compute the `min` reduction over all elements, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
     ///
-    /// # Arguments
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.min_all_keepdim_dtype(DType::F64);
+    /// ```
     #[must_use]
     pub fn min_all_keepdim_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Min, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the `min` reduction along specified `axes`, casting the result to `dtype`.
+    /// Compute the `min` reduction along the given `axes` and cast the
+    /// result to `dtype`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.min_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn min_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Min, axes, Some(dtype), 1)
     }
 
-    /// Computes the `min` reduction along specified `axes`, keeping reduced dimensions,
-    /// and casts the result to `dtype`.
+    /// Compute the `min` reduction along the given `axes`, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.min_keepdim_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn min_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Min, axes, Some(dtype), 1)
     }
@@ -661,118 +717,132 @@ impl Tensor {
 // ---------------------------------------------------------------------------
 
 impl Tensor {
-    /// Computes the `prod` reduction over all elements.
+    /// Compute the `prod` reduction over all elements.
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// let result = t.prod_all();
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.prod_all();
     /// ```
     #[must_use]
     pub fn prod_all(&self) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Prod, [], None, 1).unwrap()
     }
 
-    /// Computes the `prod` reduction over all elements, keeping reduced dimensions.
+    /// Compute the `prod` reduction over all elements, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// Reduced axes are retained with length 1.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.prod_all_keepdim();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.prod_all_keepdim();
     /// ```
     #[must_use]
     pub fn prod_all_keepdim(&self) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Prod, [], None, 1).unwrap()
     }
 
-    /// Computes the `prod` reduction along the specified `axes`.
+    /// Compute the `prod` reduction along the given `axes`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.prod([0]).unwrap();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.prod([0]).unwrap();
     /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn prod(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Prod, axes, None, 1)
     }
 
-    /// Computes the `prod` reduction along the specified `axes`, keeping reduced dimensions.
+    /// Compute the `prod` reduction along the given `axes`, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * Keeps reduced dimensions with length 1.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::Tensor;
-    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let result = t.prod_keepdim([1]).unwrap();
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.prod_keepdim([1]).unwrap();
     /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn prod_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Prod, axes, None, 1)
     }
 
-    /// Computes the `prod` reduction over all elements and casts the result to `dtype`.
+    /// Compute the `prod` reduction over all elements and cast the result to
+    /// `dtype`.
     ///
-    /// # Arguments
-    /// * `dtype` — Desired output data type.
+    /// # Example
     ///
-    /// # Examples
-    /// ```
-    /// use zyx::{Tensor, DType};
-    /// let t = Tensor::from([1.0, 2.0, 3.0]);
-    /// let result = t.prod_all_dtype(DType::F64);
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.prod_all_dtype(DType::F64);
     /// ```
     #[must_use]
     pub fn prod_all_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Prod, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the `prod` reduction over all elements, keeping reduced dimensions,
-    /// and casts the result to `dtype`.
+    /// Compute the `prod` reduction over all elements, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
     ///
-    /// # Arguments
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.prod_all_keepdim_dtype(DType::F64);
+    /// ```
     #[must_use]
     pub fn prod_all_keepdim_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Prod, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the `prod` reduction along specified `axes`, casting the result to `dtype`.
+    /// Compute the `prod` reduction along the given `axes` and cast the
+    /// result to `dtype`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.prod_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn prod_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Prod, axes, Some(dtype), 1)
     }
 
-    /// Computes the `prod` reduction along specified `axes`, keeping reduced dimensions,
-    /// and casts the result to `dtype`.
+    /// Compute the `prod` reduction along the given `axes`, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `dtype` — Desired output data type.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.prod_keepdim_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn prod_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Prod, axes, Some(dtype), 1)
     }
@@ -783,106 +853,216 @@ impl Tensor {
 // ---------------------------------------------------------------------------
 
 impl Tensor {
-    /// Computes the variance reduction over **all elements**.
+    /// Compute the variance reduction over all elements.
     ///
-    /// # Returns
-    /// A scalar tensor containing the reduction result.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.var_all();
+    /// ```
     #[must_use]
     pub fn var_all(&self) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, [], None, 1).unwrap()
     }
 
-    /// Computes the variance reduction over all elements, keeping reduced dimensions.
+    /// Compute the variance reduction over all elements, keeping reduced
+    /// dimensions with length 1.
     ///
-    /// Reduced axes are retained with length 1.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.var_all_keepdim();
+    /// ```
     #[must_use]
     pub fn var_all_keepdim(&self) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, [], None, 1).unwrap()
     }
 
-    /// Computes the variance reduction over all elements, casting the result to `dtype`.
+    /// Compute the variance reduction over all elements and cast the result
+    /// to `dtype`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.var_all_dtype(DType::F64);
+    /// ```
     #[must_use]
     pub fn var_all_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the variance reduction along specified `axes`.
+    /// Compute the variance reduction along the given `axes`.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.var([1]).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn var(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Var, axes, None, 1)
     }
 
-    /// Computes the variance reduction along specified `axes`, keeping reduced dimensions.
+    /// Compute the variance reduction along the given `axes`, keeping reduced
+    /// dimensions with length 1.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.var_keepdim([1]).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn var_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Var, axes, None, 1)
     }
 
-    /// Computes the variance reduction along specified `axes`, casting the result to `dtype`.
+    /// Compute the variance reduction along the given `axes` and cast the
+    /// result to `dtype`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.var_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn var_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Var, axes, Some(dtype), 1)
     }
 
-    /// Computes the variance reduction along specified `axes` with a `correction` factor.
+    /// Compute the variance reduction along the given `axes` with a
+    /// `correction` factor.
     ///
-    /// # Arguments
-    /// * `axes` — Iterable of axes to reduce over.
-    /// * `correction` — Bias correction to apply.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.var_correction([1], 0).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn var_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Var, axes, None, correction)
     }
 
-    /// All correction
+    /// Compute the variance reduction over all elements with a `correction`
+    /// factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.var_all_correction(0).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When correction is out of range.
+    ///
+    /// Returns an error when the correction is out of range.
     pub fn var_all_correction(&self, correction: Dim) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Var, [], None, correction)
     }
 
-    /// Computes the variance reduction over all elements, keeping reduced dimensions and casting to `dtype`.
+    /// Compute the variance reduction over all elements, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.var_keepdim_dtype(DType::F64);
+    /// ```
     #[must_use]
     pub fn var_keepdim_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the variance reduction over all elements, keeping reduced dimensions, with `correction`.
+    /// Compute the variance reduction over all elements, keeping reduced
+    /// dimensions, with a `correction` factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.var_all_keepdim_correction(0);
+    /// ```
     #[must_use]
     pub fn var_all_keepdim_correction(&self, correction: Dim) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, [], None, correction).unwrap()
     }
 
-    /// Computes the variance reduction over all elements, casting to `dtype`, with `correction`.
+    /// Compute the variance reduction over all elements, cast to `dtype`,
+    /// with a `correction` factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = t.var_all_dtype_correction(DType::F64, 0);
+    /// ```
     #[must_use]
     pub fn var_all_dtype_correction(&self, dtype: DType, correction: Dim) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, [], Some(dtype), correction).unwrap()
     }
 
-    /// Computes the variance reduction along `axes`, keeping reduced dimensions, casting to `dtype`.
+    /// Compute the variance reduction along `axes`, keeping reduced
+    /// dimensions, and cast the result to `dtype`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.var_axes_keepdim_dtype([1], DType::F64).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn var_axes_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Var, axes, Some(dtype), 1)
     }
 
-    /// Computes the variance reduction along `axes`, keeping reduced dimensions, with `correction`.
+    /// Compute the variance reduction along `axes`, keeping reduced
+    /// dimensions, with a `correction` factor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let y = t.var_keepdim_correction([1], 0).unwrap();
+    /// ```
     ///
     /// # Errors
-    /// When axes are out of range
+    ///
+    /// Returns an error when an axis is out of range.
     pub fn var_keepdim_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Var, axes, None, correction)
     }
