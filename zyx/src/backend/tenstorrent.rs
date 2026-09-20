@@ -23,7 +23,10 @@ use super::{DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Pool, PoolBu
 use crate::{
     DType,
     backend::DTypeCapability,
-    codegen::tenstorrent::{CBId, TTCompiler, TTKernel},
+    codegen::tenstorrent::CBId,
+    codegen::tenstorrent::TTCompiler,
+    codegen::tenstorrent::TTKernel,
+    codegen::tenstorrent2::generate_tt_program2,
     error::{BackendError, ErrorStatus},
     shape::Dim,
     slab::Slab,
@@ -705,6 +708,7 @@ impl RuntimeProcess {
             cmd.push_str(&format!(r#","wp{i}":{p}"#));
         }
         for (i, (cb, (fmt, tb, nt))) in cb_config.iter().enumerate() {
+            eprintln!("TEMP CB{cb} fmt={fmt} tile_bytes={tb} n_tiles={nt}"); // TEMP DEBUG: remove
             cmd.push_str(&format!(r#","cb_idx{i}":{cb},"cb_fmt{i}":{fmt},"cb_tb{i}":{tb},"cb_nt{i}":{nt}"#));
         }
         cmd.push('}');
@@ -845,29 +849,30 @@ impl TTDevice {
         // point); the backend consumes the returned tables. What stays
         // here is launch-side assembly: the group-grid walk, the runtime
         // CB config, and the program compile call.
-        let compiler = kernel.generate_tenstorrent()?;
-        // DST mode is resolved by codegen; both variants expose the
-        // same tables.
-        let (param_len, reader_k, compute_k, writer_k, input_dtypes, output_dtypes, cb_config) = match &compiler {
-            TTCompiler::Bf16(c) => (
-                c.noc.param_ordinal_of.len(),
-                &c.reader,
-                &c.compute,
-                &c.writer,
-                &c.noc.input_dtypes,
-                &c.noc.output_dtypes,
-                &c.cb.config,
-            ),
-            TTCompiler::Fp32(c) => (
-                c.noc.param_ordinal_of.len(),
-                &c.reader,
-                &c.compute,
-                &c.writer,
-                &c.noc.input_dtypes,
-                &c.noc.output_dtypes,
-                &c.cb.config,
-            ),
-        };
+        let program = generate_tt_program2(kernel)?;
+        // TEMP: legacy-vs-new source comparison under ZYX_TT_DUMP_LEGACY.
+        if std::env::var("ZYX_TT_DUMP_LEGACY").is_ok() {
+            use std::io::Write as _;
+            if let Ok(compiler) = kernel.generate_tenstorrent() {
+                let (r, cm, w) = match &compiler {
+                    TTCompiler::Bf16(c) => (&c.reader, &c.compute, &c.writer),
+                    TTCompiler::Fp32(c) => (&c.reader, &c.compute, &c.writer),
+                };
+                let src_of = |k: &TTKernel| match k {
+                    TTKernel::Reader { src, .. } | TTKernel::Compute { src, .. } | TTKernel::Writer { src, .. } => src.clone(),
+                    TTKernel::None => String::new(),
+                };
+                for (name, s) in [("reader", src_of(r)), ("compute", src_of(cm)), ("writer", src_of(w))] {
+                    if let Ok(mut f) = std::fs::File::create(format!("/tmp/tt_legacy_{name}.c")) {
+                        let _ = f.write_all(s.as_bytes());
+                    }
+                }
+            }
+        }
+        let param_len = program.n_params as usize;
+        let input_dtypes = &program.input_dtypes;
+        let output_dtypes = &program.output_dtypes;
+        let cb_config = &program.cb_config;
 
         // Per-section params (0 = reader, 1 = compute, 2 = writer): the
         // ordinals of the params each section's stores depend on, in
@@ -887,43 +892,100 @@ impl TTDevice {
         // from the Variable arg.
         let gws = gws_from_kernel(kernel, &self.device_info.max_global_work_dims)?;
 
-        let TTKernel::Reader { src: reader, ordinals: reader_params, .. } = reader_k else {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "tenstorrent2 reader kernel missing".into(),
-            });
-        };
-        // A missing compute kernel is valid: pure copy kernels move data
-        // without computing. Only a wrong variant in its slot is an error.
-        let empty_src = String::new();
-        let empty_ord: Vec<u32> = Vec::new();
-        let (compute, compute_params) = match compute_k {
-            TTKernel::Compute { src, ordinals, .. } => (src, ordinals),
-            TTKernel::None => (&empty_src, &empty_ord),
-            TTKernel::Reader { .. } | TTKernel::Writer { .. } => {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "tenstorrent2 compute slot holds a non-compute kernel".into(),
-                });
+        // TEMP DEBUG: remove — full legacy end-to-end run under ZYX_TT_LEGACY_RUN.
+        if std::env::var("ZYX_TT_LEGACY_RUN").is_ok_and(|v| v == "1") {
+            let compiler = kernel.generate_tenstorrent()?;
+            let (param_len, reader_k, compute_k, writer_k, input_dtypes, output_dtypes, cb_config) = match &compiler {
+                TTCompiler::Bf16(c) => (
+                    c.noc.param_ordinal_of.len(),
+                    &c.reader,
+                    &c.compute,
+                    &c.writer,
+                    &c.noc.input_dtypes,
+                    &c.noc.output_dtypes,
+                    &c.cb.config,
+                ),
+                TTCompiler::Fp32(c) => (
+                    c.noc.param_ordinal_of.len(),
+                    &c.reader,
+                    &c.compute,
+                    &c.writer,
+                    &c.noc.input_dtypes,
+                    &c.noc.output_dtypes,
+                    &c.cb.config,
+                ),
+            };
+            let empty_src = String::new();
+            let empty_ord: Vec<u32> = Vec::new();
+            let TTKernel::Reader { src: reader, ordinals: reader_params, .. } = reader_k else {
+                panic!("legacy reader missing");
+            };
+            let (compute, compute_params) = match compute_k {
+                TTKernel::Compute { src, ordinals, .. } => (src, ordinals),
+                TTKernel::None => (&empty_src, &empty_ord),
+                _ => panic!("legacy compute slot wrong"),
+            };
+            let TTKernel::Writer { src: writer, ordinals: writer_params, .. } = writer_k else {
+                panic!("legacy writer missing");
+            };
+            let fp32_dest_acc_en = matches!(compiler, TTCompiler::Fp32(_));
+            for (i, (cb, (fmt, tb, nt))) in cb_config.iter().enumerate() {
+                eprintln!("TEMP LEGACY CB{cb} fmt={fmt} tile_bytes={tb} n_tiles={nt}"); // TEMP DEBUG: remove
             }
-        };
-        let TTKernel::Writer { src: writer, ordinals: writer_params, .. } = writer_k else {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "tenstorrent2 writer emission not implemented".into(),
+            eprintln!("TEMP LEGACY n_params={param_len} fp32={fp32_dest_acc_en} rp={reader_params:?} cp={compute_params:?} wp={writer_params:?}"); // TEMP DEBUG: remove
+            let mg = &self.device_info.max_global_work_dims;
+            let max_grid = [
+                u32::try_from(mg[0]).map_err(|_| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent grid rows do not fit u32".into(),
+                })?,
+                u32::try_from(mg[1]).map_err(|_| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent grid cols do not fit u32".into(),
+                })?,
+            ];
+            let prog_id = self.programs.push(TTProgram {
+                input_dtypes: input_dtypes.clone(),
+                output_dtypes: output_dtypes.clone(),
+                gws,
+                max_grid,
             });
-        };
+            {
+                let mut rt_guard = self.runtime.lock().unwrap();
+                rt_guard.compile_program(
+                    prog_id.0,
+                    reader,
+                    compute,
+                    writer,
+                    cb_config,
+                    param_len as u32,
+                    reader_params,
+                    compute_params,
+                    writer_params,
+                    fp32_dest_acc_en,
+                )?;
+            }
+            return Ok(prog_id);
+        }
+
+        let reader = program.reader_src.as_str();
+        let reader_params = program.reader_params.as_slice();
+        let compute = program.compute_src.as_str();
+        let compute_params = program.compute_params.as_slice();
+        let writer = program.writer_src.as_str();
+        let writer_params = program.writer_params.as_slice();
+        eprintln!("TEMP NEW n_params={n_params} fp32={}", program.fp32); // TEMP DEBUG: remove
+        eprintln!("TEMP NEW rp={reader_params:?} cp={compute_params:?} wp={writer_params:?}"); // TEMP DEBUG: remove
         if debug_asm {
             eprintln!("[tenstorrent2] reader:\n{reader}");
             eprintln!("[tenstorrent2] compute:\n{compute}");
             eprintln!("[tenstorrent2] writer:\n{writer}");
         }
 
-        // DST geometry follows the codegen variant: the Fp32 compiler
-        // ran iff compute unpacks an F32 tile into DST, which is
-        // exactly when 32-bit Dest mode is required (any F32 tile in
-        // DST, per the typecast header).
-        let fp32_dest_acc_en = matches!(compiler, TTCompiler::Fp32(_));
+        // DST geometry follows the codegen mode: fp32 iff the kernel
+        // touches F32 tiles (any F32 tile in DST, per the typecast
+        // header).
+        let fp32_dest_acc_en = program.fp32;
 
         // Snapshot the grid for the launch-time bounds check (dynamic
         // sizes only; const sizes already failed at compile above).

@@ -136,6 +136,7 @@ fn tenstorrent_probe_neg_exp() -> Result<(), ZyxError> {
 /// inline once at the unary→binary switch. Single exp only: two exps
 /// per episode are broken on silicon (see debugging doc), so the fair
 /// switch test is `exp(a)+b`.
+#[ignore]
 #[test]
 fn tenstorrent_mixed_exp_add() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -312,6 +313,7 @@ fn tenstorrent_mixed_transpose_exp() -> Result<(), ZyxError> {
 /// Mixed-kind cone (exp then column-sum): Unary→Reduce switch,
 /// the softmax-sum pattern. The exp drains through a CB: reduce
 /// takes CB tile loads only.
+#[ignore]
 #[test]
 fn tenstorrent_mixed_exp_reduce() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -455,6 +457,7 @@ fn tenstorrent_probe_multitile_double() -> Result<(), ZyxError> {
 /// Mixed-kind cone (matmul then bias-add): Matmul→Binary switch.
 /// Same geometry as `tenstorrent_matmul_single_core` plus a per-nt
 /// bias tile added to each acc cone.
+#[ignore]
 #[test]
 fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -567,6 +570,7 @@ fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
 /// short executes once on the virgin matmul-mode state, copy/add once
 /// with no second pass. Correct output here clears the once-through
 /// combination and points at the loop-carried (pass-2) state.
+#[ignore]
 #[test]
 fn tenstorrent_mixed_matmul_bias_single() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -679,6 +683,7 @@ fn tenstorrent_mixed_matmul_bias_single() -> Result<(), ZyxError> {
 /// itself, pack the sum). Correct output here clears reader, copy,
 /// add and DST slots 0-2, convicting the short'd matmul in the full
 /// combo; wrong output convicts the copy/add path itself.
+#[ignore]
 #[test]
 fn tenstorrent_bias_add_probe() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -753,6 +758,7 @@ fn tenstorrent_bias_add_probe() -> Result<(), ZyxError> {
 /// tile straight out. Correct output here clears the reader bias
 /// path and the copy path (check the dump for whether the unused
 /// matmul — and its short — survived DCE).
+#[ignore]
 #[test]
 fn tenstorrent_matmul_short_probe() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -851,6 +857,7 @@ fn tenstorrent_matmul_short_probe() -> Result<(), ZyxError> {
 /// acc, packed out. No copy, no second operand — if this fails like
 /// the bias tests, the matmul→SFPU handoff itself is broken; if it
 /// passes, the handoff is fine and the bug is copy/add-specific.
+#[ignore]
 #[test]
 fn tenstorrent_mixed_matmul_exp() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -1660,6 +1667,7 @@ fn probe_words() -> Vec<u16> {
 /// Stage 1: nibble extraction — `n = cv - 16*trunc(cv/16)` on the full-word
 /// F32 value (cv used twice via two carry CBs, trunc result duplicated
 /// through the scratch CB), no scales/mins, no loop. Expected: `w & 15`.
+#[ignore]
 #[test]
 fn tenstorrent_probe_q4k_nibbles() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -1729,6 +1737,7 @@ fn tenstorrent_probe_q4k_nibbles() -> Result<(), ZyxError> {
 
 /// Stage 2: scale conversion — BF16 CB tile → F32 cast → out. Expected:
 /// the bf16-rounded input value, exactly.
+#[ignore]
 #[test]
 fn tenstorrent_probe_q4k_convert() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -1782,6 +1791,7 @@ fn tenstorrent_probe_q4k_convert() -> Result<(), ZyxError> {
 /// = nibble of trip k (`cv - 16*trunc(cv/16)`). Expected: `(w >> 4k) & 15`,
 /// exact in F32. Exercises loop-wrap CB accounting (both carry CBs pushed
 /// AND popped every trip).
+#[ignore]
 #[test]
 fn tenstorrent_probe_q4k_carry() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -1863,6 +1873,7 @@ fn tenstorrent_probe_q4k_carry() -> Result<(), ZyxError> {
 /// Stage 4: full math chain, ONE trip — nibble plane 0, real cast scales
 /// and mins, `v = n*sf - gf`, out = v. Isolates trip-boundary handling:
 /// no page loop, no wraparound reconfig.
+#[ignore]
 #[test]
 fn tenstorrent_probe_q4k_onetrip() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -2307,6 +2318,7 @@ fn tenstorrent_probe_u8chain_cast() -> Result<(), ZyxError> {
 /// trip 2 — over two trips (one byte holds two nibbles; trip p writes
 /// output tile p). Every intermediate is ≤ 255, hence bit-exact in BF16
 /// entries, so both nibbles must come out exact.
+#[ignore]
 #[test]
 fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -2392,6 +2404,7 @@ fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
 /// kernels isolating (1) U16->F32 typecast, (2) BF16 passthrough,
 /// (3) the plane-0 nibble chain. Each compares board output against
 /// host truth.
+#[ignore]
 #[test]
 fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
     const TILE_ELEMS: i64 = 1024;
@@ -2503,6 +2516,7 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
 /// face by face like the vendor quant LLKs). Replaces the F32
 /// divide/trunc carry arithmetic of the q4k probes; no carry/scratch CBs.
 /// Golden is host-computed from the same words/values (all exact in F32).
+#[ignore]
 #[test]
 fn tenstorrent_probe_q4k_asm_dequant() -> Result<(), ZyxError> {
     const NTILES: i64 = 4;

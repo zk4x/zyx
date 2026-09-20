@@ -266,7 +266,7 @@ fn const_f32_bits(kernel: &Kernel, op: OpId) -> Option<u32> {
 /// kernel IR is unchanged — no new `UOp`, no other backend touched.
 /// A missed match only costs speed: the plain composite still emits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum FusedKind {
+pub(crate) enum FusedKind {
     Sigmoid,
     Silu,
 }
@@ -275,21 +275,21 @@ enum FusedKind {
 /// the single call subsumes (root excluded — the root stays in the
 /// section op list, the inners are filtered out of it).
 #[derive(Clone, Debug)]
-struct FusedPat {
-    kind: FusedKind,
-    x: OpId,
-    inners: Vec<OpId>,
+pub(crate) struct FusedPat {
+    pub(crate) kind: FusedKind,
+    pub(crate) x: OpId,
+    pub(crate) inners: Vec<OpId>,
 }
 
 impl FusedKind {
-    fn init_name(self) -> &'static str {
+    pub(crate) fn init_name(self) -> &'static str {
         match self {
             FusedKind::Sigmoid => "sigmoid_tile_init();",
             FusedKind::Silu => "silu_tile_init();",
         }
     }
 
-    fn call_name(self) -> &'static str {
+    pub(crate) fn call_name(self) -> &'static str {
         match self {
             FusedKind::Sigmoid => "sigmoid_tile",
             FusedKind::Silu => "silu_tile",
@@ -303,7 +303,7 @@ impl FusedKind {
     /// only by the pattern (the single call transforms its slot in
     /// place). Anything else falls back to the plain composite —
     /// slower, never wrong.
-    fn match_pat(kernel: &Kernel, data: &SectionData, consumers: &Map<OpId, Vec<OpId>>, op: OpId) -> Option<FusedPat> {
+    pub(crate) fn match_pat(kernel: &Kernel, data: &SectionData, consumers: &Map<OpId, Vec<OpId>>, op: OpId) -> Option<FusedPat> {
         let (dt, layout) = data.dtypes.get(&op).copied()?;
         if !matches!(layout, MemLayout::Tile { .. }) || !matches!(dt, DType::F32 | DType::BF16) {
             return None;
@@ -811,7 +811,7 @@ impl Kernel {
     /// and the input/output dtypes.
     #[allow(unused_must_use)]
     pub(crate) fn generate_tenstorrent(&self) -> Result<TTCompiler, BackendError> {
-        Kernel::generate_tenstorrent2(self);
+        //Kernel::generate_tenstorrent2(self);
         // DST mode is a type-level constant but only known at runtime:
         // 32-bit iff the kernel touches F32 tiles (F32 storage, e.g.
         // matmul accumulation into an F32 circular acc/output tile).
@@ -3437,6 +3437,7 @@ impl<const DSTBF16: bool> Compiler<DSTBF16> {
         // loads or no stores (pure movement) need no startup.
         if let (Some(&in0), Some(&out)) = (loaded_order.first(), stored_first.as_ref()) {
             let in1 = loaded_order.get(1).copied().unwrap_or(in0);
+            eprintln!("TEMP LEGACY startup loaded_order={loaded_order:?} stored_first={stored_first:?}"); // TEMP DEBUG: remove
             self.tl.set_startup([in0, in1, out]);
         }
 
