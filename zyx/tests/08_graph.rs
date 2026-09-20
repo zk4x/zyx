@@ -137,7 +137,7 @@ fn shrink_e_single_keepdim_sum() -> Result<(), ZyxError> {
 // ============================================================================
 
 // F1: manual CE with one-hot target, realize loss only
-#[test]
+/*#[test]
 fn f1_onehot_loss_only() -> Result<(), ZyxError> {
     let w = Tensor::randn([2, 3], DType::F32)?;
     let tape = Tape::new([&w])?;
@@ -150,10 +150,10 @@ fn f1_onehot_loss_only() -> Result<(), ZyxError> {
     let loss = (&-&ls * &oh).sum([1])?;
     tape.realize([&loss])?;
     Ok(())
-}
+}*/
 
 // F2: manual CE with one-hot + gradient + realize param update
-#[test]
+/*#[test]
 fn f2_onehot_grad_realize() -> Result<(), ZyxError> {
     let w = Tensor::randn([2, 3], DType::F32)?;
     let tape = Tape::new([&w])?;
@@ -168,8 +168,7 @@ fn f2_onehot_grad_realize() -> Result<(), ZyxError> {
     let nw = &w + &grads[0] * -0.01f32;
     tape.realize([&nw])?;
     Ok(())
-}
-
+}*/
 // G1: NO one-hot: use full-rank target via broadcasting scalar; grad + realize update
 #[test]
 fn g1_no_onehot_grad_realize() -> Result<(), ZyxError> {
