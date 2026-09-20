@@ -865,18 +865,16 @@ impl Compiler {
         let mut next = Vec::with_capacity(old.len());
         let mut state = DstState::Unlocked;
         let mut section = 0u8;
-        let math_lock = |next: &mut Vec<TTOp>, state: &mut DstState| {
-            match *state {
-                DstState::MathLock => {}
-                DstState::PackLock => {
-                    next.push(TTOp::PackUnlock);
-                    next.push(TTOp::MathLock);
-                    *state = DstState::MathLock;
-                }
-                DstState::Unlocked => {
-                    next.push(TTOp::MathLock);
-                    *state = DstState::MathLock;
-                }
+        let math_lock = |next: &mut Vec<TTOp>, state: &mut DstState| match *state {
+            DstState::MathLock => {}
+            DstState::PackLock => {
+                next.push(TTOp::PackUnlock);
+                next.push(TTOp::MathLock);
+                *state = DstState::MathLock;
+            }
+            DstState::Unlocked => {
+                next.push(TTOp::MathLock);
+                *state = DstState::MathLock;
             }
         };
         for op in old {

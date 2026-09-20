@@ -153,7 +153,19 @@ impl Graph {
                     Node::Assign { dst, src } => vec![*dst, *src],
                     Node::After { x, dep } => vec![*x, *dep],
                     Node::ToDevice { x, .. } | Node::Contiguous { x, .. } => vec![*x],
-                    Node::Index { vec, .. } => vec![*vec],
+                    // For Index over a Stack the vec edge is shape metadata
+                    // (a dim the consumer consumes). For Index over a
+                    // multi-output kernel (Custom) the vec edge is the
+                    // producer, not data — the Index class itself is the
+                    // producer boundary and must not pull the kernel class
+                    // into the reference-count walk.
+                    Node::Index { vec, .. } => {
+                        if matches!(&self.nodes[*vec].node, Node::Stack { .. }) {
+                            vec![*vec]
+                        } else {
+                            vec![]
+                        }
+                    }
                     Node::Kernel { inputs, .. } => inputs.to_vec(),
                     Node::Custom { inputs, .. } => inputs.to_vec(),
                 };
@@ -215,10 +227,19 @@ impl Graph {
                         // the expression on demand (missing from visited
                         // ⇒ replay).
                     }
-                    Node::Index { .. } => {
-                        // Output selection is never materialized: consumers
-                        // replay the element expression on demand.
-                    }
+                    Node::Index { vec, .. } => match &self.nodes[vec].node {
+                        // Dim selection over a Stack of scalars: replayed on
+                        // demand by consumers, never materialized.
+                        Node::Stack { .. } => {}
+                        // Output selection of a multi-output kernel: the
+                        // Custom kernel stored this buffer — consumers load
+                        // it like any AOT kernel output.
+                        Node::Custom { .. } | Node::Kernel { .. } => {
+                            let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
+                            visited.insert(cid, (kid, op_id));
+                        }
+                        n => unreachable!("Index vec must be a Stack, Custom or Kernel class, got {n:?}"),
+                    },
                     Node::Stack { ref ops } => {
                         // Copy the element list out of the node so the shared
                         // borrow of self.nodes ends before we mutate kernels.
@@ -1342,7 +1363,11 @@ impl Graph {
                 _ => None,
             };
             if let Some((inputs, outputs, program_id)) = custom {
-                let class_of = self.nodes[nid].class_of;
+                // The twin joins the FIRST output class (the Index accessor
+                // heading it), mirroring backend kernel twins whose
+                // `class_of` is the output class — downstream discovery of
+                // the twin's inputs walks `class_nodes(output_class)`.
+                let class_of = outputs[0];
                 self.mint_node(Node::Kernel { inputs, outputs: outputs.clone().into(), program_id, time: 10 }, class_of);
             }
         }

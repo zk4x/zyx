@@ -541,9 +541,6 @@ impl Graph {
                     break;
                 }
             }
-            if visited.contains(&cid) {
-                break;
-            }
         }
         topo.reverse();
         topo

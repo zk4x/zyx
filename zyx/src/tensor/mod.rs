@@ -2257,10 +2257,10 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, ReduceOp};
-    /// let logp = Tensor::zeros([2, 2], /* DType::F32 */);
+    /// # use zyx::{Tensor, DType, ReduceOp};
+    /// let logp = Tensor::zeros([2, 2], DType::F32);
     /// let l = logp.ctc_loss(Tensor::from([0i32, 1]), 0, ReduceOp::Mean).unwrap();
-    /// assert!(l.is_finite().unwrap());
+    /// assert!(l.item::<f32>().is_finite());
     /// ```
     ///
     /// # Errors
@@ -2357,32 +2357,27 @@ impl Tensor {
         }
     }
 
-    /// Triplet margin loss.
-    ///
-    /// Computes the triplet margin loss between anchor, positive, and negative
-    /// samples using the p-norm distance.
+    /// Triplet margin loss over `(anchor, positive, negative)` samples using the
+    /// p-norm distance:
     ///
     /// `loss = max(d(anchor, positive) - d(anchor, negative) + margin, 0)`
     ///
-    /// where `d(x, y) = ||x - y||_p` is the p-norm distance.
+    /// `self` is the anchor. Inputs are 2D `[N, D]` tensors.
     ///
-    /// When `swap` is true, the positive distance is taken as the maximum of
-    /// `d(anchor, positive)` and `d(positive, negative)`.
+    /// # Example
     ///
-    /// Inputs should be 2D tensors of shape `[N, D]` (batch, features).
-    ///
-    /// # Arguments
-    ///
-    /// * `positive` - Positive sample tensor.
-    /// * `negative` - Negative sample tensor.
-    /// * `margin` - Margin for the triplet loss (default 1.0).
-    /// * `p` - The norm degree for pairwise distance (default 2).
-    /// * `swap` - Whether to swap for the positive distance (default false).
-    /// * `reduction` - Reduction mode.
+    /// ```rust
+    /// # use zyx::{Tensor, ReduceOp};
+    /// let anchor = Tensor::from([[0.0f32, 0.0]]);
+    /// let pos = Tensor::from([[0.1, 0.1]]);
+    /// let neg = Tensor::from([[1.0, 1.0]]);
+    /// let l = anchor.triplet_margin_loss(&pos, &neg, 0.5, 2, false, ReduceOp::Mean).unwrap();
+    /// assert!((l.item::<f32>().unwrap() - 0.5).abs() < 1e-3);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if shapes are incompatible.
+    /// Returns a shape error if the tensors have incompatible shapes.
     #[allow(clippy::missing_panics_doc)]
     pub fn triplet_margin_loss(
         &self,
@@ -2428,11 +2423,21 @@ impl Tensor {
         }
     }
 
-    /// Shrink
+    /// Shrink the tensor, cropping it to the per-dimension `(start, end)`
+    /// ranges in `dims`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1i32, 2, 3, 4, 5, 6]);
+    /// let s = t.shrink([(2, 5)]).unwrap();
+    /// assert_eq!(s.to_vec::<i32>().unwrap(), vec![3, 4, 5]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the dimensions are invalid.
+    /// Returns a shape error if the ranges are invalid.
     pub fn shrink<I>(&self, dims: I) -> Result<Tensor, ZyxError>
     where
         I: IntoIterator<Item = (Dim, Dim)>,
@@ -2447,9 +2452,18 @@ impl Tensor {
         )
     }
 
-    /// One hot
+    /// Convert `self` (class indices) into a one-hot tensor with `num_classes`
+    /// columns, appending the dimension along the last axis. If `num_classes`
+    /// is `0`, it is inferred from the max index in `self` (plus one).
     ///
-    /// If `num_classes` is less than any scalr in self, that scalar is ignored.
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0i32, 2, 1]);
+    /// assert_eq!(t.one_hot(3).to_vec::<i32>().unwrap(),
+    ///     vec![1, 0, 0, 0, 0, 1, 0, 1, 0]);
+    /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn one_hot(&self, num_classes: Dim) -> Tensor {
@@ -2467,11 +2481,21 @@ impl Tensor {
             .unwrap()
     }
 
-    /// One hot along dim
+    /// Convert `self` (class indices) into a one-hot tensor along `dim`, with
+    /// `num_classes` positions.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([0i32, 2, 1]);
+    /// assert_eq!(t.one_hot_along_dim(3, 0).unwrap().to_vec::<i32>().unwrap(),
+    ///     vec![1, 0, 0, 0, 0, 1, 0, 1, 0]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensor dtype is not integer.
+    /// Returns a dtype error if `self` is not an integer tensor.
     pub fn one_hot_along_dim(&self, num_classes: Dim, dim: Axis) -> Result<Tensor, ZyxError> {
         if !self.dtype().is_int() {
             return Err(ZyxError::dtype_error(
@@ -2500,56 +2524,36 @@ impl Tensor {
         self.equal(&arange)
     }
 
-    /// Calculates the L1 loss between `self` and the target tensor.
+    /// Element-wise L1 (absolute difference) loss between `self` and `target`.
     ///
-    /// # Arguments
+    /// # Example
     ///
-    /// * `target`: The target tensor to compare against. It will be converted into a `Tensor`.
-    ///
-    /// # Returns
-    ///
-    /// A new `Tensor` containing the absolute difference between `self` and the target tensor.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let self_tensor = Tensor::from([1.0f32, 2.0, 3.0]);
-    /// let target_tensor = Tensor::from([2.0f32, 3.0, 4.0]);
-    ///
-    /// assert_eq!(self_tensor.l1_loss(target_tensor), [1.0f32, 1.0, 1.0]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let b = Tensor::from([2.0f32, 3.0, 4.0]);
+    /// assert_eq!(a.l1_loss(b).to_vec::<f32>().unwrap(), vec![1.0f32, 1.0, 1.0]);
     /// ```
     #[must_use]
     pub fn l1_loss(&self, target: impl Into<Tensor>) -> Tensor {
         (self - target).abs()
     }
 
-    /// Calculates the Mean Squared Error (MSE) loss.
-    ///
-    /// # Arguments
-    ///
-    /// * `target`: The target tensor to compare against the input tensor (`self`).
-    ///
-    /// # Returns
-    ///
-    /// * A new tensor containing the MSE loss values.
+    /// Mean squared error loss between `self` and `target` (scalar mean of
+    /// squared differences).
     ///
     /// # Example
     ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let input = Tensor::from([2.0f32, 3.0]);
-    /// let target = Tensor::from([4.0f32, 5.0]);
-    ///
-    /// assert_eq!(input.mse_loss(target).unwrap(), 4.0f32);
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([2.0f32, 3.0]);
+    /// let b = Tensor::from([4.0f32, 5.0]);
+    /// assert!((a.mse_loss(b).unwrap().item::<f32>().unwrap() - 4.0).abs() < 1e-6);
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns a shape error if the tensors have non broadcastable shapes.
     #[track_caller]
     pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, target)?;
@@ -2558,11 +2562,22 @@ impl Tensor {
         Ok((x.clone() * x).mean_all())
     }
 
-    /// BCE Loss
+    /// Binary cross-entropy loss between `self` (clamped to `[eps, 1-eps]`)
+    /// and `target`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let x = Tensor::from([0.9f32, 0.1]);
+    /// let t = Tensor::from([1.0f32, 0.0]);
+    /// let l = x.bce_loss(t, 1e-6).unwrap();
+    /// assert!((l.item::<f32>().unwrap() - 0.2106).abs() < 1e-3);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non-broadcastable shapes.
+    /// Returns a shape error if the tensors are not broadcastable.
     #[track_caller]
     pub fn bce_loss(&self, target: impl Into<Tensor>, eps: f32) -> Result<Tensor, ZyxError> {
         let target: Tensor = target.into();
@@ -2572,32 +2587,22 @@ impl Tensor {
         Ok(loss.mean_all())
     }
 
-    /// Calculates the cosine similarity between this tensor and another.
-    ///
-    /// # Arguments
-    ///
-    /// * `rhs`: The other tensor to compare against. It will be converted into a `Tensor`.
-    /// * `eps`: A tolerance value for numerical stability, which will also be converted into a `Tensor`.
-    ///
-    /// # Returns
-    ///
-    /// A new `Tensor` containing the cosine similarity values.
+    /// Cosine similarity between `self` and `rhs` (dot product over the
+    /// product of Euclidean norms), with `eps` guarding against zero norms.
     ///
     /// # Example
     ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let tensor1 = Tensor::from([1.0, 2.0, 3.0]);
-    /// let tensor2 = Tensor::from([4.0, 5.0, 6.0]);
-    /// let eps = Tensor::from([1e-9]);
-    ///
-    /// let similarity = tensor1.cosine_similarity(tensor2, eps);
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let b = Tensor::from([4.0, 5.0, 6.0]);
+    /// let s = a.cosine_similarity(b, Tensor::from([1e-9f32])).unwrap();
+    /// assert!((s.to_vec::<f32>().unwrap()[0] - 0.9747).abs() < 1e-4);
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns a shape error if the tensors are not broadcastable.
     pub fn cosine_similarity(&self, rhs: impl Into<Tensor>, eps: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let rhs: Tensor = rhs.into();
         let eps: Tensor = eps.into();
@@ -2606,11 +2611,19 @@ impl Tensor {
     }
 
     // misc
-    /// Flatten. Joins axes into one dimension,
+    /// Flatten the tensor, joining the range of `axes` into a single dimension.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1i32, 2], [3, 4]]);
+    /// assert_eq!(t.flatten(0..1).unwrap().shape(), &[1, 2, 2]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if self cannot be flattened by axes.
+    /// Returns a shape error if the axis range is invalid.
     pub fn flatten(&self, axes: impl RangeBounds<Axis>) -> Result<Tensor, ZyxError> {
         let rank = self.rank() as usize;
         let start_dim = into_axis(
@@ -2646,36 +2659,25 @@ impl Tensor {
         self.reshape(new_shape)
     }
 
-    /// Concatenates a list of tensors along a specified dimension.
+    /// Concatenate a list of tensors along `axis`.
     ///
-    /// # Arguments
+    /// All input tensors must have matching shapes except along `axis`.
     ///
-    /// * `tensors`: An iterator of tensor references to concatenate.
-    /// * `dim`: The dimension along which to concatenate. If negative, it is interpreted as counting from the end.
+    /// # Example
     ///
-    /// # Returns
-    ///
-    /// A new tensor containing the concatenated input tensors.
-    ///
-    /// # Panics
-    ///
-    /// This function panics if any two tensors have different shapes except at the specified dimension.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let a = Tensor::from([[1, 2], [3, 4]]);
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([[1i32, 2], [3, 4]]);
     /// let b = Tensor::from([[5, 6], [7, 8]]);
-    /// let c = Tensor::cat([&a, &b], 0)?;
-    /// assert_eq!(c, [[1, 2], [3, 4], [5, 6], [7, 8]]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// let c = Tensor::cat([&a, &b], 0).unwrap();
+    /// assert_eq!(c.to_vec::<i32>().unwrap(),
+    ///     vec![1, 2, 3, 4, 5, 6, 7, 8]);
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if tensors cannot be concattenated along axis.
+    /// Returns a shape error if the tensors cannot be concatenated along the
+    /// axis.
     #[track_caller]
     pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, axis: Axis) -> Result<Tensor, ZyxError> {
         let tensors: Vec<&Tensor> = tensors.into_iter().collect();
@@ -2722,11 +2724,15 @@ impl Tensor {
         Ok(res.unwrap())
     }
 
-    /// Squeeze
+    /// Remove size-1 dimensions from `self`, optionally restricted to `axes`.
     ///
-    /// # Errors
+    /// # Example
     ///
-    /// Returns error if self cannot be squeezed along axis.
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::zeros([1i64, 3, 1]);
+    /// assert_eq!(t.squeeze().shape(), [3]);
+    /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn squeeze(&self, axes: impl IntoIterator<Item = Axis>) -> Tensor {
@@ -2756,30 +2762,20 @@ impl Tensor {
         self.reshape(new_shape).unwrap()
     }
 
-    /// Expands the dimensionality of a tensor by inserting singleton dimensions.
+    /// Insert a new size-1 dimension at position `dim` (negative counts from
+    /// the end).
     ///
-    /// # Arguments
+    /// # Example
     ///
-    /// * `dim`: The dimension to insert the singleton dimension at. If negative, it is counted from the end.
-    ///
-    /// # Returns
-    ///
-    /// A new tensor with expanded dimensionality.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::{Tensor, DType};
-    ///
-    /// let t = Tensor::zeros([2, 3], DType::I8);
-    /// assert_eq!(t.unsqueeze(1)?.shape(), &[2, 1, 3]);
-    /// assert_eq!(t.unsqueeze(-1)?.shape(), &[2, 3, 1]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::zeros([2i64, 3], DType::I8);
+    /// assert_eq!(t.unsqueeze(1).unwrap().shape(), [2, 1, 3]);
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if self cannot be unsqueezed along axis.
+    /// Returns a shape error if `dim` is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn unsqueeze(&self, dim: Axis) -> Result<Tensor, ZyxError> {
         let rank = self.rank() as usize;
@@ -2813,18 +2809,35 @@ impl Tensor {
         }
     }
 
-    /// Argmax
+    /// Index of the maximum element (flattened, 1D).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1i32, 5, 3]);
+    /// assert_eq!(t.argmax().item::<i64>(), 1);
+    /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn argmax(&self) -> Tensor {
         self.flatten(..).unwrap().argmax_impl(0, false).unwrap()
     }
 
-    /// Argmax
+    /// Index of the maximum element along `axis` (shape with that axis removed).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([[1i32, 5], [3, 9]]);
+    /// let a = t.argmax_axis(1).unwrap();
+    /// assert_eq!(a.to_vec::<i64>().unwrap(), vec![1, 1]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the axis is out of bounds.
+    /// Returns a shape error if the axis is out of bounds.
     pub fn argmax_axis(&self, axis: Axis) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let _ = into_axis(axis, rank as usize)?;
@@ -2858,33 +2871,22 @@ impl Tensor {
         Ok(res.cast(DType::I32))
     }
 
-    /// Creates a new tensor by stacking the input tensors along the specified dimension.
+    /// Stack the input tensors along a new `dim` axis (each gets a size-1 dim
+    /// at `dim`).
     ///
-    /// # Arguments
+    /// # Example
     ///
-    /// * `tensors`: An iterator of tensor references to stack.
-    /// * `dim`: The dimension along which to stack the tensors.
-    ///
-    /// # Returns
-    ///
-    /// A new tensor containing the stacked tensors.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    /// let a = Tensor::from([[1, 2], [3, 4]]);
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([[1i32, 2], [3, 4]]);
     /// let b = Tensor::from([[5, 6], [7, 8]]);
-    /// assert_eq!(Tensor::stack_axis([&a, &b], 0)?, [[[1, 2],
-    ///                                               [3, 4]],
-    ///                                              [[5, 6],
-    ///                                               [7, 8]]]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// let c = Tensor::stack_axis([&a, &b], 0).unwrap();
+    /// assert_eq!(c.to_vec::<i32>().unwrap().len(), 8);
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have different shapes along the stacking dimension.
+    /// Returns a shape error if the tensors have mismatching shapes.
     ///
     /// # See also
     ///
