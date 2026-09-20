@@ -2905,7 +2905,21 @@ impl Tensor {
         }
     }
 
-    /// Stacks the given tensors along a new leading axis.
+    /// Stack the given (identically-shaped) tensors along a new leading axis.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([1i32, 2, 3]);
+    /// let b = Tensor::from([4, 5, 6]);
+    /// let c = Tensor::stack(&[a.clone(), b]).unwrap();
+    /// assert_eq!(c.to_vec::<i32>().unwrap().len(), 6);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a shape error if the tensors have mismatching shapes.
     pub fn stack(tensors: &[Tensor]) -> Result<Tensor, ZyxError> {
         if tensors.is_empty() {
             return Err(ZyxError::shape_error("stack: empty".into()));
@@ -2923,11 +2937,20 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// Split tensor into multiple tensors at given dim/axis
+    /// Split `self` into sub-tensors of the given `sizes` along `axis`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1i32, 2, 3, 4, 5, 6]);
+    /// let parts = t.split([2, 3, 1], 0).unwrap();
+    /// assert_eq!(parts.len(), 3);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if self cannot be split along axis.
+    /// Returns a shape error if `sizes` do not sum to the axis length.
     #[allow(clippy::missing_panics_doc)]
     pub fn split(&self, sizes: impl IntoIterator<Item = impl Into<Tensor>>, axis: isize) -> Result<Vec<Tensor>, ZyxError> {
         // assert all_int(self.shape), f"does not support symbolic shape {self.shape}"
@@ -2972,26 +2995,45 @@ impl Tensor {
         Ok(res)
     }
 
-    /// Masked fill
+    /// Replace elements of `self` with `value` where `mask` is true.
     ///
     /// # Note
     ///
     /// Delegates to `where_`, so it inherits its branchless decomposition and
-    /// its ±inf limitation: filling with ±inf (or self containing ±inf on
-    /// kept elements) produces `NaN` (`0 * ±inf`). Use a large finite value
-    /// instead, or a host-built mask tensor added to the input.
+    /// its ±inf limitation: filling with ±inf (or `self` containing ±inf on
+    /// kept elements) produces `NaN`. Use a finite value instead.
     // TODO: possibly for some models in the future a ternary where op will be
     // needed here (graph node + kernel IR + backends); then masked_fill can
     // support ±inf values.
     ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([1i32, 2, 3]);
+    /// let m = Tensor::from([false, true, false]);
+    /// assert_eq!(a.masked_fill(m, 0i32).unwrap().to_vec::<i32>().unwrap(),
+    ///     vec![1, 0, 3]);
+    /// ```
+    ///
     /// # Errors
     ///
-    /// Returns error if self cannot be masked with mask.
+    /// Returns a shape error if `self` and `mask` are not broadcastable.
     pub fn masked_fill(&self, mask: impl Into<Tensor>, value: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         mask.into().where_(value, self.clone())
     }
 
-    /// Tri
+    /// Triangular matrix with `1`s on and below the `diagonal` and `0`s above
+    /// (shape `[r, c]`).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::tri(3, 3, 0, DType::I32);
+    /// assert_eq!(t.to_vec::<i32>().unwrap(),
+    ///     vec![1, 0, 0, 1, 1, 0, 1, 1, 1]);
+    /// ```
     #[must_use]
     #[track_caller]
     #[allow(clippy::missing_panics_doc)]
@@ -3015,31 +3057,66 @@ impl Tensor {
         }
     }
 
-    /// Returns upper triangular part of the input tensor, other elements are set to zero
+    /// Upper-triangular part of `self` (elements on/above `diagonal` kept, rest
+    /// zeroed).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([[1i32, 2, 3], [4, 5, 6]]);
+    /// let u = a.triu(0).unwrap().to_vec::<i32>().unwrap();
+    /// assert_eq!(u, vec![1, 2, 3, 0, 5, 6]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensor rank is less than 2.
+    /// Returns a shape error if the tensor rank is less than 2.
     pub fn triu(&self, diagonal: i64) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal, device=self.device, dtype=dtypes.bool).where(self, self.zeros_like())
         let [r, c] = self.rdims::<2>()?;
         Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal, DType::Bool).where_(self, Tensor::zeros_like(self))
     }
 
-    /// Returns lower triangular part of the input tensor, other elements are set to zero
+    /// Lower-triangular part of `self` (elements on/below `diagonal` kept, rest
+    /// zeroed).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([[1i32, 2, 3], [4, 5, 6]]);
+    /// let l = a.tril(0).unwrap().to_vec::<i32>().unwrap();
+    /// assert_eq!(l, vec![1, 0, 0, 4, 5, 0]);
+    /// ```
+    ///
     /// # Errors
-    /// Returns error if self's rank < 2
+    ///
+    /// Returns a shape error if the tensor rank is less than 2.
     pub fn tril(&self, diagonal: i64) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal+1, device=self.device, dtype=dtypes.bool).where(self.zeros_like(), self)
         let [r, c] = self.rdims::<2>()?;
         Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal + 1, DType::Bool).where_(Tensor::zeros_like(self), self)
     }
 
-    /// Pooling function with kernel size, stride and dilation
+    /// Strided pooling over the last two dimensions using the given
+    /// `kernel_size`, `stride`, and `dilation`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let x = Tensor::from([[1.0f32, 2.0, 3.0, 4.0],
+    ///                        [5.0, 6.0, 7.0, 8.0],
+    ///                        [9.0, 10.0, 11.0, 12.0],
+    ///                        [13.0, 14.0, 15.0, 16.0]]);
+    /// let p = x.pool([2, 2], [2, 2], [1, 1]).unwrap();
+    /// assert_eq!(p.to_vec::<f32>().unwrap().len(), 4);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if self cannot be pooled with stride and dilation.
+    /// Returns a shape error if the pooling parameters are incompatible.
     #[allow(clippy::missing_panics_doc)]
     pub fn pool(
         &self,
@@ -3145,42 +3222,26 @@ impl Tensor {
         Ok(xup)
     }
 
-    /// Performs an *N*-dimensional convolution on the tensor.
+    /// Perform an N-dimensional convolution over `self`.
     ///
-    /// This method supports arbitrary dimensionality (1D, 2D, 3D, etc.) and
-    /// optional grouping, stride, dilation, and padding parameters.
-    ///
-    /// # Parameters
-    /// - `weight`: Convolution kernel tensor of shape `[out_channels, in_channels / groups, ...]`.
-    /// - `bias`: Optional bias tensor added to the output. Use `None` for no bias.
-    /// - `groups`: Number of groups to divide the input and output channels into.
-    /// - `stride`: Stride (step size) of the convolution, given per spatial dimension.
-    /// - `dilation`: Spacing between kernel elements, given per spatial dimension.
-    /// - `padding`: Number of padding elements added to each side per spatial dimension.
-    ///
-    /// # Returns
-    /// A new [`Tensor`] containing the result of the convolution.
+    /// `weight` has shape `[out_channels, in_channels / groups, ...]`;
+    /// `stride`, `dilation`, and `padding` are given per spatial dimension.
     ///
     /// # Example
-    /// ```
+    ///
+    /// ```rust
     /// # use zyx::{Tensor, DType};
-    ///
-    /// // Input tensor: shape [1, 1, 3, 3]
-    /// let t = Tensor::arange(0, 9, 1)?
-    ///     .reshape([1, 1, 3, 3])?;
-    ///
-    /// // Kernel tensor: shape [1, 1, 2, 2]
+    /// let t = Tensor::arange(0, 9, 1).unwrap()
+    ///     .reshape([1, 1, 3, 3]).unwrap();
     /// let w = Tensor::ones([1, 1, 2, 2], DType::F32);
-    ///
-    /// // Perform convolution (no bias, 1 group, stride=1, dilation=1, padding=0)
-    /// let out = t.conv(&w, None, 1, [1, 1], [1, 1], [0, 0])?;
-    ///
-    /// println!("{out}");
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// let out = t.conv(&w, None, 1, [1, 1], [1, 1], [0, 0]).unwrap();
+    /// assert_eq!(out.shape(), [1, 1, 2, 2]);
     /// ```
     ///
     /// # Errors
-    /// Returns an error if the tensor shapes are incompatible for convolution.
+    ///
+    /// Returns a shape error if the tensor shapes are incompatible for
+    /// convolution.
     #[allow(clippy::missing_panics_doc)]
     pub fn conv(
         &self,
@@ -3305,11 +3366,24 @@ impl Tensor {
         pads[-1-dim*2] += s*(o-1) + (d*(k-1)+1) - (i+pB+pA) - smax(s*(o-1) - (pB+i-1), 0)
       return pads*/
 
-    /// Max pool
+    /// Max pooling over the last two dimensions with the given `kernel_size`,
+    /// `stride`, `dilation`, and `padding`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let x = Tensor::from([[1.0f32, 2.0, 3.0, 4.0],
+    ///                        [5.0, 6.0, 7.0, 8.0],
+    ///                        [9.0, 10.0, 11.0, 12.0],
+    ///                        [13.0, 14.0, 15.0, 16.0]]);
+    /// let p = x.max_pool([2, 2], [2, 2], [1, 1], [(0, 0), (0, 0)], false, false).unwrap();
+    /// assert_eq!(p.to_vec::<f32>().unwrap(), vec![6.0, 8.0, 14.0, 16.0]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the kernel size, stride, or padding is invalid.
+    /// Returns a shape error if the kernel size, stride, or padding is invalid.
     pub fn max_pool(
         &self,
         kernel_size: impl IntoIterator<Item = impl Into<Tensor>>,
@@ -3347,28 +3421,20 @@ impl Tensor {
         todo!()
     }
 
-    /// Creates a new tensor by repeating the input tensor along its dimensions.
+    /// Repeat `self` along each dimension by the counts in `repeats`. If `repeats`
+    /// is shorter than the rank, it is padded with ones at the front.
     ///
-    /// The `repeats` parameter specifies how many times to repeat each dimension of the tensor. If the length of `repeats`
-    /// is less than the rank of the tensor, it will be padded with ones at the beginning.
+    /// # Example
     ///
-    /// # Examples
-    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from(vec![1i32, 2, 3]);
+    /// assert_eq!(t.repeat([2]).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 1, 2, 3]);
     /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let arr = Tensor::from(vec![1, 2, 3]);
-    /// assert_eq!(arr.repeat([2])?, [1, 2, 3, 1, 2, 3]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Returns
-    ///
-    /// Returns a new tensor with the repeated values.
     ///
     /// # Errors
     ///
-    /// Returns error if the input tensor has zero dimensions.
+    /// Returns a shape error if the tensor has zero dimensions.
     #[allow(clippy::missing_panics_doc)]
     pub fn repeat(&self, repeats: impl IntoIterator<Item = impl Into<Tensor>>) -> Result<Tensor, ZyxError> {
         let repeats: Vec<Dim> = repeats.into_iter().map(|s| s.into().item::<i64>()).collect();
@@ -3389,55 +3455,23 @@ impl Tensor {
         Ok(x)
     }
 
-    /// Applies Rotary Positional Encoding (`RoPE`) to a tensor.
-    ///
-    /// This method computes `RoPE` by taking two tensors representing sine and cosine frequency components,
-    /// reshapes them appropriately, and combines them with the given input tensor to produce a new tensor
-    /// representing the positional encodings.
-    ///
-    /// # Arguments
-    ///
-    /// * `sine_frequencies` - A tensor containing the sine frequency components for the `RoPE` computation.
-    /// * `cosine_frequencies` - A tensor containing the cosine frequency components for the `RoPE` computation.
-    ///
-    /// # Returns
-    ///
-    /// * `Result<Tensor, ZyxError>` - A `Result` containing either the computed tensor with positional encodings
-    ///   or an error describing the issue (e.g., shape mismatch, dtype mismatch, etc.).
-    ///
-    /// # Errors
-    ///
-    /// This function will return a `ZyxError` if:
-    ///
-    /// - The input tensors' shapes or dtypes do not match expectations.
-    /// - The tensor is not at least 2D (requiring at least [`seq_len`, `embed_dim`]).
+    /// Apply Rotary Positional Encoding (`RoPE`) using the provided sine and
+    /// cosine frequency tensors.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use zyx::{Tensor, DType};
-    ///
-    /// let input_tensor = Tensor::rand([10, 16], DType::F32)?;  // Example 2D tensor of shape [seq_len=10, embed_dim=16]
-    /// let sine_frequencies = Tensor::rand([10, 8], DType::F32)?; // Shape [seq_len=10, embed_dim / 2 = 8]
-    /// let cosine_frequencies = Tensor::rand([10, 8], DType::F32)?; // Shape [seq_len=10, embed_dim / 2 = 8]
-    ///
-    /// // Call rope to compute positional encodings
-    /// let result = input_tensor.rope(sine_frequencies, cosine_frequencies)?;
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// # use zyx::{Tensor, DType};
+    /// let x = Tensor::ones([2, 8], DType::F32);
+    /// let s = Tensor::zeros([2, 4], DType::F32);
+    /// let c = Tensor::zeros([2, 4], DType::F32);
+    /// let r = x.rope(s, c).unwrap();
+    /// assert_eq!(r.shape(), [2, 8]);
     /// ```
     ///
-    /// # Notes
+    /// # Errors
     ///
-    /// - The input tensor must be at least 2D: the first dimension represents the sequence length (`seq_len`),
-    ///   and the second represents the embedding dimension (`embed_dim`).
-    /// - The sine and cosine frequency tensors should have the shape `[seq_len, embed_dim / 2]`.
-    /// - This method assumes the input tensor and the frequency tensors have the same dtype.
-    ///
-    /// # Panics
-    /// This function may panic in the following cases:
-    ///
-    /// - Memory allocation failures or system-level errors when reshaping or performing tensor operations.
-    /// - Internal logic errors in the library (e.g., unexpected failure when performing tensor slicing or concatenation).
+    /// Returns a shape or dtype error if the tensors are incompatible.
     pub fn rope(&self, sine_frequencies: impl Into<Tensor>, cosine_frequencies: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let sin_freqs: Tensor = sine_frequencies.into();
         let cos_freqs: Tensor = cosine_frequencies.into();
@@ -3519,11 +3553,20 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// All tensor elements as contiguous `le_bytes` vector in row major order
+    /// All tensor elements as a contiguous little-endian byte vector in row-major
+    /// (C) order.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1i16, -2]);
+    /// assert_eq!(t.to_le_bytes().unwrap(), [1, 0, 254, 255]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if self failed to realize.
+    /// Returns a realization error if `self` cannot be evaluated to concrete data.
     pub fn to_le_bytes(&self) -> Result<Vec<u8>, ZyxError> {
         Ok(match self.dtype() {
             DType::BF16 => {
@@ -3598,17 +3641,41 @@ impl Tensor {
         todo!()
     }*/
 
-    /// Move this tensor to the specified device. Creates a new graph node
-    /// that will be realized via a cross-device copy during kernelization.
+    /// Move this tensor to the specified device, inserting a cross-device copy
+    /// node in the graph.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// use zyx::Dev;
+    /// let t = Tensor::from([1i32]);
+    /// let t2 = t.to(Dev::Cpu).unwrap();
+    /// assert_eq!(t2.device(), t.device());
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device copy cannot be performed.
     pub fn to(&self, device: crate::Dev) -> Result<Tensor, ZyxError> {
         let id = RT.lock().to_device(self.id, device)?;
         Ok(Tensor { id })
     }
 
-    /// Returns a tensor whose value is materialized in its own contiguous
-    /// buffer. This is a manual kernel fusion break: the current value is
-    /// stored out and reloaded, so downstream ops no longer fuse with the
-    /// producer kernel.
+    /// Materialize the tensor into its own contiguous buffer. This breaks kernel
+    /// fusion: downstream ops no longer fuse with the producer kernel.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1i32, 2, 3]).contiguous().unwrap();
+    /// assert_eq!(t.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tensor cannot be made contiguous.
     pub fn contiguous(&self) -> Result<Tensor, ZyxError> {
         let id = RT.lock().contiguous(self.id)?;
         Ok(Tensor { id })

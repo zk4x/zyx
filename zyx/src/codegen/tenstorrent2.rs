@@ -53,7 +53,7 @@ pub enum TTOp {
     EndCompute,
     /// End of the writer section. Explicit, never implicit end-of-Vec.
     EndWriter,
-    /// Loop with trip count in a scalar register (materialized by a prior
+    /// Loop with trip count in a scalar register (defined by a prior
     /// `SConst`/`SBinary` statement).
     Loop {
         /// Number of iterations.
@@ -73,7 +73,7 @@ pub enum TTOp {
     Arg {
         /// Destination scalar register.
         z: VarId,
-        /// Global launch-arg ordinal (survives section materialization).
+        /// Global launch-arg ordinal (survives replicate_ops_per_section).
         ordinal: u32,
     },
     /// Scalar constant definition.
@@ -179,6 +179,86 @@ pub enum TTOp {
     PackLock,
     /// `tile_regs_release()`.
     PackUnlock,
+    // -- Engine config: init/reconfig calls, one variant per family --
+    /// `copy_tile_init(cb);`.
+    CopyInit {
+        /// Input circular buffer.
+        cb: CBId,
+    },
+    /// `copy_tile_to_dst_init_short_with_dt(prev, cb);` (reprograms
+    /// UNPACK+MATH SRCA to `cb`'s format).
+    CopyInitWithDt {
+        /// Previously programmed CB (reconfig guard source).
+        prev: CBId,
+        /// Input circular buffer.
+        cb: CBId,
+    },
+    /// `pack_reconfig_data_format(cb);`.
+    PackReconfig {
+        /// Output circular buffer.
+        cb: CBId,
+    },
+    /// Tile unary init (`exp_tile_init();`, ...).
+    UnaryInit {
+        /// Operation (selects the init call).
+        uop: UOp,
+    },
+    /// Tile binary init (`add_binary_tile_init();`, ...).
+    BinaryInit {
+        /// Operation (selects the init call).
+        bop: BOp,
+    },
+    /// `binop_with_scalar_tile_init();` (tile-scalar binary).
+    BinScalarInit,
+    /// `typecast_tile_init<in, out>();`.
+    CastInit {
+        /// Source dtype.
+        in_dtype: DType,
+        /// Target dtype.
+        out_dtype: DType,
+    },
+    /// `transpose_wh_init(cb, out);`.
+    TransposeInit {
+        /// Input circular buffer.
+        cb: CBId,
+        /// Output circular buffer (startup triple).
+        out: CBId,
+    },
+    /// `mm_init(a, b, out);` (full init before every matmul; the
+    /// hoist/dedup pass later folds these).
+    MatmulInit {
+        /// Left input circular buffer.
+        a: CBId,
+        /// Right input circular buffer.
+        b: CBId,
+        /// Output circular buffer (startup triple).
+        out: CBId,
+    },
+    /// `reduce_init<op, dim>(ci, cs, acc);` (always inline: the acc
+    /// slot lives at the op).
+    ReduceInit {
+        /// Input circular buffer.
+        ci: CBId,
+        /// Scaler circular buffer.
+        cs: CBId,
+        /// Accumulator value (render maps it to the DST slot).
+        acc: OpId,
+        /// Reduction op.
+        rop: BOp,
+        /// In-tile dimension.
+        kind: TileDim,
+    },
+    /// Fused broadcast binary init (`add_bcast_cols_init_short`, ...).
+    BcastInit {
+        /// Operation.
+        bop: BOp,
+        /// Broadcast dimension.
+        kind: TileDim,
+        /// Full-tile circular buffer.
+        cb_a: CBId,
+        /// Broadcast-lane circular buffer.
+        cb_b: CBId,
+    },
     // -- SSA ports: 1:1 kernel-IR lowering, `OpId` operands verbatim.
     //    Only ops Tenstorrent lowers (`Wmma` excluded; `Move`/`Reduce`
     //    never survive linearization so they never reach conversion). --
@@ -378,8 +458,101 @@ pub enum TTOp {
     },
 }
 
-struct Compiler {
-    ops: Vec<TTOp>,
+/// Hoisted init call for a tile unary op. Duplicated from the legacy
+/// codegen (`tenstorrent.rs`): one table per IR, never shared.
+fn unary_init_name(uop: UOp) -> &'static str {
+    match uop {
+        UOp::Neg => "negative_tile_init();",
+        UOp::BitNot => "bitwise_not_tile_init();",
+        UOp::Exp => "exp_tile_init();",
+        UOp::Exp2 => "exp2_tile_init();",
+        UOp::Log2 => "log_with_base_tile_init();",
+        UOp::Reciprocal => "recip_tile_init();",
+        UOp::Sqrt => "sqrt_tile_init();",
+        UOp::Rsqrt => "rsqrt_tile_init();",
+        UOp::Sin => "sin_tile_init();",
+        UOp::Cos => "cos_tile_init();",
+        UOp::Floor | UOp::Trunc => "rounding_op_tile_init();",
+        UOp::Abs => "abs_tile_init();",
+        UOp::Not => "logical_not_tile_init();",
+    }
+}
+
+/// Hoisted init call for a tile binary op, if it needs one.
+fn binary_init_name(bop: BOp) -> Option<&'static str> {
+    match bop {
+        BOp::Add => Some("add_binary_tile_init();"),
+        BOp::Sub => Some("sub_binary_tile_init();"),
+        BOp::Mul => Some("mul_binary_tile_init();"),
+        BOp::Div => Some("div_binary_tile_init();"),
+        BOp::Max => Some("binary_max_tile_init();"),
+        BOp::BitShiftLeft | BOp::BitShiftRight => Some("binary_shift_tile_init();"),
+        _ => None,
+    }
+}
+
+/// Hoisted init call for a fused broadcast binary. `None` means the
+/// (op, kind) pair has no LLK (notably every `Div`).
+fn bcast_init_name(bop: BOp, kind: TileDim) -> Option<&'static str> {
+    match (bop, kind) {
+        (BOp::Add, TileDim::Row) => Some("add_bcast_rows_init_short"),
+        (BOp::Add, TileDim::Col) => Some("add_bcast_cols_init_short"),
+        (BOp::Add, TileDim::Scalar) => Some("add_bcast_scalar_init_short"),
+        (BOp::Sub, TileDim::Row) => Some("sub_bcast_rows_init_short"),
+        (BOp::Sub, TileDim::Col) => Some("sub_bcast_cols_init_short"),
+        (BOp::Sub, TileDim::Scalar) => Some("sub_tiles_bcast_scalar_init_short"),
+        (BOp::Mul, TileDim::Row) => Some("mul_bcast_rows_init_short"),
+        (BOp::Mul, TileDim::Col) => Some("mul_bcast_cols_init_short"),
+        (BOp::Mul, TileDim::Scalar) => Some("mul_tiles_bcast_scalar_init_short"),
+        _ => None,
+    }
+}
+
+/// LLK reduce dimension for a tile reduce kind.
+fn reduce_dim_name(kind: TileDim) -> &'static str {
+    match kind {
+        TileDim::Row => "ReduceDim::REDUCE_ROW",
+        TileDim::Col => "ReduceDim::REDUCE_COL",
+        TileDim::Scalar => "ReduceDim::REDUCE_SCALAR",
+    }
+}
+
+/// TT `DataFormat` code for a dtype on the tile path (the
+/// `typecast_tile_init<in, out>` template args). This is NOT the CB
+/// descriptor code (`cb_fmt` below): the two numberings differ.
+fn tt_fmt(dtype: DType) -> u32 {
+    match dtype {
+        DType::F32 => 0,
+        DType::F16 | DType::BF16 => 5,
+        DType::I32 => 8,
+        DType::U16 => 9,
+        DType::I8 => 14,
+        DType::U32 => 24,
+        DType::F8E4M3 => 26,
+        DType::U8 => 30,
+        dt => panic!("tenstorrent2: dtype {dt:?} has no tt tile format"),
+    }
+}
+
+/// Runtime CB descriptor format code for a CB storage dtype
+/// (F32=0, F16=1, BF16=2, ...). Follows the CB storage dtype;
+/// an unmappable dtype is a compilation error, never a default.
+fn cb_fmt(dtype: DType) -> u32 {
+    match dtype {
+        DType::F32 => 0,
+        DType::F16 => 1,
+        DType::BF16 => 2,
+        DType::U16 => 3,
+        DType::F8E4M3 => 4,
+        DType::U8 => 5,
+        DType::I8 => 6,
+        DType::U32 => 7,
+        DType::I32 => 8,
+        dt => panic!("tenstorrent2: CB dtype {dt:?} has no tt format"),
+    }
+}
+
+struct Compiler {    ops: Vec<TTOp>,
     /// Circular storage (`OpId` of `SSAStorage`) to hardware CB assignment,
     /// in stream order. One hardware object, one `CBId`, never duplicated.
     cbs: Map<OpId, CBId>,
@@ -525,6 +698,216 @@ impl Compiler {
             op_id = kernel.next_op(op_id);
         }
         Self { ops, cbs: Map::default(), cb_depth: Map::default(), params, load_info, drain_consumers, trips, zeros }
+    }
+
+    /// Replicate_ops_per_section: values consumed in multiple sections are
+    /// duplicated per section (each section is a separate kernel with its own
+    /// registers and runtime args; arg ordinals stay global so the launch
+    /// contract survives). Circular-buffer storages are the exception: one
+    /// hardware object, one `CBId`, never duplicated — they are hoisted once
+    /// to the stream head. Mirrors the legacy `get_needed_ops` closure per
+    /// section (stores + structural starters, transitive data deps), then
+    /// re-emits each section's needed ops in stream order.
+    fn replicate_ops_per_section(&mut self) {
+        use MemScope::Circular;
+        // Section index per position (0 reader, 1 compute, 2 writer).
+        let mut section_of: Vec<u8> = vec![0; self.ops.len()];
+        let mut section = 0u8;
+        for (pos, op) in self.ops.iter().enumerate() {
+            section_of[pos] = section;
+            match op {
+                TTOp::EndReader | TTOp::EndCompute => section += 1,
+                _ => {}
+            }
+        }
+        debug_assert!(section == 2, "tenstorrent2: expected two section markers, found {section}");
+        // Data operands per position (closure edges), and whether the op is
+        // a circular storage (global, never replicated).
+        fn operands(op: &TTOp) -> Vec<OpId> {
+            match op {
+                TTOp::SSAConst { .. }
+                | TTOp::SSAStorage { .. }
+                | TTOp::SSALoop { .. }
+                | TTOp::SSARange { .. }
+                | TTOp::SSAEndLoop
+                | TTOp::SSAEndIf
+                | TTOp::SSABarrier
+                | TTOp::EndReader
+                | TTOp::EndCompute
+                | TTOp::EndWriter => Vec::new(),
+                TTOp::SSAParam { shape, .. } => vec![*shape],
+                TTOp::SSACast { x, .. }
+                | TTOp::SSABitcast { x, .. }
+                | TTOp::SSAUnary { x, .. }
+                | TTOp::SSATransposeTile { x, .. }
+                | TTOp::SSABroadcastTile { x, .. } => vec![*x],
+                TTOp::SSABinary { x, y, .. } => vec![*x, *y],
+                TTOp::SSAStack { ops, .. } => ops.iter().copied().collect(),
+                TTOp::SSAStore { dst, src, index, .. } => vec![*dst, *src, *index],
+                TTOp::SSALoad { src, index, .. } => vec![*src, *index],
+                TTOp::SSAIf { condition } => vec![*condition],
+                TTOp::SSAMad { x, y, z, .. } => vec![*x, *y, *z],
+                TTOp::SSAIndex { vec, .. } => vec![*vec],
+                TTOp::SSAReduceTile { x, scaler, acc, .. } => vec![*x, *scaler, *acc],
+                TTOp::SSAMatmulTile { x, y, acc, .. } => vec![*x, *y, *acc],
+                TTOp::SSAAsm { ops, .. } => ops.iter().copied().collect(),
+                _ => Vec::new(),
+            }
+        }
+        // Range/loop length starters need their own edge (walk references them).
+        fn starters(op: &TTOp) -> Vec<OpId> {
+            match op {
+                TTOp::SSARange { kind, .. } => match kind {
+                    RangeKind::Group(len) | RangeKind::Warp(len) => vec![*len],
+                    RangeKind::Local(_) => Vec::new(),
+                },
+                TTOp::SSALoop { len, .. } => vec![*len],
+                TTOp::SSAIf { condition } => vec![*condition],
+                TTOp::SSAAsm { ops, .. } => ops.iter().copied().collect(),
+                _ => Vec::new(),
+            }
+        }
+        fn defines(op: &TTOp) -> Option<OpId> {
+            match op {
+                TTOp::SSAMad { w, .. } => Some(*w),
+                TTOp::SSAConst { z, .. }
+                | TTOp::SSAParam { z, .. }
+                | TTOp::SSACast { z, .. }
+                | TTOp::SSABitcast { z, .. }
+                | TTOp::SSAUnary { z, .. }
+                | TTOp::SSABinary { z, .. }
+                | TTOp::SSAStack { z, .. }
+                | TTOp::SSAStorage { z, .. }
+                | TTOp::SSAStore { z, .. }
+                | TTOp::SSALoad { z, .. }
+                | TTOp::SSARange { z, .. }
+                | TTOp::SSALoop { z, .. }
+                | TTOp::SSAIndex { z, .. }
+                | TTOp::SSAReduceTile { z, .. }
+                | TTOp::SSAMatmulTile { z, .. }
+                | TTOp::SSATransposeTile { z, .. }
+                | TTOp::SSAAsm { z, .. } => Some(*z),
+                TTOp::SSABroadcastTile { .. } => None,
+                _ => None,
+            }
+        }
+        let is_circular_storage = |op: &TTOp| -> bool {
+            matches!(op, TTOp::SSAStorage { scope: Circular, .. })
+        };
+        // Loops/branches must not span sections: collect loop open sections.
+        {
+            let mut loop_sections: Map<OpId, u8> = Map::default();
+            for (pos, op) in self.ops.iter().enumerate() {
+                match op {
+                    TTOp::SSALoop { z, .. } => {
+                        loop_sections.insert(*z, section_of[pos]);
+                    }
+                    TTOp::SSAEndLoop => {}
+                    _ => {}
+                }
+            }
+            let _ = loop_sections;
+        }
+        // Per-section needed sets.
+        let mut needed: Vec<Set<OpId>> = vec![Set::default(), Set::default(), Set::default()];
+        let mut structural: Vec<Set<OpId>> = vec![Set::default(), Set::default(), Set::default()];
+        for target in 0..3u8 {
+            let mut stack: Vec<OpId> = Vec::new();
+            for (pos, op) in self.ops.iter().enumerate() {
+                if section_of[pos] != target {
+                    continue;
+                }
+                match op {
+                    TTOp::SSAStore { .. } => {
+                        if let Some(z) = defines(op) {
+                            needed[target as usize].insert(z);
+                        }
+                        stack.extend(operands(op));
+                    }
+                    TTOp::SSALoop { .. }
+                    | TTOp::SSARange { .. }
+                    | TTOp::SSAIf { .. }
+                    | TTOp::SSAEndLoop
+                    | TTOp::SSAEndIf
+                    | TTOp::SSAAsm { .. } => {
+                        if let Some(z) = defines(op) {
+                            structural[target as usize].insert(z);
+                        } else {
+                            structural[target as usize].insert(OpId::NULL);
+                        }
+                        stack.extend(starters(op));
+                    }
+                    _ => {}
+                }
+            }
+            while let Some(id) = stack.pop() {
+                if id.is_null() || needed[target as usize].contains(&id) {
+                    continue;
+                }
+                // Circular storages stay global; consumers reference the
+                // single head copy without pulling them into the section.
+                if let Some(pos) = self.ops.iter().position(|o| defines(o) == Some(id)) {
+                    if is_circular_storage(&self.ops[pos]) {
+                        continue;
+                    }
+                }
+                needed[target as usize].insert(id);
+                let def_pos = self.ops.iter().position(|o| defines(o) == Some(id));
+                match def_pos {
+                    Some(pos) => stack.extend(operands(&self.ops[pos])),
+                    None => panic!("tenstorrent2: replicate_ops_per_section: no def for op {id}"),
+                }
+            }
+        }
+        // Rebuild: circular storages once at head, then each section's
+        // needed + structural ops in stream order with section markers.
+        let mut out: Vec<TTOp> = Vec::new();
+        for op in &self.ops {
+            if is_circular_storage(op) {
+                out.push(op.clone());
+            }
+        }
+        for target in 0..3u8 {
+            for (pos, op) in self.ops.iter().enumerate() {
+                if is_circular_storage(op) {
+                    continue;
+                }
+                match op {
+                    TTOp::EndReader | TTOp::EndCompute | TTOp::EndWriter => {}
+                    _ => {
+                        let keep = match defines(op) {
+                            // Value defs replicate: emit wherever consumed,
+                            // regardless of lexical section.
+                            Some(z) => {
+                                needed[target as usize].contains(&z)
+                                    || structural[target as usize].contains(&z)
+                            }
+                            // Id-less ops stay lexical (structure, broadcast
+                            // markers, closers).
+                            None => {
+                                section_of[pos] == target
+                                    && (structural[target as usize].contains(&OpId::NULL)
+                                        || matches!(
+                                            op,
+                                            TTOp::SSAEndLoop
+                                                | TTOp::SSAEndIf
+                                                | TTOp::SSABroadcastTile { .. }
+                                        ))
+                            }
+                        };
+                        if keep {
+                            out.push(op.clone());
+                        }
+                    }
+                }
+            }
+            out.push(match target {
+                0 => TTOp::EndReader,
+                1 => TTOp::EndCompute,
+                _ => TTOp::EndWriter,
+            });
+        }
+        self.ops = out;
     }
 
     /// Sectioning: the first barrier becomes `EndReader`, the second
@@ -942,6 +1325,515 @@ impl Compiler {
         self.ops = next;
     }
 
+    /// MATH/config init insertion (pass 1 of 2): a full init before
+    /// every compute-section tile compute op. Naive: no hoisting, no
+    /// dedup (the hoist+dedup pass folds these later); redundancy is
+    /// safe. Copy inits track the unpack-A source like the legacy
+    /// emitter (`with_dt` form on format change, plain short
+    /// otherwise); matmul notes it the same way. Anything the naive
+    /// pass cannot resolve fails loudly at the exact op.
+    fn init_math(&mut self) {
+        // Storage dtypes, register accs, consts, and every defined id.
+        let mut storage_dtype: Map<OpId, DType> = Map::default();
+        let mut register: Set<OpId> = Set::default();
+        let mut const_ids: Set<OpId> = Set::default();
+        let mut defined: Set<OpId> = Set::default();
+        for op in &self.ops {
+            match op {
+                TTOp::SSAStorage { z, dtype, scope, .. } => {
+                    storage_dtype.insert(*z, *dtype);
+                    if matches!(scope, MemScope::Register) {
+                        register.insert(*z);
+                    }
+                    defined.insert(*z);
+                }
+                TTOp::SSAConst { z, .. }
+                | TTOp::SSAParam { z, .. }
+                | TTOp::SSACast { z, .. }
+                | TTOp::SSABitcast { z, .. }
+                | TTOp::SSAUnary { z, .. }
+                | TTOp::SSABinary { z, .. }
+                | TTOp::SSAStack { z, .. }
+                | TTOp::SSALoad { z, .. }
+                | TTOp::SSALoop { z, .. }
+                | TTOp::SSAMad { w: z, .. }
+                | TTOp::SSAIndex { z, .. }
+                | TTOp::SSAReduceTile { z, .. }
+                | TTOp::SSAMatmulTile { z, .. }
+                | TTOp::SSATransposeTile { z, .. }
+                | TTOp::SSAAsm { z, .. } => {
+                    defined.insert(*z);
+                }
+                _ => {}
+            }
+            if let TTOp::SSAConst { z, .. } = op {
+                const_ids.insert(*z);
+            }
+        }
+        // CB descriptor format per CBId, from the storage dtype.
+        let mut cb_format: Map<CBId, u32> = Map::default();
+        for (&storage, &cb) in self.cbs.iter() {
+            let dtype = storage_dtype.get(&storage).expect("tenstorrent2: CB storage without dtype");
+            cb_format.insert(cb, cb_fmt(*dtype));
+        }
+        // Broadcast marker kinds by marked value: SSABroadcastTile
+        // carries no own id, so consumers find the kind through the
+        // marker's operand (recorded in params at lowering).
+        let mut bcast_kinds: Map<OpId, Vec<TileDim>> = Map::default();
+        for op in &self.ops {
+            if let TTOp::SSABroadcastTile { x, kind } = op {
+                bcast_kinds.entry(*x).or_default().push(*kind);
+            }
+        }
+        // First pack destination in compute: the startup-triple output
+        // for `mm_init`/`transpose_wh_init` (single-output kernels;
+        // pass 2's unconditional pack reconfigs make the choice
+        // non-load-bearing for the packer side).
+        let mut first_pack_cb: Option<CBId> = None;
+        {
+            let mut section = 0u8;
+            for op in &self.ops {
+                match op {
+                    TTOp::EndReader | TTOp::EndCompute => section += 1,
+                    TTOp::SSAStore { dst, .. } if section == 1 => {
+                        if let Some(&cb) = self.cbs.get(dst) {
+                            first_pack_cb = Some(cb);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Load value to its CB (tile loads from Circular storage only;
+        // acc loads and fused-draining loads resolve to none).
+        let load_cb = |v: OpId,
+                       load_info: &Map<OpId, (OpId, bool, OpId)>,
+                       cbs: &Map<OpId, CBId>,
+                       drain_consumers: &Map<OpId, Vec<OpId>>|
+         -> Option<CBId> {
+            let (storage, tile, _) = load_info.get(&v)?;
+            if !tile || drain_consumers.contains_key(&v) {
+                return None;
+            }
+            cbs.get(storage).copied()
+        };
+        // Broadcast marker kind for a binary operand: the operand is a
+        // marker op id (in params, defined nowhere) whose recorded
+        // operand names a broadcast-marked value.
+        let bcast_of = |o: OpId,
+                        params: &Map<OpId, Vec<OpId>>,
+                        defined: &Set<OpId>,
+                        bcast_kinds: &Map<OpId, Vec<TileDim>>|
+         -> Option<TileDim> {
+            if defined.contains(&o) {
+                return None;
+            }
+            let mx = params.get(&o).and_then(|ps| match ps.as_slice() {
+                [single] => Some(*single),
+                _ => None,
+            })?;
+            match bcast_kinds.get(&mx).map(Vec::as_slice) {
+                Some([kind]) => Some(*kind),
+                Some(_) => panic!("tenstorrent2: broadcast marker value r{mx} has ambiguous kinds"),
+                None => None,
+            }
+        };
+        let old = std::mem::take(&mut self.ops);
+        let mut next = Vec::with_capacity(old.len());
+        let mut section = 0u8;
+        let mut unpack_src: Option<(CBId, u32)> = None;
+        for op in old {
+            match &op {
+                TTOp::EndReader | TTOp::EndCompute => {
+                    section += 1;
+                    next.push(op);
+                    continue;
+                }
+                TTOp::EndWriter => {
+                    next.push(op);
+                    continue;
+                }
+                _ => {}
+            }
+            if section != 1 {
+                next.push(op);
+                continue;
+            }
+            match op {
+                TTOp::SSALoad { z, src, index, layout } => {
+                    let tile = matches!(layout, MemLayout::Tile { .. });
+                    if tile && !register.contains(&src) && !self.drain_consumers.contains_key(&z) {
+                        let cb = self.cbs.get(&src).expect("tenstorrent2: tile load from unmapped CB storage");
+                        let fmt = cb_format[cb];
+                        if unpack_src.map(|(_, f)| f) != Some(fmt) {
+                            let prev = unpack_src.map(|(c, _)| c).unwrap_or(*cb);
+                            next.push(TTOp::CopyInitWithDt { prev, cb: *cb });
+                            unpack_src = Some((*cb, fmt));
+                        } else {
+                            next.push(TTOp::CopyInit { cb: *cb });
+                        }
+                    }
+                    next.push(TTOp::SSALoad { z, src, index, layout });
+                }
+                TTOp::SSAUnary { z, x, uop } => {
+                    next.push(TTOp::UnaryInit { uop });
+                    next.push(TTOp::SSAUnary { z, x, uop });
+                }
+                TTOp::SSABinary { z, x, y, bop } => {
+                    let bx = bcast_of(x, &self.params, &defined, &bcast_kinds);
+                    let by = bcast_of(y, &self.params, &defined, &bcast_kinds);
+                    match (bx, by) {
+                        (Some(kind), None) => {
+                            let cb_b = load_cb(x, &self.load_info, &self.cbs, &self.drain_consumers)
+                                .expect("tenstorrent2: broadcast lane is no CB tile load");
+                            let cb_a = load_cb(y, &self.load_info, &self.cbs, &self.drain_consumers)
+                                .expect("tenstorrent2: broadcast op reads a non-CB tile");
+                            if bcast_init_name(bop, kind).is_none() {
+                                panic!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no init call");
+                            }
+                            next.push(TTOp::BcastInit { bop, kind, cb_a, cb_b });
+                            unpack_src = Some((cb_a, cb_format[&cb_a]));
+                        }
+                        (None, Some(kind)) => {
+                            let cb_b = load_cb(y, &self.load_info, &self.cbs, &self.drain_consumers)
+                                .expect("tenstorrent2: broadcast lane is no CB tile load");
+                            let cb_a = load_cb(x, &self.load_info, &self.cbs, &self.drain_consumers)
+                                .expect("tenstorrent2: broadcast op reads a non-CB tile");
+                            if bcast_init_name(bop, kind).is_none() {
+                                panic!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no init call");
+                            }
+                            next.push(TTOp::BcastInit { bop, kind, cb_a, cb_b });
+                            unpack_src = Some((cb_a, cb_format[&cb_a]));
+                        }
+                        (Some(_), Some(_)) => {
+                            panic!("tenstorrent2: broadcast op r{z} marks both sides");
+                        }
+                        (None, None) => {
+                            if const_ids.contains(&x) || const_ids.contains(&y) {
+                                next.push(TTOp::BinScalarInit);
+                            } else if binary_init_name(bop).is_some() {
+                                next.push(TTOp::BinaryInit { bop });
+                            }
+                        }
+                    }
+                    next.push(TTOp::SSABinary { z, x, y, bop });
+                }
+                TTOp::SSACast { z, x, dtype } => {
+                    let in_dtype = match self.load_info.get(&x) {
+                        Some((storage, _, _)) => storage_dtype
+                            .get(storage)
+                            .copied()
+                            .expect("tenstorrent2: cast source storage without dtype"),
+                        None => panic!("tenstorrent2: cast r{z} reads a non-load value r{x}"),
+                    };
+                    next.push(TTOp::CastInit { in_dtype, out_dtype: dtype });
+                    next.push(TTOp::SSACast { z, x, dtype });
+                }
+                TTOp::SSAMatmulTile { z, x, y, acc } => {
+                    let a = load_cb(x, &self.load_info, &self.cbs, &self.drain_consumers)
+                        .expect("tenstorrent2: matmul reads a non-CB tile");
+                    let b = load_cb(y, &self.load_info, &self.cbs, &self.drain_consumers)
+                        .expect("tenstorrent2: matmul reads a non-CB tile");
+                    let out = first_pack_cb
+                        .expect("tenstorrent2: matmul needs a startup output CB but compute packs nothing");
+                    next.push(TTOp::MatmulInit { a, b, out });
+                    unpack_src = Some((a, cb_format[&a]));
+                    next.push(TTOp::SSAMatmulTile { z, x, y, acc });
+                }
+                TTOp::SSAReduceTile { z, x, scaler, acc, rop, kind } => {
+                    if !matches!(rop, BOp::Max | BOp::Add) {
+                        panic!("tenstorrent2: reduce op {rop:?} unsupported, op r{z}");
+                    }
+                    let ci = load_cb(x, &self.load_info, &self.cbs, &self.drain_consumers)
+                        .expect("tenstorrent2: reduce reads a non-CB tile");
+                    let cs = load_cb(scaler, &self.load_info, &self.cbs, &self.drain_consumers)
+                        .expect("tenstorrent2: reduce scaler is no CB tile load");
+                    next.push(TTOp::ReduceInit { ci, cs, acc, rop, kind });
+                    next.push(TTOp::SSAReduceTile { z, x, scaler, acc, rop, kind });
+                }
+                TTOp::SSATransposeTile { z, x } => {
+                    let cb = load_cb(x, &self.load_info, &self.cbs, &self.drain_consumers)
+                        .expect("tenstorrent2: transpose reads a non-CB tile");
+                    let out = first_pack_cb
+                        .expect("tenstorrent2: transpose needs a startup output CB but compute packs nothing");
+                    next.push(TTOp::TransposeInit { cb, out });
+                    next.push(TTOp::SSATransposeTile { z, x });
+                }
+                other => next.push(other),
+            }
+        }
+        self.ops = next;
+    }
+
+    /// Pack reconfig insertion (pass 2 of 2): a `PackReconfig` before
+    /// every compute-section pack. Naive and unconditional — the first
+    /// pack must always reconfigure (silicon starts the packer on
+    /// BF16), and redundant reconfigs are safe; the hoist+dedup pass
+    /// folds them later.
+    fn reconfig_pack(&mut self) {
+        let old = std::mem::take(&mut self.ops);
+        let mut next = Vec::with_capacity(old.len());
+        let mut section = 0u8;
+        for op in old {
+            match &op {
+                TTOp::EndReader | TTOp::EndCompute => {
+                    section += 1;
+                    next.push(op);
+                    continue;
+                }
+                TTOp::EndWriter => {
+                    next.push(op);
+                    continue;
+                }
+                _ => {}
+            }
+            if section == 1 {
+                if let TTOp::SSAStore { dst, .. } = &op {
+                    if let Some(&cb) = self.cbs.get(dst) {
+                        next.push(TTOp::PackReconfig { cb });
+                    }
+                }
+            }
+            next.push(op);
+        }
+        self.ops = next;
+    }
+
+    /// Hoist + dedup of init/reconfig ops (compute section only).
+    ///
+    /// Hoist: a constant-trip loop body holding exactly one distinct init
+    /// config per unit moves that init to the loop preheader. Single-config
+    /// is the only safe shape (sticky hardware state: hoisting two configs
+    /// would leave the last programmed for the first use). Trip must be a
+    /// known `>= 1` (a zero-trip loop would program state for uses that
+    /// never run while dedup believes it did); symbolic or zero-trip loops
+    /// keep their inits inside, which is always correct. Bodies holding
+    /// lock ops are never hoisted across.
+    ///
+    /// Dedup: per-unit last-programmed state drops redundant inits within
+    /// one lock epoch (`MathLock` clears, `PackUnlock` clears). Compute and
+    /// sync ops never touch the state. Rebuild, locks/sync/SSA untouched.
+    fn hoist_dedup_inits(&mut self) {
+        fn is_init(op: &TTOp) -> bool {
+            matches!(
+                op,
+                TTOp::CopyInit { .. }
+                    | TTOp::CopyInitWithDt { .. }
+                    | TTOp::UnaryInit { .. }
+                    | TTOp::BinaryInit { .. }
+                    | TTOp::BinScalarInit
+                    | TTOp::CastInit { .. }
+                    | TTOp::TransposeInit { .. }
+                    | TTOp::MatmulInit { .. }
+                    | TTOp::ReduceInit { .. }
+                    | TTOp::BcastInit { .. }
+                    | TTOp::PackReconfig { .. }
+            )
+        }
+        fn is_lock(op: &TTOp) -> bool {
+            matches!(op, TTOp::MathLock | TTOp::MathUnlock | TTOp::PackLock | TTOp::PackUnlock)
+        }
+        // Unit class: unpack programs the unpacker source, math programs the
+        // compute unit, pack programs the packer. Dedup tracks one state
+        // per unit; hoisting requires a single distinct config per unit.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Unit {
+            Unpack,
+            Math,
+            Pack,
+        }
+        fn unit(op: &TTOp) -> Unit {
+            match op {
+                TTOp::CopyInit { .. } | TTOp::CopyInitWithDt { .. } => Unit::Unpack,
+                TTOp::PackReconfig { .. } => Unit::Pack,
+                _ => Unit::Math,
+            }
+        }
+        // Recursive hoist over one level. `section` threads the caller
+        // position; only section 1 (compute) holds inits.
+        fn hoist_level(ops: Vec<TTOp>, compiler: &Compiler, section: &mut u8) -> Vec<TTOp> {
+            let mut out: Vec<TTOp> = Vec::with_capacity(ops.len());
+            let mut idx = 0;
+            while idx < ops.len() {
+                match &ops[idx] {
+                    TTOp::EndReader | TTOp::EndCompute => {
+                        *section += 1;
+                        out.push(ops[idx].clone());
+                        idx += 1;
+                    }
+                    TTOp::SSALoop { z, .. } if *section == 1 => {
+                        // Find the matching end (nesting depth counted).
+                        let mut depth = 1;
+                        let mut end = idx + 1;
+                        while end < ops.len() && depth > 0 {
+                            match &ops[end] {
+                                TTOp::SSALoop { .. } => depth += 1,
+                                TTOp::SSAEndLoop => depth -= 1,
+                                _ => {}
+                            }
+                            end += 1;
+                        }
+                        if depth != 0 {
+                            panic!("tenstorrent2: hoist_dedup_inits: unbalanced loop");
+                        }
+                        let open = ops[idx].clone();
+                        let body = hoist_level(ops[idx + 1..end - 1].to_vec(), compiler, &mut 1u8);
+                        let close = ops[end - 1].clone();
+                        let trip = compiler.trips.get(z).copied().flatten();
+                        let single = trip.is_some_and(|t| t >= 1)
+                            && !body.iter().any(is_lock);
+                        if single {
+                            // Distinct init configs per unit, first-occurrence order.
+                            let mut seen: Vec<TTOp> = Vec::new();
+                            for op in &body {
+                                if is_init(op) && !seen.contains(op) {
+                                    seen.push(op.clone());
+                                }
+                            }
+                            let mut units: Vec<Unit> = Vec::new();
+                            let mut multi = false;
+                            for op in &seen {
+                                let u = unit(op);
+                                if units.contains(&u) {
+                                    multi = true;
+                                    break;
+                                }
+                                units.push(u);
+                            }
+                            if !multi && !seen.is_empty() {
+                                out.extend(seen.iter().cloned());
+                                out.push(open);
+                                out.extend(body.into_iter().filter(|op| !seen.contains(op)));
+                                out.push(close);
+                            } else {
+                                out.push(open);
+                                out.extend(body);
+                                out.push(close);
+                            }
+                        } else {
+                            out.push(open);
+                            out.extend(body);
+                            out.push(close);
+                        }
+                        idx = end;
+                    }
+                    _ => {
+                        out.push(ops[idx].clone());
+                        idx += 1;
+                    }
+                }
+            }
+            out
+        }
+        let old = std::mem::take(&mut self.ops);
+        let mut section = 0u8;
+        let hoisted = hoist_level(old, self, &mut section);
+        // CB descriptor formats for unpack-state tracking.
+        let mut storage_dtype: Map<OpId, DType> = Map::default();
+        for op in &hoisted {
+            if let TTOp::SSAStorage { z, dtype, .. } = op {
+                storage_dtype.insert(*z, *dtype);
+            }
+        }
+        let mut cb_format: Map<CBId, u32> = Map::default();
+        for (&storage, &cb) in self.cbs.iter() {
+            let dtype = storage_dtype.get(&storage).expect("tenstorrent2: CB storage without dtype");
+            cb_format.insert(cb, cb_fmt(*dtype));
+        }
+        // Linear dedup over the hoisted stream.
+        let mut next: Vec<TTOp> = Vec::with_capacity(hoisted.len());
+        let mut section = 0u8;
+        let mut unpack: Option<(CBId, u32)> = None;
+        let mut math: Option<TTOp> = None;
+        let mut pack: Option<CBId> = None;
+        for op in hoisted {
+            match &op {
+                TTOp::EndReader | TTOp::EndCompute => {
+                    section += 1;
+                    next.push(op);
+                    continue;
+                }
+                TTOp::EndWriter => {
+                    next.push(op);
+                    continue;
+                }
+                _ => {}
+            }
+            if section != 1 {
+                next.push(op);
+                continue;
+            }
+            match op {
+                TTOp::MathLock => {
+                    unpack = None;
+                    math = None;
+                    pack = None;
+                    next.push(TTOp::MathLock);
+                }
+                TTOp::PackUnlock => {
+                    unpack = None;
+                    math = None;
+                    pack = None;
+                    next.push(TTOp::PackUnlock);
+                }
+                TTOp::MathUnlock | TTOp::PackLock => next.push(op),
+                TTOp::CopyInitWithDt { prev, cb } => {
+                    let fmt = cb_format[&cb];
+                    if unpack != Some((cb, fmt)) {
+                        next.push(TTOp::CopyInitWithDt { prev, cb });
+                        unpack = Some((cb, fmt));
+                    }
+                }
+                TTOp::CopyInit { cb } => {
+                    let fmt = cb_format[&cb];
+                    if unpack != Some((cb, fmt)) {
+                        next.push(TTOp::CopyInit { cb });
+                        unpack = Some((cb, fmt));
+                    }
+                }
+                TTOp::PackReconfig { cb } => {
+                    if pack != Some(cb) {
+                        next.push(TTOp::PackReconfig { cb });
+                        pack = Some(cb);
+                    }
+                }
+                TTOp::UnaryInit { .. }
+                | TTOp::BinaryInit { .. }
+                | TTOp::BinScalarInit
+                | TTOp::CastInit { .. }
+                | TTOp::TransposeInit { .. }
+                | TTOp::MatmulInit { .. }
+                | TTOp::ReduceInit { .. }
+                | TTOp::BcastInit { .. } => {
+                    if math.as_ref() != Some(&op) {
+                        // Broadcast/matmul/transpose/reduce inits also
+                        // program the unpacker side; keep it in sync.
+                        match &op {
+                            TTOp::BcastInit { cb_a, .. } => {
+                                unpack = Some((*cb_a, cb_format[cb_a]));
+                            }
+                            TTOp::MatmulInit { a, .. } => {
+                                unpack = Some((*a, cb_format[a]));
+                            }
+                            TTOp::TransposeInit { cb, .. } => {
+                                unpack = Some((*cb, cb_format[cb]));
+                            }
+                            TTOp::ReduceInit { ci, .. } => {
+                                unpack = Some((*ci, cb_format[ci]));
+                            }
+                            _ => {}
+                        }
+                        next.push(op.clone());
+                        math = Some(op);
+                    }
+                }
+                other => next.push(other),
+            }
+        }
+        self.ops = next;
+    }
+
     /// Print the TTIR stream, one op per line (`r{id}` = SSA values,
     /// `v{id}` = scalar registers, `cb{id}` = circular buffers).
     pub fn debug(&self) {
@@ -953,9 +1845,13 @@ impl Kernel {
     pub fn generate_tenstorrent2(kernel: &Kernel) {
         let mut compiler = Compiler::new(kernel);
         compiler.sectioning();
+        compiler.replicate_ops_per_section();
         compiler.assign_cbs();
         compiler.sync_cbs();
         compiler.lock_dst();
+        compiler.init_math();
+        compiler.reconfig_pack();
+        compiler.hoist_dedup_inits();
         compiler.debug();
 
         todo!()
@@ -1018,6 +1914,37 @@ impl Display for Compiler {
                 TTOp::MathUnlock => writeln!(f, "{indent}tile_regs_commit()")?,
                 TTOp::PackLock => writeln!(f, "{indent}tile_regs_wait()")?,
                 TTOp::PackUnlock => writeln!(f, "{indent}tile_regs_release()")?,
+                TTOp::CopyInit { cb } => writeln!(f, "{indent}copy_tile_init({cb});")?,
+                TTOp::CopyInitWithDt { prev, cb } => {
+                    writeln!(f, "{indent}copy_tile_to_dst_init_short_with_dt({prev}, {cb});")?;
+                }
+                TTOp::PackReconfig { cb } => writeln!(f, "{indent}pack_reconfig_data_format({cb});")?,
+                TTOp::UnaryInit { uop } => writeln!(f, "{indent}{}", unary_init_name(*uop))?,
+                TTOp::BinaryInit { bop } => writeln!(
+                    f,
+                    "{indent}{}",
+                    binary_init_name(*bop).expect("tenstorrent2: placed binary init without an init call")
+                )?,
+                TTOp::BinScalarInit => writeln!(f, "{indent}binop_with_scalar_tile_init();")?,
+                TTOp::CastInit { in_dtype, out_dtype } => {
+                    writeln!(f, "{indent}typecast_tile_init<{}, {}>();", tt_fmt(*in_dtype), tt_fmt(*out_dtype))?;
+                }
+                TTOp::TransposeInit { cb, out } => writeln!(f, "{indent}transpose_wh_init({cb}, {out});")?,
+                TTOp::MatmulInit { a, b, out } => writeln!(f, "{indent}mm_init({a}, {b}, {out});")?,
+                TTOp::ReduceInit { ci, cs, acc, rop, kind } => {
+                    let (op_name, dim_name) = match rop {
+                        BOp::Max => ("PoolType::MAX", reduce_dim_name(*kind)),
+                        BOp::Add => ("PoolType::SUM", reduce_dim_name(*kind)),
+                        _ => panic!("tenstorrent2: reduce op {rop:?} has no init call"),
+                    };
+                    writeln!(f, "{indent}reduce_init<{op_name}, {dim_name}>({ci}, {cs}, r{acc});")?;
+                }
+                TTOp::BcastInit { bop, kind, cb_a, cb_b } => {
+                    let Some(init) = bcast_init_name(*bop, *kind) else {
+                        panic!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no init call")
+                    };
+                    writeln!(f, "{indent}{init}({cb_a}, {cb_b});")?;
+                }
                 TTOp::SSAConst { value, z } => writeln!(f, "{indent}r{z} = {value}")?,
                 TTOp::SSAParam { dtype, kind, shape, z } => {
                     writeln!(f, "{indent}r{z} = param {kind:?} {dtype} shape=r{shape}")?;

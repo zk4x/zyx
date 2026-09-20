@@ -89,7 +89,7 @@ Section boundaries are ops in the stream:
 
 | type | meaning | budget |
 |---|---|---|
-| `VId` | virtual register (kernel `OpId`s at lowering time; fresh ids from decomposition) | unbounded |
+| `OpId` | original kernel-IR SSA id, carried verbatim by the 1:1 lowering; completely gone by the end of all passes | unbounded |
 | `LRegId` | SFPU LREG | 64 |
 | `DstId` | DST tile slot | 16 BF16 / 8 FP32 mode |
 | `VarId` | scalar C register (`r{reg}` slots) | unbounded |
@@ -101,13 +101,15 @@ error in the IR's own definitions, following the `TileId`/`CBId` pattern.
 ### SSA-ness
 
 Non-SSA by type, **SSA by invariant until rewritten**: the 1:1-mapped
-stream writes each `VId` exactly once, in order. Passes that need def-use
+stream writes each `OpId` exactly once, in order. Passes that need def-use
 (fusion, regalloc liveness) rely on that invariant as a
 `debug_assert!`-checked property (linear scan), not a type guarantee.
 De-SSAing happens only when a pass actually rewrites (in-place chains
 `SfpMad(z=v7, x=v7, ...)`; coalescing) — by then the def-use-hungry
 passes have run. No two-phase vreg/phys ceremony: one IR, phase invariants
-asserted (below).
+asserted (below). The terminal invariant is total: after regalloc no
+`OpId` remains anywhere in the stream — every value has become a
+physical `LRegId`/`DstId`/`VarId`, and verify asserts the absence.
 
 ## `TTOp`
 
@@ -115,7 +117,7 @@ One enum, both levels mixed — high-level vendor-wrapper equivalents and
 raw Tensix/SFPU instructions. Each variant is one emitted line (or, after
 decomposition, one instruction). Every variant carries:
 
-- typed operands (`VId`/`LRegId`/... — never formatted strings; the
+- typed operands (`OpId`/`LRegId`/... — never formatted strings; the
   scalar expression `(idx*elem)/4096` is a small operand tree over typed
   ids, rendered by the backend),
 - a **static signature**: which CB it moves (produce/consume, n tiles),
@@ -169,9 +171,9 @@ evidence.
 
 Fixed order, one pass per concern, each pass TT-specific:
 
-1. **Convert + materialize** — 1:1 kernel-IR → TTOp (`Op::Binary { x, y,
-   bop }` → `TTOp::Binary { z: OpId, x, y, bop }`), then section
-   materialization: values consumed in multiple sections are duplicated
+1. **Convert + replicate_ops_per_section** — 1:1 kernel-IR → TTOp (`Op::Binary { x, y,
+   bop }` → `TTOp::Binary { z: OpId, x, y, bop }`), then
+   replicate_ops_per_section: values consumed in multiple sections are duplicated
    per section (each section is a separate kernel with its own registers
    and runtime args; arg ordinals stay global so the launch contract
    survives). CBs are the exception: one hardware object, one `CBId`,
@@ -205,12 +207,13 @@ Fixed order, one pass per concern, each pass TT-specific:
    cannot express. Runs on the fully-placed stream: place first, then
    clean.
 6. **Regalloc + coalesce** — late. Linear scan over the linear stream;
-   `VId` → `LRegId`/`DstId`/`VarId`; coalescing produces the in-place
+   `OpId` → `LRegId`/`DstId`/`VarId`; coalescing produces the in-place
    forms (dst merged into a dead operand). Liveness from single-def
-   chains (the pre-rewrite invariant), not a solver.
+   chains (the pre-rewrite invariant), not a solver. After this pass no
+   `OpId` remains in the stream.
 7. **Verify** — structural, on the fully-physical stream: budgets per id
    class, CB balance and traffic correspondence, lock pairing, walk
-   completeness, section termination, and the materialization invariant
+   completeness, section termination, and the replicate_ops_per_section invariant
    (every value consumed in a section is defined in that section).
 8. **Render** — C++ vehicle (TensorAccessor, NOC calls, `get_arg_val`,
    scalar C stay C; TTI words via the existing volatile-write macros).
@@ -227,9 +230,9 @@ as the encoding table grows.
   `ZYX_DEBUG` dumps between passes. Neighbor pattern-matching on
   consecutive indices. Streams are hundreds–thousands of ops; every pass
   is microseconds (30µs budget applies).
-- **Phase invariants, asserted**: all-`VId` (post-conversion) → mixed
-  (mid-regalloc, transient) → all-physical (verify + render). Each pass
-  states which phase it expects and panics otherwise.
+- **Phase invariants, asserted**: all-`OpId` (post-conversion) → mixed
+  (mid-regalloc, transient) → all-physical, zero `OpId`s (verify +
+  render). Each pass states which phase it expects and panics otherwise.
 - **Loud failure at the exact op**: a pass that cannot place an event
   names the op and the reason. Verify guards the composition — whatever
   the passes did, the final stream must be launchable. Pass order and
@@ -277,7 +280,7 @@ as the encoding table grows.
 |---|---|
 | `TileEmitter` + `Cfg`/`PlacedInit` backward placement pass | deleted — naive insert + dedup + hoist replaces optimal-once placement |
 | `CBBatch` anchor machinery | deleted — sync insertion pass + trip-count hoist |
-| `get_needed_ops` closures (3 phases) | deleted — convert + materialization pass |
+| `get_needed_ops` closures (3 phases) | deleted — convert + replicate_ops_per_section pass |
 | `FusedKind`/`FusedPat` prepass | deleted — instruction-level fusion is free |
 | unpack/pack format trackers | become reconfig-insertion pass state, back-edge modeled properly (fixes the known mixed-format loop-body limitation) |
 | string emission | deleted — render is a table walk |

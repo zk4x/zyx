@@ -2325,9 +2325,9 @@ fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
     let c16 = k.cast(c16v, DType::BF16);
 
     let u = k.load_global_tile(packed, c0);
-    k.store_circular(cu16, u, c0);
+    k.store_circular(cu8, u, c0);
     k.barrier();
-    let u1 = k.load_circular(cu16, c0);
+    let u1 = k.load_circular(cu8, c0);
     let f = k.cast(u1, DType::BF16);
     k.store_circular(ccur, f, c0);
     k.store_circular(ccur2, f, c0);
@@ -2605,8 +2605,8 @@ for (int face = 0; face < 4; face++) {{
         }
     }
     let packed_t = Tensor::from_vec(words, [32i64, 32])?.tilize()?.to(Dev::TT(0))?;
-    let sc_t = Tensor::from_vec(sc_flat, [64i64, 64])?.cast(DType::BF16)?.tilize()?.to(Dev::TT(0))?;
-    let mn_t = Tensor::from_vec(mn_flat, [64i64, 64])?.cast(DType::BF16)?.tilize()?.to(Dev::TT(0))?;
+    let sc_t = Tensor::from_vec(sc_flat, [64i64, 64])?.cast(DType::BF16).tilize()?.to(Dev::TT(0))?;
+    let mn_t = Tensor::from_vec(mn_flat, [64i64, 64])?.cast(DType::BF16).tilize()?.to(Dev::TT(0))?;
 
     let out_bufs = compiled.forward(&[&packed_t, &sc_t, &mn_t], vec![[64, 64]])?;
     let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(64, 64)?.to_vec()?;
