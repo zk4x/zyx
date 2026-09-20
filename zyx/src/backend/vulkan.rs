@@ -463,10 +463,7 @@ struct InFlight {
 
 /// Single backend initializer: builds pools + devices together in one pass,
 /// publishes both tables. Reads config directly; no init locks.
-fn backend() -> Result<
-    (&'static Vec<Mutex<VulkanMemoryPool>>, &'static Vec<Mutex<VulkanDevice>>),
-    BackendError,
-> {
+fn backend() -> Result<(&'static Vec<Mutex<VulkanMemoryPool>>, &'static Vec<Mutex<VulkanDevice>>), BackendError> {
     if let Some(pools) = VULKAN_POOLS.get()
         && let Some(devs) = VULKAN_DEVICES.get()
     {
@@ -1043,10 +1040,7 @@ fn sweep_inflight(
 // ── Initialization ───────────────────────────────────────────────────────────
 
 #[allow(clippy::unnecessary_wraps)]
-pub(super) fn ensure_pool_table(
-    config: &VulkanConfig,
-    debug_dev: bool,
-) -> Result<Vec<Mutex<VulkanMemoryPool>>, BackendError> {
+pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Result<Vec<Mutex<VulkanMemoryPool>>, BackendError> {
     let mut pools: Vec<Mutex<VulkanMemoryPool>> = Vec::new();
     if let Some(ids) = &config.device_ids
         && ids.is_empty()

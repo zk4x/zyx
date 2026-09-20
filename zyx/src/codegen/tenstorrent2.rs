@@ -811,6 +811,139 @@ impl Compiler {
         self.ops = next;
     }
 
+    /// DST lock insertion: `MathLock`/`MathUnlock`/`PackLock`/`PackUnlock`
+    /// around compute-section tile traffic. Faithful port of the legacy
+    /// `TileEmitter` state machine (`tenstorrent.rs`): lazy MATH acquire
+    /// (first take acquires, later takes in the same cone keep), deferred
+    /// PACK release (consecutive packs share one cone; the release flushes
+    /// at the next MATH take or at section/loop end). MATH ops are tile
+    /// compute ops; PACK ops are tile stores draining to a CB. Scalar and
+    /// movement sections carry no locks.
+    fn lock_dst(&mut self) {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum DstState {
+            Unlocked,
+            MathLock,
+            PackLock,
+        }
+        // Register-acc storages: loads/stores threading them are alias
+        // moves, not MATH/PACK traffic.
+        let mut register: Set<OpId> = Set::default();
+        for op in &self.ops {
+            if let TTOp::SSAStorage { z, scope, .. } = op
+                && matches!(scope, MemScope::Register)
+            {
+                register.insert(*z);
+            }
+        }
+        let is_math = |op: &TTOp, drain_consumers: &Map<OpId, Vec<OpId>>| -> bool {
+            match op {
+                TTOp::SSAStorage { scope, .. } => matches!(scope, MemScope::Register),
+                TTOp::SSALoad { z, src, layout, .. } => {
+                    if !matches!(layout, MemLayout::Tile { .. }) {
+                        return false;
+                    }
+                    if register.contains(src) {
+                        return false;
+                    }
+                    if drain_consumers.contains_key(z) {
+                        return false;
+                    }
+                    true
+                }
+                TTOp::SSAUnary { .. }
+                | TTOp::SSABinary { .. }
+                | TTOp::SSACast { .. }
+                | TTOp::SSAMad { .. }
+                | TTOp::SSAReduceTile { .. }
+                | TTOp::SSAMatmulTile { .. }
+                | TTOp::SSATransposeTile { .. } => true,
+                _ => false,
+            }
+        };
+        let old = std::mem::take(&mut self.ops);
+        let mut next = Vec::with_capacity(old.len());
+        let mut state = DstState::Unlocked;
+        let mut section = 0u8;
+        let math_lock = |next: &mut Vec<TTOp>, state: &mut DstState| {
+            match *state {
+                DstState::MathLock => {}
+                DstState::PackLock => {
+                    next.push(TTOp::PackUnlock);
+                    next.push(TTOp::MathLock);
+                    *state = DstState::MathLock;
+                }
+                DstState::Unlocked => {
+                    next.push(TTOp::MathLock);
+                    *state = DstState::MathLock;
+                }
+            }
+        };
+        for op in old {
+            match &op {
+                TTOp::EndReader | TTOp::EndCompute => {
+                    if section == 1 && state == DstState::PackLock {
+                        next.push(TTOp::PackUnlock);
+                        state = DstState::Unlocked;
+                    }
+                    section += 1;
+                    next.push(op);
+                    continue;
+                }
+                TTOp::EndWriter => {
+                    if section == 1 && state == DstState::PackLock {
+                        next.push(TTOp::PackUnlock);
+                        state = DstState::Unlocked;
+                    }
+                    next.push(op);
+                    continue;
+                }
+                TTOp::SSAEndLoop => {
+                    // No open cone across the back-edge: the body runs N
+                    // times, so a PACK-held file here would deadlock the
+                    // next iteration on an acquire past the loop.
+                    if section == 1 && state == DstState::PackLock {
+                        next.push(TTOp::PackUnlock);
+                        state = DstState::Unlocked;
+                    }
+                    next.push(op);
+                    continue;
+                }
+                _ => {}
+            }
+            if section != 1 {
+                next.push(op);
+                continue;
+            }
+            // Pack path: tile store draining to a CB. Acc-threading
+            // stores (dst is a Register acc) alias tiles, no lock.
+            if let TTOp::SSAStore { dst, .. } = &op {
+                if self.cbs.contains_key(dst) {
+                    match state {
+                        DstState::MathLock => {
+                            next.push(TTOp::MathUnlock);
+                            next.push(TTOp::PackLock);
+                            state = DstState::PackLock;
+                        }
+                        DstState::PackLock => {}
+                        DstState::Unlocked => {
+                            panic!("tenstorrent2: pack with DST Unlocked, no live cone (pack of a dead slot)");
+                        }
+                    }
+                    next.push(op);
+                    continue;
+                }
+                next.push(op);
+                continue;
+            }
+            if is_math(&op, &self.drain_consumers) {
+                math_lock(&mut next, &mut state);
+            }
+            next.push(op);
+        }
+        self.ops = next;
+    }
+
     /// Print the TTIR stream, one op per line (`r{id}` = SSA values,
     /// `v{id}` = scalar registers, `cb{id}` = circular buffers).
     pub fn debug(&self) {
@@ -824,6 +957,7 @@ impl Kernel {
         compiler.sectioning();
         compiler.assign_cbs();
         compiler.sync_cbs();
+        compiler.lock_dst();
         compiler.debug();
 
         todo!()

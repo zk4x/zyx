@@ -23,14 +23,14 @@ use std::sync::Arc;
 use crate::backend::{Buffer, DeviceInfo, LaunchArg, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
-use crate::graph::{OpId, EClass, Node, OpNode};
+use crate::graph::{Node, OpNode};
 use crate::kernel::{
     BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
     ops::TileDim,
 };
 use crate::runtime::{Runtime, TensorData};
 use crate::shape::UAxis;
-use crate::slab::{Slab, SlabId};
+use crate::slab::Slab;
 use crate::symbolic::{Expr, ExprId};
 use crate::tensor::TensorId;
 use crate::types::{TinyString, TinyVec};
@@ -1042,11 +1042,7 @@ impl CompiledKernel {
     /// `forward` fires in debug builds when the kernel does not have
     /// exactly one output, so misuse panics instead of silently
     /// dropping outputs.
-    pub fn forward1(
-        &self,
-        inputs: &[&Tensor],
-        shape: impl IntoIterator<Item = impl Into<Tensor>>,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn forward1(&self, inputs: &[&Tensor], shape: impl IntoIterator<Item = impl Into<Tensor>>) -> Result<Tensor, ZyxError> {
         Ok(self.forward(inputs, vec![shape])?.remove(0))
     }
 }
@@ -1178,27 +1174,42 @@ impl Runtime {
                 shape_ids.push(shape_expr);
             }
 
-            // Fresh output classes (empty until the Custom node joins them),
-            // then the Custom node itself: member of every output class,
-            // `class_of` the first. Hashcons is bypassed — the node references
-            // output classes that must exist before it, mirroring how
-            // `Node::Kernel`s are minted in `autotune_jit_kernels`.
+            // One `Custom` node (the kernel) plus one `Node::Index` per
+            // output: the kernel node is self-headed, and each output class is
+            // headed by its Index accessor (`vec` = the kernel node, `idx` =
+            // output position) — the graph mirror of egglog's
+            // one-constructor-row + accessor-primitive shape. The outputs
+            // descriptor is patched to the Index classes after they exist;
+            // hashcons is bypassed for the Custom node because it references
+            // classes that only exist once it does.
+            let node = Node::Custom { inputs: input_classes.into(), outputs: Box::new([]), program_id: program, time: 10 };
+            let nid = self.graphs[graph_id].nodes.push(OpNode { node, class_of: OpId::NULL, next_in_class: OpId::NULL });
+            self.graphs[graph_id].nodes[nid].class_of = nid;
+
             let mut out_cids = Vec::with_capacity(shapes.len());
-            for _ in 0..shapes.len() {
-                out_cids.push(self.graphs[graph_id].classes.push(EClass { nodes: vec![] }));
+            for (i, _) in shape_classes.iter().enumerate() {
+                let idx_node = Node::Index { vec: nid, idx: i };
+                let idx_id = self.graphs[graph_id].nodes.push(OpNode {
+                    node: idx_node.clone(),
+                    class_of: OpId::NULL,
+                    next_in_class: OpId::NULL,
+                });
+                self.graphs[graph_id].nodes[idx_id].class_of = idx_id;
+                self.graphs[graph_id].hashcons.insert(idx_node, idx_id);
+                out_cids.push(idx_id);
             }
+
+            // Patch the Custom node's outputs descriptor to the Index classes.
             let outputs: Vec<(OpId, OpId, DType)> = out_cids
                 .iter()
                 .copied()
-                .zip(shape_classes)
+                .zip(shape_classes.iter().copied())
                 .zip(output_dtypes.iter().copied())
                 .map(|((cid, shape), dtype)| (cid, shape, dtype))
                 .collect();
-            let node = Node::Custom { inputs: input_classes.into(), outputs: outputs.into(), program_id: program, time: 10 };
-            let nid = self.graphs[graph_id].nodes.push(OpNode { node: node.clone(), class_of: out_cids[0] });
-            self.graphs[graph_id].hashcons.insert(node, nid);
-            for &ocid in &out_cids {
-                self.graphs[graph_id].classes[ocid].nodes.push(nid);
+            match &mut self.graphs[graph_id].nodes[nid].node {
+                Node::Custom { outputs: slot, .. } => *slot = outputs.into(),
+                n => unreachable!("patching outputs of non-Custom node {n:?}"),
             }
 
             // Output tensors: lazy graph tensors backed by the output classes.

@@ -19,7 +19,7 @@ use std::hash::BuildHasherDefault;
 use crate::{
     Map,
     dtype::{Constant, DType},
-    graph::{OpId, GraphId, Node},
+    graph::{GraphId, Node},
     kernel::{BOp, IDX_T, Op, OpId, UOp},
     runtime::{KernelId, ResolvedDim, Runtime, TensorData},
     shape::Dim,

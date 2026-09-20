@@ -1846,32 +1846,23 @@ impl Tensor {
     }
 
     // reduce
-    /// Computes the natural logarithm of the softmax of the input tensor along the specified axes.
+    /// Compute the log-softmax of this tensor along the given axes.
     ///
-    /// This function first subtracts the maximum value along the given axes from the input tensor,
-    /// then computes the exponential of the result, sums over the specified axes using `sum_kd`,
-    /// and finally takes the natural logarithm of the sum before returning it.
+    /// First subtracts the max along the axes (for numerical stability), then
+    /// computes `m - ln(sum(exp(m)))`.
     ///
-    /// # Arguments
+    /// # Example
     ///
-    /// * `self` - The input tensor to compute the softmax and natural logarithm of.
-    /// * `axes` - A trait implementing `IntoAxes`, specifying along which axes the softmax should be computed.
-    ///
-    /// # Examples
-    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let x = Tensor::from([2.0f32, 3.0, 4.0]);
+    /// let v = x.ln_softmax([]).unwrap().to_vec::<f32>().unwrap();
+    /// assert!((v[1] - -1.4084).abs() < 1e-4);
     /// ```
-    /// use zyx::Tensor;
-    /// let x = Tensor::from([2f32, 3., 4.]);
-    /// let y = x.ln_softmax([]);
-    /// ```
-    ///
-    /// # Returns
-    ///
-    /// The resulting tensor after computing the natural logarithm of the softmax of `self`.
     ///
     /// # Errors
     ///
-    /// Returns error if any of the specified axes are out-of-bounds for the input tensor.
+    /// Returns a shape error if the axes are invalid.
     #[allow(clippy::missing_panics_doc)]
     pub fn ln_softmax(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
@@ -1879,30 +1870,23 @@ impl Tensor {
         Ok(&m - m.exp().sum_keepdim(axes)?.ln())
     }
 
-    /// Calculates the softmax of this tensor along the specified axes.
+    /// Compute the softmax of this tensor along the given axes.
     ///
-    /// # Arguments
+    /// Divides by the sum of `exp(x)` along the axes, shifted by the max for
+    /// numerical stability.
     ///
-    /// * `axes`: The axes along which to calculate the softmax.
+    /// # Example
     ///
-    /// # Returns
-    ///
-    /// * A new tensor containing the result of the softmax operation.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let t = Tensor::from(vec![1f32, 2.0, 3.0]);
-    /// let sm = t.softmax([])?;
-    /// assert_eq!(sm, [0.0900305748f32, 0.2447281546, 0.6652412706]);
-    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let v = t.softmax([]).unwrap().to_vec::<f32>().unwrap();
+    /// assert!((v[0] - 0.09003).abs() < 1e-4);
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if self cannot be reduced by axes.
+    /// Returns a shape error if the axes are invalid.
     pub fn softmax(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         let e = (self - self.max_keepdim(axes.clone())?).exp();
@@ -1910,11 +1894,23 @@ impl Tensor {
     }
 
     // binary
-    /// Matmul and dot
+    /// Compute the dot product (matmul) of this tensor and `rhs`.
+    ///
+    /// Contracts the last dimension of `self` with the first dimension of `rhs`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let b = Tensor::from([[5.0, 6.0], [7.0, 8.0]]);
+    /// let c = a.dot(b).unwrap();
+    /// assert_eq!(c.to_vec::<f32>().unwrap(), vec![19.0f32, 22.0, 43.0, 50.0]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns a shape error if the last/first dimensions do not match.
     pub fn dot(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let rhs = rhs.into();
         let org_y_shape = rhs.resolve_shape();
@@ -1942,11 +1938,22 @@ impl Tensor {
         (self.reshape(x_shape)? * y.reshape(y_shape)?).sum([-1])?.reshape(out_shape)
     }
 
-    /// Matmul
+    /// Compute the matmul of this tensor and `rhs` in the output dtype
+    /// `out_dtype`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let b = Tensor::from([[5.0, 6.0], [7.0, 8.0]]);
+    /// let c = a.dot_dtype(b, DType::F32).unwrap();
+    /// assert_eq!(c.to_vec::<f32>().unwrap(), vec![19.0f32, 22.0, 43.0, 50.0]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have incompatible shapes for matmul.
+    /// Returns a shape error if the tensors have incompatible shapes.
     pub fn dot_dtype(&self, rhs: impl Into<Tensor>, out_dtype: DType) -> Result<Tensor, ZyxError> {
         let rhs: Tensor = rhs.into();
         let org_y_shape = rhs.resolve_shape();
@@ -1972,34 +1979,40 @@ impl Tensor {
         (self.reshape(x_shape)?.cast(out_dtype) * y.reshape(y_shape)?.cast(out_dtype)).sum([-1])?.reshape(out_shape)
     }
 
-    /// Matmul is just alias to dot
+    /// Compute the matrix multiplication of this tensor and `rhs` (alias of
+    /// `dot`).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+    /// let b = Tensor::from([[5.0, 6.0], [7.0, 8.0]]);
+    /// assert_eq!(a.matmul(b).unwrap().to_vec::<f32>().unwrap(),
+    ///     vec![19.0f32, 22.0, 43.0, 50.0]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns a shape error if the tensors have incompatible shapes.
     pub fn matmul(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         self.dot(rhs)
     }
 
-    /// Returns a new tensor where each element is the result of raising the corresponding element in `self` to the power of `exponent`.
+    /// Element-wise raise `self` to the power `exponent`.
     ///
-    /// # Examples
+    /// # Example
     ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([1.0f32, 2.0]);
+    /// assert_eq!(a.pow(2.0).unwrap().to_vec::<f32>().unwrap(),
+    ///     vec![1.0f32, 4.0]);
     /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let arr = Tensor::from([1.0f32, 2.0]);
-    /// assert_eq!(arr.pow(2.0f32)?, [1.0f32, 4.0]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Returns
-    ///
-    /// A new tensor where each element is the result of raising the corresponding element in `self` to the power of `exponent`.
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns a shape error if the shapes are not broadcastable.
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         //Ok((self.log2() * exponent).exp2())
         let (x, y) = Tensor::broadcast(self.clone(), exponent)?;
@@ -2007,33 +2020,63 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// Logical and
+    /// Element-wise logical AND of `self` and `rhs`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([true, true, false]);
+    /// let b = Tensor::from([true, false, true]);
+    /// assert_eq!(a.logical_and(b).unwrap().to_vec::<bool>().unwrap(),
+    ///     vec![true, false, false]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns a shape error if the shapes are not broadcastable.
     pub fn logical_and(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().binary(x.id, y.id, BOp::And)?;
         Ok(Tensor { id })
     }
 
-    /// Logical or
+    /// Element-wise logical OR of `self` and `rhs`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([true, true, false]);
+    /// let b = Tensor::from([true, false, true]);
+    /// assert_eq!(a.logical_or(b).unwrap().to_vec::<bool>().unwrap(),
+    ///     vec![true, true, true]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns a shape error if the shapes are not broadcastable.
     pub fn logical_or(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().binary(x.id, y.id, BOp::Or)?;
         Ok(Tensor { id })
     }
 
-    /// Returns boolean mask with true where self == rhs
+    /// Element-wise equality of `self` and `rhs` (boolean mask of `self == rhs`).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([1i32, 2, 3]);
+    /// let b = Tensor::from([1i32, 9, 3]);
+    /// assert_eq!(a.equal(b).unwrap().to_vec::<bool>().unwrap(),
+    ///     vec![true, false, true]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns a shape error if the shapes are not broadcastable.
     pub fn equal(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().binary(x.id, y.id, BOp::Eq)?;
@@ -2041,11 +2084,22 @@ impl Tensor {
         Ok(x)
     }
 
-    /// Returns boolean mask with true where self != rhs
+    /// Element-wise inequality of `self` and `rhs` (boolean mask of
+    /// `self != rhs`).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([1i32, 2, 3]);
+    /// let b = Tensor::from([1i32, 9, 3]);
+    /// assert_eq!(a.ne(b).unwrap().to_vec::<bool>().unwrap(),
+    ///     vec![false, true, false]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns a shape error if the shapes are not broadcastable.
     pub fn ne(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().binary(x.id, y.id, BOp::NotEq)?;
@@ -2053,7 +2107,16 @@ impl Tensor {
         Ok(x)
     }
 
-    /// Returns true where self is different from zero and false otherwise.
+    /// Boolean mask of elements of `self` that are nonzero.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let a = Tensor::from([0i32, 5, -1]);
+    /// assert_eq!(a.nonzero().to_vec::<bool>().unwrap(),
+    ///     vec![false, true, true]);
+    /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn nonzero(&self) -> Tensor {
@@ -2063,22 +2126,26 @@ impl Tensor {
     }
 
     // ternary
-    /// Where operation. Replaces elementwise true values with `if_true` and false values with `if_false`.
+    /// Ternary select: element-wise `self ? if_true : if_false` (using `self`
+    /// as the boolean condition).
     ///
     /// # Note
     ///
-    /// Implemented with the branchless decomposition
-    /// `cond * if_true + (1 - cond) * if_false` — GPUs hate branching, and a
-    /// ternary select would be much slower. The decomposition is exact for
-    /// finite values, but produces `NaN` whenever a product hits `0 * ±inf`
-    /// (e.g. `where_(-inf, 0)` on a false element). Do NOT pass ±inf values.
-    /// If a model in the future needs true ternary semantics with infinities,
-    /// a proper ternary `Where` op (graph node + kernel IR op + backends) will
-    /// have to be added.
+    /// Implemented branchlessly as `cond * if_true + (1 - cond) * if_false`;
+    /// this yields `NaN` on a `0 * ±inf` product — do not pass infinities.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let cond = Tensor::from([true, false]);
+    /// let a = cond.where_(Tensor::from([1i32, 2]), Tensor::from([3, 4])).unwrap();
+    /// assert_eq!(a.to_vec::<i32>().unwrap(), vec![1, 4]);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the tensors have non broadcasteable shapes.
+    /// Returns a shape error if the tensors have non broadcastable shapes.
     // TODO: possibly for some models in the future a ternary where op will be
     // needed (graph node + kernel IR + backends); the branchless decomposition
     // below cannot support ±inf values.
@@ -2093,18 +2160,24 @@ impl Tensor {
     }
 
     // loss functions
-    /// Calculates the cross-entropy loss for this tensor.
+    /// Cross-entropy loss between this tensor (logits) and `target`.
     ///
-    /// This function takes a target tensor and axes as input. It first calculates the softmax of the input tensor along the specified axes,
-    /// then multiplies the result by the logarithm of the target tensor.
+    /// `target` may be class indices or one-hot; the class axis is inferred
+    /// (0 for 1D inputs, 1 for 2D+). `reduction` selects `Mean` (scalar),
+    /// `Sum` (scalar), or `None` (per-sample).
     ///
-    /// Self is logits, target is one-hot.
+    /// # Example
     ///
-    /// Cross entropy loss
+    /// ```rust
+    /// # use zyx::{Tensor, ReduceOp};
+    /// let logits = Tensor::from([[1.0f32, 2.0, 0.0]]);
+    /// let loss = logits.cross_entropy(Tensor::from([1i32]), ReduceOp::Mean).unwrap();
+    /// assert!((loss.item::<f32>().unwrap() - 0.7222).abs() < 1e-3);
+    /// ```
     ///
-    /// `self` are logits. `target` can be class indices (int tensor) or one-hot (float tensor).
-    /// When `target` is class indices, the class axis is inferred: 0 for 1D inputs, 1 for 2D+.
-    /// `reduction` controls the output shape: `Mean` (default, scalar), `Sum` (scalar), or `None`.
+    /// # Errors
+    ///
+    /// Returns a shape error if `self` and `target` are incompatible.
     pub fn cross_entropy(&self, target: impl Into<Tensor>, reduction: ReduceOp) -> Result<Tensor, ZyxError> {
         let target = target.into();
         let classes_dim = if self.rank() <= 1 { 0 } else { 1 };
@@ -2123,22 +2196,24 @@ impl Tensor {
         }
     }
 
-    /// Negative log-likelihood loss.
+    /// Negative log-likelihood loss between this tensor (log-probabilities)
+    /// and `target` class indices, with optional `weight` and
+    /// `ignore_index`.
     ///
-    /// Computes the NLL loss between log-probabilities and target class indices.
-    /// `self` should be log-probabilities of shape `[N, C]` (or `[C]` for 1D),
-    /// `target` should be class indices of shape `[N]` (or a scalar for 1D).
+    /// # Example
     ///
-    /// # Arguments
-    ///
-    /// * `target` - Class indices tensor.
-    /// * `weight` - Optional per-class weight tensor.
-    /// * `ignore_index` - Optional class index to ignore.
-    /// * `reduction` - Reduction mode: `Mean`, `Sum`, or `None`.
+    /// ```rust
+    /// # use zyx::{Tensor, ReduceOp};
+    /// let logits = Tensor::from([[2.0f32, 1.0, 0.0]]);
+    /// let loss = logits.nll_loss(
+    ///     Tensor::from([1i32]), None, None, ReduceOp::Mean,
+    /// ).unwrap();
+    /// assert!((loss.item::<f32>().unwrap() - 2.3069).abs() < 1e-3);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns error if the shapes are incompatible.
+    /// Returns a shape error if the shapes are incompatible.
     #[allow(clippy::missing_panics_doc)]
     pub fn nll_loss(
         &self,
@@ -2174,16 +2249,23 @@ impl Tensor {
         }
     }
 
-    /// CTC loss (Connectionist Temporal Classification).
+    /// CTC (Connectionist Temporal Classification) loss between this tensor
+    /// (log-probabilities, shape `[T, C]`) and `targets` (class indices, shape
+    /// `[L]`), using the forward-backward algorithm in log space. `blank` is
+    /// the blank label index.
     ///
-    /// Computes the CTC loss between log-probabilities and target labels using
-    /// the forward-backward algorithm in log space.
+    /// # Example
     ///
-    /// `self` should be log-probabilities of shape `[T, C]` (time, classes).
-    /// `targets` should be class indices of shape `[L]`.
-    /// `blank` is the blank label index.
+    /// ```rust
+    /// # use zyx::{Tensor, ReduceOp};
+    /// let logp = Tensor::zeros([2, 2], /* DType::F32 */);
+    /// let l = logp.ctc_loss(Tensor::from([0i32, 1]), 0, ReduceOp::Mean).unwrap();
+    /// assert!(l.is_finite().unwrap());
+    /// ```
     ///
-    /// Returns the scalar loss.
+    /// # Errors
+    ///
+    /// Returns an error if the input shapes or dtypes are incompatible.
     #[allow(clippy::missing_panics_doc)]
     pub fn ctc_loss(&self, targets: impl Into<Tensor>, blank: i64, reduction: ReduceOp) -> Result<Tensor, ZyxError> {
         let target = targets.into();

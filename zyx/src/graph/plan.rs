@@ -6,7 +6,7 @@ use crate::{
     Map, Set, ZyxError,
     backend::{Buffer, LaunchArg, Pool, ProgramId},
     dtype::Constant,
-    graph::{OpId, Graph, Node, OpId},
+    graph::{Graph, Node, OpId},
     kernel::BOp,
     runtime::Runtime,
     shape::Dim,
@@ -117,16 +117,16 @@ impl ExecPlan {
         // leaf dims must terminate the walk; anything else is unreachable.
         fn alloc_spec(graph: &Graph, class: OpId) -> (Dim, Vec<PlanDim>) {
             fn dim_expr(graph: &Graph, dim: OpId) -> PlanDim {
-                match &graph.nodes[graph.classes[dim].nodes[0]].node {
+                match graph.nodes[dim].node {
                     Node::Const { value: c, .. } => {
                         PlanDim::Const(c.as_dim().unwrap_or_else(|| panic!("dim class {dim:?} is not a constant")))
                     }
                     Node::Leaf { .. } => PlanDim::Leaf(dim),
                     Node::Binary { x, y, bop } => {
-                        PlanDim::Binary { x: Box::new(dim_expr(graph, *x)), y: Box::new(dim_expr(graph, *y)), bop: *bop }
+                        PlanDim::Binary { x: Box::new(dim_expr(graph, x)), y: Box::new(dim_expr(graph, y)), bop }
                     }
-                    Node::Cast { x, dtype } => PlanDim::Cast { x: Box::new(dim_expr(graph, *x)), dtype: *dtype },
-                    op => unreachable!("alloc dim class {dim:?} must be a dim over Const/leaf leaves, got {op:?}"),
+                    Node::Cast { x, dtype } => PlanDim::Cast { x: Box::new(dim_expr(graph, x)), dtype },
+                    ref op => unreachable!("alloc dim class {dim:?} must be a dim over Const/leaf leaves, got {op:?}"),
                 }
             }
             let dtype_size = Dim::from(graph.dtype(class).bit_size() / 8);
@@ -141,14 +141,12 @@ impl ExecPlan {
         // is owned by the realized tensor.
         let mut aliases: Vec<(OpId, OpId, Dim, Vec<PlanDim>)> = Vec::new();
         let mut alias_classes: Set<OpId> = Set::default();
-        for cid in graph.classes.ids() {
-            for nid in &graph.classes[cid].nodes {
-                if let Node::After { x, .. } = &graph.nodes[*nid].node {
-                    let base = graph.base_leaf(*x);
-                    let (dtype_size, dims) = alloc_spec(graph, cid);
-                    aliases.push((cid, base, dtype_size, dims));
-                    alias_classes.insert(cid);
-                }
+        for (cid, nd) in graph.nodes.iter().filter(|(id, nd)| nd.class_of == *id) {
+            if let Node::After { x, .. } = nd.node {
+                let base = graph.base_leaf(x);
+                let (dtype_size, dims) = alloc_spec(graph, cid);
+                aliases.push((cid, base, dtype_size, dims));
+                alias_classes.insert(cid);
             }
         }
 

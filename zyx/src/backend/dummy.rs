@@ -47,7 +47,9 @@ pub(super) fn pool() -> Result<&'static Mutex<DummyMemoryPool>, BackendError> {
     }
     let pool = Mutex::new(ensure_pool()?);
     let _ = DUMMY_POOL.set(pool);
-    DUMMY_POOL.get().ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "dummy pool init failed".into() })
+    DUMMY_POOL
+        .get()
+        .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "dummy pool init failed".into() })
 }
 
 /// Constructs the global dummy pool. Fails when dummy is configured out.

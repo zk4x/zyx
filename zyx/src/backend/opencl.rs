@@ -156,10 +156,7 @@ unsafe impl Send for Command {}
 
 /// Single backend initializer: builds pools + devices together in one pass,
 /// publishes both tables. Reads config directly; no init locks.
-fn backend() -> Result<
-    (&'static Vec<Mutex<OpenCLMemoryPool>>, &'static Vec<Mutex<OpenCLDevice>>),
-    BackendError,
-> {
+fn backend() -> Result<(&'static Vec<Mutex<OpenCLMemoryPool>>, &'static Vec<Mutex<OpenCLDevice>>), BackendError> {
     if let Some(pools) = OPENCL_POOLS.get()
         && let Some(devs) = OPENCL_DEVICES.get()
     {

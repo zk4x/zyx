@@ -4,10 +4,10 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, Set,
-    graph::{OpId, Graph, JitKernelData, JitKernelId, Node, OpNode, OpId},
-    kernel::{Dev, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind},
+    graph::{Graph, JitKernelData, JitKernelId, Node, OpId},
+    kernel::{Dev, IDX_T, Kernel, MoveOp, Op, ParamKind},
     shape::UAxis,
-    slab::{Slab, SlabId},
+    slab::Slab,
 };
 
 impl Graph {
@@ -153,6 +153,7 @@ impl Graph {
                     Node::Assign { dst, src } => vec![*dst, *src],
                     Node::After { x, dep } => vec![*x, *dep],
                     Node::ToDevice { x, .. } | Node::Contiguous { x, .. } => vec![*x],
+                    Node::Index { vec, .. } => vec![*vec],
                     Node::Kernel { inputs, .. } => inputs.to_vec(),
                     Node::Custom { inputs, .. } => inputs.to_vec(),
                 };
@@ -183,7 +184,7 @@ impl Graph {
                 continue;
             }
 
-            let nid = self.classes[cid].first;
+            let nid = cid;
 
             if inputs.contains(&cid) {
                 // Boundary input: load the class from storage, same as a leaf.
@@ -213,6 +214,10 @@ impl Graph {
                         // Scalars are never materialized: consumers replay
                         // the expression on demand (missing from visited
                         // ⇒ replay).
+                    }
+                    Node::Index { .. } => {
+                        // Output selection is never materialized: consumers
+                        // replay the element expression on demand.
                     }
                     Node::Stack { ref ops } => {
                         // Copy the element list out of the node so the shared
@@ -526,7 +531,7 @@ impl Graph {
                         // exist — trace it instead of assuming a position,
                         // fail loud otherwise.
                         let dst_loads = self.jit_kernels[dst_kid].loads.clone();
-                        let is_var_class = |g: &Self, c: OpId| matches!(&g.nodes[g.classes[c].first].node, Node::Leaf { dtype, shape, .. } if *dtype == IDX_T && shape.is_null());
+                        let is_var_class = |g: &Self, c: OpId| matches!(&g.nodes[c].node, Node::Leaf { dtype, shape, .. } if dtype == &IDX_T && shape.is_null());
                         let mut buffer_classes = dst_loads.iter().copied().filter(|&c| !is_var_class(self, c));
                         let dst_leaf = match (buffer_classes.next(), buffer_classes.next()) {
                             (Some(c), None) => c,
@@ -884,9 +889,7 @@ impl Graph {
             // backend kernel, not by this fused kernel. Materialize the class into
             // storage and hand off to a fresh load kernel, so downstream ops (e.g.
             // relu) start from the stored class instead of fusing into this kernel.
-            if !inputs.contains(&cid)
-                && self.class_nodes(cid).any(|nid| matches!(&self.nodes[nid].node, Node::Kernel { .. }))
-            {
+            if !inputs.contains(&cid) && self.class_nodes(cid).any(|nid| matches!(&self.nodes[nid].node, Node::Kernel { .. })) {
                 let (kid, op_id) = visited[&cid];
                 let _ = self.add_store(cid, kid, op_id, &mut visited, &rcs);
             }
@@ -913,9 +916,7 @@ impl Graph {
                 // fresh-buffer store. AOT kernel classes are already materialized
                 // into storage by the backend kernel — storing the load kernel
                 // again would produce a self-copying kernel.
-                if !self.class_nodes(cid)
-                    .any(|nid| matches!(&self.nodes[nid].node, Node::After { .. } | Node::Kernel { .. }))
-                {
+                if !self.class_nodes(cid).any(|nid| matches!(&self.nodes[nid].node, Node::After { .. } | Node::Kernel { .. })) {
                     (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs);
                 }
                 *rcs.get_mut(&cid).unwrap() -= 1;
@@ -1031,11 +1032,11 @@ impl Graph {
                 for load in &kernel.loads {
                     let stored = self.jit_kernels.values().any(|k| k.stores.contains(load));
                     let in_outputs = self.jit_kernels.values().any(|k| k.outputs.contains(load));
-                    let is_input = inputs.contains(load) || matches!(self.nodes[self.classes[*load].first].node, Node::Leaf { .. });
+                    let is_input = inputs.contains(load) || matches!(self.nodes[*load].node, Node::Leaf { .. });
                     if !stored && !is_input {
                         panic!(
                             "DEBUG kernelize: load class {load:?} (node {:?}) of kernel {kid:?} is not stored anywhere (in_outputs={in_outputs}) and is not an input",
-                            self.nodes[self.classes[*load].first].node
+                            self.nodes[*load].node
                         );
                     }
                 }
@@ -1273,13 +1274,7 @@ impl Graph {
         (kid, op_id)
     }
 
-    fn consume(
-        &mut self,
-        cid: OpId,
-        kid: JitKernelId,
-        visited: &mut Map<OpId, (JitKernelId, OpId)>,
-        rcs: &mut Map<OpId, u32>,
-    ) {
+    fn consume(&mut self, cid: OpId, kid: JitKernelId, visited: &mut Map<OpId, (JitKernelId, OpId)>, rcs: &mut Map<OpId, u32>) {
         *rcs.get_mut(&cid).unwrap() -= 1;
         remove_first_output(&mut self.jit_kernels, kid, cid);
         if *rcs.get(&cid).unwrap() == 0 {
@@ -1348,14 +1343,7 @@ impl Graph {
             };
             if let Some((inputs, outputs, program_id)) = custom {
                 let class_of = self.nodes[nid].class_of;
-                let knid = self.nodes.push(OpNode {
-                    node: Node::Kernel { inputs, outputs: outputs.clone().into(), program_id, time: 10 },
-                    class_of,
-                    next_in_class: OpId::NULL,
-                });
-                for &ocid in &outputs {
-                    self.class_push(ocid, knid);
-                }
+                self.mint_node(Node::Kernel { inputs, outputs: outputs.clone().into(), program_id, time: 10 }, class_of);
             }
         }
     }

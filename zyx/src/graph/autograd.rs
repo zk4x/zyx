@@ -3,11 +3,10 @@
 use crate::{
     Map, Set,
     dtype::Constant,
-    graph::{OpId, Graph, GraphId, Node},
+    graph::{Graph, GraphId, Node, OpId},
     kernel::{BOp, UOp},
     runtime::{Runtime, TensorData},
     shape::{Dim, UAxis},
-    slab::SlabId,
     tensor::TensorId,
 };
 use std::collections::BTreeSet;
@@ -62,12 +61,10 @@ impl Runtime {
                 continue;
             };
 
-            let nid = match self.graphs[graph_id].classes[cid].nodes.iter().copied().find(|&nid| {
-                !matches!(&self.graphs[graph_id].nodes[nid].node, Node::Leaf { .. } | Node::Const { .. } | Node::Kernel { .. })
-            }) {
-                Some(nid) => nid,
-                None => continue,
-            };
+            let nid = cid;
+            if matches!(&self.graphs[graph_id].nodes[nid].node, Node::Leaf { .. } | Node::Const { .. } | Node::Kernel { .. }) {
+                continue;
+            }
 
             match self.graphs[graph_id].nodes[nid].node {
                 Node::Unary { x, uop } => match uop {
@@ -419,6 +416,11 @@ impl Runtime {
                     accum_grad(self, graph_id, &mut grads, x, grad);
                 }
                 Node::Stack { .. } => todo!("stack backward"),
+                Node::Index { vec, .. } => {
+                    // Selecting one output of a multi-output kernel passes the
+                    // gradient through to the Stack class.
+                    accum_grad(self, graph_id, &mut grads, vec, grad);
+                }
                 Node::Leaf { .. } | Node::Const { .. } => {}
                 Node::Kernel { .. } => todo!("backward through custom kernel"),
                 Node::Custom { .. } => todo!("backward through custom kernel"),
@@ -483,27 +485,25 @@ impl Graph {
         let mut rcs: Map<OpId, u32> = Map::default();
         while let Some(cid) = stack.pop() {
             rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                for nid in &self.classes[cid].nodes {
-                    let node = &self.nodes[*nid].node;
-                    if matches!(
-                        node,
-                        Node::Binary {
-                            bop: BOp::Cmpgt
-                                | BOp::Cmplt
-                                | BOp::Eq
-                                | BOp::NotEq
-                                | BOp::Or
-                                | BOp::And
-                                | BOp::BitAnd
-                                | BOp::BitOr
-                                | BOp::BitXor
-                                | BOp::BitShiftLeft
-                                | BOp::BitShiftRight,
-                            ..
-                        }
-                    ) {
-                        continue;
+                let nid = cid;
+                let node = &self.nodes[nid].node;
+                if !matches!(
+                    node,
+                    Node::Binary {
+                        bop: BOp::Cmpgt
+                            | BOp::Cmplt
+                            | BOp::Eq
+                            | BOp::NotEq
+                            | BOp::Or
+                            | BOp::And
+                            | BOp::BitAnd
+                            | BOp::BitOr
+                            | BOp::BitXor
+                            | BOp::BitShiftLeft
+                            | BOp::BitShiftRight,
+                        ..
                     }
+                ) {
                     for p in node.class_params() {
                         if !stack.contains(&p) {
                             stack.push(p);
@@ -522,11 +522,9 @@ impl Graph {
                 && rc == *internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1)
             {
                 order.push(cid);
-                for nid in &self.classes[cid].nodes {
-                    for p in self.nodes[*nid].node.class_params() {
-                        if !stack.contains(&p) {
-                            stack.push(p);
-                        }
+                for p in self.nodes[cid].node.class_params() {
+                    if !stack.contains(&p) {
+                        stack.push(p);
                     }
                 }
             }
@@ -536,17 +534,15 @@ impl Graph {
         let mut req_grad = sources.clone();
         let mut visited: Set<OpId> = Set::default();
         for cid in order.into_iter().rev() {
-            for nid in &self.classes[cid].nodes {
-                for p in self.nodes[*nid].node.class_params() {
-                    if req_grad.contains(&p) && visited.insert(cid) {
-                        req_grad.insert(cid);
-                        topo.push(cid);
-                        break;
-                    }
-                }
-                if visited.contains(&cid) {
+            for p in self.nodes[cid].node.class_params() {
+                if req_grad.contains(&p) && visited.insert(cid) {
+                    req_grad.insert(cid);
+                    topo.push(cid);
                     break;
                 }
+            }
+            if visited.contains(&cid) {
+                break;
             }
         }
         topo.reverse();

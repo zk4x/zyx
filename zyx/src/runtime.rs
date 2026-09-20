@@ -226,7 +226,7 @@ use crate::{
     DType, Dev, Map, Scalar, Set, ZyxError,
     backend::{Buffer, DTypeCapability, DeviceProgramId, LaunchArg, Pool, ProgramId},
     dtype::Constant,
-    graph::{OpId, ExecPlan, Graph, GraphId, Node},
+    graph::{ExecPlan, Graph, GraphId, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     rng::Rng,
     scalar::{bf16, f8e4m3, f8e5m2, f16},
@@ -3021,7 +3021,7 @@ impl Runtime {
                 // Walk graph to find the source of the lvalue
                 let graph = &self.graphs[graph_id];
                 loop {
-                    match graph.nodes[graph.classes[dst_leaf_cid].nodes[0]].node {
+                    match graph.nodes[dst_leaf_cid].node {
                         Node::Pad { x, .. }
                         | Node::Flip { x, .. }
                         | Node::Expand { x, .. }
@@ -3036,7 +3036,7 @@ impl Runtime {
                 // the same buffer) to find the base tensor. The After for this assign
                 // threads onto the previous After, not the original buffer.
                 let mut leaf_cid = dst_leaf_cid;
-                while let Node::After { x, .. } = &graph.nodes[graph.classes[leaf_cid].nodes[0]].node {
+                while let Node::After { x, .. } = &graph.nodes[leaf_cid].node {
                     leaf_cid = *x;
                 }
                 let dst_leaf = graph.leaf_map[&leaf_cid];

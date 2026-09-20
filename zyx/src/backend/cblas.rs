@@ -20,8 +20,8 @@ use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Pool, 
 use crate::{
     DType, Set,
     error::{BackendError, ErrorStatus},
-    graph::{OpId, Graph, Node, OpNode},
-    kernel::Kernel,
+    graph::{Graph, Node},
+    kernel::{Kernel, OpId},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -220,16 +220,15 @@ impl CblasDevice {
             }
             println!("[cblas] matched matmul m={}, n={}, k={}", mm.m, mm.n, mm.k);
             let program_id = self.programs.push(CblasProgram { kernel: CblasKernelId::ZERO, m: mm.m, n: mm.n, k: mm.k });
-            let nid = graph.nodes.push(OpNode {
-                node: Node::Kernel {
+            graph.mint_node(
+                Node::Kernel {
                     inputs: Box::new([mm.a, mm.b]),
                     outputs: Box::new([mm.out]),
                     program_id: ProgramId { dev: Dev::Cblas, program_id },
                     time: 1,
                 },
-                class_of: mm.out,
-            });
-            graph.classes[mm.out].nodes.push(nid);
+                mm.out,
+            );
         }
     }
 

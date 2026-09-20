@@ -116,7 +116,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{OpId, Graph, Node, OpNode},
+    graph::{Graph, Node},
     kernel::{Kernel, MMADType, MMADims, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
     slab::{Slab, SlabId},
@@ -415,10 +415,7 @@ pub(super) struct CudaFns {
 /// Single entry point: builds pools + devices together in one enumeration,
 /// publishes both tables, returns both. No init locks — `OnceLock::set`
 /// publishes exactly once; losers' workers exit when their channels drop.
-fn backend() -> Result<
-    (&'static Vec<Mutex<CUDAMemoryPool>>, &'static Vec<Mutex<CUDADevice>>),
-    BackendError,
-> {
+fn backend() -> Result<(&'static Vec<Mutex<CUDAMemoryPool>>, &'static Vec<Mutex<CUDADevice>>), BackendError> {
     if let Some(pools) = CUDA_POOLS.get()
         && let Some(devs) = CUDA_DEVICES.get()
     {
@@ -1578,8 +1575,8 @@ impl CUDADevice {
             let Ok(program_id) = reply_rx.recv().unwrap() else {
                 continue;
             };
-            let nid = graph.nodes.push(OpNode {
-                node: Node::Kernel {
+            graph.mint_node(
+                Node::Kernel {
                     inputs: Box::new([mm.a, mm.b]),
                     outputs: Box::new([mm.out]),
                     program_id: ProgramId {
@@ -1591,9 +1588,8 @@ impl CUDADevice {
                     },
                     time: 1,
                 },
-                class_of: mm.out,
-            });
-            graph.classes[mm.out].nodes.push(nid);
+                mm.out,
+            );
         }
     }
 }

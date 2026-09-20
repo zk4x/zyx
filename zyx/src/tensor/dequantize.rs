@@ -16,8 +16,9 @@ use crate::{DType, QDType, Tensor, ZyxError};
 
 /// Nibble lookup values for [`QDType::IQ4_NL`] and [`QDType::IQ4_XS`]
 /// (`kvalues` in `gguf-py`).
-const KVALUES_IQ4NL: [f32; 16] =
-    [-127., -104., -83., -65., -49., -35., -22., -10., 1., 13., 25., 38., 53., 69., 89., 113.];
+const KVALUES_IQ4NL: [f32; 16] = [
+    -127., -104., -83., -65., -49., -35., -22., -10., 1., 13., 25., 38., 53., 69., 89., 113.,
+];
 
 /// Sign bytes for the IQ2/IQ3 family (`ksigns` in `gguf-py`).
 const KSIGNS_HEX: &str = concat!(
@@ -367,9 +368,7 @@ fn hex_val(c: u8) -> u8 {
 fn hex_bytes(hex: &str) -> Result<Vec<u8>, ZyxError> {
     let b = hex.as_bytes();
     if b.len() % 2 != 0 {
-        return Err(ZyxError::parse_error(
-            format!("dequantize: odd-length hex table ({} chars)", b.len()).into(),
-        ));
+        return Err(ZyxError::parse_error(format!("dequantize: odd-length hex table ({} chars)", b.len()).into()));
     }
     Ok(b.chunks_exact(2).map(|c| hex_val(c[0]) << 4 | hex_val(c[1])).collect())
 }
@@ -499,14 +498,10 @@ impl Tensor {
     /// or a shape error if `self` is not rank 2 with last dim `q.block_bytes()`.
     pub fn dequantize(&self, q: QDType, dtype: DType) -> Result<Tensor, ZyxError> {
         if self.dtype() != DType::U8 {
-            return Err(ZyxError::dtype_error(
-                format!("dequantize: expected U8 blocks for {q}, got {}", self.dtype()).into(),
-            ));
+            return Err(ZyxError::dtype_error(format!("dequantize: expected U8 blocks for {q}, got {}", self.dtype()).into()));
         }
         if !matches!(dtype, DType::F32 | DType::F16 | DType::BF16) {
-            return Err(ZyxError::dtype_error(
-                format!("dequantize: output dtype must be a float, got {dtype}").into(),
-            ));
+            return Err(ZyxError::dtype_error(format!("dequantize: output dtype must be a float, got {dtype}").into()));
         }
         let shape = self.resolve_shape();
         if shape.len() != 2 || shape[1] != q.block_bytes() {
@@ -637,8 +632,7 @@ fn deq_q3_k(blocks: &Tensor) -> Result<Tensor, ZyxError> {
     for k in 0..4u8 {
         hparts.push((hi4.clone() >> (k * 2)) & 3u8);
     }
-    let s16 = Tensor::cat([&slo, &shi].into_iter(), 1)?
-        | (Tensor::cat(hparts.iter(), 1)? << 4u8);
+    let s16 = Tensor::cat([&slo, &shi].into_iter(), 1)? | (Tensor::cat(hparts.iter(), 1)? << 4u8);
     let dl = d * (s16.bitcast(DType::I8)?.cast(DType::F32) - 32f32);
     let mut parts = Vec::with_capacity(16);
     for hlf in 0..2i64 {
@@ -781,10 +775,10 @@ fn deq_iq2_xs(blocks: &Tensor) -> Result<Tensor, ZyxError> {
         let db = d.clone() * (Tensor::from(0.5f32) + sc16.narrow(1, g, 1i64)?) * 0.25f32;
         let ua = u16le(blocks, 2 + 4 * g)?;
         let ub = u16le(blocks, 2 + 4 * g + 2)?;
-        let ga = lut_row(&grid, &((ua.clone() & 511u16)), 8)?;
+        let ga = lut_row(&grid, &(ua.clone() & 511u16), 8)?;
         let sa = sign_bits(&lut_row(&ksigns, &((ua >> 9u16) & 127u16).cast(DType::U8), 1)?)?;
         parts.push(db.clone() * ga * sa);
-        let gb = lut_row(&grid, &((ub.clone() & 511u16)), 8)?;
+        let gb = lut_row(&grid, &(ub.clone() & 511u16), 8)?;
         let sb = sign_bits(&lut_row(&ksigns, &((ub >> 9u16) & 127u16).cast(DType::U8), 1)?)?;
         parts.push(db * gb * sb);
     }

@@ -2,11 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 #![allow(unused)]
 
-use crate::{
-    DType,
-    graph::{OpId, Graph},
-    shape::Dim,
-};
+use crate::{DType, graph::Graph, kernel::OpId, shape::Dim};
 
 /// A matmul subgraph matched in the graph: `out = a @ b`, where `a` is `[m, k]`,
 /// `b` is `[k, n]` and `out` is `[m, n]`.

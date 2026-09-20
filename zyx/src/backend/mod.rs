@@ -30,7 +30,7 @@ use crate::{
     DebugMask,
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus},
-    graph::{OpId, Graph},
+    graph::Graph,
     kernel::{BOp, Kernel, MMADims, Op, OpId, ParamKind, RangeKind, UOp},
     shape::Dim,
     slab::SlabId,
