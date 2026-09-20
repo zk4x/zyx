@@ -7,11 +7,11 @@
 //! sources, split at render time at the `EndReader`/`EndCompute`/`EndWriter`
 //! markers.
 
-use super::tenstorrent::CBId;
+use super::tenstorrent::{CBId, NocEmitter, TT_DRAM_PAGE_BYTES, TtSection};
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TileDim, UOp},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TileDim, UOp},
     shape::Dim,
     types::{TinyString, TinyVec},
 };
@@ -41,6 +41,18 @@ impl TileId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VarId(pub u32);
 
+/// One `Asm` template operand: a CB renders as its index, a tile as
+/// its DST slot, a scalar as its register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsmOperand {
+    /// Circular buffer operand.
+    Cb(CBId),
+    /// DST slot operand.
+    Tile(TileId),
+    /// Scalar register operand.
+    Var(VarId),
+}
+
 /// One physical instruction. Each variant is one emitted line (or, after
 /// decomposition, one instruction) and carries a static signature (CB
 /// traffic, DST lock effects, executing thread) used by verify.
@@ -54,10 +66,17 @@ pub enum TTOp {
     /// End of the writer section. Explicit, never implicit end-of-Vec.
     EndWriter,
     /// Loop with trip count in a scalar register (defined by a prior
-    /// `SConst`/`SBinary` statement).
+    /// `Const`/`Binary` statement).
     Loop {
-        /// Number of iterations.
+        /// Number of iterations (input).
         len: VarId,
+        /// Loop counter slot (output, used by body index math).
+        counter: VarId,
+        /// Counter dtype (always `IDX_T`; carried for render declarations).
+        dtype: DType,
+        /// Compile-time trip count (`None` = symbolic; traffic under a
+        /// symbolic loop is a compilation error in `sync_cbs`).
+        trip: Option<u32>,
     },
     /// End of loop body.
     EndLoop,
@@ -73,20 +92,24 @@ pub enum TTOp {
     Arg {
         /// Destination scalar register.
         z: VarId,
-        /// Global launch-arg ordinal (survives replicate_ops_per_section).
+        /// Element dtype (render declaration).
+        dtype: DType,
+        /// Global launch-arg ordinal (backend runtime-arg tables).
         ordinal: u32,
     },
-    /// Scalar constant definition.
+    /// Scalar constant definition (rendered via `c_type`/`c_code`).
     Const {
         /// Destination scalar register.
         z: VarId,
         /// Literal value.
-        value: i64,
+        value: Constant,
     },
     /// Scalar binary: `z = x <bop> y`.
     Binary {
         /// Destination scalar register.
         z: VarId,
+        /// Result dtype (render declaration).
+        dtype: DType,
         /// Left operand.
         x: VarId,
         /// Right operand.
@@ -98,17 +121,88 @@ pub enum TTOp {
     Unary {
         /// Destination scalar register.
         z: VarId,
+        /// Result dtype (render declaration).
+        dtype: DType,
         /// Source scalar register.
         x: VarId,
         /// Operation.
         uop: UOp,
     },
-    /// NOC address computation: `z = get_noc_addr(addr)` (one `uint64_t` line).
-    NocAddr {
+    /// Scalar cast: `z = (dtype)x`.
+    Cast {
         /// Destination scalar register.
         z: VarId,
-        /// Address value (a scalar register holding prior page/offset math).
-        addr: VarId,
+        /// Result dtype (render declaration).
+        dtype: DType,
+        /// Source scalar register.
+        x: VarId,
+    },
+    /// Scalar fused multiply-add: `z = x * y + w`.
+    Mad {
+        /// Destination scalar register.
+        z: VarId,
+        /// Result dtype (render declaration).
+        dtype: DType,
+        /// Multiplicand.
+        x: VarId,
+        /// Multiplier.
+        y: VarId,
+        /// Addend.
+        w: VarId,
+    },
+    /// Backend assembly escape hatch: `{i}` substitutes the i-th
+    /// operand (CBs as indices, tiles as slots, scalars as registers).
+    Asm {
+        /// Assembly template.
+        asm: TinyString,
+        /// Operand values.
+        ops: Vec<AsmOperand>,
+    },
+    /// NOC address computation:
+    /// `z = accessor.get_noc_addr(page, offset)` (one `uint64_t` line;
+    /// page/offset render inline from the index register).
+    NocAddr {
+        /// Destination scalar register (the address, always `u64`).
+        z: VarId,
+        /// Source param ordinal (names the accessor `p{ordinal}`).
+        ordinal: u32,
+        /// Element index (a scalar register holding the tile index).
+        index: VarId,
+        /// Element size in bytes (scales the index).
+        elem_size: u32,
+    },
+    /// DRAM accessor declaration for one Global/GlobalMut param
+    /// (`TensorAccessor` triple; section-implied `p`/`p_out` naming,
+    /// chained compile-time offsets). Rendered once per param per
+    /// section, ahead of its first traffic op.
+    NocAccessor {
+        /// Source param ordinal (names the accessor `p{ordinal}`).
+        ordinal: u32,
+        /// Element dtype (backend input/output dtype tables).
+        dtype: DType,
+        /// Global (reader) or GlobalMut (writer).
+        kind: ParamKind,
+    },
+    /// Tensix core grid X coordinate (group range axis 0). Render lowers
+    /// to the section's group-arg read (`get_arg_val`, one per axis after
+    /// the section args, mirroring the legacy `group_arg` layout).
+    TensixGridX {
+        /// Destination scalar register.
+        z: VarId,
+        /// Coordinate dtype (render declaration).
+        dtype: DType,
+        /// Section-local runtime arg index (lowering precomputes the
+        /// section param layout, so render stays a single emitter).
+        arg: u32,
+    },
+    /// Tensix core grid Y coordinate (group range axis 1).
+    TensixGridY {
+        /// Destination scalar register.
+        z: VarId,
+        /// Coordinate dtype (render declaration).
+        dtype: DType,
+        /// Section-local runtime arg index.
+        arg: u32,
     },
     // -- CB traffic: FIFO sync, one op per event --
     /// Declare one hardware circular buffer (single object, never duplicated
@@ -118,6 +212,16 @@ pub enum TTOp {
         cb: CBId,
         /// Depth in tiles.
         n_tiles: u32,
+        /// Runtime descriptor format code (CB storage dtype).
+        format: u32,
+    },
+    /// DST register-file mode (kernel-wide header op, first in the
+    /// stream): 32-bit iff the kernel touches F32 tiles. Lowering
+    /// asserts the alloc budget; `verify` re-checks the max slot;
+    /// render forwards the flag to the backend.
+    DstMode {
+        /// True = 16-tile BF16 file, false = 8-tile FP32 file.
+        bf16: bool,
     },
     /// `cb.reserve_back(n)`: open n back slots for writing.
     ReserveBack {
@@ -147,8 +251,45 @@ pub enum TTOp {
         /// Slots to release.
         n: u32,
     },
+    // -- Movement: pre-sync tile transfers, one op per transfer --
+    /// Reader transfer: DRAM tile into a CB (`Global` param source).
+    /// `sync_cbs` wraps it with reserve/push; `expand_movement` lowers
+    /// it to accessor + address + async read + barrier.
+    ReadTile {
+        /// Source param ordinal (names the accessor `p{ordinal}`).
+        ordinal: u32,
+        /// Element dtype (accessor + backend input table).
+        dtype: DType,
+        /// Element index (scalar register holding the tile index).
+        index: VarId,
+        /// Destination circular buffer.
+        cb: CBId,
+        /// Transfer size in bytes.
+        bytes: u32,
+        /// Element size in bytes (scales the index).
+        elem_size: u32,
+    },
+    /// Writer transfer: CB tile into DRAM (`GlobalMut` param sink).
+    /// `sync_cbs` wraps it with wait/pop; `expand_movement` lowers it
+    /// to accessor + address + async write + barrier.
+    WriteTile {
+        /// Source circular buffer.
+        cb: CBId,
+        /// Destination param ordinal (names `p_out{ordinal}`).
+        ordinal: u32,
+        /// Element dtype (accessor + backend output table).
+        dtype: DType,
+        /// Element index (scalar register holding the tile index).
+        index: VarId,
+        /// Transfer size in bytes.
+        bytes: u32,
+        /// Element size in bytes (scales the index).
+        elem_size: u32,
+    },
     // -- NOC: real firmware calls, stay C forever --
-    /// `noc_async_read(addr, cb.get_write_ptr(), bytes)` + one tile write.
+    /// `noc_async_read(addr, cb.get_write_ptr()[+ off*bytes], bytes)` —
+    /// no barrier (one barrier follows each movement sequence, plus a
+    /// trailing reader barrier).
     AsyncRead {
         /// Source NOC address (scalar register holding `get_noc_addr` result).
         addr: VarId,
@@ -156,10 +297,14 @@ pub enum TTOp {
         dst_cb: CBId,
         /// Transfer size in bytes.
         bytes: u32,
+        /// Tile-slot offset within a hoisted block (`None` = slot 0,
+        /// plain write pointer).
+        off: Option<VarId>,
     },
     /// `noc_async_read_barrier()`.
     NocReadBarrier,
-    /// `noc_async_write(cb.get_read_ptr(), addr, bytes)`.
+    /// `noc_async_write(cb.get_read_ptr()[+ off*bytes], addr, bytes)` —
+    /// no barrier (one barrier follows each movement sequence).
     AsyncWrite {
         /// Source circular buffer.
         src_cb: CBId,
@@ -167,6 +312,9 @@ pub enum TTOp {
         addr: VarId,
         /// Transfer size in bytes.
         bytes: u32,
+        /// Tile-slot offset within a hoisted block (`None` = slot 0,
+        /// plain read pointer).
+        off: Option<VarId>,
     },
     /// `noc_async_write_barrier()`.
     NocWriteBarrier,
@@ -234,15 +382,29 @@ pub enum TTOp {
         /// Output circular buffer (startup triple).
         out: CBId,
     },
-    /// `reduce_init<op, dim>(ci, cs, acc);` (always inline: the acc
-    /// slot lives at the op).
+    /// `compute_kernel_hw_startup(in0, in1, out);` (compute front,
+    /// ahead of all loops; single-input kernels repeat in0). Emitted
+    /// by `verify` when compute both loads and packs (pure movement
+    /// needs no startup); matmul kernels carry none (`mm_init` owns
+    /// the long init). Render emits it verbatim.
+    ComputeStartup {
+        /// First-loaded circular buffer (second load, or in0).
+        in0: CBId,
+        /// Second-loaded circular buffer.
+        in1: CBId,
+        /// First-packed circular buffer.
+        out: CBId,
+    },
+    /// `reduce_init<op, dim>(ci, cs, acc);` (always inline at its op:
+    /// the acc slot only exists after tile allocation, so `tile_regs`
+    /// emits this together with the `TileReduce`, never `init_math`).
     ReduceInit {
         /// Input circular buffer.
         ci: CBId,
         /// Scaler circular buffer.
         cs: CBId,
-        /// Accumulator value (render maps it to the DST slot).
-        acc: OpId,
+        /// Accumulator DST slot (also the result tile).
+        acc: TileId,
         /// Reduction op.
         rop: BOp,
         /// In-tile dimension.
@@ -259,202 +421,116 @@ pub enum TTOp {
         /// Broadcast-lane circular buffer.
         cb_b: CBId,
     },
-    // -- SSA ports: 1:1 kernel-IR lowering, `OpId` operands verbatim.
-    //    Only ops Tenstorrent lowers (`Wmma` excluded; `Move`/`Reduce`
-    //    never survive linearization so they never reach conversion). --
-    /// Constant value.
-    SSAConst {
-        /// Constant value.
-        value: Constant,
-        /// Result value (this op's own id).
-        z: OpId,
+    // -- Tile DST: physical tile registers, no passes over these --
+    /// Streaming copy in: `copy_tile(cb, index, slot)` (runs under MATH).
+    TileCopy {
+        /// Destination DST slot.
+        slot: TileId,
+        /// Source circular buffer.
+        cb: CBId,
+        /// Tile slot within the waited block (scalar register).
+        index: VarId,
     },
-    /// Kernel parameter (launch argument or buffer).
-    SSAParam {
-        /// Element type.
-        dtype: DType,
-        /// Scalar-by-value or buffer-by-pointer.
-        kind: ParamKind,
-        /// Shape operand.
-        shape: OpId,
-        /// Result value (this op's own id).
-        z: OpId,
+    /// Pack out: `pack_tile(slot, cb)` (runs under PACK).
+    TilePack {
+        /// Source DST slot.
+        slot: TileId,
+        /// Destination circular buffer.
+        cb: CBId,
     },
-    /// Value cast.
-    SSACast {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Source value.
-        x: OpId,
-        /// Target type.
-        dtype: DType,
-    },
-    /// Bitcast (no value conversion, equal bit widths).
-    SSABitcast {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Source value.
-        x: OpId,
-        /// Target type.
-        dtype: DType,
-    },
-    /// High-level unary (decomposes to SFPU sequences per the opcode table).
-    SSAUnary {
-        /// Destination value.
-        z: OpId,
-        /// Source value.
-        x: OpId,
-        /// Operation.
-        uop: UOp,
-    },
-    /// High-level binary.
-    SSABinary {
-        /// Destination value.
-        z: OpId,
-        /// Left operand.
-        x: OpId,
-        /// Right operand.
-        y: OpId,
+    /// Tiled binary ALU: `op(x, y, dst)` (inputs stay live).
+    TileBinary {
+        /// Destination DST slot.
+        dst: TileId,
+        /// Left operand slot.
+        x: TileId,
+        /// Right operand slot.
+        y: TileId,
         /// Operation.
         bop: BOp,
     },
-    /// Vector pack.
-    SSAStack {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Element values.
-        ops: Box<[OpId]>,
+    /// Fused broadcast binary (`add_tiles_bcast_rows`, ...): the full
+    /// tile stays in `cb_a`, the broadcast lane in `cb_b`, the result
+    /// lands in a fresh DST slot.
+    TileBcastBinary {
+        /// Destination DST slot.
+        dst: TileId,
+        /// Full-tile circular buffer.
+        cb_a: CBId,
+        /// Broadcast-lane circular buffer.
+        cb_b: CBId,
+        /// Operation.
+        bop: BOp,
+        /// Broadcast dimension.
+        kind: TileDim,
+        /// First-packed compute CB (init pass placeholder: `None` from
+        /// lowering, filled when the init pass places `BcastInit`).
+        out: Option<CBId>,
     },
-    /// Kernel-internal memory (accumulators, circular buffers, ...).
-    SSAStorage {
-        /// Result handle (this op's own id).
-        z: OpId,
-        /// Element type.
-        dtype: DType,
-        /// Memory scope.
-        scope: MemScope,
-        /// Length.
-        len: Dim,
+    /// Tile-scalar binary (`add_unary_tile`, ... with an fp32-bits
+    /// immediate): DST-inplace like unary, no CB traffic for the
+    /// scalar side.
+    TileBinScalar {
+        /// Operand and result slot.
+        slot: TileId,
+        /// Operation (selects the `*_unary_tile` call).
+        bop: BOp,
+        /// Scalar side as fp32 bits.
+        bits: u32,
     },
-    /// Indexed store into storage.
-    SSAStore {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Destination storage.
-        dst: OpId,
-        /// Value to write.
-        src: OpId,
-        /// Index value.
-        index: OpId,
-        /// Access layout.
-        layout: MemLayout,
+    /// Tiled unary ALU: in-place `op(slot)` (SFPU mutates the slot).
+    TileUnary {
+        /// Operand and result slot.
+        slot: TileId,
+        /// Operation.
+        uop: UOp,
     },
-    /// Indexed load from storage.
-    SSALoad {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Source storage.
-        src: OpId,
-        /// Index value.
-        index: OpId,
-        /// Access layout.
-        layout: MemLayout,
+    /// Tiled cast: `typecast_tile<in, out>(slot)` (in-place like unary;
+    /// Tenstorrent has no DST->DST copy).
+    TileCast {
+        /// Operand and result slot.
+        slot: TileId,
+        /// Source dtype.
+        in_dtype: DType,
+        /// Target dtype.
+        out_dtype: DType,
     },
-    /// Parallel range (group/local/warp).
-    SSARange {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Axis.
-        axis: u32,
-        /// Range kind.
-        kind: RangeKind,
+    /// Streaming transpose: `transpose_wh_tile(cb, 0, dst)` (the input
+    /// streams from its CB, fused drain, never copied to DST first).
+    TileTranspose {
+        /// Destination DST slot.
+        dst: TileId,
+        /// Source circular buffer.
+        cb: CBId,
+        /// First-packed compute CB (init pass placeholder: `None` from
+        /// lowering, filled when the init pass places `TransposeInit`).
+        out: Option<CBId>,
     },
-    /// Loop with trip count value.
-    SSALoop {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Number of iterations.
-        len: OpId,
+    /// Fused matmul: `matmul_tiles(cb_a, cb_b, acc, acc, acc)`
+    /// (inputs stay in CBs, accumulate into the acc slot).
+    TileMatmul {
+        /// Accumulator DST slot (also the result).
+        acc: TileId,
+        /// Left input circular buffer.
+        cb_a: CBId,
+        /// Right input circular buffer.
+        cb_b: CBId,
+        /// First-packed compute CB (init pass placeholder: `None` from
+        /// lowering, filled when the init pass places `MatmulInit`).
+        out: Option<CBId>,
     },
-    /// End of loop body.
-    SSAEndLoop,
-    /// Branch on a boolean value.
-    SSAIf {
-        /// Condition value.
-        condition: OpId,
-    },
-    /// End of branch body.
-    SSAEndIf,
-    /// Fused multiply-add.
-    SSAMad {
-        /// Multiplicand.
-        x: OpId,
-        /// Multiplier.
-        y: OpId,
-        /// Addend.
-        z: OpId,
-        /// Result value (this op's own id).
-        w: OpId,
-    },
-    /// Single value out of a vector.
-    SSAIndex {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Source vector.
-        vec: OpId,
-        /// Element position.
-        idx: usize,
-    },
-    /// Execution barrier.
-    SSABarrier,
-    /// Hardware tile reduce into accumulator tile.
-    SSAReduceTile {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Input tile.
-        x: OpId,
-        /// LLK scale tile.
-        scaler: OpId,
-        /// Accumulator tile.
-        acc: OpId,
+    /// Fused reduce: `reduce_tile<op, dim>(cb_in, cb_sc, 0, 0, acc)`.
+    TileReduce {
+        /// Accumulator DST slot (also the result).
+        acc: TileId,
+        /// Input circular buffer.
+        cb_in: CBId,
+        /// Scaler circular buffer.
+        cb_sc: CBId,
         /// Reduction op.
         rop: BOp,
         /// In-tile dimension.
         kind: TileDim,
-    },
-    /// Hardware tile matmul into accumulator tile.
-    SSAMatmulTile {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Left tile.
-        x: OpId,
-        /// Right tile.
-        y: OpId,
-        /// Accumulator tile.
-        acc: OpId,
-    },
-    /// Hardware tile transpose.
-    SSATransposeTile {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Input tile.
-        x: OpId,
-    },
-    /// Broadcast marker: tile `x` consumed with broadcast `kind`.
-    SSABroadcastTile {
-        /// Input tile.
-        x: OpId,
-        /// In-tile dimension.
-        kind: TileDim,
-    },
-    /// Backend-specific assembly escape hatch.
-    SSAAsm {
-        /// Result value (this op's own id).
-        z: OpId,
-        /// Assembly template.
-        asm: TinyString,
-        /// Operand values.
-        ops: TinyVec<OpId>,
     },
 }
 
@@ -552,152 +628,544 @@ fn cb_fmt(dtype: DType) -> u32 {
     }
 }
 
-struct Compiler {    ops: Vec<TTOp>,
-    /// Circular storage (`OpId` of `SSAStorage`) to hardware CB assignment,
-    /// in stream order. One hardware object, one `CBId`, never duplicated.
-    cbs: Map<OpId, CBId>,
-    /// CB depth in tiles, by `CBId` (storage `len / 1024`).
-    cb_depth: Map<CBId, u32>,
-    /// Data operands per kernel op, recorded at lowering (the sync pass
-    /// reasons about dataflow through this table, never over TTIR).
-    params: Map<OpId, Vec<OpId>>,
-    /// Load `z` to (source storage, tile layout, slot index), recorded at lowering.
-    load_info: Map<OpId, (OpId, bool, OpId)>,
-    /// Fused-draining load `z` to consuming tile-op `z`s, recorded at lowering.
-    drain_consumers: Map<OpId, Vec<OpId>>,
-    /// Loop `z` to constant trip count (`None` = symbolic), recorded at lowering.
-    trips: Map<OpId, Option<u32>>,
-    /// `Const` ops whose value is dim 0, recorded at lowering.
-    zeros: Set<OpId>,
-}
-
-/// Loop body tracking for sync insertion: direct traffic per CB, branch
-/// presence, and the constant trip count. A loop hoists a CB's
-/// transaction iff the body holds exactly one traffic op for that CB,
-/// no branch, and a constant trip > 1 that fits the CB depth.
-struct LoopFrame {
-    /// The `SSALoop` op (open anchor; its counter is the block position).
-    op: OpId,
-    /// Position in `ops` (open anchor for hoisted blocks).
-    pos: usize,
-    /// Compile-time trip count; `None` = symbolic (never hoisted, and
-    /// any CB traffic under it is a compilation error).
-    trip: Option<u32>,
-    /// A branch sits in the body: hoisting would emit sync ops for a
-    /// body that may not run.
-    if_seen: bool,
-    /// One traffic op per CB directly in the body (deeper loops own
-    /// their own traffic): `z` of the traffic op.
-    traffic: Map<CBId, OpId>,
-    /// CBs with more than one traffic op in the body: no hoist.
-    dirty: Set<CBId>,
+/// Lowered TTIR: one physical op stream with section boundaries.
+/// Built once by [`Compiler::new`]; every later pass rewrites only this vector.
+struct Compiler {
+    ops: Vec<TTOp>,
 }
 
 impl Compiler {
+    /// Lowering: one walk per section op list from `get_needed_ops`
+    /// (already replicated per section: each section is a separate
+    /// kernel with its own registers, arg ordinals stay global).
+    /// Scalar values bind `VarId`s, tiled values bind `TileId`s,
+    /// circular storages bind one global `CBId`; a use count reaching
+    /// zero frees its slot for reuse (shared slots stay live while
+    /// any bound id is). Single pass, nothing else: fusion, sync,
+    /// locks, and inits are later passes over the ops.
     fn new(kernel: &Kernel) -> Self {
-        // Pre-pass over the kernel: dataflow facts the sync pass consumes.
-        let mut params: Map<OpId, Vec<OpId>> = Map::default();
-        let mut load_info: Map<OpId, (OpId, bool, OpId)> = Map::default();
-        let mut load_section: Map<OpId, u8> = Map::default();
-        let mut trips: Map<OpId, Option<u32>> = Map::default();
-        let mut zeros: Set<OpId> = Set::default();
-        let mut section = 0u8;
-        let mut pre = kernel.head;
-        while !pre.is_null() {
-            match &kernel.ops[pre].op {
-                Op::Barrier => section += 1,
-                Op::Const(c) => {
-                    if c.as_dim() == Some(0) {
-                        zeros.insert(pre);
-                    }
-                }
-                Op::Load { src, index, layout, .. } => {
-                    load_info.insert(pre, (*src, matches!(layout, MemLayout::Tile { .. }), *index));
-                    load_section.insert(pre, section);
-                }
-                Op::Loop { len } => {
-                    trips.insert(
-                        pre,
-                        match kernel.resolve_const(*len).and_then(|c| c.as_dim()) {
-                            Some(d) if d >= 0 => Some(d as u32),
-                            Some(d) => panic!("tenstorrent2: negative loop trip count {d}, op {pre}"),
-                            None => None,
-                        },
-                    );
-                }
+        // Section gate, same rule as the legacy `check_sections`:
+        // exactly 2 barriers delimiting reader/compute/writer, and no
+        // GPU-only Wmma (tenstorrent has `MatmulTile`, no WMMA units).
+        let mut barriers = 0u32;
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            match &kernel.ops[scan].op {
+                Op::Barrier => barriers += 1,
+                Op::Wmma { .. } => panic!("tenstorrent2: Wmma is GPU-only, tenstorrent uses Op::MatmulTile"),
                 _ => {}
             }
-            params.insert(pre, kernel.ops[pre].op.parameters().collect());
-            pre = kernel.next_op(pre);
+            scan = kernel.next_op(scan);
         }
-        // Fused drains: a compute-section tile load fed only by fused
-        // tile ops drains at the consuming ops (legacy 1-tile path),
-        // never at the load itself. The load still counts as consumption.
-        let mut consumers: Map<OpId, Vec<OpId>> = Map::default();
-        for (&op, ps) in params.iter() {
-            for &p in ps {
-                consumers.entry(p).or_default().push(op);
-            }
+        if barriers != 2 {
+            panic!("tenstorrent2: need exactly 2 barriers (3 sections), found {barriers}");
         }
-        let is_bcast_side = |side: OpId| -> bool { matches!(kernel.ops[side].op, Op::BroadcastTile { .. }) };
-        let mut drain_consumers: Map<OpId, Vec<OpId>> = Map::default();
-        for (&load, &(_, tile, index)) in load_info.iter() {
-            if !tile || load_section[&load] != 1 {
-                continue;
+        // DST mode, same scan as the legacy `generate_tenstorrent`:
+        // 32-bit iff the kernel touches F32 tiles (F32 storage, or an
+        // F8 circular sharing the core per the Blackhole mandate).
+        let mut dst_bf16 = true;
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
             }
-            let empty = Vec::new();
-            let cs = consumers.get(&load).unwrap_or(&empty);
-            if cs.is_empty() {
-                continue;
+            if let Op::Storage { dtype, scope, .. } = kernel.ops[scan].op {
+                match (dtype, scope) {
+                    (DType::F32, _) | (DType::F8E4M3, MemScope::Circular) => {
+                        dst_bf16 = false;
+                        break;
+                    }
+                    _ => {}
+                }
             }
-            let fused = cs.iter().all(|&c| match &kernel.ops[c].op {
-                Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. } | Op::BroadcastTile { .. } => true,
-                Op::Binary { x, y, .. } => is_bcast_side(*x) || is_bcast_side(*y),
-                _ => false,
-            });
-            if !fused {
-                continue;
-            }
-            if !zeros.contains(&index) {
-                panic!("tenstorrent2: fused consumer drains at slot 0; load index op {index} must be 0");
-            }
-            drain_consumers.insert(load, cs.clone());
+            scan = kernel.next_op(scan);
         }
-        let mut ops = Vec::new();
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            let op = match kernel.ops[op_id].op {
-                Op::Const(constant) => TTOp::SSAConst { value: constant, z: op_id },
-                Op::Param { dtype, kind, shape } => TTOp::SSAParam { dtype, kind, shape, z: op_id },
-                Op::Cast { x, dtype } => TTOp::SSACast { z: op_id, x, dtype },
-                Op::Bitcast { x, dtype } => TTOp::SSABitcast { z: op_id, x, dtype },
-                Op::Unary { x, uop } => TTOp::SSAUnary { z: op_id, x, uop },
-                Op::Binary { x, y, bop } => TTOp::SSABinary { z: op_id, x, y, bop },
-                Op::Stack { ref ops } => TTOp::SSAStack { z: op_id, ops: ops.clone() },
-                Op::Storage { dtype, scope, len } => TTOp::SSAStorage { z: op_id, dtype, scope, len },
-                Op::Store { dst, src, index, layout } => TTOp::SSAStore { z: op_id, dst, src, index, layout },
-                Op::Load { src, index, layout } => TTOp::SSALoad { z: op_id, src, index, layout },
-                Op::Range { axis, kind } => TTOp::SSARange { z: op_id, axis, kind },
-                Op::Loop { len } => TTOp::SSALoop { z: op_id, len },
-                Op::EndLoop => TTOp::SSAEndLoop,
-                Op::If { condition } => TTOp::SSAIf { condition },
-                Op::EndIf => TTOp::SSAEndIf,
-                Op::Mad { x, y, z } => TTOp::SSAMad { x, y, z, w: op_id },
-                Op::Index { vec, idx } => TTOp::SSAIndex { z: op_id, vec, idx },
-                Op::Barrier => TTOp::SSABarrier,
-                Op::Wmma { .. } => unreachable!("tenstorrent2: Wmma has no Tenstorrent lowering"),
-                Op::ReduceTile { x, scaler, acc, rop, kind } => TTOp::SSAReduceTile { z: op_id, x, scaler, acc, rop, kind },
-                Op::MatmulTile { x, y, acc } => TTOp::SSAMatmulTile { z: op_id, x, y, acc },
-                Op::TransposeTile { x } => TTOp::SSATransposeTile { z: op_id, x },
-                Op::BroadcastTile { x, kind } => TTOp::SSABroadcastTile { x, kind },
-                Op::Asm { ref asm, ref ops } => TTOp::SSAAsm { z: op_id, asm: asm.clone(), ops: ops.clone() },
-                Op::Move { .. } => unreachable!("tenstorrent2: Move never survives linearization"),
-                Op::Reduce { .. } => unreachable!("tenstorrent2: Reduce never survives linearization"),
+        let budget = if dst_bf16 { TileId::BUDGET_BF16 } else { TileId::BUDGET_FP32 };
+        let param_ordinal_of = NocEmitter::new(kernel).param_ordinal_of;
+        // CB allocation: first-touch order over loads/stores of
+        // Circular storages, with the legacy validity checks (whole
+        // 1024-element tiles, whole pages, single-core L1 budget,
+        // hardware CB count fit).
+        let mut cbs: Map<OpId, CBId> = Map::default();
+        let mut cb_order: Vec<OpId> = Vec::new();
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            let storage = match &kernel.ops[scan].op {
+                Op::Load { src, .. } => Some(*src),
+                Op::Store { dst, .. } => Some(*dst),
+                _ => None,
             };
-            ops.push(op);
-            op_id = kernel.next_op(op_id);
+            if let Some(st) = storage
+                && matches!(kernel.ops[st].op, Op::Storage { scope: MemScope::Circular, .. })
+                && !cbs.contains_key(&st)
+            {
+                cbs.insert(st, CBId(cb_order.len() as u32));
+                cb_order.push(st);
+            }
+            scan = kernel.next_op(scan);
         }
-        Self { ops, cbs: Map::default(), cb_depth: Map::default(), params, load_info, drain_consumers, trips, zeros }
+        let num_circular_buffers = kernel.device_info().num_circular_buffers;
+        if cb_order.len() > num_circular_buffers as usize {
+            panic!("tenstorrent2: kernel needs {} circular buffers, device holds {num_circular_buffers}", cb_order.len());
+        }
+        let mut ops = vec![TTOp::DstMode { bf16: dst_bf16 }];
+        for (cb, &st) in cb_order.iter().enumerate() {
+            let Op::Storage { dtype, len, .. } = kernel.ops[st].op else {
+                unreachable!("tenstorrent2: CB map entry {st} is not a storage op")
+            };
+            let elem = dtype.bit_size() as i64 / 8;
+            let bytes = len * elem;
+            if len % 1024 != 0 {
+                panic!("tenstorrent2: CB{cb} holds {len} elements, not whole 1024-element tiles");
+            }
+            let page = 1024 * elem;
+            if bytes % page != 0 {
+                panic!("tenstorrent2: CB{cb} holds {bytes} bytes, not whole {page}B pages");
+            }
+            if bytes > 32768 {
+                panic!("tenstorrent2: CB{cb} needs {bytes} bytes, single-core L1 budget is 32768");
+            }
+            ops.push(TTOp::CbDeclare { cb: CBId(cb as u32), n_tiles: (len / 1024) as u32, format: cb_fmt(dtype) });
+        }
+        // A side resolving to a compile-time float constant (follows
+        // const expressions): folds into a `*_unary_tile` immediate.
+        // Integer constants are NOT converted (a tile op's scalar lane
+        // is float; silent int→float would hide dtype bugs).
+        let const_f32_bits = |op: OpId| -> Option<u32> {
+            use crate::scalar::{bf16, f16};
+            match kernel.resolve_const(op)? {
+                Constant::F32(b) => Some(f32::from_le_bytes(b).to_bits()),
+                Constant::F16(b) => Some(f16::from_le_bytes(b).to_f32().to_bits()),
+                Constant::BF16(b) => Some(bf16::from_le_bytes(b).to_f32().to_bits()),
+                _ => None,
+            }
+        };
+        let sections = [TtSection::Reader, TtSection::Compute, TtSection::Writer];
+        for (s, tt_section) in sections.into_iter().enumerate() {
+            let data = kernel.get_needed_ops(tt_section);
+            let total = data.rcs.clone();
+            let mut remaining = data.rcs.clone();
+            let mut vars: Map<OpId, VarId> = Map::default();
+            let mut tiles: Map<OpId, TileId> = Map::default();
+            let mut free_vars: Vec<VarId> = Vec::new();
+            let mut free_tiles: Vec<TileId> = Vec::new();
+            let mut next_var = 0u32;
+            let mut next_tile = 0u8;
+            // Section params in IR order: this section kernel's runtime args.
+            let section_params: Vec<OpId> =
+                data.ops.iter().copied().filter(|op| matches!(kernel.ops[*op].op, Op::Param { .. })).collect();
+            // Bind a fresh (or freed) scalar register to a value.
+            let mut def_var = |vars: &mut Map<OpId, VarId>, free_vars: &mut Vec<VarId>, next_var: &mut u32, id: OpId| -> VarId {
+                let v = free_vars.pop().unwrap_or_else(|| {
+                    let v = VarId(*next_var);
+                    *next_var += 1;
+                    v
+                });
+                vars.insert(id, v);
+                v
+            };
+            // Consume one use of a scalar value, freeing its register at zero.
+            let mut use_var =
+                |vars: &Map<OpId, VarId>, remaining: &mut Map<OpId, u32>, free_vars: &mut Vec<VarId>, id: OpId| -> VarId {
+                    let &v = vars.get(&id).unwrap_or_else(|| panic!("tenstorrent2: scalar op {id} has no register"));
+                    let left = remaining.get_mut(&id).unwrap_or_else(|| panic!("tenstorrent2: scalar op {id} has no use count"));
+                    assert!(*left > 0, "tenstorrent2: scalar op {id} used past its uses");
+                    *left -= 1;
+                    if *left == 0 {
+                        free_vars.push(v);
+                    }
+                    v
+                };
+            // Bind a fresh (or freed) DST slot to a tiled value.
+            let mut def_tile =
+                |tiles: &mut Map<OpId, TileId>, free_tiles: &mut Vec<TileId>, next_tile: &mut u8, id: OpId| -> TileId {
+                    let t = free_tiles.pop().unwrap_or_else(|| {
+                        let t = TileId(*next_tile);
+                        *next_tile += 1;
+                        t
+                    });
+                    assert!((t.0 as usize) < budget, "tenstorrent2: DST budget exceeded");
+                    tiles.insert(id, t);
+                    t
+                };
+            for &id in &data.ops {
+                match &kernel.ops[id].op {
+                    Op::Const(c) => {
+                        let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                        ops.push(TTOp::Const { z, value: c.clone() });
+                    }
+                    Op::Param { dtype, kind, .. } => match kind {
+                        ParamKind::Variable => {
+                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                            let ordinal =
+                                param_ordinal_of.get(&id).copied().expect("tenstorrent2: variable param missing ordinal");
+                            ops.push(TTOp::Arg { z, dtype: *dtype, ordinal });
+                        }
+                        ParamKind::Global | ParamKind::GlobalMut => {
+                            if s == 1 {
+                                panic!("tenstorrent2: compute touches DRAM through param {id}");
+                            }
+                            let ordinal = param_ordinal_of.get(&id).copied().expect("tenstorrent2: DRAM param missing ordinal");
+                            ops.push(TTOp::NocAccessor { ordinal, dtype: *dtype, kind: *kind });
+                        }
+                    },
+                    Op::Storage { scope, .. } => match scope {
+                        MemScope::Circular => {}
+                        MemScope::Register => {
+                            def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                        }
+                        MemScope::Local => unreachable!(
+                            "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
+                        ),
+                        MemScope::Global => todo!("tenstorrent2 storage scope, op {id}"),
+                    },
+                    Op::Load { src, index, layout } => {
+                        if !matches!(layout, MemLayout::Tile { .. }) {
+                            if s == 1 {
+                                todo!("tenstorrent2 compute only supports tile loads");
+                            }
+                            continue;
+                        }
+                        if s != 1 {
+                            continue;
+                        }
+                        if matches!(kernel.ops[*src].op, Op::Storage { scope: MemScope::Register, .. }) {
+                            let tile = tiles.get(src).copied().expect("tenstorrent2: compute acc load reads an undeclared acc");
+                            tiles.insert(id, tile);
+                            continue;
+                        }
+                        let Some(&cb) = cbs.get(src) else {
+                            panic!("tenstorrent2: compute load targets unmapped CB, op {id}");
+                        };
+                        let slot = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                        let index = use_var(&vars, &mut remaining, &mut free_vars, *index);
+                        ops.push(TTOp::TileCopy { slot, cb, index });
+                    }
+                    Op::Store { dst, src, index, layout } => {
+                        if !matches!(layout, MemLayout::Tile { .. }) {
+                            todo!("tenstorrent2 only supports tile stores, op {id}");
+                        }
+                        if s == 0 {
+                            let Op::Load { src: ld_src, index: ld_idx, layout: ld_layout } = kernel.ops[*src].op else {
+                                panic!("tenstorrent2: reader supports only global to local stores, op {id} has ops in between");
+                            };
+                            let Op::Param { kind: ParamKind::Global, .. } = kernel.ops[ld_src].op else {
+                                panic!("tenstorrent2: reader load op {id} is not from a Global param");
+                            };
+                            let Op::Storage { dtype, scope: MemScope::Circular, .. } = kernel.ops[*dst].op else {
+                                panic!("tenstorrent2: reader store op {id} does not target a Circular CB");
+                            };
+                            let Some(&cb) = cbs.get(dst) else {
+                                panic!("tenstorrent2: reader store op {id} targets unmapped CB");
+                            };
+                            let MemLayout::Tile { x, y, .. } = ld_layout else {
+                                todo!("tenstorrent2 reader only supports tile stores");
+                            };
+                            let elem_size = dtype.bit_size() as u32 / 8;
+                            let index = use_var(&vars, &mut remaining, &mut free_vars, ld_idx);
+                            ops.push(TTOp::ReadTile {
+                                ordinal: param_ordinal_of[&ld_src],
+                                dtype,
+                                index,
+                                cb,
+                                bytes: x as u32 * y as u32 * elem_size,
+                                elem_size,
+                            });
+                            continue;
+                        }
+                        if s == 2 {
+                            let Op::Load { src: cb_src, index: _, layout: ld_layout } = kernel.ops[*src].op else {
+                                panic!("tenstorrent2: writer supports only CB to DRAM stores, op {id} has ops in between");
+                            };
+                            let Some(&cb) = cbs.get(&cb_src) else {
+                                panic!("tenstorrent2: writer load op {id} targets unmapped CB");
+                            };
+                            let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = kernel.ops[*dst].op else {
+                                panic!("tenstorrent2: writer store dst must be a GlobalMut param, op {id}");
+                            };
+                            let MemLayout::Tile { x, y, .. } = ld_layout else {
+                                todo!("tenstorrent2 writer only supports tile stores");
+                            };
+                            let elem_size = dtype.bit_size() as u32 / 8;
+                            let index = use_var(&vars, &mut remaining, &mut free_vars, *index);
+                            ops.push(TTOp::WriteTile {
+                                cb,
+                                ordinal: param_ordinal_of[dst],
+                                dtype,
+                                index,
+                                bytes: x as u32 * y as u32 * elem_size,
+                                elem_size,
+                            });
+                            continue;
+                        }
+                        if let Op::Storage { scope: MemScope::Register, .. } = kernel.ops[*dst].op {
+                            if let Some(&tile) = tiles.get(src) {
+                                tiles.insert(*dst, tile);
+                            } else if let Op::Load { src: lsrc, .. } = kernel.ops[*src].op
+                                && let Some(&tile) = tiles.get(&lsrc)
+                            {
+                                tiles.insert(*dst, tile);
+                            }
+                            continue;
+                        }
+                        let Some(&cb) = cbs.get(dst) else {
+                            panic!("tenstorrent2: compute store op {id} targets unmapped CB");
+                        };
+                        let slot =
+                            tiles.get(src).copied().expect("tenstorrent2: compute acc store reads a tile with no DST slot");
+                        ops.push(TTOp::TilePack { slot, cb });
+                    }
+                    Op::Cast { x, dtype } => {
+                        if matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
+                            let slot = tiles.get(x).copied().expect("tenstorrent2: tiled cast reads a value with no DST slot");
+                            if total[&x] != 1 {
+                                todo!("tenstorrent2 multi-use tiled cast operand, op {id}");
+                            }
+                            let in_dtype = data.dtypes[&x].0;
+                            tiles.insert(id, slot);
+                            ops.push(TTOp::TileCast { slot, in_dtype, out_dtype: *dtype });
+                        } else {
+                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x);
+                            ops.push(TTOp::Cast { z, dtype: *dtype, x });
+                        }
+                    }
+                    Op::Bitcast { x, .. } => {
+                        if matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
+                            let tile = tiles.get(x).copied().expect("tenstorrent2: tiled bitcast reads a value with no DST slot");
+                            tiles.insert(id, tile);
+                        } else {
+                            todo!("tenstorrent2 scalar bitcast, op {id}");
+                        }
+                    }
+                    Op::Unary { x, uop } => {
+                        if matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
+                            let slot = tiles.get(x).copied().expect("tenstorrent2: tiled unary reads a value with no DST slot");
+                            tiles.insert(id, slot);
+                            ops.push(TTOp::TileUnary { slot, uop: *uop });
+                        } else {
+                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x);
+                            ops.push(TTOp::Unary { z, dtype: data.dtypes[&id].0, x, uop: *uop });
+                        }
+                    }
+                    Op::Binary { x, y, bop } => {
+                        if !matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
+                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x);
+                            let y = use_var(&vars, &mut remaining, &mut free_vars, *y);
+                            ops.push(TTOp::Binary { z, dtype: data.dtypes[&id].0, x, y, bop: *bop });
+                            continue;
+                        }
+                        let marker = |side: OpId| match kernel.ops[side].op {
+                            Op::BroadcastTile { x: mx, kind } => Some((kind, mx)),
+                            _ => None,
+                        };
+                        let plain_cb = |side: OpId| match kernel.ops[side].op {
+                            Op::Load { src: lsrc, .. } => cbs.get(&lsrc).copied(),
+                            _ => None,
+                        };
+                        match (marker(*x), marker(*y)) {
+                            (Some(_), Some(_)) => {
+                                panic!("tenstorrent2: broadcast op {id} marks both sides");
+                            }
+                            (Some((kind, mx)), None) => {
+                                let (Some(cb_b), Some(cb_a)) = (plain_cb(mx), plain_cb(*y)) else {
+                                    panic!("tenstorrent2: broadcast op {id} side is no CB tile load");
+                                };
+                                let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                                ops.push(TTOp::TileBcastBinary { dst, cb_a, cb_b, bop: *bop, kind, out: None });
+                            }
+                            (None, Some((kind, my))) => {
+                                let (Some(cb_b), Some(cb_a)) = (plain_cb(my), plain_cb(*x)) else {
+                                    panic!("tenstorrent2: broadcast op {id} side is no CB tile load");
+                                };
+                                let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                                ops.push(TTOp::TileBcastBinary { dst, cb_a, cb_b, bop: *bop, kind, out: None });
+                            }
+                            (None, None) => {
+                                let xc = const_f32_bits(*x);
+                                let yc = const_f32_bits(*y);
+                                let scalar = match (xc, yc) {
+                                    (None, Some(bits)) => Some(("tile", bits, *x)),
+                                    (Some(bits), None) => Some(("const", bits, *y)),
+                                    _ => None,
+                                };
+                                if let Some((side, bits, tile_op)) = scalar {
+                                    match (*bop, side) {
+                                        (BOp::Add, _) | (BOp::Mul, _) | (BOp::Sub, _) | (BOp::Div, "tile") => {}
+                                        _ => {
+                                            panic!("tenstorrent2: const-first {bop:?} has no scalar call, op {id}");
+                                        }
+                                    };
+                                    let t = tiles
+                                        .get(&tile_op)
+                                        .copied()
+                                        .expect("tenstorrent2: scalar binary reads a value with no DST slot");
+                                    if total[&tile_op] != 1 {
+                                        panic!("tenstorrent2: scalar binary {id} reads a multi-use operand");
+                                    }
+                                    tiles.insert(id, t);
+                                    ops.push(TTOp::TileBinScalar { slot: t, bop: *bop, bits });
+                                } else {
+                                    let ta =
+                                        tiles.get(x).copied().expect("tenstorrent2: tiled binary reads a value with no DST slot");
+                                    let tb =
+                                        tiles.get(y).copied().expect("tenstorrent2: tiled binary reads a value with no DST slot");
+                                    let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                                    ops.push(TTOp::TileBinary { dst, x: ta, y: tb, bop: *bop });
+                                }
+                            }
+                        }
+                    }
+                    Op::Mad { x, y, z } => {
+                        if matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
+                            todo!("tenstorrent2 tiled mad, op {id}");
+                        }
+                        let v = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                        let x = use_var(&vars, &mut remaining, &mut free_vars, *x);
+                        let y = use_var(&vars, &mut remaining, &mut free_vars, *y);
+                        let z = use_var(&vars, &mut remaining, &mut free_vars, *z);
+                        ops.push(TTOp::Mad { z: v, dtype: data.dtypes[&id].0, x, y, w: z });
+                    }
+                    Op::Stack { .. } => todo!("tenstorrent2 scalar stack, op {id}"),
+                    Op::Index { .. } => todo!("tenstorrent2 scalar index, op {id}"),
+                    Op::Range { axis, kind } => match kind {
+                        RangeKind::Group(_) => {
+                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                            let arg = section_params.len() as u32 + axis;
+                            match axis {
+                                0 => ops.push(TTOp::TensixGridX { z, dtype: data.dtypes[&id].0, arg }),
+                                1 => ops.push(TTOp::TensixGridY { z, dtype: data.dtypes[&id].0, arg }),
+                                _ => todo!("tenstorrent2 group range axis {axis}, op {id}"),
+                            }
+                        }
+                        RangeKind::Local(_) => {
+                            unreachable!(
+                                "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
+                            )
+                        }
+                        RangeKind::Warp(_) => {
+                            unreachable!("tenstorrent has no warps; warp ranges are gpu-only")
+                        }
+                    },
+                    Op::Loop { len } => {
+                        let bound = use_var(&vars, &mut remaining, &mut free_vars, *len);
+                        let trip = match kernel.resolve_const(*len).and_then(|c| c.as_dim()) {
+                            Some(d) if d >= 0 => Some(d as u32),
+                            Some(d) => panic!("tenstorrent2: negative loop trip count {d}, op {id}"),
+                            None => None,
+                        };
+                        let counter = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                        ops.push(TTOp::Loop { len: bound, counter, dtype: IDX_T, trip });
+                    }
+                    Op::EndLoop => ops.push(TTOp::EndLoop),
+                    Op::If { condition } => {
+                        let cond = use_var(&vars, &mut remaining, &mut free_vars, *condition);
+                        ops.push(TTOp::If { cond });
+                    }
+                    Op::EndIf => ops.push(TTOp::EndIf),
+                    Op::Barrier => unreachable!("should've been filtered by kernel sections decomposition"),
+                    Op::Wmma { .. } => unreachable!("tenstorrent2: Wmma has no Tenstorrent lowering"),
+                    Op::Move { .. } => unreachable!("tenstorrent2: Move never survives linearization"),
+                    Op::Reduce { .. } => unreachable!("tenstorrent2: Reduce never survives linearization"),
+                    Op::ReduceTile { x, scaler, acc, rop, kind } => {
+                        let Op::Load { src: lx, layout: MemLayout::Tile { x: wx, y: hx, .. }, .. } = kernel.ops[*x].op else {
+                            panic!("tenstorrent2: reduce side op {x} is no CB tile load");
+                        };
+                        if wx as u32 != 32 || hx as u32 != 32 {
+                            panic!("tenstorrent2: reduce is fixed 32x32, op {x} is {wx}x{hx}");
+                        }
+                        let Some(&cb_in) = cbs.get(&lx) else {
+                            panic!("tenstorrent2: reduce side op {x} targets unmapped CB");
+                        };
+                        let Op::Load { src: la, .. } = kernel.ops[*acc].op else {
+                            panic!("tenstorrent2: reduce acc op {acc} is no acc tile load");
+                        };
+                        if !matches!(kernel.ops[la].op, Op::Storage { scope: MemScope::Register, .. }) {
+                            panic!("tenstorrent2: reduce acc op {acc} does not thread a Register acc");
+                        }
+                        let Op::Load { src: ls, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*scaler].op else {
+                            panic!("tenstorrent2: reduce scaler op {scaler} is no scaler tile load");
+                        };
+                        let Some(&cb_sc) = cbs.get(&ls) else {
+                            panic!("tenstorrent2: reduce scaler op {scaler} targets unmapped CB");
+                        };
+                        let Some(&acc_slot) = tiles.get(&la) else {
+                            panic!("tenstorrent2: reduce acc op {acc} reads an undeclared acc");
+                        };
+                        tiles.insert(id, acc_slot);
+                        ops.push(TTOp::TileReduce { acc: acc_slot, cb_in, cb_sc, rop: *rop, kind: *kind });
+                    }
+                    Op::MatmulTile { x, y, acc } => {
+                        let Op::Load { src: la, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*x].op else {
+                            panic!("tenstorrent2: matmul side op {x} is no CB tile load");
+                        };
+                        let Some(&cb_a) = cbs.get(&la) else {
+                            panic!("tenstorrent2: matmul side op {x} targets unmapped CB");
+                        };
+                        let Op::Load { src: lb, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*y].op else {
+                            panic!("tenstorrent2: matmul side op {y} is no CB tile load");
+                        };
+                        let Some(&cb_b) = cbs.get(&lb) else {
+                            panic!("tenstorrent2: matmul side op {y} targets unmapped CB");
+                        };
+                        let Op::Load { src: lacc, .. } = kernel.ops[*acc].op else {
+                            panic!("tenstorrent2: matmul acc op {acc} is no acc tile load");
+                        };
+                        let Some(&tile) = tiles.get(&lacc) else {
+                            panic!("tenstorrent2: matmul acc op {acc} reads an undeclared acc");
+                        };
+                        tiles.insert(id, tile);
+                        ops.push(TTOp::TileMatmul { acc: tile, cb_a, cb_b, out: None });
+                    }
+                    Op::TransposeTile { x } => {
+                        let Op::Load { src: lx, layout: MemLayout::Tile { x: wx, y: hx, .. }, .. } = kernel.ops[*x].op else {
+                            panic!("tenstorrent2: transpose side op {x} is no CB tile load");
+                        };
+                        if wx as u32 != 32 || hx as u32 != 32 {
+                            panic!("tenstorrent2: transpose is fixed 32x32, op {x} is {wx}x{hx}");
+                        }
+                        let Some(&cb) = cbs.get(&lx) else {
+                            panic!("tenstorrent2: transpose side op {x} targets unmapped CB");
+                        };
+                        let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                        ops.push(TTOp::TileTranspose { dst, cb, out: None });
+                    }
+                    Op::BroadcastTile { .. } => {}
+                    Op::Asm { asm, ops: operands } => {
+                        let mut resolved = Vec::with_capacity(operands.len());
+                        for &operand in operands.iter() {
+                            if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[operand].op {
+                                let Some(&cb) = cbs.get(&operand) else {
+                                    panic!("tenstorrent2: asm operand {operand} targets unmapped CB");
+                                };
+                                resolved.push(AsmOperand::Cb(cb));
+                            } else if let Some(&slot) = tiles.get(&operand) {
+                                resolved.push(AsmOperand::Tile(slot));
+                            } else if let Some(&reg) = vars.get(&operand) {
+                                resolved.push(AsmOperand::Var(reg));
+                            } else {
+                                panic!("tenstorrent2: asm operand {operand} is not a CB or live tile");
+                            }
+                        }
+                        ops.push(TTOp::Asm { asm: asm.clone(), ops: resolved });
+                    }
+                }
+            }
+            ops.push(match s {
+                0 => TTOp::EndReader,
+                1 => TTOp::EndCompute,
+                _ => TTOp::EndWriter,
+            });
+        }
+        Self { ops }
     }
 
     /// Replicate_ops_per_section: values consumed in multiple sections are
@@ -708,259 +1176,6 @@ impl Compiler {
     /// to the stream head. Mirrors the legacy `get_needed_ops` closure per
     /// section (stores + structural starters, transitive data deps), then
     /// re-emits each section's needed ops in stream order.
-    fn replicate_ops_per_section(&mut self) {
-        use MemScope::Circular;
-        // Section index per position (0 reader, 1 compute, 2 writer).
-        let mut section_of: Vec<u8> = vec![0; self.ops.len()];
-        let mut section = 0u8;
-        for (pos, op) in self.ops.iter().enumerate() {
-            section_of[pos] = section;
-            match op {
-                TTOp::EndReader | TTOp::EndCompute => section += 1,
-                _ => {}
-            }
-        }
-        debug_assert!(section == 2, "tenstorrent2: expected two section markers, found {section}");
-        // Data operands per position (closure edges), and whether the op is
-        // a circular storage (global, never replicated).
-        fn operands(op: &TTOp) -> Vec<OpId> {
-            match op {
-                TTOp::SSAConst { .. }
-                | TTOp::SSAStorage { .. }
-                | TTOp::SSALoop { .. }
-                | TTOp::SSARange { .. }
-                | TTOp::SSAEndLoop
-                | TTOp::SSAEndIf
-                | TTOp::SSABarrier
-                | TTOp::EndReader
-                | TTOp::EndCompute
-                | TTOp::EndWriter => Vec::new(),
-                TTOp::SSAParam { shape, .. } => vec![*shape],
-                TTOp::SSACast { x, .. }
-                | TTOp::SSABitcast { x, .. }
-                | TTOp::SSAUnary { x, .. }
-                | TTOp::SSATransposeTile { x, .. }
-                | TTOp::SSABroadcastTile { x, .. } => vec![*x],
-                TTOp::SSABinary { x, y, .. } => vec![*x, *y],
-                TTOp::SSAStack { ops, .. } => ops.iter().copied().collect(),
-                TTOp::SSAStore { dst, src, index, .. } => vec![*dst, *src, *index],
-                TTOp::SSALoad { src, index, .. } => vec![*src, *index],
-                TTOp::SSAIf { condition } => vec![*condition],
-                TTOp::SSAMad { x, y, z, .. } => vec![*x, *y, *z],
-                TTOp::SSAIndex { vec, .. } => vec![*vec],
-                TTOp::SSAReduceTile { x, scaler, acc, .. } => vec![*x, *scaler, *acc],
-                TTOp::SSAMatmulTile { x, y, acc, .. } => vec![*x, *y, *acc],
-                TTOp::SSAAsm { ops, .. } => ops.iter().copied().collect(),
-                _ => Vec::new(),
-            }
-        }
-        // Range/loop length starters need their own edge (walk references them).
-        fn starters(op: &TTOp) -> Vec<OpId> {
-            match op {
-                TTOp::SSARange { kind, .. } => match kind {
-                    RangeKind::Group(len) | RangeKind::Warp(len) => vec![*len],
-                    RangeKind::Local(_) => Vec::new(),
-                },
-                TTOp::SSALoop { len, .. } => vec![*len],
-                TTOp::SSAIf { condition } => vec![*condition],
-                TTOp::SSAAsm { ops, .. } => ops.iter().copied().collect(),
-                _ => Vec::new(),
-            }
-        }
-        fn defines(op: &TTOp) -> Option<OpId> {
-            match op {
-                TTOp::SSAMad { w, .. } => Some(*w),
-                TTOp::SSAConst { z, .. }
-                | TTOp::SSAParam { z, .. }
-                | TTOp::SSACast { z, .. }
-                | TTOp::SSABitcast { z, .. }
-                | TTOp::SSAUnary { z, .. }
-                | TTOp::SSABinary { z, .. }
-                | TTOp::SSAStack { z, .. }
-                | TTOp::SSAStorage { z, .. }
-                | TTOp::SSAStore { z, .. }
-                | TTOp::SSALoad { z, .. }
-                | TTOp::SSARange { z, .. }
-                | TTOp::SSALoop { z, .. }
-                | TTOp::SSAIndex { z, .. }
-                | TTOp::SSAReduceTile { z, .. }
-                | TTOp::SSAMatmulTile { z, .. }
-                | TTOp::SSATransposeTile { z, .. }
-                | TTOp::SSAAsm { z, .. } => Some(*z),
-                TTOp::SSABroadcastTile { .. } => None,
-                _ => None,
-            }
-        }
-        let is_circular_storage = |op: &TTOp| -> bool {
-            matches!(op, TTOp::SSAStorage { scope: Circular, .. })
-        };
-        // Loops/branches must not span sections: collect loop open sections.
-        {
-            let mut loop_sections: Map<OpId, u8> = Map::default();
-            for (pos, op) in self.ops.iter().enumerate() {
-                match op {
-                    TTOp::SSALoop { z, .. } => {
-                        loop_sections.insert(*z, section_of[pos]);
-                    }
-                    TTOp::SSAEndLoop => {}
-                    _ => {}
-                }
-            }
-            let _ = loop_sections;
-        }
-        // Per-section needed sets.
-        let mut needed: Vec<Set<OpId>> = vec![Set::default(), Set::default(), Set::default()];
-        let mut structural: Vec<Set<OpId>> = vec![Set::default(), Set::default(), Set::default()];
-        for target in 0..3u8 {
-            let mut stack: Vec<OpId> = Vec::new();
-            for (pos, op) in self.ops.iter().enumerate() {
-                if section_of[pos] != target {
-                    continue;
-                }
-                match op {
-                    TTOp::SSAStore { .. } => {
-                        if let Some(z) = defines(op) {
-                            needed[target as usize].insert(z);
-                        }
-                        stack.extend(operands(op));
-                    }
-                    TTOp::SSALoop { .. }
-                    | TTOp::SSARange { .. }
-                    | TTOp::SSAIf { .. }
-                    | TTOp::SSAEndLoop
-                    | TTOp::SSAEndIf
-                    | TTOp::SSAAsm { .. } => {
-                        if let Some(z) = defines(op) {
-                            structural[target as usize].insert(z);
-                        } else {
-                            structural[target as usize].insert(OpId::NULL);
-                        }
-                        stack.extend(starters(op));
-                    }
-                    _ => {}
-                }
-            }
-            while let Some(id) = stack.pop() {
-                if id.is_null() || needed[target as usize].contains(&id) {
-                    continue;
-                }
-                // Circular storages stay global; consumers reference the
-                // single head copy without pulling them into the section.
-                if let Some(pos) = self.ops.iter().position(|o| defines(o) == Some(id)) {
-                    if is_circular_storage(&self.ops[pos]) {
-                        continue;
-                    }
-                }
-                needed[target as usize].insert(id);
-                let def_pos = self.ops.iter().position(|o| defines(o) == Some(id));
-                match def_pos {
-                    Some(pos) => stack.extend(operands(&self.ops[pos])),
-                    None => panic!("tenstorrent2: replicate_ops_per_section: no def for op {id}"),
-                }
-            }
-        }
-        // Rebuild: circular storages once at head, then each section's
-        // needed + structural ops in stream order with section markers.
-        let mut out: Vec<TTOp> = Vec::new();
-        for op in &self.ops {
-            if is_circular_storage(op) {
-                out.push(op.clone());
-            }
-        }
-        for target in 0..3u8 {
-            for (pos, op) in self.ops.iter().enumerate() {
-                if is_circular_storage(op) {
-                    continue;
-                }
-                match op {
-                    TTOp::EndReader | TTOp::EndCompute | TTOp::EndWriter => {}
-                    _ => {
-                        let keep = match defines(op) {
-                            // Value defs replicate: emit wherever consumed,
-                            // regardless of lexical section.
-                            Some(z) => {
-                                needed[target as usize].contains(&z)
-                                    || structural[target as usize].contains(&z)
-                            }
-                            // Id-less ops stay lexical (structure, broadcast
-                            // markers, closers).
-                            None => {
-                                section_of[pos] == target
-                                    && (structural[target as usize].contains(&OpId::NULL)
-                                        || matches!(
-                                            op,
-                                            TTOp::SSAEndLoop
-                                                | TTOp::SSAEndIf
-                                                | TTOp::SSABroadcastTile { .. }
-                                        ))
-                            }
-                        };
-                        if keep {
-                            out.push(op.clone());
-                        }
-                    }
-                }
-            }
-            out.push(match target {
-                0 => TTOp::EndReader,
-                1 => TTOp::EndCompute,
-                _ => TTOp::EndWriter,
-            });
-        }
-        self.ops = out;
-    }
-
-    /// Sectioning: the first barrier becomes `EndReader`, the second
-    /// `EndCompute`, `EndWriter` closes the stream. A third barrier is a
-    /// malformed kernel — there are only three sections.
-    fn sectioning(&mut self) {
-        let mut barriers = 0;
-        for op in &mut self.ops {
-            if matches!(op, TTOp::SSABarrier) {
-                barriers += 1;
-                *op = match barriers {
-                    1 => TTOp::EndReader,
-                    2 => TTOp::EndCompute,
-                    _ => panic!("tenstorrent2: kernel has more than two barriers"),
-                };
-            }
-        }
-        self.ops.push(TTOp::EndWriter);
-    }
-
-    /// Assign CBs: number each circular storage in stream order, recording
-    /// storage `OpId` to hardware `CBId`. Non-circular storages are untouched.
-    fn assign_cbs(&mut self) {
-        for op in &self.ops {
-            if let TTOp::SSAStorage { z, scope, len, .. } = op
-                && matches!(scope, MemScope::Circular)
-                && !self.cbs.contains_key(z)
-            {
-                let cb = CBId(self.cbs.len() as u32);
-                self.cbs.insert(*z, cb);
-                self.cb_depth.insert(cb, (*len / 1024) as u32);
-            }
-        }
-    }
-
-    /// Counter check: the operand closure of `root` contains the loop
-    /// counter `target` (block slots must tie to the counter or be 0).
-    fn counter_tied(&self, root: OpId, target: OpId) -> bool {
-        if root.is_null() {
-            return false;
-        }
-        let mut stack = vec![root];
-        while let Some(id) = stack.pop() {
-            if id == target {
-                return true;
-            }
-            if let Some(ps) = self.params.get(&id) {
-                stack.extend(ps.iter().copied());
-            }
-        }
-        false
-    }
-
     /// Sync insertion: `ReserveBack`/`WaitFront`/`PushBack`/`PopFront`
     /// around every CB traffic op. Single-tile transactions wrap the op
     /// inline; a loop body holding exactly one traffic op for a CB, no
@@ -969,229 +1184,7 @@ impl Compiler {
     /// Fused-draining loads carry no syncs; their consumers drain.
     /// `CbDeclare` ops head the stream in `CBId` order.
     fn sync_cbs(&mut self) {
-        // Fused drains resolve to consumer wraps (CB known only now).
-        let mut drain_at: Map<OpId, Vec<CBId>> = Map::default();
-        for (&load, cs) in self.drain_consumers.iter() {
-            let (storage, _, _) = self.load_info[&load];
-            let cb = self.cbs[&storage];
-            for &c in cs {
-                drain_at.entry(c).or_default().push(cb);
-            }
-        }
-        // Transaction per traffic op: (cb, tiles per pass, hoist op,
-        // produce?). Provisional single-tile; EndLoop may upgrade.
-        struct Batch {
-            cb: CBId,
-            per_op: u32,
-            hoist: OpId,
-            produce: bool,
-        }
-        let mut batches: Map<OpId, Batch> = Map::default();
-        let mut produced: Map<CBId, u32> = Map::default();
-        let mut consumed: Map<CBId, u32> = Map::default();
-        for &cb in self.cbs.values() {
-            produced.insert(cb, 0);
-            consumed.insert(cb, 0);
-        }
-        let mut section = 0u8;
-        let mut stack: Vec<LoopFrame> = Vec::new();
-        let mut loop_end: Map<OpId, usize> = Map::default();
-        // Stream position of every `z`-carrying op.
-        let mut pos_of: Map<OpId, usize> = Map::default();
-        for (pos, op) in self.ops.iter().enumerate() {
-            match op {
-                TTOp::SSAStore { z, .. }
-                | TTOp::SSALoad { z, .. }
-                | TTOp::SSALoop { z, .. }
-                | TTOp::SSAUnary { z, .. }
-                | TTOp::SSABinary { z, .. }
-                | TTOp::SSAMad { w: z, .. }
-                | TTOp::SSAIndex { z, .. }
-                | TTOp::SSAReduceTile { z, .. }
-                | TTOp::SSAMatmulTile { z, .. }
-                | TTOp::SSATransposeTile { z, .. } => {
-                    pos_of.insert(*z, pos);
-                }
-                _ => {}
-            }
-        }
-        for (pos, op) in self.ops.iter().enumerate() {
-            match op {
-                TTOp::EndReader | TTOp::EndCompute => section += 1,
-                TTOp::SSALoop { z, .. } => {
-                    let trip = self.trips[z];
-                    stack.push(LoopFrame { op: *z, pos, trip, if_seen: false, traffic: Map::default(), dirty: Set::default() });
-                }
-                TTOp::SSAIf { .. } => {
-                    if let Some(f) = stack.last_mut() {
-                        f.if_seen = true;
-                    }
-                }
-                TTOp::SSAEndLoop => {
-                    let f = stack.pop().expect("tenstorrent2: EndLoop without Loop");
-                    loop_end.insert(f.op, pos);
-                    for (&cb, &op) in f.traffic.iter() {
-                        if f.dirty.contains(&cb) {
-                            continue;
-                        }
-                        let Some(t) = f.trip else { continue };
-                        if t <= 1 {
-                            continue;
-                        }
-                        if t > self.cb_depth[&cb] {
-                            // The CB cannot hold the whole block:
-                            // streaming. Keep the per-iteration
-                            // single-tile transaction, always correct.
-                            continue;
-                        }
-                        if !batches.contains_key(&op) {
-                            // Fused-only loads count for balance but
-                            // carry no batch to upgrade.
-                            continue;
-                        }
-                        let index = match &self.ops[pos_of[&op]] {
-                            TTOp::SSALoad { index, .. } | TTOp::SSAStore { index, .. } => *index,
-                            _ => panic!("tenstorrent2: hoisted op {op} is not traffic"),
-                        };
-                        if !self.counter_tied(index, f.op) && !self.zeros.contains(&index) {
-                            panic!("tenstorrent2: CB{cb} index op {index} is neither the hoist loop counter nor 0");
-                        }
-                        if let Some(b) = batches.get_mut(&op) {
-                            b.per_op = t;
-                            b.hoist = f.op;
-                        }
-                    }
-                }
-                TTOp::SSAStore { z, dst, src, index, .. } => {
-                    let traffic = match section {
-                        0 | 1 => self.cbs.get(dst).map(|&cb| (true, cb, *index)),
-                        _ => match self.load_info.get(src) {
-                            Some(&(storage, tile, load_index)) if tile => {
-                                self.cbs.get(&storage).map(|&cb| (false, cb, load_index))
-                            }
-                            _ => None,
-                        },
-                    };
-                    if let Some((produce, cb, index)) = traffic {
-                        // Per-pass tile count: product of enclosing trips.
-                        // Symbolic trips cannot bound CB traffic.
-                        let mut count = 1u32;
-                        for fr in stack.iter() {
-                            match fr.trip {
-                                Some(t) => count *= t,
-                                None => panic!("tenstorrent2: CB{cb} traffic inside a non-constant loop"),
-                            }
-                        }
-                        if produce {
-                            *produced.get_mut(&cb).expect("tenstorrent2: CB totals pre-recorded") += count;
-                        } else {
-                            *consumed.get_mut(&cb).expect("tenstorrent2: CB totals pre-recorded") += count;
-                        }
-                        if let Some(f) = stack.last_mut() {
-                            if f.traffic.insert(cb, *z).is_some() {
-                                f.dirty.insert(cb);
-                            }
-                        }
-                        let counter_tied = stack.iter().any(|fr| self.counter_tied(index, fr.op));
-                        if !self.zeros.contains(&index) && !counter_tied {
-                            panic!("tenstorrent2: single-tile transaction on CB{cb} needs slot index 0 or the loop counter");
-                        }
-                        batches.insert(*z, Batch { cb, per_op: 1, hoist: *z, produce });
-                    }
-                }
-                TTOp::SSALoad { z, src, index, .. } => {
-                    if section != 1 {
-                        continue;
-                    }
-                    let Some(&cb) = self.cbs.get(src) else { continue };
-                    if !self.load_info.get(z).is_some_and(|&(_, tile, _)| tile) {
-                        continue;
-                    }
-                    let mut count = 1u32;
-                    for fr in stack.iter() {
-                        match fr.trip {
-                            Some(t) => count *= t,
-                            None => panic!("tenstorrent2: CB{cb} traffic inside a non-constant loop"),
-                        }
-                    }
-                    *consumed.get_mut(&cb).expect("tenstorrent2: CB totals pre-recorded") += count;
-                    if let Some(f) = stack.last_mut() {
-                        if f.traffic.insert(cb, *z).is_some() {
-                            f.dirty.insert(cb);
-                        }
-                    }
-                    if self.drain_consumers.contains_key(z) {
-                        continue;
-                    }
-                    let counter_tied = stack.iter().any(|fr| self.counter_tied(*index, fr.op));
-                    if !self.zeros.contains(index) && !counter_tied {
-                        panic!("tenstorrent2: single-tile transaction on CB{cb} needs slot index 0 or the loop counter");
-                    }
-                    batches.insert(*z, Batch { cb, per_op: 1, hoist: *z, produce: false });
-                }
-                _ => {}
-            }
-        }
-        // Anchors: inline transactions wrap the traffic op; hoisted
-        // blocks open before the loop and close after its end.
-        // (`pos_of` was built before the walk.)
-        let mut before: Map<usize, Vec<TTOp>> = Map::default();
-        let mut after: Map<usize, Vec<TTOp>> = Map::default();
-        let mut open_close: Vec<(usize, usize, CBId, u32, bool)> = Vec::new();
-        for (&op, b) in batches.iter() {
-            if b.hoist == op {
-                let pos = pos_of[&op];
-                open_close.push((pos, pos, b.cb, b.per_op, b.produce));
-            } else {
-                let open = pos_of[&b.hoist];
-                let close = loop_end[&b.hoist] + 1;
-                open_close.push((open, close, b.cb, b.per_op, b.produce));
-            }
-        }
-        open_close.sort();
-        for (open, close, cb, n, produce) in open_close {
-            let (first, second) = if produce {
-                (TTOp::ReserveBack { cb, n }, TTOp::PushBack { cb, n })
-            } else {
-                (TTOp::WaitFront { cb, m: n }, TTOp::PopFront { cb, n })
-            };
-            before.entry(open).or_default().push(first);
-            after.entry(close).or_default().push(second);
-        }
-        // Fused consumers drain inline (legacy 1-tile path).
-        for (&c, cbs) in drain_at.iter() {
-            let pos = pos_of[&c];
-            for &cb in cbs {
-                before.entry(pos).or_default().push(TTOp::WaitFront { cb, m: 1 });
-                after.entry(pos).or_default().push(TTOp::PopFront { cb, n: 1 });
-            }
-        }
-        // Cross-section balance: every produced tile per pass is
-        // consumed per pass, per CB.
-        for (&cb, &p) in produced.iter() {
-            let c = consumed[&cb];
-            if p != c {
-                panic!("tenstorrent2: CB{cb} produces {p} but consumes {c} tiles per pass");
-            }
-        }
-        // Rebuild with sync ops spliced in; CB declarations head the stream.
-        let mut cbs: Vec<CBId> = self.cbs.values().copied().collect();
-        cbs.sort();
-        let mut next = Vec::with_capacity(self.ops.len());
-        for cb in cbs {
-            next.push(TTOp::CbDeclare { cb, n_tiles: self.cb_depth[&cb] });
-        }
-        let old = std::mem::take(&mut self.ops);
-        for (pos, op) in old.into_iter().enumerate() {
-            if let Some(v) = before.remove(&pos) {
-                next.extend(v);
-            }
-            next.push(op);
-            if let Some(v) = after.remove(&pos) {
-                next.extend(v);
-            }
-        }
-        self.ops = next;
+        // BIGBANG: physical port lands after compile; lowering emits no syncs yet.
     }
 
     /// DST lock insertion: `MathLock`/`MathUnlock`/`PackLock`/`PackUnlock`
@@ -1209,38 +1202,22 @@ impl Compiler {
             MathLock,
             PackLock,
         }
-        // Register-acc storages: loads/stores threading them are alias
-        // moves, not MATH/PACK traffic.
-        let mut register: Set<OpId> = Set::default();
-        for op in &self.ops {
-            if let TTOp::SSAStorage { z, scope, .. } = op
-                && matches!(scope, MemScope::Register)
-            {
-                register.insert(*z);
-            }
-        }
-        let is_math = |op: &TTOp, drain_consumers: &Map<OpId, Vec<OpId>>| -> bool {
+        // MATH ops are tile compute ops (copies stream under MATH
+        // like every unpack-side op); PACK ops are `TilePack`s draining
+        // to a CB. Scalar and movement sections carry no locks. Acc
+        // threading leaves no ops (alias bindings in lowering), so no
+        // register scan: only emitted ops lock.
+        let is_math = |op: &TTOp| -> bool {
             match op {
-                TTOp::SSAStorage { scope, .. } => matches!(scope, MemScope::Register),
-                TTOp::SSALoad { z, src, layout, .. } => {
-                    if !matches!(layout, MemLayout::Tile { .. }) {
-                        return false;
-                    }
-                    if register.contains(src) {
-                        return false;
-                    }
-                    if drain_consumers.contains_key(z) {
-                        return false;
-                    }
-                    true
-                }
-                TTOp::SSAUnary { .. }
-                | TTOp::SSABinary { .. }
-                | TTOp::SSACast { .. }
-                | TTOp::SSAMad { .. }
-                | TTOp::SSAReduceTile { .. }
-                | TTOp::SSAMatmulTile { .. }
-                | TTOp::SSATransposeTile { .. } => true,
+                TTOp::TileCopy { .. }
+                | TTOp::TileUnary { .. }
+                | TTOp::TileBinary { .. }
+                | TTOp::TileBcastBinary { .. }
+                | TTOp::TileBinScalar { .. }
+                | TTOp::TileCast { .. }
+                | TTOp::TileMatmul { .. }
+                | TTOp::TileReduce { .. }
+                | TTOp::TileTranspose { .. } => true,
                 _ => false,
             }
         };
@@ -1279,7 +1256,7 @@ impl Compiler {
                     next.push(op);
                     continue;
                 }
-                TTOp::SSAEndLoop => {
+                TTOp::EndLoop => {
                     // No open cone across the back-edge: the body runs N
                     // times, so a PACK-held file here would deadlock the
                     // next iteration on an acquire past the loop.
@@ -1296,28 +1273,23 @@ impl Compiler {
                 next.push(op);
                 continue;
             }
-            // Pack path: tile store draining to a CB. Acc-threading
-            // stores (dst is a Register acc) alias tiles, no lock.
-            if let TTOp::SSAStore { dst, .. } = &op {
-                if self.cbs.contains_key(dst) {
-                    match state {
-                        DstState::MathLock => {
-                            next.push(TTOp::MathUnlock);
-                            next.push(TTOp::PackLock);
-                            state = DstState::PackLock;
-                        }
-                        DstState::PackLock => {}
-                        DstState::Unlocked => {
-                            panic!("tenstorrent2: pack with DST Unlocked, no live cone (pack of a dead slot)");
-                        }
+            // Pack path: `TilePack` draining to a CB.
+            if let TTOp::TilePack { .. } = &op {
+                match state {
+                    DstState::MathLock => {
+                        next.push(TTOp::MathUnlock);
+                        next.push(TTOp::PackLock);
+                        state = DstState::PackLock;
                     }
-                    next.push(op);
-                    continue;
+                    DstState::PackLock => {}
+                    DstState::Unlocked => {
+                        panic!("tenstorrent2: pack with DST Unlocked, no live cone (pack of a dead slot)");
+                    }
                 }
                 next.push(op);
                 continue;
             }
-            if is_math(&op, &self.drain_consumers) {
+            if is_math(&op) {
                 math_lock(&mut next, &mut state);
             }
             next.push(op);
@@ -1333,237 +1305,7 @@ impl Compiler {
     /// otherwise); matmul notes it the same way. Anything the naive
     /// pass cannot resolve fails loudly at the exact op.
     fn init_math(&mut self) {
-        // Storage dtypes, register accs, consts, and every defined id.
-        let mut storage_dtype: Map<OpId, DType> = Map::default();
-        let mut register: Set<OpId> = Set::default();
-        let mut const_ids: Set<OpId> = Set::default();
-        let mut defined: Set<OpId> = Set::default();
-        for op in &self.ops {
-            match op {
-                TTOp::SSAStorage { z, dtype, scope, .. } => {
-                    storage_dtype.insert(*z, *dtype);
-                    if matches!(scope, MemScope::Register) {
-                        register.insert(*z);
-                    }
-                    defined.insert(*z);
-                }
-                TTOp::SSAConst { z, .. }
-                | TTOp::SSAParam { z, .. }
-                | TTOp::SSACast { z, .. }
-                | TTOp::SSABitcast { z, .. }
-                | TTOp::SSAUnary { z, .. }
-                | TTOp::SSABinary { z, .. }
-                | TTOp::SSAStack { z, .. }
-                | TTOp::SSALoad { z, .. }
-                | TTOp::SSALoop { z, .. }
-                | TTOp::SSAMad { w: z, .. }
-                | TTOp::SSAIndex { z, .. }
-                | TTOp::SSAReduceTile { z, .. }
-                | TTOp::SSAMatmulTile { z, .. }
-                | TTOp::SSATransposeTile { z, .. }
-                | TTOp::SSAAsm { z, .. } => {
-                    defined.insert(*z);
-                }
-                _ => {}
-            }
-            if let TTOp::SSAConst { z, .. } = op {
-                const_ids.insert(*z);
-            }
-        }
-        // CB descriptor format per CBId, from the storage dtype.
-        let mut cb_format: Map<CBId, u32> = Map::default();
-        for (&storage, &cb) in self.cbs.iter() {
-            let dtype = storage_dtype.get(&storage).expect("tenstorrent2: CB storage without dtype");
-            cb_format.insert(cb, cb_fmt(*dtype));
-        }
-        // Broadcast marker kinds by marked value: SSABroadcastTile
-        // carries no own id, so consumers find the kind through the
-        // marker's operand (recorded in params at lowering).
-        let mut bcast_kinds: Map<OpId, Vec<TileDim>> = Map::default();
-        for op in &self.ops {
-            if let TTOp::SSABroadcastTile { x, kind } = op {
-                bcast_kinds.entry(*x).or_default().push(*kind);
-            }
-        }
-        // First pack destination in compute: the startup-triple output
-        // for `mm_init`/`transpose_wh_init` (single-output kernels;
-        // pass 2's unconditional pack reconfigs make the choice
-        // non-load-bearing for the packer side).
-        let mut first_pack_cb: Option<CBId> = None;
-        {
-            let mut section = 0u8;
-            for op in &self.ops {
-                match op {
-                    TTOp::EndReader | TTOp::EndCompute => section += 1,
-                    TTOp::SSAStore { dst, .. } if section == 1 => {
-                        if let Some(&cb) = self.cbs.get(dst) {
-                            first_pack_cb = Some(cb);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // Load value to its CB (tile loads from Circular storage only;
-        // acc loads and fused-draining loads resolve to none).
-        let load_cb = |v: OpId,
-                       load_info: &Map<OpId, (OpId, bool, OpId)>,
-                       cbs: &Map<OpId, CBId>,
-                       drain_consumers: &Map<OpId, Vec<OpId>>|
-         -> Option<CBId> {
-            let (storage, tile, _) = load_info.get(&v)?;
-            if !tile || drain_consumers.contains_key(&v) {
-                return None;
-            }
-            cbs.get(storage).copied()
-        };
-        // Broadcast marker kind for a binary operand: the operand is a
-        // marker op id (in params, defined nowhere) whose recorded
-        // operand names a broadcast-marked value.
-        let bcast_of = |o: OpId,
-                        params: &Map<OpId, Vec<OpId>>,
-                        defined: &Set<OpId>,
-                        bcast_kinds: &Map<OpId, Vec<TileDim>>|
-         -> Option<TileDim> {
-            if defined.contains(&o) {
-                return None;
-            }
-            let mx = params.get(&o).and_then(|ps| match ps.as_slice() {
-                [single] => Some(*single),
-                _ => None,
-            })?;
-            match bcast_kinds.get(&mx).map(Vec::as_slice) {
-                Some([kind]) => Some(*kind),
-                Some(_) => panic!("tenstorrent2: broadcast marker value r{mx} has ambiguous kinds"),
-                None => None,
-            }
-        };
-        let old = std::mem::take(&mut self.ops);
-        let mut next = Vec::with_capacity(old.len());
-        let mut section = 0u8;
-        let mut unpack_src: Option<(CBId, u32)> = None;
-        for op in old {
-            match &op {
-                TTOp::EndReader | TTOp::EndCompute => {
-                    section += 1;
-                    next.push(op);
-                    continue;
-                }
-                TTOp::EndWriter => {
-                    next.push(op);
-                    continue;
-                }
-                _ => {}
-            }
-            if section != 1 {
-                next.push(op);
-                continue;
-            }
-            match op {
-                TTOp::SSALoad { z, src, index, layout } => {
-                    let tile = matches!(layout, MemLayout::Tile { .. });
-                    if tile && !register.contains(&src) && !self.drain_consumers.contains_key(&z) {
-                        let cb = self.cbs.get(&src).expect("tenstorrent2: tile load from unmapped CB storage");
-                        let fmt = cb_format[cb];
-                        if unpack_src.map(|(_, f)| f) != Some(fmt) {
-                            let prev = unpack_src.map(|(c, _)| c).unwrap_or(*cb);
-                            next.push(TTOp::CopyInitWithDt { prev, cb: *cb });
-                            unpack_src = Some((*cb, fmt));
-                        } else {
-                            next.push(TTOp::CopyInit { cb: *cb });
-                        }
-                    }
-                    next.push(TTOp::SSALoad { z, src, index, layout });
-                }
-                TTOp::SSAUnary { z, x, uop } => {
-                    next.push(TTOp::UnaryInit { uop });
-                    next.push(TTOp::SSAUnary { z, x, uop });
-                }
-                TTOp::SSABinary { z, x, y, bop } => {
-                    let bx = bcast_of(x, &self.params, &defined, &bcast_kinds);
-                    let by = bcast_of(y, &self.params, &defined, &bcast_kinds);
-                    match (bx, by) {
-                        (Some(kind), None) => {
-                            let cb_b = load_cb(x, &self.load_info, &self.cbs, &self.drain_consumers)
-                                .expect("tenstorrent2: broadcast lane is no CB tile load");
-                            let cb_a = load_cb(y, &self.load_info, &self.cbs, &self.drain_consumers)
-                                .expect("tenstorrent2: broadcast op reads a non-CB tile");
-                            if bcast_init_name(bop, kind).is_none() {
-                                panic!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no init call");
-                            }
-                            next.push(TTOp::BcastInit { bop, kind, cb_a, cb_b });
-                            unpack_src = Some((cb_a, cb_format[&cb_a]));
-                        }
-                        (None, Some(kind)) => {
-                            let cb_b = load_cb(y, &self.load_info, &self.cbs, &self.drain_consumers)
-                                .expect("tenstorrent2: broadcast lane is no CB tile load");
-                            let cb_a = load_cb(x, &self.load_info, &self.cbs, &self.drain_consumers)
-                                .expect("tenstorrent2: broadcast op reads a non-CB tile");
-                            if bcast_init_name(bop, kind).is_none() {
-                                panic!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no init call");
-                            }
-                            next.push(TTOp::BcastInit { bop, kind, cb_a, cb_b });
-                            unpack_src = Some((cb_a, cb_format[&cb_a]));
-                        }
-                        (Some(_), Some(_)) => {
-                            panic!("tenstorrent2: broadcast op r{z} marks both sides");
-                        }
-                        (None, None) => {
-                            if const_ids.contains(&x) || const_ids.contains(&y) {
-                                next.push(TTOp::BinScalarInit);
-                            } else if binary_init_name(bop).is_some() {
-                                next.push(TTOp::BinaryInit { bop });
-                            }
-                        }
-                    }
-                    next.push(TTOp::SSABinary { z, x, y, bop });
-                }
-                TTOp::SSACast { z, x, dtype } => {
-                    let in_dtype = match self.load_info.get(&x) {
-                        Some((storage, _, _)) => storage_dtype
-                            .get(storage)
-                            .copied()
-                            .expect("tenstorrent2: cast source storage without dtype"),
-                        None => panic!("tenstorrent2: cast r{z} reads a non-load value r{x}"),
-                    };
-                    next.push(TTOp::CastInit { in_dtype, out_dtype: dtype });
-                    next.push(TTOp::SSACast { z, x, dtype });
-                }
-                TTOp::SSAMatmulTile { z, x, y, acc } => {
-                    let a = load_cb(x, &self.load_info, &self.cbs, &self.drain_consumers)
-                        .expect("tenstorrent2: matmul reads a non-CB tile");
-                    let b = load_cb(y, &self.load_info, &self.cbs, &self.drain_consumers)
-                        .expect("tenstorrent2: matmul reads a non-CB tile");
-                    let out = first_pack_cb
-                        .expect("tenstorrent2: matmul needs a startup output CB but compute packs nothing");
-                    next.push(TTOp::MatmulInit { a, b, out });
-                    unpack_src = Some((a, cb_format[&a]));
-                    next.push(TTOp::SSAMatmulTile { z, x, y, acc });
-                }
-                TTOp::SSAReduceTile { z, x, scaler, acc, rop, kind } => {
-                    if !matches!(rop, BOp::Max | BOp::Add) {
-                        panic!("tenstorrent2: reduce op {rop:?} unsupported, op r{z}");
-                    }
-                    let ci = load_cb(x, &self.load_info, &self.cbs, &self.drain_consumers)
-                        .expect("tenstorrent2: reduce reads a non-CB tile");
-                    let cs = load_cb(scaler, &self.load_info, &self.cbs, &self.drain_consumers)
-                        .expect("tenstorrent2: reduce scaler is no CB tile load");
-                    next.push(TTOp::ReduceInit { ci, cs, acc, rop, kind });
-                    next.push(TTOp::SSAReduceTile { z, x, scaler, acc, rop, kind });
-                }
-                TTOp::SSATransposeTile { z, x } => {
-                    let cb = load_cb(x, &self.load_info, &self.cbs, &self.drain_consumers)
-                        .expect("tenstorrent2: transpose reads a non-CB tile");
-                    let out = first_pack_cb
-                        .expect("tenstorrent2: transpose needs a startup output CB but compute packs nothing");
-                    next.push(TTOp::TransposeInit { cb, out });
-                    next.push(TTOp::SSATransposeTile { z, x });
-                }
-                other => next.push(other),
-            }
-        }
-        self.ops = next;
+        // BIGBANG: physical port lands after compile; lowering emits no inits yet.
     }
 
     /// Pack reconfig insertion (pass 2 of 2): a `PackReconfig` before
@@ -1589,15 +1331,177 @@ impl Compiler {
                 _ => {}
             }
             if section == 1 {
-                if let TTOp::SSAStore { dst, .. } = &op {
-                    if let Some(&cb) = self.cbs.get(dst) {
-                        next.push(TTOp::PackReconfig { cb });
-                    }
+                if let TTOp::TilePack { cb, .. } = &op {
+                    next.push(TTOp::PackReconfig { cb: *cb });
                 }
             }
             next.push(op);
         }
         self.ops = next;
+    }
+
+    /// NOC movement lowering (reader/writer sections only; runs after
+    /// `scalar_regs`, before the compute-only passes).
+    ///
+    /// Reader `Store{dst: Circular, src: Load{src: Global param}}` becomes
+    /// `NocAccessor` (once per param) + `NocAddr` + `AsyncRead` + barrier;
+    /// writer `Store{dst: GlobalMut param, src: Load{src: CB storage}}`
+    /// becomes the `AsyncWrite` form. Loads drop (consumed at the store);
+    /// a load with no consuming store is a compilation error, like the
+    /// legacy "supports only global to local stores" rule.
+    ///
+    /// The slot offset derives from the op stream alone (no side tables):
+    /// the open sync transaction for the CB (`ReserveBack`/`WaitFront`
+    /// with `n == 1` means slot 0) plus the loop-counter provenance of
+    /// the index (`off` = the index when counter-tied, else the hoist
+    /// loop's counter — the legacy `slot_offset` rule).
+    ///
+    /// v1: tile layouts only, reader `Global→Circular`, writer
+    /// `CB→GlobalMut`. Everything else stays loud.
+    fn noc_movement(&mut self) {
+        // BIGBANG: expansion of `ReadTile`/`WriteTile` lands after
+        // compile; this pass currently forwards the stream.
+        let old = std::mem::take(&mut self.ops);
+        let mut next = Vec::with_capacity(old.len());
+        let mut section = 0usize;
+        // Pending movement loads per section: `z` to (storage, index, layout).
+        let mut loads: Map<OpId, (OpId, OpId, MemLayout)> = Map::default();
+        let mut consumed: Set<OpId> = Set::default();
+        // Accessors already declared per section.
+        let mut accessors: Set<OpId> = Set::default();
+        // Open sync transaction per CB: (tiles, loop depth at open).
+        let mut open: Map<CBId, (u32, usize)> = Map::default();
+        // Loop-counter stack (scalar registers).
+        let mut loops: Vec<VarId> = Vec::new();
+        // Counter provenance per scalar register (for slot offsets).
+        let mut dep: Map<VarId, Set<VarId>> = Map::default();
+        // Scalar registers holding constant 0.
+        let mut zeros: Set<VarId> = Set::default();
+        for op in old {
+            match op {
+                TTOp::EndReader | TTOp::EndCompute => {
+                    if section < 2 {
+                        for &z in loads.keys() {
+                            debug_assert!(
+                                consumed.contains(&z),
+                                "tenstorrent2: noc_movement: movement load r{z} has no consuming store"
+                            );
+                        }
+                    }
+                    loads.clear();
+                    consumed.clear();
+                    accessors.clear();
+                    open.clear();
+                    loops.clear();
+                    section += 1;
+                    if section == 1 {
+                        // Trailing reader barrier: every async read lands
+                        // before exit (legacy `final_read_barrier`).
+                        next.push(TTOp::NocReadBarrier);
+                        next.push(TTOp::EndReader);
+                    } else {
+                        next.push(TTOp::EndCompute);
+                    }
+                    continue;
+                }
+                TTOp::EndWriter => {
+                    for &z in loads.keys() {
+                        debug_assert!(
+                            consumed.contains(&z),
+                            "tenstorrent2: noc_movement: movement load r{z} has no consuming store"
+                        );
+                    }
+                    next.push(TTOp::EndWriter);
+                    continue;
+                }
+                _ => {}
+            }
+            debug_assert!(section < 3, "tenstorrent2: noc_movement: op past EndWriter");
+            // Provenance + loop/sync tracking runs over all sections
+            // (compute ops flow through untouched below).
+            match &op {
+                TTOp::Const { z, value } => {
+                    if value.as_dim() == Some(0) {
+                        zeros.insert(*z);
+                    }
+                }
+                TTOp::Binary { z, x, y, .. } => {
+                    let mut d = dep.get(x).cloned().unwrap_or_default();
+                    d.extend(dep.get(y).cloned().unwrap_or_default());
+                    dep.insert(*z, d);
+                }
+                TTOp::Unary { z, x, .. } => {
+                    dep.insert(*z, dep.get(x).cloned().unwrap_or_default());
+                }
+                TTOp::Loop { counter, .. } => {
+                    let mut d = Set::default();
+                    d.insert(*counter);
+                    dep.insert(*counter, d);
+                }
+                TTOp::ReserveBack { cb, n } => {
+                    open.insert(*cb, (*n, loops.len()));
+                }
+                TTOp::PushBack { cb, .. } => {
+                    open.remove(cb);
+                }
+                TTOp::WaitFront { cb, m } => {
+                    open.insert(*cb, (*m, loops.len()));
+                }
+                TTOp::PopFront { cb, .. } => {
+                    open.remove(cb);
+                }
+                _ => {}
+            }
+            if section == 1 {
+                next.push(op);
+                continue;
+            }
+            // Loop stack pushes need the counter out of the op.
+            match op {
+                TTOp::Loop { len, counter, .. } => {
+                    loops.push(counter);
+                    next.push(op);
+                    continue;
+                }
+                other => next.push(other),
+            }
+        }
+        self.ops = next;
+    }
+
+    /// Hoist writer DRAM accessors to the writer-section front.
+    ///
+    /// Legacy v1 declares all writer accessors up front (chained
+    /// `TensorAccessor` triples) while the reader declares inline at
+    /// first traffic. Render is a single dumb emitter, so the ordering
+    /// lives here as a stable partition: writer-section `NocAccessor`
+    /// ops move to immediately after `EndCompute`, keeping their
+    /// relative (chain) order; every other op keeps its position.
+    fn hoist_writer_accessors(&mut self) {
+        let old = std::mem::take(&mut self.ops);
+        let mut hoisted = Vec::new();
+        let mut next = Vec::with_capacity(old.len());
+        let mut section = 0u8;
+        let mut writer_front = 0usize;
+        for op in old {
+            match &op {
+                TTOp::EndReader | TTOp::EndCompute => {
+                    section += 1;
+                    next.push(op);
+                    if section == 2 {
+                        writer_front = next.len();
+                    }
+                }
+                TTOp::NocAccessor { .. } if section == 2 => hoisted.push(op),
+                _ => next.push(op),
+            }
+        }
+        assert!(section == 2, "tenstorrent2: hoist_writer_accessors: stream has no writer section");
+        next.splice(writer_front..writer_front, hoisted);
+        self.ops = next;
+    }
+    fn tile_regs(&mut self) {
+        // BIGBANG: subsumed by lowering.
     }
 
     /// Hoist + dedup of init/reconfig ops (compute section only).
@@ -1662,14 +1566,14 @@ impl Compiler {
                         out.push(ops[idx].clone());
                         idx += 1;
                     }
-                    TTOp::SSALoop { z, .. } if *section == 1 => {
+                    TTOp::Loop { trip, .. } if *section == 1 => {
                         // Find the matching end (nesting depth counted).
                         let mut depth = 1;
                         let mut end = idx + 1;
                         while end < ops.len() && depth > 0 {
                             match &ops[end] {
-                                TTOp::SSALoop { .. } => depth += 1,
-                                TTOp::SSAEndLoop => depth -= 1,
+                                TTOp::Loop { .. } => depth += 1,
+                                TTOp::EndLoop => depth -= 1,
                                 _ => {}
                             }
                             end += 1;
@@ -1680,9 +1584,7 @@ impl Compiler {
                         let open = ops[idx].clone();
                         let body = hoist_level(ops[idx + 1..end - 1].to_vec(), compiler, &mut 1u8);
                         let close = ops[end - 1].clone();
-                        let trip = compiler.trips.get(z).copied().flatten();
-                        let single = trip.is_some_and(|t| t >= 1)
-                            && !body.iter().any(is_lock);
+                        let single = trip.is_some_and(|t| t >= 1) && !body.iter().any(is_lock);
                         if single {
                             // Distinct init configs per unit, first-occurrence order.
                             let mut seen: Vec<TTOp> = Vec::new();
@@ -1729,17 +1631,13 @@ impl Compiler {
         let old = std::mem::take(&mut self.ops);
         let mut section = 0u8;
         let hoisted = hoist_level(old, self, &mut section);
-        // CB descriptor formats for unpack-state tracking.
-        let mut storage_dtype: Map<OpId, DType> = Map::default();
-        for op in &hoisted {
-            if let TTOp::SSAStorage { z, dtype, .. } = op {
-                storage_dtype.insert(*z, *dtype);
-            }
-        }
+        // CB descriptor formats for unpack-state tracking, off the
+        // `CbDeclare` head.
         let mut cb_format: Map<CBId, u32> = Map::default();
-        for (&storage, &cb) in self.cbs.iter() {
-            let dtype = storage_dtype.get(&storage).expect("tenstorrent2: CB storage without dtype");
-            cb_format.insert(cb, cb_fmt(*dtype));
+        for op in &hoisted {
+            if let TTOp::CbDeclare { cb, format, .. } = op {
+                cb_format.insert(*cb, *format);
+            }
         }
         // Linear dedup over the hoisted stream.
         let mut next: Vec<TTOp> = Vec::with_capacity(hoisted.len());
@@ -1834,6 +1732,448 @@ impl Compiler {
         self.ops = next;
     }
 
+    /// Verify the fully-physical stream (runs after `tile_regs`, before
+    /// render). Structural firewall: whatever the passes did, the final
+    /// stream must be launchable. Loud panic at the exact op.
+    ///
+    /// Checks: section termination (any marker prefix, so reader-only
+    /// kernels pass; in order, nothing past the last marker), zero `SSA*`
+    /// ops (phase invariant), DST lock pairing per section (compute-only),
+    /// CB open/close balance per section + pushed==popped program-wide,
+    /// declare-before-use (CBs, accessors) and def-before-use (`VarId`,
+    /// `TileId`) per section, tile-slot budgets, Loop/If balance.
+    fn verify(&mut self) {
+        // Section markers seen (bitmask: 1 reader, 2 compute, 4 writer).
+        let mut seen = 0u8;
+        let mut section = 0usize;
+        // DST lock state (compute only).
+        #[derive(PartialEq)]
+        enum Lock {
+            Unlocked,
+            Math,
+            Pack,
+        }
+        let mut lock = Lock::Unlocked;
+        // CB FIFO: declared set, per-CB (reserved, avail, waited),
+        // program-wide (pushed, popped).
+        let mut declared: Set<CBId> = Set::default();
+        let mut fifo: Map<CBId, (u32, u32, u32)> = Map::default();
+        let mut totals: Map<CBId, (u32, u32)> = Map::default();
+        // Per-section defined values (cleared at each End*).
+        let mut scalars: Set<VarId> = Set::default();
+        let mut accessors: Set<u32> = Set::default();
+        // Tile liveness, replayed from the op stream: a pre-walk records
+        // the def/use event order per (section, slot); the main walk
+        // replays it, so reuse-after-death passes but clobbering a live
+        // slot or using an undefined one panics. (`true` = use.)
+        let mut events: Map<(usize, TileId), std::collections::VecDeque<bool>> = Map::default();
+        {
+            let mut sec = 0usize;
+            for op in self.ops.iter() {
+                match op {
+                    TTOp::EndReader | TTOp::EndCompute | TTOp::EndWriter => sec += 1,
+                    TTOp::ReduceInit { acc, .. } => {
+                        events.entry((sec, *acc)).or_default().push_back(false);
+                    }
+                    TTOp::TileCopy { slot, .. } => {
+                        events.entry((sec, *slot)).or_default().push_back(false);
+                    }
+                    TTOp::TilePack { slot, .. } => {
+                        events.entry((sec, *slot)).or_default().push_back(true);
+                    }
+                    TTOp::TileBinary { dst, x, y, .. } => {
+                        events.entry((sec, *x)).or_default().push_back(true);
+                        events.entry((sec, *y)).or_default().push_back(true);
+                        events.entry((sec, *dst)).or_default().push_back(false);
+                    }
+                    TTOp::TileUnary { slot, .. } => {
+                        events.entry((sec, *slot)).or_default().push_back(true);
+                        events.entry((sec, *slot)).or_default().push_back(false);
+                    }
+                    TTOp::TileCast { slot, .. } => {
+                        events.entry((sec, *slot)).or_default().push_back(true);
+                        events.entry((sec, *slot)).or_default().push_back(false);
+                    }
+                    TTOp::TileTranspose { dst, .. } => {
+                        events.entry((sec, *dst)).or_default().push_back(false);
+                    }
+                    TTOp::TileMatmul { acc, .. } => {
+                        // Acc storage reuse: first mention allocates
+                        // (def), later mentions reuse (use) — exactly the
+                        // `acc_tile` rule.
+                        let reuse = events.contains_key(&(sec, *acc));
+                        events.entry((sec, *acc)).or_default().push_back(reuse);
+                    }
+                    TTOp::TileReduce { acc, .. } => {
+                        events.entry((sec, *acc)).or_default().push_back(true);
+                    }
+                    TTOp::TileBcastBinary { dst, .. } => {
+                        events.entry((sec, *dst)).or_default().push_back(false);
+                    }
+                    TTOp::TileBinScalar { slot, .. } => {
+                        events.entry((sec, *slot)).or_default().push_back(true);
+                        events.entry((sec, *slot)).or_default().push_back(false);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut defined: Set<(usize, TileId)> = Set::default();
+        // Startup triple inputs, same scan as the legacy
+        // `generate_compute` (`loaded_order` over compute loads,
+        // `stored_first` over compute stores, single-input kernels
+        // repeat in0). Fused drains count as loads — they are `Load`
+        // ops in the legacy list with no `TileCopy` here.
+        let mut loaded_order: Vec<CBId> = Vec::new();
+        let mut stored_first: Option<CBId> = None;
+        let mut note_load = |loaded_order: &mut Vec<CBId>, cb: CBId| {
+            if !loaded_order.contains(&cb) {
+                loaded_order.push(cb);
+            }
+        };
+        // Replay one event against the pre-walk order: a def at the
+        // queue front proves all prior uses consumed (reuse-after-death
+        // passes, clobbering a live slot is order-impossible); a use
+        // requires a prior def.
+        let tile_def = |events: &mut Map<(usize, TileId), std::collections::VecDeque<bool>>,
+                        defined: &mut Set<(usize, TileId)>,
+                        sec: usize,
+                        slot: TileId| {
+            match events.get_mut(&(sec, slot)).map(|q| q.pop_front()) {
+                Some(Some(false)) => {}
+                Some(_) => panic!("tenstorrent2: verify: tile t{} redefined while live", slot.0),
+                None => panic!("tenstorrent2: verify: tile t{} defined with no recorded event", slot.0),
+            }
+            defined.insert((sec, slot));
+        };
+        let tile_use = |events: &mut Map<(usize, TileId), std::collections::VecDeque<bool>>,
+                        defined: &mut Set<(usize, TileId)>,
+                        sec: usize,
+                        slot: TileId| {
+            assert!(defined.contains(&(sec, slot)), "tenstorrent2: verify: tile t{} undefined", slot.0);
+            match events.get_mut(&(sec, slot)).map(|q| q.pop_front()) {
+                Some(Some(true)) => {}
+                _ => panic!("tenstorrent2: verify: tile t{} use out of event order", slot.0),
+            }
+        };
+        let mut max_slot = 0u8;
+        let mut depth = 0u32;
+        let end_section = |seen: &mut u8,
+                           section: &mut usize,
+                           lock: &mut Lock,
+                           fifo: &mut Map<CBId, (u32, u32, u32)>,
+                           scalars: &mut Set<VarId>,
+                           accessors: &mut Set<u32>,
+                           depth: &mut u32,
+                           marker: u8| {
+            assert!(*seen & marker == 0, "tenstorrent2: verify: duplicate section marker");
+            *seen |= marker;
+            *section += 1;
+            assert!(*lock == Lock::Unlocked, "tenstorrent2: verify: section ends with DST locked");
+            for (cb, (reserved, _, waited)) in fifo.iter() {
+                assert!(*reserved == 0, "tenstorrent2: verify: section ends with CB{cb} reserve open");
+                assert!(*waited == 0, "tenstorrent2: verify: section ends with CB{cb} wait open");
+            }
+            assert!(*depth == 0, "tenstorrent2: verify: section ends inside a walk");
+            scalars.clear();
+            accessors.clear();
+        };
+        for op in self.ops.iter() {
+            match op {
+                TTOp::EndReader => {
+                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 1)
+                }
+                TTOp::EndCompute => {
+                    assert!(seen & 1 != 0, "tenstorrent2: verify: EndCompute without EndReader");
+                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 2);
+                }
+                TTOp::EndWriter => {
+                    assert!(seen & 3 != 0, "tenstorrent2: verify: EndWriter without a prior section");
+                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 4);
+                }
+                _ => {}
+            }
+            if matches!(op, TTOp::EndReader | TTOp::EndCompute | TTOp::EndWriter) {
+                continue;
+            }
+            assert!(seen != 7, "tenstorrent2: verify: op past EndWriter");
+            match op {
+                TTOp::Loop { len, counter, .. } => {
+                    assert!(scalars.contains(len), "tenstorrent2: verify: loop bound v{} undefined", len.0);
+                    assert!(scalars.insert(*counter), "tenstorrent2: verify: loop counter v{} redefined", counter.0);
+                    depth += 1;
+                }
+                TTOp::EndLoop => {
+                    assert!(depth > 0, "tenstorrent2: verify: EndLoop without Loop");
+                    depth -= 1;
+                }
+                TTOp::If { cond } => {
+                    assert!(scalars.contains(cond), "tenstorrent2: verify: branch cond v{} undefined", cond.0);
+                    depth += 1;
+                }
+                TTOp::EndIf => {
+                    assert!(depth > 0, "tenstorrent2: verify: EndIf without If");
+                    depth -= 1;
+                }
+                TTOp::Arg { z, .. } | TTOp::Const { z, .. } | TTOp::TensixGridX { z, .. } | TTOp::TensixGridY { z, .. } => {
+                    assert!(scalars.insert(*z), "tenstorrent2: verify: scalar v{} redefined", z.0);
+                }
+                TTOp::Binary { z, x, y, .. } => {
+                    assert!(scalars.contains(x), "tenstorrent2: verify: scalar v{} undefined", x.0);
+                    assert!(scalars.contains(y), "tenstorrent2: verify: scalar v{} undefined", y.0);
+                    assert!(scalars.insert(*z), "tenstorrent2: verify: scalar v{} redefined", z.0);
+                }
+                TTOp::Cast { z, x, .. } => {
+                    assert!(scalars.contains(x), "tenstorrent2: verify: scalar v{} undefined", x.0);
+                    assert!(scalars.insert(*z), "tenstorrent2: verify: scalar v{} redefined", z.0);
+                }
+                TTOp::Mad { z, x, y, w, .. } => {
+                    assert!(scalars.contains(x), "tenstorrent2: verify: scalar v{} undefined", x.0);
+                    assert!(scalars.contains(y), "tenstorrent2: verify: scalar v{} undefined", y.0);
+                    assert!(scalars.contains(w), "tenstorrent2: verify: scalar v{} undefined", w.0);
+                    assert!(scalars.insert(*z), "tenstorrent2: verify: scalar v{} redefined", z.0);
+                }
+                TTOp::Asm { ops: operands, .. } => {
+                    for operand in operands {
+                        match operand {
+                            AsmOperand::Cb(cb) => {
+                                assert!(declared.contains(cb), "tenstorrent2: verify: asm on undeclared CB{cb}");
+                            }
+                            AsmOperand::Tile(slot) => {
+                                tile_use(&mut events, &mut defined, section, *slot);
+                            }
+                            AsmOperand::Var(v) => {
+                                assert!(scalars.contains(v), "tenstorrent2: verify: scalar v{} undefined", v.0);
+                            }
+                        }
+                    }
+                }
+                TTOp::ReadTile { cb, index, .. } => {
+                    assert!(declared.contains(cb), "tenstorrent2: verify: read on undeclared CB{cb}");
+                    assert!(scalars.contains(index), "tenstorrent2: verify: read index v{} undefined", index.0);
+                }
+                TTOp::WriteTile { cb, index, .. } => {
+                    assert!(declared.contains(cb), "tenstorrent2: verify: write on undeclared CB{cb}");
+                    assert!(scalars.contains(index), "tenstorrent2: verify: write index v{} undefined", index.0);
+                }
+                TTOp::DstMode { .. } => {}
+                TTOp::ComputeStartup { in0, in1, out } => {
+                    assert!(declared.contains(in0), "tenstorrent2: verify: startup on undeclared CB{in0}");
+                    assert!(declared.contains(in1), "tenstorrent2: verify: startup on undeclared CB{in1}");
+                    assert!(declared.contains(out), "tenstorrent2: verify: startup on undeclared CB{out}");
+                }
+                TTOp::Unary { z, x, .. } => {
+                    assert!(scalars.contains(x), "tenstorrent2: verify: scalar v{} undefined", x.0);
+                    assert!(scalars.insert(*z), "tenstorrent2: verify: scalar v{} redefined", z.0);
+                }
+                TTOp::NocAccessor { ordinal, .. } => {
+                    assert!(accessors.insert(*ordinal), "tenstorrent2: verify: duplicate accessor p{ordinal}");
+                }
+                TTOp::NocAddr { z, ordinal, index, .. } => {
+                    assert!(accessors.contains(ordinal), "tenstorrent2: verify: address uses undeclared accessor p{ordinal}");
+                    assert!(scalars.contains(index), "tenstorrent2: verify: address index v{} undefined", index.0);
+                    assert!(scalars.insert(*z), "tenstorrent2: verify: scalar v{} redefined", z.0);
+                }
+                TTOp::AsyncRead { addr, dst_cb, off, .. } => {
+                    assert!(scalars.contains(addr), "tenstorrent2: verify: read addr v{} undefined", addr.0);
+                    assert!(declared.contains(dst_cb), "tenstorrent2: verify: read on undeclared CB{dst_cb}");
+                    if let Some(o) = off {
+                        assert!(scalars.contains(o), "tenstorrent2: verify: read offset v{} undefined", o.0);
+                    }
+                }
+                TTOp::AsyncWrite { src_cb, addr, off, .. } => {
+                    assert!(scalars.contains(addr), "tenstorrent2: verify: write addr v{} undefined", addr.0);
+                    assert!(declared.contains(src_cb), "tenstorrent2: verify: write on undeclared CB{src_cb}");
+                    if let Some(o) = off {
+                        assert!(scalars.contains(o), "tenstorrent2: verify: write offset v{} undefined", o.0);
+                    }
+                }
+                TTOp::NocReadBarrier | TTOp::NocWriteBarrier => {}
+                TTOp::CbDeclare { cb, .. } => {
+                    assert!(declared.insert(*cb), "tenstorrent2: verify: duplicate CB{cb} declaration");
+                    fifo.insert(*cb, (0, 0, 0));
+                    totals.insert(*cb, (0, 0));
+                }
+                TTOp::ReserveBack { cb, n } => {
+                    assert!(declared.contains(cb), "tenstorrent2: verify: reserve on undeclared CB{cb}");
+                    let e = fifo.get_mut(cb).expect("tenstorrent2: verify: reserve on undeclared CB");
+                    assert!(e.0 == 0 && e.2 == 0, "tenstorrent2: verify: reserve on CB{cb} with open transaction");
+                    e.0 = *n;
+                }
+                TTOp::PushBack { cb, n } => {
+                    let e = fifo.get_mut(cb).expect("tenstorrent2: verify: push on undeclared CB");
+                    assert!(e.0 >= *n, "tenstorrent2: verify: push of {n} on CB{cb} with {e:?} reserved");
+                    e.0 -= *n;
+                    e.1 += *n;
+                    totals.get_mut(cb).expect("tenstorrent2: verify: push on undeclared CB").0 += *n;
+                }
+                TTOp::WaitFront { cb, m } => {
+                    let e = fifo.get_mut(cb).expect("tenstorrent2: verify: wait on undeclared CB");
+                    assert!(e.2 == 0, "tenstorrent2: verify: wait on CB{cb} with open wait");
+                    assert!(e.1 >= *m, "tenstorrent2: verify: wait of {m} on CB{cb} with {e:?} available");
+                    e.2 = *m;
+                    e.1 -= *m;
+                }
+                TTOp::PopFront { cb, n } => {
+                    let e = fifo.get_mut(cb).expect("tenstorrent2: verify: pop on undeclared CB");
+                    assert!(e.2 >= *n, "tenstorrent2: verify: pop of {n} on CB{cb} with {e:?} waited");
+                    e.2 -= *n;
+                    totals.get_mut(cb).expect("tenstorrent2: verify: pop on undeclared CB").1 += *n;
+                }
+                TTOp::MathLock => {
+                    assert!(section == 1, "tenstorrent2: verify: DST lock outside compute");
+                    assert!(lock == Lock::Unlocked || lock == Lock::Pack, "tenstorrent2: verify: acquire with DST already held");
+                    lock = Lock::Math;
+                }
+                TTOp::MathUnlock => {
+                    assert!(lock == Lock::Math, "tenstorrent2: verify: commit without MATH lock");
+                    lock = Lock::Unlocked;
+                }
+                TTOp::PackLock => {
+                    assert!(section == 1, "tenstorrent2: verify: DST lock outside compute");
+                    assert!(lock == Lock::Unlocked, "tenstorrent2: verify: pack wait without release");
+                    lock = Lock::Pack;
+                }
+                TTOp::PackUnlock => {
+                    assert!(lock == Lock::Pack, "tenstorrent2: verify: release without PACK lock");
+                    lock = Lock::Unlocked;
+                }
+                TTOp::CopyInit { .. }
+                | TTOp::CopyInitWithDt { .. }
+                | TTOp::PackReconfig { .. }
+                | TTOp::UnaryInit { .. }
+                | TTOp::BinaryInit { .. }
+                | TTOp::BinScalarInit
+                | TTOp::CastInit { .. }
+                | TTOp::TransposeInit { .. }
+                | TTOp::MatmulInit { .. }
+                | TTOp::BcastInit { .. } => {}
+                TTOp::ReduceInit { acc, .. } => {
+                    // Defines the acc slot (init precedes its op in the stream).
+                    tile_def(&mut events, &mut defined, section, *acc);
+                    max_slot = max_slot.max(acc.0);
+                }
+                TTOp::TileCopy { slot, cb, index } => {
+                    assert!(declared.contains(cb), "tenstorrent2: verify: copy on undeclared CB{cb}");
+                    assert!(scalars.contains(index), "tenstorrent2: verify: copy index v{} undefined", index.0);
+                    tile_def(&mut events, &mut defined, section, *slot);
+                    max_slot = max_slot.max(slot.0);
+                    if section == 1 {
+                        note_load(&mut loaded_order, *cb);
+                    }
+                }
+                TTOp::TilePack { slot, cb } => {
+                    tile_use(&mut events, &mut defined, section, *slot);
+                    assert!(declared.contains(cb), "tenstorrent2: verify: pack on undeclared CB{cb}");
+                    if section == 1 && stored_first.is_none() {
+                        stored_first = Some(*cb);
+                    }
+                }
+                TTOp::TileBinary { dst, x, y, .. } => {
+                    tile_use(&mut events, &mut defined, section, *x);
+                    tile_use(&mut events, &mut defined, section, *y);
+                    tile_def(&mut events, &mut defined, section, *dst);
+                    max_slot = max_slot.max(dst.0);
+                }
+                TTOp::TileUnary { slot, .. } => {
+                    // In-place: use then redefine (matches the pre-walk order).
+                    tile_use(&mut events, &mut defined, section, *slot);
+                    tile_def(&mut events, &mut defined, section, *slot);
+                }
+                TTOp::TileCast { slot, .. } => {
+                    // In-place: use then redefine (matches the pre-walk order).
+                    tile_use(&mut events, &mut defined, section, *slot);
+                    tile_def(&mut events, &mut defined, section, *slot);
+                }
+                TTOp::TileTranspose { dst, cb } => {
+                    assert!(declared.contains(cb), "tenstorrent2: verify: transpose on undeclared CB{cb}");
+                    tile_def(&mut events, &mut defined, section, *dst);
+                    max_slot = max_slot.max(dst.0);
+                    if section == 1 {
+                        note_load(&mut loaded_order, *cb);
+                    }
+                }
+                TTOp::TileMatmul { acc, cb_a, cb_b } => {
+                    assert!(declared.contains(cb_a), "tenstorrent2: verify: matmul on undeclared CB{cb_a}");
+                    assert!(declared.contains(cb_b), "tenstorrent2: verify: matmul on undeclared CB{cb_b}");
+                    // Acc storage reuse across ops: first mention defines.
+                    if defined.contains(&(section, *acc)) {
+                        tile_use(&mut events, &mut defined, section, *acc);
+                    } else {
+                        tile_def(&mut events, &mut defined, section, *acc);
+                    }
+                    max_slot = max_slot.max(acc.0);
+                    if section == 1 {
+                        note_load(&mut loaded_order, *cb_a);
+                        note_load(&mut loaded_order, *cb_b);
+                    }
+                }
+                TTOp::TileBcastBinary { dst, cb_a, cb_b, .. } => {
+                    assert!(declared.contains(cb_a), "tenstorrent2: verify: bcast on undeclared CB{cb_a}");
+                    assert!(declared.contains(cb_b), "tenstorrent2: verify: bcast on undeclared CB{cb_b}");
+                    tile_def(&mut events, &mut defined, section, *dst);
+                    max_slot = max_slot.max(dst.0);
+                    if section == 1 {
+                        note_load(&mut loaded_order, *cb_a);
+                        note_load(&mut loaded_order, *cb_b);
+                    }
+                }
+                TTOp::TileBinScalar { slot, .. } => {
+                    // In-place: use then redefine (matches the pre-walk order).
+                    tile_use(&mut events, &mut defined, section, *slot);
+                    tile_def(&mut events, &mut defined, section, *slot);
+                }
+                TTOp::TileReduce { acc, cb_in, cb_sc, .. } => {
+                    assert!(declared.contains(cb_in), "tenstorrent2: verify: reduce on undeclared CB{cb_in}");
+                    assert!(declared.contains(cb_sc), "tenstorrent2: verify: reduce on undeclared CB{cb_sc}");
+                    tile_use(&mut events, &mut defined, section, *acc);
+                    if section == 1 {
+                        note_load(&mut loaded_order, *cb_in);
+                        note_load(&mut loaded_order, *cb_sc);
+                    }
+                }
+                _ => panic!("tenstorrent2: verify: op {op:?} is not fully lowered (SSA remains)"),
+            }
+        }
+        assert!(seen != 0, "tenstorrent2: verify: stream holds no section");
+        assert!(lock == Lock::Unlocked, "tenstorrent2: verify: stream ends with DST locked");
+        assert!(depth == 0, "tenstorrent2: verify: stream ends inside a walk");
+        for ((sec, slot), q) in events.iter() {
+            assert!(q.is_empty(), "tenstorrent2: verify: section {sec} tile t{} has unreplayed events", slot.0);
+        }
+        for (cb, (pushed, popped)) in totals.iter() {
+            assert!(pushed == popped, "tenstorrent2: verify: CB{cb} pushed {pushed} but popped {popped} program-wide");
+        }
+        let bf16 = self
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                TTOp::DstMode { bf16 } => Some(*bf16),
+                _ => None,
+            })
+            .expect("tenstorrent2: verify: stream has no DstMode head");
+        let budget = if bf16 {
+            TileId::BUDGET_BF16 as u8
+        } else {
+            TileId::BUDGET_FP32 as u8
+        };
+        assert!(max_slot < budget, "tenstorrent2: verify: tile t{max_slot} exceeds the DST budget {budget}");
+        // Startup triple, legacy rule: needs a load and a store
+        // (pure movement needs no startup); single-input kernels
+        // repeat in0. Goes in the stream as a compute-front op so
+        // render emits it with no scan and no state.
+        if let (Some(&in0), Some(out)) = (loaded_order.first(), stored_first) {
+            let in1 = loaded_order.get(1).copied().unwrap_or(in0);
+            let front = self
+                .ops
+                .iter()
+                .position(|op| matches!(op, TTOp::EndReader))
+                .expect("tenstorrent2: verify: stream has no reader section")
+                + 1;
+            self.ops.insert(front, TTOp::ComputeStartup { in0, in1, out });
+        }
+    }
+
     /// Print the TTIR stream, one op per line (`r{id}` = SSA values,
     /// `v{id}` = scalar registers, `cb{id}` = circular buffers).
     pub fn debug(&self) {
@@ -1844,14 +2184,15 @@ impl Compiler {
 impl Kernel {
     pub fn generate_tenstorrent2(kernel: &Kernel) {
         let mut compiler = Compiler::new(kernel);
-        compiler.sectioning();
-        compiler.replicate_ops_per_section();
-        compiler.assign_cbs();
         compiler.sync_cbs();
         compiler.lock_dst();
         compiler.init_math();
         compiler.reconfig_pack();
         compiler.hoist_dedup_inits();
+        compiler.noc_movement();
+        compiler.hoist_writer_accessors();
+        compiler.tile_regs();
+        compiler.verify();
         compiler.debug();
 
         todo!()
@@ -1861,6 +2202,7 @@ impl Kernel {
 impl Display for Compiler {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut indent = String::from(" ");
+        let mut section = 0u8;
         let dedent = |indent: &mut String| {
             if indent.len() > 1 {
                 indent.pop();
@@ -1869,11 +2211,17 @@ impl Display for Compiler {
         };
         for op in &self.ops {
             match op {
-                TTOp::EndReader => writeln!(f, "{indent}end_reader")?,
-                TTOp::EndCompute => writeln!(f, "{indent}end_compute")?,
+                TTOp::EndReader => {
+                    writeln!(f, "{indent}end_reader")?;
+                    section += 1;
+                }
+                TTOp::EndCompute => {
+                    writeln!(f, "{indent}end_compute")?;
+                    section += 1;
+                }
                 TTOp::EndWriter => writeln!(f, "{indent}end_writer")?,
-                TTOp::Loop { len } => {
-                    writeln!(f, "{indent}for _ in 0..v{} {{", len.0)?;
+                TTOp::Loop { len, counter } => {
+                    writeln!(f, "{indent}for v{} in 0..v{} {{", counter.0, len.0)?;
                     indent += "  ";
                 }
                 TTOp::EndLoop => {
@@ -1896,19 +2244,35 @@ impl Display for Compiler {
                 TTOp::Unary { z, x, uop } => {
                     writeln!(f, "{indent}v{} = {}(v{})", z.0, format!("{uop:?}").to_lowercase(), x.0)?;
                 }
-                TTOp::NocAddr { z, addr } => writeln!(f, "{indent}v{} = noc_addr(v{})", z.0, addr.0)?,
+                TTOp::NocAddr { z, param, index, elem_size } => {
+                    let page = TT_DRAM_PAGE_BYTES;
+                    let prefix = if section == 2 { "p_out" } else { "p" };
+                    writeln!(
+                        f,
+                        "{indent}v{} = {prefix}{param}.get_noc_addr((v{}*{elem_size})/{page}, (v{}*{elem_size})%{page})",
+                        z.0, index.0, index.0
+                    )?;
+                }
+                TTOp::NocAccessor { param, ordinal, .. } => {
+                    let prefix = if section == 2 { "p_out" } else { "p" };
+                    writeln!(f, "{indent}{prefix}{param} = dram_accessor(arg({ordinal}))")?;
+                }
+                TTOp::TensixGridX { z } => writeln!(f, "{indent}v{} = tensix_grid_x()", z.0)?,
+                TTOp::TensixGridY { z } => writeln!(f, "{indent}v{} = tensix_grid_y()", z.0)?,
                 TTOp::CbDeclare { cb, n_tiles } => writeln!(f, "{indent}cb{cb}[{n_tiles}]")?,
                 TTOp::ReserveBack { cb, n } => writeln!(f, "{indent}reserve_back(cb{cb}, {n})")?,
                 TTOp::PushBack { cb, n } => writeln!(f, "{indent}push_back(cb{cb}, {n})")?,
                 TTOp::WaitFront { cb, m } => writeln!(f, "{indent}wait_front(cb{cb}, {m})")?,
                 TTOp::PopFront { cb, n } => writeln!(f, "{indent}pop_front(cb{cb}, {n})")?,
-                TTOp::AsyncRead { addr, dst_cb, bytes } => {
-                    writeln!(f, "{indent}noc_async_read(v{}, cb{dst_cb}, {bytes})", addr.0)?;
-                }
+                TTOp::AsyncRead { addr, dst_cb, bytes, off } => match off {
+                    None => writeln!(f, "{indent}noc_async_read(v{}, cb{dst_cb}, {bytes})", addr.0)?,
+                    Some(o) => writeln!(f, "{indent}noc_async_read(v{}, cb{dst_cb} + v{}*{bytes}, {bytes})", addr.0, o.0)?,
+                },
                 TTOp::NocReadBarrier => writeln!(f, "{indent}noc_async_read_barrier()")?,
-                TTOp::AsyncWrite { src_cb, addr, bytes } => {
-                    writeln!(f, "{indent}noc_async_write(cb{src_cb}, v{}, {bytes})", addr.0)?;
-                }
+                TTOp::AsyncWrite { src_cb, addr, bytes, off } => match off {
+                    None => writeln!(f, "{indent}noc_async_write(cb{src_cb}, v{}, {bytes})", addr.0)?,
+                    Some(o) => writeln!(f, "{indent}noc_async_write(cb{src_cb} + v{}*{bytes}, v{}, {bytes})", o.0, addr.0)?,
+                },
                 TTOp::NocWriteBarrier => writeln!(f, "{indent}noc_async_write_barrier()")?,
                 TTOp::MathLock => writeln!(f, "{indent}tile_regs_acquire()")?,
                 TTOp::MathUnlock => writeln!(f, "{indent}tile_regs_commit()")?,
@@ -1931,19 +2295,80 @@ impl Display for Compiler {
                 }
                 TTOp::TransposeInit { cb, out } => writeln!(f, "{indent}transpose_wh_init({cb}, {out});")?,
                 TTOp::MatmulInit { a, b, out } => writeln!(f, "{indent}mm_init({a}, {b}, {out});")?,
+                TTOp::ComputeStartup { in0, in1, out } => writeln!(f, "{indent}compute_kernel_hw_startup({in0}, {in1}, {out});")?,
                 TTOp::ReduceInit { ci, cs, acc, rop, kind } => {
                     let (op_name, dim_name) = match rop {
                         BOp::Max => ("PoolType::MAX", reduce_dim_name(*kind)),
                         BOp::Add => ("PoolType::SUM", reduce_dim_name(*kind)),
                         _ => panic!("tenstorrent2: reduce op {rop:?} has no init call"),
                     };
-                    writeln!(f, "{indent}reduce_init<{op_name}, {dim_name}>({ci}, {cs}, r{acc});")?;
+                    writeln!(f, "{indent}reduce_init<{op_name}, {dim_name}>({ci}, {cs}, t{});", acc.0)?;
                 }
                 TTOp::BcastInit { bop, kind, cb_a, cb_b } => {
                     let Some(init) = bcast_init_name(*bop, *kind) else {
                         panic!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no init call")
                     };
                     writeln!(f, "{indent}{init}({cb_a}, {cb_b});")?;
+                }
+                TTOp::TileCopy { slot, cb, index } => {
+                    writeln!(f, "{indent}copy_tile({cb}, v{}, t{});", index.0, slot.0)?;
+                }
+                TTOp::TilePack { slot, cb } => {
+                    writeln!(f, "{indent}pack_tile(t{}, {cb});", slot.0)?;
+                }
+                TTOp::TileBinary { dst, x, y, bop } => {
+                    let name = match bop {
+                        BOp::Add => "add_binary_tile",
+                        BOp::Sub => "sub_binary_tile",
+                        BOp::Mul => "mul_binary_tile",
+                        BOp::Div => "div_binary_tile",
+                        BOp::Max => "binary_max_tile",
+                        BOp::BitShiftLeft => "binary_left_shift_tile",
+                        BOp::BitShiftRight => "binary_right_shift_tile",
+                        _ => panic!("tenstorrent2: tiled binary {bop:?} has no LLK call"),
+                    };
+                    writeln!(f, "{indent}{name}(t{}, t{}, t{});", x.0, y.0, dst.0)?;
+                }
+                TTOp::TileUnary { slot, uop } => {
+                    // Log2 passes its base scale explicitly (legacy form).
+                    if *uop == UOp::Log2 {
+                        writeln!(f, "{indent}log_with_base_tile(t{}, 0x3fb8aa3b);", slot.0)?;
+                    } else {
+                        let name = match uop {
+                            UOp::Neg => "negative_tile",
+                            UOp::BitNot => "bitwise_not_tile",
+                            UOp::Exp => "exp_tile",
+                            UOp::Exp2 => "exp2_tile",
+                            UOp::Log2 => unreachable!("tenstorrent2: log2 is emitted above"),
+                            UOp::Reciprocal => "recip_tile",
+                            UOp::Sqrt => "sqrt_tile",
+                            UOp::Rsqrt => "rsqrt_tile",
+                            UOp::Sin => "sin_tile",
+                            UOp::Cos => "cos_tile",
+                            UOp::Floor => "floor_tile",
+                            UOp::Trunc => "trunc_tile",
+                            UOp::Abs => "abs_tile",
+                            UOp::Not => "logical_not_tile",
+                        };
+                        writeln!(f, "{indent}{name}(t{});", slot.0)?;
+                    }
+                }
+                TTOp::TileCast { slot, in_dtype, out_dtype } => {
+                    writeln!(f, "{indent}typecast_tile<{}, {}>(t{});", tt_fmt(*in_dtype), tt_fmt(*out_dtype), slot.0)?;
+                }
+                TTOp::TileTranspose { dst, cb } => {
+                    writeln!(f, "{indent}transpose_wh_tile({cb}, 0, t{});", dst.0)?;
+                }
+                TTOp::TileMatmul { acc, cb_a, cb_b } => {
+                    writeln!(f, "{indent}matmul_tiles({cb_a}, {cb_b}, t{}, t{}, t{});", acc.0, acc.0, acc.0)?;
+                }
+                TTOp::TileReduce { acc, cb_in, cb_sc, rop, kind } => {
+                    let (op_name, dim_name) = match rop {
+                        BOp::Max => ("PoolType::MAX", reduce_dim_name(*kind)),
+                        BOp::Add => ("PoolType::SUM", reduce_dim_name(*kind)),
+                        _ => panic!("tenstorrent2: reduce op {rop:?} has no LLK call"),
+                    };
+                    writeln!(f, "{indent}reduce_tile<{op_name}, {dim_name}>({cb_in}, {cb_sc}, 0, 0, t{});", acc.0)?;
                 }
                 TTOp::SSAConst { value, z } => writeln!(f, "{indent}r{z} = {value}")?,
                 TTOp::SSAParam { dtype, kind, shape, z } => {

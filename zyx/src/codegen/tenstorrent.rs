@@ -12,7 +12,7 @@ use crate::slab::{Slab, SlabId};
 
 /// DRAM buffer page size in bytes: every DRAM `TensorAccessor` strides by
 /// the buffer page size, never the dtype tile size.
-const TT_DRAM_PAGE_BYTES: u32 = 4096;
+pub(crate) const TT_DRAM_PAGE_BYTES: u32 = 4096;
 
 /// Circular buffer ID for Tenstorrent codegen v2.
 ///
@@ -762,7 +762,7 @@ struct VarSlot {
 /// Kernel sections delimited by barriers: reader (head -> 1st barrier),
 /// compute (1st -> 2nd), writer (2nd -> end).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum TtSection {
+pub(crate) enum TtSection {
     Reader,
     Compute,
     Writer,
@@ -852,7 +852,7 @@ impl Kernel {
     /// ranges, barriers) lexically inside the section. `dtypes`/`rcs`
     /// mirror [`Kernel::compute_dtypes_and_rcs`] restricted to this set:
     /// refcounts only count uses inside the section.
-    fn get_needed_ops(&self, tt_section: TtSection) -> SectionData {
+    pub(crate) fn get_needed_ops(&self, tt_section: TtSection) -> SectionData {
         // Phase 1: stores and structural ops lexically inside the section.
         // Loop/range length operands seed the closure: the section walk
         // references them (r{len}) and they would otherwise dangle.
@@ -1149,13 +1149,13 @@ impl Kernel {
 
 /// Closed op list for one section: the section's ops in IR order with
 /// their dtypes and section-local refcounts.
-struct SectionData {
+pub(crate) struct SectionData {
     /// Ops in IR order.
-    ops: Vec<OpId>,
+    pub(crate) ops: Vec<OpId>,
     /// Dtype and layout per op.
-    dtypes: Map<OpId, (DType, MemLayout)>,
+    pub(crate) dtypes: Map<OpId, (DType, MemLayout)>,
     /// Refcounts counting uses inside this section only.
-    rcs: Map<OpId, u32>,
+    pub(crate) rcs: Map<OpId, u32>,
 }
 
 /// Scalar register file for one section: the kernel under codegen
@@ -1337,7 +1337,7 @@ pub(crate) struct NocEmitter {
 impl NocEmitter {
     /// Build param state from a kernel: the param ordinals and
     /// input/output dtypes. One walk.
-    fn new(kernel: &Kernel) -> Self {
+    pub(crate) fn new(kernel: &Kernel) -> Self {
         let mut param_ordinal_of: Map<OpId, u32> = Map::default();
         let mut next_param = 0u32;
         let mut input_dtypes: Vec<DType> = Vec::new();
