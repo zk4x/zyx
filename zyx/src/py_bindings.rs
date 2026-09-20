@@ -1150,10 +1150,19 @@ impl Tensor {
     }
 
     #[pyo3(name = "cosine_similarity")]
-    pub fn cosine_similarity_py(&self, rhs: &Bound<'_, PyAny>, eps: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+    pub fn cosine_similarity_py(&self, rhs: &Bound<'_, PyAny>, eps: &Bound<'_, PyAny>, reduction: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
         let eps = extract_tensor_or_scalar(eps).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
-        self.cosine_similarity(rhs, eps)
+        let r = if let Ok(s) = reduction.extract::<String>() {
+            match s.as_str() {
+                "mean" => ReduceOp::Mean,
+                "sum" => ReduceOp::Sum,
+                _ => return Err(ZyxError::ParseError("invalid reduction".into())),
+            }
+        } else {
+            ReduceOp::Sum
+        };
+        self.cosine_similarity(rhs, eps, r)
     }
 
     #[must_use]

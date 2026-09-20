@@ -6,7 +6,7 @@
 
 use std::ops::Not;
 
-use zyx::{DType, Dev, Tape, Tensor, ZyxError};
+use zyx::{DType, Tape, Tensor, ZyxError};
 use zyx_nn::Linear;
 
 fn silu(x: &Tensor) -> Tensor {

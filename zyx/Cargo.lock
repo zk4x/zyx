@@ -1345,7 +1345,7 @@ dependencies = [
 
 [[package]]
 name = "zyx"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "libc",
  "libloading 0.9.0",

@@ -1,6 +1,6 @@
 [package]
 name = "zyx-onnx"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 license = "LGPL-3.0-only WITH Classpath-exception-2.0"
 

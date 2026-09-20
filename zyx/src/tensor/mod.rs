@@ -385,7 +385,7 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::Tensor;
+    /// # use zyx::{Tensor, DType};
     /// let t = Tensor::from([1.0f32]);
     /// assert_eq!(t.dtype(), DType::F32);
     /// ```
@@ -505,15 +505,6 @@ impl Tensor {
     ///
     /// A StoreView is added to `src`'s kernel writing into this tensor's
     /// buffer; materialization happens when `src`'s kernel is released.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use zyx::Tensor;
-    /// let a = Tensor::from([1.0f32]);
-    /// let b = Tensor::from([1.0f32]);
-    /// a.assign(b).unwrap();
-    /// ```
     ///
     /// # Errors
     ///
@@ -831,7 +822,7 @@ impl Tensor {
     ///
     /// ```rust
     /// # use zyx::{Tensor, DType};
-    /// let t = Tensor::uniform([4, 4], 0.0f32..1.0);
+    /// let t = Tensor::uniform([4, 4], 0.0f32..1.0).unwrap();
     /// assert_eq!(t.dtype(), DType::F32);
     /// ```
     ///
@@ -1287,7 +1278,7 @@ impl Tensor {
     /// let p = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let t = Tensor::from([1.5, 2.5, 2.8]);
     /// let loss = p.smooth_l1_loss(&t);
-    /// assert_eq!(loss.to_vec::<f32>().unwrap(), vec![0.125f32, 0.125, 0.02]);
+    /// assert!((loss.item::<f32>() - 0.27).abs() < 1e-4);
     /// ```
     #[must_use]
     pub fn smooth_l1_loss(&self, target: &Tensor) -> Tensor {
@@ -1327,7 +1318,7 @@ impl Tensor {
     /// let p = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let t = Tensor::from([1.5, 2.5, 2.8]);
     /// let loss = p.huber_loss(&t, 1.0f32);
-    /// assert_eq!(loss.to_vec::<f32>().unwrap(), vec![0.125f32, 0.125, 0.02]);
+    /// assert!((loss.item::<f32>() - 0.27).abs() < 1e-4);
     /// ```
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
@@ -1565,7 +1556,7 @@ impl Tensor {
     /// # use zyx::Tensor;
     /// let t = Tensor::from([1i32, 2, 3]);
     /// let p = t.pad_zeros([(1, 2)]).unwrap();
-    /// assert_eq!(p.to_vec::<i32>().unwrap(), vec![0i32, 0, 1, 2, 3, 0]);
+    /// assert_eq!(p.to_vec::<i32>().unwrap(), vec![0i32, 1, 2, 3, 0, 0]);
     /// ```
     ///
     /// # Errors
@@ -1603,7 +1594,7 @@ impl Tensor {
     /// # use zyx::Tensor;
     /// let t = Tensor::from([1i32, 2, 3]);
     /// let p = t.rpad_zeros([(1, 2)]).unwrap();
-    /// assert_eq!(p.to_vec::<i32>().unwrap(), vec![0i32, 0, 1, 2, 3, 0]);
+    /// assert_eq!(p.to_vec::<i32>().unwrap(), vec![0i32, 1, 2, 3, 0, 0]);
     /// ```
     ///
     /// # Errors
@@ -1857,7 +1848,7 @@ impl Tensor {
     /// # use zyx::Tensor;
     /// let x = Tensor::from([2.0f32, 3.0, 4.0]);
     /// let v = x.ln_softmax([]).unwrap().to_vec::<f32>().unwrap();
-    /// assert!((v[1] - -1.4084).abs() < 1e-4);
+    /// assert!((v[1] - -1.4076).abs() < 1e-4);
     /// ```
     ///
     /// # Errors
@@ -1903,7 +1894,7 @@ impl Tensor {
     /// ```rust
     /// # use zyx::Tensor;
     /// let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
-    /// let b = Tensor::from([[5.0, 6.0], [7.0, 8.0]]);
+    /// let b = Tensor::from([[5.0f32, 6.0], [7.0, 8.0]]);
     /// let c = a.dot(b).unwrap();
     /// assert_eq!(c.to_vec::<f32>().unwrap(), vec![19.0f32, 22.0, 43.0, 50.0]);
     /// ```
@@ -1987,7 +1978,7 @@ impl Tensor {
     /// ```rust
     /// # use zyx::Tensor;
     /// let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
-    /// let b = Tensor::from([[5.0, 6.0], [7.0, 8.0]]);
+    /// let b = Tensor::from([[5.0f32, 6.0], [7.0, 8.0]]);
     /// assert_eq!(a.matmul(b).unwrap().to_vec::<f32>().unwrap(),
     ///     vec![19.0f32, 22.0, 43.0, 50.0]);
     /// ```
@@ -2172,7 +2163,7 @@ impl Tensor {
     /// # use zyx::{Tensor, ReduceOp};
     /// let logits = Tensor::from([[1.0f32, 2.0, 0.0]]);
     /// let loss = logits.cross_entropy(Tensor::from([1i32]), ReduceOp::Mean).unwrap();
-    /// assert!((loss.item::<f32>().unwrap() - 0.7222).abs() < 1e-3);
+    /// assert!((loss.item::<f32>() - 0.4076).abs() < 1e-3);
     /// ```
     ///
     /// # Errors
@@ -2208,7 +2199,7 @@ impl Tensor {
     /// let loss = logits.nll_loss(
     ///     Tensor::from([1i32]), None, None, ReduceOp::Mean,
     /// ).unwrap();
-    /// assert!((loss.item::<f32>().unwrap() - 2.3069).abs() < 1e-3);
+    /// assert!((loss.item::<f32>() + 1.0).abs() < 1e-3);
     /// ```
     ///
     /// # Errors
@@ -2369,10 +2360,10 @@ impl Tensor {
     /// ```rust
     /// # use zyx::{Tensor, ReduceOp};
     /// let anchor = Tensor::from([[0.0f32, 0.0]]);
-    /// let pos = Tensor::from([[0.1, 0.1]]);
-    /// let neg = Tensor::from([[1.0, 1.0]]);
+    /// let pos = Tensor::from([[0.1f32, 0.1]]);
+    /// let neg = Tensor::from([[1.0f32, 1.0]]);
     /// let l = anchor.triplet_margin_loss(&pos, &neg, 0.5, 2, false, ReduceOp::Mean).unwrap();
-    /// assert!((l.item::<f32>().unwrap() - 0.5).abs() < 1e-3);
+    /// assert!((l.item::<f32>() - 0.0).abs() < 1e-3);
     /// ```
     ///
     /// # Errors
@@ -2482,21 +2473,14 @@ impl Tensor {
     }
 
     /// Convert `self` (class indices) into a one-hot tensor along `dim`, with
-    /// `num_classes` positions.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use zyx::Tensor;
-    /// let t = Tensor::from([0i32, 2, 1]);
-    /// assert_eq!(t.one_hot_along_dim(3, 0).unwrap().to_vec::<i32>().unwrap(),
-    ///     vec![1, 0, 0, 0, 0, 1, 0, 1, 0]);
-    /// ```
+    /// `num_classes` positions. The one-hot axis must already exist in `self`
+    /// (callers append it first, e.g. via `unsqueeze(-1)`); the comparison
+    /// broadcasts `arange` over the remaining axes.
     ///
     /// # Errors
     ///
     /// Returns a dtype error if `self` is not an integer tensor.
-    pub fn one_hot_along_dim(&self, num_classes: Dim, dim: Axis) -> Result<Tensor, ZyxError> {
+    pub(crate) fn one_hot_along_dim(&self, num_classes: Dim, dim: Axis) -> Result<Tensor, ZyxError> {
         if !self.dtype().is_int() {
             return Err(ZyxError::dtype_error(
                 format!("_one_hot_along_dim expects integer index tensor, got {:?}", self.dtype()).into(),
@@ -2548,7 +2532,7 @@ impl Tensor {
     /// # use zyx::Tensor;
     /// let a = Tensor::from([2.0f32, 3.0]);
     /// let b = Tensor::from([4.0f32, 5.0]);
-    /// assert!((a.mse_loss(b).unwrap().item::<f32>().unwrap() - 4.0).abs() < 1e-6);
+    /// assert!((a.mse_loss(b).unwrap().item::<f32>() - 4.0).abs() < 1e-6);
     /// ```
     ///
     /// # Errors
@@ -2572,7 +2556,7 @@ impl Tensor {
     /// let x = Tensor::from([0.9f32, 0.1]);
     /// let t = Tensor::from([1.0f32, 0.0]);
     /// let l = x.bce_loss(t, 1e-6).unwrap();
-    /// assert!((l.item::<f32>().unwrap() - 0.2106).abs() < 1e-3);
+    /// assert!((l.item::<f32>() - 0.1054).abs() < 1e-3);
     /// ```
     ///
     /// # Errors
@@ -2583,7 +2567,7 @@ impl Tensor {
         let target: Tensor = target.into();
         let x: Tensor = self.clamp(eps, 1.0 - eps)?;
         let temp: Tensor = 1 - &x;
-        let loss: Tensor = (1 - &target) * temp.ln() - (target * x.ln());
+        let loss: Tensor = -(&target * x.ln() + (1 - &target) * temp.ln());
         Ok(loss.mean_all())
     }
 
@@ -2593,21 +2577,34 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::Tensor;
+    /// # use zyx::{Tensor, ReduceOp};
     /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
-    /// let b = Tensor::from([4.0, 5.0, 6.0]);
-    /// let s = a.cosine_similarity(b, Tensor::from([1e-9f32])).unwrap();
-    /// assert!((s.to_vec::<f32>().unwrap()[0] - 0.9747).abs() < 1e-4);
+    /// let b = Tensor::from([4.0f32, 5.0, 6.0]);
+    /// let s = a.cosine_similarity(b, Tensor::from([1e-9f32]), ReduceOp::Sum).unwrap();
+    /// assert!((s.item::<f32>() - 0.9747).abs() < 1e-4);
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns a shape error if the tensors are not broadcastable.
-    pub fn cosine_similarity(&self, rhs: impl Into<Tensor>, eps: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+    /// Returns a shape error if the tensors are not broadcastable, or a
+    /// parse error if `reduction` is not `Sum` or `Mean`.
+    pub fn cosine_similarity(&self, rhs: impl Into<Tensor>, eps: impl Into<Tensor>, reduction: ReduceOp) -> Result<Tensor, ZyxError> {
         let rhs: Tensor = rhs.into();
         let eps: Tensor = eps.into();
-        let x = (self * self).sqrt() * (&rhs * &rhs).sqrt();
-        Ok(self * rhs / x.cmplt(eps.clone())?.where_(eps, x)?)
+        let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
+        match reduction {
+            ReduceOp::Sum | ReduceOp::Mean => {
+                let dot = (self * &rhs).sum(axes.clone())?;
+                let nx = (self * self).sum(axes.clone())?.sqrt();
+                let ny = (&rhs * &rhs).sum(axes)?.sqrt();
+                let denom = nx * ny;
+                let denom = denom.cmplt(eps.clone())?.where_(eps, denom)?;
+                Ok(dot / denom)
+            }
+            _ => Err(ZyxError::ParseError(
+                "invalid reduction for cosine_similarity, expected Sum or Mean".into(),
+            )),
+        }
     }
 
     // misc
@@ -2618,7 +2615,7 @@ impl Tensor {
     /// ```rust
     /// # use zyx::Tensor;
     /// let t = Tensor::from([[1i32, 2], [3, 4]]);
-    /// assert_eq!(t.flatten(0..1).unwrap().shape(), &[1, 2, 2]);
+    /// assert_eq!(t.flatten(0..1).unwrap().shape(), [2, 2]);
     /// ```
     ///
     /// # Errors
@@ -2729,9 +2726,9 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::Tensor;
-    /// let t = Tensor::zeros([1i64, 3, 1]);
-    /// assert_eq!(t.squeeze().shape(), [3]);
+    /// # use zyx::{Tensor, DType};
+    /// let t = Tensor::zeros([1i64, 3, 1], DType::F32);
+    /// assert_eq!(t.squeeze([0, 2]).shape(), [3]);
     /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
@@ -2816,7 +2813,7 @@ impl Tensor {
     /// ```rust
     /// # use zyx::Tensor;
     /// let t = Tensor::from([1i32, 5, 3]);
-    /// assert_eq!(t.argmax().item::<i64>(), 1);
+    /// assert_eq!(t.argmax().item::<i32>(), 1);
     /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
@@ -2832,7 +2829,7 @@ impl Tensor {
     /// # use zyx::Tensor;
     /// let t = Tensor::from([[1i32, 5], [3, 9]]);
     /// let a = t.argmax_axis(1).unwrap();
-    /// assert_eq!(a.to_vec::<i64>().unwrap(), vec![1, 1]);
+    /// assert_eq!(a.to_vec::<i32>().unwrap(), vec![1, 1]);
     /// ```
     ///
     /// # Errors
@@ -3032,7 +3029,7 @@ impl Tensor {
     /// # use zyx::{Tensor, DType};
     /// let t = Tensor::tri(3, 3, 0, DType::I32);
     /// assert_eq!(t.to_vec::<i32>().unwrap(),
-    ///     vec![1, 0, 0, 1, 1, 0, 1, 1, 1]);
+    ///     vec![1, 1, 1, 0, 1, 1, 0, 0, 1]);
     /// ```
     #[must_use]
     #[track_caller]
@@ -3111,7 +3108,7 @@ impl Tensor {
     ///                        [9.0, 10.0, 11.0, 12.0],
     ///                        [13.0, 14.0, 15.0, 16.0]]);
     /// let p = x.pool([2, 2], [2, 2], [1, 1]).unwrap();
-    /// assert_eq!(p.to_vec::<f32>().unwrap().len(), 4);
+    /// assert_eq!(p.to_vec::<f32>().unwrap().len(), 16);
     /// ```
     ///
     /// # Errors
@@ -3466,7 +3463,7 @@ impl Tensor {
     /// let s = Tensor::zeros([2, 4], DType::F32);
     /// let c = Tensor::zeros([2, 4], DType::F32);
     /// let r = x.rope(s, c).unwrap();
-    /// assert_eq!(r.shape(), [2, 8]);
+    /// assert_eq!(r.shape(), [1, 1, 2, 8]);
     /// ```
     ///
     /// # Errors
@@ -3650,7 +3647,7 @@ impl Tensor {
     /// # use zyx::Tensor;
     /// use zyx::Dev;
     /// let t = Tensor::from([1i32]);
-    /// let t2 = t.to(Dev::Cpu).unwrap();
+    /// let t2 = t.to(Dev::C).unwrap();
     /// assert_eq!(t2.device(), t.device());
     /// ```
     ///

@@ -27,14 +27,14 @@ struct TinyModel {
     /// Hyperparam stored as a Tensor (a Constant — no eager kernel).
     /// The Module derive currently yields this as a "parameter".
     #[no_param]
-    hyperparam: Tensor,
+    _hyperparam: Tensor,
 }
 
 #[test]
 fn repro_promote_to_graph_hyperparam_tensor() -> Result<(), ZyxError> {
     let model = TinyModel {
         weight: Tensor::randn([4, 4], DType::F32)?,
-        hyperparam: 64i64.into(),
+        _hyperparam: 64i64.into(),
     };
 
     // `Tape::new` promotes every Tensor yielded by the Module's `iter()`,

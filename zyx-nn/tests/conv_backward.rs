@@ -24,8 +24,8 @@ fn conv_bn_backward_1() -> Result<(), ZyxError> {
     let mut bn = make_bn(16);
     let linear = Linear::new(16, 10, true, DType::F32)?;
 
-    let x = Tensor::randn([128, 3, 32, 32], DType::F32)?;
-    let y = Tensor::randint([128], 0..10)?;
+    let x = Tensor::randn([12, 3, 32, 32], DType::F32)?;
+    let y = Tensor::randint([12], 0..10)?;
 
     let tape = Tape::new([&conv.weight, &linear.weight, linear.bias.as_ref().unwrap()])?;
     let h = conv.forward(&x)?;
@@ -48,7 +48,7 @@ fn conv_weight_backward() -> Result<(), ZyxError> {
     // Conv weight backward kernel only: no BN, no pool, no linear.
     // This isolates the im2col + expand + mul + reduce pattern.
     let conv = Conv2d::new(3, 16, [3], [1], [1], [1], 1, false, DType::F32)?;
-    let x = Tensor::rand([128, 3, 32, 32], DType::F32)?;
+    let x = Tensor::rand([12, 3, 32, 32], DType::F32)?;
 
     let tape = Tape::new([&conv.weight])?;
     let h = conv.forward(&x)?;

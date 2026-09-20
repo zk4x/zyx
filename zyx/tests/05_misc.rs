@@ -1383,3 +1383,17 @@ fn assign_movement_dst() -> Result<(), ZyxError> {
     assert_eq!(out, vec![1.6f32, 7.0, 8.0, 9.0, 4.7]);
     Ok(())
 }
+
+/// BUG (ignored until fixed): assigning into a bare Leaf dst makes it a
+/// PendingLeaf whose store kernel only launches on materialization. If the
+/// tensor is never read, release hits the debug_assert
+/// "PendingLeaf dies with a kept buffer — its store kernel never launched"
+/// (runtime.rs). assign must either force-materialize before returning or
+/// release must drain the pending store.
+#[test]
+#[ignore]
+fn assign_never_read_panics_on_drop() {
+    let a = Tensor::from([1.0f32]);
+    let b = Tensor::from([1.0f32]);
+    a.assign(b).unwrap();
+}
