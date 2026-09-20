@@ -24,7 +24,6 @@ use crate::{
     DType,
     backend::DTypeCapability,
     codegen::tenstorrent::CBId,
-    codegen::tenstorrent::generate_tt_program2,
     error::{BackendError, ErrorStatus},
     shape::Dim,
     slab::Slab,
@@ -63,7 +62,6 @@ fn initialize_backend() -> TTBackend {
         let guard = super::lock(pool_id, pool);
         devices.push(Mutex::new(TTDevice {
             device_info: Arc::new(guard.dev_info.clone()),
-            dev_id: guard.dev_id,
             memory_pool: pool_id,
             runtime: guard.runtime.clone(),
             programs: Slab::new(),
@@ -176,8 +174,6 @@ pub struct TTMemoryPool {
     runtime: Arc<Mutex<RuntimeProcess>>,
     free_bytes: Dim,
     dev_info: DeviceInfo,
-    /// Real Tenstorrent chip id (from device_ids config). Not the pool ordinal.
-    dev_id: u32,
 }
 
 pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Mutex<TTMemoryPool>>, BackendError> {
@@ -228,7 +224,6 @@ pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Ve
         println!("[tenstorrent] tensix grid {grid_rows} rows x {grid_cols} cols");
     }
 
-    let dev_id = config.device_ids.as_ref().and_then(|ids| ids.first().copied()).unwrap();
     // F8E5M2 has no Blackhole DataFormat: not a capable dtype, codegen rejects it.
     let mut dtype_capability = [DTypeCapability::all(); DType::N_DTYPES];
     dtype_capability[DType::F8E5M2 as usize] = DTypeCapability::ZERO;
@@ -259,7 +254,6 @@ pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Ve
             num_circular_buffers: 32, // architectural CB0-CB31
             has_openmp: false,
         },
-        dev_id: u32::try_from(dev_id).unwrap(),
     }));
 
     Ok(pools)
@@ -776,20 +770,6 @@ impl RuntimeProcess {
         }
         Ok(())
     }
-
-    fn exit(&mut self) -> Result<(), BackendError> {
-        self.send(r#"{"cmd":"exit"}"#)?;
-        let resp = self.recv_with_timeout(self.timeout_ms)?;
-        if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap();
-            return Err(BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("tt-runtime exit error: {msg}").into(),
-            });
-        }
-        self.child.wait().ok();
-        Ok(())
-    }
 }
 
 fn extract_json_str(json: &str, key: &str) -> Option<String> {
@@ -823,8 +803,6 @@ struct TTProgram {
 #[derive(Debug)]
 pub struct TTDevice {
     device_info: Arc<DeviceInfo>,
-    /// Real Tenstorrent chip id (from device_ids config), set at init. Not the slab index.
-    pub(crate) dev_id: u32,
     memory_pool: Pool,
     runtime: Arc<Mutex<RuntimeProcess>>,
     programs: Slab<DeviceProgramId, TTProgram>,
@@ -833,10 +811,6 @@ pub struct TTDevice {
 impl TTDevice {
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.device_info.clone()
-    }
-
-    pub const fn memory_pool(&self) -> Pool {
-        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {
@@ -850,7 +824,7 @@ impl TTDevice {
         // point); the backend consumes the returned tables. What stays
         // here is launch-side assembly: the group-grid walk, the runtime
         // CB config, and the program compile call.
-        let program = generate_tt_program2(kernel)?;
+        let program = kernel.generate_tenstorrent()?;
         let param_len = program.n_params as usize;
         let input_dtypes = &program.input_dtypes;
         let output_dtypes = &program.output_dtypes;

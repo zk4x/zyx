@@ -60,7 +60,7 @@ use crate::{
     slab::{Slab, SlabId},
     types::TinyString,
 };
-use std::fmt::{Display, Formatter, Write};
+use std::fmt::{Display, Formatter};
 
 fn is_one_const(kernel: &Kernel, op: OpId) -> bool {
     kernel.resolve_const(op).is_some_and(|c| c.is_one())
@@ -282,17 +282,6 @@ impl FusedKind {
 pub(crate) struct NocEmitter {
     /// Global head-order ordinal of every param (all kinds).
     pub(crate) param_ordinal_of: Map<OpId, u32>,
-    /// Global params in head order (kernel inputs).
-    pub(crate) input_dtypes: Vec<DType>,
-    /// GlobalMut params in head order (kernel outputs).
-    pub(crate) output_dtypes: Vec<DType>,
-    /// Section params in list order: this section's runtime args.
-    /// Refilled by `begin_section` for every section.
-    arg_pos: Map<OpId, u32>,
-    /// Chained accessor for the last declared DRAM param: each new
-    /// accessor's compile-time args offset chains off the previous
-    /// one. Reset by `begin_section`.
-    prev_accessor: Option<String>,
 }
 
 #[allow(unused_must_use)]
@@ -323,129 +312,7 @@ impl NocEmitter {
         if !scan.is_null() {
             panic!("tenstorrent2 compiler scan did not finish in 10000 steps");
         }
-        Self { param_ordinal_of, input_dtypes, output_dtypes, arg_pos: Map::default(), prev_accessor: None }
-    }
-
-    /// Start a section: the section's params in list order become its
-    /// runtime args, and the accessor chain restarts.
-    fn begin_section(&mut self, params: &[OpId]) {
-        self.arg_pos.clear();
-        for (i, &p) in params.iter().enumerate() {
-            self.arg_pos.insert(p, i as u32);
-        }
-        self.prev_accessor = None;
-    }
-
-    /// Runtime arg index for a section param.
-    fn arg(&self, op_id: OpId, who: &str) -> u32 {
-        self.arg_pos.get(&op_id).copied().expect(who)
-    }
-
-    /// Group-index runtime arg: section args first, then one per axis.
-    fn group_arg(&self, axis: u32) -> u32 {
-        self.arg_pos.len() as u32 + axis
-    }
-
-    /// `noc_async_read` of one tile plus its barrier: DRAM address
-    /// `rnoc{op_id}` from accessor `p{ld_src}`, then read into the CB
-    /// write pointer. `off` is the tile-slot offset within the
-    /// reserved block, in tile units ("0" = plain write pointer).
-    fn async_read_tile(
-        &self,
-        src: &mut String,
-        indent: &str,
-        op_id: OpId,
-        ld_src: OpId,
-        idx: &str,
-        elem_size: u32,
-        tile_bytes: u32,
-        cb: CBId,
-        off: &str,
-    ) {
-        writeln!(
-            src,
-            "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{TT_DRAM_PAGE_BYTES}), (uint32_t)(({idx}*{elem_size})%{TT_DRAM_PAGE_BYTES}));"
-        );
-        if off == "0" {
-            writeln!(src, "{indent}noc_async_read(rnoc{op_id}, cb{cb}.get_write_ptr(), {tile_bytes});");
-        } else {
-            writeln!(src, "{indent}noc_async_read(rnoc{op_id}, cb{cb}.get_write_ptr() + {off}*{tile_bytes}, {tile_bytes});");
-        }
-        writeln!(src, "{indent}noc_async_read_barrier();");
-    }
-
-    /// `noc_async_write` of one tile plus its barrier: CB read pointer
-    /// to DRAM address `wnoc{op_id}` in accessor `p_out{dst}`. `off`
-    /// is the tile-slot offset within the waited block, in tile units
-    /// ("0" = plain read pointer).
-    fn async_write_tile(
-        &self,
-        src: &mut String,
-        indent: &str,
-        op_id: OpId,
-        dst: OpId,
-        idx: &str,
-        elem_size: u32,
-        tile_bytes: u32,
-        cb: CBId,
-        off: &str,
-    ) {
-        writeln!(
-            src,
-            "{indent}uint64_t wnoc{op_id} = p_out{dst}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{TT_DRAM_PAGE_BYTES}), (uint32_t)(({idx}*{elem_size})%{TT_DRAM_PAGE_BYTES}));"
-        );
-        if off == "0" {
-            writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr(), wnoc{op_id}, {tile_bytes});");
-        } else {
-            writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr() + {off}*{tile_bytes}, wnoc{op_id}, {tile_bytes});");
-        }
-        writeln!(src, "{indent}noc_async_write_barrier();");
-    }
-
-    /// Reader `Global` param: DRAM address register plus the chained
-    /// `TensorAccessor` (each accessor's compile-time args offset chains
-    /// off the previous one).
-    fn declare_global(&mut self, src: &mut String, indent: &str, op_id: OpId) {
-        let arg = self.arg(op_id, "tenstorrent2 reader param missing from section args");
-        writeln!(src, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({arg});");
-        let cta = match &self.prev_accessor {
-            None => String::from("0"),
-            Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
-        };
-        writeln!(src, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
-        writeln!(src, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {TT_DRAM_PAGE_BYTES});");
-        self.prev_accessor = Some(format!("args{op_id}"));
-    }
-
-    /// Reader-side `GlobalMut` param: same accessor shape, `dst` naming.
-    fn declare_global_mut(&mut self, src: &mut String, indent: &str, op_id: OpId) {
-        let arg = self.arg(op_id, "tenstorrent2 reader param missing from section args");
-        writeln!(src, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({arg});");
-        let cta = match &self.prev_accessor {
-            None => String::from("0"),
-            Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
-        };
-        writeln!(src, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
-        writeln!(src, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {TT_DRAM_PAGE_BYTES});");
-        self.prev_accessor = Some(format!("args{op_id}"));
-    }
-
-    /// Writer-side `GlobalMut` param: `out`/`args_out`/`p_out` naming.
-    fn declare_writer_out(&mut self, src: &mut String, indent: &str, op_id: OpId) {
-        let arg = self.arg(op_id, "tenstorrent2 writer param missing from section args");
-        writeln!(src, "{indent}uint32_t out{op_id} = get_arg_val<uint32_t>({arg});");
-        let cta = match &self.prev_accessor {
-            None => String::from("0"),
-            Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
-        };
-        writeln!(src, "{indent}auto args_out{op_id} = TensorAccessorArgs<{cta}>({arg});");
-        writeln!(src, "{indent}auto p_out{op_id} = TensorAccessor(args_out{op_id}, out{op_id}, {TT_DRAM_PAGE_BYTES});");
-        self.prev_accessor = Some(format!("args_out{op_id}"));
-    }
-
-    /// Trailing reader barrier: every async read lands before exit.
-    fn final_read_barrier(&self, src: &mut String, indent: &str) {
-        writeln!(src, "{indent}noc_async_read_barrier();");
+        Self { param_ordinal_of }
     }
 }
 
@@ -1307,7 +1174,7 @@ impl Compiler {
                 }
             };
             // Bind a fresh (or freed) scalar register to a value.
-            let mut def_var = |vars: &mut Map<OpId, VarId>, free_vars: &mut Vec<VarId>, next_var: &mut u32, id: OpId| -> VarId {
+            let def_var = |vars: &mut Map<OpId, VarId>, free_vars: &mut Vec<VarId>, next_var: &mut u32, id: OpId| -> VarId {
                 let v = free_vars.pop().unwrap_or_else(|| {
                     let v = VarId(*next_var);
                     *next_var += 1;
@@ -1317,7 +1184,7 @@ impl Compiler {
                 v
             };
             // Consume one use of a scalar value, freeing its register at zero.
-            let mut use_var =
+            let use_var =
                 |vars: &Map<OpId, VarId>, remaining: &mut Map<OpId, u32>, free_vars: &mut Vec<VarId>, id: OpId| -> VarId {
                     let &v = vars.get(&id).unwrap_or_else(|| panic!("tenstorrent2: scalar op {id} has no register"));
                     let left = remaining.get_mut(&id).unwrap_or_else(|| panic!("tenstorrent2: scalar op {id} has no use count"));
@@ -1332,7 +1199,7 @@ impl Compiler {
             // value. Lowest-first matches the legacy slab scan, so slot
             // assignment agrees with legacy text. The use budget comes
             // from `remaining` (the section's consumer counts).
-            let mut def_tile =
+            let def_tile =
                 |tiles: &mut Map<OpId, TileId>, free_tiles: &mut Vec<TileId>, next_tile: &mut u8, id: OpId| -> TileId {
                     let t = if free_tiles.is_empty() {
                         let t = TileId(*next_tile);
@@ -1358,16 +1225,15 @@ impl Compiler {
             // acc aliases) transfer ownership to the result id instead:
             // the operand count stays stale-harmless, the slot frees
             // once through the result id.
-            let mut use_tile =
-                |tiles: &Map<OpId, TileId>, remaining: &mut Map<OpId, u32>, free_tiles: &mut Vec<TileId>, id: OpId| {
-                    let &t = tiles.get(&id).unwrap_or_else(|| panic!("tenstorrent2: tile op {id} has no DST slot"));
-                    let left = remaining.get_mut(&id).unwrap_or_else(|| panic!("tenstorrent2: tile op {id} has no use count"));
-                    assert!(*left > 0, "tenstorrent2: tile op {id} used past its uses");
-                    *left -= 1;
-                    if *left == 0 {
-                        free_tiles.push(t);
-                    }
-                };
+            let use_tile = |tiles: &Map<OpId, TileId>, remaining: &mut Map<OpId, u32>, free_tiles: &mut Vec<TileId>, id: OpId| {
+                let &t = tiles.get(&id).unwrap_or_else(|| panic!("tenstorrent2: tile op {id} has no DST slot"));
+                let left = remaining.get_mut(&id).unwrap_or_else(|| panic!("tenstorrent2: tile op {id} has no use count"));
+                assert!(*left > 0, "tenstorrent2: tile op {id} used past its uses");
+                *left -= 1;
+                if *left == 0 {
+                    free_tiles.push(t);
+                }
+            };
             for &id in &data.ops {
                 if fused_gone.contains(&id) {
                     continue;
@@ -2580,12 +2446,11 @@ impl Compiler {
                         match op {
                             TTOp::ReserveBack { .. } | TTOp::WaitFront { .. } | TTOp::PushBack { .. } | TTOp::PopFront { .. } => {
                             }
-                            TTOp::AsyncRead { off, .. } | TTOp::AsyncWrite { off, .. } => {
-                                let mut op = op.clone();
-                                if let TTOp::AsyncRead { off, .. } | TTOp::AsyncWrite { off, .. } = &mut op {
-                                    *off = Some(*counter);
-                                }
-                                next.push(op);
+                            TTOp::AsyncRead { addr, dst_cb, bytes, .. } => {
+                                next.push(TTOp::AsyncRead { addr: *addr, dst_cb: *dst_cb, bytes: *bytes, off: Some(*counter) });
+                            }
+                            TTOp::AsyncWrite { src_cb, addr, bytes, .. } => {
+                                next.push(TTOp::AsyncWrite { src_cb: *src_cb, addr: *addr, bytes: *bytes, off: Some(*counter) });
                             }
                             TTOp::NocReadBarrier | TTOp::NocWriteBarrier => next.push(op.clone()),
                             other => next.push(other.clone()),
@@ -2949,7 +2814,7 @@ impl Compiler {
         // ops in the legacy list with no `TileCopy` here.
         let mut loaded_order: Vec<CBId> = Vec::new();
         let mut stored_first: Option<CBId> = None;
-        let mut note_load = |loaded_order: &mut Vec<CBId>, cb: CBId| {
+        let note_load = |loaded_order: &mut Vec<CBId>, cb: CBId| {
             if !loaded_order.contains(&cb) {
                 loaded_order.push(cb);
             }
@@ -3291,7 +3156,7 @@ impl Compiler {
             }
         };
         // Section-local runtime arg index for a global ordinal.
-        let mut arg_index = |arg_idx: &mut Map<(u8, u32), u32>, arg_count: &mut [u32; 3], s: u8, ord: u32| -> u32 {
+        let arg_index = |arg_idx: &mut Map<(u8, u32), u32>, arg_count: &mut [u32; 3], s: u8, ord: u32| -> u32 {
             *arg_idx.entry((s, ord)).or_insert_with(|| {
                 let a = arg_count[s as usize];
                 arg_count[s as usize] += 1;
@@ -3721,9 +3586,9 @@ impl Compiler {
 }
 
 /// Launch tables for the Tenstorrent backend, built from the TTIR
-/// pipeline. Replaces `TTCompiler`: section sources plus the CB
-/// config, param ordinals, dtypes, and DST mode the backend needs.
-pub(crate) struct TTProgram2 {
+/// pipeline: section sources plus the CB config, param ordinals,
+/// dtypes, and DST mode the backend needs.
+pub struct TTProgram {
     /// Reader section source.
     pub(crate) reader_src: String,
     /// Compute section source (empty when the kernel is pure copy).
@@ -3748,238 +3613,220 @@ pub(crate) struct TTProgram2 {
     pub(crate) fp32: bool,
 }
 
-/// Full TTIR codegen returning launch tables: pipeline, render split
-/// at the section boundaries, param/CB tables. Same scans as the
-/// legacy `generate_tenstorrent` for ordinals, dtypes, CB ids.
-pub(crate) fn generate_tt_program2(kernel: &Kernel) -> Result<TTProgram2, BackendError> {
-    kernel.debug(); // TEMP DEBUG: remove
-    let mut c = Compiler::new(kernel);
-    if std::env::var("ZYX_DEBUG").is_ok_and(|v| v == "4") {
-        eprintln!("TTIR OPS AFTER CONVERSION:\n{:?}", c.ops); // TEMP DEBUG: remove
-    }
-    c.lock_dst();
-    c.fill_out_cbs();
-    c.init_math();
-    c.reconfig_pack();
-    c.sync_cbs();
-    c.close_reduce_cones();
-    c.hoist_dedup_inits();
-    c.noc_movement();
-    c.hoist_writer_accessors();
-    c.batch_cbs();
-    c.tile_regs();
-    c.verify();
-    let full = c.render();
-    // Split the render at the three `void kernel_main() {` blocks:
-    // each section source keeps its own includes.
-    let marks: Vec<usize> = full.match_indices("void kernel_main() {").map(|(i, _)| i).collect();
-    assert!(marks.len() == 3, "tenstorrent2: render holds {} sections, want 3", marks.len());
-    // Back up from each mark over the contiguous `#include` block that
-    // precedes it: each section source keeps its whole include block.
-    let mut starts = Vec::with_capacity(3);
-    for &m in &marks {
-        let mut start = m;
-        loop {
-            let head = &full[..start];
-            let Some(inc) = head.rfind("#include") else { break };
-            let line = head[..inc].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            let gap = &full[line..start];
-            if !gap.lines().all(|l| l.starts_with("#include")) {
+impl Kernel {
+    /// Full TTIR codegen returning launch tables: pipeline, render split
+    /// at the section boundaries, param/CB tables.
+    pub fn generate_tenstorrent(&self) -> Result<TTProgram, BackendError> {
+        let mut c = Compiler::new(self);
+        c.lock_dst();
+        c.fill_out_cbs();
+        c.init_math();
+        c.reconfig_pack();
+        c.sync_cbs();
+        c.close_reduce_cones();
+        c.hoist_dedup_inits();
+        c.noc_movement();
+        c.hoist_writer_accessors();
+        c.batch_cbs();
+        c.tile_regs();
+        c.verify();
+        let full = c.render();
+        // Split the render at the three `void kernel_main() {` blocks:
+        // each section source keeps its own includes.
+        let marks: Vec<usize> = full.match_indices("void kernel_main() {").map(|(i, _)| i).collect();
+        assert!(marks.len() == 3, "tenstorrent2: render holds {} sections, want 3", marks.len());
+        // Back up from each mark over the contiguous `#include` block that
+        // precedes it: each section source keeps its whole include block.
+        let mut starts = Vec::with_capacity(3);
+        for &m in &marks {
+            let mut start = m;
+            loop {
+                let head = &full[..start];
+                let Some(inc) = head.rfind("#include") else { break };
+                let line = head[..inc].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                let gap = &full[line..start];
+                if !gap.lines().all(|l| l.starts_with("#include")) {
+                    break;
+                }
+                start = line;
+            }
+            starts.push(start);
+        }
+        starts.push(full.len());
+        let reader_src = full[starts[0]..starts[1]].to_string();
+        let compute_src = full[starts[1]..starts[2]].to_string();
+        let writer_src = full[starts[2]..starts[3]].to_string();
+        // Param ordinals + input/output dtypes, same walk as legacy `NocEmitter::new`.
+        let mut param_ordinal_of: Map<OpId, u32> = Map::default();
+        let mut next_param = 0u32;
+        let mut input_dtypes: Vec<DType> = Vec::new();
+        let mut output_dtypes: Vec<DType> = Vec::new();
+        let mut scan = self.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
                 break;
             }
-            start = line;
-        }
-        starts.push(start);
-    }
-    starts.push(full.len());
-    let reader_src = full[starts[0]..starts[1]].to_string();
-    let mut compute_src = full[starts[1]..starts[2]].to_string();
-    let writer_src = full[starts[2]..starts[3]].to_string();
-    // TEMP DEBUG: remove — hybrid differential run with legacy compute source.
-    if std::env::var("ZYX_TT_HYBRID").is_ok_and(|v| v == "1")
-        && let Ok(leg) = std::fs::read_to_string("/tmp/leg_comp_trans.c")
-    {
-        compute_src = leg;
-    }
-    if let Ok(mut f) = std::fs::File::create("/tmp/tt2_reader.c") {
-        use std::io::Write as _;
-        let _ = f.write_all(reader_src.as_bytes());
-    }
-    if let Ok(mut f) = std::fs::File::create("/tmp/tt2_compute.c") {
-        use std::io::Write as _;
-        let _ = f.write_all(compute_src.as_bytes());
-    }
-    if let Ok(mut f) = std::fs::File::create("/tmp/tt2_writer.c") {
-        use std::io::Write as _;
-        let _ = f.write_all(writer_src.as_bytes());
-    }
-    // Param ordinals + input/output dtypes, same walk as legacy `NocEmitter::new`.
-    let mut param_ordinal_of: Map<OpId, u32> = Map::default();
-    let mut next_param = 0u32;
-    let mut input_dtypes: Vec<DType> = Vec::new();
-    let mut output_dtypes: Vec<DType> = Vec::new();
-    let mut scan = kernel.head;
-    for _ in 0..10_000 {
-        if scan.is_null() {
-            break;
-        }
-        if let Op::Param { dtype, kind, .. } = &kernel.ops[scan].op {
-            param_ordinal_of.insert(scan, next_param);
-            next_param += 1;
-            match kind {
-                ParamKind::Global => input_dtypes.push(*dtype),
-                ParamKind::GlobalMut => output_dtypes.push(*dtype),
-                ParamKind::Variable => {}
-            }
-        }
-        scan = kernel.next_op(scan);
-    }
-    // Section param lists in the render's first-use order: the render
-    // assigns section-local arg indices the first time an ordinal is
-    // emitted (see `arg_index`), so the lists the backend sends must
-    // follow exactly that order or rt args misalign with the source.
-    let mut section_param_lists: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    let mut section = 0usize;
-    for op in c.ops.iter() {
-        match op {
-            TTOp::EndReader => section = 1,
-            TTOp::EndCompute => section = 2,
-            TTOp::Arg { ordinal, .. }
-            | TTOp::NocAccessor { ordinal, .. }
-            | TTOp::NocAddr { ordinal, .. }
-            | TTOp::ReadTile { ordinal, .. }
-            | TTOp::WriteTile { ordinal, .. } => {
-                let list = &mut section_param_lists[section];
-                if !list.contains(ordinal) {
-                    list.push(*ordinal);
+            if let Op::Param { dtype, kind, .. } = &self.ops[scan].op {
+                param_ordinal_of.insert(scan, next_param);
+                next_param += 1;
+                match kind {
+                    ParamKind::Global => input_dtypes.push(*dtype),
+                    ParamKind::GlobalMut => output_dtypes.push(*dtype),
+                    ParamKind::Variable => {}
                 }
             }
-            _ => {}
+            scan = self.next_op(scan);
         }
-    }
-    // Sanity: the first-use set must equal the section's needed params
-    // (the `TensixGridX/Y` arg precompute uses the list length).
-    for (s, list) in section_param_lists.iter().enumerate() {
-        let tt_section = [TtSection::Reader, TtSection::Compute, TtSection::Writer][s];
-        let mut ir_set: Vec<u32> = kernel
-            .get_needed_ops(tt_section)
-            .ops
-            .iter()
-            .copied()
-            .filter(|op| matches!(kernel.ops[*op].op, Op::Param { .. }))
-            .map(|p| param_ordinal_of[&p])
-            .collect();
-        ir_set.sort_unstable();
-        let mut used = list.clone();
-        used.sort_unstable();
-        assert_eq!(used, ir_set, "tenstorrent2: section {s} arg first-use set != needed params");
-    }
-    let reader_params = section_param_lists[0].clone();
-    let compute_params = section_param_lists[1].clone();
-    let writer_params = section_param_lists[2].clone();
-    // CB ids by first touch (load-then-store per op), same as legacy `CBEmitter::new`.
-    let mut map: Map<OpId, CBId> = Map::default();
-    let mut next_cb = CBId::ZERO;
-    let mut section = TtSection::Reader;
-    let mut scan = kernel.head;
-    for _ in 0..10_000 {
-        if scan.is_null() {
-            break;
-        }
-        match kernel.ops[scan].op {
-            Op::Barrier => {
-                section = match section {
-                    TtSection::Reader => TtSection::Compute,
-                    TtSection::Compute => TtSection::Writer,
-                    TtSection::Writer => panic!("tenstorrent kernels have exactly 3 sections (2 barriers)"),
-                };
-            }
-            Op::Load { ref src, .. } => {
-                if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*src].op {
-                    if !map.contains_key(src) {
-                        map.insert(*src, next_cb);
-                        next_cb.inc();
+        // Section param lists in the render's first-use order: the render
+        // assigns section-local arg indices the first time an ordinal is
+        // emitted (see `arg_index`), so the lists the backend sends must
+        // follow exactly that order or rt args misalign with the source.
+        let mut section_param_lists: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut section = 0usize;
+        for op in c.ops.iter() {
+            match op {
+                TTOp::EndReader => section = 1,
+                TTOp::EndCompute => section = 2,
+                TTOp::Arg { ordinal, .. }
+                | TTOp::NocAccessor { ordinal, .. }
+                | TTOp::NocAddr { ordinal, .. }
+                | TTOp::ReadTile { ordinal, .. }
+                | TTOp::WriteTile { ordinal, .. } => {
+                    let list = &mut section_param_lists[section];
+                    if !list.contains(ordinal) {
+                        list.push(*ordinal);
                     }
-                }
-            }
-            Op::Store { ref dst, .. } => {
-                if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*dst].op {
-                    if !map.contains_key(dst) {
-                        map.insert(*dst, next_cb);
-                        next_cb.inc();
-                    }
-                }
-            }
-            _ => {}
-        }
-        scan = kernel.next_op(scan);
-    }
-    let num_circular_buffers = kernel.device_info().num_circular_buffers;
-    if map.len() > num_circular_buffers as usize {
-        return Err(BackendError {
-            status: ErrorStatus::TooManyCircularBuffers,
-            context: format!("tenstorrent2: kernel needs {} circular buffers, device holds {num_circular_buffers}", map.len())
-                .into(),
-        });
-    }
-    let mut cb_ops: Vec<(CBId, OpId)> = map.iter().map(|(&op, &cb)| (cb, op)).collect();
-    cb_ops.sort_by_key(|&(cb, _)| cb);
-    let mut cb_config: Slab<CBId, (u32, u32, u32)> = Slab::new();
-    for (cb, op) in cb_ops {
-        let Op::Storage { dtype, len, .. } = &kernel.ops[op].op else {
-            unreachable!("tenstorrent2: cb entry {op} is not a storage op")
-        };
-        let (fmt, tb) = match dtype {
-            DType::F32 => (0, 4096),
-            DType::F16 => (1, 2048),
-            DType::BF16 => (2, 2048),
-            DType::U16 => (3, 2048),
-            DType::F8E4M3 => (4, 1024),
-            DType::U8 => (5, 1024),
-            DType::I8 => (6, 1024),
-            DType::U32 => (7, 4096),
-            DType::I32 => (8, 4096),
-            dt => {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("tenstorrent2: CB dtype {dt:?} has no tt format").into(),
-                });
-            }
-        };
-        let pushed = cb_config.push((fmt, tb, (len / 1024) as u32));
-        debug_assert_eq!(pushed, cb, "tenstorrent2: CB config out of sync with allocation");
-    }
-    // DST mode, same scan as legacy `generate_tenstorrent`.
-    let mut fp32 = false;
-    let mut scan = kernel.head;
-    for _ in 0..10_000 {
-        if scan.is_null() {
-            break;
-        }
-        if let Op::Storage { dtype, scope, .. } = kernel.ops[scan].op {
-            match (dtype, scope) {
-                (DType::F32, _) | (DType::F8E4M3, MemScope::Circular) => {
-                    fp32 = true;
-                    break;
                 }
                 _ => {}
             }
         }
-        scan = kernel.next_op(scan);
+        // Sanity: the first-use set must equal the section's needed params
+        // (the `TensixGridX/Y` arg precompute uses the list length).
+        for (s, list) in section_param_lists.iter().enumerate() {
+            let tt_section = [TtSection::Reader, TtSection::Compute, TtSection::Writer][s];
+            let mut ir_set: Vec<u32> = self
+                .get_needed_ops(tt_section)
+                .ops
+                .iter()
+                .copied()
+                .filter(|op| matches!(self.ops[*op].op, Op::Param { .. }))
+                .map(|p| param_ordinal_of[&p])
+                .collect();
+            ir_set.sort_unstable();
+            let mut used = list.clone();
+            used.sort_unstable();
+            assert_eq!(used, ir_set, "tenstorrent2: section {s} arg first-use set != needed params");
+        }
+        let reader_params = section_param_lists[0].clone();
+        let compute_params = section_param_lists[1].clone();
+        let writer_params = section_param_lists[2].clone();
+        // CB ids by first touch (load-then-store per op), same as legacy `CBEmitter::new`.
+        let mut map: Map<OpId, CBId> = Map::default();
+        let mut next_cb = CBId::ZERO;
+        let mut section = TtSection::Reader;
+        let mut scan = self.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            match self.ops[scan].op {
+                Op::Barrier => {
+                    section = match section {
+                        TtSection::Reader => TtSection::Compute,
+                        TtSection::Compute => TtSection::Writer,
+                        TtSection::Writer => panic!("tenstorrent kernels have exactly 3 sections (2 barriers)"),
+                    };
+                }
+                Op::Load { ref src, .. } => {
+                    if let Op::Storage { scope: MemScope::Circular, .. } = self.ops[*src].op {
+                        if !map.contains_key(src) {
+                            map.insert(*src, next_cb);
+                            next_cb.inc();
+                        }
+                    }
+                }
+                Op::Store { ref dst, .. } => {
+                    if let Op::Storage { scope: MemScope::Circular, .. } = self.ops[*dst].op {
+                        if !map.contains_key(dst) {
+                            map.insert(*dst, next_cb);
+                            next_cb.inc();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            scan = self.next_op(scan);
+        }
+        let num_circular_buffers = self.device_info().num_circular_buffers;
+        if map.len() > num_circular_buffers as usize {
+            return Err(BackendError {
+                status: ErrorStatus::TooManyCircularBuffers,
+                context: format!(
+                    "tenstorrent2: kernel needs {} circular buffers, device holds {num_circular_buffers}",
+                    map.len()
+                )
+                .into(),
+            });
+        }
+        let mut cb_ops: Vec<(CBId, OpId)> = map.iter().map(|(&op, &cb)| (cb, op)).collect();
+        cb_ops.sort_by_key(|&(cb, _)| cb);
+        let mut cb_config: Slab<CBId, (u32, u32, u32)> = Slab::new();
+        for (cb, op) in cb_ops {
+            let Op::Storage { dtype, len, .. } = &self.ops[op].op else {
+                unreachable!("tenstorrent2: cb entry {op} is not a storage op")
+            };
+            let (fmt, tb) = match dtype {
+                DType::F32 => (0, 4096),
+                DType::F16 => (1, 2048),
+                DType::BF16 => (2, 2048),
+                DType::U16 => (3, 2048),
+                DType::F8E4M3 => (4, 1024),
+                DType::U8 => (5, 1024),
+                DType::I8 => (6, 1024),
+                DType::U32 => (7, 4096),
+                DType::I32 => (8, 4096),
+                dt => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: CB dtype {dt:?} has no tt format").into(),
+                    });
+                }
+            };
+            let pushed = cb_config.push((fmt, tb, (len / 1024) as u32));
+            debug_assert_eq!(pushed, cb, "tenstorrent2: CB config out of sync with allocation");
+        }
+        // DST mode, same scan as legacy `generate_tenstorrent`.
+        let mut fp32 = false;
+        let mut scan = self.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            if let Op::Storage { dtype, scope, .. } = self.ops[scan].op {
+                match (dtype, scope) {
+                    (DType::F32, _) | (DType::F8E4M3, MemScope::Circular) => {
+                        fp32 = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            scan = self.next_op(scan);
+        }
+        Ok(TTProgram {
+            reader_src,
+            compute_src,
+            writer_src,
+            reader_params,
+            compute_params,
+            writer_params,
+            n_params: next_param,
+            input_dtypes,
+            output_dtypes,
+            cb_config,
+            fp32,
+        })
     }
-    Ok(TTProgram2 {
-        reader_src,
-        compute_src,
-        writer_src,
-        reader_params,
-        compute_params,
-        writer_params,
-        n_params: next_param,
-        input_dtypes,
-        output_dtypes,
-        cb_config,
-        fp32,
-    })
 }
 
 impl Display for Compiler {
