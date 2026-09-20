@@ -24,9 +24,7 @@ use crate::{
     DType,
     backend::DTypeCapability,
     codegen::tenstorrent::CBId,
-    codegen::tenstorrent::TTCompiler,
-    codegen::tenstorrent::TTKernel,
-    codegen::tenstorrent2::generate_tt_program2,
+    codegen::tenstorrent::generate_tt_program2,
     error::{BackendError, ErrorStatus},
     shape::Dim,
     slab::Slab,
@@ -58,8 +56,7 @@ static TT_BACKEND: OnceLock<TTBackend> = OnceLock::new();
 fn initialize_backend() -> TTBackend {
     let config = super::config();
     let debug_dev = super::debug_backends();
-    let pools = ensure_pool_table(&config.tenstorrent, debug_dev)
-        .expect("tenstorrent: pool table init failed");
+    let pools = ensure_pool_table(&config.tenstorrent, debug_dev).expect("tenstorrent: pool table init failed");
     let mut devices = Vec::with_capacity(pools.len());
     for (idx, pool) in pools.iter().enumerate() {
         let pool_id = Pool::TT(u16::try_from(idx).expect("So many Tenstorrent devices..."));
@@ -854,25 +851,6 @@ impl TTDevice {
         // here is launch-side assembly: the group-grid walk, the runtime
         // CB config, and the program compile call.
         let program = generate_tt_program2(kernel)?;
-        // TEMP: legacy-vs-new source comparison under ZYX_TT_DUMP_LEGACY.
-        if std::env::var("ZYX_TT_DUMP_LEGACY").is_ok() {
-            use std::io::Write as _;
-            if let Ok(compiler) = kernel.generate_tenstorrent() {
-                let (r, cm, w) = match &compiler {
-                    TTCompiler::Bf16(c) => (&c.reader, &c.compute, &c.writer),
-                    TTCompiler::Fp32(c) => (&c.reader, &c.compute, &c.writer),
-                };
-                let src_of = |k: &TTKernel| match k {
-                    TTKernel::Reader { src, .. } | TTKernel::Compute { src, .. } | TTKernel::Writer { src, .. } => src.clone(),
-                    TTKernel::None => String::new(),
-                };
-                for (name, s) in [("reader", src_of(r)), ("compute", src_of(cm)), ("writer", src_of(w))] {
-                    if let Ok(mut f) = std::fs::File::create(format!("/tmp/tt_legacy_{name}.c")) {
-                        let _ = f.write_all(s.as_bytes());
-                    }
-                }
-            }
-        }
         let param_len = program.n_params as usize;
         let input_dtypes = &program.input_dtypes;
         let output_dtypes = &program.output_dtypes;
@@ -897,81 +875,6 @@ impl TTDevice {
         let gws = gws_from_kernel(kernel, &self.device_info.max_global_work_dims)?;
 
         // TEMP DEBUG: remove — full legacy end-to-end run under ZYX_TT_LEGACY_RUN.
-        if std::env::var("ZYX_TT_LEGACY_RUN").is_ok_and(|v| v == "1") {
-            let compiler = kernel.generate_tenstorrent()?;
-            let (param_len, reader_k, compute_k, writer_k, input_dtypes, output_dtypes, cb_config) = match &compiler {
-                TTCompiler::Bf16(c) => (
-                    c.noc.param_ordinal_of.len(),
-                    &c.reader,
-                    &c.compute,
-                    &c.writer,
-                    &c.noc.input_dtypes,
-                    &c.noc.output_dtypes,
-                    &c.cb.config,
-                ),
-                TTCompiler::Fp32(c) => (
-                    c.noc.param_ordinal_of.len(),
-                    &c.reader,
-                    &c.compute,
-                    &c.writer,
-                    &c.noc.input_dtypes,
-                    &c.noc.output_dtypes,
-                    &c.cb.config,
-                ),
-            };
-            let empty_src = String::new();
-            let empty_ord: Vec<u32> = Vec::new();
-            let TTKernel::Reader { src: reader, ordinals: reader_params, .. } = reader_k else {
-                panic!("legacy reader missing");
-            };
-            let (compute, compute_params) = match compute_k {
-                TTKernel::Compute { src, ordinals, .. } => (src, ordinals),
-                TTKernel::None => (&empty_src, &empty_ord),
-                _ => panic!("legacy compute slot wrong"),
-            };
-            let TTKernel::Writer { src: writer, ordinals: writer_params, .. } = writer_k else {
-                panic!("legacy writer missing");
-            };
-            let fp32_dest_acc_en = matches!(compiler, TTCompiler::Fp32(_));
-            for (i, (cb, (fmt, tb, nt))) in cb_config.iter().enumerate() {
-                eprintln!("TEMP LEGACY CB{cb} fmt={fmt} tile_bytes={tb} n_tiles={nt}"); // TEMP DEBUG: remove
-            }
-            eprintln!("TEMP LEGACY n_params={param_len} fp32={fp32_dest_acc_en} rp={reader_params:?} cp={compute_params:?} wp={writer_params:?}"); // TEMP DEBUG: remove
-            let mg = &self.device_info.max_global_work_dims;
-            let max_grid = [
-                u32::try_from(mg[0]).map_err(|_| BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "tenstorrent grid rows do not fit u32".into(),
-                })?,
-                u32::try_from(mg[1]).map_err(|_| BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "tenstorrent grid cols do not fit u32".into(),
-                })?,
-            ];
-            let prog_id = self.programs.push(TTProgram {
-                input_dtypes: input_dtypes.clone(),
-                output_dtypes: output_dtypes.clone(),
-                gws,
-                max_grid,
-            });
-            {
-                let mut rt_guard = self.runtime.lock().unwrap();
-                rt_guard.compile_program(
-                    prog_id.0,
-                    reader,
-                    compute,
-                    writer,
-                    cb_config,
-                    param_len as u32,
-                    reader_params,
-                    compute_params,
-                    writer_params,
-                    fp32_dest_acc_en,
-                )?;
-            }
-            return Ok(prog_id);
-        }
-
         let reader = program.reader_src.as_str();
         let reader_params = program.reader_params.as_slice();
         let compute = program.compute_src.as_str();
