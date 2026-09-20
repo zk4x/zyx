@@ -42,8 +42,39 @@ use std::{
 
 // ── Global state ──────────────────────────────────────────────────────────────
 
-static TT_POOLS: OnceLock<Vec<Mutex<TTMemoryPool>>> = OnceLock::new();
-static TT_DEVICES: OnceLock<Vec<Mutex<TTDevice>>> = OnceLock::new();
+/// Pools and their devices, built together by [`initialize_backend`].
+struct TTBackend {
+    pools: Vec<Mutex<TTMemoryPool>>,
+    devices: Vec<Mutex<TTDevice>>,
+}
+/// One-shot backend init: `get_or_init` runs [`initialize_backend`]
+/// exactly once — concurrent threads block until it returns and
+/// reuse its tables. Without the Once, two threads can both spawn a
+/// tt-runtime process and race the same device's init (deadlock).
+static TT_BACKEND: OnceLock<TTBackend> = OnceLock::new();
+
+/// The single backend initializer: builds pools + devices together in
+/// one pass and publishes the combined table. Runs once.
+fn initialize_backend() -> TTBackend {
+    let config = super::config();
+    let debug_dev = super::debug_backends();
+    let pools = ensure_pool_table(&config.tenstorrent, debug_dev)
+        .expect("tenstorrent: pool table init failed");
+    let mut devices = Vec::with_capacity(pools.len());
+    for (idx, pool) in pools.iter().enumerate() {
+        let pool_id = Pool::TT(u16::try_from(idx).expect("So many Tenstorrent devices..."));
+        let guard = super::lock(pool_id, pool);
+        devices.push(Mutex::new(TTDevice {
+            device_info: Arc::new(guard.dev_info.clone()),
+            dev_id: guard.dev_id,
+            memory_pool: pool_id,
+            runtime: guard.runtime.clone(),
+            programs: Slab::new(),
+        }));
+        drop(guard);
+    }
+    TTBackend { pools, devices }
+}
 
 // ---------------------------------------------------------------------------
 // DRAM size lookup
@@ -125,36 +156,9 @@ pub(crate) struct TTBuffer {
 // The pool shares the runtime IPC channel with TTDevice via Arc<Mutex>.
 // ---------------------------------------------------------------------------
 
-/// Single backend initializer: builds pools + devices together in one pass,
-/// publishes both tables. Reads config directly; no init locks.
 fn backend() -> Result<(&'static Vec<Mutex<TTMemoryPool>>, &'static Vec<Mutex<TTDevice>>), BackendError> {
-    if let Some(pools) = TT_POOLS.get()
-        && let Some(devs) = TT_DEVICES.get()
-    {
-        return Ok((pools, devs));
-    }
-    let config = super::config();
-    let debug_dev = super::debug_backends();
-    let pools = ensure_pool_table(&config.tenstorrent, debug_dev)?;
-    let mut devs = Vec::with_capacity(pools.len());
-    for (idx, pool) in pools.iter().enumerate() {
-        let pool_id = Pool::TT(u16::try_from(idx).expect("So many Tenstorrent devices..."));
-        let guard = super::lock(pool_id, pool);
-        devs.push(Mutex::new(TTDevice {
-            device_info: Arc::new(guard.dev_info.clone()),
-            dev_id: guard.dev_id,
-            memory_pool: pool_id,
-            runtime: guard.runtime.clone(),
-            programs: Slab::new(),
-        }));
-        drop(guard);
-    }
-    let _ = TT_POOLS.set(pools);
-    let _ = TT_DEVICES.set(devs);
-    match (TT_POOLS.get(), TT_DEVICES.get()) {
-        (Some(pools), Some(devs)) => Ok((pools, devs)),
-        _ => Err(BackendError { status: ErrorStatus::Initialization, context: "TT init failed".into() }),
-    }
+    let b = TT_BACKEND.get_or_init(initialize_backend);
+    Ok((&b.pools, &b.devices))
 }
 
 pub(super) fn pool(id: u16) -> Result<&'static Mutex<TTMemoryPool>, BackendError> {

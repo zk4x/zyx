@@ -52,16 +52,446 @@
 //! NEVER add another prepass; NEVER bury a transformation inside
 //! conversion or inside another pass.
 
-use super::tenstorrent::{CBId, FusedKind, FusedPat, NocEmitter, TT_DRAM_PAGE_BYTES, TtSection};
 use crate::{
     DType, Map, Set,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TileDim, UOp},
+    kernel::{BOp, IDX_T, Kernel, MMADType, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TileDim, UOp},
     slab::{Slab, SlabId},
     types::TinyString,
 };
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write};
+
+fn is_one_const(kernel: &Kernel, op: OpId) -> bool {
+    kernel.resolve_const(op).is_some_and(|c| c.is_one())
+}
+
+/// Kernel sections delimited by barriers: reader (head -> 1st barrier),
+/// compute (1st -> 2nd), writer (2nd -> end).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TtSection {
+    Reader,
+    Compute,
+    Writer,
+}
+
+impl TtSection {
+    /// Step to the next section at a barrier. Panics past the writer:
+    /// kernels have exactly 3 sections (2 barriers).
+    fn advance(&mut self) {
+        *self = match self {
+            TtSection::Reader => TtSection::Compute,
+            TtSection::Compute => TtSection::Writer,
+            TtSection::Writer => {
+                panic!("tenstorrent kernels have exactly 3 sections (2 barriers)")
+            }
+        };
+    }
+}
+
+/// DRAM buffer page size in bytes: every DRAM `TensorAccessor` strides by
+/// the buffer page size, never the dtype tile size.
+pub(crate) const TT_DRAM_PAGE_BYTES: u32 = 4096;
+
+/// Subset check for inner containment: every consumer is inside
+/// the pattern (unlike [`uses_exactly`], the pattern may hold other
+/// ops that do not consume this one).
+fn uses_within(consumers: &Map<OpId, Vec<OpId>>, inner: OpId, allowed: &[OpId]) -> bool {
+    match consumers.get(&inner) {
+        None => false,
+        Some(cs) => !cs.is_empty() && cs.iter().all(|c| allowed.contains(c)),
+    }
+}
+
+/// A composite the backend recognizes and emits as one LLK call
+/// (`sigmoid_tile` / `silu_tile` from `compute_kernel_api.h`). The
+/// kernel IR is unchanged — no new `UOp`, no other backend touched.
+/// A missed match only costs speed: the plain composite still emits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum FusedKind {
+    Sigmoid,
+    Silu,
+}
+
+/// Closed op list for one section: the section's ops in IR order with
+/// their dtypes and section-local refcounts.
+pub(crate) struct SectionData {
+    /// Ops in IR order.
+    pub(crate) ops: Vec<OpId>,
+    /// Dtype and layout per op.
+    pub(crate) dtypes: Map<OpId, (DType, MemLayout)>,
+    /// Refcounts counting uses inside this section only.
+    pub(crate) rcs: Map<OpId, u32>,
+}
+
+/// A matched composite: its external (non-const) input plus the ops
+/// the single call subsumes (root excluded — the root stays in the
+/// section op list, the inners are filtered out of it).
+#[derive(Clone, Debug)]
+pub(crate) struct FusedPat {
+    pub(crate) kind: FusedKind,
+    pub(crate) x: OpId,
+    pub(crate) inners: Vec<OpId>,
+}
+
+/// Set-equality on a consumer list: every consumer is expected and
+/// every expected op consumes (order-independent — the two users of
+/// a shared `exp` may appear in either IR order).
+fn uses_exactly(consumers: &Map<OpId, Vec<OpId>>, inner: OpId, expected: &[OpId]) -> bool {
+    match consumers.get(&inner) {
+        None => false,
+        Some(cs) => cs.len() == expected.len() && cs.iter().all(|c| expected.contains(c)),
+    }
+}
+
+impl FusedKind {
+    pub(crate) fn init_name(self) -> &'static str {
+        match self {
+            FusedKind::Sigmoid => "sigmoid_tile_init();",
+            FusedKind::Silu => "silu_tile_init();",
+        }
+    }
+
+    pub(crate) fn call_name(self) -> &'static str {
+        match self {
+            FusedKind::Sigmoid => "sigmoid_tile",
+            FusedKind::Silu => "silu_tile",
+        }
+    }
+
+    /// Either fused shape at `op` (silu first): tile-domain float
+    /// roots only (BF16/FP32 DST; F16 SFPU is unproven on this
+    /// board). Strict containment — every subsumed op's consumers
+    /// are all inside the pattern, and the external input is consumed
+    /// only by the pattern (the single call transforms its slot in
+    /// place). Anything else falls back to the plain composite —
+    /// slower, never wrong.
+    pub(crate) fn match_pat(kernel: &Kernel, data: &SectionData, consumers: &Map<OpId, Vec<OpId>>, op: OpId) -> Option<FusedPat> {
+        let (dt, layout) = data.dtypes.get(&op).copied()?;
+        if !matches!(layout, MemLayout::Tile { .. }) || !matches!(dt, DType::F32 | DType::BF16) {
+            return None;
+        }
+        Self::silu_pat(kernel, data, consumers, op).or_else(|| Self::sigmoid_pat(kernel, data, consumers, op))
+    }
+
+    /// Sigmoid shape below `s` (no containment yet): the external
+    /// input and the subsumed ops under `s` (`s` excluded — the caller
+    /// decides whether `s` stays (standalone root) or goes (silu
+    /// inner)). Two spellings: the builder composite
+    /// `reciprocal(1 + exp(-x))` and the eager `exp(x) / (exp(x) + 1)`
+    /// (shared `exp`, hence the two-consumer shape).
+    fn sigmoid_shape(kernel: &Kernel, data: &SectionData, s: OpId) -> Option<(OpId, Vec<OpId>)> {
+        if let Op::Unary { x: den, uop: UOp::Reciprocal } = kernel.at(s) {
+            let Op::Binary { x: a, y: b, bop: BOp::Add } = kernel.at(*den) else {
+                return None;
+            };
+            let e = if is_one_const(kernel, *a) {
+                *b
+            } else if is_one_const(kernel, *b) {
+                *a
+            } else {
+                return None;
+            };
+            let Op::Unary { x: nx, uop: UOp::Exp } = kernel.at(e) else {
+                return None;
+            };
+            let Op::Unary { x, uop: UOp::Neg } = kernel.at(*nx) else {
+                return None;
+            };
+            if !matches!(data.dtypes.get(x).map(|d| d.1), Some(MemLayout::Tile { .. })) {
+                return None;
+            }
+            return Some((*x, vec![*den, e, *nx]));
+        }
+        let Op::Binary { x: z, y: den, bop: BOp::Div } = kernel.at(s) else {
+            return None;
+        };
+        let Op::Binary { x: a, y: b, bop: BOp::Add } = kernel.at(*den) else {
+            return None;
+        };
+        if !(is_one_const(kernel, *a) && *b == *z || is_one_const(kernel, *b) && *a == *z) {
+            return None;
+        }
+        let Op::Unary { x, uop: UOp::Exp } = kernel.at(*z) else {
+            return None;
+        };
+        if !matches!(data.dtypes.get(x).map(|d| d.1), Some(MemLayout::Tile { .. })) {
+            return None;
+        }
+        Some((*x, vec![*z, *den]))
+    }
+
+    /// Silu shape at `op`: `mul(x, s)` (either side) with `s` a
+    /// sigmoid shape fed by the mul's other side. `s` itself goes
+    /// (its only consumer is the mul); the root stays.
+    fn silu_pat(kernel: &Kernel, data: &SectionData, consumers: &Map<OpId, Vec<OpId>>, op: OpId) -> Option<FusedPat> {
+        let Op::Binary { x: a, y: b, bop: BOp::Mul } = kernel.at(op) else {
+            return None;
+        };
+        for (s, other) in [(*a, *b), (*b, *a)] {
+            let Some((x, below)) = Self::sigmoid_shape(kernel, data, s) else {
+                continue;
+            };
+            if x != other || !uses_exactly(consumers, s, &[op]) {
+                continue;
+            }
+            let mut allowed = below.clone();
+            allowed.push(s);
+            if !below.iter().all(|&inner| uses_within(consumers, inner, &allowed)) {
+                continue;
+            }
+            let Some(&entry) = below.iter().find(|&&o| matches!(kernel.at(o), Op::Unary { x: ix, .. } if *ix == x)) else {
+                continue;
+            };
+            if !uses_exactly(consumers, x, &[entry, op]) {
+                continue;
+            }
+            let mut inners = below;
+            inners.push(s);
+            return Some(FusedPat { kind: FusedKind::Silu, x, inners });
+        }
+        None
+    }
+
+    /// Standalone sigmoid shape at `op`: the root stays, only the ops
+    /// below it go.
+    fn sigmoid_pat(kernel: &Kernel, data: &SectionData, consumers: &Map<OpId, Vec<OpId>>, op: OpId) -> Option<FusedPat> {
+        let Some((x, below)) = Self::sigmoid_shape(kernel, data, op) else {
+            return None;
+        };
+        let entry = below.iter().find(|&&o| matches!(kernel.at(o), Op::Unary { x: ix, .. } if *ix == x)).copied().unwrap_or(x);
+        let mut allowed = below.clone();
+        allowed.push(op);
+        if !below.iter().all(|&inner| uses_within(consumers, inner, &allowed)) {
+            return None;
+        }
+        if !uses_exactly(consumers, x, &[entry]) {
+            return None;
+        }
+        Some(FusedPat { kind: FusedKind::Sigmoid, x, inners: below })
+    }
+}
+
+/// Host-side param data plus dataflow (NOC) traffic emission.
+///
+/// Holds the global head-order ordinal of every param and the
+/// Global/GlobalMut dtypes, and emits the reader/writer NOC sequences:
+/// address computation, async read/write, and read/write barriers. The
+/// section generators own the source text; every method here checks its
+/// inputs and appends exactly one sequence.
+pub(crate) struct NocEmitter {
+    /// Global head-order ordinal of every param (all kinds).
+    pub(crate) param_ordinal_of: Map<OpId, u32>,
+    /// Global params in head order (kernel inputs).
+    pub(crate) input_dtypes: Vec<DType>,
+    /// GlobalMut params in head order (kernel outputs).
+    pub(crate) output_dtypes: Vec<DType>,
+    /// Section params in list order: this section's runtime args.
+    /// Refilled by `begin_section` for every section.
+    arg_pos: Map<OpId, u32>,
+    /// Chained accessor for the last declared DRAM param: each new
+    /// accessor's compile-time args offset chains off the previous
+    /// one. Reset by `begin_section`.
+    prev_accessor: Option<String>,
+}
+
+#[allow(unused_must_use)]
+impl NocEmitter {
+    /// Build param state from a kernel: the param ordinals and
+    /// input/output dtypes. One walk.
+    pub(crate) fn new(kernel: &Kernel) -> Self {
+        let mut param_ordinal_of: Map<OpId, u32> = Map::default();
+        let mut next_param = 0u32;
+        let mut input_dtypes: Vec<DType> = Vec::new();
+        let mut output_dtypes: Vec<DType> = Vec::new();
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            if let Op::Param { dtype, kind, .. } = &kernel.ops[scan].op {
+                param_ordinal_of.insert(scan, next_param);
+                next_param += 1;
+                match kind {
+                    ParamKind::Global => input_dtypes.push(*dtype),
+                    ParamKind::GlobalMut => output_dtypes.push(*dtype),
+                    ParamKind::Variable => {}
+                }
+            }
+            scan = kernel.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("tenstorrent2 compiler scan did not finish in 10000 steps");
+        }
+        Self { param_ordinal_of, input_dtypes, output_dtypes, arg_pos: Map::default(), prev_accessor: None }
+    }
+
+    /// Start a section: the section's params in list order become its
+    /// runtime args, and the accessor chain restarts.
+    fn begin_section(&mut self, params: &[OpId]) {
+        self.arg_pos.clear();
+        for (i, &p) in params.iter().enumerate() {
+            self.arg_pos.insert(p, i as u32);
+        }
+        self.prev_accessor = None;
+    }
+
+    /// Runtime arg index for a section param.
+    fn arg(&self, op_id: OpId, who: &str) -> u32 {
+        self.arg_pos.get(&op_id).copied().expect(who)
+    }
+
+    /// Group-index runtime arg: section args first, then one per axis.
+    fn group_arg(&self, axis: u32) -> u32 {
+        self.arg_pos.len() as u32 + axis
+    }
+
+    /// `noc_async_read` of one tile plus its barrier: DRAM address
+    /// `rnoc{op_id}` from accessor `p{ld_src}`, then read into the CB
+    /// write pointer. `off` is the tile-slot offset within the
+    /// reserved block, in tile units ("0" = plain write pointer).
+    fn async_read_tile(
+        &self,
+        src: &mut String,
+        indent: &str,
+        op_id: OpId,
+        ld_src: OpId,
+        idx: &str,
+        elem_size: u32,
+        tile_bytes: u32,
+        cb: CBId,
+        off: &str,
+    ) {
+        writeln!(
+            src,
+            "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{TT_DRAM_PAGE_BYTES}), (uint32_t)(({idx}*{elem_size})%{TT_DRAM_PAGE_BYTES}));"
+        );
+        if off == "0" {
+            writeln!(src, "{indent}noc_async_read(rnoc{op_id}, cb{cb}.get_write_ptr(), {tile_bytes});");
+        } else {
+            writeln!(src, "{indent}noc_async_read(rnoc{op_id}, cb{cb}.get_write_ptr() + {off}*{tile_bytes}, {tile_bytes});");
+        }
+        writeln!(src, "{indent}noc_async_read_barrier();");
+    }
+
+    /// `noc_async_write` of one tile plus its barrier: CB read pointer
+    /// to DRAM address `wnoc{op_id}` in accessor `p_out{dst}`. `off`
+    /// is the tile-slot offset within the waited block, in tile units
+    /// ("0" = plain read pointer).
+    fn async_write_tile(
+        &self,
+        src: &mut String,
+        indent: &str,
+        op_id: OpId,
+        dst: OpId,
+        idx: &str,
+        elem_size: u32,
+        tile_bytes: u32,
+        cb: CBId,
+        off: &str,
+    ) {
+        writeln!(
+            src,
+            "{indent}uint64_t wnoc{op_id} = p_out{dst}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{TT_DRAM_PAGE_BYTES}), (uint32_t)(({idx}*{elem_size})%{TT_DRAM_PAGE_BYTES}));"
+        );
+        if off == "0" {
+            writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr(), wnoc{op_id}, {tile_bytes});");
+        } else {
+            writeln!(src, "{indent}noc_async_write(cb{cb}.get_read_ptr() + {off}*{tile_bytes}, wnoc{op_id}, {tile_bytes});");
+        }
+        writeln!(src, "{indent}noc_async_write_barrier();");
+    }
+
+    /// Reader `Global` param: DRAM address register plus the chained
+    /// `TensorAccessor` (each accessor's compile-time args offset chains
+    /// off the previous one).
+    fn declare_global(&mut self, src: &mut String, indent: &str, op_id: OpId) {
+        let arg = self.arg(op_id, "tenstorrent2 reader param missing from section args");
+        writeln!(src, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({arg});");
+        let cta = match &self.prev_accessor {
+            None => String::from("0"),
+            Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
+        };
+        writeln!(src, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
+        writeln!(src, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {TT_DRAM_PAGE_BYTES});");
+        self.prev_accessor = Some(format!("args{op_id}"));
+    }
+
+    /// Reader-side `GlobalMut` param: same accessor shape, `dst` naming.
+    fn declare_global_mut(&mut self, src: &mut String, indent: &str, op_id: OpId) {
+        let arg = self.arg(op_id, "tenstorrent2 reader param missing from section args");
+        writeln!(src, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({arg});");
+        let cta = match &self.prev_accessor {
+            None => String::from("0"),
+            Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
+        };
+        writeln!(src, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
+        writeln!(src, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {TT_DRAM_PAGE_BYTES});");
+        self.prev_accessor = Some(format!("args{op_id}"));
+    }
+
+    /// Writer-side `GlobalMut` param: `out`/`args_out`/`p_out` naming.
+    fn declare_writer_out(&mut self, src: &mut String, indent: &str, op_id: OpId) {
+        let arg = self.arg(op_id, "tenstorrent2 writer param missing from section args");
+        writeln!(src, "{indent}uint32_t out{op_id} = get_arg_val<uint32_t>({arg});");
+        let cta = match &self.prev_accessor {
+            None => String::from("0"),
+            Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
+        };
+        writeln!(src, "{indent}auto args_out{op_id} = TensorAccessorArgs<{cta}>({arg});");
+        writeln!(src, "{indent}auto p_out{op_id} = TensorAccessor(args_out{op_id}, out{op_id}, {TT_DRAM_PAGE_BYTES});");
+        self.prev_accessor = Some(format!("args_out{op_id}"));
+    }
+
+    /// Trailing reader barrier: every async read lands before exit.
+    fn final_read_barrier(&self, src: &mut String, indent: &str) {
+        writeln!(src, "{indent}noc_async_read_barrier();");
+    }
+}
+
+/// Circular buffer ID for Tenstorrent codegen v2.
+///
+/// This is a unique identifier for each circular buffer in the compiled
+/// Tenstorrent program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CBId(pub(crate) u32);
+
+impl CBId {
+    /// NULL
+    pub const NULL: Self = Self(u32::MAX);
+
+    /// Check if this CBId is null.
+    pub const fn is_null(self) -> bool {
+        self.0 == u32::MAX
+    }
+}
+
+impl std::fmt::Display for CBId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl From<usize> for CBId {
+    fn from(value: usize) -> Self {
+        CBId(value as u32)
+    }
+}
+
+impl From<CBId> for usize {
+    fn from(value: CBId) -> usize {
+        value.0 as usize
+    }
+}
+
+impl SlabId for CBId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
 
 /// DST tile slot. Budget: 16 in BF16 mode, 8 in FP32 mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -2871,9 +3301,11 @@ impl Compiler {
         for op in &self.ops {
             let s = section;
             let si = s as usize;
-            // Section preamble on first content op (declares flush
-            // here, matching legacy `declare_all` placement).
-            if !started[si] && !matches!(op, TTOp::EndReader | TTOp::EndCompute | TTOp::EndWriter) {
+            // Section preamble: every section gets its header, even an
+            // empty one (legacy `generate_compute` always emits
+            // `kernel_main`, so a pure-copy kernel still renders three
+            // sections).
+            if !started[si] {
                 match s {
                     0 => {
                         writeln!(out, "#include <cstdint>")?;
@@ -3553,5 +3985,309 @@ pub(crate) fn generate_tt_program2(kernel: &Kernel) -> Result<TTProgram2, Backen
 impl Display for Compiler {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         return write!(f, "{}", self.render());
+    }
+}
+
+impl Kernel {
+    /// All ops needed by the stores inside the given section, in IR order,
+    /// with their dtypes and section-local refcounts.
+    ///
+    /// The list holds the section's stores, the transitive closure of
+    /// their data dependencies, and the structural ops (loops, branches,
+    /// ranges, barriers) lexically inside the section. `dtypes`/`rcs`
+    /// mirror [`Kernel::compute_dtypes_and_rcs`] restricted to this set:
+    /// refcounts only count uses inside the section.
+    pub(crate) fn get_needed_ops(&self, tt_section: TtSection) -> SectionData {
+        // Phase 1: stores and structural ops lexically inside the section.
+        // Loop/range length operands seed the closure: the section walk
+        // references them (r{len}) and they would otherwise dangle.
+        let mut section = TtSection::Reader;
+        let mut stores: Vec<OpId> = Vec::new();
+        let mut starters: Vec<OpId> = Vec::new();
+        let mut structural: Set<OpId> = Set::default();
+        let mut scan = self.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            // Barriers always track the section; every other arm carries
+            // a guard so the op matches only inside the target section.
+            match self.ops[scan].op {
+                Op::Barrier => {
+                    // Delimiters only: barriers advance the section scan
+                    // but never join any section's op list.
+                    section.advance();
+                }
+                Op::Store { .. } if section == tt_section => {
+                    stores.push(scan);
+                }
+                Op::Loop { len } if section == tt_section => {
+                    structural.insert(scan);
+                    starters.push(len);
+                }
+                Op::Range { kind, .. } if section == tt_section => {
+                    structural.insert(scan);
+                    match kind {
+                        RangeKind::Group(len) | RangeKind::Warp(len) => starters.push(len),
+                        RangeKind::Local(_) => {}
+                    }
+                }
+                Op::EndLoop | Op::If { .. } | Op::EndIf if section == tt_section => {
+                    structural.insert(scan);
+                }
+                Op::Asm { ref ops, .. } if section == tt_section => {
+                    // Opaque side effect (e.g. `init_sfpu` setup): always
+                    // belongs to its lexical section, even with no users.
+                    structural.insert(scan);
+                    starters.extend(ops.iter().copied());
+                }
+                _ => {}
+            }
+            scan = self.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("get_needed_ops did not finish in 10000 steps");
+        }
+        // Phase 2: transitive data-dependency closure over the stores.
+        let mut needed: Set<OpId> = Set::default();
+        let mut stack: Vec<OpId> = starters;
+        for &store in &stores {
+            needed.insert(store);
+            if let Op::Store { dst, src, index, .. } = self.ops[store].op {
+                stack.push(dst);
+                stack.push(src);
+                stack.push(index);
+            } else {
+                unreachable!("get_needed_ops collected a non-store");
+            }
+        }
+        for _ in 0..10_000 {
+            let Some(id) = stack.pop() else { break };
+            if id.is_null() || needed.contains(&id) {
+                continue;
+            }
+            needed.insert(id);
+            match self.ops[id].op {
+                Op::Const(_) | Op::Storage { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => {}
+                Op::Param { shape, .. } => {
+                    stack.push(shape);
+                }
+                Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } | Op::BroadcastTile { x, .. } => {
+                    stack.push(x);
+                }
+                Op::Binary { x, y, .. } => {
+                    stack.push(x);
+                    stack.push(y);
+                }
+                Op::Stack { ref ops } => {
+                    stack.extend(ops.iter().copied());
+                }
+                Op::Store { dst, src, index, .. } => {
+                    stack.push(dst);
+                    stack.push(src);
+                    stack.push(index);
+                }
+                Op::Load { src, index, .. } => {
+                    stack.push(src);
+                    stack.push(index);
+                }
+                Op::Range { kind, .. } => match kind {
+                    RangeKind::Group(len) | RangeKind::Warp(len) => {
+                        stack.push(len);
+                    }
+                    RangeKind::Local(_) => {}
+                },
+                Op::Loop { len } => {
+                    stack.push(len);
+                }
+                Op::If { condition } => {
+                    stack.push(condition);
+                }
+                Op::Mad { x, y, z } => {
+                    stack.push(x);
+                    stack.push(y);
+                    stack.push(z);
+                }
+                Op::Index { vec, .. } => {
+                    stack.push(vec);
+                }
+                Op::Wmma { a, b, c, .. } => {
+                    stack.push(a);
+                    stack.push(b);
+                    stack.push(c);
+                }
+                Op::ReduceTile { x, scaler, acc, .. } => {
+                    stack.push(x);
+                    stack.push(scaler);
+                    stack.push(acc);
+                }
+                Op::MatmulTile { x, y, acc } => {
+                    stack.push(x);
+                    stack.push(y);
+                    stack.push(acc);
+                }
+                Op::TransposeTile { x } => {
+                    stack.push(x);
+                }
+                Op::Asm { ref ops, .. } => {
+                    stack.extend(ops.iter().copied());
+                }
+                Op::Move { x, .. } => {
+                    stack.push(x);
+                }
+                Op::Reduce { x, reduce_axis, .. } => {
+                    stack.push(x);
+                    stack.push(reduce_axis);
+                }
+            }
+        }
+        if !stack.is_empty() {
+            panic!("get_needed_ops closure did not finish in 10000 steps");
+        }
+        // Phase 3: emit in IR order with dtypes and section-local refcounts.
+        let mut ops: Vec<OpId> = Vec::new();
+        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::default();
+        let mut rcs: Map<OpId, u32> = Map::default();
+        let mut op_id = self.head;
+        for _ in 0..10_000 {
+            if op_id.is_null() {
+                break;
+            }
+            if needed.contains(&op_id) || structural.contains(&op_id) {
+                ops.push(op_id);
+                // Every listed op carries a section refcount, even when
+                // nothing consumes it (zero uses). A missing entry
+                // downstream is a phase-3 bug, never a default.
+                rcs.entry(op_id).or_insert(0);
+                match self.ops[op_id].op {
+                    Op::Move { .. } | Op::Reduce { .. } => {
+                        unreachable!()
+                    }
+                    Op::ReduceTile { x, scaler, acc, .. } => {
+                        dtypes.insert(op_id, dtypes[&acc]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(scaler).or_insert(0) += 1;
+                        *rcs.entry(acc).or_insert(0) += 1;
+                    }
+                    Op::Const(x) => {
+                        dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
+                    }
+                    Op::Param { dtype, .. } => {
+                        dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                    }
+                    Op::Storage { dtype, .. } => {
+                        dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                    }
+                    Op::Load { src, index, layout } => {
+                        dtypes.insert(op_id, (dtypes[&src].0, layout));
+                        *rcs.entry(index).or_insert(0) += 1;
+                    }
+                    Op::Store { dst, src: x, index, layout } => {
+                        debug_assert_eq!(dtypes[&x].1, layout);
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(dst).or_insert(0) += 1;
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(index).or_insert(0) += 1;
+                    }
+                    Op::Cast { x, dtype } => {
+                        dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::Bitcast { x, dtype } => {
+                        dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::Unary { x, .. } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::Binary { x, y, bop } => {
+                        let dtype = if bop.returns_bool() {
+                            (DType::Bool, dtypes[&x].1)
+                        } else {
+                            dtypes[&x]
+                        };
+                        dtypes.insert(op_id, dtype);
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(y).or_insert(0) += 1;
+                    }
+                    Op::Asm { ref ops, .. } => {
+                        let dtype = dtypes[&ops[0]];
+                        dtypes.insert(op_id, dtype);
+                        for &x in ops.iter() {
+                            *rcs.entry(x).or_insert(0) += 1;
+                        }
+                    }
+                    Op::Stack { ref ops } => {
+                        let dtype = dtypes[&ops[0]];
+                        dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
+                        for &x in ops.iter() {
+                            *rcs.entry(x).or_insert(0) += 1;
+                        }
+                    }
+                    Op::Index { vec, idx: _ } => {
+                        let dtype = dtypes[&vec];
+                        dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
+                        *rcs.entry(vec).or_insert(0) += 1;
+                    }
+                    Op::Wmma { dims: _, layout: _, dtype, a, b, c } => {
+                        let out_dtype = match dtype {
+                            MMADType::f16_f16_f16_f32 => DType::F32,
+                            MMADType::f16_f16_f16_f16 => DType::F16,
+                            MMADType::s8_s8_s32_s32
+                            | MMADType::s4_s4_s32_s32
+                            | MMADType::b1_b1_s32_xor_popc
+                            | MMADType::b1_b1_s32_and_popc => DType::I32,
+                        };
+                        dtypes.insert(op_id, (out_dtype, MemLayout::Vector(4)));
+                        *rcs.entry(a).or_insert(0) += 1;
+                        *rcs.entry(b).or_insert(0) += 1;
+                        *rcs.entry(c).or_insert(0) += 1;
+                    }
+                    Op::MatmulTile { x, y, acc } => {
+                        dtypes.insert(op_id, dtypes[&acc]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(y).or_insert(0) += 1;
+                        *rcs.entry(acc).or_insert(0) += 1;
+                    }
+                    Op::TransposeTile { x } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::BroadcastTile { x, .. } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::Mad { x, y, z } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(y).or_insert(0) += 1;
+                        *rcs.entry(z).or_insert(0) += 1;
+                    }
+                    Op::Range { kind, .. } => {
+                        if let RangeKind::Group(len) = kind {
+                            *rcs.entry(len).or_insert(0) += 1;
+                        }
+                        if let RangeKind::Warp(local_id) = kind {
+                            *rcs.entry(local_id).or_insert(0) += 1;
+                        }
+                        dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
+                    }
+                    Op::Loop { len, .. } => {
+                        *rcs.entry(len).or_insert(0) += 1;
+                        dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
+                    }
+                    Op::If { condition } => {
+                        *rcs.entry(condition).or_insert(0) += 1;
+                    }
+                    Op::Barrier | Op::EndIf | Op::EndLoop => {}
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        if !op_id.is_null() {
+            panic!("get_needed_ops did not finish in 10000 steps");
+        }
+        SectionData { ops, dtypes, rcs }
     }
 }

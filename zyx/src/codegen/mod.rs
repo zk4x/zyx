@@ -5,5 +5,5 @@ mod cuda;
 mod opencl;
 mod ptx;
 mod spirv;
-pub mod tenstorrent;
+//pub mod tenstorrent;
 pub mod tenstorrent2;
