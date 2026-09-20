@@ -6,7 +6,7 @@ use zyx_derive::Module;
 
 /// Applies a 2D convolution over an input signal composed of several input planes.
 ///
-/// See: https://pytorch.org/docs/stable/generated/torch.nn.Conv2d
+/// See: <https://pytorch.org/docs/stable/generated/torch.nn.Conv2d>
 #[derive(Debug, Module)]
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Conv2d {

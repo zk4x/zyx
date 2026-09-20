@@ -1401,7 +1401,7 @@ impl Kernel {
 
     /// Create a logical accumulator: a zero-initialized per-lane register
     /// tile over `tile`, split into device-native mma fragments (see
-    /// [`Kernel::mma_frag_dims`]). The tile must be a whole multiple of the
+    /// `Kernel::mma_frag_dims`). The tile must be a whole multiple of the
     /// fragment shape.
     pub fn acc<const N: usize>(&mut self, tile: [impl IntoOp; N], dtype: DType) -> Acc {
         let mut tile_ops = Vec::with_capacity(N);
@@ -1514,7 +1514,7 @@ impl Kernel {
     /// (e.g. shared-memory register views), so all origins are zero and the
     /// K base is 0 — no coords. The A/B views' K extent is processed in
     /// `frag_k` (8)-wide rounds. See [`Kernel::mma_at`] for the general
-    /// form and [`Kernel::mma_frag_dims`] for the fragment shape.
+    /// form and `Kernel::mma_frag_dims` for the fragment shape.
     pub fn mma(&mut self, acc: &Acc, a: &Partition, b: &Partition) {
         let c0 = self.const_idx(0u32);
         let coords = vec![c0; a.shape.len() + b.shape.len() - 1];
@@ -1784,9 +1784,9 @@ impl_into_op_float!(f16, bf16, f32, f64);
 
 /// Shared-memory tile: a `MemScope::Local` buffer of `depth` generations of
 /// `total(tile)` elements, cut from the global view `view_shape`. Created by
-/// [`Kernel::view_global_local`]; staged by [`Kernel::load_global_local`], one
+/// `view_global_local`; staged by [`Kernel::load_global_local`], one
 /// element per call. The tile is viewed in registers via
-/// [`Kernel::view_local_register`].
+/// `view_local_register`.
 /// `load_global_local` writes generation `k_coord % depth`, so `depth = 1` is
 /// classic single buffering and `depth = 2` is double buffering — the
 /// surrounding barrier structure (explicit, user-written) is identical.
@@ -1871,7 +1871,7 @@ impl Kernel {
     /// Coverage of the tile is user responsibility (thread-cooperative
     /// mappings like `id = la * threads + tid` are exactly how papers write
     /// it). Returns `()` — view the staged tile with
-    /// [`Kernel::view_local_register`].
+    /// `view_local_register`.
     pub fn load_global_local<const N: usize>(&mut self, shared: &LocalPartition<N>, origins: [impl IntoOp; N], id: impl IntoOp) {
         debug_assert!(N > 0, "load_global_local: rank must be non-zero");
         let origins: [OpId; N] = origins.map(|o| o.into_op(self));

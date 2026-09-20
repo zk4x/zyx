@@ -186,8 +186,8 @@ pub enum Op {
     },
 }
 
-/// Which dimension a [`Op::ReduceTile`] collapses, or a
-/// [`Op::BroadcastTile`] replicates, within each 32x32 tile.
+/// Which dimension a `Op::ReduceTile` collapses, or a
+/// `Op::BroadcastTile` replicates, within each 32x32 tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum TileDim {
     /// One value per row (reduce: 32 values carried in the result

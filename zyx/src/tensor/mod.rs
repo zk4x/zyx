@@ -1308,8 +1308,8 @@ impl Tensor {
     /// Compute the Huber loss between this tensor and `target` with threshold
     /// `delta`.
     ///
-    /// `0.5 * (x - y)^2` when `|x - y| <= delta`, otherwise `delta * |x - y|
-    /// - 0.5 * delta^2`. Returns the same dtype as the input.
+    /// `0.5 * (x - y)^2` when `|x - y| <= delta`, otherwise
+    /// `delta * |x - y| - 0.5 * delta^2`. Returns the same dtype as the input.
     ///
     /// # Example
     ///

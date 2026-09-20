@@ -96,9 +96,9 @@ pub enum Pool {
 pub enum Dev {
     /// Auto-select: resolves to the first available device from [`Dev::all`].
     Auto,
-    /// CPU backend (runs on [`Pool::Host`]).
+    /// CPU backend (runs on the host pool).
     C,
-    /// CBLAS backend for AOT matmuls (runs on [`Pool::Host`]).
+    /// CBLAS backend for AOT matmuls (runs on the host pool).
     Cblas,
     /// CUDA GPU with the given driver ordinal.
     Cuda(u16),

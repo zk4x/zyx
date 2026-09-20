@@ -13,9 +13,9 @@ pub struct GroupNorm {
     pub num_groups: Tensor,
     /// epsilon
     pub eps: f32,
-    /// shape: [C]
+    /// shape: `[C]`
     pub weight: Option<Tensor>,
-    /// shape: [C]
+    /// shape: `[C]`
     pub bias: Option<Tensor>,
 }
 

@@ -64,7 +64,7 @@ pub trait Module {
     }
 
     /// Save a single tensor to a `.npy` file (numpy array format).
-    /// Mirrors [`Self::load_numpy`]: little-endian, C order (Fortran order
+    /// Mirrors `load_numpy`: little-endian, C order (Fortran order
     /// is never written). Header is padded so data starts at a 64-byte
     /// boundary, like numpy >= 1.9. Numpy files hold a single array, so
     /// saving a module with more than one tensor is an error.
