@@ -15,7 +15,7 @@
 #![allow(unused)]
 
 use crate::{
-    graph::{ClassId, Graph, Node},
+    graph::{OpId, Graph, Node},
     kernel::BOp,
     shape::Dim,
 };
@@ -25,7 +25,7 @@ mod matmul;
 impl Graph {
     /// Resolves a class's symbolic shape to numeric dims, or `None` if any
     /// dim is not a constant.
-    fn const_shape(&self, cid: ClassId) -> Option<Vec<Dim>> {
+    fn const_shape(&self, cid: OpId) -> Option<Vec<Dim>> {
         self.shape(cid)
             .into_iter()
             .map(|dim| match &self.nodes[self.classes[dim].nodes[0]].node {
@@ -37,7 +37,7 @@ impl Graph {
 
     /// Finds a `Reduce(Add)` over the single trailing axis of a 3D product.
     /// Returns the product class and the contraction dim `k`.
-    fn reduce_add_last(&self, cid: ClassId) -> Option<(ClassId, Dim)> {
+    fn reduce_add_last(&self, cid: OpId) -> Option<(OpId, Dim)> {
         self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
             Node::Reduce { x, rop: BOp::Add, axes } => {
                 let prod_shape = self.const_shape(*x)?;
@@ -53,7 +53,7 @@ impl Graph {
 
     /// Finds the elementwise `Mul` beneath the product class, through an optional
     /// accumulator `Cast` (`dot` casts the product before reducing).
-    fn mul_of(&self, cid: ClassId) -> Option<(ClassId, ClassId)> {
+    fn mul_of(&self, cid: OpId) -> Option<(OpId, OpId)> {
         if let Some((x, y)) = self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
             Node::Binary { x, y, bop: BOp::Mul } => Some((*x, *y)),
             _ => None,
@@ -75,7 +75,7 @@ impl Graph {
     /// The shape is read from the source class itself, so matching does not
     /// depend on how the shape was produced (e.g. a `Reshape` in the canonical
     /// matmul form, or an eager tensor already at the broadcast shape).
-    fn expand_src(&self, cid: ClassId) -> Option<(ClassId, Vec<Dim>)> {
+    fn expand_src(&self, cid: OpId) -> Option<(OpId, Vec<Dim>)> {
         let x = self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
             Node::Expand { x, .. } => Some(*x),
             _ => None,
@@ -86,7 +86,7 @@ impl Graph {
     /// Finds the source of a 2D `Permute [1, 0]` (a `[n, k]` transposed from
     /// `[k, n]`), looking through shape-only wrappers such as the `Reshape` to
     /// `[1, n, k]` in the broadcast matmul form.
-    fn transpose_src(&self, cid: ClassId) -> Option<ClassId> {
+    fn transpose_src(&self, cid: OpId) -> Option<OpId> {
         self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
             Node::Reshape { x, .. } => self.transpose_src(*x),
             Node::Permute { x, axes } if axes.len() == 2 && axes[0] == 1 && axes[1] == 0 => Some(*x),

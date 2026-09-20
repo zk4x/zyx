@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, Set,
-    graph::{ClassId, Graph, JitKernelData, JitKernelId, Node, NodeData, NodeId},
+    graph::{OpId, Graph, JitKernelData, JitKernelId, Node, OpNode, OpId},
     kernel::{Dev, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind},
     shape::UAxis,
     slab::{Slab, SlabId},
@@ -98,7 +98,7 @@ impl Graph {
     ///    movement chain into src's kernel and uses an in-place store, then re-points dst's
     ///    remaining consumers at a fresh load kernel (the same contract `add_store` uses for
     ///    every other stored class).
-    pub fn kernelize(&mut self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, allowed: Option<&Set<ClassId>>) {
+    pub fn kernelize(&mut self, inputs: &Set<OpId>, outputs: &BTreeSet<OpId>, allowed: Option<&Set<OpId>>) {
         // A class can't be both a boundary input and a region output — that
         // would make a fused kernel load and store the same class.
         if cfg!(debug_assertions) {
@@ -112,7 +112,7 @@ impl Graph {
 
         let order = self.topo_sort_classes::<true>(inputs, outputs, allowed);
 
-        let mut rcs: Map<ClassId, u32> = Map::default();
+        let mut rcs: Map<OpId, u32> = Map::default();
 
         for &cid in &order {
             // Boundary inputs are loaded, not fused — their structural nodes
@@ -134,7 +134,7 @@ impl Graph {
                 // (Reshape/Expand shape, Pad lp/len, Narrow start/len, Leaf
                 // shape) alike. Symbolic classes never materialize; their
                 // consumers replay them on demand and decrement inline.
-                let data_slots: Vec<ClassId> = match &self.nodes[nid].node {
+                let data_slots: Vec<OpId> = match &self.nodes[nid].node {
                     Node::Const { .. } => vec![],
                     Node::Leaf { shape, .. } => {
                         if shape.is_null() {
@@ -166,7 +166,7 @@ impl Graph {
             *rcs.entry(cid).or_default() += 1;
         }
 
-        let mut visited: Map<ClassId, (JitKernelId, OpId)> = Map::default();
+        let mut visited: Map<OpId, (JitKernelId, OpId)> = Map::default();
 
         for (i, &cid) in order.iter().enumerate() {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
@@ -217,7 +217,7 @@ impl Graph {
                     Node::Stack { ref ops } => {
                         // Copy the element list out of the node so the shared
                         // borrow of self.nodes ends before we mutate kernels.
-                        let ops: Vec<ClassId> = ops.iter().copied().collect();
+                        let ops: Vec<OpId> = ops.iter().copied().collect();
                         // Symbolic elements never enter visited: record their
                         // status before any consumption mutates visited.
                         let sym: Vec<bool> = ops.iter().map(|&e| !visited.contains_key(&e)).collect();
@@ -526,7 +526,7 @@ impl Graph {
                         // exist — trace it instead of assuming a position,
                         // fail loud otherwise.
                         let dst_loads = self.jit_kernels[dst_kid].loads.clone();
-                        let is_var_class = |g: &Self, c: ClassId| matches!(&g.nodes[g.classes[c].first].node, Node::Leaf { dtype, shape, .. } if *dtype == IDX_T && shape.is_null());
+                        let is_var_class = |g: &Self, c: OpId| matches!(&g.nodes[g.classes[c].first].node, Node::Leaf { dtype, shape, .. } if *dtype == IDX_T && shape.is_null());
                         let mut buffer_classes = dst_loads.iter().copied().filter(|&c| !is_var_class(self, c));
                         let dst_leaf = match (buffer_classes.next(), buffer_classes.next()) {
                             (Some(c), None) => c,
@@ -584,7 +584,7 @@ impl Graph {
                         // position. Every replayed define keeps its load class,
                         // aligned in define order (positional args law).
                         let mut op_map: Map<OpId, OpId> = Map::default();
-                        let mut new_def_loads: Vec<ClassId> = Vec::new();
+                        let mut new_def_loads: Vec<OpId> = Vec::new();
                         let mut def_i = 0usize;
                         let mut op_id = dst_kernel.head;
                         while !op_id.is_null() {
@@ -946,7 +946,7 @@ impl Graph {
 
             if cfg!(debug_assertions) {
                 for ek in self.jit_kernels.values() {
-                    let mut counts: Map<ClassId, u32> = Map::default();
+                    let mut counts: Map<OpId, u32> = Map::default();
                     for &ocid in &ek.outputs {
                         *counts.entry(ocid).or_default() += 1;
                     }
@@ -1062,7 +1062,7 @@ impl Graph {
     /// remaining consumers at a fresh loader" contract used by [`add_store`] and the assign
     /// arm's post-in-place-store handling — the inverse of placement, so consumers never
     /// re-enter a kernel whose `outputs` no longer contains the class.
-    fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
+    fn new_load_kernel(&mut self, cid: OpId, rc: u32) -> (JitKernelId, OpId) {
         let kid = self.jit_kernels.push(JitKernelData {
             kernel: Kernel::from_device_id(Dev::Auto, None),
             outputs: Vec::new(),
@@ -1089,11 +1089,11 @@ impl Graph {
     #[must_use]
     fn add_store(
         &mut self,
-        cid: ClassId,
+        cid: OpId,
         kid: JitKernelId,
         op_id: OpId,
-        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
-        rcs: &Map<ClassId, u32>,
+        visited: &mut Map<OpId, (JitKernelId, OpId)>,
+        rcs: &Map<OpId, u32>,
     ) -> (JitKernelId, OpId) {
         //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         //println!("outputs={:?}", self.ekernels[kid].outputs);
@@ -1147,7 +1147,7 @@ impl Graph {
         }
     }
 
-    fn merge_kernels(&mut self, src: JitKernelId, dst: JitKernelId, visited: &mut Map<ClassId, (JitKernelId, OpId)>) {
+    fn merge_kernels(&mut self, src: JitKernelId, dst: JitKernelId, visited: &mut Map<OpId, (JitKernelId, OpId)>) {
         let JitKernelData { kernel: src_kernel, outputs, loads, stores } = unsafe { self.jit_kernels.remove_and_return(src) };
 
         {
@@ -1208,11 +1208,11 @@ impl Graph {
     #[allow(clippy::too_many_arguments)] // graph kernel API, arguments are structural parameters
     fn duplicate_or_store_class(
         &mut self,
-        child: ClassId,
+        child: OpId,
         mut kid: JitKernelId,
         mut op_id: OpId,
-        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
-        rcs: &Map<ClassId, u32>,
+        visited: &mut Map<OpId, (JitKernelId, OpId)>,
+        rcs: &Map<OpId, u32>,
         force_store: bool,
     ) -> (JitKernelId, OpId) {
         // if kernel has stores, store child and create fresh load kernel
@@ -1275,10 +1275,10 @@ impl Graph {
 
     fn consume(
         &mut self,
-        cid: ClassId,
+        cid: OpId,
         kid: JitKernelId,
-        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
-        rcs: &mut Map<ClassId, u32>,
+        visited: &mut Map<OpId, (JitKernelId, OpId)>,
+        rcs: &mut Map<OpId, u32>,
     ) {
         *rcs.get_mut(&cid).unwrap() -= 1;
         remove_first_output(&mut self.jit_kernels, kid, cid);
@@ -1287,19 +1287,19 @@ impl Graph {
         }
     }
 
-    fn push_outputs(&mut self, kid: JitKernelId, cid: ClassId, n: u32) {
+    fn push_outputs(&mut self, kid: JitKernelId, cid: OpId, n: u32) {
         self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(cid, n as usize));
     }
 
     #[allow(clippy::too_many_arguments)] // graph kernel API, arguments are structural parameters
     fn add_move(
         &mut self,
-        cid: ClassId,
-        child: ClassId,
+        cid: OpId,
+        child: OpId,
         mop: MoveOp,
         force_store: bool,
-        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
-        rcs: &mut Map<ClassId, u32>,
+        visited: &mut Map<OpId, (JitKernelId, OpId)>,
+        rcs: &mut Map<OpId, u32>,
     ) {
         let (kid, op_id) = if !visited.contains_key(&child) {
             // Scalar child: fresh kernel, replay the expression into it and
@@ -1338,20 +1338,20 @@ impl Graph {
     ///
     /// Must run before the kernel-output pool grouping in `compile_graph`.
     pub fn lower_custom_kernels(&mut self) {
-        let node_ids: Vec<NodeId> = self.nodes.ids().collect();
+        let node_ids: Vec<OpId> = self.nodes.ids().collect();
         for nid in node_ids {
             let custom = match &self.nodes[nid].node {
                 Node::Custom { inputs, outputs, program_id, .. } => {
-                    Some((inputs.clone(), outputs.iter().map(|(c, _, _)| *c).collect::<Vec<ClassId>>(), *program_id))
+                    Some((inputs.clone(), outputs.iter().map(|(c, _, _)| *c).collect::<Vec<OpId>>(), *program_id))
                 }
                 _ => None,
             };
             if let Some((inputs, outputs, program_id)) = custom {
                 let class_of = self.nodes[nid].class_of;
-                let knid = self.nodes.push(NodeData {
+                let knid = self.nodes.push(OpNode {
                     node: Node::Kernel { inputs, outputs: outputs.clone().into(), program_id, time: 10 },
                     class_of,
-                    next_in_class: NodeId::NULL,
+                    next_in_class: OpId::NULL,
                 });
                 for &ocid in &outputs {
                     self.class_push(ocid, knid);
@@ -1371,13 +1371,13 @@ impl Graph {
     /// AOT kernel inputs / final outputs on the output side. Each region is
     /// kernelized independently, so the gaps between AOT kernels get filled
     /// while each AOT kernel keeps its own subgraph.
-    pub fn fill_gaps(&mut self, active_outputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>) {
-        let mut producer_boundaries: Set<ClassId> = self.leaf_classes.iter().copied().collect();
+    pub fn fill_gaps(&mut self, active_outputs: &Set<OpId>, outputs: &BTreeSet<OpId>) {
+        let mut producer_boundaries: Set<OpId> = self.leaf_classes.iter().copied().collect();
         producer_boundaries.extend(active_outputs.iter().copied());
 
         // Classes consumed by active AOT kernels — region outputs that must be
         // stored so the backend kernel can read them.
-        let mut kernel_inputs: Set<ClassId> = Set::default();
+        let mut kernel_inputs: Set<OpId> = Set::default();
         for &cid in active_outputs {
             for nid in self.class_nodes(cid) {
                 if let Node::Kernel { inputs: kin, .. } = &self.nodes[nid].node {
@@ -1389,8 +1389,8 @@ impl Graph {
         let order = self.topo_sort_classes::<true>(&producer_boundaries, outputs, None);
 
         // Union-find the structural classes into connected regions.
-        let structural: Vec<ClassId> = order.iter().copied().filter(|&c| !producer_boundaries.contains(&c)).collect();
-        let idx: Map<ClassId, usize> = structural.iter().enumerate().map(|(i, &c)| (c, i)).collect();
+        let structural: Vec<OpId> = order.iter().copied().filter(|&c| !producer_boundaries.contains(&c)).collect();
+        let idx: Map<OpId, usize> = structural.iter().enumerate().map(|(i, &c)| (c, i)).collect();
         let mut parent: Vec<usize> = (0..structural.len()).collect();
         fn find(parent: &mut [usize], mut i: usize) -> usize {
             while parent[i] != i {
@@ -1409,17 +1409,17 @@ impl Graph {
                 }
             }
         }
-        let mut regions: Map<usize, Vec<ClassId>> = Map::default();
+        let mut regions: Map<usize, Vec<OpId>> = Map::default();
         for (i, &cid) in structural.iter().enumerate() {
             regions.entry(find(&mut parent, i)).or_default().push(cid);
         }
 
         // Region id per structural class.
-        let region_of: Map<ClassId, usize> = structural.iter().map(|&c| (c, find(&mut parent, idx[&c]))).collect();
+        let region_of: Map<OpId, usize> = structural.iter().map(|&c| (c, find(&mut parent, idx[&c]))).collect();
         // A class consumed by a node in a *different* region must be stored —
         // the consumer region loads it through a global param ("a shape
         // dimension is a result of a kernel now and loaded into a new one").
-        let mut cross_region_outputs: Map<usize, BTreeSet<ClassId>> = Map::default();
+        let mut cross_region_outputs: Map<usize, BTreeSet<OpId>> = Map::default();
         for (i, &cid) in structural.iter().enumerate() {
             for nid in self.class_nodes(cid) {
                 for p in self.nodes[nid].node.class_params() {
@@ -1436,9 +1436,9 @@ impl Graph {
         }
 
         for (root, region_classes) in regions.iter_mut() {
-            let region: Set<ClassId> = region_classes.iter().copied().collect();
+            let region: Set<OpId> = region_classes.iter().copied().collect();
 
-            let mut region_inputs: Set<ClassId> = Set::default();
+            let mut region_inputs: Set<OpId> = Set::default();
             for &cid in &region {
                 for nid in self.class_nodes(cid) {
                     for p in self.nodes[nid].node.class_params() {
@@ -1449,7 +1449,7 @@ impl Graph {
                 }
             }
 
-            let mut region_outputs: BTreeSet<ClassId> = BTreeSet::new();
+            let mut region_outputs: BTreeSet<OpId> = BTreeSet::new();
             for &cid in &region {
                 if outputs.contains(&cid) || kernel_inputs.contains(&cid) {
                     region_outputs.insert(cid);
@@ -1462,13 +1462,13 @@ impl Graph {
             if region_outputs.is_empty() {
                 continue;
             }
-            let region_allowed: Set<ClassId> = region.union(&region_inputs).copied().collect();
+            let region_allowed: Set<OpId> = region.union(&region_inputs).copied().collect();
             self.kernelize(&region_inputs, &region_outputs, Some(&region_allowed));
         }
     }
 }
 
-fn remove_first_output(kernels: &mut Slab<JitKernelId, JitKernelData>, kid: JitKernelId, cid: ClassId) -> bool {
+fn remove_first_output(kernels: &mut Slab<JitKernelId, JitKernelData>, kid: JitKernelId, cid: OpId) -> bool {
     match kernels[kid].outputs.iter().position(|&x| x == cid) {
         Some(pos) => {
             kernels[kid].outputs.remove(pos);

@@ -116,7 +116,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{ClassId, Graph, Node, NodeData},
+    graph::{OpId, Graph, Node, OpNode},
     kernel::{Kernel, MMADType, MMADims, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
     slab::{Slab, SlabId},
@@ -1548,7 +1548,7 @@ impl CUDADevice {
     /// for each with the exact shapes and dtypes, adding `Node::Kernel`s (with
     /// `time = 1`) so they beat any fused zyx kernel in extraction. Only f32 is
     /// supported for now (compute type float).
-    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>) {
+    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<OpId>) {
         if !self.cudnn_available {
             return;
         }
@@ -1578,7 +1578,7 @@ impl CUDADevice {
             let Ok(program_id) = reply_rx.recv().unwrap() else {
                 continue;
             };
-            let nid = graph.nodes.push(NodeData {
+            let nid = graph.nodes.push(OpNode {
                 node: Node::Kernel {
                     inputs: Box::new([mm.a, mm.b]),
                     outputs: Box::new([mm.out]),

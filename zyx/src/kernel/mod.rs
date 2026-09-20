@@ -97,7 +97,7 @@
 pub use crate::backend::{Dev, DeviceInfo};
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{BOp, MMADType, MMADims, MMALayout, OpId, ParamKind, TileDim};
-pub(crate) use ops::{MoveOp, Op, OpNode, RangeKind, UOp};
+pub(crate) use ops::{MoveOp, Op, OpLinked, RangeKind, UOp};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
@@ -197,7 +197,7 @@ pub(crate) const IDX_T: DType = DType::I64;
 #[derive(Debug, Clone)]
 pub struct Kernel {
     /// Operation slab containing the kernel IR.
-    pub(crate) ops: Slab<OpId, OpNode>,
+    pub(crate) ops: Slab<OpId, OpLinked>,
     /// Head of the operation linked list.
     pub(crate) head: OpId,
     /// Tail of the operation linked list.
@@ -566,7 +566,7 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let prev = self.ops[before_id].prev;
-        let op_node = OpNode { prev, next: before_id, op };
+        let op_node = OpLinked { prev, next: before_id, op };
         let op_id = self.ops.push(op_node);
         self.ops[before_id].prev = op_id;
         if prev.is_null() {
@@ -586,7 +586,7 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let next = self.ops[after_id].next;
-        let op_node = OpNode { prev: after_id, next, op };
+        let op_node = OpLinked { prev: after_id, next, op };
         let op_id = self.ops.push(op_node);
         self.ops[after_id].next = op_id;
         if next.is_null() {
@@ -609,7 +609,7 @@ impl Kernel {
         //println!("moving op={op_id}, after={after_id}");
 
         // Remove
-        let OpNode { prev, next, .. } = self.ops[op_id];
+        let OpLinked { prev, next, .. } = self.ops[op_id];
         if prev.is_null() {
             self.head = next;
         } else {
@@ -648,7 +648,7 @@ impl Kernel {
         //println!("moving op={op_id}, before={before_id}");
 
         // Remove
-        let OpNode { prev, next, .. } = self.ops[op_id];
+        let OpLinked { prev, next, .. } = self.ops[op_id];
         if prev.is_null() {
             self.head = next;
         } else {
@@ -679,7 +679,7 @@ impl Kernel {
         debug_assert!(!op_id.is_null());
         debug_assert!(!self.ops.is_empty());
 
-        let OpNode { prev, next, .. } = self.ops[op_id];
+        let OpLinked { prev, next, .. } = self.ops[op_id];
         if prev.is_null() {
             self.head = next;
         } else {
@@ -1620,7 +1620,7 @@ impl Kernel {
 
     /// Add an operation to the kernel.
     pub(crate) fn push_back(&mut self, op: Op) -> OpId {
-        let op_node = OpNode { prev: self.tail, next: OpId::NULL, op };
+        let op_node = OpLinked { prev: self.tail, next: OpId::NULL, op };
         let op_id = self.ops.push(op_node);
         if self.head.is_null() {
             self.head = op_id;

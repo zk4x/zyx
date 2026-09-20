@@ -35,28 +35,6 @@ pub(crate) mod plan;
 pub use plan::ExecPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NodeId(pub u32);
-
-impl From<usize> for NodeId {
-    fn from(v: usize) -> Self {
-        Self(v as u32)
-    }
-}
-impl From<NodeId> for usize {
-    fn from(v: NodeId) -> usize {
-        v.0 as usize
-    }
-}
-
-impl SlabId for NodeId {
-    const ZERO: Self = Self(0);
-    const NULL: Self = Self(u32::MAX);
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GraphId(pub u16);
 
 impl From<usize> for GraphId {
@@ -73,28 +51,6 @@ impl From<GraphId> for usize {
 impl SlabId for GraphId {
     const ZERO: Self = Self(0);
     const NULL: Self = Self(u16::MAX);
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ClassId(pub u32);
-
-impl From<usize> for ClassId {
-    fn from(v: usize) -> Self {
-        Self(v as u32)
-    }
-}
-impl From<ClassId> for usize {
-    fn from(v: ClassId) -> usize {
-        v.0 as usize
-    }
-}
-
-impl SlabId for ClassId {
-    const ZERO: Self = Self(0);
-    const NULL: Self = Self(u32::MAX);
     fn inc(&mut self) {
         self.0 += 1;
     }
@@ -149,91 +105,91 @@ pub enum Node {
         /// `shape == ClassId::NULL` — they represent a dynamic dimension
         /// value, created by `replay_symbolic_into_graph`, never merged with
         /// any other class, and bound at execution time via `variable_map`.
-        shape: ClassId,
+        shape: OpId,
     },
     Expand {
-        x: ClassId,
-        shape: ClassId,
+        x: OpId,
+        shape: OpId,
     },
     Permute {
-        x: ClassId,
+        x: OpId,
         axes: Box<[UAxis]>,
     },
     Reshape {
-        x: ClassId,
-        shape: ClassId,
+        x: OpId,
+        shape: OpId,
     },
     Pad {
-        x: ClassId,
+        x: OpId,
         axis: UAxis,
         /// Left padding amount, as a dim class.
-        lp: ClassId,
+        lp: OpId,
         /// Total padded length of `axis` (`orig_len + lp + rp`), as a dim
         /// class (tinygrad convention). Right padding is `len - lp - orig_len`.
-        len: ClassId,
+        len: OpId,
     },
     Flip {
-        x: ClassId,
+        x: OpId,
         axes: Box<[UAxis]>,
     },
     Narrow {
-        x: ClassId,
+        x: OpId,
         axis: UAxis,
-        start: ClassId,
-        len: ClassId,
+        start: OpId,
+        len: OpId,
     },
     Stack {
-        ops: Box<[ClassId]>,
+        ops: Box<[OpId]>,
     },
     Reduce {
-        x: ClassId,
+        x: OpId,
         rop: BOp,
         axes: Box<[UAxis]>,
     },
     Cast {
-        x: ClassId,
+        x: OpId,
         dtype: DType,
     },
     /// Bitcast: reinterprets the raw bits of `x` as `dtype` (no value
     /// conversion). Requires equal bit widths.
     Bitcast {
-        x: ClassId,
+        x: OpId,
         dtype: DType,
     },
     Unary {
-        x: ClassId,
+        x: OpId,
         uop: UOp,
     },
     Binary {
-        x: ClassId,
-        y: ClassId,
+        x: OpId,
+        y: OpId,
         bop: BOp,
     },
     Assign {
-        dst: ClassId,
-        src: ClassId,
+        dst: OpId,
+        src: OpId,
     },
     After {
-        x: ClassId,
-        dep: ClassId,
+        x: OpId,
+        dep: OpId,
     },
     ToDevice {
-        x: ClassId,
+        x: OpId,
         device: Dev,
         time: u64,
     },
     Contiguous {
-        x: ClassId,
+        x: OpId,
     },
     Kernel {
-        inputs: Box<[ClassId]>,
-        outputs: Box<[ClassId]>,
+        inputs: Box<[OpId]>,
+        outputs: Box<[OpId]>,
         program_id: ProgramId,
         time: u64,
     },
     Custom {
-        inputs: Box<[ClassId]>,
-        outputs: Box<[(ClassId, ClassId, DType)]>,
+        inputs: Box<[OpId]>,
+        outputs: Box<[(OpId, OpId, DType)]>,
         program_id: ProgramId,
         // TODO this should just work?
         //backward: ProgramId,
@@ -388,20 +344,14 @@ impl std::hash::Hash for Node {
 }
 
 #[derive(Debug)]
-pub(crate) struct NodeData {
+pub(crate) struct OpNode {
     pub(crate) node: Node,
-    pub(crate) class_of: ClassId,
+    pub(crate) class_of: OpId,
     /// Next node of the same e-class (intrusive chain), or `NodeId::NULL` if
     /// this is the last variant. Chains preserve insertion order: a class's
     /// first node is its oldest, and later variants (e.g. lowered Kernel
     /// twins) are appended at the tail.
-    pub(crate) next_in_class: NodeId,
-}
-
-#[derive(Debug)]
-pub struct EClass {
-    /// First (oldest) node of the intrusive variant chain.
-    pub first: NodeId,
+    pub(crate) next_in_class: OpId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -425,7 +375,6 @@ impl SlabId for JitKernelId {
     }
 }
 
-#[derive(Debug, Clone)]
 /// A jit kernel under construction by the kernelizer.
 ///
 /// # Field contracts
@@ -456,21 +405,21 @@ impl SlabId for JitKernelId {
 /// Known pending fix: `assign` handling assumed `loads[0]` was the destination
 /// buffer — with variables now also present in `loads`, it must trace the
 /// actual buffer class instead of assuming position 0.
+#[derive(Debug, Clone)]
 pub struct JitKernelData {
     pub(crate) kernel: Kernel,
-    pub(crate) outputs: Vec<ClassId>,
-    pub(crate) loads: Vec<ClassId>,
-    pub(crate) stores: Vec<ClassId>,
+    pub(crate) outputs: Vec<OpId>,
+    pub(crate) loads: Vec<OpId>,
+    pub(crate) stores: Vec<OpId>,
 }
 
 #[derive(Debug)]
 pub struct Graph {
-    pub(crate) hashcons: Map<Node, NodeId>,
-    pub(crate) nodes: Slab<NodeId, NodeData>,
-    pub(crate) classes: Slab<ClassId, EClass>,
+    pub(crate) hashcons: Map<Node, OpId>,
+    pub(crate) nodes: Slab<OpId, OpNode>,
     pub(crate) jit_kernels: Slab<JitKernelId, JitKernelData>,
-    pub(crate) leaf_classes: Vec<ClassId>,
-    pub(crate) leaf_map: Map<ClassId, TensorId>,
+    pub(crate) leaf_classes: Vec<OpId>,
+    pub(crate) leaf_map: Map<OpId, TensorId>,
     // Number of alive graph tensors (TensorState::Graph) referencing this graph.
     // Incremented at every graph-tensor birth, decremented when a tensor dies
     // (release), is eagerified, or is dropped.
@@ -486,7 +435,7 @@ pub struct Graph {
 impl Node {
     /// Classes this node references: operands, and metadata like shape
     /// descriptors (a leaf's shape is a parameter of the leaf).
-    fn class_params(&self) -> impl Iterator<Item = ClassId> {
+    fn class_params(&self) -> impl Iterator<Item = OpId> {
         // NULL is not a class: rank-0 nodes carry `shape: ClassId::NULL` and
         // optional fields may be absent — a NULL is never a dependency.
         let v = match self {
@@ -521,7 +470,6 @@ impl Graph {
         self.dead = true;
         self.hashcons = Map::default();
         self.nodes = Slab::new();
-        self.classes = Slab::new();
         self.jit_kernels = Slab::new();
         self.leaf_map = Map::default();
     }
@@ -530,7 +478,6 @@ impl Graph {
         Self {
             hashcons: Map::default(),
             nodes: Slab::new(),
-            classes: Slab::new(),
             jit_kernels: Slab::new(),
             leaf_map: Map::default(),
             leaf_classes: Vec::new(),
@@ -542,7 +489,7 @@ impl Graph {
 
     /// Iterates a class's variant nodes in insertion order (oldest first) by
     /// walking the intrusive `next_in_class` chain.
-    pub(crate) fn class_nodes(&self, cid: ClassId) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn class_nodes(&self, cid: OpId) -> impl Iterator<Item = OpId> + '_ {
         let mut cur = self.classes[cid].first;
         std::iter::from_fn(move || {
             if cur.is_null() {
@@ -555,8 +502,8 @@ impl Graph {
     }
 
     /// Appends a variant node to a class's intrusive chain (insertion order).
-    pub(crate) fn class_push(&mut self, cid: ClassId, nid: NodeId) {
-        debug_assert_eq!(self.nodes[nid].next_in_class, NodeId::NULL);
+    pub(crate) fn class_push(&mut self, cid: OpId, nid: OpId) {
+        debug_assert_eq!(self.nodes[nid].next_in_class, OpId::NULL);
         let mut cur = self.classes[cid].first;
         debug_assert!(!cur.is_null(), "class {cid:?} has no first node");
         while !self.nodes[cur].next_in_class.is_null() {
@@ -565,14 +512,14 @@ impl Graph {
         self.nodes[cur].next_in_class = nid;
     }
 
-    pub fn is_leaf(&self, class_id: ClassId) -> bool {
+    pub fn is_leaf(&self, class_id: OpId) -> bool {
         self.class_nodes(class_id).any(|nid| matches!(&self.nodes[nid].node, Node::Leaf { .. }))
     }
 
     /// Walks back through single-input movement nodes until reaching dst's base
     /// leaf class (a key of `leaf_map`). Used to find which leaf buffer an
     /// [`ExecNode`] class's store aliases.
-    pub(crate) fn base_leaf(&self, mut c: ClassId) -> ClassId {
+    pub(crate) fn base_leaf(&self, mut c: OpId) -> OpId {
         loop {
             if self.leaf_map.contains_key(&c) {
                 return c;
@@ -597,16 +544,16 @@ impl Graph {
 
     /// Whether `class_id` is the output of an in-place `assign` — a class whose
     /// value lives in (aliases) dst's realized leaf buffer.
-    pub fn is_after(&self, class_id: ClassId) -> bool {
+    pub fn is_after(&self, class_id: OpId) -> bool {
         self.class_nodes(class_id).any(|nid| matches!(&self.nodes[nid].node, Node::After { .. }))
     }
 
-    pub fn push_to_device(&mut self, x: ClassId, device: Dev, time: u64) -> ClassId {
+    pub fn push_to_device(&mut self, x: OpId, device: Dev, time: u64) -> OpId {
         let node = Node::ToDevice { x, device, time };
         if let Some(&nid) = self.hashcons.get(&node) {
             return self.nodes[nid].class_of;
         }
-        let nid = self.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL, next_in_class: NodeId::NULL });
+        let nid = self.nodes.push(OpNode { node: node.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
         let cid = self.classes.push(EClass { first: nid });
         self.nodes[nid].class_of = cid;
         self.hashcons.insert(node, nid);
@@ -640,10 +587,10 @@ impl Graph {
     /// through this sort.
     pub fn topo_sort_classes<const WITHOUT_KERNELS: bool>(
         &self,
-        inputs: &Set<ClassId>,
-        outputs: &BTreeSet<ClassId>,
-        allowed: Option<&Set<ClassId>>,
-    ) -> Vec<ClassId> {
+        inputs: &Set<OpId>,
+        outputs: &BTreeSet<OpId>,
+        allowed: Option<&Set<OpId>>,
+    ) -> Vec<OpId> {
         // Dead classes (unconsumed, not an output) are harmless: traversal
         // never reaches them, so they neither appear in `rcs` nor stall
         // anything. What must NEVER happen is a *reachable* class failing
@@ -651,8 +598,8 @@ impl Graph {
         // broken and everything depending on it silently drops out of the
         // order. Checked only in the global sort: region-restricted walks
         // legitimately cannot see consumers outside their boundary.
-        let mut rcs: Map<ClassId, u32> = Map::default();
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        let mut rcs: Map<OpId, u32> = Map::default();
+        let mut stack: Vec<OpId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
             rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 let deps = self.deps::<WITHOUT_KERNELS>(inputs, cid);
@@ -662,8 +609,8 @@ impl Graph {
         }
 
         let mut order = Vec::new();
-        let mut internal_rcs: Map<ClassId, u32> = Map::default();
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        let mut internal_rcs: Map<OpId, u32> = Map::default();
+        let mut stack: Vec<OpId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
             if let Some(&rc) = rcs.get(&cid) {
                 let visited = internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1);
@@ -682,7 +629,7 @@ impl Graph {
                 }
                 let mut report = String::new();
                 let mut frontier = vec![*cid];
-                let mut seen: Set<ClassId> = Set::default();
+                let mut seen: Set<OpId> = Set::default();
                 while let Some(c) = frontier.pop() {
                     if !seen.insert(c) {
                         continue;
@@ -726,8 +673,8 @@ impl Graph {
     /// the walk exceeds 10 000 steps.
     pub(crate) fn verify(&self) {
         // Iterative colored DFS: 1 = on stack (gray), 2 = done (black).
-        let mut color: Map<ClassId, u8> = Map::default();
-        let mut parent: Map<ClassId, ClassId> = Map::default();
+        let mut color: Map<OpId, u8> = Map::default();
+        let mut parent: Map<OpId, OpId> = Map::default();
         for root in self.classes.ids() {
             let mut steps = 0;
             let mut stack = vec![(root, false)];
@@ -774,7 +721,7 @@ impl Graph {
     /// With `WITHOUT_KERNELS`, [`Node::Kernel`] nodes are ignored and a
     /// boundary class (in `inputs`) contributes only its non-boundary kernel
     /// inputs; otherwise every node's [`Node::class_params`] is used.
-    fn deps<const WITHOUT_KERNELS: bool>(&self, inputs: &Set<ClassId>, cid: ClassId) -> Vec<ClassId> {
+    fn deps<const WITHOUT_KERNELS: bool>(&self, inputs: &Set<OpId>, cid: OpId) -> Vec<OpId> {
         let mut deps = Vec::new();
         for nid in self.class_nodes(cid) {
             match &self.nodes[nid].node {
@@ -815,8 +762,8 @@ impl Graph {
     /// derivation.
     ///
     /// Used by [`Self::topo_sort_for_extract`] and [`Self::verify`].
-    fn extract_deps(&self, cid: ClassId) -> Vec<ClassId> {
-        let mut kdeps: Vec<ClassId> = Vec::new();
+    fn extract_deps(&self, cid: OpId) -> Vec<OpId> {
+        let mut kdeps: Vec<OpId> = Vec::new();
         for nid in self.class_nodes(cid) {
             match &self.nodes[nid].node {
                 Node::Kernel { inputs, .. } => {
@@ -859,9 +806,9 @@ impl Graph {
     /// Topological order of classes for [`Self::extract`]: like
     /// [`Self::topo_sort_classes`] but using the extraction view
     /// ([`Self::extract_deps`]) for dependencies.
-    fn topo_sort_for_extract(&self, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
-        let mut rcs: Map<ClassId, u32> = Map::default();
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+    fn topo_sort_for_extract(&self, outputs: &BTreeSet<OpId>) -> Vec<OpId> {
+        let mut rcs: Map<OpId, u32> = Map::default();
+        let mut stack: Vec<OpId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
             rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 stack.extend(self.extract_deps(cid));
@@ -870,8 +817,8 @@ impl Graph {
         }
 
         let mut order = Vec::new();
-        let mut internal_rcs: Map<ClassId, u32> = Map::default();
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        let mut internal_rcs: Map<OpId, u32> = Map::default();
+        let mut stack: Vec<OpId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
             if let Some(&rc) = rcs.get(&cid) {
                 let visited = internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1);
@@ -902,7 +849,7 @@ impl Graph {
             println!("Class {:?} shape={} dtype={}", cid, shape_str, dtype_str);
             for nid in self.class_nodes(cid) {
                 let kind = &self.nodes[nid].node;
-                let inputs: Vec<ClassId> = match kind {
+                let inputs: Vec<OpId> = match kind {
                     Node::Kernel { inputs, .. } => inputs.to_vec(),
                     _ => kind.class_params().collect(),
                 };
@@ -946,20 +893,20 @@ impl Graph {
     /// extracted path (chosen kernel output, chosen transfer output, or
     /// realized leaf buffer). User-inserted [`Node::ToDevice`] nodes are kept
     /// as-is and reused through hashconsing.
-    pub fn add_memory_ops(&mut self, buffer_map: &Map<TensorId, Buffer>, chosen: &[NodeId]) -> Vec<NodeId> {
+    pub fn add_memory_ops(&mut self, buffer_map: &Map<TensorId, Buffer>, chosen: &[OpId]) -> Vec<OpId> {
         // Pool each class lives in on the extracted path. Chosen kernel
         // outputs live in their kernel's pool, chosen transfers in their
         // target pool, realized leaves in their buffer pool. Variable leaves
         // have no buffer and no placement — they bind at launch.
-        let mut pool_of: Map<ClassId, Pool> = Map::default();
+        let mut pool_of: Map<OpId, Pool> = Map::default();
         for (&cid, &tid) in &self.leaf_map {
             if let Some(buf) = buffer_map.get(&tid) {
                 pool_of.insert(cid, buf.pool);
             }
         }
 
-        let mut repaired: Vec<NodeId> = Vec::with_capacity(chosen.len());
-        let mut emitted: Set<NodeId> = Set::default();
+        let mut repaired: Vec<OpId> = Vec::with_capacity(chosen.len());
+        let mut emitted: Set<OpId> = Set::default();
         for &nid in chosen {
             let (device_id, inputs, class_of) = match &self.nodes[nid].node {
                 Node::Kernel { program_id, inputs, .. } => {
@@ -982,7 +929,7 @@ impl Graph {
                     pool_of.insert(oc, dev_pool);
                 }
             }
-            let mut new_inputs: Option<Box<[ClassId]>> = None;
+            let mut new_inputs: Option<Box<[OpId]>> = None;
             for (i, &input_cid) in inputs.iter().enumerate() {
                 if pool_of.get(&input_cid) == Some(&dev_pool) {
                     continue;
@@ -1024,7 +971,7 @@ impl Graph {
     /// structure but different shapes/dtypes (e.g. an `f32[10]` sin vs an
     /// `f32[3]` sin) would otherwise share a plan with wrong allocation sizes.
     #[must_use]
-    pub fn cache_key(&self, outputs: &BTreeSet<ClassId>) -> u64 {
+    pub fn cache_key(&self, outputs: &BTreeSet<OpId>) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -1069,13 +1016,13 @@ impl Graph {
     ///
     /// Panics if any output class lacks a producer path through Kernel or ToDevice nodes.
     #[must_use]
-    pub fn extract(&self, outputs: &BTreeSet<ClassId>) -> Vec<NodeId> {
+    pub fn extract(&self, outputs: &BTreeSet<OpId>) -> Vec<OpId> {
         let order = self.topo_sort_for_extract(outputs);
 
         let n = self.classes.ids().count();
         let is_leaf: Vec<bool> = (0..n)
             .map(|i| {
-                let cid = ClassId(i as u32);
+                let cid = OpId(i as u32);
                 self.class_nodes(cid).any(|nid| matches!(&self.nodes[nid].node, Node::Leaf { .. }))
             })
             .collect();
@@ -1085,13 +1032,13 @@ impl Graph {
         // extraction); a leaf class is already realized and never needs one.
         #[derive(Clone, Copy)]
         struct Cand {
-            nid: NodeId,
+            nid: OpId,
             time: u64,
         }
         let mut cands: Vec<Vec<Cand>> = vec![Vec::new(); n];
         let nn = self.nodes.ids().count();
-        let mut node_in: Vec<Vec<ClassId>> = vec![Vec::new(); nn];
-        let mut node_out: Vec<Vec<ClassId>> = vec![Vec::new(); nn];
+        let mut node_in: Vec<Vec<OpId>> = vec![Vec::new(); nn];
+        let mut node_out: Vec<Vec<OpId>> = vec![Vec::new(); nn];
         let mut node_time: Vec<u64> = vec![0; nn];
         for &cid in &order {
             for nid in self.class_nodes(cid) {
@@ -1115,7 +1062,7 @@ impl Graph {
         // Needing an After class forces its whole assign chain to run (every
         // earlier After plus the assign classes) — otherwise the in-place store
         // kernels of chained assigns get dropped. Mirrors the backward walk below.
-        let mut after_chain: Vec<Vec<ClassId>> = vec![Vec::new(); n];
+        let mut after_chain: Vec<Vec<OpId>> = vec![Vec::new(); n];
         for &cid in &order {
             let mut chain = Vec::new();
             let mut cur = cid;
@@ -1136,22 +1083,22 @@ impl Graph {
         }
 
         struct Ctx<'a> {
-            outputs: &'a BTreeSet<ClassId>,
-            order: &'a [ClassId],
+            outputs: &'a BTreeSet<OpId>,
+            order: &'a [OpId],
             cands: &'a [Vec<Cand>],
-            node_in: &'a [Vec<ClassId>],
-            node_out: &'a [Vec<ClassId>],
+            node_in: &'a [Vec<OpId>],
+            node_out: &'a [Vec<OpId>],
             node_time: &'a [u64],
-            after_chain: &'a [Vec<ClassId>],
+            after_chain: &'a [Vec<OpId>],
             is_leaf: &'a [bool],
         }
 
         impl Ctx<'_> {
             /// The classes that still must be produced (`pending`, in topological
             /// order) and the classes already produced, derived from `selected`.
-            fn pending_and_produced(&self, selected: &Set<NodeId>) -> (Vec<ClassId>, Set<ClassId>) {
-                let mut produced: Set<ClassId> = Set::default();
-                let mut requested: Set<ClassId> = self.outputs.iter().copied().collect();
+            fn pending_and_produced(&self, selected: &Set<OpId>) -> (Vec<OpId>, Set<OpId>) {
+                let mut produced: Set<OpId> = Set::default();
+                let mut requested: Set<OpId> = self.outputs.iter().copied().collect();
                 for &nid in selected {
                     for &o in &self.node_out[nid.0 as usize] {
                         produced.insert(o);
@@ -1161,7 +1108,7 @@ impl Graph {
                     }
                 }
                 loop {
-                    let mut add: Vec<ClassId> = Vec::new();
+                    let mut add: Vec<OpId> = Vec::new();
                     for &c in &requested {
                         for &r in &self.after_chain[c.0 as usize] {
                             if !requested.contains(&r) {
@@ -1189,15 +1136,15 @@ impl Graph {
                 (pending, produced)
             }
 
-            fn plan_cost(&self, selected: &Set<NodeId>) -> u64 {
+            fn plan_cost(&self, selected: &Set<OpId>) -> u64 {
                 selected.iter().map(|&nid| self.node_time[nid.0 as usize]).sum()
             }
 
             /// A feasible plan that selects the cheapest producer of each pending
             /// class in topological order. Always terminates; provides the upper
             /// bound for the search and a safe fallback.
-            fn greedy(&self) -> Set<NodeId> {
-                let mut selected: Set<NodeId> = Set::default();
+            fn greedy(&self) -> Set<OpId> {
+                let mut selected: Set<OpId> = Set::default();
                 loop {
                     let (pending, _) = self.pending_and_produced(&selected);
                     if pending.is_empty() {
@@ -1213,7 +1160,7 @@ impl Graph {
             /// set, `cost` the cost so far, `best` the best total cost seen
             /// (prunes branches that cannot improve it). Returns the cheapest
             /// completion from this state and the nodes it selects.
-            fn search(&self, selected: &mut Set<NodeId>, cost: u64, best: &mut u64) -> Option<(u64, Vec<NodeId>)> {
+            fn search(&self, selected: &mut Set<OpId>, cost: u64, best: &mut u64) -> Option<(u64, Vec<OpId>)> {
                 let (pending, _) = self.pending_and_produced(selected);
                 if pending.is_empty() {
                     return Some((0, Vec::new()));
@@ -1221,7 +1168,7 @@ impl Graph {
                 let c = pending[0];
                 let mut ordered: Vec<&Cand> = self.cands[c.0 as usize].iter().collect();
                 ordered.sort_by_key(|k| k.time);
-                let mut best_res: Option<(u64, Vec<NodeId>)> = None;
+                let mut best_res: Option<(u64, Vec<OpId>)> = None;
                 for cand in ordered {
                     if selected.contains(&cand.nid) {
                         continue;
@@ -1280,7 +1227,7 @@ impl Graph {
 
         // Producer of each class in the winning plan (multi-output kernels
         // produce several classes at once).
-        let mut producer: Vec<Option<NodeId>> = vec![None; n];
+        let mut producer: Vec<Option<OpId>> = vec![None; n];
         for &nid in &winning {
             for &oc in &node_out[nid.0 as usize] {
                 producer[oc.0 as usize] = Some(nid);
@@ -1293,7 +1240,7 @@ impl Graph {
         // pure kernel graph — it exists to (a) thread the After/assign chains
         // below and (b) emit the producers in class-topological order.
         let mut needed: Vec<bool> = vec![false; n];
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        let mut stack: Vec<OpId> = outputs.iter().copied().collect();
         loop {
             while let Some(cid) = stack.pop() {
                 if !needed[cid.0 as usize] {
@@ -1325,7 +1272,7 @@ impl Graph {
             // rather than a producer on the read path — nothing consumes the
             // assign class, so the backward walk above never reaches it. Run the
             // store whenever the buffer it writes is needed.
-            let mut add: Vec<ClassId> = Vec::new();
+            let mut add: Vec<OpId> = Vec::new();
             for &cid in &order {
                 if !needed[cid.0 as usize]
                     && self.class_nodes(cid).any(|nid| {
@@ -1345,7 +1292,7 @@ impl Graph {
         }
 
         let mut result = Vec::new();
-        let mut seen: Set<NodeId> = Set::default();
+        let mut seen: Set<OpId> = Set::default();
         for &cid in &order {
             if !needed[cid.0 as usize] {
                 continue;
@@ -1359,7 +1306,7 @@ impl Graph {
         result
     }
 
-    pub fn rank(&self, class: ClassId) -> UAxis {
+    pub fn rank(&self, class: OpId) -> UAxis {
         self.shape(class).len() as UAxis
     }
 
@@ -1367,7 +1314,7 @@ impl Graph {
     /// each element is a class evaluating to a dimension value — a `Const`
     /// for static dims or a symbolic dim leaf otherwise. Empty vec for
     /// scalars.
-    pub fn shape(&self, class: ClassId) -> Vec<ClassId> {
+    pub fn shape(&self, class: OpId) -> Vec<OpId> {
         match &self.nodes[self.classes[class].first].node {
             Node::Const { .. } | Node::Stack { .. } => Vec::new(),
             Node::Leaf { shape, .. } => self.dims(*shape),
@@ -1418,7 +1365,7 @@ impl Graph {
 
     /// Interpret a shape class: `NULL` is `[]`, a `Stack` of dim classes is
     /// its ops, anything else is a single bare dim class (rank-1 convention).
-    pub fn dims(&self, shape: ClassId) -> Vec<ClassId> {
+    pub fn dims(&self, shape: OpId) -> Vec<OpId> {
         if shape.is_null() {
             return Vec::new();
         }
@@ -1452,10 +1399,10 @@ impl Graph {
     /// particular on computed dims (`Reduce` results feeding shapes). Shapes
     /// are purely symbolic; a shape dimension may never be produced by a
     /// kernel (jax/inductor/tinygrad convention adopted repo-wide).
-    pub(crate) fn replay_symbolic_into_kernel(&mut self, kid: JitKernelId, dims: &[ClassId]) -> OpId {
+    pub(crate) fn replay_symbolic_into_kernel(&mut self, kid: JitKernelId, dims: &[OpId]) -> OpId {
         // Post-order flatten: every class lands after its operands, so one
         // flat pass emits with operands already mapped.
-        fn flatten(graph: &Graph, cid: ClassId, order: &mut Vec<ClassId>) {
+        fn flatten(graph: &Graph, cid: OpId, order: &mut Vec<OpId>) {
             debug_assert!(graph.class_nodes(cid).count() == 1, "symbolic dim class must have exactly one node");
             let node = &graph.nodes[graph.classes[cid].first].node;
             match node {
@@ -1478,7 +1425,7 @@ impl Graph {
             order.push(cid);
         }
 
-        let mut class_map: Map<ClassId, OpId> = Map::default();
+        let mut class_map: Map<OpId, OpId> = Map::default();
         let mut dim_ops: Vec<OpId> = Vec::with_capacity(dims.len());
         for &cid in dims {
             if cid.is_null() {
@@ -1541,20 +1488,20 @@ impl Graph {
     /// stack of its dim elements; any other class replays as a single dim
     /// expression. Read-only over the egraph: no graph or kernel mutation
     /// beyond emitting the expression's ops into `kid`.
-    pub(crate) fn replay_shape_into_kernel(&mut self, kid: JitKernelId, shape: ClassId) -> OpId {
+    pub(crate) fn replay_shape_into_kernel(&mut self, kid: JitKernelId, shape: OpId) -> OpId {
         if shape.is_null() {
             return OpId::NULL;
         }
         match &self.nodes[self.classes[shape].first].node {
             Node::Stack { ops } => {
-                let ops: Vec<ClassId> = ops.iter().copied().collect();
+                let ops: Vec<OpId> = ops.iter().copied().collect();
                 self.replay_symbolic_into_kernel(kid, &ops)
             }
             _ => self.replay_symbolic_into_kernel(kid, &[shape]),
         }
     }
 
-    pub fn dtype(&self, class: ClassId) -> DType {
+    pub fn dtype(&self, class: OpId) -> DType {
         match &self.nodes[self.classes[class].first].node {
             Node::Const { value: c, .. } => c.dtype(),
             Node::Leaf { dtype, .. } => *dtype,
@@ -1588,11 +1535,11 @@ impl Graph {
     /// `Binary` nodes (iteratively, no recursion). Returns `None` if the
     /// class is not a scalar, the walk exceeds 10 000 steps, or any leaf
     /// is not a `Const`.
-    pub(crate) fn resolve_const(&self, class: ClassId) -> Option<Constant> {
+    pub(crate) fn resolve_const(&self, class: OpId) -> Option<Constant> {
         // Preorder of the const-expression subgraph reachable through
         // `Cast`, `Unary` and `Binary`; non-const leaves abort.
-        let mut visited: Set<NodeId> = Set::default();
-        let mut order: Vec<NodeId> = Vec::new();
+        let mut visited: Set<OpId> = Set::default();
+        let mut order: Vec<OpId> = Vec::new();
         let mut stack = vec![class];
         for _ in 0..10_000 {
             let Some(id) = stack.pop() else { break };
@@ -1635,7 +1582,7 @@ impl Graph {
         // Evaluate bottom-up: `order` is a preorder (parents before their
         // operands), so reversing it evaluates every operand before its
         // consumer.
-        let mut values: Map<NodeId, Constant> = Map::default();
+        let mut values: Map<OpId, Constant> = Map::default();
         for &node_id in order.iter().rev() {
             let value = match &self.nodes[node_id].node {
                 Node::Const { value, .. } => *value,
@@ -1654,12 +1601,12 @@ impl Graph {
 }
 
 impl Runtime {
-    pub fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<ClassId, ZyxError> {
+    pub fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<OpId, ZyxError> {
         let (class_id, gid) = match self.tensors[tid] {
             TensorData::Graph { class_id, graph_id, .. } | TensorData::Promoted { class_id, graph_id, .. } => {
                 (class_id, graph_id)
             }
-            _ => (ClassId::NULL, GraphId::NULL),
+            _ => (OpId::NULL, GraphId::NULL),
         };
         if !class_id.is_null() {
             if !self.graphs[gid].dead {
@@ -1705,7 +1652,7 @@ impl Runtime {
                 "promote_to_graph: Leaf {tid} has no buffer (pending store not realized)"
             );
             let shape_class = if shape_id.is_null() {
-                ClassId::NULL
+                OpId::NULL
             } else {
                 // replay_symbolic_into_graph takes a TensorId handle: mint a
                 // transient Symbolic handle for the shape expression and
@@ -1772,7 +1719,7 @@ impl Runtime {
             // died without `realize`. Its value was never computed and cannot
             // be recomputed (the graph is gone), so it can never be promoted
             // into a new tape. This is intended behaviour, not a bug.
-            TensorData::Graph { class_id: ClassId::NULL, .. } => panic!(
+            TensorData::Graph { class_id: OpId::NULL, .. } => panic!(
                 "tensor {tid} is bound to a tape that was dropped without `Tape::realize`: its \
                  graph is gone, the value was never computed and cannot be recomputed, so the \
                  tensor is permanently invalid.\n\
@@ -1840,7 +1787,7 @@ impl Runtime {
                             matches!(self.tensors[var_tid], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. })),
                             "promote_to_graph: dim variable {var_tid} is not a symbolic variable"
                         );
-                        let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, ClassId::NULL);
+                        let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, OpId::NULL);
                         self.graphs[graph_id].leaf_map.insert(dim_cid, var_tid);
                         self.retain(var_tid);
                         self.graphs[graph_id].leaf_classes.push(dim_cid);
@@ -1851,7 +1798,7 @@ impl Runtime {
                 });
             }
             let shape_class = match dim_classes.len() {
-                0 => ClassId::NULL,
+                0 => OpId::NULL,
                 1 => dim_classes[0],
                 _ => self.push_node(graph_id, Node::Stack { ops: dim_classes.into_boxed_slice() }).1,
             };
@@ -1961,7 +1908,7 @@ impl Runtime {
             }
             p = self.kernels[kernel_id].kernel.next_op(p);
         }
-        let mut op_to_class: Map<OpId, ClassId> = Map::default();
+        let mut op_to_class: Map<OpId, OpId> = Map::default();
         let mut op_id = self.kernels[kernel_id].kernel.head;
         while !op_id.is_null() {
             if relevant.contains(&op_id) {
@@ -2032,7 +1979,7 @@ impl Runtime {
                                             matches!(self.tensors[var_tid], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. })),
                                             "promote_to_graph: dim variable {var_tid} is not a symbolic variable"
                                         );
-                                        let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, ClassId::NULL);
+                                        let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, OpId::NULL);
                                         self.graphs[graph_id].leaf_map.insert(dim_cid, var_tid);
                                         self.retain(var_tid);
                                         self.graphs[graph_id].leaf_classes.push(dim_cid);
@@ -2076,7 +2023,7 @@ impl Runtime {
                                 });
                             }
                             let shape_class = match dim_classes.len() {
-                                0 => ClassId::NULL,
+                                0 => OpId::NULL,
                                 1 => dim_classes[0],
                                 _ => self.push_node(graph_id, Node::Stack { ops: dim_classes.into_boxed_slice() }).1,
                             };
@@ -2165,7 +2112,7 @@ impl Runtime {
                         class_id
                     }
                     Op::Stack { ref ops } => {
-                        let ops: Box<[ClassId]> = ops.iter().map(|o| op_to_class[o]).collect();
+                        let ops: Box<[OpId]> = ops.iter().map(|o| op_to_class[o]).collect();
                         let (_, class_id) = self.push_node(graph_id, Node::Stack { ops });
                         class_id
                     }
@@ -2271,13 +2218,13 @@ impl Runtime {
     /// evaluate before every parent referencing them. Anything outside the
     /// symbolic closed set (kernels, movement, data ops, shapes) is not a
     /// scalar dim and resolves to `None`.
-    pub(crate) fn resolve_symbolic_class(&self, graph_id: GraphId, cid: ClassId) -> Option<Constant> {
+    pub(crate) fn resolve_symbolic_class(&self, graph_id: GraphId, cid: OpId) -> Option<Constant> {
         let graph = &self.graphs[graph_id];
         if cid.is_null() {
             return None;
         }
-        let mut seen: Set<ClassId> = Set::default();
-        let mut order: Vec<ClassId> = Vec::new();
+        let mut seen: Set<OpId> = Set::default();
+        let mut order: Vec<OpId> = Vec::new();
         let mut stack = vec![(cid, false)];
         for _ in 0..10_000 {
             let Some((id, emit)) = stack.pop() else { break };
@@ -2305,7 +2252,7 @@ impl Runtime {
             panic!("resolve_symbolic_class did not finish in 10000 steps");
         }
 
-        let mut values: Map<ClassId, Option<Constant>> = Map::default();
+        let mut values: Map<OpId, Option<Constant>> = Map::default();
         for &id in &order {
             let v = match &graph.nodes[graph.classes[id].first].node {
                 Node::Const { value } => Some(*value),
@@ -2353,7 +2300,7 @@ impl Runtime {
             let mut mut_lens: Vec<Dim> = Vec::new();
             // True length in elements of a buffer class. Scalar (empty
             // shape) holds one element.
-            let resolve_len = |cid: ClassId| -> Dim {
+            let resolve_len = |cid: OpId| -> Dim {
                 let mut len: Dim = 1;
                 for &d in &self.graphs[graph_id].shape(cid) {
                     let v = match self.resolve_symbolic_class(graph_id, d) {
@@ -2498,7 +2445,7 @@ impl Runtime {
                 }
                 let prog = ProgramId { dev: dev_id, program_id: dev_prog };
 
-                let knid = self.graphs[graph_id].nodes.push(NodeData {
+                let knid = self.graphs[graph_id].nodes.push(OpNode {
                     node: Node::Kernel {
                         inputs: ek.loads.clone().into(),
                         outputs: ek.stores.clone().into(),
@@ -2506,7 +2453,7 @@ impl Runtime {
                         time: timing,
                     },
                     class_of,
-                    next_in_class: NodeId::NULL,
+                    next_in_class: OpId::NULL,
                 });
 
                 for &ocid in &*ek.stores {
@@ -2519,7 +2466,7 @@ impl Runtime {
         }
 
         if cfg!(debug_assertions) {
-            let mut seen: Set<NodeId> = Set::default();
+            let mut seen: Set<OpId> = Set::default();
             for cid in self.graphs[graph_id].classes.ids() {
                 for nid in self.graphs[graph_id].class_nodes(cid) {
                     if !seen.insert(nid) {
@@ -2575,7 +2522,7 @@ impl Runtime {
     /// Compiles the graph into an [`ExecPlan`]: pattern-matches AOT kernels,
     /// kernelizes the remaining structural nodes, autotunes the fused kernels,
     /// extracts the cheapest kernel path, and returns the resulting plan.
-    pub(crate) fn compile_graph(&mut self, graph_id: GraphId, output_set: &BTreeSet<ClassId>) -> Result<ExecPlan, ZyxError> {
+    pub(crate) fn compile_graph(&mut self, graph_id: GraphId, output_set: &BTreeSet<OpId>) -> Result<ExecPlan, ZyxError> {
         debug_assert!(self.graphs.contains_id(graph_id));
         self.debug_assert_pre_realize(graph_id);
 
@@ -2613,7 +2560,7 @@ impl Runtime {
         self.graphs[graph_id].lower_custom_kernels();
 
         // AOT kernel output classes, grouped by the memory pool they run in.
-        let mut pool_kernel_outputs: Map<Pool, Set<ClassId>> = Map::default();
+        let mut pool_kernel_outputs: Map<Pool, Set<OpId>> = Map::default();
         for cid in self.graphs[graph_id].classes.ids() {
             for nid in self.graphs[graph_id].class_nodes(cid) {
                 if let Node::Kernel { program_id, .. } = &self.graphs[graph_id].nodes[nid].node {
@@ -2624,7 +2571,7 @@ impl Runtime {
         }
 
         // Pass 1: fill every gap between all AOT kernels, ignoring devices.
-        let all_kernel_outputs: Set<ClassId> = pool_kernel_outputs.values().flatten().copied().collect();
+        let all_kernel_outputs: Set<OpId> = pool_kernel_outputs.values().flatten().copied().collect();
         self.graphs[graph_id].fill_gaps(&all_kernel_outputs, output_set);
 
         // Pass 2: for each memory pool, fill the gaps between only that pool's
@@ -2651,7 +2598,7 @@ impl Runtime {
 
         // Leaf pools at compile time — the plan bakes the alias binding (and
         // any cross-pool copy) into its ExecNodes, so leaves must stay put.
-        let mut leaf_pools: Map<ClassId, Pool> = Map::default();
+        let mut leaf_pools: Map<OpId, Pool> = Map::default();
         for (&cid, &tid) in &self.graphs[graph_id].leaf_map {
             // Variable leaves have no buffer and no pool — they bind per exec
             // from the tensors slab, so no pool invariant applies to them.
@@ -2721,18 +2668,18 @@ impl Runtime {
     ///
     /// Consts hashcons by value: pushing an equal constant twice returns the
     /// same class (see [`Node::Const`] for why that is sound).
-    pub fn push_const(&mut self, graph_id: GraphId, value: Constant) -> ClassId {
+    pub fn push_const(&mut self, graph_id: GraphId, value: Constant) -> OpId {
         self.push_node(graph_id, Node::Const { value }).1
     }
 
-    pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType, shape: ClassId) -> (NodeId, ClassId) {
+    pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType, shape: OpId) -> (OpId, OpId) {
         // Fresh cons_id: leaves hashcons but never merge (each buffer keeps
         // its own class).
         let cons_id = self.graphs[graph_id].max_cons_id;
         self.graphs[graph_id].max_cons_id += 1;
         let node = Node::Leaf { cons_id, dtype, shape };
         let g = &mut self.graphs[graph_id];
-        let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL, next_in_class: NodeId::NULL });
+        let nid = g.nodes.push(OpNode { node: node.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
         let cid = g.classes.push(EClass { first: nid });
         g.nodes[nid].class_of = cid;
         g.hashcons.insert(node, nid);
@@ -2740,7 +2687,7 @@ impl Runtime {
     }
 
     /// Numeric shape of a class for the runtime's `shapes` cache: static dim
-    pub fn push_node(&mut self, graph_id: GraphId, node: Node) -> (NodeId, ClassId) {
+    pub fn push_node(&mut self, graph_id: GraphId, node: Node) -> (OpId, OpId) {
         match node {
             Node::Permute { .. } => {
                 /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
@@ -2775,14 +2722,14 @@ impl Runtime {
         if let Some(&nid) = g.hashcons.get(&node) {
             return (nid, g.nodes[nid].class_of);
         }
-        let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL, next_in_class: NodeId::NULL });
+        let nid = g.nodes.push(OpNode { node: node.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
         let cid = g.classes.push(EClass { first: nid });
         g.nodes[nid].class_of = cid;
         g.hashcons.insert(node, nid);
         (nid, cid)
     }
 
-    pub fn push_binary_node(&mut self, graph_id: GraphId, x: ClassId, y: ClassId, bop: BOp) -> ClassId {
+    pub fn push_binary_node(&mut self, graph_id: GraphId, x: OpId, y: OpId, bop: BOp) -> OpId {
         // With symbolic shapes we can only check rank — dim classes may differ
         // yet resolve equal (e.g. dims built from user tensors). Numeric
         // broadcastability is validated upstream by Tensor::broadcast.
@@ -2813,7 +2760,7 @@ impl Runtime {
         // (unresolved/dynamic dims are `-1` and skipped) so that two operands
         // with the same concrete shape but distinct dim classes still compare
         // equal.
-        let concrete = |s: &[ClassId]| -> Vec<Dim> {
+        let concrete = |s: &[OpId]| -> Vec<Dim> {
             s.iter().map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1)).collect()
         };
         let sx = self.graphs[graph_id].shape(x);

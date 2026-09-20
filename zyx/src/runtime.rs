@@ -226,7 +226,7 @@ use crate::{
     DType, Dev, Map, Scalar, Set, ZyxError,
     backend::{Buffer, DTypeCapability, DeviceProgramId, LaunchArg, Pool, ProgramId},
     dtype::Constant,
-    graph::{ClassId, ExecPlan, Graph, GraphId, Node},
+    graph::{OpId, ExecPlan, Graph, GraphId, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     rng::Rng,
     scalar::{bf16, f8e4m3, f8e5m2, f16},
@@ -305,7 +305,7 @@ pub enum TensorData {
         rc: u16,
     },
     GraphLeaf {
-        class_id: ClassId,
+        class_id: OpId,
         graph_id: GraphId,
         shape_id: ExprId,
         dtype: DType,
@@ -334,7 +334,7 @@ pub enum TensorData {
     // freed by this variant's death path. See the module docs
     // ("Graph tensors may hold a buffer — one exception").
     Graph {
-        class_id: ClassId,
+        class_id: OpId,
         graph_id: GraphId,
         shape_id: ExprId,
         dtype: DType,
@@ -350,7 +350,7 @@ pub enum TensorData {
     Promoted {
         kernel_id: KernelId,
         op_id: OpId,
-        class_id: ClassId,
+        class_id: OpId,
         graph_id: GraphId,
         shape_id: ExprId,
         dtype: DType,
@@ -452,7 +452,7 @@ impl Runtime {
     /// (`ExecPlan::leaf_pools`, cross-pool alias handling), so two realizations
     /// of the same graph shape may only share a plan when the leaf pool layout
     /// matches; otherwise the plan recompiles.
-    pub(crate) fn plan_cache_key(&self, graph_id: GraphId, outputs: &BTreeSet<ClassId>) -> u64 {
+    pub(crate) fn plan_cache_key(&self, graph_id: GraphId, outputs: &BTreeSet<OpId>) -> u64 {
         use std::hash::{Hash, Hasher};
         let graph = &self.graphs[graph_id];
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

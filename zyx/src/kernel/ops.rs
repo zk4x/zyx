@@ -444,7 +444,7 @@ pub enum MMADType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-pub struct OpNode {
+pub struct OpLinked {
     pub prev: OpId,
     pub next: OpId, // Use Vec<OpId> instead for egraph
     pub op: Op,

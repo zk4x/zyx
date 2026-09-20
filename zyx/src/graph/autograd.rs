@@ -3,7 +3,7 @@
 use crate::{
     Map, Set,
     dtype::Constant,
-    graph::{ClassId, Graph, GraphId, Node},
+    graph::{OpId, Graph, GraphId, Node},
     kernel::{BOp, UOp},
     runtime::{Runtime, TensorData},
     shape::{Dim, UAxis},
@@ -22,7 +22,7 @@ impl Runtime {
                 panic!("gradient on non-graph tensor")
             }
         };
-        let source_classes: Set<ClassId> = sources
+        let source_classes: Set<OpId> = sources
             .iter()
             .map(|tid| match self.tensors[*tid] {
                 TensorData::Graph { class_id, .. }
@@ -37,10 +37,10 @@ impl Runtime {
             })
             .collect();
 
-        let output_set: BTreeSet<ClassId> = [target_class].into();
+        let output_set: BTreeSet<OpId> = [target_class].into();
         let topo = self.graphs[graph_id].build_topo(&output_set, &source_classes);
 
-        let mut grads: Map<ClassId, ClassId> = Map::default();
+        let mut grads: Map<OpId, OpId> = Map::default();
 
         // Seed gradient: ones expanded to the target's shape. Never a bare
         // const — a const class has no producer path, so it cannot be realized
@@ -258,7 +258,7 @@ impl Runtime {
                     if sum_axes.is_empty() {
                         accum_grad(self, graph_id, &mut grads, x, grad);
                     } else {
-                        let reduced_dims: Vec<ClassId> = out_dims
+                        let reduced_dims: Vec<OpId> = out_dims
                             .iter()
                             .enumerate()
                             .filter(|(i, _)| !sum_axes.contains(&(*i as UAxis)))
@@ -314,7 +314,7 @@ impl Runtime {
                             // Shape dims are lengths: always integer-typed,
                             // never the tensor's data dtype.
                             let one_dim = self.push_const(graph_id, Constant::new(1i64));
-                            let kept: Vec<ClassId> = x_dims
+                            let kept: Vec<OpId> = x_dims
                                 .iter()
                                 .enumerate()
                                 .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one_dim } else { d })
@@ -334,7 +334,7 @@ impl Runtime {
                             // Shape dims are lengths: always integer-typed,
                             // never the tensor's data dtype.
                             let one_dim = self.push_const(graph_id, Constant::new(1i64));
-                            let kept: Vec<ClassId> = x_dims
+                            let kept: Vec<OpId> = x_dims
                                 .iter()
                                 .enumerate()
                                 .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one_dim } else { d })
@@ -368,7 +368,7 @@ impl Runtime {
                             // Shape dims are lengths: always integer-typed,
                             // never the tensor's data dtype.
                             let one_dim = self.push_const(graph_id, Constant::new(1i64));
-                            let kept: Vec<ClassId> = x_dims
+                            let kept: Vec<OpId> = x_dims
                                 .iter()
                                 .enumerate()
                                 .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one_dim } else { d })
@@ -460,7 +460,7 @@ impl Runtime {
                     let shape: Vec<Dim> = self.resolve_shape(tid);
                     let dtype = self.dtype(tid);
                     let zero_cid = self.push_const(graph_id, Constant::new(0u8).cast(dtype));
-                    let ops: Box<[ClassId]> = shape.iter().map(|&d| self.push_const(graph_id, Constant::idx(d))).collect();
+                    let ops: Box<[OpId]> = shape.iter().map(|&d| self.push_const(graph_id, Constant::idx(d))).collect();
                     let shape_cid = if ops.len() == 1 {
                         ops[0]
                     } else {
@@ -478,9 +478,9 @@ impl Runtime {
 }
 
 impl Graph {
-    pub fn build_topo(&self, outputs: &BTreeSet<ClassId>, sources: &Set<ClassId>) -> Vec<ClassId> {
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
-        let mut rcs: Map<ClassId, u32> = Map::default();
+    pub fn build_topo(&self, outputs: &BTreeSet<OpId>, sources: &Set<OpId>) -> Vec<OpId> {
+        let mut stack: Vec<OpId> = outputs.iter().copied().collect();
+        let mut rcs: Map<OpId, u32> = Map::default();
         while let Some(cid) = stack.pop() {
             rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 for nid in &self.classes[cid].nodes {
@@ -515,8 +515,8 @@ impl Graph {
         }
 
         let mut order = Vec::new();
-        let mut internal_rcs: Map<ClassId, u32> = Map::default();
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        let mut internal_rcs: Map<OpId, u32> = Map::default();
+        let mut stack: Vec<OpId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
             if let Some(&rc) = rcs.get(&cid)
                 && rc == *internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1)
@@ -534,7 +534,7 @@ impl Graph {
 
         let mut topo = Vec::new();
         let mut req_grad = sources.clone();
-        let mut visited: Set<ClassId> = Set::default();
+        let mut visited: Set<OpId> = Set::default();
         for cid in order.into_iter().rev() {
             for nid in &self.classes[cid].nodes {
                 for p in self.nodes[*nid].node.class_params() {
@@ -554,7 +554,7 @@ impl Graph {
     }
 }
 
-fn accum_grad(rt: &mut Runtime, graph_id: GraphId, grads: &mut Map<ClassId, ClassId>, nid: ClassId, grad: ClassId) {
+fn accum_grad(rt: &mut Runtime, graph_id: GraphId, grads: &mut Map<OpId, OpId>, nid: OpId, grad: OpId) {
     match grads.entry(nid) {
         std::collections::hash_map::Entry::Vacant(e) => {
             e.insert(grad);
@@ -570,9 +570,9 @@ fn accum_grad(rt: &mut Runtime, graph_id: GraphId, grads: &mut Map<ClassId, Clas
 impl Runtime {
     /// Build a shape class from dim classes: rank-1 uses the dim directly,
     /// higher ranks get a `Stack`, rank-0 is `NULL`.
-    pub(crate) fn shape_class(&mut self, graph_id: GraphId, dims: Vec<ClassId>) -> ClassId {
+    pub(crate) fn shape_class(&mut self, graph_id: GraphId, dims: Vec<OpId>) -> OpId {
         match dims.len() {
-            0 => ClassId::NULL,
+            0 => OpId::NULL,
             1 => dims[0],
             _ => self.push_node(graph_id, Node::Stack { ops: dims.into_boxed_slice() }).1,
         }
@@ -580,7 +580,7 @@ impl Runtime {
 
     /// Numeric value of a dim class, only if it is a constant. Symbolic dims
     /// return `None` — callers must not guess.
-    fn graph_const_dim(&self, graph_id: GraphId, dim: ClassId) -> Option<Dim> {
+    fn graph_const_dim(&self, graph_id: GraphId, dim: OpId) -> Option<Dim> {
         self.graphs[graph_id].resolve_const(dim).and_then(|c| c.as_dim())
     }
 }

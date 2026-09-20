@@ -20,7 +20,7 @@ use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Pool, 
 use crate::{
     DType, Set,
     error::{BackendError, ErrorStatus},
-    graph::{ClassId, Graph, Node, NodeData},
+    graph::{OpId, Graph, Node, OpNode},
     kernel::Kernel,
     shape::Dim,
     slab::{Slab, SlabId},
@@ -206,7 +206,7 @@ impl CblasDevice {
     /// Pattern-matches matmul subgraphs in `graph` and adds `Node::Kernel`s backed
     /// by this device's gemm kernels so they compete with the fused zyx kernels in
     /// extraction. `time = 1` makes the AOT gemm win over any fused kernel.
-    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>) {
+    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<OpId>) {
         let order = graph.topo_sort_classes::<true>(&Set::default(), outputs, None);
         for &cid in &order {
             let Some(mm) = graph.match_matmul(cid) else {
@@ -220,7 +220,7 @@ impl CblasDevice {
             }
             println!("[cblas] matched matmul m={}, n={}, k={}", mm.m, mm.n, mm.k);
             let program_id = self.programs.push(CblasProgram { kernel: CblasKernelId::ZERO, m: mm.m, n: mm.n, k: mm.k });
-            let nid = graph.nodes.push(NodeData {
+            let nid = graph.nodes.push(OpNode {
                 node: Node::Kernel {
                     inputs: Box::new([mm.a, mm.b]),
                     outputs: Box::new([mm.out]),

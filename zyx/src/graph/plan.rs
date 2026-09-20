@@ -6,7 +6,7 @@ use crate::{
     Map, Set, ZyxError,
     backend::{Buffer, LaunchArg, Pool, ProgramId},
     dtype::Constant,
-    graph::{ClassId, Graph, Node, NodeId},
+    graph::{OpId, Graph, Node, OpId},
     kernel::BOp,
     runtime::Runtime,
     shape::Dim,
@@ -19,7 +19,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum PlanDim {
     Const(Dim),
-    Leaf(ClassId),
+    Leaf(OpId),
     Binary { x: Box<PlanDim>, y: Box<PlanDim>, bop: BOp },
     Cast { x: Box<PlanDim>, dtype: crate::dtype::DType },
 }
@@ -28,7 +28,7 @@ impl PlanDim {
     /// Evaluate the dim expression against the leaf classes' scalar values.
     /// Fails loudly on an unbound leaf — a missing value is a bug, never a
     /// default.
-    fn eval(&self, class_vars: &Map<ClassId, Constant>) -> Dim {
+    fn eval(&self, class_vars: &Map<OpId, Constant>) -> Dim {
         match self {
             PlanDim::Const(c) => *c,
             PlanDim::Leaf(cid) => class_vars
@@ -51,7 +51,7 @@ impl PlanDim {
 #[derive(Debug, Clone)]
 pub enum ExecNode {
     Allocate {
-        class: ClassId,
+        class: OpId,
         pool: Pool,
         dtype_size: Dim,
         /// One dim expression per shape axis; the buffer is sized by their
@@ -59,40 +59,40 @@ pub enum ExecNode {
         dims: Vec<PlanDim>,
     },
     Copy {
-        dst_class: ClassId,
-        src_class: ClassId,
+        dst_class: OpId,
+        src_class: OpId,
     },
     Deallocate {
-        class: ClassId,
+        class: OpId,
     },
     Launch {
         program_id: ProgramId,
-        load_classes: Box<[ClassId]>,
-        store_classes: Box<[ClassId]>,
+        load_classes: Box<[OpId]>,
+        store_classes: Box<[OpId]>,
     },
     // Binds class_buf[class] = class_buf[to]: an After output aliases the
     // buffer of its base leaf class (in-place assign write). Preplanned by
     // ExecPlan::new so execute_plan only resolves buffers, never decides.
     Alias {
-        class: ClassId,
-        to: ClassId,
+        class: OpId,
+        to: OpId,
     },
 }
 
 #[derive(Debug, Clone)]
 pub struct ExecPlan {
     pub nodes: Vec<ExecNode>,
-    pub leaf_classes: Vec<ClassId>,
+    pub leaf_classes: Vec<OpId>,
     // Pool each leaf class lived in when the plan was compiled. Leaf pools
     // must not vary across plan reuse, or the preplanned Alias/Allocate/Copy
     // binding would be wrong — debug-asserted in execute_plan.
-    pub leaf_pools: Map<ClassId, Pool>,
+    pub leaf_pools: Map<OpId, Pool>,
 }
 
 impl ExecPlan {
     #[must_use]
-    pub fn new(graph: &Graph, nodes: &[NodeId], output_set: &BTreeSet<ClassId>, leaf_pools: &Map<ClassId, Pool>) -> Self {
-        let mut rc: Map<ClassId, u32> = Map::default();
+    pub fn new(graph: &Graph, nodes: &[OpId], output_set: &BTreeSet<OpId>, leaf_pools: &Map<OpId, Pool>) -> Self {
+        let mut rc: Map<OpId, u32> = Map::default();
         for &nid in nodes {
             match &graph.nodes[nid].node {
                 Node::Kernel { inputs, .. } => {
@@ -108,15 +108,15 @@ impl ExecPlan {
         }
 
         let mut plan_nodes = Vec::new();
-        let mut allocated: Set<ClassId> = Set::default();
+        let mut allocated: Set<OpId> = Set::default();
 
         // Allocation spec of a class: dtype byte size and one `PlanDim` per
         // shape axis. Dim expressions over leaf classes stay symbolic — their
         // values live in leaf buffers set between plan runs — so execution
         // evaluates the tree and multiplies. Expression trees over Const and
         // leaf dims must terminate the walk; anything else is unreachable.
-        fn alloc_spec(graph: &Graph, class: ClassId) -> (Dim, Vec<PlanDim>) {
-            fn dim_expr(graph: &Graph, dim: ClassId) -> PlanDim {
+        fn alloc_spec(graph: &Graph, class: OpId) -> (Dim, Vec<PlanDim>) {
+            fn dim_expr(graph: &Graph, dim: OpId) -> PlanDim {
                 match &graph.nodes[graph.classes[dim].nodes[0]].node {
                     Node::Const { value: c, .. } => {
                         PlanDim::Const(c.as_dim().unwrap_or_else(|| panic!("dim class {dim:?} is not a constant")))
@@ -139,8 +139,8 @@ impl ExecPlan {
         // so an After class (x's value after the assign) shares the leaf's
         // buffer. They must not be allocated or deallocated — the leaf's buffer
         // is owned by the realized tensor.
-        let mut aliases: Vec<(ClassId, ClassId, Dim, Vec<PlanDim>)> = Vec::new();
-        let mut alias_classes: Set<ClassId> = Set::default();
+        let mut aliases: Vec<(OpId, OpId, Dim, Vec<PlanDim>)> = Vec::new();
+        let mut alias_classes: Set<OpId> = Set::default();
         for cid in graph.classes.ids() {
             for nid in &graph.classes[cid].nodes {
                 if let Node::After { x, .. } = &graph.nodes[*nid].node {
@@ -154,7 +154,7 @@ impl ExecPlan {
 
         // Pool of the kernel that stores each alias class — precomputed so the
         // binding below is decided at plan time, not execution time.
-        let mut store_pool: Map<ClassId, Pool> = Map::default();
+        let mut store_pool: Map<OpId, Pool> = Map::default();
         for &nid in nodes {
             if let Node::Kernel { outputs, program_id, .. } = &graph.nodes[nid].node {
                 let pool = program_id.dev.pool();
@@ -170,7 +170,7 @@ impl ExecPlan {
         // leaf — chained assigns must write the same physical buffer or the
         // intermediate writes are lost. Mirrors eager assign's store-to-target
         // pool handling.
-        let mut leaf_copy: Map<ClassId, ClassId> = Map::default();
+        let mut leaf_copy: Map<OpId, OpId> = Map::default();
         for &(class, to, dtype_size, ref dims) in &aliases {
             match store_pool.get(&class) {
                 Some(pool) if leaf_pools[&to] != *pool => {
@@ -242,7 +242,7 @@ impl ExecPlan {
 
         // Deallocate kernel outputs that are neither consumed by any node nor
         // requested outputs (e.g. the extra stores of a multi-output kernel).
-        let allocated: Vec<ClassId> = allocated.iter().copied().collect();
+        let allocated: Vec<OpId> = allocated.iter().copied().collect();
         for c in allocated {
             if !graph.leaf_map.contains_key(&c) && !output_set.contains(&c) && !alias_classes.contains(&c) && !rc.contains_key(&c)
             {
@@ -286,8 +286,8 @@ impl Runtime {
     pub fn execute_plan(
         &mut self,
         cache_key: u64,
-        class_buf: &mut Map<ClassId, Buffer>,
-        class_vars: &Map<ClassId, Constant>,
+        class_buf: &mut Map<OpId, Buffer>,
+        class_vars: &Map<OpId, Constant>,
     ) -> Result<(), ZyxError> {
         let plan = self.plan_cache.get(&cache_key).unwrap();
 

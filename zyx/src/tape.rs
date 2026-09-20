@@ -49,7 +49,7 @@ use crate::{
     DType, Map, RT, Set, Tensor, ZyxError,
     backend::Buffer,
     dtype::Constant,
-    graph::{ClassId, Graph, GraphId},
+    graph::{OpId, Graph, GraphId},
     runtime::{Runtime, TensorData},
     shape::Dim,
     slab::SlabId,
@@ -154,7 +154,7 @@ impl Tape {
         let mut rt = RT.lock();
         let graph_id = self.graph_id;
 
-        let output_pairs: Vec<(TensorId, ClassId)> = tensors
+        let output_pairs: Vec<(TensorId, OpId)> = tensors
             .into_iter()
             .map(|t| {
                 let class_id = match rt.tensors[t.id] {
@@ -187,17 +187,17 @@ impl Tape {
             .collect();
 
         let output_tids: Vec<TensorId> = output_pairs.iter().map(|(tid, _)| *tid).collect();
-        let output_classes: Vec<ClassId> = output_pairs.iter().map(|(_, cid)| *cid).collect();
+        let output_classes: Vec<OpId> = output_pairs.iter().map(|(_, cid)| *cid).collect();
 
         debug_assert!(rt.graphs.contains_id(graph_id));
         rt.debug_assert_pre_realize(graph_id);
 
-        let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
+        let output_set: BTreeSet<OpId> = output_classes.iter().copied().collect();
         let cache_key = rt.plan_cache_key(graph_id, &output_set);
 
         if let Some(plan) = rt.plan_cache.get(&cache_key) {
-            let mut class_buf: Map<ClassId, Buffer> = Map::default();
-            let mut class_vars: Map<ClassId, Constant> = Map::default();
+            let mut class_buf: Map<OpId, Buffer> = Map::default();
+            let mut class_vars: Map<OpId, Constant> = Map::default();
             for &cid in &plan.leaf_classes {
                 let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
                 if let Some(buf_id) = rt.leaf_buffer(tid) {
@@ -231,8 +231,8 @@ impl Tape {
 
         let plan = rt.compile_graph(graph_id, &output_set)?;
 
-        let mut class_buf: Map<ClassId, Buffer> = Map::default();
-        let mut class_vars: Map<ClassId, Constant> = Map::default();
+        let mut class_buf: Map<OpId, Buffer> = Map::default();
+        let mut class_vars: Map<OpId, Constant> = Map::default();
         for &cid in &plan.leaf_classes {
             let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
             if let Some(buf_id) = rt.leaf_buffer(tid) {
@@ -357,7 +357,7 @@ impl Drop for Tape {
                         match &mut rt.tensors[tid] {
                             TensorData::GraphLeaf { graph_id, class_id, .. } => {
                                 *graph_id = GraphId::NULL;
-                                *class_id = ClassId::NULL;
+                                *class_id = OpId::NULL;
                             }
                             _ => unreachable!(),
                         }
@@ -374,7 +374,7 @@ impl Drop for Tape {
                         match &mut rt.tensors[tid] {
                             TensorData::Graph { graph_id, class_id, .. } => {
                                 *graph_id = GraphId::NULL;
-                                *class_id = ClassId::NULL;
+                                *class_id = OpId::NULL;
                             }
                             _ => unreachable!(),
                         }
@@ -461,7 +461,7 @@ impl Tape {
         let mut rt = RT.lock();
         let graph_id = self.graph_id;
 
-        let outputs: Vec<(ClassId, Vec<Dim>, DType)> = outputs
+        let outputs: Vec<(OpId, Vec<Dim>, DType)> = outputs
             .into_iter()
             .map(|t| {
                 let class_id = match rt.tensors[t.id] {
@@ -475,7 +475,7 @@ impl Tape {
         debug_assert!(rt.graphs.contains_id(graph_id));
         rt.debug_assert_pre_realize(graph_id);
 
-        let output_set: BTreeSet<ClassId> = outputs.iter().map(|x| x.0).collect();
+        let output_set: BTreeSet<OpId> = outputs.iter().map(|x| x.0).collect();
         let cache_key = rt.plan_cache_key(graph_id, &output_set);
 
         if rt.plan_cache.contains_key(&cache_key) {
@@ -493,7 +493,7 @@ impl Tape {
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct FrozenTape {
     cache_key: u64,
-    outputs: Vec<(ClassId, Vec<Dim>, DType)>,
+    outputs: Vec<(OpId, Vec<Dim>, DType)>,
 }
 
 impl FrozenTape {
@@ -501,8 +501,8 @@ impl FrozenTape {
     pub fn replay<'a>(&self, inputs: impl IntoIterator<Item = &'a Tensor>) -> Result<Vec<Tensor>, ZyxError> {
         let mut rt = RT.lock();
 
-        let mut class_buf: Map<ClassId, Buffer> = Map::default();
-        let mut class_vars: Map<ClassId, Constant> = Map::default();
+        let mut class_buf: Map<OpId, Buffer> = Map::default();
+        let mut class_vars: Map<OpId, Constant> = Map::default();
         for (tensor, &cid) in inputs.into_iter().zip(rt.plan_cache[&self.cache_key].leaf_classes.iter()) {
             // The frozen contract: leaf bindings are fixed since `freeze` — a
             // compiled plan bakes pool-dependent decisions (ExecPlan::new's

@@ -19,7 +19,7 @@ use std::hash::BuildHasherDefault;
 use crate::{
     Map,
     dtype::{Constant, DType},
-    graph::{ClassId, GraphId, Node},
+    graph::{OpId, GraphId, Node},
     kernel::{BOp, IDX_T, Op, OpId, UOp},
     runtime::{KernelId, ResolvedDim, Runtime, TensorData},
     shape::Dim,
@@ -664,7 +664,7 @@ impl Runtime {
     ///   len < 2).
     ///
     /// The same closed-set rule applies: anything else panics here.
-    pub(crate) fn replay_symbolic_into_graph(&mut self, graph_id: GraphId, shape: TensorId) -> ClassId {
+    pub(crate) fn replay_symbolic_into_graph(&mut self, graph_id: GraphId, shape: TensorId) -> OpId {
         // DFS post-order flatten: every node lands after its operands.
         fn flatten(rt: &Runtime, x: ExprId, order: &mut Vec<ExprId>) {
             if order.contains(&x) {
@@ -713,8 +713,8 @@ impl Runtime {
         let mut order = Vec::new();
         flatten(self, root, &mut order);
 
-        let mut class_map: Map<ExprId, ClassId> = Map::with_hasher(BuildHasherDefault::new());
-        let mut root_class = ClassId::NULL;
+        let mut class_map: Map<ExprId, OpId> = Map::with_hasher(BuildHasherDefault::new());
+        let mut root_class = OpId::NULL;
         for eid in order {
             let class_id = match self.exprs[eid].clone() {
                 Expr::Constant { value } => self.push_const(graph_id, value),
@@ -723,7 +723,7 @@ impl Runtime {
                     // structure: register its leaf so the plan binds it via
                     // the tensors slab and value changes never force
                     // recompilation.
-                    let (_, cid) = self.push_leaf_node(graph_id, IDX_T, ClassId::NULL);
+                    let (_, cid) = self.push_leaf_node(graph_id, IDX_T, OpId::NULL);
                     let var_tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
                     self.graphs[graph_id].leaf_map.insert(cid, var_tid);
                     self.retain(var_tid);
@@ -745,41 +745,41 @@ impl Runtime {
                     self.push_binary_node(graph_id, a, b, bop)
                 }
                 Expr::Stack { ref exprs } => {
-                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
+                    let ops: Vec<OpId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
-                        0 => ClassId::NULL,
+                        0 => OpId::NULL,
                         1 => ops[0],
                         _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
                 Expr::Stack2 { ref exprs } => {
-                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
+                    let ops: Vec<OpId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
-                        0 => ClassId::NULL,
+                        0 => OpId::NULL,
                         1 => ops[0],
                         _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
                 Expr::Stack3 { ref exprs } => {
-                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
+                    let ops: Vec<OpId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
-                        0 => ClassId::NULL,
+                        0 => OpId::NULL,
                         1 => ops[0],
                         _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
                 Expr::Stack4 { ref exprs } => {
-                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
+                    let ops: Vec<OpId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
-                        0 => ClassId::NULL,
+                        0 => OpId::NULL,
                         1 => ops[0],
                         _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
                 Expr::Stack5 { ref exprs } => {
-                    let ops: Vec<ClassId> = exprs.iter().map(|e| class_map[e]).collect();
+                    let ops: Vec<OpId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
-                        0 => ClassId::NULL,
+                        0 => OpId::NULL,
                         1 => ops[0],
                         _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
                     }

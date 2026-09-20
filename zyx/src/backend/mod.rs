@@ -30,7 +30,7 @@ use crate::{
     DebugMask,
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus},
-    graph::{ClassId, Graph},
+    graph::{OpId, Graph},
     kernel::{BOp, Kernel, MMADims, Op, OpId, ParamKind, RangeKind, UOp},
     shape::Dim,
     slab::SlabId,
@@ -285,7 +285,7 @@ impl Dev {
     /// Pattern-matches subgraphs in `graph` (e.g. matmul) and adds `Node::Kernel`s
     /// backed by this device's AOT kernels so they compete with the fused zyx
     /// kernels in extraction. No-op for devices without AOT kernels.
-    pub fn match_graph(self, graph: &mut Graph, outputs: &BTreeSet<ClassId>) {
+    pub fn match_graph(self, graph: &mut Graph, outputs: &BTreeSet<OpId>) {
         match self {
             Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().match_graph(graph, outputs),
             Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).match_graph(graph, outputs),

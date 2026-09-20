@@ -23,7 +23,7 @@ use std::sync::Arc;
 use crate::backend::{Buffer, DeviceInfo, LaunchArg, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
-use crate::graph::{ClassId, EClass, Node, NodeData};
+use crate::graph::{OpId, EClass, Node, OpNode};
 use crate::kernel::{
     BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
     ops::TileDim,
@@ -1144,7 +1144,7 @@ impl Runtime {
             let mut shape_ids = Vec::with_capacity(shapes.len());
             for shape in shapes.iter() {
                 if shape.is_empty() {
-                    shape_classes.push(ClassId::NULL);
+                    shape_classes.push(OpId::NULL);
                     shape_ids.push(ExprId::NULL);
                     continue;
                 }
@@ -1187,7 +1187,7 @@ impl Runtime {
             for _ in 0..shapes.len() {
                 out_cids.push(self.graphs[graph_id].classes.push(EClass { nodes: vec![] }));
             }
-            let outputs: Vec<(ClassId, ClassId, DType)> = out_cids
+            let outputs: Vec<(OpId, OpId, DType)> = out_cids
                 .iter()
                 .copied()
                 .zip(shape_classes)
@@ -1195,7 +1195,7 @@ impl Runtime {
                 .map(|((cid, shape), dtype)| (cid, shape, dtype))
                 .collect();
             let node = Node::Custom { inputs: input_classes.into(), outputs: outputs.into(), program_id: program, time: 10 };
-            let nid = self.graphs[graph_id].nodes.push(NodeData { node: node.clone(), class_of: out_cids[0] });
+            let nid = self.graphs[graph_id].nodes.push(OpNode { node: node.clone(), class_of: out_cids[0] });
             self.graphs[graph_id].hashcons.insert(node, nid);
             for &ocid in &out_cids {
                 self.graphs[graph_id].classes[ocid].nodes.push(nid);

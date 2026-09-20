@@ -4,7 +4,7 @@
 
 use crate::{
     DType,
-    graph::{ClassId, Graph},
+    graph::{OpId, Graph},
     shape::Dim,
 };
 
@@ -12,9 +12,9 @@ use crate::{
 /// `b` is `[k, n]` and `out` is `[m, n]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MatMul {
-    pub(crate) a: ClassId,
-    pub(crate) b: ClassId,
-    pub(crate) out: ClassId,
+    pub(crate) a: OpId,
+    pub(crate) b: OpId,
+    pub(crate) out: OpId,
     pub(crate) m: Dim,
     pub(crate) n: Dim,
     pub(crate) k: Dim,
@@ -42,7 +42,7 @@ impl Graph {
     ///   a leaf at the broadcast shape.
     /// - `b` is found by looking through the expand source's `Reshape` for the
     ///   `Permute [1, 0]` and returning its `[k, n]` source.
-    pub(crate) fn match_matmul(&self, cid: ClassId) -> Option<MatMul> {
+    pub(crate) fn match_matmul(&self, cid: OpId) -> Option<MatMul> {
         let out_shape = self.const_shape(cid)?;
         if out_shape.len() != 2 {
             return None;
