@@ -133,6 +133,13 @@ impl From<std::io::Error> for ZyxError {
     }
 }
 
+impl From<std::fmt::Error> for BackendError {
+    #[track_caller]
+    fn from(_: std::fmt::Error) -> Self {
+        Self { status: ErrorStatus::KernelCompilation, context: "tenstorrent2: render: format write failed".into() }
+    }
+}
+
 #[derive(Debug)]
 pub struct BackendError {
     pub status: ErrorStatus,

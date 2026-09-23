@@ -2588,7 +2588,12 @@ impl Tensor {
     ///
     /// Returns a shape error if the tensors are not broadcastable, or a
     /// parse error if `reduction` is not `Sum` or `Mean`.
-    pub fn cosine_similarity(&self, rhs: impl Into<Tensor>, eps: impl Into<Tensor>, reduction: ReduceOp) -> Result<Tensor, ZyxError> {
+    pub fn cosine_similarity(
+        &self,
+        rhs: impl Into<Tensor>,
+        eps: impl Into<Tensor>,
+        reduction: ReduceOp,
+    ) -> Result<Tensor, ZyxError> {
         let rhs: Tensor = rhs.into();
         let eps: Tensor = eps.into();
         let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
@@ -2601,9 +2606,7 @@ impl Tensor {
                 let denom = denom.cmplt(eps.clone())?.where_(eps, denom)?;
                 Ok(dot / denom)
             }
-            _ => Err(ZyxError::ParseError(
-                "invalid reduction for cosine_similarity, expected Sum or Mean".into(),
-            )),
+            _ => Err(ZyxError::ParseError("invalid reduction for cosine_similarity, expected Sum or Mean".into())),
         }
     }
 

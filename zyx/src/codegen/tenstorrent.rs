@@ -76,16 +76,20 @@ pub(crate) enum TtSection {
 }
 
 impl TtSection {
-    /// Step to the next section at a barrier. Panics past the writer:
+    /// Step to the next section at a barrier. Errors past the writer:
     /// kernels have exactly 3 sections (2 barriers).
-    fn advance(&mut self) {
+    fn advance(&mut self) -> Result<(), BackendError> {
         *self = match self {
             TtSection::Reader => TtSection::Compute,
             TtSection::Compute => TtSection::Writer,
             TtSection::Writer => {
-                panic!("tenstorrent kernels have exactly 3 sections (2 barriers)")
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2: kernels have exactly 3 sections (2 barriers)".into(),
+                });
             }
         };
+        Ok(())
     }
 }
 
@@ -288,7 +292,7 @@ pub(crate) struct NocEmitter {
 impl NocEmitter {
     /// Build param state from a kernel: the param ordinals and
     /// input/output dtypes. One walk.
-    pub(crate) fn new(kernel: &Kernel) -> Self {
+    pub(crate) fn new(kernel: &Kernel) -> Result<Self, BackendError> {
         let mut param_ordinal_of: Map<OpId, u32> = Map::default();
         let mut next_param = 0u32;
         let mut input_dtypes: Vec<DType> = Vec::new();
@@ -310,9 +314,12 @@ impl NocEmitter {
             scan = kernel.next_op(scan);
         }
         if !scan.is_null() {
-            panic!("tenstorrent2 compiler scan did not finish in 10000 steps");
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: compiler scan did not finish in 10000 steps".into(),
+            });
         }
-        Self { param_ordinal_of }
+        Ok(Self { param_ordinal_of })
     }
 }
 
@@ -957,35 +964,41 @@ fn reduce_dim_name(kind: TileDim) -> &'static str {
 /// TT `DataFormat` code for a dtype on the tile path (the
 /// `typecast_tile_init<in, out>` template args). This is NOT the CB
 /// descriptor code (`cb_fmt` below): the two numberings differ.
-fn tt_fmt(dtype: DType) -> u32 {
+fn tt_fmt(dtype: DType) -> Result<u32, BackendError> {
     match dtype {
-        DType::F32 => 0,
-        DType::F16 | DType::BF16 => 5,
-        DType::I32 => 8,
-        DType::U16 => 9,
-        DType::I8 => 14,
-        DType::U32 => 24,
-        DType::F8E4M3 => 26,
-        DType::U8 => 30,
-        dt => panic!("tenstorrent2: dtype {dt:?} has no tt tile format"),
+        DType::F32 => Ok(0),
+        DType::F16 | DType::BF16 => Ok(5),
+        DType::I32 => Ok(8),
+        DType::U16 => Ok(9),
+        DType::I8 => Ok(14),
+        DType::U32 => Ok(24),
+        DType::F8E4M3 => Ok(26),
+        DType::U8 => Ok(30),
+        dt => Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("tenstorrent2: dtype {dt:?} has no tt tile format").into(),
+        }),
     }
 }
 
 /// Runtime CB descriptor format code for a CB storage dtype
 /// (F32=0, F16=1, BF16=2, ...). Follows the CB storage dtype;
 /// an unmappable dtype is a compilation error, never a default.
-fn cb_fmt(dtype: DType) -> u32 {
+fn cb_fmt(dtype: DType) -> Result<u32, BackendError> {
     match dtype {
-        DType::F32 => 0,
-        DType::F16 => 1,
-        DType::BF16 => 2,
-        DType::U16 => 3,
-        DType::F8E4M3 => 4,
-        DType::U8 => 5,
-        DType::I8 => 6,
-        DType::U32 => 7,
-        DType::I32 => 8,
-        dt => panic!("tenstorrent2: CB dtype {dt:?} has no tt format"),
+        DType::F32 => Ok(0),
+        DType::F16 => Ok(1),
+        DType::BF16 => Ok(2),
+        DType::U16 => Ok(3),
+        DType::F8E4M3 => Ok(4),
+        DType::U8 => Ok(5),
+        DType::I8 => Ok(6),
+        DType::U32 => Ok(7),
+        DType::I32 => Ok(8),
+        dt => Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("tenstorrent2: CB dtype {dt:?} has no tt format").into(),
+        }),
     }
 }
 
@@ -1013,7 +1026,7 @@ impl Compiler {
     /// zero frees its slot for reuse (shared slots stay live while
     /// any bound id is). Single pass, nothing else: fusion, sync,
     /// locks, and inits are later passes over the ops.
-    fn new(kernel: &Kernel) -> Self {
+    fn new(kernel: &Kernel) -> Result<Self, BackendError> {
         // Section gate, same rule as the legacy `check_sections`:
         // exactly 2 barriers delimiting reader/compute/writer, and no
         // GPU-only Wmma (tenstorrent has `MatmulTile`, no WMMA units).
@@ -1025,13 +1038,21 @@ impl Compiler {
             }
             match &kernel.ops[scan].op {
                 Op::Barrier => barriers += 1,
-                Op::Wmma { .. } => panic!("tenstorrent2: Wmma is GPU-only, tenstorrent uses Op::MatmulTile"),
+                Op::Wmma { .. } => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: Wmma is GPU-only, tenstorrent uses Op::MatmulTile".into(),
+                    });
+                }
                 _ => {}
             }
             scan = kernel.next_op(scan);
         }
         if barriers != 2 {
-            panic!("tenstorrent2: need exactly 2 barriers (3 sections), found {barriers}");
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tenstorrent2: need exactly 2 barriers (3 sections), found {barriers}").into(),
+            });
         }
         // DST mode, same scan as the legacy `generate_tenstorrent`:
         // 32-bit iff the kernel touches F32 tiles (F32 storage, or an
@@ -1054,7 +1075,7 @@ impl Compiler {
             scan = kernel.next_op(scan);
         }
         let budget = if dst_bf16 { TileId::BUDGET_BF16 } else { TileId::BUDGET_FP32 };
-        let param_ordinal_of = NocEmitter::new(kernel).param_ordinal_of;
+        let param_ordinal_of = NocEmitter::new(kernel)?.param_ordinal_of;
         // CB allocation: first-touch order over loads/stores of
         // Circular storages, with the legacy validity checks (whole
         // 1024-element tiles, whole pages, single-core L1 budget,
@@ -1082,36 +1103,54 @@ impl Compiler {
         }
         let num_circular_buffers = kernel.device_info().num_circular_buffers;
         if cb_order.len() > num_circular_buffers as usize {
-            panic!("tenstorrent2: kernel needs {} circular buffers, device holds {num_circular_buffers}", cb_order.len());
+            return Err(BackendError {
+                status: ErrorStatus::TooManyCircularBuffers,
+                context: format!(
+                    "tenstorrent2: kernel needs {} circular buffers, device holds {num_circular_buffers}",
+                    cb_order.len()
+                )
+                .into(),
+            });
         }
         let mut ops = vec![TTOp::DstMode { bf16: dst_bf16 }];
         for (cb, &st) in cb_order.iter().enumerate() {
             let Op::Storage { dtype, len, .. } = kernel.ops[st].op else {
-                unreachable!("tenstorrent2: CB map entry {st} is not a storage op")
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: CB map entry {st} is not a storage op").into(),
+                });
             };
             let elem = dtype.bit_size() as i64 / 8;
             let bytes = len * elem;
             if len % 1024 != 0 {
-                panic!("tenstorrent2: CB{cb} holds {len} elements, not whole 1024-element tiles");
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: CB{cb} holds {len} elements, not whole 1024-element tiles").into(),
+                });
             }
             let page = 1024 * elem;
             if bytes % page != 0 {
-                panic!("tenstorrent2: CB{cb} holds {bytes} bytes, not whole {page}B pages");
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: CB{cb} holds {bytes} bytes, not whole {page}B pages").into(),
+                });
             }
             if bytes > 32768 {
-                panic!("tenstorrent2: CB{cb} needs {bytes} bytes, single-core L1 budget is 32768");
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: CB{cb} needs {bytes} bytes, single-core L1 budget is 32768").into(),
+                });
             }
-            ops.push(TTOp::CbDeclare { cb: CBId(cb as u32), n_tiles: (len / 1024) as u32, format: cb_fmt(dtype) });
+            ops.push(TTOp::CbDeclare { cb: CBId(cb as u32), n_tiles: (len / 1024) as u32, format: cb_fmt(dtype)? });
         }
         // A side resolving to a compile-time float constant (follows
         // const expressions): folds into a `*_unary_tile` immediate.
         // Integer constants are NOT converted (a tile op's scalar lane
         // is float; silent int→float would hide dtype bugs).
         let const_scalar = |op: OpId| -> Option<Constant> {
-            match kernel.resolve_const(op)? {
-                Constant::F32(_) | Constant::F16(_) | Constant::BF16(_) => {
-                    Some(kernel.resolve_const(op).expect("tenstorrent2: scalar side lost its constant"))
-                }
+            let c = kernel.resolve_const(op)?;
+            match c {
+                Constant::F32(_) | Constant::F16(_) | Constant::BF16(_) => Some(c),
                 _ => None,
             }
         };
@@ -1142,7 +1181,7 @@ impl Compiler {
         let mut startup_loads: Vec<CBId> = Vec::new();
         let mut startup_store: Option<CBId> = None;
         for (s, tt_section) in sections.into_iter().enumerate() {
-            let data = kernel.get_needed_ops(tt_section);
+            let data = kernel.get_needed_ops(tt_section)?;
             let total = data.rcs.clone();
             let mut remaining = data.rcs.clone();
             let mut vars: Map<OpId, VarId> = Map::default();
@@ -1216,40 +1255,61 @@ impl Compiler {
                 v
             };
             // Consume one use of a scalar value, freeing its register at zero.
-            let use_var =
-                |vars: &Map<OpId, VarId>, remaining: &mut Map<OpId, u32>, free_vars: &mut Vec<VarId>, id: OpId| -> VarId {
-                    let &v = vars.get(&id).unwrap_or_else(|| panic!("tenstorrent2: scalar op {id} has no register"));
-                    let left = remaining.get_mut(&id).unwrap_or_else(|| panic!("tenstorrent2: scalar op {id} has no use count"));
-                    assert!(*left > 0, "tenstorrent2: scalar op {id} used past its uses");
-                    *left -= 1;
-                    if *left == 0 {
-                        free_vars.push(v);
-                    }
-                    v
-                };
+            let use_var = |vars: &Map<OpId, VarId>,
+                           remaining: &mut Map<OpId, u32>,
+                           free_vars: &mut Vec<VarId>,
+                           id: OpId|
+             -> Result<VarId, BackendError> {
+                let &v = vars.get(&id).ok_or_else(|| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: scalar op {id} has no register").into(),
+                })?;
+                let left = remaining.get_mut(&id).ok_or_else(|| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: scalar op {id} has no use count").into(),
+                })?;
+                if !(*left > 0) {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: scalar op {id} used past its uses").into(),
+                    });
+                }
+                *left -= 1;
+                if *left == 0 {
+                    free_vars.push(v);
+                }
+                Ok(v)
+            };
             // Bind the lowest dead DST slot (or a fresh one) to a tiled
             // value. Lowest-first matches the legacy slab scan, so slot
             // assignment agrees with legacy text. The use budget comes
             // from `remaining` (the section's consumer counts).
-            let def_tile =
-                |tiles: &mut Map<OpId, TileId>, free_tiles: &mut Vec<TileId>, next_tile: &mut u8, id: OpId| -> TileId {
-                    let t = if free_tiles.is_empty() {
-                        let t = TileId(*next_tile);
-                        *next_tile += 1;
-                        t
-                    } else {
-                        let pos = free_tiles
-                            .iter()
-                            .enumerate()
-                            .min_by_key(|(_, t)| t.0)
-                            .map(|(i, _)| i)
-                            .expect("tenstorrent2: free tile list went missing");
-                        free_tiles.remove(pos)
-                    };
-                    assert!((t.0 as usize) < budget, "tenstorrent2: DST budget exceeded");
-                    tiles.insert(id, t);
+            let def_tile = |tiles: &mut Map<OpId, TileId>,
+                            free_tiles: &mut Vec<TileId>,
+                            next_tile: &mut u8,
+                            id: OpId|
+             -> Result<TileId, BackendError> {
+                let t = if free_tiles.is_empty() {
+                    let t = TileId(*next_tile);
+                    *next_tile += 1;
                     t
+                } else {
+                    let pos =
+                        free_tiles.iter().enumerate().min_by_key(|(_, t)| t.0).map(|(i, _)| i).ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: free tile list went missing".into(),
+                        })?;
+                    free_tiles.remove(pos)
                 };
+                if !((t.0 as usize) < budget) {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: DST budget exceeded".into(),
+                    });
+                }
+                tiles.insert(id, t);
+                Ok(t)
+            };
             // Consume one use of a tiled value, freeing its DST slot at
             // zero. Def-before-uses at each op (like the legacy
             // alloc-then-use order) so a dead operand slot is reused by
@@ -1257,14 +1317,30 @@ impl Compiler {
             // acc aliases) transfer ownership to the result id instead:
             // the operand count stays stale-harmless, the slot frees
             // once through the result id.
-            let use_tile = |tiles: &Map<OpId, TileId>, remaining: &mut Map<OpId, u32>, free_tiles: &mut Vec<TileId>, id: OpId| {
-                let &t = tiles.get(&id).unwrap_or_else(|| panic!("tenstorrent2: tile op {id} has no DST slot"));
-                let left = remaining.get_mut(&id).unwrap_or_else(|| panic!("tenstorrent2: tile op {id} has no use count"));
-                assert!(*left > 0, "tenstorrent2: tile op {id} used past its uses");
+            let use_tile = |tiles: &Map<OpId, TileId>,
+                            remaining: &mut Map<OpId, u32>,
+                            free_tiles: &mut Vec<TileId>,
+                            id: OpId|
+             -> Result<(), BackendError> {
+                let &t = tiles.get(&id).ok_or_else(|| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: tile op {id} has no DST slot").into(),
+                })?;
+                let left = remaining.get_mut(&id).ok_or_else(|| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: tile op {id} has no use count").into(),
+                })?;
+                if !(*left > 0) {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: tile op {id} used past its uses").into(),
+                    });
+                }
                 *left -= 1;
                 if *left == 0 {
                     free_tiles.push(t);
                 }
+                Ok(())
             };
             for &id in &data.ops {
                 if fused_gone.contains(&id) {
@@ -1274,7 +1350,10 @@ impl Compiler {
                 // transforms the external input's slot (ownership
                 // transfers to the root id, like every in-place chain).
                 if let Some(pat) = fused.get(&id) {
-                    let slot = tiles.get(&pat.x).copied().expect("tenstorrent2: fused op reads a value with no DST slot");
+                    let slot = tiles.get(&pat.x).copied().ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: fused op reads a value with no DST slot".into(),
+                    })?;
                     tiles.insert(id, slot);
                     ops.push(TTOp::TileFused { slot, kind: pat.kind });
                     continue;
@@ -1288,31 +1367,52 @@ impl Compiler {
                         ParamKind::Variable => {
                             let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
                             let ordinal =
-                                param_ordinal_of.get(&id).copied().expect("tenstorrent2: variable param missing ordinal");
+                                param_ordinal_of.get(&id).copied().ok_or_else(|| BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "tenstorrent2: variable param missing ordinal".into(),
+                                })?;
                             ops.push(TTOp::Arg { z, dtype: *dtype, ordinal });
                         }
                         ParamKind::Global | ParamKind::GlobalMut => {
                             if s == 1 {
-                                panic!("tenstorrent2: compute touches DRAM through param {id}");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: compute touches DRAM through param {id}").into(),
+                                });
                             }
-                            let ordinal = param_ordinal_of.get(&id).copied().expect("tenstorrent2: DRAM param missing ordinal");
+                            let ordinal =
+                                param_ordinal_of.get(&id).copied().ok_or_else(|| BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "tenstorrent2: DRAM param missing ordinal".into(),
+                                })?;
                             ops.push(TTOp::NocAccessor { ordinal, dtype: *dtype, kind: *kind });
                         }
                     },
                     Op::Storage { scope, .. } => match scope {
                         MemScope::Circular => {}
                         MemScope::Register => {
-                            def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                            def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id)?;
                         }
-                        MemScope::Local => unreachable!(
-                            "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
-                        ),
-                        MemScope::Global => todo!("tenstorrent2 storage scope, op {id}"),
+                        MemScope::Local => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass".into(),
+                            })
+                        }
+                        MemScope::Global => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2 storage scope, op {id}").into(),
+                            })
+                        }
                     },
                     Op::Load { src, index, layout } => {
                         if !matches!(layout, MemLayout::Tile { .. }) {
                             if s == 1 {
-                                todo!("tenstorrent2 compute only supports tile loads");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "tenstorrent2 compute only supports tile loads".into(),
+                                });
                             }
                             continue;
                         }
@@ -1320,42 +1420,70 @@ impl Compiler {
                             continue;
                         }
                         if matches!(kernel.ops[*src].op, Op::Storage { scope: MemScope::Register, .. }) {
-                            let tile = tiles.get(src).copied().expect("tenstorrent2: compute acc load reads an undeclared acc");
+                            let tile = tiles.get(src).copied().ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent2: compute acc load reads an undeclared acc".into(),
+                            })?;
                             tiles.insert(id, tile);
                             continue;
                         }
                         let Some(&cb) = cbs.get(src) else {
-                            panic!("tenstorrent2: compute load targets unmapped CB, op {id}");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: compute load targets unmapped CB, op {id}").into(),
+                            });
                         };
                         if fused_only(&consumers, id) {
                             continue;
                         }
-                        let slot = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
-                        let index = use_var(&vars, &mut remaining, &mut free_vars, *index);
+                        let slot = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id)?;
+                        let index = use_var(&vars, &mut remaining, &mut free_vars, *index)?;
                         ops.push(TTOp::TileCopy { slot, cb, index });
                     }
                     Op::Store { dst, src, index, layout } => {
                         if !matches!(layout, MemLayout::Tile { .. }) {
-                            todo!("tenstorrent2 only supports tile stores, op {id}");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2 only supports tile stores, op {id}").into(),
+                            });
                         }
                         if s == 0 {
                             let Op::Load { src: ld_src, index: ld_idx, layout: ld_layout } = kernel.ops[*src].op else {
-                                panic!("tenstorrent2: reader supports only global to local stores, op {id} has ops in between");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!(
+                                        "tenstorrent2: reader supports only global to local stores, op {id} has ops in between"
+                                    )
+                                    .into(),
+                                })
                             };
                             let Op::Param { kind: ParamKind::Global, .. } = kernel.ops[ld_src].op else {
-                                panic!("tenstorrent2: reader load op {id} is not from a Global param");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: reader load op {id} is not from a Global param").into(),
+                                })
                             };
                             let Op::Storage { dtype, scope: MemScope::Circular, .. } = kernel.ops[*dst].op else {
-                                panic!("tenstorrent2: reader store op {id} does not target a Circular CB");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: reader store op {id} does not target a Circular CB")
+                                        .into(),
+                                })
                             };
                             let Some(&cb) = cbs.get(dst) else {
-                                panic!("tenstorrent2: reader store op {id} targets unmapped CB");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: reader store op {id} targets unmapped CB").into(),
+                                })
                             };
                             let MemLayout::Tile { x, y, .. } = ld_layout else {
-                                todo!("tenstorrent2 reader only supports tile stores");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "tenstorrent2 reader only supports tile stores".into(),
+                                })
                             };
                             let elem_size = dtype.bit_size() as u32 / 8;
-                            let index = use_var(&vars, &mut remaining, &mut free_vars, ld_idx);
+                            let index = use_var(&vars, &mut remaining, &mut free_vars, ld_idx)?;
                             ops.push(TTOp::ReadTile {
                                 ordinal: param_ordinal_of[&ld_src],
                                 dtype,
@@ -1368,19 +1496,35 @@ impl Compiler {
                         }
                         if s == 2 {
                             let Op::Load { src: cb_src, index: _, layout: ld_layout } = kernel.ops[*src].op else {
-                                panic!("tenstorrent2: writer supports only CB to DRAM stores, op {id} has ops in between");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!(
+                                        "tenstorrent2: writer supports only CB to DRAM stores, op {id} has ops in between"
+                                    )
+                                    .into(),
+                                })
                             };
                             let Some(&cb) = cbs.get(&cb_src) else {
-                                panic!("tenstorrent2: writer load op {id} targets unmapped CB");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: writer load op {id} targets unmapped CB").into(),
+                                })
                             };
                             let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = kernel.ops[*dst].op else {
-                                panic!("tenstorrent2: writer store dst must be a GlobalMut param, op {id}");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: writer store dst must be a GlobalMut param, op {id}")
+                                        .into(),
+                                })
                             };
                             let MemLayout::Tile { x, y, .. } = ld_layout else {
-                                todo!("tenstorrent2 writer only supports tile stores");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "tenstorrent2 writer only supports tile stores".into(),
+                                })
                             };
                             let elem_size = dtype.bit_size() as u32 / 8;
-                            let index = use_var(&vars, &mut remaining, &mut free_vars, *index);
+                            let index = use_var(&vars, &mut remaining, &mut free_vars, *index)?;
                             ops.push(TTOp::WriteTile {
                                 cb,
                                 ordinal: param_ordinal_of[dst],
@@ -1402,52 +1546,72 @@ impl Compiler {
                             continue;
                         }
                         let Some(&cb) = cbs.get(dst) else {
-                            panic!("tenstorrent2: compute store op {id} targets unmapped CB");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: compute store op {id} targets unmapped CB").into(),
+                            })
                         };
-                        let slot =
-                            tiles.get(src).copied().expect("tenstorrent2: compute acc store reads a tile with no DST slot");
+                        let slot = tiles.get(src).copied().ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: compute acc store reads a tile with no DST slot".into(),
+                        })?;
                         ops.push(TTOp::TilePack { slot, cb });
-                        use_tile(&tiles, &mut remaining, &mut free_tiles, *src);
+                        use_tile(&tiles, &mut remaining, &mut free_tiles, *src)?;
                     }
                     Op::Cast { x, dtype } => {
                         if matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
-                            let slot = tiles.get(x).copied().expect("tenstorrent2: tiled cast reads a value with no DST slot");
+                            let slot = tiles.get(x).copied().ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent2: tiled cast reads a value with no DST slot".into(),
+                            })?;
                             if total[&x] != 1 {
-                                todo!("tenstorrent2 multi-use tiled cast operand, op {id}");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2 multi-use tiled cast operand, op {id}").into(),
+                                });
                             }
                             let in_dtype = data.dtypes[&x].0;
                             tiles.insert(id, slot);
                             ops.push(TTOp::TileCast { slot, in_dtype, out_dtype: *dtype });
                         } else {
                             let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
-                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x);
+                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x)?;
                             ops.push(TTOp::Cast { z, dtype: *dtype, x });
                         }
                     }
                     Op::Bitcast { x, .. } => {
                         if matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
-                            let tile = tiles.get(x).copied().expect("tenstorrent2: tiled bitcast reads a value with no DST slot");
+                            let tile = tiles.get(x).copied().ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent2: tiled bitcast reads a value with no DST slot".into(),
+                            })?;
                             tiles.insert(id, tile);
                         } else {
-                            todo!("tenstorrent2 scalar bitcast, op {id}");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2 scalar bitcast, op {id}").into(),
+                            });
                         }
                     }
                     Op::Unary { x, uop } => {
                         if matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
-                            let slot = tiles.get(x).copied().expect("tenstorrent2: tiled unary reads a value with no DST slot");
+                            let slot = tiles.get(x).copied().ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent2: tiled unary reads a value with no DST slot".into(),
+                            })?;
                             tiles.insert(id, slot);
                             ops.push(TTOp::TileUnary { slot, uop: *uop });
                         } else {
                             let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
-                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x);
+                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x)?;
                             ops.push(TTOp::Unary { z, dtype: data.dtypes[&id].0, x, uop: *uop });
                         }
                     }
                     Op::Binary { x, y, bop } => {
                         if !matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
                             let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
-                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x);
-                            let y = use_var(&vars, &mut remaining, &mut free_vars, *y);
+                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x)?;
+                            let y = use_var(&vars, &mut remaining, &mut free_vars, *y)?;
                             ops.push(TTOp::Binary { z, dtype: data.dtypes[&id].0, x, y, bop: *bop });
                             continue;
                         }
@@ -1461,20 +1625,29 @@ impl Compiler {
                         };
                         match (marker(*x), marker(*y)) {
                             (Some(_), Some(_)) => {
-                                panic!("tenstorrent2: broadcast op {id} marks both sides");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: broadcast op {id} marks both sides").into(),
+                                });
                             }
                             (Some((kind, mx)), None) => {
                                 let (Some(cb_b), Some(cb_a)) = (plain_cb(mx), plain_cb(*y)) else {
-                                    panic!("tenstorrent2: broadcast op {id} side is no CB tile load");
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: broadcast op {id} side is no CB tile load").into(),
+                                    })
                                 };
-                                let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                                let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id)?;
                                 ops.push(TTOp::TileBcastBinary { dst, cb_a, cb_b, bop: *bop, kind, out: None });
                             }
                             (None, Some((kind, my))) => {
                                 let (Some(cb_b), Some(cb_a)) = (plain_cb(my), plain_cb(*x)) else {
-                                    panic!("tenstorrent2: broadcast op {id} side is no CB tile load");
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: broadcast op {id} side is no CB tile load").into(),
+                                    })
                                 };
-                                let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                                let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id)?;
                                 ops.push(TTOp::TileBcastBinary { dst, cb_a, cb_b, bop: *bop, kind, out: None });
                             }
                             (None, None) => {
@@ -1496,9 +1669,15 @@ impl Compiler {
                                         | DType::I8
                                         | DType::I16
                                         | DType::I64
-                                        | DType::Bool => panic!(
-                                            "tenstorrent2: tiled shift on {dt:?}, LLK supports Int32/UInt32/UInt16 only, op {id}"
-                                        ),
+                                        | DType::Bool => {
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!(
+                                                    "tenstorrent2: tiled shift on {dt:?}, LLK supports Int32/UInt32/UInt16 only, op {id}"
+                                                )
+                                                .into(),
+                                            })
+                                        }
                                     }
                                     // A const amount folds into the
                                     // unary-immediate LLK (`tile << amount`);
@@ -1506,25 +1685,47 @@ impl Compiler {
                                     // outside 0..=31 are UB in every other
                                     // backend — fail loudly, never emit.
                                     if kernel.resolve_const(*x).is_some() {
-                                        panic!("tenstorrent2: const-first {bop:?} has no scalar call, op {id}");
+                                        return Err(BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!("tenstorrent2: const-first {bop:?} has no scalar call, op {id}")
+                                                .into(),
+                                        });
                                     }
                                     if kernel.resolve_const(*y).is_some() {
                                         let Some(amount) = const_shift_amt(*y) else {
-                                            panic!("tenstorrent2: shift amount is no integer const, op {id}");
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!("tenstorrent2: shift amount is no integer const, op {id}")
+                                                    .into(),
+                                            })
                                         };
                                         if amount > 31 {
-                                            panic!("tenstorrent2: shift amount {amount} outside 0..=31, op {id}");
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!("tenstorrent2: shift amount {amount} outside 0..=31, op {id}")
+                                                    .into(),
+                                            });
                                         }
                                         if *bop == BOp::BitShiftRight && dt == DType::U32 {
-                                            panic!("tenstorrent2: U32 right-shift by immediate is arithmetic-only, op {id}");
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!(
+                                                    "tenstorrent2: U32 right-shift by immediate is arithmetic-only, op {id}"
+                                                )
+                                                .into(),
+                                            });
                                         }
                                         let tile_op = *x;
-                                        let t = tiles
-                                            .get(&tile_op)
-                                            .copied()
-                                            .expect("tenstorrent2: scalar binary reads a value with no DST slot");
+                                        let t = tiles.get(&tile_op).copied().ok_or_else(|| BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: "tenstorrent2: scalar binary reads a value with no DST slot".into(),
+                                        })?;
                                         if total[&tile_op] != 1 {
-                                            panic!("tenstorrent2: scalar binary {id} reads a multi-use operand");
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!("tenstorrent2: scalar binary {id} reads a multi-use operand")
+                                                    .into(),
+                                            });
                                         }
                                         tiles.insert(id, t);
                                         ops.push(TTOp::TileBinScalar { slot: t, bop: *bop, value: Constant::U32(amount) });
@@ -1542,43 +1743,68 @@ impl Compiler {
                                     match (*bop, side) {
                                         (BOp::Add, _) | (BOp::Mul, _) | (BOp::Sub, _) | (BOp::Div, "tile") => {}
                                         _ => {
-                                            panic!("tenstorrent2: const-first {bop:?} has no scalar call, op {id}");
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!("tenstorrent2: const-first {bop:?} has no scalar call, op {id}")
+                                                    .into(),
+                                            });
                                         }
                                     };
-                                    let t = tiles
-                                        .get(&tile_op)
-                                        .copied()
-                                        .expect("tenstorrent2: scalar binary reads a value with no DST slot");
+                                    let t = tiles.get(&tile_op).copied().ok_or_else(|| BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: "tenstorrent2: scalar binary reads a value with no DST slot".into(),
+                                    })?;
                                     if total[&tile_op] != 1 {
-                                        panic!("tenstorrent2: scalar binary {id} reads a multi-use operand");
+                                        return Err(BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!("tenstorrent2: scalar binary {id} reads a multi-use operand")
+                                                .into(),
+                                        });
                                     }
                                     tiles.insert(id, t);
                                     ops.push(TTOp::TileBinScalar { slot: t, bop: *bop, value });
                                 } else {
-                                    let ta =
-                                        tiles.get(x).copied().expect("tenstorrent2: tiled binary reads a value with no DST slot");
-                                    let tb =
-                                        tiles.get(y).copied().expect("tenstorrent2: tiled binary reads a value with no DST slot");
-                                    let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                                    let ta = tiles.get(x).copied().ok_or_else(|| BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: "tenstorrent2: tiled binary reads a value with no DST slot".into(),
+                                    })?;
+                                    let tb = tiles.get(y).copied().ok_or_else(|| BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: "tenstorrent2: tiled binary reads a value with no DST slot".into(),
+                                    })?;
+                                    let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id)?;
                                     ops.push(TTOp::TileBinary { dst, x: ta, y: tb, bop: *bop, dtype: data.dtypes[&id].0 });
-                                    use_tile(&tiles, &mut remaining, &mut free_tiles, *x);
-                                    use_tile(&tiles, &mut remaining, &mut free_tiles, *y);
+                                    use_tile(&tiles, &mut remaining, &mut free_tiles, *x)?;
+                                    use_tile(&tiles, &mut remaining, &mut free_tiles, *y)?;
                                 }
                             }
                         }
                     }
                     Op::Mad { x, y, z } => {
                         if matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
-                            todo!("tenstorrent2 tiled mad, op {id}");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2 tiled mad, op {id}").into(),
+                            });
                         }
                         let v = def_var(&mut vars, &mut free_vars, &mut next_var, id);
-                        let x = use_var(&vars, &mut remaining, &mut free_vars, *x);
-                        let y = use_var(&vars, &mut remaining, &mut free_vars, *y);
-                        let z = use_var(&vars, &mut remaining, &mut free_vars, *z);
+                        let x = use_var(&vars, &mut remaining, &mut free_vars, *x)?;
+                        let y = use_var(&vars, &mut remaining, &mut free_vars, *y)?;
+                        let z = use_var(&vars, &mut remaining, &mut free_vars, *z)?;
                         ops.push(TTOp::Mad { z: v, dtype: data.dtypes[&id].0, x, y, w: z });
                     }
-                    Op::Stack { .. } => todo!("tenstorrent2 scalar stack, op {id}"),
-                    Op::Index { .. } => todo!("tenstorrent2 scalar index, op {id}"),
+                    Op::Stack { .. } => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2 scalar stack, op {id}").into(),
+                        })
+                    }
+                    Op::Index { .. } => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2 scalar index, op {id}").into(),
+                        })
+                    }
                     Op::Range { axis, kind } => match kind {
                         RangeKind::Group(_) => {
                             let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
@@ -1586,16 +1812,25 @@ impl Compiler {
                             match axis {
                                 0 => ops.push(TTOp::TensixGridX { z, dtype: data.dtypes[&id].0, arg }),
                                 1 => ops.push(TTOp::TensixGridY { z, dtype: data.dtypes[&id].0, arg }),
-                                _ => todo!("tenstorrent2 group range axis {axis}, op {id}"),
+                                _ => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2 group range axis {axis}, op {id}").into(),
+                                    })
+                                }
                             }
                         }
                         RangeKind::Local(_) => {
-                            unreachable!(
-                                "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
-                            )
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass".into(),
+                            })
                         }
                         RangeKind::Warp(_) => {
-                            unreachable!("tenstorrent has no warps; warp ranges are gpu-only")
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent has no warps; warp ranges are gpu-only".into(),
+                            })
                         }
                     },
                     Op::Loop { len } => {
@@ -1612,86 +1847,169 @@ impl Compiler {
                         // by a later def while still live.
                         *remaining
                             .get_mut(&id)
-                            .unwrap_or_else(|| panic!("tenstorrent2: loop counter op {id} has no use count")) = u32::MAX;
-                        let bound = *vars.get(len).unwrap_or_else(|| panic!("tenstorrent2: loop bound op {len} has no register"));
+                            .ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: loop counter op {id} has no use count").into(),
+                            })? = u32::MAX;
+                        let bound = *vars.get(len).ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: loop bound op {len} has no register").into(),
+                        })?;
                         let trip = match kernel.resolve_const(*len).and_then(|c| c.as_dim()) {
                             Some(d) if d >= 0 => Some(d as u32),
-                            Some(d) => panic!("tenstorrent2: negative loop trip count {d}, op {id}"),
+                            Some(d) => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: negative loop trip count {d}, op {id}").into(),
+                                })
+                            }
                             None => None,
                         };
                         ops.push(TTOp::Loop { len: bound, counter, dtype: IDX_T, trip });
                     }
                     Op::EndLoop => ops.push(TTOp::EndLoop),
                     Op::If { condition } => {
-                        let cond = use_var(&vars, &mut remaining, &mut free_vars, *condition);
+                        let cond = use_var(&vars, &mut remaining, &mut free_vars, *condition)?;
                         ops.push(TTOp::If { cond });
                     }
                     Op::EndIf => ops.push(TTOp::EndIf),
-                    Op::Barrier => unreachable!("should've been filtered by kernel sections decomposition"),
-                    Op::Wmma { .. } => unreachable!("tenstorrent2: Wmma has no Tenstorrent lowering"),
-                    Op::Move { .. } => unreachable!("tenstorrent2: Move never survives linearization"),
-                    Op::Reduce { .. } => unreachable!("tenstorrent2: Reduce never survives linearization"),
+                    Op::Barrier => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: Barrier should've been filtered by kernel sections decomposition"
+                                .into(),
+                        })
+                    }
+                    Op::Wmma { .. } => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: Wmma has no Tenstorrent lowering".into(),
+                        })
+                    }
+                    Op::Move { .. } => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: Move never survives linearization".into(),
+                        })
+                    }
+                    Op::Reduce { .. } => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: Reduce never survives linearization".into(),
+                        })
+                    }
                     Op::ReduceTile { x, scaler, acc, rop, kind } => {
                         let Op::Load { src: lx, layout: MemLayout::Tile { x: wx, y: hx, .. }, .. } = kernel.ops[*x].op else {
-                            panic!("tenstorrent2: reduce side op {x} is no CB tile load");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reduce side op {x} is no CB tile load").into(),
+                            })
                         };
                         if wx as u32 != 32 || hx as u32 != 32 {
-                            panic!("tenstorrent2: reduce is fixed 32x32, op {x} is {wx}x{hx}");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reduce is fixed 32x32, op {x} is {wx}x{hx}").into(),
+                            });
                         }
                         let Some(&cb_in) = cbs.get(&lx) else {
-                            panic!("tenstorrent2: reduce side op {x} targets unmapped CB");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reduce side op {x} targets unmapped CB").into(),
+                            })
                         };
                         let Op::Load { src: la, .. } = kernel.ops[*acc].op else {
-                            panic!("tenstorrent2: reduce acc op {acc} is no acc tile load");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reduce acc op {acc} is no acc tile load").into(),
+                            })
                         };
                         if !matches!(kernel.ops[la].op, Op::Storage { scope: MemScope::Register, .. }) {
-                            panic!("tenstorrent2: reduce acc op {acc} does not thread a Register acc");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reduce acc op {acc} does not thread a Register acc").into(),
+                            });
                         }
                         let Op::Load { src: ls, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*scaler].op else {
-                            panic!("tenstorrent2: reduce scaler op {scaler} is no scaler tile load");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reduce scaler op {scaler} is no scaler tile load").into(),
+                            })
                         };
                         let Some(&cb_sc) = cbs.get(&ls) else {
-                            panic!("tenstorrent2: reduce scaler op {scaler} targets unmapped CB");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reduce scaler op {scaler} targets unmapped CB").into(),
+                            })
                         };
                         let Some(&acc_slot) = tiles.get(&la) else {
-                            panic!("tenstorrent2: reduce acc op {acc} reads an undeclared acc");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reduce acc op {acc} reads an undeclared acc").into(),
+                            })
                         };
                         tiles.insert(id, acc_slot);
                         ops.push(TTOp::TileReduce { acc: acc_slot, cb_in, cb_sc, rop: *rop, kind: *kind });
                     }
                     Op::MatmulTile { x, y, acc } => {
                         let Op::Load { src: la, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*x].op else {
-                            panic!("tenstorrent2: matmul side op {x} is no CB tile load");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul side op {x} is no CB tile load").into(),
+                            })
                         };
                         let Some(&cb_a) = cbs.get(&la) else {
-                            panic!("tenstorrent2: matmul side op {x} targets unmapped CB");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul side op {x} targets unmapped CB").into(),
+                            })
                         };
                         let Op::Load { src: lb, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*y].op else {
-                            panic!("tenstorrent2: matmul side op {y} is no CB tile load");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul side op {y} is no CB tile load").into(),
+                            })
                         };
                         let Some(&cb_b) = cbs.get(&lb) else {
-                            panic!("tenstorrent2: matmul side op {y} targets unmapped CB");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul side op {y} targets unmapped CB").into(),
+                            })
                         };
                         let Op::Load { src: lacc, .. } = kernel.ops[*acc].op else {
-                            panic!("tenstorrent2: matmul acc op {acc} is no acc tile load");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul acc op {acc} is no acc tile load").into(),
+                            })
                         };
                         let Some(&tile) = tiles.get(&lacc) else {
-                            panic!("tenstorrent2: matmul acc op {acc} reads an undeclared acc");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul acc op {acc} reads an undeclared acc").into(),
+                            })
                         };
                         tiles.insert(id, tile);
                         ops.push(TTOp::TileMatmul { acc: tile, cb_a, cb_b, out: None });
                     }
                     Op::TransposeTile { x } => {
                         let Op::Load { src: lx, layout: MemLayout::Tile { x: wx, y: hx, .. }, .. } = kernel.ops[*x].op else {
-                            panic!("tenstorrent2: transpose side op {x} is no CB tile load");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: transpose side op {x} is no CB tile load").into(),
+                            })
                         };
                         if wx as u32 != 32 || hx as u32 != 32 {
-                            panic!("tenstorrent2: transpose is fixed 32x32, op {x} is {wx}x{hx}");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: transpose is fixed 32x32, op {x} is {wx}x{hx}").into(),
+                            });
                         }
                         let Some(&cb) = cbs.get(&lx) else {
-                            panic!("tenstorrent2: transpose side op {x} targets unmapped CB");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: transpose side op {x} targets unmapped CB").into(),
+                            })
                         };
-                        let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
+                        let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id)?;
                         ops.push(TTOp::TileTranspose { dst, cb, out: None });
                     }
                     Op::BroadcastTile { .. } => {}
@@ -1700,7 +2018,10 @@ impl Compiler {
                         for &operand in operands.iter() {
                             if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[operand].op {
                                 let Some(&cb) = cbs.get(&operand) else {
-                                    panic!("tenstorrent2: asm operand {operand} targets unmapped CB");
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: asm operand {operand} targets unmapped CB").into(),
+                                    })
                                 };
                                 resolved.push(AsmOperand::Cb(cb));
                             } else if let Some(&slot) = tiles.get(&operand) {
@@ -1708,7 +2029,10 @@ impl Compiler {
                             } else if let Some(&reg) = vars.get(&operand) {
                                 resolved.push(AsmOperand::Var(reg));
                             } else {
-                                panic!("tenstorrent2: asm operand {operand} is not a CB or live tile");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: asm operand {operand} is not a CB or live tile").into(),
+                                });
                             }
                         }
                         ops.push(TTOp::Asm { asm: asm.clone(), ops: resolved });
@@ -1744,7 +2068,7 @@ impl Compiler {
                 }
             }
         }
-        Self { ops, startup_loads, startup_store }
+        Ok(Self { ops, startup_loads, startup_store })
     }
 
     /// Replicate_ops_per_section: values consumed in multiple sections are
@@ -1781,7 +2105,7 @@ impl Compiler {
     /// The back-scan passes inits and the cone's own lock ops; anything
     /// else (a prior traffic op, a loop boundary, a barrier) means this
     /// op opens at the current position and sync goes immediately.
-    fn sync_cbs(&mut self) {
+    fn sync_cbs(&mut self) -> Result<(), BackendError> {
         fn is_init(op: &TTOp) -> bool {
             matches!(
                 op,
@@ -1809,20 +2133,23 @@ impl Compiler {
         // scan and sync lands there (past the trailing inits, ahead of
         // the prior traffic op's text). Exhausting the stream without
         // a lock is a lock-pass bug, loud.
-        fn before_lock(next: &[TTOp], lock: TTOp) -> usize {
+        fn before_lock(next: &[TTOp], lock: TTOp) -> Result<usize, BackendError> {
             let mut idx = next.len();
             while idx > 0 {
                 let back = &next[idx - 1];
                 if *back == lock {
-                    return idx - 1;
+                    return Ok(idx - 1);
                 }
                 if is_init(back) || matches!(back, TTOp::MathLock | TTOp::MathUnlock | TTOp::PackLock | TTOp::PackUnlock) {
                     idx -= 1;
                     continue;
                 }
-                return idx;
+                return Ok(idx);
             }
-            panic!("tenstorrent2: sync_cbs: traffic without a cone lock");
+            Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: sync_cbs: traffic without a cone lock".into(),
+            })
         }
         for op in old {
             match &op {
@@ -1858,14 +2185,14 @@ impl Compiler {
             match &op {
                 TTOp::TileCopy { cb, .. } | TTOp::TileTranspose { cb, .. } => {
                     let cb = *cb;
-                    let at = before_lock(&next, TTOp::MathLock);
+                    let at = before_lock(&next, TTOp::MathLock)?;
                     next.insert(at, TTOp::WaitFront { cb, m: 1 });
                     next.push(op);
                     next.push(TTOp::PopFront { cb, n: 1 });
                 }
                 TTOp::TilePack { cb, .. } => {
                     let cb = *cb;
-                    let at = before_lock(&next, TTOp::MathUnlock);
+                    let at = before_lock(&next, TTOp::MathUnlock)?;
                     next.insert(at, TTOp::ReserveBack { cb, n: 1 });
                     next.push(op);
                     next.push(TTOp::PushBack { cb, n: 1 });
@@ -1890,6 +2217,7 @@ impl Compiler {
             }
         }
         self.ops = next;
+        Ok(())
     }
 
     /// DST lock insertion: `MathLock`/`MathUnlock`/`PackLock`/`PackUnlock`
@@ -1900,7 +2228,7 @@ impl Compiler {
     /// at the next MATH take or at section/loop end). MATH ops are tile
     /// compute ops; PACK ops are tile stores draining to a CB. Scalar and
     /// movement sections carry no locks.
-    fn lock_dst(&mut self) {
+    fn lock_dst(&mut self) -> Result<(), BackendError> {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum DstState {
             Unlocked,
@@ -2027,7 +2355,10 @@ impl Compiler {
                     }
                     DstState::PackLock => {}
                     DstState::Unlocked => {
-                        panic!("tenstorrent2: pack with DST Unlocked, no live cone (pack of a dead slot)");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: pack with DST Unlocked, no live cone (pack of a dead slot)".into(),
+                        });
                     }
                 }
                 next.push(op);
@@ -2039,6 +2370,7 @@ impl Compiler {
             next.push(op);
         }
         self.ops = next;
+        Ok(())
     }
 
     /// MATH/config init insertion (pass 1 of 2): a full init before
@@ -2048,7 +2380,7 @@ impl Compiler {
     /// emitter (`with_dt` form on format change, plain short
     /// otherwise); matmul notes it the same way. Anything the naive
     /// pass cannot resolve fails loudly at the exact op.
-    fn init_math(&mut self) {
+    fn init_math(&mut self) -> Result<(), BackendError> {
         // CB runtime-format table (`CbDeclare` is the single source;
         // codes match the legacy `CBEmitter::config` table).
         let mut fmt_of: Map<CBId, u32> = Map::default();
@@ -2083,7 +2415,10 @@ impl Compiler {
             }
             match &op {
                 TTOp::TileCopy { cb, .. } => {
-                    let fmt = *fmt_of.get(cb).expect("tenstorrent2: init_math: copy on undeclared CB");
+                    let fmt = *fmt_of.get(cb).ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: init_math: copy on undeclared CB".into(),
+                    })?;
                     match unpack_src {
                         Some((prev, f)) if f != fmt => {
                             next.push(TTOp::CopyInitWithDt { prev, cb: *cb });
@@ -2101,15 +2436,24 @@ impl Compiler {
                 }
                 TTOp::TileTranspose { cb, out, .. } => next.push(TTOp::TransposeInit {
                     cb: *cb,
-                    out: out.expect("tenstorrent2: init_math: transpose with unfilled out"),
+                    out: out.ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: init_math: transpose with unfilled out".into(),
+                    })?,
                 }),
                 TTOp::TileMatmul { cb_a, cb_b, out, .. } => {
                     next.push(TTOp::MatmulInit {
                         a: *cb_a,
                         b: *cb_b,
-                        out: out.expect("tenstorrent2: init_math: matmul with unfilled out"),
+                        out: out.ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: init_math: matmul with unfilled out".into(),
+                        })?,
                     });
-                    let fmt_a = *fmt_of.get(cb_a).expect("tenstorrent2: init_math: matmul on undeclared CB");
+                    let fmt_a = *fmt_of.get(cb_a).ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: init_math: matmul on undeclared CB".into(),
+                    })?;
                     unpack_src = Some((*cb_a, fmt_a));
                 }
                 TTOp::TileBcastBinary { bop, kind, cb_a, cb_b, .. } => {
@@ -2123,6 +2467,7 @@ impl Compiler {
             next.push(op);
         }
         self.ops = next;
+        Ok(())
     }
 
     /// Pack reconfig insertion (pass 2 of 2): a `PackReconfig` before
@@ -2291,7 +2636,7 @@ impl Compiler {
     /// lives here as a stable partition: writer-section `NocAccessor`
     /// ops move to immediately after `EndCompute`, keeping their
     /// relative (chain) order; every other op keeps its position.
-    fn hoist_writer_accessors(&mut self) {
+    fn hoist_writer_accessors(&mut self) -> Result<(), BackendError> {
         let old = std::mem::take(&mut self.ops);
         let mut hoisted = Vec::new();
         let mut next = Vec::with_capacity(old.len());
@@ -2310,16 +2655,22 @@ impl Compiler {
                 _ => next.push(op),
             }
         }
-        assert!(section == 2, "tenstorrent2: hoist_writer_accessors: stream has no writer section");
+        if section != 2 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: hoist_writer_accessors: stream has no writer section".into(),
+            });
+        }
         next.splice(writer_front..writer_front, hoisted);
         self.ops = next;
+        Ok(())
     }
 
     /// Reduce-cone close: a `TileReduce` opens a reduce cone on its
     /// acc slot; the pack draining that slot closes it — `ReduceUninit`
     /// right before the cone's `MathUnlock` (the legacy `reduce_pending`
     /// rule: `reduce_uninit()` between the reserve and the commit).
-    fn close_reduce_cones(&mut self) {
+    fn close_reduce_cones(&mut self) -> Result<(), BackendError> {
         let old = std::mem::take(&mut self.ops);
         let mut next = Vec::with_capacity(old.len());
         let mut pending: Option<TileId> = None;
@@ -2344,10 +2695,10 @@ impl Compiler {
                     next.push(op);
                 }
                 TTOp::TilePack { slot, .. } if section == 1 && pending == Some(*slot) => {
-                    let at = next
-                        .iter()
-                        .rposition(|o| matches!(o, TTOp::MathUnlock))
-                        .expect("tenstorrent2: close_reduce_cones: pack without an open MathUnlock");
+                    let at = next.iter().rposition(|o| matches!(o, TTOp::MathUnlock)).ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: close_reduce_cones: pack without an open MathUnlock".into(),
+                    })?;
                     next.insert(at, TTOp::ReduceUninit);
                     pending = None;
                     next.push(op);
@@ -2356,6 +2707,7 @@ impl Compiler {
             }
         }
         self.ops = next;
+        Ok(())
     }
 
     /// CB batching: hoist per-tile sync groups out of innermost
@@ -2566,7 +2918,7 @@ impl Compiler {
     /// CB — the same source the startup triple's third slot reads
     /// (see `verify`), matching legacy (`transpose_wh_init`/`mm_init`
     /// read it off the startup triple).
-    fn fill_out_cbs(&mut self) {
+    fn fill_out_cbs(&mut self) -> Result<(), BackendError> {
         let mut section = 0u8;
         let mut first_pack: Option<CBId> = None;
         for op in &self.ops {
@@ -2582,17 +2934,24 @@ impl Compiler {
             match op {
                 TTOp::TileTranspose { out, .. } | TTOp::TileMatmul { out, .. } => {
                     if out.is_none() {
-                        *out = Some(first_pack.expect("tenstorrent2: fill_out_cbs: transpose/matmul with no packed CB"));
+                        *out = Some(first_pack.ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: fill_out_cbs: transpose/matmul with no packed CB".into(),
+                        })?);
                     }
                 }
                 TTOp::TileBcastBinary { out, .. } => {
                     if out.is_none() {
-                        *out = Some(first_pack.expect("tenstorrent2: fill_out_cbs: bcast with no packed CB"));
+                        *out = Some(first_pack.ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: fill_out_cbs: bcast with no packed CB".into(),
+                        })?);
                     }
                 }
                 _ => {}
             }
         }
+        Ok(())
     }
 
     fn tile_regs(&mut self) {
@@ -2613,7 +2972,7 @@ impl Compiler {
     /// Dedup: per-unit last-programmed state drops redundant inits within
     /// one lock epoch (`MathLock` clears, `PackUnlock` clears). Compute and
     /// sync ops never touch the state. Rebuild, locks/sync/SSA untouched.
-    fn hoist_dedup_inits(&mut self) {
+    fn hoist_dedup_inits(&mut self) -> Result<(), BackendError> {
         fn is_init(op: &TTOp) -> bool {
             matches!(
                 op,
@@ -2652,7 +3011,7 @@ impl Compiler {
         }
         // Recursive hoist over one level. `section` threads the caller
         // position; only section 1 (compute) holds inits.
-        fn hoist_level(ops: Vec<TTOp>, compiler: &Compiler, section: &mut u8) -> Vec<TTOp> {
+        fn hoist_level(ops: Vec<TTOp>, compiler: &Compiler, section: &mut u8) -> Result<Vec<TTOp>, BackendError> {
             let mut out: Vec<TTOp> = Vec::with_capacity(ops.len());
             let mut idx = 0;
             while idx < ops.len() {
@@ -2675,10 +3034,13 @@ impl Compiler {
                             end += 1;
                         }
                         if depth != 0 {
-                            panic!("tenstorrent2: hoist_dedup_inits: unbalanced loop");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent2: hoist_dedup_inits: unbalanced loop".into(),
+                            });
                         }
                         let open = ops[idx].clone();
-                        let body = hoist_level(ops[idx + 1..end - 1].to_vec(), compiler, &mut 1u8);
+                        let body = hoist_level(ops[idx + 1..end - 1].to_vec(), compiler, &mut 1u8)?;
                         let close = ops[end - 1].clone();
                         let single = trip.is_some_and(|t| t >= 1) && !body.iter().any(is_lock);
                         if single {
@@ -2738,11 +3100,11 @@ impl Compiler {
                     }
                 }
             }
-            out
+            Ok(out)
         }
         let old = std::mem::take(&mut self.ops);
         let mut section = 0u8;
-        let hoisted = hoist_level(old, self, &mut section);
+        let hoisted = hoist_level(old, self, &mut section)?;
         // CB descriptor formats for unpack-state tracking, off the
         // `CbDeclare` head.
         let mut cb_format: Map<CBId, u32> = Map::default();
@@ -2860,11 +3222,12 @@ impl Compiler {
             }
         }
         self.ops = next;
+        Ok(())
     }
 
     /// Verify the fully-physical stream (runs after `tile_regs`, before
     /// render). Structural firewall: whatever the passes did, the final
-    /// stream must be launchable. Loud panic at the exact op.
+    /// stream must be launchable. Loud error at the exact op.
     ///
     /// Checks: section termination (any marker prefix, so reader-only
     /// kernels pass; in order, nothing past the last marker), zero `SSA*`
@@ -2872,7 +3235,7 @@ impl Compiler {
     /// CB open/close balance per section + pushed==popped program-wide,
     /// declare-before-use (CBs, accessors) and def-before-use (`VarId`,
     /// `TileId`) per section, tile-slot budgets, Loop/If balance.
-    fn verify(&mut self) {
+    fn verify(&mut self) -> Result<(), BackendError> {
         // Section markers seen (bitmask: 1 reader, 2 compute, 4 writer).
         let mut seen = 0u8;
         let mut section = 0usize;
@@ -2921,38 +3284,80 @@ impl Compiler {
                            scalars: &mut Set<VarId>,
                            accessors: &mut Set<u32>,
                            depth: &mut u32,
-                           marker: u8| {
-            assert!(*seen & marker == 0, "tenstorrent2: verify: duplicate section marker");
+                           marker: u8|
+         -> Result<(), BackendError> {
+            if !(*seen & marker == 0) {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2: verify: duplicate section marker".into(),
+                });
+            }
             *seen |= marker;
             *section += 1;
-            assert!(*lock == Lock::Unlocked, "tenstorrent2: verify: section ends with DST locked");
-            for (cb, (reserved, _, waited)) in fifo.iter() {
-                assert!(*reserved == 0, "tenstorrent2: verify: section ends with CB{cb} reserve open");
-                assert!(*waited == 0, "tenstorrent2: verify: section ends with CB{cb} wait open");
+            if !(*lock == Lock::Unlocked) {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2: verify: section ends with DST locked".into(),
+                });
             }
-            assert!(*depth == 0, "tenstorrent2: verify: section ends inside a walk");
+            for (cb, (reserved, _, waited)) in fifo.iter() {
+                if !(*reserved == 0) {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: verify: section ends with CB{cb} reserve open").into(),
+                    });
+                }
+                if !(*waited == 0) {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: verify: section ends with CB{cb} wait open").into(),
+                    });
+                }
+            }
+            if !(*depth == 0) {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2: verify: section ends inside a walk".into(),
+                });
+            }
             scalars.clear();
             accessors.clear();
+            Ok(())
         };
         for op in self.ops.iter() {
             match op {
                 TTOp::EndReader => {
-                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 1)
+                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 1)?
                 }
                 TTOp::EndCompute => {
-                    assert!(seen & 1 != 0, "tenstorrent2: verify: EndCompute without EndReader");
-                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 2);
+                    if !(seen & 1 != 0) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: EndCompute without EndReader".into(),
+                        });
+                    }
+                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 2)?;
                 }
                 TTOp::EndWriter => {
-                    assert!(seen & 3 != 0, "tenstorrent2: verify: EndWriter without a prior section");
-                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 4);
+                    if !(seen & 3 != 0) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: EndWriter without a prior section".into(),
+                        });
+                    }
+                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 4)?;
                 }
                 _ => {}
             }
             if matches!(op, TTOp::EndReader | TTOp::EndCompute | TTOp::EndWriter) {
                 continue;
             }
-            assert!(seen != 7, "tenstorrent2: verify: op past EndWriter");
+            if seen == 7 {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2: verify: op past EndWriter".into(),
+                });
+            }
             match op {
                 TTOp::Loop { trip, .. } => {
                     depth += 1;
@@ -2968,9 +3373,17 @@ impl Compiler {
                     }
                 }
                 TTOp::EndLoop => {
-                    assert!(depth > 0, "tenstorrent2: verify: EndLoop without Loop");
+                    if !(depth > 0) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: EndLoop without Loop".into(),
+                        });
+                    }
                     depth -= 1;
-                    let t = loop_trips.pop().expect("tenstorrent2: verify: EndLoop without Loop");
+                    let t = loop_trips.pop().ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: verify: EndLoop without Loop".into(),
+                    })?;
                     if t == 0 {
                         sym_loops -= 1;
                     } else {
@@ -2981,7 +3394,12 @@ impl Compiler {
                     depth += 1;
                 }
                 TTOp::EndIf => {
-                    assert!(depth > 0, "tenstorrent2: verify: EndIf without If");
+                    if !(depth > 0) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: EndIf without If".into(),
+                        });
+                    }
                     depth -= 1;
                 }
                 TTOp::Arg { .. } | TTOp::Const { .. } | TTOp::TensixGridX { .. } | TTOp::TensixGridY { .. } => {}
@@ -2992,7 +3410,12 @@ impl Compiler {
                     for operand in operands {
                         match operand {
                             AsmOperand::Cb(cb) => {
-                                assert!(declared.contains(cb), "tenstorrent2: verify: asm on undeclared CB{cb}");
+                                if !declared.contains(cb) {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("tenstorrent2: verify: asm on undeclared CB{cb}").into(),
+                                    });
+                                }
                             }
                             AsmOperand::Tile(_) => {}
                             AsmOperand::Var(_) => {}
@@ -3000,82 +3423,236 @@ impl Compiler {
                     }
                 }
                 TTOp::ReadTile { cb, .. } => {
-                    assert!(declared.contains(cb), "tenstorrent2: verify: read on undeclared CB{cb}");
+                    if !declared.contains(cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: read on undeclared CB{cb}").into(),
+                        });
+                    }
                 }
                 TTOp::WriteTile { cb, .. } => {
-                    assert!(declared.contains(cb), "tenstorrent2: verify: write on undeclared CB{cb}");
+                    if !declared.contains(cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: write on undeclared CB{cb}").into(),
+                        });
+                    }
                 }
                 TTOp::DstMode { .. } => {}
                 TTOp::ComputeStartup { in0, in1, out } => {
-                    assert!(declared.contains(in0), "tenstorrent2: verify: startup on undeclared CB{in0}");
-                    assert!(declared.contains(in1), "tenstorrent2: verify: startup on undeclared CB{in1}");
-                    assert!(declared.contains(out), "tenstorrent2: verify: startup on undeclared CB{out}");
+                    if !declared.contains(in0) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: startup on undeclared CB{in0}").into(),
+                        });
+                    }
+                    if !declared.contains(in1) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: startup on undeclared CB{in1}").into(),
+                        });
+                    }
+                    if !declared.contains(out) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: startup on undeclared CB{out}").into(),
+                        });
+                    }
                 }
                 TTOp::Unary { .. } => {}
                 TTOp::NocAccessor { ordinal, .. } => {
-                    assert!(accessors.insert(*ordinal), "tenstorrent2: verify: duplicate accessor p{ordinal}");
+                    if !accessors.insert(*ordinal) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: duplicate accessor p{ordinal}").into(),
+                        });
+                    }
                 }
                 TTOp::NocAddr { z: _, ordinal, .. } => {
-                    assert!(accessors.contains(ordinal), "tenstorrent2: verify: address uses undeclared accessor p{ordinal}");
+                    if !accessors.contains(ordinal) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: address uses undeclared accessor p{ordinal}").into(),
+                        });
+                    }
                 }
                 TTOp::AsyncRead { dst_cb, .. } => {
-                    assert!(declared.contains(dst_cb), "tenstorrent2: verify: read on undeclared CB{dst_cb}");
+                    if !declared.contains(dst_cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: read on undeclared CB{dst_cb}").into(),
+                        });
+                    }
                 }
                 TTOp::AsyncWrite { src_cb, .. } => {
-                    assert!(declared.contains(src_cb), "tenstorrent2: verify: write on undeclared CB{src_cb}");
+                    if !declared.contains(src_cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: write on undeclared CB{src_cb}").into(),
+                        });
+                    }
                 }
                 TTOp::NocReadBarrier | TTOp::NocWriteBarrier => {}
                 TTOp::CbDeclare { cb, .. } => {
-                    assert!(declared.insert(*cb), "tenstorrent2: verify: duplicate CB{cb} declaration");
+                    if !declared.insert(*cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: duplicate CB{cb} declaration").into(),
+                        });
+                    }
                     fifo.insert(*cb, (0, 0, 0));
                     totals.insert(*cb, (0, 0));
                 }
                 TTOp::ReserveBack { cb, n } => {
-                    assert!(sym_loops == 0, "tenstorrent2: verify: FIFO traffic under a symbolic loop");
-                    assert!(declared.contains(cb), "tenstorrent2: verify: reserve on undeclared CB{cb}");
-                    let e = fifo.get_mut(cb).expect("tenstorrent2: verify: reserve on undeclared CB");
-                    assert!(e.0 == 0 && e.2 == 0, "tenstorrent2: verify: reserve on CB{cb} with open transaction");
+                    if sym_loops != 0 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: FIFO traffic under a symbolic loop".into(),
+                        });
+                    }
+                    if !declared.contains(cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: reserve on undeclared CB{cb}").into(),
+                        });
+                    }
+                    let e = fifo.get_mut(cb).ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: verify: reserve on undeclared CB").into(),
+                    })?;
+                    if !(e.0 == 0 && e.2 == 0) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: reserve on CB{cb} with open transaction").into(),
+                        });
+                    }
                     e.0 = *n * mult;
                 }
                 TTOp::PushBack { cb, n } => {
-                    assert!(sym_loops == 0, "tenstorrent2: verify: FIFO traffic under a symbolic loop");
-                    let e = fifo.get_mut(cb).expect("tenstorrent2: verify: push on undeclared CB");
-                    assert!(e.0 >= *n * mult, "tenstorrent2: verify: push of {n} on CB{cb} with {e:?} reserved");
+                    if sym_loops != 0 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: FIFO traffic under a symbolic loop".into(),
+                        });
+                    }
+                    let e = fifo.get_mut(cb).ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: verify: push on undeclared CB").into(),
+                    })?;
+                    if !(e.0 >= *n * mult) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: push of {n} on CB{cb} with {e:?} reserved").into(),
+                        });
+                    }
                     e.0 -= *n * mult;
                     e.1 += *n * mult;
-                    totals.get_mut(cb).expect("tenstorrent2: verify: push on undeclared CB").0 += *n * mult;
+                    totals
+                        .get_mut(cb)
+                        .ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: push on undeclared CB").into(),
+                        })?
+                        .0 += *n * mult;
                 }
                 TTOp::WaitFront { cb, m } => {
-                    assert!(sym_loops == 0, "tenstorrent2: verify: FIFO traffic under a symbolic loop");
-                    let e = fifo.get_mut(cb).expect("tenstorrent2: verify: wait on undeclared CB");
-                    assert!(e.2 == 0, "tenstorrent2: verify: wait on CB{cb} with open wait");
-                    assert!(e.1 >= *m * mult, "tenstorrent2: verify: wait of {m} on CB{cb} with {e:?} available");
+                    if sym_loops != 0 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: FIFO traffic under a symbolic loop".into(),
+                        });
+                    }
+                    let e = fifo.get_mut(cb).ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: verify: wait on undeclared CB").into(),
+                    })?;
+                    if !(e.2 == 0) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: wait on CB{cb} with open wait").into(),
+                        });
+                    }
+                    if !(e.1 >= *m * mult) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: wait of {m} on CB{cb} with {e:?} available").into(),
+                        });
+                    }
                     e.2 = *m * mult;
                     e.1 -= *m * mult;
                 }
                 TTOp::PopFront { cb, n } => {
-                    assert!(sym_loops == 0, "tenstorrent2: verify: FIFO traffic under a symbolic loop");
-                    let e = fifo.get_mut(cb).expect("tenstorrent2: verify: pop on undeclared CB");
-                    assert!(e.2 >= *n * mult, "tenstorrent2: verify: pop of {n} on CB{cb} with {e:?} waited");
+                    if sym_loops != 0 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: FIFO traffic under a symbolic loop".into(),
+                        });
+                    }
+                    let e = fifo.get_mut(cb).ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: verify: pop on undeclared CB").into(),
+                    })?;
+                    if !(e.2 >= *n * mult) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: pop of {n} on CB{cb} with {e:?} waited").into(),
+                        });
+                    }
                     e.2 -= *n * mult;
-                    totals.get_mut(cb).expect("tenstorrent2: verify: pop on undeclared CB").1 += *n * mult;
+                    totals
+                        .get_mut(cb)
+                        .ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: pop on undeclared CB").into(),
+                        })?
+                        .1 += *n * mult;
                 }
                 TTOp::MathLock => {
-                    assert!(section == 1, "tenstorrent2: verify: DST lock outside compute");
-                    assert!(lock == Lock::Unlocked || lock == Lock::Pack, "tenstorrent2: verify: acquire with DST already held");
+                    if section != 1 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: DST lock outside compute".into(),
+                        });
+                    }
+                    if !(lock == Lock::Unlocked || lock == Lock::Pack) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: acquire with DST already held".into(),
+                        });
+                    }
                     lock = Lock::Math;
                 }
                 TTOp::MathUnlock => {
-                    assert!(lock == Lock::Math, "tenstorrent2: verify: commit without MATH lock");
+                    if !(lock == Lock::Math) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: commit without MATH lock".into(),
+                        });
+                    }
                     lock = Lock::Unlocked;
                 }
                 TTOp::PackLock => {
-                    assert!(section == 1, "tenstorrent2: verify: DST lock outside compute");
-                    assert!(lock == Lock::Unlocked, "tenstorrent2: verify: pack wait without release");
+                    if section != 1 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: DST lock outside compute".into(),
+                        });
+                    }
+                    if !(lock == Lock::Unlocked) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: pack wait without release".into(),
+                        });
+                    }
                     lock = Lock::Pack;
                 }
                 TTOp::PackUnlock => {
-                    assert!(lock == Lock::Pack, "tenstorrent2: verify: release without PACK lock");
+                    if !(lock == Lock::Pack) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: verify: release without PACK lock".into(),
+                        });
+                    }
                     lock = Lock::Unlocked;
                 }
                 TTOp::CopyInit { .. }
@@ -3094,14 +3671,24 @@ impl Compiler {
                 }
                 TTOp::ReduceUninit => {}
                 TTOp::TileCopy { slot, cb, .. } => {
-                    assert!(declared.contains(cb), "tenstorrent2: verify: copy on undeclared CB{cb}");
+                    if !declared.contains(cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: copy on undeclared CB{cb}").into(),
+                        });
+                    }
                     max_slot = max_slot.max(slot.0);
                     if section == 1 {
                         note_load(&mut loaded_order, *cb);
                     }
                 }
                 TTOp::TilePack { cb, .. } => {
-                    assert!(declared.contains(cb), "tenstorrent2: verify: pack on undeclared CB{cb}");
+                    if !declared.contains(cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: pack on undeclared CB{cb}").into(),
+                        });
+                    }
                     if section == 1 && stored_first.is_none() {
                         stored_first = Some(*cb);
                     }
@@ -3115,15 +3702,30 @@ impl Compiler {
                 }
                 TTOp::TileCast { .. } => {}
                 TTOp::TileTranspose { dst, cb, .. } => {
-                    assert!(declared.contains(cb), "tenstorrent2: verify: transpose on undeclared CB{cb}");
+                    if !declared.contains(cb) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: transpose on undeclared CB{cb}").into(),
+                        });
+                    }
                     max_slot = max_slot.max(dst.0);
                     if section == 1 {
                         note_load(&mut loaded_order, *cb);
                     }
                 }
                 TTOp::TileMatmul { acc, cb_a, cb_b, .. } => {
-                    assert!(declared.contains(cb_a), "tenstorrent2: verify: matmul on undeclared CB{cb_a}");
-                    assert!(declared.contains(cb_b), "tenstorrent2: verify: matmul on undeclared CB{cb_b}");
+                    if !declared.contains(cb_a) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: matmul on undeclared CB{cb_a}").into(),
+                        });
+                    }
+                    if !declared.contains(cb_b) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: matmul on undeclared CB{cb_b}").into(),
+                        });
+                    }
                     max_slot = max_slot.max(acc.0);
                     if section == 1 {
                         note_load(&mut loaded_order, *cb_a);
@@ -3131,8 +3733,18 @@ impl Compiler {
                     }
                 }
                 TTOp::TileBcastBinary { dst, cb_a, cb_b, .. } => {
-                    assert!(declared.contains(cb_a), "tenstorrent2: verify: bcast on undeclared CB{cb_a}");
-                    assert!(declared.contains(cb_b), "tenstorrent2: verify: bcast on undeclared CB{cb_b}");
+                    if !declared.contains(cb_a) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: bcast on undeclared CB{cb_a}").into(),
+                        });
+                    }
+                    if !declared.contains(cb_b) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: bcast on undeclared CB{cb_b}").into(),
+                        });
+                    }
                     max_slot = max_slot.max(dst.0);
                     if section == 1 {
                         note_load(&mut loaded_order, *cb_a);
@@ -3141,21 +3753,56 @@ impl Compiler {
                 }
                 TTOp::TileBinScalar { .. } => {}
                 TTOp::TileReduce { cb_in, cb_sc, .. } => {
-                    assert!(declared.contains(cb_in), "tenstorrent2: verify: reduce on undeclared CB{cb_in}");
-                    assert!(declared.contains(cb_sc), "tenstorrent2: verify: reduce on undeclared CB{cb_sc}");
+                    if !declared.contains(cb_in) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: reduce on undeclared CB{cb_in}").into(),
+                        });
+                    }
+                    if !declared.contains(cb_sc) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: verify: reduce on undeclared CB{cb_sc}").into(),
+                        });
+                    }
                     if section == 1 {
                         note_load(&mut loaded_order, *cb_in);
                         note_load(&mut loaded_order, *cb_sc);
                     }
                 }
-                _ => panic!("tenstorrent2: verify: op {op:?} is not fully lowered (SSA remains)"),
+                _ => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: verify: op {op:?} is not fully lowered (SSA remains)").into(),
+                    });
+                }
             }
         }
-        assert!(seen != 0, "tenstorrent2: verify: stream holds no section");
-        assert!(lock == Lock::Unlocked, "tenstorrent2: verify: stream ends with DST locked");
-        assert!(depth == 0, "tenstorrent2: verify: stream ends inside a walk");
+        if seen == 0 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: verify: stream holds no section".into(),
+            });
+        }
+        if !(lock == Lock::Unlocked) {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: verify: stream ends with DST locked".into(),
+            });
+        }
+        if !(depth == 0) {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: verify: stream ends inside a walk".into(),
+            });
+        }
         for (cb, (pushed, popped)) in totals.iter() {
-            assert!(pushed == popped, "tenstorrent2: verify: CB{cb} pushed {pushed} but popped {popped} program-wide");
+            if !(pushed == popped) {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: verify: CB{cb} pushed {pushed} but popped {popped} program-wide").into(),
+                });
+            }
         }
         let bf16 = self
             .ops
@@ -3164,13 +3811,21 @@ impl Compiler {
                 TTOp::DstMode { bf16 } => Some(*bf16),
                 _ => None,
             })
-            .expect("tenstorrent2: verify: stream has no DstMode head");
+            .ok_or_else(|| BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: verify: stream has no DstMode head".into(),
+            })?;
         let budget = if bf16 {
             TileId::BUDGET_BF16 as u8
         } else {
             TileId::BUDGET_FP32 as u8
         };
-        assert!(max_slot < budget, "tenstorrent2: verify: tile t{max_slot} exceeds the DST budget {budget}");
+        if max_slot >= budget {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tenstorrent2: verify: tile t{max_slot} exceeds the DST budget {budget}").into(),
+            });
+        }
         // Startup triple, legacy rule: needs a load and a store
         // (pure movement needs no startup); single-input kernels
         // repeat in0. Matmul kernels carry none (`mm_init` owns the
@@ -3180,21 +3835,20 @@ impl Compiler {
         if !has_matmul {
             if let (Some(&in0), Some(out)) = (self.startup_loads.first(), self.startup_store) {
                 let in1 = self.startup_loads.get(1).copied().unwrap_or(in0);
-                let front = self
-                    .ops
-                    .iter()
-                    .position(|op| matches!(op, TTOp::EndReader))
-                    .expect("tenstorrent2: verify: stream has no reader section")
-                    + 1;
+                let front = self.ops.iter().position(|op| matches!(op, TTOp::EndReader)).ok_or_else(|| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2: verify: stream has no reader section".into(),
+                })? + 1;
                 self.ops.insert(front, TTOp::ComputeStartup { in0, in1, out });
             }
         }
+        Ok(())
     }
 
     /// Render the TTIR stream, one op per line (`v{id}` = scalar
     /// registers, `t{id}` = DST slots, `cb{id}` = circular buffers).
     /// Single walk over `ops`, single emission per op, no scans.
-    pub fn render(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {
+    pub fn render(&self, out: &mut impl std::fmt::Write) -> Result<(), BackendError> {
         use crate::scalar::{bf16, f16};
         let mut section = 0u8;
         let mut indent = [String::from("  "), String::from("  "), String::from("  ")];
@@ -3225,12 +3879,19 @@ impl Compiler {
             (n, declared.insert((s, z)))
         };
         // Operand text: consts inline as literals, regs as `r{n}`.
-        let operand = |const_vals: &Map<(u8, VarId), String>, reg: &Map<(u8, VarId), u32>, s: u8, v: VarId| -> String {
+        let operand = |const_vals: &Map<(u8, VarId), String>,
+                       reg: &Map<(u8, VarId), u32>,
+                       s: u8,
+                       v: VarId|
+         -> Result<String, BackendError> {
             if let Some(lit) = const_vals.get(&(s, v)) {
-                lit.clone()
+                Ok(lit.clone())
             } else {
-                let n = reg.get(&(s, v)).expect("tenstorrent2: render: use before def");
-                format!("r{n}")
+                let n = reg.get(&(s, v)).ok_or_else(|| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2: render: use before def".into(),
+                })?;
+                Ok(format!("r{n}"))
             }
         };
         // Section-local runtime arg index for a global ordinal.
@@ -3341,7 +4002,7 @@ impl Compiler {
                     }
                 }
                 TTOp::Loop { len, counter, .. } => {
-                    let bound = operand(&const_vals, &reg, s, *len);
+                    let bound = operand(&const_vals, &reg, s, *len)?;
                     const_vals.remove(&(s, *counter));
                     let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *counter);
                     debug_assert!(fresh_decl, "tenstorrent2: render: loop counter reuses a live register");
@@ -3354,7 +4015,7 @@ impl Compiler {
                     writeln!(out, "{ind}}}", ind = indent[si].clone())?;
                 }
                 TTOp::If { cond } => {
-                    let c = operand(&const_vals, &reg, s, *cond);
+                    let c = operand(&const_vals, &reg, s, *cond)?;
                     writeln!(out, "{ind}if ({c}) {{")?;
                     indent[si] += "  ";
                 }
@@ -3378,8 +4039,8 @@ impl Compiler {
                     const_vals.insert((s, *z), format!("{}", value.c_code()));
                 }
                 TTOp::Binary { z, x, y, bop, dtype, .. } => {
-                    let xo = operand(&const_vals, &reg, s, *x);
-                    let yo = operand(&const_vals, &reg, s, *y);
+                    let xo = operand(&const_vals, &reg, s, *x)?;
+                    let yo = operand(&const_vals, &reg, s, *y)?;
                     const_vals.remove(&(s, *z));
                     let t = dtype.c_type();
                     let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *z);
@@ -3407,12 +4068,22 @@ impl Compiler {
                         BOp::BitAnd => writeln!(out, "{ind}{decl}{xo} & {yo};")?,
                         BOp::BitShiftLeft => writeln!(out, "{ind}{decl}{xo} << {yo};")?,
                         BOp::BitShiftRight => writeln!(out, "{ind}{decl}{xo} >> {yo};")?,
-                        BOp::Pow => todo!("tenstorrent2: render scalar pow"),
+                        BOp::Pow => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent2: render scalar pow".into(),
+                            });
+                        }
                     }
                 }
-                TTOp::Unary { .. } => todo!("tenstorrent2: render scalar unary"),
+                TTOp::Unary { .. } => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: render scalar unary".into(),
+                    });
+                }
                 TTOp::Cast { z, x, dtype, .. } => {
-                    let xo = operand(&const_vals, &reg, s, *x);
+                    let xo = operand(&const_vals, &reg, s, *x)?;
                     const_vals.remove(&(s, *z));
                     let t = dtype.c_type();
                     let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *z);
@@ -3423,9 +4094,9 @@ impl Compiler {
                     }
                 }
                 TTOp::Mad { z, x, y, w, dtype, .. } => {
-                    let xo = operand(&const_vals, &reg, s, *x);
-                    let yo = operand(&const_vals, &reg, s, *y);
-                    let wo = operand(&const_vals, &reg, s, *w);
+                    let xo = operand(&const_vals, &reg, s, *x)?;
+                    let yo = operand(&const_vals, &reg, s, *y)?;
+                    let wo = operand(&const_vals, &reg, s, *w)?;
                     const_vals.remove(&(s, *z));
                     let t = dtype.c_type();
                     let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *z);
@@ -3435,7 +4106,12 @@ impl Compiler {
                         writeln!(out, "{ind}r{n} = {xo} * {yo} + {wo};")?;
                     }
                 }
-                TTOp::Asm { .. } => todo!("tenstorrent2: render scalar asm"),
+                TTOp::Asm { .. } => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: render scalar asm".into(),
+                    });
+                }
                 TTOp::TensixGridX { z, arg, .. } | TTOp::TensixGridY { z, arg, .. } => {
                     const_vals.remove(&(s, *z));
                     let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *z);
@@ -3471,11 +4147,16 @@ impl Compiler {
                             writeln!(out, "{ind}auto p_out{ordinal} = TensorAccessor(args_out{ordinal}, out{ordinal}, {page});")?;
                             acc_prev[si] = Some(format!("args_out{ordinal}"));
                         }
-                        _ => panic!("tenstorrent2: render: accessor {kind:?} in section {s}"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: render: accessor {kind:?} in section {s}").into(),
+                            });
+                        }
                     }
                 }
                 TTOp::NocAddr { z, ordinal, index, elem_size } => {
-                    let idx = operand(&const_vals, &reg, s, *index);
+                    let idx = operand(&const_vals, &reg, s, *index)?;
                     let page = TT_DRAM_PAGE_BYTES;
                     let k = next_noc[si];
                     next_noc[si] += 1;
@@ -3495,9 +4176,15 @@ impl Compiler {
                 TTOp::WaitFront { cb, m } => writeln!(out, "{ind}cb{cb}.wait_front({m});")?,
                 TTOp::PopFront { cb, n } => writeln!(out, "{ind}cb{cb}.pop_front({n});")?,
                 TTOp::AsyncRead { addr, dst_cb, bytes, off } => {
-                    let an = noc_names.get(&(s, *addr)).expect("tenstorrent2: render: read on unnamed addr").clone();
+                    let an = noc_names
+                        .get(&(s, *addr))
+                        .ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: render: read on unnamed addr".into(),
+                        })?
+                        .clone();
                     if let Some(o) = off {
-                        let os = operand(&const_vals, &reg, s, *o);
+                        let os = operand(&const_vals, &reg, s, *o)?;
                         writeln!(out, "{ind}noc_async_read({an}, cb{dst_cb}.get_write_ptr() + {os}*{bytes}, {bytes});")?;
                     } else {
                         writeln!(out, "{ind}noc_async_read({an}, cb{dst_cb}.get_write_ptr(), {bytes});")?;
@@ -3505,9 +4192,15 @@ impl Compiler {
                 }
                 TTOp::NocReadBarrier => writeln!(out, "{ind}noc_async_read_barrier();")?,
                 TTOp::AsyncWrite { src_cb, addr, bytes, off } => {
-                    let an = noc_names.get(&(s, *addr)).expect("tenstorrent2: render: write on unnamed addr").clone();
+                    let an = noc_names
+                        .get(&(s, *addr))
+                        .ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: render: write on unnamed addr".into(),
+                        })?
+                        .clone();
                     if let Some(o) = off {
-                        let os = operand(&const_vals, &reg, s, *o);
+                        let os = operand(&const_vals, &reg, s, *o)?;
                         writeln!(out, "{ind}noc_async_write(cb{src_cb}.get_read_ptr() + {os}*{bytes}, {an}, {bytes});")?;
                     } else {
                         writeln!(out, "{ind}noc_async_write(cb{src_cb}.get_read_ptr(), {an}, {bytes});")?;
@@ -3527,7 +4220,10 @@ impl Compiler {
                 TTOp::BinaryInit { bop } => writeln!(
                     out,
                     "{ind}{}",
-                    binary_init_name(*bop).expect("tenstorrent2: placed binary init without an init call")
+                    binary_init_name(*bop).ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: placed binary init without an init call".into(),
+                    })?
                 )?,
                 TTOp::BinScalarInit { bop } => match bop {
                     BOp::Add | BOp::Sub | BOp::Mul | BOp::Div => writeln!(out, "{ind}binop_with_scalar_tile_init();")?,
@@ -3546,12 +4242,15 @@ impl Compiler {
                     | BOp::BitAnd
                     | BOp::NotEq
                     | BOp::Eq => {
-                        panic!("tenstorrent2: scalar init for {bop:?} has no init call")
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: scalar init for {bop:?} has no init call").into(),
+                        });
                     }
                 },
                 TTOp::FusedInit { kind } => writeln!(out, "{ind}{}", kind.init_name())?,
                 TTOp::CastInit { in_dtype, out_dtype } => {
-                    writeln!(out, "{ind}typecast_tile_init<{}, {}>();", tt_fmt(*in_dtype), tt_fmt(*out_dtype))?;
+                    writeln!(out, "{ind}typecast_tile_init<{}, {}>();", tt_fmt(*in_dtype)?, tt_fmt(*out_dtype)?)?;
                 }
                 TTOp::TransposeInit { cb, out: cb_out } => writeln!(out, "{ind}transpose_wh_init({cb}, {cb_out});")?,
                 TTOp::MatmulInit { a, b, out: cb_out } => writeln!(out, "{ind}mm_init({a}, {b}, {cb_out});")?,
@@ -3562,14 +4261,22 @@ impl Compiler {
                     let (op_name, dim_name) = match rop {
                         BOp::Max => ("PoolType::MAX", reduce_dim_name(*kind)),
                         BOp::Add => ("PoolType::SUM", reduce_dim_name(*kind)),
-                        _ => panic!("tenstorrent2: reduce op {rop:?} has no init call"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reduce op {rop:?} has no init call").into(),
+                            });
+                        }
                     };
                     writeln!(out, "{ind}reduce_init<{op_name}, {dim_name}>({ci}, {cs}, {});", acc.0)?;
                 }
                 TTOp::ReduceUninit => writeln!(out, "{ind}reduce_uninit();")?,
                 TTOp::BcastInit { bop, kind, cb_a, cb_b } => {
                     let Some(init) = bcast_init_name(*bop, *kind) else {
-                        panic!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no init call")
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no init call").into(),
+                        });
                     };
                     writeln!(out, "{ind}{init}({cb_a}, {cb_b});")?;
                 }
@@ -3595,7 +4302,12 @@ impl Compiler {
                             DType::I32 => "<DataFormat::Int32>",
                             DType::U32 => "<DataFormat::UInt32>",
                             DType::U16 => "<DataFormat::UInt16>",
-                            dt => panic!("tenstorrent2: tiled shift on {dt:?} has no LLK format"),
+                            dt => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: tiled shift on {dt:?} has no LLK format").into(),
+                                });
+                            }
                         },
                         _ => "",
                     };
@@ -3608,7 +4320,12 @@ impl Compiler {
                         BOp::BitShiftLeft => "binary_left_shift_tile",
                         BOp::BitShiftRight if matches!(dtype, DType::U32) => "binary_logical_right_shift_tile",
                         BOp::BitShiftRight => "binary_right_shift_tile",
-                        _ => panic!("tenstorrent2: tiled binary {bop:?} has no LLK call"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: tiled binary {bop:?} has no LLK call").into(),
+                            });
+                        }
                     };
                     writeln!(out, "{ind}{name}{tmpl}({}, {}, {});", x.0, y.0, dst.0)?;
                 }
@@ -3625,7 +4342,12 @@ impl Compiler {
                             UOp::BitNot => "bitwise_not_tile",
                             UOp::Exp => "exp_tile",
                             UOp::Exp2 => "exp2_tile",
-                            UOp::Log2 => unreachable!("tenstorrent2: log2 is emitted above"),
+                            UOp::Log2 => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "tenstorrent2: log2 is emitted above".into(),
+                                });
+                            }
                             UOp::Reciprocal => "recip_tile",
                             UOp::Sqrt => "sqrt_tile",
                             UOp::Rsqrt => "rsqrt_tile",
@@ -3640,7 +4362,7 @@ impl Compiler {
                     }
                 }
                 TTOp::TileCast { slot, in_dtype, out_dtype } => {
-                    writeln!(out, "{ind}typecast_tile<{}, {}>({});", tt_fmt(*in_dtype), tt_fmt(*out_dtype), slot.0)?;
+                    writeln!(out, "{ind}typecast_tile<{}, {}>({});", tt_fmt(*in_dtype)?, tt_fmt(*out_dtype)?, slot.0)?;
                 }
                 TTOp::TileTranspose { dst, cb, .. } => {
                     writeln!(out, "{ind}transpose_wh_tile({cb}, 0, {});", dst.0)?;
@@ -3652,7 +4374,12 @@ impl Compiler {
                     let (op_name, dim_name) = match rop {
                         BOp::Max => ("PoolType::MAX", reduce_dim_name(*kind)),
                         BOp::Add => ("PoolType::SUM", reduce_dim_name(*kind)),
-                        _ => panic!("tenstorrent2: reduce op {rop:?} has no LLK call"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: reduce op {rop:?} has no LLK call").into(),
+                            });
+                        }
                     };
                     writeln!(out, "{ind}reduce_tile<{op_name}, {dim_name}>({cb_in}, {cb_sc}, 0, 0, {});", acc.0)?;
                 }
@@ -3667,7 +4394,12 @@ impl Compiler {
                         (BOp::Mul, TileDim::Row) => "mul_tiles_bcast_rows",
                         (BOp::Mul, TileDim::Col) => "mul_tiles_bcast_cols",
                         (BOp::Mul, TileDim::Scalar) => "mul_tiles_bcast_scalar",
-                        _ => panic!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no LLK call"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no LLK call").into(),
+                            });
+                        }
                     };
                     if matches!(kind, TileDim::Row) {
                         writeln!(out, "{ind}{name}({cb_a}, {cb_b}, 0, 0, {}, 0);", dst.0)?;
@@ -3680,7 +4412,10 @@ impl Compiler {
                     // U32 bit count, not fp32 bits.
                     if matches!(bop, BOp::BitShiftLeft | BOp::BitShiftRight) {
                         let Constant::U32(amount) = value else {
-                            panic!("tenstorrent2: render: shift-scalar on non-U32 const {value}");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: render: shift-scalar on non-U32 const {value}").into(),
+                            });
                         };
                         let name = if matches!(bop, BOp::BitShiftLeft) {
                             "left_shift_tile"
@@ -3693,23 +4428,42 @@ impl Compiler {
                             Constant::F32(b) => f32::from_le_bytes(*b).to_bits(),
                             Constant::F16(b) => f16::from_le_bytes(*b).to_f32().to_bits(),
                             Constant::BF16(b) => bf16::from_le_bytes(*b).to_f32().to_bits(),
-                            v => panic!("tenstorrent2: render: binscalar on non-float const {v}"),
+                            v => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: render: binscalar on non-float const {v}").into(),
+                                });
+                            }
                         };
                         match bop {
                             BOp::Add => writeln!(out, "{ind}add_unary_tile({}, {bits:#x});", slot.0)?,
                             BOp::Mul => writeln!(out, "{ind}mul_unary_tile({}, {bits:#x});", slot.0)?,
                             BOp::Div => writeln!(out, "{ind}div_unary_tile({}, {bits:#x});", slot.0)?,
-                            BOp::Sub => todo!("tenstorrent2: render TileBinScalar sub needs operand side"),
-                            _ => panic!("tenstorrent2: tiled scalar {bop:?} has no LLK call"),
+                            BOp::Sub => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "tenstorrent2: render TileBinScalar sub needs operand side".into(),
+                                });
+                            }
+                            _ => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tenstorrent2: tiled scalar {bop:?} has no LLK call").into(),
+                                });
+                            }
                         }
                     }
                 }
                 TTOp::ReadTile { .. } | TTOp::WriteTile { .. } => {
-                    panic!("tenstorrent2: render: unexpanded movement op (noc_movement bug)")
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "tenstorrent2: render: unexpanded movement op (noc_movement bug)".into(),
+                    });
                 }
             }
         }
-        writeln!(out)
+        writeln!(out)?;
+        Ok(())
     }
 }
 
@@ -3745,25 +4499,30 @@ impl Kernel {
     /// Full TTIR codegen returning launch tables: pipeline, render split
     /// at the section boundaries, param/CB tables.
     pub fn generate_tenstorrent(&self) -> Result<TTProgram, BackendError> {
-        let mut c = Compiler::new(self);
-        c.lock_dst();
-        c.fill_out_cbs();
-        c.init_math();
+        let mut c = Compiler::new(self)?;
+        c.lock_dst()?;
+        c.fill_out_cbs()?;
+        c.init_math()?;
         c.reconfig_pack();
-        c.sync_cbs();
-        c.close_reduce_cones();
-        c.hoist_dedup_inits();
+        c.sync_cbs()?;
+        c.close_reduce_cones()?;
+        c.hoist_dedup_inits()?;
         c.noc_movement();
-        c.hoist_writer_accessors();
+        c.hoist_writer_accessors()?;
         c.batch_cbs();
         c.tile_regs();
-        c.verify();
+        c.verify()?;
         let mut full = String::new();
-        c.render(&mut full).unwrap();
+        c.render(&mut full)?;
         // Split the render at the three `void kernel_main() {` blocks:
         // each section source keeps its own includes.
         let marks: Vec<usize> = full.match_indices("void kernel_main() {").map(|(i, _)| i).collect();
-        assert!(marks.len() == 3, "tenstorrent2: render holds {} sections, want 3", marks.len());
+        if marks.len() != 3 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tenstorrent2: render holds {} sections, want 3", marks.len()).into(),
+            });
+        }
         // Back up from each mark over the contiguous `#include` block that
         // precedes it: each section source keeps its whole include block.
         let mut starts = Vec::with_capacity(3);
@@ -3834,7 +4593,7 @@ impl Kernel {
         for (s, list) in section_param_lists.iter().enumerate() {
             let tt_section = [TtSection::Reader, TtSection::Compute, TtSection::Writer][s];
             let mut ir_set: Vec<u32> = self
-                .get_needed_ops(tt_section)
+                .get_needed_ops(tt_section)?
                 .ops
                 .iter()
                 .copied()
@@ -3844,7 +4603,12 @@ impl Kernel {
             ir_set.sort_unstable();
             let mut used = list.clone();
             used.sort_unstable();
-            assert_eq!(used, ir_set, "tenstorrent2: section {s} arg first-use set != needed params");
+            if used != ir_set {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: section {s} arg first-use set != needed params").into(),
+                });
+            }
         }
         let reader_params = section_param_lists[0].clone();
         let compute_params = section_param_lists[1].clone();
@@ -3863,7 +4627,12 @@ impl Kernel {
                     section = match section {
                         TtSection::Reader => TtSection::Compute,
                         TtSection::Compute => TtSection::Writer,
-                        TtSection::Writer => panic!("tenstorrent kernels have exactly 3 sections (2 barriers)"),
+                        TtSection::Writer => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent2: kernels have exactly 3 sections (2 barriers)".into(),
+                            });
+                        }
                     };
                 }
                 Op::Load { ref src, .. } => {
@@ -3902,7 +4671,10 @@ impl Kernel {
         let mut cb_config: Slab<CBId, (u32, u32, u32)> = Slab::new();
         for (cb, op) in cb_ops {
             let Op::Storage { dtype, len, .. } = &self.ops[op].op else {
-                unreachable!("tenstorrent2: cb entry {op} is not a storage op")
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: cb entry {op} is not a storage op").into(),
+                });
             };
             let (fmt, tb) = match dtype {
                 DType::F32 => (0, 4096),
@@ -3960,7 +4732,10 @@ impl Kernel {
 
 impl Display for Compiler {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.render(f)
+        self.render(f).map_err(|e| {
+            eprintln!("tenstorrent2: render for display failed: {e}");
+            std::fmt::Error
+        })
     }
 }
 
@@ -3973,7 +4748,7 @@ impl Kernel {
     /// ranges, barriers) lexically inside the section. `dtypes`/`rcs`
     /// mirror [`Kernel::compute_dtypes_and_rcs`] restricted to this set:
     /// refcounts only count uses inside the section.
-    pub(crate) fn get_needed_ops(&self, tt_section: TtSection) -> SectionData {
+    pub(crate) fn get_needed_ops(&self, tt_section: TtSection) -> Result<SectionData, BackendError> {
         // Phase 1: stores and structural ops lexically inside the section.
         // Loop/range length operands seed the closure: the section walk
         // references them (r{len}) and they would otherwise dangle.
@@ -3992,7 +4767,7 @@ impl Kernel {
                 Op::Barrier => {
                     // Delimiters only: barriers advance the section scan
                     // but never join any section's op list.
-                    section.advance();
+                    section.advance()?;
                 }
                 Op::Store { .. } if section == tt_section => {
                     stores.push(scan);
@@ -4022,7 +4797,10 @@ impl Kernel {
             scan = self.next_op(scan);
         }
         if !scan.is_null() {
-            panic!("get_needed_ops did not finish in 10000 steps");
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: get_needed_ops did not finish in 10000 steps".into(),
+            });
         }
         // Phase 2: transitive data-dependency closure over the stores.
         let mut needed: Set<OpId> = Set::default();
@@ -4034,7 +4812,10 @@ impl Kernel {
                 stack.push(src);
                 stack.push(index);
             } else {
-                unreachable!("get_needed_ops collected a non-store");
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent2: get_needed_ops collected a non-store".into(),
+                });
             }
         }
         for _ in 0..10_000 {
@@ -4118,7 +4899,10 @@ impl Kernel {
             }
         }
         if !stack.is_empty() {
-            panic!("get_needed_ops closure did not finish in 10000 steps");
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: get_needed_ops closure did not finish in 10000 steps".into(),
+            });
         }
         // Phase 3: emit in IR order with dtypes and section-local refcounts.
         let mut ops: Vec<OpId> = Vec::new();
@@ -4137,7 +4921,10 @@ impl Kernel {
                 rcs.entry(op_id).or_insert(0);
                 match self.ops[op_id].op {
                     Op::Move { .. } | Op::Reduce { .. } => {
-                        unreachable!()
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent2: get_needed_ops collected a Move/Reduce (never lowered)".into(),
+                        });
                     }
                     Op::ReduceTile { x, scaler, acc, .. } => {
                         dtypes.insert(op_id, dtypes[&acc]);
@@ -4262,8 +5049,11 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         if !op_id.is_null() {
-            panic!("get_needed_ops did not finish in 10000 steps");
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: get_needed_ops did not finish in 10000 steps".into(),
+            });
         }
-        SectionData { ops, dtypes, rcs }
+        Ok(SectionData { ops, dtypes, rcs })
     }
 }

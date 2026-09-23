@@ -11,7 +11,7 @@
 #![cfg(feature = "tenstorrent")]
 
 use zyx::kernel::{BOp, Dev, Kernel, MemScope, OpId, TileDim};
-use zyx::{DType, Tensor, ZyxError, f8e4m3, f16};
+use zyx::{DType, Tensor, ZyxError, bf16, f8e4m3, f16};
 
 /// Single-core dtype×op capability matrix: every elementwise op with a
 /// Tenstorrent lowering (all 14 UOps; Add/Sub/Mul/Div/Max/Shl/Shr) on every
@@ -21,7 +21,7 @@ use zyx::{DType, Tensor, ZyxError, f8e4m3, f16};
 /// capability record, not just the green path.
 /// A second matrix covers immediate shifts (`_imm`: tile `<< const` via
 /// the unary-immediate LLK on I32/U16/U32-shl; every other dtype×op
-/// panics at lowering and those rows run as `should_panic`).
+/// fails lowering with Err and those rows assert the message).
 fn tt_range() -> Vec<f32> {
     // [0, 2): F16/BF16-exact steps, safe for sqrt/exp.
     (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect()
@@ -2450,12 +2450,14 @@ tt_binary!(
 // lowering folds it into the unary-immediate LLK (`tile << amount`).
 // Same single-tile flow as `run_tt_binary` with one data input.
 // Launch rows (`_imm`, ignored): I32/U16 both directions, U32 left only
-// (U32 `>> const` is arithmetic-only — panics by design, row below).
+// (U32 `>> const` is arithmetic-only — Err by design, row below).
 // They stay ignored under the int-hang rule; DUMP_ONLY proves emission.
-// Panic rows (run, no `ignore`): every other dtype rejects at lowering,
-// plus the U32-shr-const, amount->31, and const-first guards. The panic
-// fires inside `compile` before any device access, so these run green
-// on the host with no board traffic.
+// Error rows (run, no `ignore`): every other dtype rejects at lowering,
+// plus the U32-shr-const and amount->31 guards. (No const-first row:
+// `shift(scalar, tile)` is Scalar-layout, so kernel verify rejects the
+// tile store before TT lowering; the const-first gate is unreachable
+// defense-in-depth.) The Err surfaces from `compile` before any device
+// on the host with no board traffic and no mutex poisoning.
 fn run_tt_shift_const(
     name: &str,
     dtype: DType,
@@ -2468,7 +2470,26 @@ fn run_tt_shift_const(
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(dtype);
     let out = k.param_mut(dtype);
-    let amt = k.const_val(amount);
+    // The amount const carries the tile's dtype: kernel verify requires
+    // both Binary operands to share it, and TT lowering folds the const
+    // into the shift gate by dtype.
+    let amt = match dtype {
+        DType::I32 => k.const_val(amount as i32),
+        DType::U32 => k.const_val(amount),
+        DType::U16 => k.const_val(amount as u16),
+        DType::U8 => k.const_val(amount as u8),
+        DType::I8 => k.const_val(amount as i8),
+        DType::F16 => k.const_val(f16::from_f32(amount as f32)),
+        DType::BF16 => k.const_val(bf16::from_f32(amount as f32)),
+        DType::F8E4M3 => k.const_val(f8e4m3::from_f32(amount as f32)),
+        DType::F32 => todo!("shift amount const for F32 tiles"),
+        DType::F64 => todo!("shift amount const for F64 tiles"),
+        DType::F8E5M2 => todo!("shift amount const for F8E5M2 tiles"),
+        DType::U64 => todo!("shift amount const for U64 tiles"),
+        DType::I16 => todo!("shift amount const for I16 tiles"),
+        DType::I64 => todo!("shift amount const for I64 tiles"),
+        DType::Bool => todo!("shift amount const for Bool tiles"),
+    };
 
     let ca = k.circular_storage(dtype, 1);
     let cout = k.circular_storage(dtype, 1);
@@ -2529,9 +2550,12 @@ macro_rules! tt_shift_const {
     };
     ($name:ident, $op:expr, $dtype:expr, $range:ident, $amount:expr, $panic:expr, panics) => {
         #[test]
-        #[should_panic(expected = $panic)]
         fn $name() -> Result<(), ZyxError> {
-            run_tt_shift_const(stringify!($name), $dtype, 0., $range(), $amount, |x, _| x, $op)
+            // Lowering rejects with Err (never panics): assert the message.
+            let err = run_tt_shift_const(stringify!($name), $dtype, 0., $range(), $amount, |x, _| x, $op)
+                .expect_err("shift lowering must reject this dtype/shape");
+            assert!(format!("{err}").contains($panic), "unexpected shift error: {err}");
+            Ok(())
         }
     };
 }
@@ -2692,15 +2716,6 @@ tt_shift_const!(
     tt_i32_small,
     32,
     "tenstorrent2: shift amount 32 outside 0..=31",
-    panics
-);
-tt_shift_const!(
-    tenstorrent_shl_i32_constfirst,
-    |k: &mut Kernel, x: OpId, amt: OpId| k.bit_shift_left(amt, x),
-    DType::I32,
-    tt_i32_small,
-    3,
-    "tenstorrent2: const-first BitShiftLeft has no scalar call",
     panics
 );
 
