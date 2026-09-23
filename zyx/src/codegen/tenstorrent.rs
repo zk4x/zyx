@@ -690,8 +690,13 @@ pub enum TTOp {
         /// Operation (selects the init call).
         bop: BOp,
     },
-    /// `binop_with_scalar_tile_init();` (tile-scalar binary).
-    BinScalarInit,
+    /// Scalar-binary init: `binop_with_scalar_tile_init();` for
+    /// arithmetic, `left/right_shift_tile_init();` for shifts
+    /// (tile-scalar binary).
+    BinScalarInit {
+        /// Operation (selects the init call).
+        bop: BOp,
+    },
     /// `typecast_tile_init<in, out>();`.
     CastInit {
         /// Source dtype.
@@ -785,6 +790,9 @@ pub enum TTOp {
         y: TileId,
         /// Operation.
         bop: BOp,
+        /// Tile dtype (selects the `DataFormat` template arg of the
+        /// templated shift LLKs; untemplated ops ignore it).
+        dtype: DType,
     },
     /// Fused broadcast binary (`add_tiles_bcast_rows`, ...): the full
     /// tile stays in `cb_a`, the broadcast lane in `cb_b`, the result
@@ -806,7 +814,8 @@ pub enum TTOp {
     },
     /// Tile-scalar binary (`add_unary_tile`, ... with a scalar
     /// immediate): DST-inplace like unary, no CB traffic for the
-    /// scalar side.
+    /// scalar side. Arithmetic lowers the const to fp32 bits; shifts
+    /// carry the bit count as `Constant::U32`.
     TileBinScalar {
         /// Operand and result slot.
         slot: TileId,
@@ -1105,6 +1114,29 @@ impl Compiler {
                 }
                 _ => None,
             }
+        };
+        // A side resolving to a compile-time integer constant (follows
+        // const expressions): folds into a shift immediate. Float and
+        // bool consts are NOT amounts (`None`, like non-consts).
+        let const_shift_amt = |op: OpId| -> Option<u32> {
+            let v: i128 = match kernel.resolve_const(op)? {
+                Constant::U8(v) => v as i128,
+                Constant::U16(v) => v as i128,
+                Constant::U32(v) => v as i128,
+                Constant::U64(v) => u64::from_le_bytes(v) as i128,
+                Constant::I8(v) => v as i128,
+                Constant::I16(v) => v as i128,
+                Constant::I32(v) => v as i128,
+                Constant::I64(v) => i64::from_le_bytes(v) as i128,
+                Constant::BF16(_)
+                | Constant::F16(_)
+                | Constant::F32(_)
+                | Constant::F64(_)
+                | Constant::F8E4M3(_)
+                | Constant::F8E5M2(_)
+                | Constant::Bool(_) => return None,
+            };
+            u32::try_from(v).ok()
         };
         let sections = [TtSection::Reader, TtSection::Compute, TtSection::Writer];
         let mut startup_loads: Vec<CBId> = Vec::new();
@@ -1446,6 +1478,59 @@ impl Compiler {
                                 ops.push(TTOp::TileBcastBinary { dst, cb_a, cb_b, bop: *bop, kind, out: None });
                             }
                             (None, None) => {
+                                // Shifts lower to the shift LLKs, which are
+                                // int-only (Int32/UInt32/UInt16): anything
+                                // else fails here, never on the device.
+                                if matches!(bop, BOp::BitShiftLeft | BOp::BitShiftRight) {
+                                    let dt = data.dtypes[&id].0;
+                                    match dt {
+                                        DType::I32 | DType::U32 | DType::U16 => {}
+                                        DType::BF16
+                                        | DType::F16
+                                        | DType::F32
+                                        | DType::F64
+                                        | DType::F8E4M3
+                                        | DType::F8E5M2
+                                        | DType::U8
+                                        | DType::U64
+                                        | DType::I8
+                                        | DType::I16
+                                        | DType::I64
+                                        | DType::Bool => panic!(
+                                            "tenstorrent2: tiled shift on {dt:?}, LLK supports Int32/UInt32/UInt16 only, op {id}"
+                                        ),
+                                    }
+                                    // A const amount folds into the
+                                    // unary-immediate LLK (`tile << amount`);
+                                    // const-first has no call. Amounts
+                                    // outside 0..=31 are UB in every other
+                                    // backend — fail loudly, never emit.
+                                    if kernel.resolve_const(*x).is_some() {
+                                        panic!("tenstorrent2: const-first {bop:?} has no scalar call, op {id}");
+                                    }
+                                    if kernel.resolve_const(*y).is_some() {
+                                        let Some(amount) = const_shift_amt(*y) else {
+                                            panic!("tenstorrent2: shift amount is no integer const, op {id}");
+                                        };
+                                        if amount > 31 {
+                                            panic!("tenstorrent2: shift amount {amount} outside 0..=31, op {id}");
+                                        }
+                                        if *bop == BOp::BitShiftRight && dt == DType::U32 {
+                                            panic!("tenstorrent2: U32 right-shift by immediate is arithmetic-only, op {id}");
+                                        }
+                                        let tile_op = *x;
+                                        let t = tiles
+                                            .get(&tile_op)
+                                            .copied()
+                                            .expect("tenstorrent2: scalar binary reads a value with no DST slot");
+                                        if total[&tile_op] != 1 {
+                                            panic!("tenstorrent2: scalar binary {id} reads a multi-use operand");
+                                        }
+                                        tiles.insert(id, t);
+                                        ops.push(TTOp::TileBinScalar { slot: t, bop: *bop, value: Constant::U32(amount) });
+                                        continue;
+                                    }
+                                }
                                 let xc = const_scalar(*x);
                                 let yc = const_scalar(*y);
                                 let scalar = match (xc, yc) {
@@ -1475,7 +1560,7 @@ impl Compiler {
                                     let tb =
                                         tiles.get(y).copied().expect("tenstorrent2: tiled binary reads a value with no DST slot");
                                     let dst = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id);
-                                    ops.push(TTOp::TileBinary { dst, x: ta, y: tb, bop: *bop });
+                                    ops.push(TTOp::TileBinary { dst, x: ta, y: tb, bop: *bop, dtype: data.dtypes[&id].0 });
                                     use_tile(&tiles, &mut remaining, &mut free_tiles, *x);
                                     use_tile(&tiles, &mut remaining, &mut free_tiles, *y);
                                 }
@@ -1704,7 +1789,7 @@ impl Compiler {
                     | TTOp::CopyInitWithDt { .. }
                     | TTOp::UnaryInit { .. }
                     | TTOp::BinaryInit { .. }
-                    | TTOp::BinScalarInit
+                    | TTOp::BinScalarInit { .. }
                     | TTOp::FusedInit { .. }
                     | TTOp::CastInit { .. }
                     | TTOp::TransposeInit { .. }
@@ -2009,7 +2094,7 @@ impl Compiler {
                 }
                 TTOp::TileUnary { uop, .. } => next.push(TTOp::UnaryInit { uop: *uop }),
                 TTOp::TileBinary { bop, .. } => next.push(TTOp::BinaryInit { bop: *bop }),
-                TTOp::TileBinScalar { .. } => next.push(TTOp::BinScalarInit),
+                TTOp::TileBinScalar { bop, .. } => next.push(TTOp::BinScalarInit { bop: *bop }),
                 TTOp::TileFused { kind, .. } => next.push(TTOp::FusedInit { kind: *kind }),
                 TTOp::TileCast { in_dtype, out_dtype, .. } => {
                     next.push(TTOp::CastInit { in_dtype: *in_dtype, out_dtype: *out_dtype })
@@ -2536,7 +2621,7 @@ impl Compiler {
                     | TTOp::CopyInitWithDt { .. }
                     | TTOp::UnaryInit { .. }
                     | TTOp::BinaryInit { .. }
-                    | TTOp::BinScalarInit
+                    | TTOp::BinScalarInit { .. }
                     | TTOp::FusedInit { .. }
                     | TTOp::CastInit { .. }
                     | TTOp::TransposeInit { .. }
@@ -2608,7 +2693,7 @@ impl Compiler {
                             let sticky = |op: &TTOp| match op {
                                 TTOp::BinaryInit { bop } => !matches!(bop, BOp::Mul),
                                 TTOp::UnaryInit { .. }
-                                | TTOp::BinScalarInit
+                                | TTOp::BinScalarInit { .. }
                                 | TTOp::FusedInit { .. }
                                 | TTOp::CastInit { .. }
                                 | TTOp::MatmulInit { .. } => true,
@@ -2738,7 +2823,7 @@ impl Compiler {
                 }
                 TTOp::UnaryInit { .. }
                 | TTOp::BinaryInit { .. }
-                | TTOp::BinScalarInit
+                | TTOp::BinScalarInit { .. }
                 | TTOp::FusedInit { .. }
                 | TTOp::CastInit { .. }
                 | TTOp::TransposeInit { .. }
@@ -2998,7 +3083,7 @@ impl Compiler {
                 | TTOp::PackReconfig { .. }
                 | TTOp::UnaryInit { .. }
                 | TTOp::BinaryInit { .. }
-                | TTOp::BinScalarInit
+                | TTOp::BinScalarInit { .. }
                 | TTOp::FusedInit { .. }
                 | TTOp::CastInit { .. }
                 | TTOp::TransposeInit { .. }
@@ -3109,14 +3194,7 @@ impl Compiler {
     /// Render the TTIR stream, one op per line (`v{id}` = scalar
     /// registers, `t{id}` = DST slots, `cb{id}` = circular buffers).
     /// Single walk over `ops`, single emission per op, no scans.
-    pub fn render(&self) -> String {
-        let mut out = String::new();
-        self.render_inner(&mut out).expect("tenstorrent2: render write failed");
-        out
-    }
-
-    /// Walk `ops` once, emitting one line per op into `out`.
-    fn render_inner(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {
+    pub fn render(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {
         use crate::scalar::{bf16, f16};
         let mut section = 0u8;
         let mut indent = [String::from("  "), String::from("  "), String::from("  ")];
@@ -3187,6 +3265,8 @@ impl Compiler {
                         writeln!(out, "#include \"api/compute/compute_kernel_api.h\"")?;
                         writeln!(out, "#include \"api/compute/eltwise_binary_sfpu.h\"")?;
                         writeln!(out, "#include \"api/compute/eltwise_unary/binop_with_scalar.h\"")?;
+                        writeln!(out, "#include \"api/compute/eltwise_unary/left_shift.h\"")?;
+                        writeln!(out, "#include \"api/compute/eltwise_unary/right_shift.h\"")?;
                         writeln!(out, "#include \"api/compute/tile_move_copy.h\"")?;
                         writeln!(out, "#include \"api/compute/eltwise_unary/eltwise_unary.h\"")?;
                         writeln!(out, "#include \"api/compute/eltwise_unary/trigonometry.h\"")?;
@@ -3449,7 +3529,26 @@ impl Compiler {
                     "{ind}{}",
                     binary_init_name(*bop).expect("tenstorrent2: placed binary init without an init call")
                 )?,
-                TTOp::BinScalarInit => writeln!(out, "{ind}binop_with_scalar_tile_init();")?,
+                TTOp::BinScalarInit { bop } => match bop {
+                    BOp::Add | BOp::Sub | BOp::Mul | BOp::Div => writeln!(out, "{ind}binop_with_scalar_tile_init();")?,
+                    BOp::BitShiftLeft => writeln!(out, "{ind}left_shift_tile_init();")?,
+                    BOp::BitShiftRight => writeln!(out, "{ind}right_shift_tile_init();")?,
+                    BOp::Pow
+                    | BOp::Mod
+                    | BOp::Cmplt
+                    | BOp::Cmpgt
+                    | BOp::Cmpge
+                    | BOp::Max
+                    | BOp::Or
+                    | BOp::And
+                    | BOp::BitXor
+                    | BOp::BitOr
+                    | BOp::BitAnd
+                    | BOp::NotEq
+                    | BOp::Eq => {
+                        panic!("tenstorrent2: scalar init for {bop:?} has no init call")
+                    }
+                },
                 TTOp::FusedInit { kind } => writeln!(out, "{ind}{}", kind.init_name())?,
                 TTOp::CastInit { in_dtype, out_dtype } => {
                     writeln!(out, "{ind}typecast_tile_init<{}, {}>();", tt_fmt(*in_dtype), tt_fmt(*out_dtype))?;
@@ -3485,7 +3584,21 @@ impl Compiler {
                 TTOp::TilePack { slot, cb } => {
                     writeln!(out, "{ind}pack_tile({}, {cb});", slot.0)?;
                 }
-                TTOp::TileBinary { dst, x, y, bop } => {
+                TTOp::TileBinary { dst, x, y, bop, dtype } => {
+                    // Shift LLKs are `template <DataFormat>` over
+                    // Int32/UInt32/UInt16 (lowering rejects anything
+                    // else); U32 right-shift uses the logical form (the
+                    // plain one saturates amounts >= 32 to 31). Every
+                    // other binary LLK is untemplated.
+                    let tmpl = match bop {
+                        BOp::BitShiftLeft | BOp::BitShiftRight => match dtype {
+                            DType::I32 => "<DataFormat::Int32>",
+                            DType::U32 => "<DataFormat::UInt32>",
+                            DType::U16 => "<DataFormat::UInt16>",
+                            dt => panic!("tenstorrent2: tiled shift on {dt:?} has no LLK format"),
+                        },
+                        _ => "",
+                    };
                     let name = match bop {
                         BOp::Add => "add_binary_tile",
                         BOp::Sub => "sub_binary_tile",
@@ -3493,10 +3606,11 @@ impl Compiler {
                         BOp::Div => "div_binary_tile",
                         BOp::Max => "binary_max_tile",
                         BOp::BitShiftLeft => "binary_left_shift_tile",
+                        BOp::BitShiftRight if matches!(dtype, DType::U32) => "binary_logical_right_shift_tile",
                         BOp::BitShiftRight => "binary_right_shift_tile",
                         _ => panic!("tenstorrent2: tiled binary {bop:?} has no LLK call"),
                     };
-                    writeln!(out, "{ind}{name}({}, {}, {});", x.0, y.0, dst.0)?;
+                    writeln!(out, "{ind}{name}{tmpl}({}, {}, {});", x.0, y.0, dst.0)?;
                 }
                 TTOp::TileFused { slot, kind } => {
                     writeln!(out, "{ind}{}({});", kind.call_name(), slot.0)?;
@@ -3562,18 +3676,32 @@ impl Compiler {
                     }
                 }
                 TTOp::TileBinScalar { slot, bop, value } => {
-                    let bits = match value {
-                        Constant::F32(b) => f32::from_le_bytes(*b).to_bits(),
-                        Constant::F16(b) => f16::from_le_bytes(*b).to_f32().to_bits(),
-                        Constant::BF16(b) => bf16::from_le_bytes(*b).to_f32().to_bits(),
-                        v => panic!("tenstorrent2: render: binscalar on non-float const {v}"),
-                    };
-                    match bop {
-                        BOp::Add => writeln!(out, "{ind}add_unary_tile({}, {bits:#x});", slot.0)?,
-                        BOp::Mul => writeln!(out, "{ind}mul_unary_tile({}, {bits:#x});", slot.0)?,
-                        BOp::Div => writeln!(out, "{ind}div_unary_tile({}, {bits:#x});", slot.0)?,
-                        BOp::Sub => todo!("tenstorrent2: render TileBinScalar sub needs operand side"),
-                        _ => panic!("tenstorrent2: tiled scalar {bop:?} has no LLK call"),
+                    // Immediate shifts (`left/right_shift_tile`) take a
+                    // U32 bit count, not fp32 bits.
+                    if matches!(bop, BOp::BitShiftLeft | BOp::BitShiftRight) {
+                        let Constant::U32(amount) = value else {
+                            panic!("tenstorrent2: render: shift-scalar on non-U32 const {value}");
+                        };
+                        let name = if matches!(bop, BOp::BitShiftLeft) {
+                            "left_shift_tile"
+                        } else {
+                            "right_shift_tile"
+                        };
+                        writeln!(out, "{ind}{name}({}, {amount});", slot.0)?
+                    } else {
+                        let bits = match value {
+                            Constant::F32(b) => f32::from_le_bytes(*b).to_bits(),
+                            Constant::F16(b) => f16::from_le_bytes(*b).to_f32().to_bits(),
+                            Constant::BF16(b) => bf16::from_le_bytes(*b).to_f32().to_bits(),
+                            v => panic!("tenstorrent2: render: binscalar on non-float const {v}"),
+                        };
+                        match bop {
+                            BOp::Add => writeln!(out, "{ind}add_unary_tile({}, {bits:#x});", slot.0)?,
+                            BOp::Mul => writeln!(out, "{ind}mul_unary_tile({}, {bits:#x});", slot.0)?,
+                            BOp::Div => writeln!(out, "{ind}div_unary_tile({}, {bits:#x});", slot.0)?,
+                            BOp::Sub => todo!("tenstorrent2: render TileBinScalar sub needs operand side"),
+                            _ => panic!("tenstorrent2: tiled scalar {bop:?} has no LLK call"),
+                        }
                     }
                 }
                 TTOp::ReadTile { .. } | TTOp::WriteTile { .. } => {
@@ -3630,7 +3758,8 @@ impl Kernel {
         c.batch_cbs();
         c.tile_regs();
         c.verify();
-        let full = c.render();
+        let mut full = String::new();
+        c.render(&mut full).unwrap();
         // Split the render at the three `void kernel_main() {` blocks:
         // each section source keeps its own includes.
         let marks: Vec<usize> = full.match_indices("void kernel_main() {").map(|(i, _)| i).collect();
@@ -3831,7 +3960,7 @@ impl Kernel {
 
 impl Display for Compiler {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        return write!(f, "{}", self.render());
+        self.render(f)
     }
 }
 

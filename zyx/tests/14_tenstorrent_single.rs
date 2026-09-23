@@ -19,6 +19,9 @@ use zyx::{DType, Tensor, ZyxError, f8e4m3, f16};
 /// One 32x32 tile, straight-line acquire→copy→op→commit→pack.
 /// Failures use the `ignore` arm with a doc failure mode: this file is the
 /// capability record, not just the green path.
+/// A second matrix covers immediate shifts (`_imm`: tile `<< const` via
+/// the unary-immediate LLK on I32/U16/U32-shl; every other dtype×op
+/// panics at lowering and those rows run as `should_panic`).
 fn tt_range() -> Vec<f32> {
     // [0, 2): F16/BF16-exact steps, safe for sqrt/exp.
     (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect()
@@ -1492,8 +1495,11 @@ fn tenstorrent_matmul_bf16_acc() -> Result<(), ZyxError> {
 // `template <DataFormat>` — device-JIT error, kernel never runs,
 // timeout + mutex-poison abort. Fix = emit the `<FORMAT>` arg;
 // F16/U8/I8/F8 DST formats are not in the op's supported list and stay
-// unsupported. Same bare-template cause for all 14 shift rows
-// (`binary_left/right_shift_tile`, proven via shl_bf16/shl_u16 aborts).
+// unsupported. Shifts had the same bare-template cause and now emit
+// `binary_left/right_shift_tile<DataFormat::*>` for Int32/UInt32/UInt16
+// (U32 `>>` uses the logical form); every other dtype panics at
+// lowering — the LLK is int-only. The int shift rows stay ignored
+// under the int-hang rule above.
 // IGNORED `bitnot_f16/bf16`: run, 1008/1024 wrong values (int op on
 // float DST bits). IGNORED `rsqrt_f16`: 1024/1024 wrong (F16 SFPU class).
 // IGNORED cross-format casts: any format-converting cast in compute
@@ -1972,8 +1978,8 @@ tt_unary!(
 tt_unary!(tenstorrent_sin_i32, |k: &mut Kernel, x: OpId| k.sin(x), DType::I32, 5e-1, tt_i32_small, |x: f32| x.sin(), ignore);
 tt_unary!(tenstorrent_cos_i32, |k: &mut Kernel, x: OpId| k.cos(x), DType::I32, 5e-1, tt_i32_small, |x: f32| x.cos(), ignore);
 
-// F16/BF16 shifts: the LLK shift op is int-only; these rows record the
-// failure mode (compile-time static_assert, not silent wrong values).
+// F16/BF16 shifts: the LLK shift op is int-only; these rows panic at
+// lowering (compile-time, not silent wrong values).
 tt_binary!(
     tenstorrent_shl_f16,
     |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
@@ -2438,6 +2444,264 @@ tt_binary!(
     tt_shift_amt32,
     |x: f32, y: f32| (x as i32).wrapping_shr(y as u32) as f32,
     ignore
+);
+
+// Immediate-shift (tile-const) matrix: the amount is a kernel const, so
+// lowering folds it into the unary-immediate LLK (`tile << amount`).
+// Same single-tile flow as `run_tt_binary` with one data input.
+// Launch rows (`_imm`, ignored): I32/U16 both directions, U32 left only
+// (U32 `>> const` is arithmetic-only — panics by design, row below).
+// They stay ignored under the int-hang rule; DUMP_ONLY proves emission.
+// Panic rows (run, no `ignore`): every other dtype rejects at lowering,
+// plus the U32-shr-const, amount->31, and const-first guards. The panic
+// fires inside `compile` before any device access, so these run green
+// on the host with no board traffic.
+fn run_tt_shift_const(
+    name: &str,
+    dtype: DType,
+    tol: f32,
+    data: Vec<f32>,
+    amount: u32,
+    expect: fn(f32, u32) -> f32,
+    op: impl Fn(&mut Kernel, OpId, OpId) -> OpId,
+) -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(dtype);
+    let out = k.param_mut(dtype);
+    let amt = k.const_val(amount);
+
+    let ca = k.circular_storage(dtype, 1);
+    let cout = k.circular_storage(dtype, 1);
+
+    let _g = k.group_range(0, 1);
+
+    let ta = k.load_global_tile(a, 0);
+    k.store_circular(ca, ta, 0);
+    k.barrier();
+    let va = k.load_circular(ca, 0);
+    let v = op(&mut k, va, amt);
+    k.store_circular(cout, v, 0);
+    k.barrier();
+    let w = k.load_circular(cout, 0);
+    k.store_global_tile(out, w, 0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
+        println!("dump only, skipping launch");
+        return Ok(());
+    }
+
+    let a_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(dtype).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (p, (&x, &v)) in data.iter().zip(z.iter()).enumerate() {
+        let expected = expect(x, amount);
+        if (v - expected).abs() >= tol {
+            if bad < 10 || std::env::var("ZYX_TT_FULL").is_ok() {
+                println!("{name}[{p}] = {v}, expected {expected}");
+            }
+            bad += 1;
+        }
+    }
+    println!("{name} bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+macro_rules! tt_shift_const {
+    ($name:ident, $op:expr, $dtype:expr, $tol:expr, $range:ident, $amount:expr, $expect:expr) => {
+        #[test]
+        fn $name() -> Result<(), ZyxError> {
+            run_tt_shift_const(stringify!($name), $dtype, $tol, $range(), $amount, $expect, $op)
+        }
+    };
+    ($name:ident, $op:expr, $dtype:expr, $tol:expr, $range:ident, $amount:expr, $expect:expr, ignore) => {
+        #[test]
+        #[ignore]
+        fn $name() -> Result<(), ZyxError> {
+            run_tt_shift_const(stringify!($name), $dtype, $tol, $range(), $amount, $expect, $op)
+        }
+    };
+    ($name:ident, $op:expr, $dtype:expr, $range:ident, $amount:expr, $panic:expr, panics) => {
+        #[test]
+        #[should_panic(expected = $panic)]
+        fn $name() -> Result<(), ZyxError> {
+            run_tt_shift_const(stringify!($name), $dtype, 0., $range(), $amount, |x, _| x, $op)
+        }
+    };
+}
+
+tt_shift_const!(
+    tenstorrent_shl_i32_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
+    DType::I32,
+    1e-5,
+    tt_i32_small,
+    3,
+    |x: f32, a: u32| (x as i32).wrapping_shl(a) as f32,
+    ignore
+);
+tt_shift_const!(
+    tenstorrent_shr_i32_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
+    DType::I32,
+    1e-5,
+    tt_i32_small,
+    3,
+    |x: f32, a: u32| (x as i32).wrapping_shr(a) as f32,
+    ignore
+);
+tt_shift_const!(
+    tenstorrent_shl_u16_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
+    DType::U16,
+    1e-5,
+    tt_u16_small,
+    3,
+    |x: f32, a: u32| (x as u16).wrapping_shl(a) as f32,
+    ignore
+);
+tt_shift_const!(
+    tenstorrent_shr_u16_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
+    DType::U16,
+    1e-5,
+    tt_u16_small,
+    3,
+    |x: f32, a: u32| (x as u16).wrapping_shr(a) as f32,
+    ignore
+);
+tt_shift_const!(
+    tenstorrent_shl_u32_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
+    DType::U32,
+    1e-5,
+    tt_u32_small,
+    3,
+    |x: f32, a: u32| (x as u32).wrapping_shl(a) as f32,
+    ignore
+);
+tt_shift_const!(
+    tenstorrent_shl_f16_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
+    DType::F16,
+    tt_range,
+    3,
+    "tenstorrent2: tiled shift on F16",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shr_f16_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
+    DType::F16,
+    tt_range,
+    3,
+    "tenstorrent2: tiled shift on F16",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shl_bf16_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
+    DType::BF16,
+    tt_range,
+    3,
+    "tenstorrent2: tiled shift on BF16",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shr_bf16_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
+    DType::BF16,
+    tt_range,
+    3,
+    "tenstorrent2: tiled shift on BF16",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shl_f8_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
+    DType::F8E4M3,
+    tt_f8_int8,
+    3,
+    "tenstorrent2: tiled shift on F8E4M3",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shr_f8_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
+    DType::F8E4M3,
+    tt_f8_int8,
+    3,
+    "tenstorrent2: tiled shift on F8E4M3",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shl_u8_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
+    DType::U8,
+    tt_u8_small,
+    3,
+    "tenstorrent2: tiled shift on U8",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shr_u8_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
+    DType::U8,
+    tt_u8_small,
+    3,
+    "tenstorrent2: tiled shift on U8",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shl_i8_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
+    DType::I8,
+    tt_i8_small,
+    3,
+    "tenstorrent2: tiled shift on I8",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shr_i8_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
+    DType::I8,
+    tt_i8_small,
+    3,
+    "tenstorrent2: tiled shift on I8",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shr_u32_imm,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
+    DType::U32,
+    tt_u32_small,
+    3,
+    "tenstorrent2: U32 right-shift by immediate is arithmetic-only",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shl_i32_amt32,
+    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
+    DType::I32,
+    tt_i32_small,
+    32,
+    "tenstorrent2: shift amount 32 outside 0..=31",
+    panics
+);
+tt_shift_const!(
+    tenstorrent_shl_i32_constfirst,
+    |k: &mut Kernel, x: OpId, amt: OpId| k.bit_shift_left(amt, x),
+    DType::I32,
+    tt_i32_small,
+    3,
+    "tenstorrent2: const-first BitShiftLeft has no scalar call",
+    panics
 );
 
 // Typecast matrix: every directed pair over F16/BF16/F8E4M3/F32 plus U8.
