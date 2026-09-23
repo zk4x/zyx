@@ -1715,6 +1715,15 @@ impl Compiler {
                                                 .into(),
                                             });
                                         }
+                                        if *bop == BOp::BitShiftRight && dt == DType::U16 {
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!(
+                                                    "tenstorrent2: U16 right-shift by immediate is wrong on silicon, op {id}"
+                                                )
+                                                .into(),
+                                            });
+                                        }
                                         let tile_op = *x;
                                         let t = tiles.get(&tile_op).copied().ok_or_else(|| BackendError {
                                             status: ErrorStatus::KernelCompilation,

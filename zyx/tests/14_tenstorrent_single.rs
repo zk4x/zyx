@@ -2449,11 +2449,13 @@ tt_binary!(
 // Immediate-shift (tile-const) matrix: the amount is a kernel const, so
 // lowering folds it into the unary-immediate LLK (`tile << amount`).
 // Same single-tile flow as `run_tt_binary` with one data input.
-// Launch rows (`_imm`, ignored): I32/U16 both directions, U32 left only
-// (U32 `>> const` is arithmetic-only — Err by design, row below).
-// They stay ignored under the int-hang rule; DUMP_ONLY proves emission.
+// Launch rows (`_imm`, ignored): I32 both directions, U16/U32 left only
+// (U32 `>> const` is arithmetic-only, U16 `>> const` corrupts lanes on
+// silicon — both Err by design, rows below).
+// They stay ignored pending board time; sim + silicon runs prove emission
+// and values for the int triple (see tenstorrent_debugging.md 2026-09-23).
 // Error rows (run, no `ignore`): every other dtype rejects at lowering,
-// plus the U32-shr-const and amount->31 guards. (No const-first row:
+// plus the U32/U16-shr-const and amount->31 guards. (No const-first row:
 // `shift(scalar, tile)` is Scalar-layout, so kernel verify rejects the
 // tile store before TT lowering; the const-first gate is unreachable
 // defense-in-depth.) The Err surfaces from `compile` before any device
@@ -2594,11 +2596,10 @@ tt_shift_const!(
     tenstorrent_shr_u16_imm,
     |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
     DType::U16,
-    1e-5,
     tt_u16_small,
     3,
-    |x: f32, a: u32| (x as u16).wrapping_shr(a) as f32,
-    ignore
+    "tenstorrent2: U16 right-shift by immediate",
+    panics
 );
 tt_shift_const!(
     tenstorrent_shl_u32_imm,
