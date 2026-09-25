@@ -50,6 +50,10 @@ pub struct CompiledKernel {
     program: ProgramId,
     inputs: Vec<DType>,
     outputs: Vec<DType>,
+    /// Compile-time perf estimate (flops, global bytes read, global bytes
+    /// written) from `Kernel::flop_mem_rw`. `Some` only when the dev debug
+    /// bit was set at compile; eager launches with `Some` use timed launch.
+    perf: Option<(u64, u64, u64)>,
 }
 
 impl Kernel {
@@ -186,8 +190,11 @@ impl Kernel {
         let program_id = device_id.compile(&self, debug_asm)?;
         eprintln!("[compile] device.compile {}us", _t.elapsed().as_micros());
         eprintln!("[compile] total {}us", _compile_start.elapsed().as_micros());
+        // Dev debug bit: record the compile-time perf estimate so eager
+        // launches can time themselves with `launch_timed`.
+        let perf = crate::debug_mask().dev().then(|| self.flop_mem_rw());
         let program = crate::backend::ProgramId { dev: device_id, program_id };
-        Ok(CompiledKernel { program, inputs, outputs })
+        Ok(CompiledKernel { program, inputs, outputs, perf })
     }
 
     /// Permute tensor axes.
@@ -1032,6 +1039,7 @@ impl CompiledKernel {
             &inputs.iter().map(|t| t.id).collect::<Vec<_>>(),
             &self.outputs,
             &shape_tids,
+            self.perf,
         )?;
         Ok(ids.into_iter().map(Tensor::from_id).collect())
     }
@@ -1056,13 +1064,15 @@ impl Runtime {
     /// `inputs[i]` binds to kernel param `i`; `shapes[i]` is output i's
     /// shape expression (dim tensor ids, possibly empty for a scalar output).
     /// `program` is the compiled kernel's program id; `output_dtypes` its
-    /// per-output dtypes.
+    /// per-output dtypes. `perf` is the compile-time estimate (flops, global
+    /// bytes read, global bytes written); `Some` selects timed launch.
     pub(crate) fn forward(
         &mut self,
         program: ProgramId,
         inputs: &[TensorId],
         output_dtypes: &[DType],
         shapes: &[&[TensorId]],
+        perf: Option<(u64, u64, u64)>,
     ) -> Result<Vec<TensorId>, ZyxError> {
         // Routing mirrors `Runtime::stack`: the graph path runs iff any
         // operand is a graph tensor of the current tape; otherwise the
@@ -1231,7 +1241,6 @@ impl Runtime {
         // (mirroring the graph path's `class_vars` binding in plan.rs) — they
         // are kernel params, never buffers.
         // NOTE: all async — allocate is pool bump, launch is stream enqueue, sync is deferred to to_vec/item.
-        let _fwd_start = std::time::Instant::now();
         let device_id = program.dev;
         let pool_id = device_id.pool();
         let mut input_args: Vec<LaunchArg> = Vec::with_capacity(inputs.len());
@@ -1288,7 +1297,15 @@ impl Runtime {
             args.push(LaunchArg::Buffer(buf.buffer_id));
         }
         let _launch_t = std::time::Instant::now();
-        device_id.launch(program.program_id, &args)?;
+        // Perf estimate present (set at compile under the dev debug bit):
+        // synchronous timed launch, then the perf line. No estimate means
+        // plain async enqueue.
+        if let Some((flop, read, write)) = perf {
+            let nanos = device_id.launch_timed(program.program_id, &args)?;
+            println!("{}", crate::get_perf(flop, read, write, nanos));
+        } else {
+            device_id.launch(program.program_id, &args)?;
+        }
         /*eprintln!(
             "[forward async] launch enqueue {}us total {}us (async, no sync)",
             _launch_t.elapsed().as_micros(),

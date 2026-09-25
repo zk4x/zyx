@@ -358,7 +358,7 @@ impl Dev {
                 dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).launch_timed(program_id, args)
             }
             #[cfg(feature = "tenstorrent")]
-            Dev::TT(id) => todo!("launch_timed not yet ported to the TT device ({id})"),
+            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).launch_timed(program_id, args),
             #[cfg(feature = "wgpu")]
             Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).launch_timed(program_id, args),
         }

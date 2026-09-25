@@ -1024,4 +1024,14 @@ impl TTDevice {
 
         Ok(())
     }
+
+    /// Timed launch for autotune. Returns the kernel's run time in nanos.
+    /// Tenstorrent launches are synchronous (the runtime blocks through
+    /// Finish), so a wall-clock bracket is already an uncontended
+    /// measurement.
+    pub fn launch_timed(&mut self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<u64, BackendError> {
+        let start = std::time::Instant::now();
+        self.launch(program_id, self.memory_pool, args)?;
+        Ok(start.elapsed().as_nanos() as u64)
+    }
 }

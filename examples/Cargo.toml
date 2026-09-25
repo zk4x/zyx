@@ -10,8 +10,8 @@ members = [
     "tiny-net",
     "tiny-net2",
     "llama",
-    "probe",
     "qwen3.8-27b",
+    "tt_gemm",
 ]
 
 [profile.release]

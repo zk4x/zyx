@@ -164,6 +164,72 @@ impl DebugMask {
     }
 }
 
+/// Format launch perf (flops, global bytes read/written, nanos) as a
+/// human-readable line: time, FLOP/s, read B/s, write B/s.
+#[allow(unused)]
+#[allow(clippy::similar_names)]
+pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> String {
+    if nanos == u64::MAX {
+        return format!("INF time taken");
+    }
+    const fn value_unit(x: u64) -> (u64, &'static str) {
+        match x {
+            0..1000 => (x * 100, ""),
+            1_000..1_000_000 => (x / 10, "k"),
+            1_000_000..1_000_000_000 => (x / 10_000, "M"),
+            1_000_000_000..1_000_000_000_000 => (x / 10_000_000, "G"),
+            1_000_000_000_000..1_000_000_000_000_000 => (x / 10_000_000_000, "T"),
+            1_000_000_000_000_000..1_000_000_000_000_000_000 => (x / 10_000_000_000_000, "P"),
+            1_000_000_000_000_000_000.. => (x / 10_000_000_000_000_000, "E"),
+        }
+    }
+
+    //let (f, f_u) = value_unit(flop);
+    //let (br, br_u) = value_unit(bytes_read);
+    //let (bw, bw_u) = value_unit(bytes_written);
+    let (t, t_u) = match nanos {
+        0..1_000 => (nanos * 10, "ns"),
+        1_000..1_000_000 => (nanos / 100, "μs"),
+        1_000_000..1_000_000_000 => (nanos / 100_000, "ms"),
+        1_000_000_000..1_000_000_000_000 => (nanos / 100_000_000, "s"),
+        1_000_000_000_000.. => (nanos / 6_000_000_000, "min"),
+    };
+
+    let (fs, f_us) = value_unit(flop * 1_000_000 / nanos * 1000);
+    let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
+    let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
+
+    /*format!(
+        "{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w, {}.{:02} {f_u}FLOP, {}.{:02} {br_u}B r, {}.{:02} {bw_u}B w",
+        t / 10,
+        t % 10,
+        fs / 100,
+        fs % 100,
+        brs / 100,
+        brs % 100,
+        bws / 100,
+        bws % 100,
+        f / 100,
+        f % 100,
+        br / 100,
+        br % 100,
+        bw / 100,
+        bw % 100,
+    )*/
+
+    format!(
+        "{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w",
+        t / 10,
+        t % 10,
+        fs / 100,
+        fs % 100,
+        brs / 100,
+        brs % 100,
+        bws / 100,
+        bws % 100,
+    )
+}
+
 static DEBUG_MASK: mutex::Mutex<Option<DebugMask>> = mutex::Mutex::new(None);
 
 /// Returns the global debug mask, loading `ZYX_DEBUG` from the

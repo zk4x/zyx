@@ -936,6 +936,12 @@ impl Kernel {
                     flops = flops.saturating_add(2 * m * n * k * warps * loop_prod);
                 }
                 Op::ReduceTile { .. } => flops = flops.saturating_add(mult),
+                Op::MatmulTile { .. } => {
+                    // Tenstorrent `matmul_tile` is one 32x32x32 MAC: the
+                    // kernel API only builds 32x32 tiles (`load_circular` /
+                    // `load_register_tile` assert Tile { 32, 32, 32 }).
+                    flops = flops.saturating_add(2 * 32 * 32 * 32 * mult);
+                }
                 Op::Load { src, layout, .. } => {
                     if let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*src].op {
                         let bytes = (dtype.bit_size() as u64 / 8) * layout.n_elements() as u64;

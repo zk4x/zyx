@@ -1,0 +1,8 @@
+[package]
+name = "tt_gemm"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-3.0-only"
+
+[dependencies]
+zyx = { path = "../../zyx", features = ["tenstorrent"] }
