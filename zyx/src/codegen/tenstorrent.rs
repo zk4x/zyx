@@ -1226,10 +1226,16 @@ impl Compiler {
             let mut remaining = data.rcs.clone();
             let mut vars: Map<OpId, VarId> = Map::default();
             let mut tiles: Map<OpId, TileId> = Map::default();
-            let mut free_vars: Vec<VarId> = Vec::new();
+            let mut free_vars: Vec<(VarId, DType, u8)> = Vec::new();
             let mut free_tiles: Vec<TileId> = Vec::new();
             let mut next_var = 0u32;
             let mut next_tile = 0u8;
+            // Loop nesting level and per-var (dtype, def level), PTX
+            // style: refcounts tick only on same-level uses so
+            // loop-invariant temps survive loops, and a freed slot is
+            // reused only with matching dtype at same-or-outer level.
+            let mut loop_level: u8 = 0;
+            let mut var_info: Map<VarId, (DType, u8)> = Map::default();
             // Section params in IR order: this section kernel's runtime args.
             let section_params: Vec<OpId> =
                 data.ops.iter().copied().filter(|op| matches!(kernel.ops[*op].op, Op::Param { .. })).collect();
@@ -1284,26 +1290,55 @@ impl Compiler {
                     }),
                 }
             };
-            // Bind a fresh (or freed) scalar register to a value.
-            let def_var = |vars: &mut Map<OpId, VarId>, free_vars: &mut Vec<VarId>, next_var: &mut u32, id: OpId| -> VarId {
-                let v = free_vars.pop().unwrap_or_else(|| {
-                    let v = VarId(*next_var);
-                    *next_var += 1;
-                    v
-                });
+            // Bind a scalar register to a value, reusing a freed slot
+            // only on dtype match at same-or-outer level (PTX rule:
+            // inner-loop temps must not leak outward-allocated names
+            // that render still considers live). Records (dtype, def
+            // level) for the use-side gate below.
+            let def_var = |vars: &mut Map<OpId, VarId>,
+                           free_vars: &mut Vec<(VarId, DType, u8)>,
+                           next_var: &mut u32,
+                           var_info: &mut Map<VarId, (DType, u8)>,
+                           kernel: &Kernel,
+                           level: u8,
+                           id: OpId|
+             -> VarId {
+                let dtype = kernel.dtype(id);
+                let v = free_vars
+                    .iter()
+                    .position(|(_, dt, lv)| *dt == dtype && level <= *lv)
+                    .map(|i| free_vars.swap_remove(i).0)
+                    .unwrap_or_else(|| {
+                        let v = VarId(*next_var);
+                        *next_var += 1;
+                        v
+                    });
                 vars.insert(id, v);
+                var_info.insert(v, (dtype, level));
                 v
             };
-            // Consume one use of a scalar value, freeing its register at zero.
+            // Consume one use of a scalar value, freeing its register at
+            // zero. Only same-level uses tick the count (PTX rule):
+            // deeper uses repeat across trips and must not consume the
+            // value out from under later trips.
             let use_var = |vars: &Map<OpId, VarId>,
                            remaining: &mut Map<OpId, u32>,
-                           free_vars: &mut Vec<VarId>,
+                           free_vars: &mut Vec<(VarId, DType, u8)>,
+                           var_info: &Map<VarId, (DType, u8)>,
+                           level: u8,
                            id: OpId|
              -> Result<VarId, BackendError> {
                 let &v = vars.get(&id).ok_or_else(|| BackendError {
                     status: ErrorStatus::KernelCompilation,
                     context: format!("tenstorrent2: scalar op {id} has no register").into(),
                 })?;
+                let &(dtype, def_level) = var_info.get(&v).ok_or_else(|| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: scalar op {id} has no level info").into(),
+                })?;
+                if level != def_level {
+                    return Ok(v);
+                }
                 let left = remaining.get_mut(&id).ok_or_else(|| BackendError {
                     status: ErrorStatus::KernelCompilation,
                     context: format!("tenstorrent2: scalar op {id} has no use count").into(),
@@ -1316,7 +1351,7 @@ impl Compiler {
                 }
                 *left -= 1;
                 if *left == 0 {
-                    free_vars.push(v);
+                    free_vars.push((v, dtype, def_level));
                 }
                 Ok(v)
             };
@@ -1400,12 +1435,12 @@ impl Compiler {
                 }
                 match &kernel.ops[id].op {
                     Op::Const(c) => {
-                        let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                        let z = def_var(&mut vars, &mut free_vars, &mut next_var, &mut var_info, kernel, loop_level, id);
                         ops.push(TTOp::Const { z, value: c.clone() });
                     }
                     Op::Param { dtype, kind, .. } => match kind {
                         ParamKind::Variable => {
-                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, &mut var_info, kernel, loop_level, id);
                             let ordinal =
                                 param_ordinal_of.get(&id).copied().ok_or_else(|| BackendError {
                                     status: ErrorStatus::KernelCompilation,
@@ -1477,7 +1512,7 @@ impl Compiler {
                             continue;
                         }
                         let slot = def_tile(&mut tiles, &mut free_tiles, &mut next_tile, id)?;
-                        let index = use_var(&vars, &mut remaining, &mut free_vars, *index)?;
+                        let index = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *index)?;
                         ops.push(TTOp::TileCopy { slot, cb, index });
                     }
                     Op::Store { dst, src, index, layout } => {
@@ -1523,7 +1558,7 @@ impl Compiler {
                                 })
                             };
                             let elem_size = dtype.bit_size() as u32 / 8;
-                            let index = use_var(&vars, &mut remaining, &mut free_vars, ld_idx)?;
+                            let index = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, ld_idx)?;
                             ops.push(TTOp::ReadTile {
                                 ordinal: param_ordinal_of[&ld_src],
                                 dtype,
@@ -1564,7 +1599,7 @@ impl Compiler {
                                 })
                             };
                             let elem_size = dtype.bit_size() as u32 / 8;
-                            let index = use_var(&vars, &mut remaining, &mut free_vars, *index)?;
+                            let index = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *index)?;
                             ops.push(TTOp::WriteTile {
                                 cb,
                                 ordinal: param_ordinal_of[dst],
@@ -1614,8 +1649,8 @@ impl Compiler {
                             tiles.insert(id, slot);
                             ops.push(TTOp::TileCast { slot, in_dtype, out_dtype: *dtype });
                         } else {
-                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
-                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x)?;
+                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, &mut var_info, kernel, loop_level, id);
+                            let x = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *x)?;
                             ops.push(TTOp::Cast { z, dtype: *dtype, x });
                         }
                     }
@@ -1642,16 +1677,16 @@ impl Compiler {
                             tiles.insert(id, slot);
                             ops.push(TTOp::TileUnary { slot, uop: *uop });
                         } else {
-                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
-                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x)?;
+                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, &mut var_info, kernel, loop_level, id);
+                            let x = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *x)?;
                             ops.push(TTOp::Unary { z, dtype: data.dtypes[&id].0, x, uop: *uop });
                         }
                     }
                     Op::Binary { x, y, bop } => {
                         if !matches!(data.dtypes[&id].1, MemLayout::Tile { .. }) {
-                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
-                            let x = use_var(&vars, &mut remaining, &mut free_vars, *x)?;
-                            let y = use_var(&vars, &mut remaining, &mut free_vars, *y)?;
+                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, &mut var_info, kernel, loop_level, id);
+                            let x = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *x)?;
+                            let y = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *y)?;
                             ops.push(TTOp::Binary { z, dtype: data.dtypes[&id].0, x, y, bop: *bop });
                             continue;
                         }
@@ -1827,10 +1862,10 @@ impl Compiler {
                                 context: format!("tenstorrent2 tiled mad, op {id}").into(),
                             });
                         }
-                        let v = def_var(&mut vars, &mut free_vars, &mut next_var, id);
-                        let x = use_var(&vars, &mut remaining, &mut free_vars, *x)?;
-                        let y = use_var(&vars, &mut remaining, &mut free_vars, *y)?;
-                        let z = use_var(&vars, &mut remaining, &mut free_vars, *z)?;
+                        let v = def_var(&mut vars, &mut free_vars, &mut next_var, &mut var_info, kernel, loop_level, id);
+                        let x = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *x)?;
+                        let y = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *y)?;
+                        let z = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *z)?;
                         ops.push(TTOp::Mad { z: v, dtype: data.dtypes[&id].0, x, y, w: z });
                     }
                     Op::Stack { .. } => {
@@ -1847,7 +1882,7 @@ impl Compiler {
                     }
                     Op::Range { axis, kind } => match kind {
                         RangeKind::Group(_) => {
-                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                            let z = def_var(&mut vars, &mut free_vars, &mut next_var, &mut var_info, kernel, loop_level, id);
                             let arg = section_params.len() as u32 + axis;
                             match axis {
                                 0 => ops.push(TTOp::TensixGridX { z, dtype: data.dtypes[&id].0, arg }),
@@ -1879,7 +1914,7 @@ impl Compiler {
                         // live for the whole loop body (the header reads
                         // it every trip), so freeing it here would let a
                         // later def reuse its register while live.
-                        let counter = def_var(&mut vars, &mut free_vars, &mut next_var, id);
+                        let counter = def_var(&mut vars, &mut free_vars, &mut next_var, &mut var_info, kernel, loop_level, id);
                         // The loop header re-reads the counter every trip
                         // (compare + increment in the rendered `for`), but
                         // those uses aren't in `rcs`. Saturate the count so
@@ -1906,10 +1941,16 @@ impl Compiler {
                             None => None,
                         };
                         ops.push(TTOp::Loop { len: bound, counter, dtype: IDX_T, trip });
+                        // Loop body nests one level deeper (PTX rule):
+                        // inner uses must not consume outer temps.
+                        loop_level += 1;
                     }
-                    Op::EndLoop => ops.push(TTOp::EndLoop),
+                    Op::EndLoop => {
+                        loop_level -= 1;
+                        ops.push(TTOp::EndLoop);
+                    }
                     Op::If { condition } => {
-                        let cond = use_var(&vars, &mut remaining, &mut free_vars, *condition)?;
+                        let cond = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *condition)?;
                         ops.push(TTOp::If { cond });
                     }
                     Op::EndIf => ops.push(TTOp::EndIf),

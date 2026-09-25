@@ -170,7 +170,7 @@ Every op has two paths, chosen per op by operands. **Eager:** `Runtime::{pad_zer
 ## Interaction Rules
 
 - **ALWAYS ASK BEFORE ADDING ANY FUNCTION OR CHANGING A SIGNATURE** — including private/`pub(crate)` helpers and backend free functions. Signature changes (params, return type, generics, `Result`) are design changes too. Don't "just refactor" to thread a capability through; if an edit needs a new helper, ask whether/where to add it or compute differently.
-- If a message contains `?`, **answer and stop** — no file edits.
+- If a message asks anything (contains `?` or is interrogative in plain words — "are you capable", "do you see", "isn't it", "what do you think", "why"), **answer and stop** — no file edits, no writes, no launches, no state-changing commands of any kind. Reads (read/grep/glob, listings) are allowed only to ground the answer. The `?` character is sufficient but not necessary: interrogative intent alone triggers this rule.
 - **Before accessing an external resource** (repo, docs, download, clone), ASK how to get it — never assume a source or fetch on your own.
 - **Follow the literal ask exactly — quantity included.** "A test" = ONE test. Extras (more tests, renames, refactors, extra fixes) are unrequested work.
 - **Never implement beyond the literal ask.** If the change requires fixing other code (e.g. a test exposes a library bug), STOP and ask before writing any fix.

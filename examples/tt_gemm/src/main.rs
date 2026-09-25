@@ -8,6 +8,10 @@
 //! `KT_TILES` K-tiles per output through `matmul_tile` accumulation under
 //! the 16-bit DST path (all-BF16, no F32 storage anywhere).
 //!
+//! Row-stationary reuse (v2): each A tile is pushed once per (mt, kt)
+//! and shared across the whole output row (`NT_PER_CORE` matmuls, one
+//! live acc cone each) instead of re-streamed per output tile.
+//!
 //! Inputs are uniform rand in a small range; correctness is checked against
 //! a reference matmul on CUDA (C when CUDA is absent). The best of
 //! `TIMED_ITERS` launches sets the reported TFLOPS.
@@ -73,15 +77,16 @@ fn main() -> Result<(), ZyxError> {
     let gx = kernel.group_range(0, rows);
     let gy = kernel.group_range(1, cols);
 
-    // Reader: A tile (mt,kt) at mt*Kt+kt, B tile (kt,nt) at kt*Nt+nt.
+    // Reader: per (mt, kt) push one A tile, then the B row-block.
+    // A tile (mt,kt) at mt*Kt+kt, B tile (kt,nt) at kt*Nt+nt.
     kernel.loop_over(MT_PER_CORE, |kernel, mti| {
-        kernel.loop_over(NT_PER_CORE, |kernel, nti| {
-            kernel.loop_over(KT_TILES, |kernel, kti| {
-                let mt_idx = kernel.mad(gx, MT_PER_CORE, mti);
-                let at = kernel.mad(mt_idx, KT_TILES, kti);
-                let abase = kernel.mad(at, TILE_ELEMS, 0);
-                let ta = kernel.load_global_tile(a, abase);
-                kernel.store_circular(ca, ta, 0);
+        kernel.loop_over(KT_TILES, |kernel, kti| {
+            let mt_idx = kernel.mad(gx, MT_PER_CORE, mti);
+            let at = kernel.mad(mt_idx, KT_TILES, kti);
+            let abase = kernel.mad(at, TILE_ELEMS, 0);
+            let ta = kernel.load_global_tile(a, abase);
+            kernel.store_circular(ca, ta, 0);
+            kernel.loop_over(NT_PER_CORE, |kernel, nti| {
                 let nt_idx = kernel.mad(gy, NT_PER_CORE, nti);
                 let bt = kernel.mad(kti, nt, nt_idx);
                 let bbase = kernel.mad(bt, TILE_ELEMS, 0);
@@ -91,20 +96,30 @@ fn main() -> Result<(), ZyxError> {
         });
     });
     kernel.barrier();
-    // Compute: one acc cone per output tile, Kt accumulation steps.
+    // Compute: one acc cone per output column of the row-block; a single
+    // shared A-load feeds all NT_PER_CORE matmuls per K step (row-stationary
+    // reuse: pop deferred past the 4 uses by construction).
+    debug_assert_eq!(NT_PER_CORE, 4, "tt_gemm: acc array sized for NT_PER_CORE == 4");
     kernel.loop_over(MT_PER_CORE, |kernel, _mti| {
-        kernel.loop_over(NT_PER_CORE, |kernel, _nti| {
-            let acc = kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS);
-            kernel.loop_over(KT_TILES, |kernel, _kti| {
-                let va = kernel.load_circular(ca, 0);
+        let accs = [
+            kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+            kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+            kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+            kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+        ];
+        kernel.loop_over(KT_TILES, |kernel, _kti| {
+            let va = kernel.load_circular(ca, 0);
+            for acc in accs {
                 let vb = kernel.load_circular(cb, 0);
                 let av = kernel.load_register_tile(acc, 0);
                 let f = kernel.matmul_tile(va, vb, av);
                 kernel.store_register_tile(acc, f, 0);
-            });
+            }
+        });
+        for acc in accs {
             let f = kernel.load_register_tile(acc, 0);
             kernel.store_circular(cout, f, 0);
-        });
+        }
     });
     kernel.barrier();
     // Writer: output tile (mt,nt) at mt*Nt+nt, row-major.
