@@ -1304,9 +1304,8 @@ impl Compiler {
                            id: OpId|
              -> VarId {
                 let dtype = kernel.dtype(id);
-                let v = free_vars
-                    .iter()
-                    .position(|(_, dt, lv)| *dt == dtype && level <= *lv)
+                let pos = free_vars.iter().position(|(_, dt, lv)| *dt == dtype && level <= *lv);
+                let v = pos
                     .map(|i| free_vars.swap_remove(i).0)
                     .unwrap_or_else(|| {
                         let v = VarId(*next_var);
@@ -1914,7 +1913,16 @@ impl Compiler {
                         // live for the whole loop body (the header reads
                         // it every trip), so freeing it here would let a
                         // later def reuse its register while live.
-                        let counter = def_var(&mut vars, &mut free_vars, &mut next_var, &mut var_info, kernel, loop_level, id);
+                        //
+                        // Counters always take fresh VarIds (never
+                        // recycled): render re-declares the counter
+                        // (`for (uint32_t rN ...)`), so a recycled name
+                        // re-declares and trips the assert below. Only
+                        // consecutive loop defs dodged this by luck.
+                        let counter = VarId(next_var);
+                        next_var += 1;
+                        vars.insert(id, counter);
+                        var_info.insert(counter, (IDX_T, loop_level));
                         // The loop header re-reads the counter every trip
                         // (compare + increment in the rendered `for`), but
                         // those uses aren't in `rcs`. Saturate the count so
