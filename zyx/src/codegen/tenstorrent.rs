@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-//! TTIR — Tenstorrent physical IR (see `TTIR_DESIGN.md`).
+//! TTIR — Tenstorrent physical IR.
 //!
 //! One program = one ordered `Vec<TTOp>` covering all three RISC-V kernel
 //! sources, split at render time at the `EndReader`/`EndCompute`/`EndWriter`
@@ -24,29 +24,40 @@
 //! rebuild-don't-splice, O(n), no hidden state, no global rewriting, no
 //! prepass-like coupling into conversion. Passes see plain op streams and
 //! may read (never mutate) shared tables (CB formats, param ordinals).
+//!
+//! Single-pass rule (Wirth-style): each pass walks the input vector
+//! exactly ONCE, front to back, emitting the replacement vector as it
+//! goes. No second scans, no fixpoints, no cross-stream backpatching.
+//! A pass that needs non-local context (loop-trip products, CB depths)
+//! takes it from the shared tables or a bounded local window — never
+//! from re-walking the stream. That's what keeps TTIR simple: every
+//! pass is one linear transducer, and the pipeline is their composition.
 //! The current fixed order:
 //!
 //! 1. `lock_dst` — DST lock cones around pack ops.
 //! 2. `fill_out_cbs` — output CB packing (`PackTile`/`PackReconfig`).
 //! 3. `init_math` — hoists/dedups per-unit init config.
 //! 4. `reconfig_pack` — packer format reconfigs.
-//! 5. `sync_cbs` — CB reserve/push/wait/pop accounting (must see the
-//!    FINAL traffic shape; batching changes counts, so any pass that
-//!    alters traffic must run BEFORE this).
-//! 6. `hoist_dedup_inits` — hoist init/reconfig effect ops out of
+//! 5. `sync_cbs` — CB reserve/push/wait accounting; compute reads get
+//!    waits only, no pops (must see the FINAL traffic shape; batching
+//!    changes counts, so any pass that alters traffic must run BEFORE
+//!    this).
+//! 6. `dedup_waits` — drop same-group repeat waits (shared tiles).
+//! 7. `place_pops` — pop after last static use (FIFO order assumed).
+//! 8. `hoist_dedup_inits` — hoist init/reconfig effect ops out of
 //!    constant-trip loops, dedup adjacent same-config.
-//! 7. `noc_movement` — NOC reads/writes for Global params.
-//! 8. `hoist_writer_accessors` — writer-section accessor hoist.
-//! 9. `batch_cbs` — hoists per-tile sync groups (reader reserve/push,
+//! 9. `noc_movement` — NOC reads/writes for Global params.
+//! 10. `hoist_writer_accessors` — writer-section accessor hoist.
+//! 11. `batch_cbs` — hoists per-tile sync groups (reader reserve/push,
 //!    writer wait/pop) out of innermost constant-trip loops: one
 //!    multi-tile `ReserveBack(n)`/`PushBack(n)` (or `WaitFront(n)`/
 //!    `PopFront(n)`) around the loop, per-trip transfer writes slot
 //!    `counter` via `AsyncRead/Write { off: Some(counter) }`, and a
 //!    single barrier covers the whole block. Traffic totals are
 //!    unchanged, so the sync accounting that ran before stays valid.
-//! 10. `tile_regs` — DST acquire/commit/ release accounting.
-//! 11. `verify` — structural checks on the fully-physical stream.
-//! 12. `render` — table walk producing the three C++ sources.
+//! 12. `tile_regs` — DST acquire/commit/ release accounting.
+//! 13. `verify` — structural checks on the fully-physical stream.
+//! 14. `render` — table walk producing the three C++ sources.
 //!
 //! Adding a transformation = adding a pass method in the order above.
 //! NEVER add another prepass; NEVER bury a transformation inside
@@ -394,6 +405,20 @@ pub enum AsmOperand {
     Var(VarId),
 }
 
+/// CB-slot sharing group: which dynamic tile a wait/use refers to.
+/// Identity is the source `Op::Load` op (one load op = one logical
+/// tile acquisition; compute-side load indices are fresh consts and
+/// carry no identity). Same load feeding several matmuls straight-line
+/// = same tile (dedup never crosses loop/branch markers, so per-trip
+/// tiles stay per-trip). `None` (opaque) never merges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitGroup {
+    /// Left input of a `TileMatmul` (its `x_load`).
+    MatA(OpId),
+    /// Right input of a `TileMatmul` (its `y_load`).
+    MatB(OpId),
+}
+
 /// One physical instruction. Each variant is one emitted line (or, after
 /// decomposition, one instruction) and carries a static signature (CB
 /// traffic, DST lock effects, executing thread) used by verify.
@@ -584,6 +609,10 @@ pub enum TTOp {
         cb: CBId,
         /// Slots to wait for.
         m: u32,
+        /// Sharing group this wait covers (`None` = opaque, never
+        /// merged). Set by `sync_cbs` from the consumer op; read by
+        /// the wait-dedup pass. Ignored by render/verify/batching.
+        grp: Option<WaitGroup>,
     },
     /// `cb.pop_front(n)`: release n consumed slots.
     PopFront {
@@ -883,6 +912,11 @@ pub enum TTOp {
         cb_a: CBId,
         /// Right input circular buffer.
         cb_b: CBId,
+        /// Left source `Op::Load` op: sharing-group identity (same
+        /// load feeding several matmuls = one tile, see `WaitGroup`).
+        x_load: OpId,
+        /// Right source `Op::Load` op: sharing-group identity.
+        y_load: OpId,
         /// First-packed compute CB (init pass placeholder: `None` from
         /// lowering, filled when the init pass places `MatmulInit`).
         out: Option<CBId>,
@@ -1015,6 +1049,11 @@ struct Compiler {
     /// Startup-triple out: first compute-section `Op::Store` (Tile
     /// layout) targeting a CB.
     startup_store: Option<CBId>,
+    /// Compute-side use counts per `(CB, source-load)` group: how many
+    /// `TileMatmul` inputs consume the tile. Bumped at emission; read
+    /// by the pop-placement pass for last-use pops. All other compute
+    /// reads pop strictly after their op.
+    use_counts: Map<(CBId, OpId), u32>,
 }
 
 impl Compiler {
@@ -1113,6 +1152,7 @@ impl Compiler {
             });
         }
         let mut ops = vec![TTOp::DstMode { bf16: dst_bf16 }];
+        let mut use_counts: Map<(CBId, OpId), u32> = Map::default();
         for (cb, &st) in cb_order.iter().enumerate() {
             let Op::Storage { dtype, len, .. } = kernel.ops[st].op else {
                 return Err(BackendError {
@@ -1899,7 +1939,9 @@ impl Compiler {
                         })
                     }
                     Op::ReduceTile { x, scaler, acc, rop, kind } => {
-                        let Op::Load { src: lx, layout: MemLayout::Tile { x: wx, y: hx, .. }, .. } = kernel.ops[*x].op else {
+                        let Op::Load { src: lx, layout: MemLayout::Tile { x: wx, y: hx, .. }, .. } =
+                            kernel.ops[*x].op
+                        else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
                                 context: format!("tenstorrent2: reduce side op {x} is no CB tile load").into(),
@@ -1929,7 +1971,8 @@ impl Compiler {
                                 context: format!("tenstorrent2: reduce acc op {acc} does not thread a Register acc").into(),
                             });
                         }
-                        let Op::Load { src: ls, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*scaler].op else {
+                        let Op::Load { src: ls, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*scaler].op
+                        else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
                                 context: format!("tenstorrent2: reduce scaler op {scaler} is no scaler tile load").into(),
@@ -1988,7 +2031,9 @@ impl Compiler {
                             })
                         };
                         tiles.insert(id, tile);
-                        ops.push(TTOp::TileMatmul { acc: tile, cb_a, cb_b, out: None });
+                        *use_counts.entry((cb_a, *x)).or_default() += 1;
+                        *use_counts.entry((cb_b, *y)).or_default() += 1;
+                        ops.push(TTOp::TileMatmul { acc: tile, cb_a, cb_b, x_load: *x, y_load: *y, out: None });
                     }
                     Op::TransposeTile { x } => {
                         let Op::Load { src: lx, layout: MemLayout::Tile { x: wx, y: hx, .. }, .. } = kernel.ops[*x].op else {
@@ -2068,7 +2113,7 @@ impl Compiler {
                 }
             }
         }
-        Ok(Self { ops, startup_loads, startup_store })
+        Ok(Self { ops, startup_loads, startup_store, use_counts })
     }
 
     /// Replicate_ops_per_section: values consumed in multiple sections are
@@ -2093,14 +2138,15 @@ impl Compiler {
     /// - reader `ReadTile`: `ReserveBack` before, `PushBack` after;
     /// - writer `WriteTile`: `WaitFront` before, `PopFront` after;
     /// - compute `TileCopy`/`TileTranspose` (event-anchored): `WaitFront`
-    ///   BEFORE the cone's `MathLock` (back-scan past inits), `PopFront`
-    ///   after the op;
+    ///   BEFORE the cone's `MathLock` (back-scan past inits). No pop:
+    ///   pops are placed later by `place_pops` (last use, FIFO order).
     /// - compute `TilePack` (event-anchored): `ReserveBack` BEFORE the
     ///   cone's `MathUnlock` (back-scan past pack lock/reconfig),
     ///   `PushBack` after the op;
     /// - fused `TileMatmul`/`TileBcastBinary`/`TileReduce` (op-internal
-    ///   waits): `WaitFront`s after the lock at the current position,
-    ///   `PopFront`s after the op.
+    ///   waits): `WaitFront`s after the lock at the current position.
+    ///   No pops: placed later by `place_pops`. `WaitFront` carries the
+    ///   consumer's sharing group for the wait-dedup pass.
     ///
     /// The back-scan passes inits and the cone's own lock ops; anything
     /// else (a prior traffic op, a loop boundary, a barrier) means this
@@ -2174,7 +2220,7 @@ impl Compiler {
                     }
                     TTOp::WriteTile { cb, .. } => {
                         let cb = *cb;
-                        next.push(TTOp::WaitFront { cb, m: 1 });
+                        next.push(TTOp::WaitFront { cb, m: 1, grp: None });
                         next.push(op);
                         next.push(TTOp::PopFront { cb, n: 1 });
                     }
@@ -2183,12 +2229,17 @@ impl Compiler {
                 continue;
             }
             match &op {
-                TTOp::TileCopy { cb, .. } | TTOp::TileTranspose { cb, .. } => {
+                TTOp::TileCopy { cb, .. } => {
                     let cb = *cb;
                     let at = before_lock(&next, TTOp::MathLock)?;
-                    next.insert(at, TTOp::WaitFront { cb, m: 1 });
+                    next.insert(at, TTOp::WaitFront { cb, m: 1, grp: None });
                     next.push(op);
-                    next.push(TTOp::PopFront { cb, n: 1 });
+                }
+                TTOp::TileTranspose { cb, .. } => {
+                    let cb = *cb;
+                    let at = before_lock(&next, TTOp::MathLock)?;
+                    next.insert(at, TTOp::WaitFront { cb, m: 1, grp: None });
+                    next.push(op);
                 }
                 TTOp::TilePack { cb, .. } => {
                     let cb = *cb;
@@ -2197,24 +2248,176 @@ impl Compiler {
                     next.push(op);
                     next.push(TTOp::PushBack { cb, n: 1 });
                 }
-                TTOp::TileMatmul { cb_a, cb_b, .. } | TTOp::TileBcastBinary { cb_a, cb_b, .. } => {
+                TTOp::TileMatmul { cb_a, cb_b, x_load, y_load, .. } => {
                     let (cb_a, cb_b) = (*cb_a, *cb_b);
-                    next.push(TTOp::WaitFront { cb: cb_a, m: 1 });
-                    next.push(TTOp::WaitFront { cb: cb_b, m: 1 });
+                    let (x_load, y_load) = (*x_load, *y_load);
+                    next.push(TTOp::WaitFront { cb: cb_a, m: 1, grp: Some(WaitGroup::MatA(x_load)) });
+                    next.push(TTOp::WaitFront { cb: cb_b, m: 1, grp: Some(WaitGroup::MatB(y_load)) });
                     next.push(op);
-                    next.push(TTOp::PopFront { cb: cb_a, n: 1 });
-                    next.push(TTOp::PopFront { cb: cb_b, n: 1 });
+                }
+                TTOp::TileBcastBinary { cb_a, cb_b, .. } => {
+                    let (cb_a, cb_b) = (*cb_a, *cb_b);
+                    next.push(TTOp::WaitFront { cb: cb_a, m: 1, grp: None });
+                    next.push(TTOp::WaitFront { cb: cb_b, m: 1, grp: None });
+                    next.push(op);
                 }
                 TTOp::TileReduce { cb_in, cb_sc, .. } => {
                     let (cb_in, cb_sc) = (*cb_in, *cb_sc);
-                    next.push(TTOp::WaitFront { cb: cb_in, m: 1 });
-                    next.push(TTOp::WaitFront { cb: cb_sc, m: 1 });
+                    next.push(TTOp::WaitFront { cb: cb_in, m: 1, grp: None });
+                    next.push(TTOp::WaitFront { cb: cb_sc, m: 1, grp: None });
                     next.push(op);
-                    next.push(TTOp::PopFront { cb: cb_in, n: 1 });
-                    next.push(TTOp::PopFront { cb: cb_sc, n: 1 });
                 }
                 _ => next.push(op),
             }
+        }
+        self.ops = next;
+        Ok(())
+    }
+
+    /// Wait dedup: drop a `WaitFront(cb)` whose tile is already waited.
+    /// A wait merges into the nearest preceding wait on the same CB iff
+    /// both carry the same sharing group and no CB-affecting event
+    /// (`PopFront`/`PushBack`/`ReserveBack`) sits between. Opaque waits
+    /// (`grp: None`) never merge. Loop/branch/section markers reset all
+    /// chains (per-trip tiles stay per-trip). Single scan, straight-line
+    /// only.
+    fn dedup_waits(&mut self) {
+        let old = std::mem::take(&mut self.ops);
+        let mut next = Vec::with_capacity(old.len());
+        let mut last: Map<CBId, Option<WaitGroup>> = Map::default();
+        for op in old {
+            match &op {
+                TTOp::EndReader | TTOp::EndCompute | TTOp::EndWriter => {
+                    last.clear();
+                    next.push(op);
+                }
+                TTOp::Loop { .. } | TTOp::EndLoop | TTOp::If { .. } | TTOp::EndIf => {
+                    last.clear();
+                    next.push(op);
+                }
+                TTOp::PopFront { cb, .. } | TTOp::PushBack { cb, .. } | TTOp::ReserveBack { cb, .. } => {
+                    last.insert(*cb, None);
+                    next.push(op);
+                }
+                TTOp::WaitFront { cb, m: 1, grp: Some(g) } => {
+                    if last.get(cb) == Some(&Some(*g)) {
+                        continue;
+                    }
+                    last.insert(*cb, Some(*g));
+                    next.push(op);
+                }
+                TTOp::WaitFront { cb, .. } => {
+                    last.insert(*cb, None);
+                    next.push(op);
+                }
+                _ => next.push(op),
+            }
+        }
+        self.ops = next;
+    }
+
+    /// Pop placement: pop every compute-waited tile exactly once, after
+    /// its last static use, in FIFO (push) order. Use totals come from
+    /// the conversion table (`(CB, index-op) → uses`); groups absent
+    /// there pop strictly after their op (today's shape). A pop whose
+    /// tile is not the queue head is a loud compile error (non-FIFO
+    /// consumption). Pushes are `ReadTile`s (grouped by index op);
+    /// packs and writer pairs pass through untouched. Loops re-execute
+    /// placed pops per trip, so trip handling needs no special case.
+    /// Single scan.
+    fn place_pops(&mut self) -> Result<(), BackendError> {
+        let old = std::mem::take(&mut self.ops);
+        let mut next = Vec::with_capacity(old.len() + old.len() / 4);
+        let mut section = 0u8;
+        // Remaining static uses per (CB, source-load) group.
+        let mut remaining: Map<(CBId, OpId), u32> = Map::default();
+        for op in old {
+            match &op {
+                TTOp::EndReader | TTOp::EndCompute => {
+                    section += 1;
+                    next.push(op);
+                    continue;
+                }
+                TTOp::EndWriter => {
+                    next.push(op);
+                    continue;
+                }
+                _ => {}
+            }
+            if section != 1 {
+                next.push(op);
+                continue;
+            }
+            // Countdown sides: pop at last use. Strict sides: pop
+            // immediately after the op (today's shape).
+            let counted: [(CBId, OpId); 2];
+            let n_counted: usize;
+            let strict: [Option<CBId>; 2];
+            match &op {
+                // One copy per load: the CB tile is consumed exactly
+                // once, here (a fan-out DST value shares the slot, not
+                // the CB tile).
+                TTOp::TileCopy { cb, .. } => {
+                    counted = [(CBId(u32::MAX), OpId::NULL); 2];
+                    n_counted = 0;
+                    strict = [Some(*cb), None];
+                }
+                TTOp::TileMatmul { cb_a, cb_b, x_load, y_load, .. } => {
+                    counted = [(*cb_a, *x_load), (*cb_b, *y_load)];
+                    n_counted = 2;
+                    strict = [None, None];
+                }
+                TTOp::TileReduce { cb_in, cb_sc, .. } => {
+                    counted = [(CBId(u32::MAX), OpId::NULL); 2];
+                    n_counted = 0;
+                    strict = [Some(*cb_in), Some(*cb_sc)];
+                }
+                TTOp::TileTranspose { cb, .. } => {
+                    counted = [(CBId(u32::MAX), OpId::NULL); 2];
+                    n_counted = 0;
+                    strict = [Some(*cb), None];
+                }
+                TTOp::TileBcastBinary { cb_a, cb_b, .. } => {
+                    counted = [(CBId(u32::MAX), OpId::NULL); 2];
+                    n_counted = 0;
+                    strict = [Some(*cb_a), Some(*cb_b)];
+                }
+                _ => {
+                    next.push(op);
+                    continue;
+                }
+            }
+            next.push(op);
+            for (cb, load) in counted.into_iter().take(n_counted) {
+                let Some(&total) = self.use_counts.get(&(cb, load)) else {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: place_pops: matmul side ({cb}, {load:?}) has no use count")
+                            .into(),
+                    });
+                };
+                let left = remaining.entry((cb, load)).or_insert(total);
+                if *left == 0 {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: place_pops: use beyond counted total on CB{cb}").into(),
+                    });
+                }
+                *left -= 1;
+                if *left == 0 {
+                    remaining.remove(&(cb, load));
+                    next.push(TTOp::PopFront { cb, n: 1 });
+                }
+            }
+            for cb in strict.into_iter().flatten() {
+                next.push(TTOp::PopFront { cb, n: 1 });
+            }
+        }
+        if !remaining.is_empty() {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "tenstorrent2: place_pops: partially consumed groups at end of stream".into(),
+            });
         }
         self.ops = next;
         Ok(())
@@ -2606,7 +2809,7 @@ impl Compiler {
             }
             // Loop stack pushes need the counter out of the op.
             match op {
-                TTOp::ReadTile { ordinal, dtype: _, index, cb, bytes, elem_size } => {
+                TTOp::ReadTile { ordinal, dtype: _, index, cb, bytes, elem_size, .. } => {
                     debug_assert_eq!(section, 0, "tenstorrent2: noc_movement: reader transfer outside the reader section");
                     let z = VarId(fresh);
                     fresh += 1;
@@ -2778,7 +2981,7 @@ impl Compiler {
                     for (a, op) in body.iter().enumerate() {
                         let open_cb = match op {
                             TTOp::ReserveBack { cb, n: 1 } if reader => Some(*cb),
-                            TTOp::WaitFront { cb, m: 1 } if !reader => Some(*cb),
+                            TTOp::WaitFront { cb, m: 1, .. } if !reader => Some(*cb),
                             _ => None,
                         };
                         let Some(cb) = open_cb else { continue };
@@ -2871,7 +3074,7 @@ impl Compiler {
                         if reader {
                             next.push(TTOp::ReserveBack { cb, n: *n });
                         } else {
-                            next.push(TTOp::WaitFront { cb, m: *n });
+                            next.push(TTOp::WaitFront { cb, m: *n, grp: None });
                         }
                     }
                     next.push(old[i].clone());
@@ -3555,7 +3758,7 @@ impl Compiler {
                         })?
                         .0 += *n * mult;
                 }
-                TTOp::WaitFront { cb, m } => {
+                TTOp::WaitFront { cb, m, .. } => {
                     if sym_loops != 0 {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
@@ -4173,7 +4376,7 @@ impl Compiler {
                 }
                 TTOp::ReserveBack { cb, n } => writeln!(out, "{ind}cb{cb}.reserve_back({n});")?,
                 TTOp::PushBack { cb, n } => writeln!(out, "{ind}cb{cb}.push_back({n});")?,
-                TTOp::WaitFront { cb, m } => writeln!(out, "{ind}cb{cb}.wait_front({m});")?,
+                TTOp::WaitFront { cb, m, .. } => writeln!(out, "{ind}cb{cb}.wait_front({m});")?,
                 TTOp::PopFront { cb, n } => writeln!(out, "{ind}cb{cb}.pop_front({n});")?,
                 TTOp::AsyncRead { addr, dst_cb, bytes, off } => {
                     let an = noc_names
@@ -4505,6 +4708,8 @@ impl Kernel {
         c.init_math()?;
         c.reconfig_pack();
         c.sync_cbs()?;
+        c.dedup_waits();
+        c.place_pops()?;
         c.close_reduce_cones()?;
         c.hoist_dedup_inits()?;
         c.noc_movement();
