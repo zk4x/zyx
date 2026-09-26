@@ -18,7 +18,7 @@ fn sum_2() -> Result<(), ZyxError> {
     let x2 = x.sum_all();
     assert_eq!(x0, [8, 10, 18]);
     assert_eq!(x1, [15, 8, 13]);
-    assert_eq!(x2, [36]);
+    assert_eq!(x2, 36);
     Ok(())
 }
 
@@ -43,7 +43,7 @@ fn sum_4() -> Result<(), ZyxError> {
 fn sum_5() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
     x = x.sum_all();
-    debug_assert_eq!(x, [13i32]);
+    debug_assert_eq!(x, 13i32);
     Ok(())
 }
 
@@ -52,7 +52,7 @@ fn sum_6() -> Result<(), ZyxError> {
     let x = Tensor::from([[4i32, 1, 3], [5, 2, 3], [6, 5, 7]]);
     let x = x.sum([0])?;
     let x = x.sum([0])?;
-    debug_assert_eq!(x, [36i32]);
+    debug_assert_eq!(x, 36i32);
     Ok(())
 }
 
@@ -64,7 +64,7 @@ fn max_1() -> Result<(), ZyxError> {
     let x2 = x.max_all();
     assert_eq!(x0, [4, 5, 7]);
     assert_eq!(x1, [6, 5, 7]);
-    assert_eq!(x2, [7]);
+    assert_eq!(x2, 7);
     Ok(())
 }
 

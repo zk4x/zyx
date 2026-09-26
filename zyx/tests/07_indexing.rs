@@ -632,7 +632,7 @@ fn argmax_comprehensive() -> Result<(), ZyxError> {
     let x1 = Tensor::from([1, 3, 2, 5]);
     assert_eq!(x1.argmax(), 3); // max is 5 at index 3
     let y = x1.argmax_axis(0)?; // Axis=0
-    assert_eq!(y, [3]); // same for axis=0
+    assert_eq!(y, 3); // same for axis=0
 
     // --- 2D tensor ---
     let x2 = Tensor::from([[1, 3, 2], [4, 6, 5], [7, 9, 8]]);

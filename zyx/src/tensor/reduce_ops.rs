@@ -41,7 +41,11 @@ impl Tensor {
             cur = cur.permute(perm)?;
         }
         for _ in 0..axes.len() {
-            cur = Tensor { id: RT.lock().reduce_last_axis(cur.id, rop)? };
+            // Bind the id in its own statement: the lock guard must be dead
+            // before the assignment below drops the old `cur` (Tensor::drop
+            // takes the lock; a live guard self-deadlocks).
+            let nid = RT.lock().reduce_last_axis(cur.id, rop)?;
+            cur = Tensor { id: nid };
         }
         Ok(cur)
     }

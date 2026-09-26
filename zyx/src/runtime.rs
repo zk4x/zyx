@@ -1509,7 +1509,7 @@ impl Runtime {
                 | TensorData::GraphLeaf { class_id, .. } => class_id,
                 TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
                     Expr::Constant { value } => self.push_const(graph_id, value),
-                    ref e => todo!("promote symbolic scalar tid {x} ({e:?}) into a graph"),
+                    _ => self.replay_symbolic_into_graph(graph_id, x),
                 },
                 ref t => unreachable!("unreachable after promote: {t:?}"),
             };
@@ -1519,7 +1519,7 @@ impl Runtime {
                 | TensorData::GraphLeaf { class_id, .. } => class_id,
                 TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
                     Expr::Constant { value } => self.push_const(graph_id, value),
-                    ref e => todo!("promote symbolic scalar tid {y} ({e:?}) into a graph"),
+                    _ => self.replay_symbolic_into_graph(graph_id, y),
                 },
                 ref t => unreachable!("unreachable after promote: {t:?}"),
             };
@@ -1527,7 +1527,10 @@ impl Runtime {
 
             {
                 let shape_id = result_shape(self, x, y);
-                debug_assert!(!shape_id.is_scalar(), "binary: non-scalar graph operands {x}/{y} have no shape expression");
+                debug_assert!(
+                    rx == 0 && ry == 0 || !shape_id.is_scalar(),
+                    "binary: non-scalar graph operands {x}/{y} have no shape expression"
+                );
 
                 self.graphs[graph_id].ref_count += 1;
                 let dtype = if bop.returns_bool() { DType::Bool } else { self.dtype(x) };

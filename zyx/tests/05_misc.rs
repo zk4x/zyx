@@ -1288,7 +1288,7 @@ fn test_reshape_on_reduce_kernel() {
     let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
     let reshaped = t.reshape([4]).unwrap();
     let reduced = reshaped.sum([0]).unwrap();
-    assert_eq!(reduced.resolve_shape(), [1]);
+    assert_eq!(reduced.resolve_shape(), []);
     assert_eq!(reduced.item::<f32>(), 10.0f32);
 }
 
