@@ -330,6 +330,9 @@ impl Kernel {
                 Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    unreachable!()
+                }
                 Op::Const(x) => {
                     dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                 }
@@ -494,6 +497,9 @@ impl Kernel {
                 Op::BroadcastTile { x, .. } => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return MemLayout::Scalar,
                 Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    todo!()
+                }
             }
         }
         panic!("layout not found for too long time");
@@ -539,6 +545,9 @@ impl Kernel {
                 Op::BroadcastTile { x, .. } => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return IDX_T,
                 Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    todo!()
+                }
             }
         }
         panic!("dtype not found for too long time");

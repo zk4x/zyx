@@ -1313,13 +1313,11 @@ impl Compiler {
              -> VarId {
                 let dtype = kernel.dtype(id);
                 let pos = free_vars.iter().position(|(_, dt, lv)| *dt == dtype && level <= *lv);
-                let v = pos
-                    .map(|i| free_vars.swap_remove(i).0)
-                    .unwrap_or_else(|| {
-                        let v = VarId(*next_var);
-                        *next_var += 1;
-                        v
-                    });
+                let v = pos.map(|i| free_vars.swap_remove(i).0).unwrap_or_else(|| {
+                    let v = VarId(*next_var);
+                    *next_var += 1;
+                    v
+                });
                 vars.insert(id, v);
                 var_info.insert(v, (dtype, level));
                 v
@@ -2158,6 +2156,11 @@ impl Compiler {
                         }
                         ops.push(TTOp::Asm { asm: asm.clone(), ops: resolved });
                     }
+                    Op::After { .. } => todo!(),
+                    Op::ToDevice { .. } => todo!(),
+                    Op::Contiguous { .. } => todo!(),
+                    Op::Kernel { .. } => todo!(),
+                    Op::Custom(_) => todo!(),
                 }
             }
             ops.push(match s {
@@ -2468,8 +2471,7 @@ impl Compiler {
                 let Some(&total) = self.use_counts.get(&(cb, load)) else {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: place_pops: matmul side ({cb}, {load:?}) has no use count")
-                            .into(),
+                        context: format!("tenstorrent2: place_pops: matmul side ({cb}, {load:?}) has no use count").into(),
                     });
                 };
                 let left = remaining.entry((cb, load)).or_insert(total);
@@ -5179,6 +5181,11 @@ impl Kernel {
                     stack.push(x);
                     stack.push(reduce_axis);
                 }
+                Op::After { .. } => todo!(),
+                Op::ToDevice { .. } => todo!(),
+                Op::Contiguous { .. } => todo!(),
+                Op::Kernel { .. } => todo!(),
+                Op::Custom(_) => todo!(),
             }
         }
         if !stack.is_empty() {
@@ -5335,6 +5342,11 @@ impl Kernel {
                         *rcs.entry(condition).or_insert(0) += 1;
                     }
                     Op::Barrier | Op::EndIf | Op::EndLoop => {}
+                    Op::After { .. } => todo!(),
+                    Op::ToDevice { .. } => todo!(),
+                    Op::Contiguous { .. } => todo!(),
+                    Op::Kernel { .. } => todo!(),
+                    Op::Custom(_) => todo!(),
                 }
             }
             op_id = self.next_op(op_id);

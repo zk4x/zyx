@@ -1,7 +1,10 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
+use std::hash::{Hash, Hasher};
+
 use nanoserde::{DeBin, SerBin};
 
+use crate::backend::{Dev, ProgramId};
 use crate::dtype::Constant;
 use crate::kernel::{MemLayout, MemScope};
 use crate::shape::{Dim, UAxis};
@@ -20,7 +23,7 @@ pub enum ParamKind {
     GlobalMut,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, SerBin)]
 pub enum Op {
     // ops that exist in both
     Const(Constant),
@@ -48,6 +51,12 @@ pub enum Op {
         dtype: DType,
         kind: ParamKind,
         shape: OpId,
+        /// Buffer identity for egraph hashconsing (mirrors the former
+        /// `Node::Leaf.cons_id`): two params name the same buffer iff their
+        /// `cons_id`s agree. Kernel passes ignore it (params are bound
+        /// positionally there); it is compared by `Eq` but skipped by `Hash`
+        /// so program caches (`get_hash`) keep sharing across buffers.
+        cons_id: u32,
     },
     Cast {
         x: OpId,
@@ -184,6 +193,347 @@ pub enum Op {
         rop: BOp,
         reduce_axis: OpId,
     },
+    // Graph-only ops (former `Node` variants). They never appear in ordered
+    // kernels: every kernel-side match arms them with `todo!()`.
+    // NOTE: there is no `Assign` variant: graph assigns lower to
+    // `Op::Store` with a null index (both the kernelizer and eager assign
+    // already emit `store(dst, src, OpId::NULL)`).
+    /// Ordering edge: `x` may not run before `dep` completes.
+    After {
+        x: OpId,
+        dep: OpId,
+    },
+    /// Move `x` to `device`. `time` is measured launch timing, ignored by
+    /// `Eq`/`Hash` (mirrors the former `Node::ToDevice`).
+    ToDevice {
+        x: OpId,
+        device: Dev,
+        time: u64,
+    },
+    /// Fusion-break hint: forces `x` to materialize as a separate kernel
+    /// output. The kernelizer never fuses through it.
+    Contiguous {
+        x: OpId,
+    },
+    /// A compiled kernel boundary: `info` is the owning program and measured
+    /// timing. Both `inputs` and `outputs` are `OpId`s of `Stack` ops holding
+    /// the input/output classes — the lists are shared nodes, not per-kernel
+    /// `Box` allocations. `info` is boxed so `Op` keeps its 24-byte budget.
+    /// Timing is ignored by `Eq`/`Hash` (mirrors the former `Node::Kernel`).
+    Kernel {
+        inputs: OpId,
+        outputs: OpId,
+        info: Box<(ProgramId, u64)>,
+    },
+    /// A custom (user-built) kernel boundary, boxed to keep `Op` within
+    /// its 24-byte budget. `outputs` triples are `(class, shape, dtype)`.
+    /// `time` is measured timing, ignored by `Eq`/`Hash` (mirrors the
+    /// former `Node::Custom`, which also never compares equal).
+    Custom(Box<CustomKernel>),
+}
+
+/// Boxed payload of [`Op::Custom`]: a custom kernel boundary's inputs,
+/// output `(class, shape, dtype)` triples, owning program, and measured
+/// timing. Boxed so `Op` keeps its 24-byte budget.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+pub struct CustomKernel {
+    pub inputs: Box<[OpId]>,
+    pub outputs: Box<[(OpId, OpId, DType)]>,
+    pub program_id: ProgramId,
+    pub time: u64,
+}
+
+impl Op {
+    /// Position of the variant in declaration order. Used to keep the manual
+    /// `Ord` identical to the previously derived one (existing variants keep
+    /// declaration order; the graph-only variants are appended last).
+    fn disc(&self) -> u8 {
+        match self {
+            Op::Const(_) => 0,
+            Op::Param { .. } => 1,
+            Op::Cast { .. } => 2,
+            Op::Bitcast { .. } => 3,
+            Op::Unary { .. } => 4,
+            Op::Binary { .. } => 5,
+            Op::Stack { .. } => 6,
+            Op::Storage { .. } => 7,
+            Op::Store { .. } => 8,
+            Op::Load { .. } => 9,
+            Op::Range { .. } => 10,
+            Op::Loop { .. } => 11,
+            Op::EndLoop => 12,
+            Op::If { .. } => 13,
+            Op::EndIf => 14,
+            Op::Mad { .. } => 15,
+            Op::Index { .. } => 16,
+            Op::Barrier => 17,
+            Op::Wmma { .. } => 18,
+            Op::ReduceTile { .. } => 19,
+            Op::MatmulTile { .. } => 20,
+            Op::TransposeTile { .. } => 21,
+            Op::BroadcastTile { .. } => 22,
+            Op::Asm { .. } => 23,
+            Op::Move { .. } => 24,
+            Op::Reduce { .. } => 25,
+            Op::After { .. } => 26,
+            Op::ToDevice { .. } => 27,
+            Op::Contiguous { .. } => 28,
+            Op::Kernel { .. } => 29,
+            Op::Custom(_) => 30,
+        }
+    }
+}
+
+impl PartialEq for Op {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Op::Const(a), Op::Const(b)) => a == b,
+            (
+                Op::Param { dtype: ad, kind: ak, shape: as_, cons_id: ac },
+                Op::Param { dtype: bd, kind: bk, shape: bs, cons_id: bc },
+            ) => ad == bd && ak == bk && as_ == bs && ac == bc,
+            (Op::Cast { x: a, dtype: ad }, Op::Cast { x: b, dtype: bd }) => a == b && ad == bd,
+            (Op::Bitcast { x: a, dtype: ad }, Op::Bitcast { x: b, dtype: bd }) => a == b && ad == bd,
+            (Op::Unary { x: a, uop: au }, Op::Unary { x: b, uop: bu }) => a == b && au == bu,
+            (Op::Binary { x: a, y: ay, bop: ab }, Op::Binary { x: b, y: by, bop: bb }) => a == b && ay == by && ab == bb,
+            (Op::Stack { ops: a }, Op::Stack { ops: b }) => a == b,
+            (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
+                ad == bd && as_ == bs && al == bl
+            }
+            (Op::Store { dst: ad, src: as_, index: ai, layout: al }, Op::Store { dst: bd, src: bs, index: bi, layout: bl }) => {
+                ad == bd && as_ == bs && ai == bi && al == bl
+            }
+            (Op::Load { src: as_, index: ai, layout: al }, Op::Load { src: bs, index: bi, layout: bl }) => {
+                as_ == bs && ai == bi && al == bl
+            }
+            (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => aa == ba && ak == bk,
+            (Op::Loop { len: a }, Op::Loop { len: b }) => a == b,
+            (Op::EndLoop, Op::EndLoop) => true,
+            (Op::If { condition: a }, Op::If { condition: b }) => a == b,
+            (Op::EndIf, Op::EndIf) => true,
+            (Op::Mad { x: a, y: ay, z: az }, Op::Mad { x: b, y: by, z: bz }) => a == b && ay == by && az == bz,
+            (Op::Index { vec: a, idx: ai }, Op::Index { vec: b, idx: bi }) => a == b && ai == bi,
+            (Op::Barrier, Op::Barrier) => true,
+            (
+                Op::Wmma { dims: ad, layout: al, dtype: at, a, b: ab, c: ac },
+                Op::Wmma { dims: bd, layout: bl, dtype: bt, a: ba, b: bb, c: bc },
+            ) => ad == bd && al == bl && at == bt && a == ba && ab == bb && ac == bc,
+            (
+                Op::ReduceTile { x: a, scaler: as_, acc: aa, rop: ar, kind: ak },
+                Op::ReduceTile { x: b, scaler: bs, acc: ba, rop: br, kind: bk },
+            ) => a == b && as_ == bs && aa == ba && ar == br && ak == bk,
+            (Op::MatmulTile { x: a, y: ay, acc: aa }, Op::MatmulTile { x: b, y: by, acc: ba }) => a == b && ay == by && aa == ba,
+            (Op::TransposeTile { x: a }, Op::TransposeTile { x: b }) => a == b,
+            (Op::BroadcastTile { x: a, kind: ak }, Op::BroadcastTile { x: b, kind: bk }) => a == b && ak == bk,
+            (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => aa == ba && ao == bo,
+            (Op::Move { x: a, mop: am }, Op::Move { x: b, mop: bm }) => a == b && am == bm,
+            (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
+                a == b && ar == br && aa == ba
+            }
+            // Graph-only ops mirror the former `Node` equality: `After` never
+            // merges; `time` is ignored on the boundary ops.
+            (Op::After { .. }, Op::After { .. }) => false,
+            (Op::ToDevice { x: a, device: ad, .. }, Op::ToDevice { x: b, device: bd, .. }) => a == b && ad == bd,
+            (Op::Contiguous { x: a }, Op::Contiguous { x: b }) => a == b,
+            (Op::Kernel { inputs: ai, outputs: ao, info: a }, Op::Kernel { inputs: bi, outputs: bo, info: b }) => {
+                ai == bi && ao == bo && a.0 == b.0
+            }
+            (Op::Custom(_), Op::Custom(_)) => false,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Op {}
+
+impl Hash for Op {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.disc().hash(state);
+        match self {
+            Op::Const(c) => c.hash(state),
+            // `cons_id` is skipped: program caches (`get_hash`, incl. the C
+            // backend disk cache) must keep sharing one program across
+            // buffers. `Eq` stays stricter (it compares `cons_id`), which is
+            // contract-legal and gives the egraph its leaf identity.
+            Op::Param { dtype, kind, shape, .. } => {
+                dtype.hash(state);
+                kind.hash(state);
+                shape.hash(state);
+            }
+            Op::Cast { x, dtype } => {
+                x.hash(state);
+                dtype.hash(state);
+            }
+            Op::Bitcast { x, dtype } => {
+                x.hash(state);
+                dtype.hash(state);
+            }
+            Op::Unary { x, uop } => {
+                x.hash(state);
+                uop.hash(state);
+            }
+            Op::Binary { x, y, bop } => {
+                x.hash(state);
+                y.hash(state);
+                bop.hash(state);
+            }
+            Op::Stack { ops } => ops.hash(state),
+            Op::Storage { dtype, scope, len } => {
+                dtype.hash(state);
+                scope.hash(state);
+                len.hash(state);
+            }
+            Op::Store { dst, src, index, layout } => {
+                dst.hash(state);
+                src.hash(state);
+                index.hash(state);
+                layout.hash(state);
+            }
+            Op::Load { src, index, layout } => {
+                src.hash(state);
+                index.hash(state);
+                layout.hash(state);
+            }
+            Op::Range { axis, kind } => {
+                axis.hash(state);
+                kind.hash(state);
+            }
+            Op::Loop { len } => len.hash(state),
+            Op::EndLoop | Op::EndIf | Op::Barrier => {}
+            Op::If { condition } => condition.hash(state),
+            Op::Mad { x, y, z } => {
+                x.hash(state);
+                y.hash(state);
+                z.hash(state);
+            }
+            Op::Index { vec, idx } => {
+                vec.hash(state);
+                idx.hash(state);
+            }
+            Op::Wmma { dims, layout, dtype, a, b, c } => {
+                dims.hash(state);
+                layout.hash(state);
+                dtype.hash(state);
+                a.hash(state);
+                b.hash(state);
+                c.hash(state);
+            }
+            Op::ReduceTile { x, scaler, acc, rop, kind } => {
+                x.hash(state);
+                scaler.hash(state);
+                acc.hash(state);
+                rop.hash(state);
+                kind.hash(state);
+            }
+            Op::MatmulTile { x, y, acc } => {
+                x.hash(state);
+                y.hash(state);
+                acc.hash(state);
+            }
+            Op::TransposeTile { x } => x.hash(state),
+            Op::BroadcastTile { x, kind } => {
+                x.hash(state);
+                kind.hash(state);
+            }
+            Op::Asm { asm, ops } => {
+                asm.hash(state);
+                ops.hash(state);
+            }
+            Op::Move { x, mop } => {
+                x.hash(state);
+                mop.hash(state);
+            }
+            Op::Reduce { x, rop, reduce_axis } => {
+                x.hash(state);
+                rop.hash(state);
+                reduce_axis.hash(state);
+            }
+            Op::After { x, dep } => {
+                x.hash(state);
+                dep.hash(state);
+            }
+            Op::ToDevice { x, device, .. } => {
+                x.hash(state);
+                device.hash(state);
+            }
+            Op::Contiguous { x } => x.hash(state),
+            Op::Kernel { inputs, outputs, info } => {
+                inputs.hash(state);
+                outputs.hash(state);
+                info.0.hash(state);
+            }
+            Op::Custom(c) => {
+                c.inputs.hash(state);
+                c.outputs.hash(state);
+                c.program_id.hash(state);
+            }
+        }
+    }
+}
+
+impl PartialOrd for Op {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Op {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (Op::Const(a), Op::Const(b)) => a.cmp(b),
+            (
+                Op::Param { dtype: ad, kind: ak, shape: as_, cons_id: ac },
+                Op::Param { dtype: bd, kind: bk, shape: bs, cons_id: bc },
+            ) => (ad, ak, as_, ac).cmp(&(bd, bk, bs, bc)),
+            (Op::Cast { x: a, dtype: ad }, Op::Cast { x: b, dtype: bd }) => (a, ad).cmp(&(b, bd)),
+            (Op::Bitcast { x: a, dtype: ad }, Op::Bitcast { x: b, dtype: bd }) => (a, ad).cmp(&(b, bd)),
+            (Op::Unary { x: a, uop: au }, Op::Unary { x: b, uop: bu }) => (a, au).cmp(&(b, bu)),
+            (Op::Binary { x: a, y: ay, bop: ab }, Op::Binary { x: b, y: by, bop: bb }) => (a, ay, ab).cmp(&(b, by, bb)),
+            (Op::Stack { ops: a }, Op::Stack { ops: b }) => a.cmp(b),
+            (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
+                (ad, as_, al).cmp(&(bd, bs, bl))
+            }
+            (Op::Store { dst: ad, src: as_, index: ai, layout: al }, Op::Store { dst: bd, src: bs, index: bi, layout: bl }) => {
+                (ad, as_, ai, al).cmp(&(bd, bs, bi, bl))
+            }
+            (Op::Load { src: as_, index: ai, layout: al }, Op::Load { src: bs, index: bi, layout: bl }) => {
+                (as_, ai, al).cmp(&(bs, bi, bl))
+            }
+            (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => (aa, ak).cmp(&(ba, bk)),
+            (Op::Loop { len: a }, Op::Loop { len: b }) => a.cmp(b),
+            (Op::EndLoop, Op::EndLoop) | (Op::EndIf, Op::EndIf) | (Op::Barrier, Op::Barrier) => std::cmp::Ordering::Equal,
+            (Op::If { condition: a }, Op::If { condition: b }) => a.cmp(b),
+            (Op::Mad { x: a, y: ay, z: az }, Op::Mad { x: b, y: by, z: bz }) => (a, ay, az).cmp(&(b, by, bz)),
+            (Op::Index { vec: a, idx: ai }, Op::Index { vec: b, idx: bi }) => (a, ai).cmp(&(b, bi)),
+            (
+                Op::Wmma { dims: ad, layout: al, dtype: at, a, b: ab, c: ac },
+                Op::Wmma { dims: bd, layout: bl, dtype: bt, a: ba, b: bb, c: bc },
+            ) => (ad, al, at, a, ab, ac).cmp(&(bd, bl, bt, ba, bb, bc)),
+            (
+                Op::ReduceTile { x: a, scaler: as_, acc: aa, rop: ar, kind: ak },
+                Op::ReduceTile { x: b, scaler: bs, acc: ba, rop: br, kind: bk },
+            ) => (a, as_, aa, ar, ak).cmp(&(b, bs, ba, br, bk)),
+            (Op::MatmulTile { x: a, y: ay, acc: aa }, Op::MatmulTile { x: b, y: by, acc: ba }) => (a, ay, aa).cmp(&(b, by, ba)),
+            (Op::TransposeTile { x: a }, Op::TransposeTile { x: b }) => a.cmp(b),
+            (Op::BroadcastTile { x: a, kind: ak }, Op::BroadcastTile { x: b, kind: bk }) => (a, ak).cmp(&(b, bk)),
+            (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => (aa, ao).cmp(&(ba, bo)),
+            (Op::Move { x: a, mop: am }, Op::Move { x: b, mop: bm }) => (a, am).cmp(&(b, bm)),
+            (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
+                (a, ar, aa).cmp(&(b, br, ba))
+            }
+            // `Ord` ignores exactly what `Eq` ignores, so `Eq`-equal values
+            // always compare `Equal`. `After`/`Custom` never compare equal,
+            // so any two same-discriminant values order `Equal`.
+            (Op::After { .. }, Op::After { .. }) => std::cmp::Ordering::Equal,
+            (Op::ToDevice { x: a, device: ad, .. }, Op::ToDevice { x: b, device: bd, .. }) => (a, ad).cmp(&(b, bd)),
+            (Op::Contiguous { x: a }, Op::Contiguous { x: b }) => a.cmp(b),
+            (Op::Kernel { inputs: ai, outputs: ao, info: a }, Op::Kernel { inputs: bi, outputs: bo, info: b }) => {
+                (ai, ao, a.0).cmp(&(bi, bo, b.0))
+            }
+            (Op::Custom(_), Op::Custom(_)) => std::cmp::Ordering::Equal,
+            _ => self.disc().cmp(&other.disc()),
+        }
+    }
 }
 
 /// Which dimension a `Op::ReduceTile` collapses, or a
@@ -450,6 +800,7 @@ pub struct OpLinked {
     pub op: Op,
 }
 
+const _: () = assert!(core::mem::size_of::<Op>() == 24);
 const _: () = assert!(core::mem::size_of::<OpLinked>() == 32);
 
 /// Operation ID for kernel operations.
@@ -564,6 +915,9 @@ impl Op {
             &Op::TransposeTile { x } => vec![x],
             &Op::BroadcastTile { x, .. } => vec![x],
             &Op::ReduceTile { x, acc, scaler, .. } => vec![x, acc, scaler],
+            Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                todo!("parameters: graph-only op in ordered kernel")
+            }
         }
         .into_iter()
     }
@@ -608,6 +962,9 @@ impl Op {
             Op::TransposeTile { x } => vec![x],
             Op::BroadcastTile { x, .. } => vec![x],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
+            Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                todo!("parameters_mut: graph-only op in ordered kernel")
+            }
         }
         .into_iter()
     }

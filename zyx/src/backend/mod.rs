@@ -92,7 +92,7 @@ pub enum Pool {
 /// `Auto` is the default scheduling selector (first available device);
 /// every other variant is a concrete device. The device's memory pool is
 /// always derived from the device via [`Dev::pool`] — never the reverse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Dev {
     /// Auto-select: resolves to the first available device from [`Dev::all`].
     Auto,
@@ -880,7 +880,7 @@ impl From<Buffer> for usize {
 
 /// Globally unique program identifier: the owning device plus the
 /// program id within that device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct ProgramId {
     pub dev: Dev,
     pub program_id: DeviceProgramId,

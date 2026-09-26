@@ -475,7 +475,7 @@ impl Kernel {
                     let z = self.push_back(Op::Const(value));
                     self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                 }
-                Op::Param { dtype, kind, shape } => {
+                Op::Param { dtype, kind, shape, cons_id } => {
                     // Metadata-only param: referenced only as a shape descriptor
                     // (never loaded as data), so no view was seeded for it.
                     // Load paths only — a shaped param must always be loaded.
@@ -545,7 +545,7 @@ impl Kernel {
                             // param is inserted so the define order (which scalar
                             // args bind to) is preserved, then the value is
                             // multiplied by the mask.
-                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
+                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, cons_id });
                             self.ops[op_id].op = Op::Binary { x: pc, y: src, bop: BOp::Mul };
                         }
                         ParamKind::Global => {
@@ -589,7 +589,7 @@ impl Kernel {
                             }
                             // Insert the ro source storage immediately before this op so the
                             // global param order (which buffer args bind to) is preserved.
-                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
+                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, cons_id });
                             // Zero the offset where the padding condition fails, so the load
                             // always reads in-bounds, then zero the loaded value itself.
                             let offset = self.mul(pc, index);

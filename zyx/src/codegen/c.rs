@@ -469,7 +469,12 @@ impl Kernel {
                 | Op::TransposeTile { .. }
                 | Op::BroadcastTile { .. }
                 | Op::Move { .. }
-                | Op::Reduce { .. } => {
+                | Op::Reduce { .. }
+                | Op::After { .. }
+                | Op::ToDevice { .. }
+                | Op::Contiguous { .. }
+                | Op::Kernel { .. }
+                | Op::Custom(_) => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "C codegen: ConstView/LoadView/StoreView/Move/Reduce should not appear".into(),

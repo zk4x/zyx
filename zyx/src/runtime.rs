@@ -1113,7 +1113,7 @@ impl Runtime {
             kernel: Kernel::from_device_id(Dev::Auto, None),
         });
         let shape = self.replay_expr(kernel_id, shape_id);
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
+        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, cons_id: 0 });
         self.kernels[kernel_id].loads.push(x);
         self.retain(x);
         (kernel_id, op_id)
@@ -2972,7 +2972,7 @@ impl Runtime {
             };
             let dst_shape_op = self.replay_expr(kernel_id, dst_shape_id);
             let mut_param =
-                self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: dst_shape_op });
+                self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: dst_shape_op, cons_id: 0 });
             self.kernels[kernel_id].kernel.store(mut_param, src_op, OpId::NULL);
             self.kernels[kernel_id].stores.push(dst);
             // dst becomes pending: the store kernel owns the value now, mutating
@@ -3549,7 +3549,7 @@ impl Runtime {
 
             let store_shape_id = self.kernels[kid].kernel.stack_shape_dims(op_id);
             let dst_id =
-                self.kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: store_shape_id });
+                self.kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: store_shape_id, cons_id: 0 });
             self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL);
             self.kernels[kid].stores.push(x);
             kid

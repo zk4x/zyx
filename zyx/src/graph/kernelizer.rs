@@ -147,7 +147,9 @@ impl Graph {
                     Node::Narrow { x, start, len, .. } => vec![*x, *start, *len],
                     Node::Permute { x, .. } | Node::Flip { x, .. } => vec![*x],
                     Node::Stack { ops } => ops.to_vec(),
-                    Node::ReduceLast { x, .. } | Node::Cast { x, .. } | Node::Bitcast { x, .. } | Node::Unary { x, .. } => vec![*x],
+                    Node::ReduceLast { x, .. } | Node::Cast { x, .. } | Node::Bitcast { x, .. } | Node::Unary { x, .. } => {
+                        vec![*x]
+                    }
                     Node::Binary { x, y, .. } => vec![*x, *y],
                     Node::Assign { dst, src } => vec![*dst, *src],
                     Node::After { x, dep } => vec![*x, *dep],
@@ -604,7 +606,7 @@ impl Graph {
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Const(value));
                                     op_map.insert(op_id, id);
                                 }
-                                Op::Param { dtype, mut kind, shape } => {
+                                Op::Param { dtype, mut kind, shape, cons_id: _ } => {
                                     if op_id == dst_param {
                                         kind = ParamKind::GlobalMut;
                                     }
@@ -619,7 +621,7 @@ impl Graph {
                                     // stack ops precede the param in head
                                     // order, so the mapping always exists).
                                     let shape = if shape.is_null() { shape } else { op_map[&shape] };
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape });
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape, cons_id: 0 });
                                     // Assign turns dst's base from a load into a
                                     // PURE STORE: it must NOT register in loads —
                                     // its buffer slot comes via `stores` instead.
@@ -1086,7 +1088,7 @@ impl Graph {
         let dims = self.shape(cid);
         let shape = self.replay_symbolic_into_kernel(kid, &dims);
         let dtype = self.dtype(cid);
-        let op_id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
+        let op_id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, cons_id: 0 });
         let data = &mut self.jit_kernels[kid];
         data.outputs = vec![cid; rc as usize];
         data.loads.push(cid);
@@ -1132,7 +1134,7 @@ impl Graph {
             let dtype = self.dtype(cid);
             let kernel = &mut self.jit_kernels[kid].kernel;
             let shape = kernel.stack_shape_dims(op_id);
-            let dst = kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape });
+            let dst = kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape, cons_id: 0 });
             kernel.store(dst, op_id, OpId::NULL);
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);

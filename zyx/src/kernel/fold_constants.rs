@@ -57,6 +57,9 @@ impl Kernel {
                 | Op::Range { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    todo!()
+                }
                 Op::Stack { ref ops } => {
                     // vectorize[devec(v,0), devec(v,1), ..., devec(v,n-1)] → v
                     if let Op::Index { vec, idx: 0 } = self.at(ops[0]) {

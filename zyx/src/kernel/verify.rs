@@ -304,7 +304,7 @@ impl Kernel {
                 Op::Const(v) => {
                     dtypes.insert(op_id, v.dtype());
                 }
-                Op::Param { dtype, kind, shape } => {
+                Op::Param { dtype, kind, shape, .. } => {
                     params.insert(op_id, kind);
                     dtypes.insert(op_id, dtype);
                     if shape != OpId::NULL {
@@ -399,6 +399,9 @@ impl Kernel {
                     stack.pop();
                 }
                 Op::Barrier => {}
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    todo!("verify: graph-only op in ordered kernel")
+                }
             }
             stack.last_mut().unwrap().insert(op_id);
             prev = op_id;

@@ -1136,7 +1136,12 @@ impl Kernel {
                     | Op::Wmma { .. }
                     | Op::MatmulTile { .. }
                     | Op::TransposeTile { .. }
-                    | Op::BroadcastTile { .. } => {
+                    | Op::BroadcastTile { .. }
+                    | Op::After { .. }
+                    | Op::ToDevice { .. }
+                    | Op::Contiguous { .. }
+                    | Op::Kernel { .. }
+                    | Op::Custom(_) => {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: "SPIR-V: unexpected kernel op (should be unfolded)".into(),

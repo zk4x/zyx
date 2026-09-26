@@ -70,6 +70,9 @@ impl Kernel {
                     Op::Move { .. } | Op::Reduce { .. } => {
                         unreachable!()
                     }
+                    Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                        unreachable!()
+                    }
                     Op::Stack { ref ops } => {
                         let dtype = dtypes[&ops[0]];
                         dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
@@ -220,6 +223,9 @@ impl Kernel {
                 Op::Store { .. } | Op::EndLoop | Op::Barrier | Op::If { .. } | Op::EndIf => false,
                 Op::Move { .. } => todo!(),
                 Op::Reduce { .. } => todo!(),
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    todo!()
+                }
             };
             if produces && let Some(&rc) = rcs.get(&op_id) {
                 let dtype = dtypes[&op_id];
@@ -504,6 +510,9 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
                     }
+                }
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    todo!()
                 }
             }
 

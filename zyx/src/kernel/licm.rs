@@ -54,6 +54,9 @@ impl Kernel {
                 Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    unreachable!()
+                }
                 Op::MatmulTile { x, y, acc } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&acc]),
                 Op::TransposeTile { x } => loop_dep[&x],
                 Op::BroadcastTile { x, .. } => loop_dep[&x],
@@ -111,6 +114,9 @@ impl Kernel {
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
                 Op::Move { .. } | Op::Reduce { .. } => {
+                    unreachable!()
+                }
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     unreachable!()
                 }
                 Op::ReduceTile { x, scaler, acc, .. } => loop_dep[x].max(loop_dep[scaler]).max(loop_dep[acc]),

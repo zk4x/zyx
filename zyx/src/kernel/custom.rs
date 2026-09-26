@@ -267,17 +267,17 @@ impl Kernel {
 
     /// Define a kernel input param (global memory read-only argument).
     pub fn param(&mut self, dtype: DType) -> OpId {
-        self.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: OpId::NULL })
+        self.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: OpId::NULL, cons_id: 0 })
     }
 
     /// Define a kernel output param (global memory mutable argument).
     pub fn param_mut(&mut self, dtype: DType) -> OpId {
-        self.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: OpId::NULL })
+        self.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: OpId::NULL, cons_id: 0 })
     }
 
     /// Define a scalar variable param (its value lives in the backend pools' variable slots).
     pub fn variable(&mut self, dtype: DType) -> OpId {
-        self.push_back(Op::Param { dtype, kind: ParamKind::Variable, shape: OpId::NULL })
+        self.push_back(Op::Param { dtype, kind: ParamKind::Variable, shape: OpId::NULL, cons_id: 0 })
     }
 
     /// Define multiple scalar variable params (see [`Kernel::variable`]).

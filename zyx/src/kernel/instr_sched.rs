@@ -173,6 +173,9 @@ impl Kernel {
                     add_param!(y);
                 }
                 Op::Param { .. } | Op::Const(_) | Op::Storage { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {}
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    todo!()
+                }
                 Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => add_param!(len),
                     RangeKind::Warp(local_id) => add_param!(local_id),
