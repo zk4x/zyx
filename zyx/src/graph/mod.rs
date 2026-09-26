@@ -298,6 +298,11 @@ impl std::hash::Hash for Node {
                 bop.hash(state);
                 axes.hash(state);
             }
+            Self::ReduceLast { x, rop: bop } => {
+                20u8.hash(state);
+                x.hash(state);
+                bop.hash(state);
+            }
             Self::Cast { x, dtype } => {
                 7u8.hash(state);
                 x.hash(state);
@@ -466,6 +471,7 @@ impl Node {
             Self::Stack { ops } => ops.to_vec(),
             Self::Index { vec, .. } => vec![*vec],
             Self::Reduce { x, .. } => vec![*x],
+            Self::ReduceLast { x, .. } => vec![*x],
             Self::Cast { x, .. } => vec![*x],
             Self::Bitcast { x, .. } => vec![*x],
             Self::Unary { x, .. } => vec![*x],
@@ -888,6 +894,7 @@ impl Graph {
                 };
                 let name = match kind {
                     Node::Reduce { rop: bop, .. } => format!("Reduce {:?}", bop),
+                    Node::ReduceLast { rop: bop, .. } => format!("ReduceLast {:?}", bop),
                     Node::Binary { bop, .. } => format!("Binary {:?}", bop),
                     Node::Assign { .. } => "Assign".into(),
                     Node::After { .. } => "After".into(),
@@ -1384,6 +1391,11 @@ impl Graph {
                 let s = self.shape(*x);
                 s.into_iter().enumerate().filter(|(i, _)| !axes.contains(&*i)).map(|(_, d)| d).collect()
             }
+            Node::ReduceLast { x, .. } => {
+                let mut s = self.shape(*x);
+                s.pop().expect("ReduceLast of scalar");
+                s
+            }
             Node::Assign { dst, .. } => self.shape(*dst),
             Node::Kernel { outputs, .. } => self.shape(outputs[0]),
             // A Custom node is a member of every one of its output classes, so
@@ -1562,6 +1574,7 @@ impl Graph {
             | Node::Flip { x, .. }
             | Node::Narrow { x, .. }
             | Node::Reduce { x, .. }
+            | Node::ReduceLast { x, .. }
             | Node::Unary { x, .. }
             | Node::After { x, .. }
             | Node::ToDevice { x, .. }
@@ -1611,6 +1624,7 @@ impl Graph {
                 | Node::Narrow { .. }
                 | Node::Stack { .. }
                 | Node::Reduce { .. }
+                | Node::ReduceLast { .. }
                 | Node::Assign { .. }
                 | Node::After { .. }
                 | Node::ToDevice { .. }

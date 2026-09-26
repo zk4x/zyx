@@ -148,7 +148,7 @@ impl Graph {
                     Node::Narrow { x, start, len, .. } => vec![*x, *start, *len],
                     Node::Permute { x, .. } | Node::Flip { x, .. } => vec![*x],
                     Node::Stack { ops } => ops.to_vec(),
-                    Node::Reduce { x, .. } | Node::Cast { x, .. } | Node::Bitcast { x, .. } | Node::Unary { x, .. } => vec![*x],
+                    Node::Reduce { x, .. } | Node::ReduceLast { x, .. } | Node::Cast { x, .. } | Node::Bitcast { x, .. } | Node::Unary { x, .. } => vec![*x],
                     Node::Binary { x, y, .. } => vec![*x, *y],
                     Node::Assign { dst, src } => vec![*dst, *src],
                     Node::After { x, dep } => vec![*x, *dep],
@@ -497,6 +497,29 @@ impl Graph {
                         }
                         // All dims reduced: reshape the scalar to [1].
                         if axes.len() == rank {
+                            let kernel = &mut self.jit_kernels[kid].kernel;
+                            let shape_op = kernel.add_shape(&[1]);
+                            op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape_op }) });
+                        }
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        self.push_outputs(kid, cid, rcs[&cid]);
+                        visited.insert(cid, (kid, op_id));
+                    }
+                    Node::ReduceLast { x, rop } => {
+                        // Last axis is already trailing: single reduce, no permute.
+                        let rank = self.shape(x).len();
+                        let (mut kid, mut op_id) = match visited.get(&x) {
+                            Some(&kv) => kv,
+                            None => todo!("reduce_last of symbolic scalar operand {x:?}"),
+                        };
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        let kernel = &mut self.jit_kernels[kid].kernel;
+                        let dims = kernel.shape_ids(op_id);
+                        debug_assert!(!dims.is_empty(), "reduce_last of scalar");
+                        let reduce_axis = *dims.last().unwrap();
+                        op_id = kernel.push_back(Op::Reduce { x: op_id, rop, reduce_axis });
+                        // Rank-1 input reduces to scalar: reshape to [1].
+                        if rank == 1 {
                             let kernel = &mut self.jit_kernels[kid].kernel;
                             let shape_op = kernel.add_shape(&[1]);
                             op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape_op }) });

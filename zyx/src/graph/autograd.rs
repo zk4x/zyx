@@ -403,6 +403,85 @@ impl Runtime {
                         ref bop => todo!("gradient for reduce {bop:?} is not yet supported"),
                     }
                 }
+                Node::ReduceLast { x, rop: bop } => {
+                    let x_dims = self.graphs[graph_id].shape(x);
+                    let last = x_dims.len() - 1;
+                    match bop {
+                        BOp::Add => {
+                            let one_dim = self.push_const(graph_id, Constant::new(1i64));
+                            let kept: Vec<OpId> = x_dims
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &d)| if i == last { one_dim } else { d })
+                                .collect();
+                            let kept_shape = self.shape_class(graph_id, kept);
+                            let grad_r = self.push_node(graph_id, Node::Reshape { x: grad, shape: kept_shape }).1;
+                            let x_shape = self.shape_class(graph_id, x_dims);
+                            let g = self.push_node(graph_id, Node::Expand { x: grad_r, shape: x_shape }).1;
+                            accum_grad(self, graph_id, &mut grads, x, g);
+                        }
+                        BOp::Max => {
+                            let x_dims = self.graphs[graph_id].shape(x);
+                            let dtype = self.graphs[graph_id].dtype(x);
+                            let one = self.push_const(graph_id, Constant::new(1u8).cast(dtype));
+                            let one_dim = self.push_const(graph_id, Constant::new(1i64));
+                            let kept: Vec<OpId> = x_dims
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &d)| if i == last { one_dim } else { d })
+                                .collect();
+                            let kept_shape = self.shape_class(graph_id, kept);
+                            let x_shape = self.shape_class(graph_id, x_dims);
+                            let z_reshaped = self.push_node(graph_id, Node::Reshape { x: cid, shape: kept_shape }).1;
+                            let z_broadcasted = self.push_node(graph_id, Node::Expand { x: z_reshaped, shape: x_shape }).1;
+                            let cmp = self.push_binary_node(graph_id, x, z_broadcasted, BOp::Cmplt);
+                            let cmp_f = self.push_node(graph_id, Node::Cast { x: cmp, dtype }).1;
+                            let one_e = self.push_node(graph_id, Node::Expand { x: one, shape: x_shape }).1;
+                            let mask = self.push_binary_node(graph_id, one_e, cmp_f, BOp::Sub);
+                            let grad_r = self.push_node(graph_id, Node::Reshape { x: grad, shape: kept_shape }).1;
+                            let grad_e = self.push_node(graph_id, Node::Expand { x: grad_r, shape: x_shape }).1;
+                            let grad_x = self.push_binary_node(graph_id, mask, grad_e, BOp::Mul);
+                            accum_grad(self, graph_id, &mut grads, x, grad_x);
+                        }
+                        BOp::Mul => {
+                            let x_dims = self.graphs[graph_id].shape(x);
+                            let dtype = self.graphs[graph_id].dtype(x);
+                            let zero = self.push_const(graph_id, Constant::new(0u8).cast(dtype));
+                            let one = self.push_const(graph_id, Constant::new(1u8).cast(dtype));
+                            let one_dim = self.push_const(graph_id, Constant::new(1i64));
+                            let kept: Vec<OpId> = x_dims
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &d)| if i == last { one_dim } else { d })
+                                .collect();
+                            let kept_shape = self.shape_class(graph_id, kept);
+                            let x_shape = self.shape_class(graph_id, x_dims);
+                            let is_zero_b = self.push_binary_node(graph_id, x, zero, BOp::Eq);
+                            let is_zero = self.push_node(graph_id, Node::Cast { x: is_zero_b, dtype }).1;
+                            let safe_x = self.push_binary_node(graph_id, x, is_zero, BOp::Add);
+                            let p = self.push_node(graph_id, Node::ReduceLast { x: safe_x, rop: BOp::Mul }).1;
+                            let nz = self.push_node(graph_id, Node::ReduceLast { x: is_zero, rop: BOp::Add }).1;
+                            let p_r = self.push_node(graph_id, Node::Reshape { x: p, shape: kept_shape }).1;
+                            let p_e = self.push_node(graph_id, Node::Expand { x: p_r, shape: x_shape }).1;
+                            let nz_r = self.push_node(graph_id, Node::Reshape { x: nz, shape: kept_shape }).1;
+                            let nz_e = self.push_node(graph_id, Node::Expand { x: nz_r, shape: x_shape }).1;
+                            let no_zero_b = self.push_binary_node(graph_id, nz_e, zero, BOp::Eq);
+                            let no_zero = self.push_node(graph_id, Node::Cast { x: no_zero_b, dtype }).1;
+                            let quot = self.push_binary_node(graph_id, p_e, safe_x, BOp::Div);
+                            let dense = self.push_binary_node(graph_id, quot, no_zero, BOp::Mul);
+                            let one_zero_b = self.push_binary_node(graph_id, nz_e, one, BOp::Eq);
+                            let one_zero = self.push_node(graph_id, Node::Cast { x: one_zero_b, dtype }).1;
+                            let at_zero = self.push_binary_node(graph_id, one_zero, is_zero, BOp::Mul);
+                            let sparse = self.push_binary_node(graph_id, p_e, at_zero, BOp::Mul);
+                            let partial = self.push_binary_node(graph_id, dense, sparse, BOp::Add);
+                            let grad_r = self.push_node(graph_id, Node::Reshape { x: grad, shape: kept_shape }).1;
+                            let grad_e = self.push_node(graph_id, Node::Expand { x: grad_r, shape: x_shape }).1;
+                            let grad_x = self.push_binary_node(graph_id, partial, grad_e, BOp::Mul);
+                            accum_grad(self, graph_id, &mut grads, x, grad_x);
+                        }
+                        ref bop => todo!("gradient for reduce_last {bop:?} is not yet supported"),
+                    }
+                }
                 Node::ToDevice { x, .. } => {
                     accum_grad(self, graph_id, &mut grads, x, grad);
                 }
