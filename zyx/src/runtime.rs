@@ -1862,12 +1862,23 @@ impl Runtime {
     pub fn reduce_last_axis(&mut self, x: TensorId, rop: BOp) -> Result<TensorId, ZyxError> {
         self.verify_tensor_invariants();
         match self.tensors[x] {
-            TensorData::Leaf { shape_id, dtype, buffer, rc } => todo!(),
-            TensorData::PendingLeaf { old_buffer, depends_on, shape_id, dtype, rc } => todo!(),
-            TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, rc, buffer } => todo!(),
-            TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc } => todo!(),
-            TensorData::Graph { class_id, graph_id, shape_id, dtype, rc }
-            | TensorData::Promoted { class_id, graph_id, shape_id, dtype, rc, .. } => {
+            TensorData::Eager { shape_id, dtype, .. }
+            | TensorData::Leaf { shape_id, dtype, .. }
+            | TensorData::PendingLeaf { shape_id, dtype, .. } => {
+                let out_shape = self.reduce_last_axis_shape(shape_id);
+                let (kid, op_id) = self.duplicate_or_store(x, false)?;
+                let dims = self.kernels[kid].kernel.shape_ids(op_id);
+                debug_assert!(!dims.is_empty(), "reduce_last of scalar");
+                let reduce_axis = *dims.last().unwrap();
+                let op_id = self.kernels[kid].kernel.push_back(Op::Reduce { x: op_id, rop, reduce_axis });
+                let tid = self.tensors.push(TensorData::Eager { kernel_id: kid, op_id, shape_id: out_shape, dtype, rc: 1 });
+                debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce_last must have empty outputs");
+                self.kernels[kid].outputs.insert(tid);
+                Ok(tid)
+            }
+            TensorData::Graph { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
                 let shape_id = self.reduce_last_axis_shape(shape_id);
                 let (_, class_id) = self.push_node(graph_id, Node::ReduceLast { x: class_id, rop });
@@ -1876,153 +1887,6 @@ impl Runtime {
                 Ok(tid)
             }
             TensorData::Symbolic { .. } => unreachable!("Can't reduce symbolic tensor"),
-        }
-    }
-
-    pub fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
-        self.verify_tensor_invariants();
-        let rank = self.shape(x).len();
-        debug_assert!(!axes.is_empty(), "reduce must specify at least one axis");
-        debug_assert!(axes.iter().all(|&a| (a as usize) < rank), "reduce axis {axes:?} out of bounds for rank {rank}");
-        debug_assert!(
-            axes.len() == axes.iter().collect::<std::collections::BTreeSet<_>>().len(),
-            "reduce axes must be unique: {axes:?}"
-        );
-        axes.sort_unstable();
-
-        match self.tensors[x] {
-            TensorData::Graph { class_id, graph_id, dtype, .. } | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
-                self.assert_graph_alive(graph_id);
-                // Result shape mirrors the eager arm: surviving dim
-                // expressions, reduced axes skipped; a full reduction keeps a
-                // single dim of size 1. Computed first since `axes` moves into
-                // the node below.
-                let mut dims = self.shape(x).to_vec();
-                debug_assert!(!dims.is_empty(), "reduce: input graph tensor {x} has no shape expression");
-                for axis in axes.iter().rev() {
-                    dims.remove(*axis as usize);
-                }
-                let shape_id = if dims.is_empty() {
-                    let one_const = self.new_constant_tensor(Constant::idx(1i64));
-                    let stacked = self.stack(&[one_const])?;
-                    self.release(one_const);
-                    let expr = match self.tensors[stacked] {
-                        TensorData::Symbolic { expr, .. } => expr,
-                        ref t => panic!("reduce: shape tid {stacked} is not symbolic: {t:?}"),
-                    };
-                    self.release(stacked);
-                    expr
-                } else {
-                    let stacked = self.stack(&dims)?;
-                    let expr = match self.tensors[stacked] {
-                        TensorData::Symbolic { expr, .. } => expr,
-                        ref t => panic!("reduce: shape tid {stacked} is not symbolic: {t:?}"),
-                    };
-                    self.release(stacked);
-                    expr
-                };
-                let (_node_id, class_id) =
-                    self.push_node(graph_id, Node::Reduce { x: class_id, rop, axes: axes.into_boxed_slice() });
-                self.graphs[graph_id].ref_count += 1;
-
-                let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
-                Ok(tid)
-            }
-            TensorData::Eager { dtype, .. } | TensorData::Leaf { dtype, .. } => {
-                // Reduce one axis at a time, permuting each to be last. Reduce the
-                // highest axis first so lower indices stay valid as the rank shrinks.
-                let mut cur = x;
-                // Ownership: `owns_cur` tells whether reduce holds exactly one
-                // reference on `cur` that it must release before overwriting
-                // it. Entering the loop, `cur` is the caller's `x` — reduce
-                // holds nothing on it.
-                let mut owns_cur = false;
-                let n_axes = axes.len();
-                axes.sort_unstable_by(|a, b| b.cmp(a));
-                let mut dims = self.shape(x);
-                for axis in axes {
-                    let rank = self.resolve_shape(cur).len();
-                    let permute_axes: Vec<UAxis> = (0..rank as UAxis).filter(|&i| i != axis).chain([axis]).collect();
-                    let prev = cur;
-                    let prev_owned = owns_cur;
-                    cur = self.permute(cur, permute_axes);
-                    // `permute` grants one reference on its result — including
-                    // the identity fast path, which retains and returns the
-                    // same tid.
-                    if prev_owned {
-                        self.release(prev);
-                    }
-
-                    let (kid, op_id) = self.duplicate_or_store(cur, false)?;
-                    let dims_ops = self.kernels[kid].kernel.shape_ids(op_id);
-                    debug_assert!(!dims_ops.is_empty(), "reduce of scalar");
-                    let reduce_axis = *dims_ops.last().unwrap();
-                    let op_id = self.kernels[kid].kernel.push_back(Op::Reduce { x: op_id, rop, reduce_axis });
-
-                    // Result shape: surviving dim expressions, reduced axis skipped.
-                    let mut kept_dims = dims.clone();
-                    kept_dims.remove(axis);
-                    let shape_id = if kept_dims.is_empty() {
-                        ExprId::SCALAR
-                    } else {
-                        let stacked = self.stack(&kept_dims)?;
-                        let expr = match self.tensors[stacked] {
-                            TensorData::Symbolic { expr, .. } => expr,
-                            ref t => panic!("reduce: shape tid {stacked} is not symbolic: {t:?}"),
-                        };
-                        self.release(stacked);
-                        expr
-                    };
-
-                    let tid = self.tensors.push(TensorData::Eager { kernel_id: kid, op_id, shape_id, dtype, rc: 1 });
-                    dims = kept_dims;
-
-                    debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce must have empty outputs");
-                    self.kernels[kid].outputs.insert(tid);
-                    // Overwrite `cur` with the reduce result: release the
-                    // reference reduce holds on the permuted intermediate
-                    // (granted by `permute` above).
-                    self.release(cur);
-                    owns_cur = true;
-                    cur = tid;
-                }
-
-                if rank == n_axes {
-                    let (kid, op_id) = match self.tensors[cur] {
-                        TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                        ref t => unreachable!("{t:?}"),
-                    };
-                    // Full reduction keeps a single dim of size 1.
-                    let one_const = self.new_constant_tensor(Constant::idx(1i64));
-                    let stacked = self.stack(&[one_const])?;
-                    self.release(one_const);
-                    let shape_id = match self.tensors[stacked] {
-                        TensorData::Symbolic { expr, .. } => expr,
-                        ref t => panic!("reduce: shape tid {stacked} is not symbolic: {t:?}"),
-                    };
-                    self.release(stacked);
-                    let one = self.kernels[kid].kernel.const_idx(1);
-                    let op_id = self.kernels[kid].kernel.reshape(op_id, one);
-                    match &mut self.tensors[cur] {
-                        TensorData::Eager { op_id: slot, shape_id: slot_shape, .. } => {
-                            *slot = op_id;
-                            *slot_shape = shape_id;
-                        }
-                        ref t => unreachable!("{t:?}"),
-                    }
-                }
-
-                #[cfg(feature = "debug_tensor_op")]
-                println!(
-                    "  -> eager: tid={cur}, op_id={:?}",
-                    match self.tensors[cur] {
-                        TensorData::Eager { op_id, .. } => op_id,
-                        ref t => unreachable!("{t:?}"),
-                    }
-                );
-                Ok(cur)
-            }
-            ref t => todo!("reduce of pure-slab tensor {t:?}"),
         }
     }
 

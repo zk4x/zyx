@@ -30,6 +30,21 @@ pub enum ReduceOp {
 }
 
 impl Tensor {
+    /// Reduce resolved `axes` via permute-to-last + `reduce_last_axis`,
+    /// highest-axis-first so lower indices stay valid as the rank shrinks.
+    pub(crate) fn reduce_axes(&self, axes: Vec<UAxis>, rop: BOp) -> Result<Tensor, ZyxError> {
+        let mut cur = self.clone();
+        let mut desc = axes;
+        desc.sort_unstable_by(|a, b| b.cmp(a));
+        for ax in desc {
+            let r = cur.resolve_shape().len();
+            let perm: Vec<Axis> = (0..r).filter(|&i| i != ax).chain([ax]).map(|i| i as Axis).collect();
+            cur = cur.permute(perm)?;
+            cur = Tensor { id: RT.lock().reduce_last_axis(cur.id, rop)? };
+        }
+        Ok(cur)
+    }
+
     fn inverse(&self) -> Tensor {
         let dtype = self.dtype();
         if dtype.is_float() {
@@ -78,7 +93,7 @@ impl Tensor {
                 } else {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
-                Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Add)? }
+                x.reduce_axes(axes_vec.clone(), BOp::Add)?
             }
             ReduceOp::Max => {
                 let x = if let Some(dtype) = dtype {
@@ -86,7 +101,7 @@ impl Tensor {
                 } else {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
-                Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Max)? }
+                x.reduce_axes(axes_vec.clone(), BOp::Max)?
             }
             ReduceOp::Prod => {
                 let x = if let Some(dtype) = dtype {
@@ -94,7 +109,7 @@ impl Tensor {
                 } else {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
-                Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Mul)? }
+                x.reduce_axes(axes_vec.clone(), BOp::Mul)?
             }
             ReduceOp::Min => {
                 if let Some(dtype) = dtype {
