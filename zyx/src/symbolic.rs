@@ -35,10 +35,10 @@ impl ExprId {
     /// First valid index (0).
     pub const ZERO: Self = Self(0);
     /// Sentinel for "no expression".
-    pub const NULL: Self = Self(u32::MAX);
-    /// Whether this is [`ExprId::NULL`].
-    pub const fn is_null(self) -> bool {
-        self.0 == u32::MAX
+    pub const SCALAR: Self = Self(u32::MAX - 1);
+    /// Whether this is [`ExprId::SCALAR`].
+    pub const fn is_scalar(self) -> bool {
+        self.0 == u32::MAX - 1
     }
 }
 
@@ -138,7 +138,7 @@ impl Runtime {
     /// Hashcons interning: returns the existing [`ExprId`] for a structurally
     /// equal expression, or pushes and returns a fresh one. Append-only —
     /// ids are stable forever and nothing is freed.
-    pub fn intern(&mut self, expr: Expr) -> ExprId {
+    pub fn push(&mut self, expr: Expr) -> ExprId {
         if let Some(&id) = self.expr_hash.get(&expr) {
             return id;
         }
@@ -219,9 +219,9 @@ impl Runtime {
 
     /// Dim expressions of a shape expression: a `Stack*` yields one dim per
     /// element; a bare scalar expression (1d shapes skip the `Stack` node)
-    /// is a single dim; null is rank zero.
+    /// is a single dim; scalar is rank zero.
     pub(crate) fn shape_expr_ids(&self, shape_id: ExprId) -> Vec<ExprId> {
-        if shape_id.is_null() {
+        if shape_id.is_scalar() {
             return Vec::new();
         }
         match &self.exprs[shape_id] {
@@ -541,7 +541,7 @@ impl Runtime {
     /// entry point; `replay_symbolic_into_kernel` is the `TensorId` wrapper).
     /// Walk duplicated from `replay_symbolic_into_kernel` by design.
     pub fn replay_expr(&mut self, kid: KernelId, root: ExprId) -> OpId {
-        if root.is_null() {
+        if root.is_scalar() {
             return OpId::NULL;
         }
 
@@ -789,5 +789,22 @@ impl Runtime {
             root_class = class_id;
         }
         root_class
+    }
+
+    /// Returns shape for reduce that reduces over the last axis
+    pub fn reduce_last_axis_shape(&mut self, shape_id: ExprId) -> ExprId {
+        match self.exprs[shape_id] {
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+                ExprId::SCALAR
+            }
+            Expr::Stack2 { exprs } => exprs[0],
+            Expr::Stack3 { exprs } => self.push(Expr::Stack2 { exprs: [exprs[0], exprs[1]] }),
+            Expr::Stack4 { exprs } => self.push(Expr::Stack3 { exprs: [exprs[0], exprs[1], exprs[2]] }),
+            Expr::Stack5 { exprs } => self.push(Expr::Stack4 { exprs: [exprs[0], exprs[1], exprs[2], exprs[3]] }),
+            Expr::Stack { ref exprs } => match exprs.len() {
+                6 => self.push(Expr::Stack5 { exprs: [exprs[0], exprs[1], exprs[2], exprs[3], exprs[4]] }),
+                _ => self.push(Expr::Stack { exprs: exprs[0..exprs.len() - 1].into() }),
+            },
+        }
     }
 }

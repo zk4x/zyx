@@ -1076,7 +1076,7 @@ impl Runtime {
         // Shape handles are Symbolic (or NULL for scalar); the Leaf stores the
         // interned ExprId (append-only slab, no retain needed).
         let shape_id = if shape == TensorId::NULL {
-            ExprId::NULL
+            ExprId::SCALAR
         } else {
             match self.tensors[shape] {
                 TensorData::Symbolic { expr, .. } => expr,
@@ -1123,7 +1123,7 @@ impl Runtime {
         // Constants are pure slab entries: value lives in the interned
         // expression slab, no kernel is allocated. Consumers replay the
         // value into their own kernels via Op::Const when needed.
-        let expr = self.intern(Expr::Constant { value });
+        let expr = self.push(Expr::Constant { value });
         self.tensors.push(TensorData::Symbolic { expr, rc: 1 })
     }
 
@@ -1147,7 +1147,7 @@ impl Runtime {
         // Kernels replay them as Param { Variable } loads
         // (see replay_shape_into_kernel).
         let value = Constant::new(x);
-        let expr = self.intern(Expr::Variable { value });
+        let expr = self.push(Expr::Variable { value });
         self.tensors.push(TensorData::Symbolic { expr, rc: 1 })
     }
 
@@ -1242,7 +1242,7 @@ impl Runtime {
                 | Expr::Stack3 { .. }
                 | Expr::Stack4 { .. }
                 | Expr::Stack5 { .. } => {
-                    let nested = self.intern(Expr::Cast { x: expr, dtype });
+                    let nested = self.push(Expr::Cast { x: expr, dtype });
                     let tid = self.tensors.push(TensorData::Symbolic { expr: nested, rc: 1 });
                     // The cast node holds an edge to x.
                     self.retain(x);
@@ -1279,7 +1279,7 @@ impl Runtime {
                 let (_, class_id) = self.push_node(graph_id, Node::Cast { x: class_id, dtype });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
-                debug_assert!(!shape_id.is_null(), "cast: input graph tensor {x} has no shape expression");
+                debug_assert!(!shape_id.is_scalar(), "cast: input graph tensor {x} has no shape expression");
 
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
@@ -1328,7 +1328,7 @@ impl Runtime {
                 let (_, class_id) = self.push_node(graph_id, Node::Bitcast { x: class_id, dtype });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
-                debug_assert!(!shape_id.is_null(), "bitcast: input graph tensor {x} has no shape expression");
+                debug_assert!(!shape_id.is_scalar(), "bitcast: input graph tensor {x} has no shape expression");
 
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
@@ -1357,7 +1357,7 @@ impl Runtime {
                 | Expr::Stack3 { .. }
                 | Expr::Stack4 { .. }
                 | Expr::Stack5 { .. } => {
-                    let root = self.intern(Expr::Unary { x: expr, uop });
+                    let root = self.push(Expr::Unary { x: expr, uop });
                     self.tensors.push(TensorData::Symbolic { expr: root, rc: 1 })
                 }
             },
@@ -1391,7 +1391,7 @@ impl Runtime {
                 let (_node_id, class_id) = self.push_node(graph_id, Node::Unary { x: class_id, uop });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
-                debug_assert!(!shape_id.is_null(), "unary: input graph tensor {x} has no shape expression");
+                debug_assert!(!shape_id.is_scalar(), "unary: input graph tensor {x} has no shape expression");
 
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
@@ -1446,7 +1446,7 @@ impl Runtime {
                 TensorData::Symbolic { expr, .. } => expr,
                 ref t => panic!("binary: symbolic operand tid {y} is not Symbolic: {t:?}"),
             };
-            let root = self.intern(Expr::Binary { x: ex, y: ey, bop });
+            let root = self.push(Expr::Binary { x: ex, y: ey, bop });
             let tid = self.tensors.push(TensorData::Symbolic { expr: root, rc: 1 });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> symbolic: tid={tid}");
@@ -1464,7 +1464,7 @@ impl Runtime {
                 | TensorData::GraphLeaf { shape_id, .. }
                 | TensorData::Graph { shape_id, .. }
                 | TensorData::Promoted { shape_id, .. } => shape_id,
-                TensorData::Symbolic { .. } => ExprId::NULL,
+                TensorData::Symbolic { .. } => ExprId::SCALAR,
             };
             let sb = match rt.tensors[b] {
                 TensorData::Eager { shape_id, .. }
@@ -1473,9 +1473,9 @@ impl Runtime {
                 | TensorData::GraphLeaf { shape_id, .. }
                 | TensorData::Graph { shape_id, .. }
                 | TensorData::Promoted { shape_id, .. } => shape_id,
-                TensorData::Symbolic { .. } => ExprId::NULL,
+                TensorData::Symbolic { .. } => ExprId::SCALAR,
             };
-            if sa.is_null() { sb } else { sa }
+            if sa.is_scalar() { sb } else { sa }
         }
 
         let x_is_graph = self.is_graph(x);
@@ -1527,7 +1527,7 @@ impl Runtime {
 
             {
                 let shape_id = result_shape(self, x, y);
-                debug_assert!(!shape_id.is_null(), "binary: non-scalar graph operands {x}/{y} have no shape expression");
+                debug_assert!(!shape_id.is_scalar(), "binary: non-scalar graph operands {x}/{y} have no shape expression");
 
                 self.graphs[graph_id].ref_count += 1;
                 let dtype = if bop.returns_bool() { DType::Bool } else { self.dtype(x) };
@@ -1743,7 +1743,7 @@ impl Runtime {
                 let dst_id = Buffer { pool: dst_pool, buffer_id: dst_buf };
                 // Drain pending events on the source buffer before the copy.
                 dst_pool.pool_to_pool(buf_id.pool, buf_id.buffer_id, dst_id.buffer_id)?;
-                debug_assert!(!shape_id.is_null(), "to_device: eager tensor {x} has no shape expression");
+                debug_assert!(!shape_id.is_scalar(), "to_device: eager tensor {x} has no shape expression");
 
                 let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer: dst_id, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
@@ -1773,7 +1773,7 @@ impl Runtime {
                 let dst_id = Buffer { pool: dst_pool, buffer_id: dst_buf };
                 // Drain pending events on the source buffer before the copy.
                 dst_pool.pool_to_pool(buf_id.pool, buf_id.buffer_id, dst_id.buffer_id)?;
-                debug_assert!(!shape_id.is_null(), "to_device: eager tensor {x} has no shape expression");
+                debug_assert!(!shape_id.is_scalar(), "to_device: eager tensor {x} has no shape expression");
 
                 let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer: dst_id, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
@@ -1788,7 +1788,7 @@ impl Runtime {
                 let (_node_id, cid) = self.push_node(graph_id, Node::ToDevice { x: class_id, device, time: 0 });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression.
-                debug_assert!(!shape_id.is_null(), "to_device: input graph tensor {x} has no shape expression");
+                debug_assert!(!shape_id.is_scalar(), "to_device: input graph tensor {x} has no shape expression");
 
                 let dtype = self.dtype(x);
                 let tid = self.tensors.push(TensorData::Graph { class_id: cid, graph_id, shape_id, dtype, rc: 1 });
@@ -1836,7 +1836,7 @@ impl Runtime {
                 let (_node_id, cid) = self.push_node(graph_id, Node::Contiguous { x: class_id });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression.
-                debug_assert!(!shape_id.is_null(), "contiguous: input graph tensor {x} has no shape expression");
+                debug_assert!(!shape_id.is_scalar(), "contiguous: input graph tensor {x} has no shape expression");
 
                 let tid = self.tensors.push(TensorData::Graph { class_id: cid, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
@@ -1856,6 +1856,26 @@ impl Runtime {
                 println!("  -> tid={cast_tid} (cast shim stored)");
                 Ok(cast_tid)
             }
+        }
+    }
+
+    pub fn reduce_last_axis(&mut self, x: TensorId, rop: BOp) -> Result<TensorId, ZyxError> {
+        self.verify_tensor_invariants();
+        match self.tensors[x] {
+            TensorData::Leaf { shape_id, dtype, buffer, rc } => todo!(),
+            TensorData::PendingLeaf { old_buffer, depends_on, shape_id, dtype, rc } => todo!(),
+            TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, rc, buffer } => todo!(),
+            TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc } => todo!(),
+            TensorData::Graph { class_id, graph_id, shape_id, dtype, rc }
+            | TensorData::Promoted { class_id, graph_id, shape_id, dtype, rc, .. } => {
+                self.assert_graph_alive(graph_id);
+                let shape_id = self.reduce_last_axis_shape(shape_id);
+                let (_, class_id) = self.push_node(graph_id, Node::ReduceLast { x: class_id, rop });
+                let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
+                self.graphs[graph_id].ref_count += 1;
+                Ok(tid)
+            }
+            TensorData::Symbolic { .. } => unreachable!("Can't reduce symbolic tensor"),
         }
     }
 
@@ -1943,7 +1963,7 @@ impl Runtime {
                     let mut kept_dims = dims.clone();
                     kept_dims.remove(axis);
                     let shape_id = if kept_dims.is_empty() {
-                        ExprId::NULL
+                        ExprId::SCALAR
                     } else {
                         let stacked = self.stack(&kept_dims)?;
                         let expr = match self.tensors[stacked] {
@@ -2035,11 +2055,11 @@ impl Runtime {
                 })
                 .collect();
             let expr = match exprs.len() {
-                2 => self.intern(Expr::Stack2 { exprs: [exprs[0], exprs[1]] }),
-                3 => self.intern(Expr::Stack3 { exprs: [exprs[0], exprs[1], exprs[2]] }),
-                4 => self.intern(Expr::Stack4 { exprs: [exprs[0], exprs[1], exprs[2], exprs[3]] }),
-                5 => self.intern(Expr::Stack5 { exprs: [exprs[0], exprs[1], exprs[2], exprs[3], exprs[4]] }),
-                _ => self.intern(Expr::Stack { exprs: exprs.into_boxed_slice() }),
+                2 => self.push(Expr::Stack2 { exprs: [exprs[0], exprs[1]] }),
+                3 => self.push(Expr::Stack3 { exprs: [exprs[0], exprs[1], exprs[2]] }),
+                4 => self.push(Expr::Stack4 { exprs: [exprs[0], exprs[1], exprs[2], exprs[3]] }),
+                5 => self.push(Expr::Stack5 { exprs: [exprs[0], exprs[1], exprs[2], exprs[3], exprs[4]] }),
+                _ => self.push(Expr::Stack { exprs: exprs.into_boxed_slice() }),
             };
             let tid = self.tensors.push(TensorData::Symbolic { expr, rc: 1 });
             // The stack node holds an edge to every element.
@@ -2176,7 +2196,7 @@ impl Runtime {
         // The shape operand is a TensorId handle; the result stores the
         // interned ExprId (append-only slab, no retain needed).
         let shape_expr = if shape_id == TensorId::NULL {
-            ExprId::NULL
+            ExprId::SCALAR
         } else {
             match self.tensors[shape_id] {
                 TensorData::Symbolic { expr, .. } => expr,
@@ -2254,7 +2274,7 @@ impl Runtime {
             // view-only reshape. The view retains x, so x (the owner)
             // outlives all its views and deallocates the buffer on death.
             if let Some(buf_id) = self.leaf_buffer(x) {
-                if !shape_expr.is_null() {}
+                if !shape_expr.is_scalar() {}
                 let dtype = self.dtype(x);
                 self.retain(x);
                 // The view is a second owner of the pool buffer: pool-level
@@ -2276,7 +2296,7 @@ impl Runtime {
             );
             let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
             let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op);
-            if !shape_expr.is_null() {}
+            if !shape_expr.is_scalar() {}
             let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
             debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
@@ -2294,7 +2314,7 @@ impl Runtime {
         // The shape operand is a TensorId handle; the result stores the
         // interned ExprId (append-only slab, no retain needed).
         let shape_expr = if shape_id == TensorId::NULL {
-            ExprId::NULL
+            ExprId::SCALAR
         } else {
             match self.tensors[shape_id] {
                 TensorData::Symbolic { expr, .. } => expr,
@@ -2359,7 +2379,7 @@ impl Runtime {
                 let val_op = self.replay_symbolic_into_kernel(kid, x);
                 let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);
                 let op_id = self.kernels[kid].kernel.expand(val_op, shape_op);
-                if !shape_expr.is_null() {}
+                if !shape_expr.is_scalar() {}
                 let tid = self.tensors.push(TensorData::Eager { kernel_id: kid, op_id, shape_id: shape_expr, dtype, rc: 1 });
                 self.kernels[kid].outputs.insert(tid);
                 #[cfg(feature = "debug_tensor_op")]
@@ -2425,7 +2445,7 @@ impl Runtime {
             let dims = self.shape(x);
             let permuted = crate::shape::permute(&dims, &axes);
             if permuted.is_empty() {
-                ExprId::NULL
+                ExprId::SCALAR
             } else {
                 let stacked = self.stack(&permuted).expect("permute: failed to build shape stack");
                 let expr = match self.tensors[stacked] {
@@ -2740,7 +2760,7 @@ impl Runtime {
             | TensorData::Promoted { shape_id, .. } => shape_id,
             ref t => todo!("flip of pure-slab tensor {t:?}"),
         };
-        if shape_id != ExprId::NULL {}
+        if shape_id != ExprId::SCALAR {}
 
         match self.tensors[x] {
             TensorData::Graph { class_id, graph_id, dtype, .. }
@@ -4372,7 +4392,7 @@ mod leak_tests {
                     TensorData::Eager { shape_id, .. }
                     | TensorData::Graph { shape_id, .. }
                     | TensorData::Promoted { shape_id, .. } => {
-                        if !shape_id.is_null() {
+                        if !shape_id.is_scalar() {
                             *expected.entry(*shape_id).or_insert(0) += 1;
                         }
                     }

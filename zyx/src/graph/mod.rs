@@ -147,6 +147,10 @@ pub enum Node {
         vec: OpId,
         idx: usize,
     },
+    ReduceLast {
+        x: OpId,
+        rop: BOp,
+    },
     Reduce {
         x: OpId,
         rop: BOp,
@@ -1693,7 +1697,7 @@ impl Runtime {
                 self.leaf_buffer(tid).is_some(),
                 "promote_to_graph: Leaf {tid} has no buffer (pending store not realized)"
             );
-            let shape_class = if shape_id.is_null() {
+            let shape_class = if shape_id.is_scalar() {
                 OpId::NULL
             } else {
                 // replay_symbolic_into_graph takes a TensorId handle: mint a
@@ -1739,7 +1743,7 @@ impl Runtime {
             };
             let class_id = self.replay_symbolic_into_graph(graph_id, tid);
             let shape_id = if rank == 0 {
-                ExprId::NULL
+                ExprId::SCALAR
             } else {
                 let stacked = self.new_constant_tensor(Constant::idx(rank as i64));
                 let shape_expr = match self.tensors[stacked] {

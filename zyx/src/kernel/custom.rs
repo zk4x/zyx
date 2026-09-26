@@ -1151,7 +1151,7 @@ impl Runtime {
             for shape in shapes.iter() {
                 if shape.is_empty() {
                     shape_classes.push(OpId::NULL);
-                    shape_ids.push(ExprId::NULL);
+                    shape_ids.push(ExprId::SCALAR);
                     continue;
                 }
                 let sid = self.stack(shape)?;
@@ -1323,7 +1323,7 @@ impl Runtime {
             let dim_tids: Vec<TensorId> =
                 shape.iter().map(|&d| self.new_constant_tensor(crate::dtype::Constant::idx(d))).collect();
             let shape_id = if dim_tids.is_empty() {
-                ExprId::NULL
+                ExprId::SCALAR
             } else {
                 let stacked = self.stack(&dim_tids).expect("custom kernel output: failed to build shape stack");
                 let expr = match self.tensors[stacked] {

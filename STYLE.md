@@ -17,10 +17,6 @@
 
 Simplicity is the ultimate goal. The best metric is usefulness divided by lines of code. Lines of code matter only if the code is readable — short unreadable code is no good.
 
-### Explicit over implicit
-
-Use explicit return to make code more readable. The rule of thumb: if you are not sure what is going on, make the code more explicit until you know without thinking. If the code makes perfect sense and feels too verbose, make it more implicit.
-
 ### Debuggable over clean
 
 Don't write "clean code." Write debuggable code — understandable code.
@@ -102,7 +98,6 @@ Interface with hardware in very specific places. In zyx, each backend is fully i
 - **Asserts**: Use debug asserts everywhere. Any time an invariant should hold, assert it. This includes maximum sizes, memory limits, and any program constraints.
 - **Documentation**: Document everything, even obvious things. Documentation is easier to remove than to add. Aim for ~20% comments (50% in complex code). Update comments as code gets more concise.
 - **Inheritance**: Don't use it.
-- **Returns**: Use explicit return keyword.
 
 ## Metrics
 
