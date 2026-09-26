@@ -1424,8 +1424,9 @@ impl Runtime {
         // broadcast to equal shapes by the time they reach a binary op: any
         // non-scalar broadcasting is performed upstream by `Tensor::broadcast`.
         // `Node::Binary` / `Kernel::binary` do NOT broadcast.
-        let rx = self.resolve_shape(x).len();
-        let ry = self.resolve_shape(y).len();
+        // Rank only: no dim is resolved, nothing is minted.
+        let rx = self.tensor_rank(x);
+        let ry = self.tensor_rank(y);
         if !(rx == 0 || ry == 0) {
             debug_assert_eq!(
                 self.resolve_shape(x),
@@ -2077,93 +2078,83 @@ impl Runtime {
 
         let dtype = self.dtype(x);
 
-        if self.is_graph(x) || self.is_graph(shape_id) {
-            let graph_id = if self.is_graph(x) {
-                match self.tensors[x] {
-                    TensorData::Graph { graph_id, .. }
-                    | TensorData::GraphLeaf { graph_id, .. }
-                    | TensorData::Promoted { graph_id, .. } => graph_id,
-                    ref t => unreachable!("{t:?}"),
-                }
-            } else {
-                match self.tensors[shape_id] {
-                    TensorData::Graph { graph_id, .. }
-                    | TensorData::GraphLeaf { graph_id, .. }
-                    | TensorData::Promoted { graph_id, .. } => graph_id,
-                    ref t => unreachable!("{t:?}"),
-                }
-            };
-            self.assert_graph_alive(graph_id);
-            if !self.is_graph(x) {
-                self.promote_to_graph(x, graph_id)?;
-            }
-            let x_class = match self.tensors[x] {
-                TensorData::Graph { class_id, .. }
-                | TensorData::GraphLeaf { class_id, .. }
-                | TensorData::Promoted { class_id, .. } => class_id,
+        // Normalize: a slab-side value reshaped by a graph-side shape joins
+        // that graph first, so the dispatch below sees a graph `x` whenever
+        // any graph is involved.
+        if !self.is_graph(x) && self.is_graph(shape_id) {
+            let graph_id = match self.tensors[shape_id] {
+                TensorData::Graph { graph_id, .. }
+                | TensorData::GraphLeaf { graph_id, .. }
+                | TensorData::Promoted { graph_id, .. } => graph_id,
                 ref t => unreachable!("{t:?}"),
             };
-            // The target shape enters the graph: a graph-affiliated shape is
-            // used directly (same scope asserted); a slab-side symbolic
-            // expression is promoted node by node.
-            let shape_class = match self.tensors[shape_id] {
-                TensorData::Graph { class_id, graph_id: g, .. }
-                | TensorData::GraphLeaf { class_id, graph_id: g, .. }
-                | TensorData::Promoted { class_id, graph_id: g, .. } => {
-                    assert!(g == graph_id, "reshape: shape belongs to a different tape scope");
-                    class_id
-                }
-                TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, shape_id),
-                TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
-                    panic!("reshape: shape operand {shape_id} is a data tensor, not a symbolic shape")
-                }
-            };
-            let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape: shape_class });
-            {
-                self.graphs[graph_id].ref_count += 1;
+            self.assert_graph_alive(graph_id);
+            self.promote_to_graph(x, graph_id)?;
+        }
 
+        match self.tensors[x] {
+            TensorData::Graph { class_id: x_class, graph_id, dtype, .. }
+            | TensorData::GraphLeaf { class_id: x_class, graph_id, dtype, .. }
+            | TensorData::Promoted { class_id: x_class, graph_id, dtype, .. } => {
+                self.assert_graph_alive(graph_id);
+                // The target shape enters the graph: a graph-affiliated shape is
+                // used directly (same scope asserted); a slab-side symbolic
+                // expression is promoted node by node.
+                let shape_class = match self.tensors[shape_id] {
+                    TensorData::Graph { class_id, graph_id: g, .. }
+                    | TensorData::GraphLeaf { class_id, graph_id: g, .. }
+                    | TensorData::Promoted { class_id, graph_id: g, .. } => {
+                        assert!(g == graph_id, "reshape: shape belongs to a different tape scope");
+                        class_id
+                    }
+                    TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, shape_id),
+                    TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
+                        panic!("reshape: shape operand {shape_id} is a data tensor, not a symbolic shape")
+                    }
+                };
+                let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape: shape_class });
+                self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id: shape_expr, dtype, rc: 1 });
                 Ok(tid)
             }
-        } else {
-            // If x is realized, the result is a **Leaf** sharing x's buffer:
-            // a view is not an operation, so no kernel is created and nothing
-            // is listed in any kernel's outputs — consumers mint their own
-            // load kernels via `new_kernel_from_leaf`. This avoids copying data for a
-            // view-only reshape. The view retains x, so x (the owner)
-            // outlives all its views and deallocates the buffer on death.
-            if let Some(buf_id) = self.leaf_buffer(x) {
-                if !shape_expr.is_scalar() {}
-                let dtype = self.dtype(x);
-                self.retain(x);
-                // The view is a second owner of the pool buffer: pool-level
-                // retain pairs with the release in the Leaf death path, so a
-                // dying view never frees the owner's buffer early.
-                buf_id.pool.retain(buf_id.buffer_id);
-                let tid = self.tensors.push(TensorData::Leaf { shape_id: shape_expr, dtype, buffer: buf_id, rc: 1 });
+            TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } | TensorData::Symbolic { .. } => {
+                // If x is realized, the result is a **Leaf** sharing x's buffer:
+                // a view is not an operation, so no kernel is created and nothing
+                // is listed in any kernel's outputs — consumers mint their own
+                // load kernels via `new_kernel_from_leaf`. This avoids copying data for a
+                // view-only reshape. The view retains x, so x (the owner)
+                // outlives all its views and deallocates the buffer on death.
+                if let Some(buf_id) = self.leaf_buffer(x) {
+                    let dtype = self.dtype(x);
+                    self.retain(x);
+                    // The view is a second owner of the pool buffer: pool-level
+                    // retain pairs with the release in the Leaf death path, so a
+                    // dying view never frees the owner's buffer early.
+                    buf_id.pool.retain(buf_id.buffer_id);
+                    let tid = self.tensors.push(TensorData::Leaf { shape_id: shape_expr, dtype, buffer: buf_id, rc: 1 });
+                    #[cfg(feature = "debug_tensor_op")]
+                    println!("  -> eager: tid={tid} (Leaf, shares buffer with x={x})");
+                    return Ok(tid);
+                }
+
+                let (kernel_id, op_id) = self.duplicate_or_store(x, false)?;
+
+                debug_assert_eq!(
+                    self.kernels[kernel_id].outputs.len(),
+                    0,
+                    "input into reshape must have empty outputs before the shape kernel is merged"
+                );
+                let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
+                let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op);
+                let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
+
+                debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
+                self.kernels[kernel_id].outputs.insert(tid);
+
                 #[cfg(feature = "debug_tensor_op")]
-                println!("  -> eager: tid={tid} (Leaf, shares buffer with x={x})");
-                return Ok(tid);
+                println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+                Ok(tid)
             }
-
-            let (kernel_id, op_id) = self.duplicate_or_store(x, false)?;
-
-            debug_assert_eq!(
-                self.kernels[kernel_id].outputs.len(),
-                0,
-                "input into reshape must have empty outputs before the shape kernel is merged"
-            );
-            let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
-            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op);
-            if !shape_expr.is_scalar() {}
-            let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
-
-            debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
-            self.kernels[kernel_id].outputs.insert(tid);
-
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            Ok(tid)
         }
     }
 
@@ -2186,18 +2177,22 @@ impl Runtime {
             }
         };
         let dtype = self.dtype(x);
-        let sh = self.resolve_shape(x);
-        let target = self.resolve_symbolic_dims(shape_expr);
+        // Rank check only: no dim is resolved, nothing is minted.
         debug_assert!(
-            sh.len() <= target.len(),
-            "expand: input rank {} > target rank {}: {:?} -> {:?}",
-            sh.len(),
-            target.len(),
-            sh,
-            target
+            self.tensor_rank(x) <= self.rank(shape_expr),
+            "expand: input rank {} > target rank {}",
+            self.tensor_rank(x),
+            self.rank(shape_expr)
         );
-        for (old, new) in sh.iter().copied().rev().zip(target.iter().copied().rev()) {
-            debug_assert!(old == new || old == 1, "expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", sh, target);
+        // Dim compatibility needs concrete values, so it runs in debug
+        // builds only.
+        #[cfg(debug_assertions)]
+        {
+            let sh = self.resolve_shape(x);
+            let target = self.resolve_symbolic_dims(shape_expr);
+            for (old, new) in sh.iter().copied().rev().zip(target.iter().copied().rev()) {
+                assert!(old == new || old == 1, "expand: incompatible dims: {old} vs {new} in {sh:?} -> {target:?}");
+            }
         }
 
         match self.tensors[x] {
@@ -2238,25 +2233,35 @@ impl Runtime {
                 let val_op = self.replay_symbolic_into_kernel(kid, x);
                 let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);
                 let op_id = self.kernels[kid].kernel.expand(val_op, shape_op);
-                if !shape_expr.is_scalar() {}
                 let tid = self.tensors.push(TensorData::Eager { kernel_id: kid, op_id, shape_id: shape_expr, dtype, rc: 1 });
                 self.kernels[kid].outputs.insert(tid);
                 #[cfg(feature = "debug_tensor_op")]
                 println!("runtime::expand(x={x}) -> eager from slab: tid={tid}, kid={kid:?}, op_id={op_id:?}");
                 Ok(tid)
             }
-            TensorData::Eager { .. } | TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
-                let force_store = match self.tensors[x] {
-                    TensorData::Eager { kernel_id, op_id, .. } => self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id),
-                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => false,
-                    TensorData::Graph { .. }
-                    | TensorData::GraphLeaf { .. }
-                    | TensorData::Promoted { .. }
-                    | TensorData::Symbolic { .. } => {
-                        panic!("expand: operand tid {x} is not an eager tensor: {:?}", self.tensors[x])
-                    }
-                };
+            TensorData::Eager { kernel_id, op_id, .. } => {
+                let force_store = self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
                 let (kernel_id, op_id) = self.duplicate_or_store(x, force_store)?;
+
+                debug_assert_eq!(
+                    self.kernels[kernel_id].outputs.len(),
+                    0,
+                    "input into expand must have empty outputs before the shape kernel is merged"
+                );
+                let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
+                let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape_op);
+
+                let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
+
+                debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
+                self.kernels[kernel_id].outputs.insert(tid);
+
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+                Ok(tid)
+            }
+            TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
+                let (kernel_id, op_id) = self.duplicate_or_store(x, false)?;
 
                 debug_assert_eq!(
                     self.kernels[kernel_id].outputs.len(),
