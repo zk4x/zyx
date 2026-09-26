@@ -3750,6 +3750,16 @@ impl Tensor {
                 x = x.cast(y_dtype);
             } else if !x_scalar && y_scalar {
                 y = y.cast(x_dtype);
+            } else if x_scalar && y_scalar {
+                // Two scalars promote torch-style, always: with no shape
+                // to prefer, least_upper_dtype picks the result dtype.
+                let common_dtype = x_dtype.least_upper_dtype(y_dtype);
+                if x_dtype != common_dtype {
+                    x = x.cast(common_dtype);
+                }
+                if y_dtype != common_dtype {
+                    y = y.cast(common_dtype);
+                }
             } else {
                 return Err(ZyxError::dtype_error(
                     format!("Implicit casting disabled, binary inputs have different dtypes: {x_dtype} and {y_dtype}").into(),

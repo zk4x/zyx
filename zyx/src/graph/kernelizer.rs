@@ -201,15 +201,15 @@ impl Graph {
                 // Boundary input: load the class from storage, same as a leaf.
                 // A shape-NULL leaf is a scalar variable — replayed on demand
                 // by its consumers, never materialized.
-                if matches!(&self.nodes[nid].node, Node::Leaf { shape, .. } if shape.is_null()) {
+                if matches!(&self.nodes[nid].node, Node::Leaf { shape, dtype, .. } if shape.is_null() && dtype == &IDX_T) {
                     continue;
                 }
                 let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
                 visited.insert(cid, (kid, op_id));
             } else {
                 match self.nodes[nid].node {
-                    Node::Leaf { shape, .. } => {
-                        if shape.is_null() {
+                    Node::Leaf { shape, dtype, .. } => {
+                        if shape.is_null() && dtype == IDX_T {
                             // Scalar dim variable: replayed on demand by its
                             // consumers, never materialized.
                         } else {
@@ -217,7 +217,10 @@ impl Graph {
                             // The leaf's shape edge is consumed here: the
                             // shape class is replayed into this load kernel
                             // (inside new_load_kernel), never visited.
-                            *rcs.get_mut(&shape).unwrap() -= 1;
+                            // Scalar data leaves have no shape edge.
+                            if !shape.is_null() {
+                                *rcs.get_mut(&shape).unwrap() -= 1;
+                            }
                             visited.insert(cid, (kid, op_id));
                         }
                     }

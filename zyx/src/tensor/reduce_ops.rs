@@ -137,7 +137,8 @@ impl Tensor {
                 } else {
                     self.sum(axes)?
                 };
-                x / n_t.cast(x_dtype)
+                let xd = x.dtype();
+                x / n_t.cast(xd)
             }
             ReduceOp::Var => {
                 if let Some(dtype) = dtype {
@@ -145,13 +146,15 @@ impl Tensor {
                     let shape_dims: Vec<Dim> = axes_vec.iter().map(|&a| shape[a]).collect();
                     let d =
                         Axis::try_from(shape_dims.iter().product::<Dim>() as u64).unwrap() - Axis::try_from(correction).unwrap();
-                    (x.clone() * x).sum_dtype(axes, dtype)? / Tensor::from(d).cast(x_dtype)
+                    (x.clone() * x).sum_dtype(axes, dtype)? / Tensor::from(d).cast(dtype)
                 } else {
                     let x = self - self.mean_keepdim(axes.clone())?;
                     let shape_dims: Vec<Dim> = axes_vec.iter().map(|&a| shape[a]).collect();
                     let d =
                         Axis::try_from(shape_dims.iter().product::<Dim>() as u64).unwrap() - Axis::try_from(correction).unwrap();
-                    (x.clone() * x).sum(axes)? / Tensor::from(d).cast(x_dtype)
+                    let num = (x.clone() * x).sum(axes)?;
+                    let nd = num.dtype();
+                    num / Tensor::from(d).cast(nd)
                 }
             }
             ReduceOp::Std => {

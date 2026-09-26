@@ -773,9 +773,11 @@ impl Kernel {
                             let n = x_shape.len();
                             let out_view = views[&op_id].clone();
                             let view = if n == 0 {
-                                // Scalar input broadcasts to every axis: the whole
-                                // output view (including its mask) propagates.
-                                out_view
+                                // Scalar input broadcasts to every axis: it reads
+                                // a single element, so its view is empty (load
+                                // index 0), not the output view. The output
+                                // mask propagates so padded regions read zero.
+                                SView { dims: Vec::new(), mask: out_view.mask }
                             } else {
                                 let mut v = Vec::with_capacity(n);
                                 for a in 0..n {
@@ -915,8 +917,20 @@ impl Kernel {
                 }
                 Op::Binary { x, y, .. } => {
                     if let Some(view) = views.get(&op_id).cloned() {
-                        views.insert(x, view.clone());
-                        views.insert(y, view);
+                        // Scalar operands broadcast: they read a single
+                        // element, so their view is empty (load index 0),
+                        // not the output view. The output mask is inherited
+                        // so padded regions still read zero.
+                        if self.shape(x).is_empty() {
+                            views.insert(x, SView { dims: Vec::new(), mask: view.mask.clone() });
+                        } else {
+                            views.insert(x, view.clone());
+                        }
+                        if self.shape(y).is_empty() {
+                            views.insert(y, SView { dims: Vec::new(), mask: view.mask });
+                        } else {
+                            views.insert(y, view);
+                        }
                     }
                 }
                 Op::Range { .. } => {}
