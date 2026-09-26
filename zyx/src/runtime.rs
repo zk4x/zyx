@@ -1200,7 +1200,7 @@ impl Runtime {
         let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer: buffer_id, rc: 1 });
 
         #[cfg(feature = "debug_tensor_op")]
-        println!("  -> tid={tid}, shape={:?} dtype={}", self.shape(tid), self.dtype(tid));
+        println!("  -> tid={tid}, shape={:?} dtype={}", self.resolve_shape(tid), self.dtype(tid));
         Ok(tid)
     }
 
@@ -1976,26 +1976,26 @@ impl Runtime {
             let (_, class_id) = self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() });
             {
                 // Result shape mirrors the eager arm: [len] ++ first operand's
-                // dims, as a slab stack.
-                let len_const = self.new_constant_tensor(Constant::idx(tensors.len() as i64));
-                let mut shape_dims = Vec::with_capacity(tensors.len() + 1);
-                shape_dims.push(len_const);
-                shape_dims.extend(self.shape(tensors[0]));
-                let stacked = self.stack(&shape_dims)?;
-                self.release(len_const);
-                let shape_id = match self.tensors[stacked] {
-                    TensorData::Symbolic { expr, .. } => expr,
-                    ref t => panic!("stack: shape tid {stacked} is not symbolic: {t:?}"),
+                // dims. Same reachable set as the ops loop above: graph
+                // operands carry their shape, a symbolic operand is a scalar
+                // const with no dims.
+                let first_shape = match self.tensors[tensors[0]] {
+                    TensorData::Graph { shape_id, .. } | TensorData::Promoted { shape_id, .. } => shape_id,
+                    TensorData::Symbolic { .. } => ExprId::SCALAR,
+                    ref t => todo!("stack: first operand tid {} ({t:?})", tensors[0]),
                 };
-                self.release(stacked);
+                let len_expr = self.push(Expr::Constant { value: Constant::idx(tensors.len() as i64) });
+                let shape_id = self.stack_prefix_shape(len_expr, first_shape);
                 self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 Ok(tid)
             }
         } else {
-            let keep_kid = match self.tensors[tensors[0]] {
-                TensorData::Eager { kernel_id, .. } => kernel_id,
-                TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(tensors[0]).0,
+            let (keep_kid, first_shape) = match self.tensors[tensors[0]] {
+                TensorData::Eager { kernel_id, shape_id, .. } => (kernel_id, shape_id),
+                TensorData::Leaf { shape_id, .. } | TensorData::PendingLeaf { shape_id, .. } => {
+                    (self.new_kernel_from_leaf(tensors[0]).0, shape_id)
+                }
                 TensorData::Graph { .. }
                 | TensorData::GraphLeaf { .. }
                 | TensorData::Promoted { .. }
@@ -2036,18 +2036,10 @@ impl Runtime {
             }
             let op_id = self.kernels[keep_kid].kernel.stack(&ops);
 
-            // Result shape: [len] ++ first operand's dims, as a slab stack.
-            let len_const = self.new_constant_tensor(Constant::idx(tensors.len() as i64));
-            let mut shape_dims = Vec::with_capacity(tensors.len() + 1);
-            shape_dims.push(len_const);
-            shape_dims.extend(self.shape(tensors[0]));
-            let stacked = self.stack(&shape_dims)?;
-            self.release(len_const);
-            let shape_id = match self.tensors[stacked] {
-                TensorData::Symbolic { expr, .. } => expr,
-                ref t => panic!("stack: shape tid {stacked} is not symbolic: {t:?}"),
-            };
-            self.release(stacked);
+            // Result shape: [len] ++ first operand's dims (`first_shape`
+            // bound in the keep_kid match above).
+            let len_expr = self.push(Expr::Constant { value: Constant::idx(tensors.len() as i64) });
+            let shape_id = self.stack_prefix_shape(len_expr, first_shape);
 
             let tid = self.tensors.push(TensorData::Eager { kernel_id: keep_kid, op_id, shape_id, dtype, rc: 1 });
             self.kernels[keep_kid].outputs.insert(tid);
@@ -2290,52 +2282,28 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::permute(x={x}, axes={axes:?})");
         self.verify_tensor_invariants();
-        let sh = self.resolve_shape(x).to_vec();
-        debug_assert_eq!(axes.len(), sh.len(), "permute: axes length {} != rank {}", axes.len(), sh.len());
+        // Rank only: no dim is resolved, nothing is minted.
+        let rank = self.tensor_rank(x);
+        debug_assert_eq!(axes.len() as Dim, rank, "permute: axes length {} != rank {}", axes.len(), rank);
         {
             let mut sorted = axes.clone();
             sorted.sort();
             debug_assert!(
-                sorted.iter().copied().eq(0..sh.len() as UAxis),
-                "permute: axes not a valid permutation: {axes:?} for rank {}",
-                sh.len()
+                sorted.iter().copied().eq(0..rank as UAxis),
+                "permute: axes not a valid permutation: {axes:?} for rank {rank}",
             );
         }
-        if axes.iter().copied().eq(0..sh.len() as UAxis) {
+        if axes.iter().copied().eq(0..rank as UAxis) {
             self.retain(x);
             return x;
         }
 
-        // Result shape: x's dims in the new axis order. The stack's expr is
-        // stored (append-only slab); the transient handle is released.
-        let shape_id = {
-            let dims = self.shape(x);
-            let permuted = crate::shape::permute(&dims, &axes);
-            if permuted.is_empty() {
-                ExprId::SCALAR
-            } else {
-                let stacked = self.stack(&permuted).expect("permute: failed to build shape stack");
-                let expr = match self.tensors[stacked] {
-                    TensorData::Symbolic { expr, .. } => expr,
-                    TensorData::Eager { .. }
-                    | TensorData::Leaf { .. }
-                    | TensorData::PendingLeaf { .. }
-                    | TensorData::Graph { .. }
-                    | TensorData::GraphLeaf { .. }
-                    | TensorData::Promoted { .. } => {
-                        panic!("permute: shape tid {stacked} is not symbolic: {:?}", self.tensors[stacked])
-                    }
-                };
-                self.release(stacked);
-                expr
-            }
-        };
-
         match self.tensors[x] {
-            TensorData::Graph { class_id, graph_id, dtype, .. }
-            | TensorData::GraphLeaf { class_id, graph_id, dtype, .. }
-            | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
+            TensorData::Graph { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
+                let shape_id = self.permute_shape(shape_id, &axes);
                 let (_, class_id) = self.push_node(graph_id, Node::Permute { x: class_id, axes: axes.into_boxed_slice() });
                 self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
@@ -2343,7 +2311,10 @@ impl Runtime {
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
                 tid
             }
-            TensorData::Eager { dtype, .. } | TensorData::Leaf { dtype, .. } | TensorData::PendingLeaf { dtype, .. } => {
+            TensorData::Eager { shape_id, dtype, .. }
+            | TensorData::Leaf { shape_id, dtype, .. }
+            | TensorData::PendingLeaf { shape_id, dtype, .. } => {
+                let shape_id = self.permute_shape(shape_id, &axes);
                 let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
                 let op_id = self.kernels[kernel_id]
                     .kernel
@@ -2366,8 +2337,8 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::pad_zeros(x={x}, axis={axis}, lp={lp}, len={len})");
         self.verify_tensor_invariants();
-        let rank = self.resolve_shape(x).len();
-        debug_assert!((axis as usize) < rank, "pad_zeros axis {axis} out of bounds for rank {rank}");
+        // No rank assert here: pad_zeros_shape indexes the axis and fails
+        // loudly on its own.
         debug_assert!(
             self.resolve_shape(lp).is_empty() || self.resolve_shape(lp) == [1],
             "pad_zeros lp must be scalar, got {:?}",
@@ -2386,34 +2357,21 @@ impl Runtime {
             self.dtype(len)
         );
 
-        // Result shape: x's dims with the padded axis replaced by `len`
-        // directly (total-length semantics). The stack's expr is stored
-        // (append-only slab); the transient handle is released.
-        let shape_id = {
-            let mut dims = self.shape(x);
-            dims[axis as usize] = len;
-            self.retain(len);
-            let stacked = self.stack(&dims).expect("pad_zeros: failed to build shape stack");
-            let expr = match self.tensors[stacked] {
-                TensorData::Symbolic { expr, .. } => expr,
-                TensorData::Eager { .. }
-                | TensorData::Leaf { .. }
-                | TensorData::PendingLeaf { .. }
-                | TensorData::Graph { .. }
-                | TensorData::GraphLeaf { .. }
-                | TensorData::Promoted { .. } => {
-                    panic!("pad_zeros: shape tid {stacked} is not symbolic: {:?}", self.tensors[stacked])
-                }
-            };
-            self.release(stacked);
-            expr
+        // The `len` bound is a shape expression, read straight off the
+        // slab (no TensorIds minted).
+        let len_expr = match self.tensors[len] {
+            TensorData::Symbolic { expr, .. } => expr,
+            ref t => panic!("pad_zeros: len tid {len} is not symbolic: {t:?}"),
         };
 
         match self.tensors[x] {
-            TensorData::Graph { class_id, graph_id, dtype, .. }
-            | TensorData::GraphLeaf { class_id, graph_id, dtype, .. }
-            | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
+            TensorData::Graph { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
+                // Result shape: x's dims with the padded axis replaced by
+                // `len` (total-length semantics).
+                let shape_id = self.pad_zeros_shape(shape_id, axis, len_expr);
                 let lp_class = match self.tensors[lp] {
                     TensorData::Graph { class_id, graph_id: g, .. }
                     | TensorData::GraphLeaf { class_id, graph_id: g, .. }
@@ -2445,7 +2403,12 @@ impl Runtime {
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
                 tid
             }
-            TensorData::Eager { dtype, .. } | TensorData::Leaf { dtype, .. } | TensorData::PendingLeaf { dtype, .. } => {
+            TensorData::Eager { shape_id, dtype, .. }
+            | TensorData::Leaf { shape_id, dtype, .. }
+            | TensorData::PendingLeaf { shape_id, dtype, .. } => {
+                // Result shape: x's dims with the padded axis replaced by
+                // `len` (total-length semantics).
+                let shape_id = self.pad_zeros_shape(shape_id, axis, len_expr);
                 // Duplicate only when the pad actually grows the tensor AND
                 // compute precedes it in the kernel (conv layers need this).
                 let len_const = self
@@ -2517,31 +2480,24 @@ impl Runtime {
             "narrow len must be scalar, got {:?}",
             self.resolve_shape(len)
         );
+        // No rank assert here: narrow_shape indexes the axis and fails
+        // loudly on its own.
 
-        let sh = self.resolve_shape(x).to_vec();
-        debug_assert!(axis < sh.len() as UAxis, "narrow: axis {axis} out of range for rank {}", sh.len());
-
-        // Result shape: x's dims with the narrowed axis replaced by `len`.
-        // The stack's expr is stored (append-only slab); the transient
-        // handle is released.
-        let shape_id = {
-            let mut dims = self.shape(x);
-            dims[axis as usize] = len;
-            self.retain(len);
-            let stacked = self.stack(&dims).expect("narrow: failed to build shape stack");
-            let expr = match self.tensors[stacked] {
-                TensorData::Symbolic { expr, .. } => expr,
-                ref t => panic!("narrow: shape tid {stacked} is not symbolic: {t:?}"),
-            };
-            self.release(stacked);
-            expr
+        // The `len` bound is a shape expression, read straight off the
+        // slab (no TensorIds minted).
+        let len_expr = match self.tensors[len] {
+            TensorData::Symbolic { expr, .. } => expr,
+            ref t => panic!("narrow: len tid {len} is not symbolic: {t:?}"),
         };
 
         match self.tensors[x] {
-            TensorData::Graph { class_id, graph_id, dtype, .. }
-            | TensorData::GraphLeaf { class_id, graph_id, dtype, .. }
-            | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
+            TensorData::Graph { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
+                // Result shape: x's dims with the narrowed axis replaced
+                // by `len`.
+                let shape_id = self.narrow_shape(shape_id, axis, len_expr);
                 let start_class = match self.tensors[start] {
                     TensorData::Graph { class_id, graph_id: g, .. }
                     | TensorData::GraphLeaf { class_id, graph_id: g, .. }
@@ -2574,7 +2530,12 @@ impl Runtime {
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
                 tid
             }
-            TensorData::Eager { dtype, .. } | TensorData::Leaf { dtype, .. } | TensorData::PendingLeaf { dtype, .. } => {
+            TensorData::Eager { shape_id, dtype, .. }
+            | TensorData::Leaf { shape_id, dtype, .. }
+            | TensorData::PendingLeaf { shape_id, dtype, .. } => {
+                // Result shape: x's dims with the narrowed axis replaced
+                // by `len`.
+                let shape_id = self.narrow_shape(shape_id, axis, len_expr);
                 let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
                 debug_assert_eq!(
                     self.kernels[kernel_id].outputs.len(),
@@ -2606,7 +2567,7 @@ impl Runtime {
         println!("runtime::flip(x={x}, axes={axes:?})");
         self.verify_tensor_invariants();
 
-        let sh = self.resolve_shape(x).to_vec();
+        let sh = self.resolve_shape(x);
         if axes.is_empty() {
             return Err(ZyxError::shape_error(format!("flip: axes must not be empty for tensor of shape {sh:?}").into()));
         }

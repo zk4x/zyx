@@ -903,15 +903,19 @@ pub enum TTOp {
         /// lowering, filled when the init pass places `TransposeInit`).
         out: Option<CBId>,
     },
-    /// Fused matmul: `matmul_tiles(cb_a, cb_b, acc, acc, acc)`
-    /// (inputs stay in CBs, accumulate into the acc slot).
+    /// Fused matmul: `matmul_tiles(cb_a, cb_b, in0, in1, acc)`
+    /// (inputs stay in CBs, accumulate into the DST acc slot).
     TileMatmul {
-        /// Accumulator DST slot (also the result).
+        /// Accumulator DST slot (also the result, `idst`).
         acc: TileId,
         /// Left input circular buffer.
         cb_a: CBId,
         /// Right input circular buffer.
         cb_b: CBId,
+        /// Left CB tile slot (`in0_tile_index`, front-relative).
+        in0: VarId,
+        /// Right CB tile slot (`in1_tile_index`, front-relative).
+        in1: VarId,
         /// Left source `Op::Load` op: sharing-group identity (same
         /// load feeding several matmuls = one tile, see `WaitGroup`).
         x_load: OpId,
@@ -1153,6 +1157,9 @@ impl Compiler {
         }
         let mut ops = vec![TTOp::DstMode { bf16: dst_bf16 }];
         let mut use_counts: Map<(CBId, OpId), u32> = Map::default();
+        // CB depth in 1024-element tiles, for front-relative slot
+        // bounds checks on indexed consumers (`TileMatmul`).
+        let mut cb_tiles: Map<CBId, u32> = Map::default();
         for (cb, &st) in cb_order.iter().enumerate() {
             let Op::Storage { dtype, len, .. } = kernel.ops[st].op else {
                 return Err(BackendError {
@@ -1182,6 +1189,7 @@ impl Compiler {
                 });
             }
             ops.push(TTOp::CbDeclare { cb: CBId(cb as u32), n_tiles: (len / 1024) as u32, format: cb_fmt(dtype)? });
+            cb_tiles.insert(CBId(cb as u32), (len / 1024) as u32);
         }
         // A side resolving to a compile-time float constant (follows
         // const expressions): folds into a `*_unary_tile` immediate.
@@ -2043,7 +2051,7 @@ impl Compiler {
                         ops.push(TTOp::TileReduce { acc: acc_slot, cb_in, cb_sc, rop: *rop, kind: *kind });
                     }
                     Op::MatmulTile { x, y, acc } => {
-                        let Op::Load { src: la, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*x].op else {
+                        let Op::Load { src: la, index: ia, layout: MemLayout::Tile { .. } } = kernel.ops[*x].op else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
                                 context: format!("tenstorrent2: matmul side op {x} is no CB tile load").into(),
@@ -2055,7 +2063,7 @@ impl Compiler {
                                 context: format!("tenstorrent2: matmul side op {x} targets unmapped CB").into(),
                             })
                         };
-                        let Op::Load { src: lb, layout: MemLayout::Tile { .. }, .. } = kernel.ops[*y].op else {
+                        let Op::Load { src: lb, index: ib, layout: MemLayout::Tile { .. } } = kernel.ops[*y].op else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
                                 context: format!("tenstorrent2: matmul side op {y} is no CB tile load").into(),
@@ -2067,6 +2075,25 @@ impl Compiler {
                                 context: format!("tenstorrent2: matmul side op {y} targets unmapped CB").into(),
                             })
                         };
+                        // Front-relative CB slots come from the side loads'
+                        // own index operands. Constant slots must fit the CB
+                        // depth, or the firmware reads out of bounds.
+                        if let Some(slot) = const_shift_amt(ia) {
+                            debug_assert!(
+                                slot < cb_tiles[&cb_a],
+                                "tenstorrent2: matmul in0 slot {slot} OOB for CB{cb_a} depth {}",
+                                cb_tiles[&cb_a]
+                            );
+                        }
+                        if let Some(slot) = const_shift_amt(ib) {
+                            debug_assert!(
+                                slot < cb_tiles[&cb_b],
+                                "tenstorrent2: matmul in1 slot {slot} OOB for CB{cb_b} depth {}",
+                                cb_tiles[&cb_b]
+                            );
+                        }
+                        let in0 = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, ia)?;
+                        let in1 = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, ib)?;
                         let Op::Load { src: lacc, .. } = kernel.ops[*acc].op else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
@@ -2082,7 +2109,7 @@ impl Compiler {
                         tiles.insert(id, tile);
                         *use_counts.entry((cb_a, *x)).or_default() += 1;
                         *use_counts.entry((cb_b, *y)).or_default() += 1;
-                        ops.push(TTOp::TileMatmul { acc: tile, cb_a, cb_b, x_load: *x, y_load: *y, out: None });
+                        ops.push(TTOp::TileMatmul { acc: tile, cb_a, cb_b, in0, in1, x_load: *x, y_load: *y, out: None });
                     }
                     Op::TransposeTile { x } => {
                         let Op::Load { src: lx, layout: MemLayout::Tile { x: wx, y: hx, .. }, .. } = kernel.ops[*x].op else {
@@ -4619,8 +4646,10 @@ impl Compiler {
                 TTOp::TileTranspose { dst, cb, .. } => {
                     writeln!(out, "{ind}transpose_wh_tile({cb}, 0, {});", dst.0)?;
                 }
-                TTOp::TileMatmul { acc, cb_a, cb_b, .. } => {
-                    writeln!(out, "{ind}matmul_tiles({cb_a}, {cb_b}, {}, {}, {});", acc.0, acc.0, acc.0)?;
+                TTOp::TileMatmul { acc, cb_a, cb_b, in0, in1, .. } => {
+                    let a = operand(&const_vals, &reg, s, *in0)?;
+                    let b = operand(&const_vals, &reg, s, *in1)?;
+                    writeln!(out, "{ind}matmul_tiles({cb_a}, {cb_b}, {a}, {b}, {});", acc.0)?;
                 }
                 TTOp::TileReduce { acc, cb_in, cb_sc, rop, kind } => {
                     let (op_name, dim_name) = match rop {
@@ -5266,6 +5295,14 @@ impl Kernel {
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(y).or_insert(0) += 1;
                         *rcs.entry(acc).or_insert(0) += 1;
+                        // Each matmul consumes its sides' CB-slot indices
+                        // once (lowered to `in0`/`in1` via `use_var` at
+                        // emission, alongside the `Load`-edge count above).
+                        for side in [x, y] {
+                            if let Op::Load { index, .. } = self.ops[side].op {
+                                *rcs.entry(index).or_insert(0) += 1;
+                            }
+                        }
                     }
                     Op::TransposeTile { x } => {
                         dtypes.insert(op_id, dtypes[&x]);

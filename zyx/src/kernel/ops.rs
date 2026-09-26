@@ -450,6 +450,8 @@ pub struct OpLinked {
     pub op: Op,
 }
 
+const _: () = assert!(core::mem::size_of::<OpLinked>() == 32);
+
 /// Operation ID for kernel operations.
 ///
 /// This is a unique identifier for each operation in the kernel IR.

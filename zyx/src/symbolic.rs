@@ -22,7 +22,7 @@ use crate::{
     graph::{GraphId, Node},
     kernel::{BOp, IDX_T, Op, OpId, UOp},
     runtime::{KernelId, ResolvedDim, Runtime, TensorData},
-    shape::Dim,
+    shape::{Dim, UAxis},
     slab::SlabId,
     tensor::TensorId,
 };
@@ -806,5 +806,204 @@ impl Runtime {
                 _ => self.push(Expr::Stack { exprs: exprs[0..exprs.len() - 1].into() }),
             },
         }
+    }
+
+    /// Returns shape for permute of `axes` applied to `shape_id`: the dims
+    /// in the new axis order. A bare dim expression is a rank-1 shape, which
+    /// permute leaves alone; a scalar stays a scalar.
+    pub fn permute_shape(&mut self, shape_id: ExprId, axes: &[UAxis]) -> ExprId {
+        if shape_id.is_scalar() {
+            return ExprId::SCALAR;
+        }
+        match self.exprs[shape_id] {
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+                shape_id
+            }
+            Expr::Stack2 { exprs } => {
+                let permuted = [exprs[axes[0] as usize], exprs[axes[1] as usize]];
+                self.push(Expr::Stack2 { exprs: permuted })
+            }
+            Expr::Stack3 { exprs } => {
+                let permuted = [exprs[axes[0] as usize], exprs[axes[1] as usize], exprs[axes[2] as usize]];
+                self.push(Expr::Stack3 { exprs: permuted })
+            }
+            Expr::Stack4 { exprs } => {
+                let permuted =
+                    [exprs[axes[0] as usize], exprs[axes[1] as usize], exprs[axes[2] as usize], exprs[axes[3] as usize]];
+                self.push(Expr::Stack4 { exprs: permuted })
+            }
+            Expr::Stack5 { exprs } => {
+                let permuted = [
+                    exprs[axes[0] as usize],
+                    exprs[axes[1] as usize],
+                    exprs[axes[2] as usize],
+                    exprs[axes[3] as usize],
+                    exprs[axes[4] as usize],
+                ];
+                self.push(Expr::Stack5 { exprs: permuted })
+            }
+            Expr::Stack { ref exprs } => {
+                let permuted: Vec<ExprId> = axes.iter().map(|&a| exprs[a as usize]).collect();
+                self.push(Expr::Stack { exprs: permuted.into() })
+            }
+        }
+    }
+
+    /// Returns shape for pad_zeros replacing the `axis` dim of `shape_id`
+    /// with `len` (total-length semantics). A bare dim expression is a
+    /// rank-1 shape, so `axis` must be 0 and the result is `len` itself.
+    pub fn pad_zeros_shape(&mut self, shape_id: ExprId, axis: UAxis, len: ExprId) -> ExprId {
+        if shape_id.is_scalar() {
+            panic!("pad_zeros of scalar tensor");
+        }
+        match self.exprs[shape_id] {
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+                debug_assert_eq!(axis, 0, "pad_zeros axis {axis} out of bounds for rank 1");
+                len
+            }
+            Expr::Stack2 { exprs } => {
+                let mut replaced = exprs;
+                replaced[axis as usize] = len;
+                self.push(Expr::Stack2 { exprs: replaced })
+            }
+            Expr::Stack3 { exprs } => {
+                let mut replaced = exprs;
+                replaced[axis as usize] = len;
+                self.push(Expr::Stack3 { exprs: replaced })
+            }
+            Expr::Stack4 { exprs } => {
+                let mut replaced = exprs;
+                replaced[axis as usize] = len;
+                self.push(Expr::Stack4 { exprs: replaced })
+            }
+            Expr::Stack5 { exprs } => {
+                let mut replaced = exprs;
+                replaced[axis as usize] = len;
+                self.push(Expr::Stack5 { exprs: replaced })
+            }
+            Expr::Stack { ref exprs } => {
+                let mut replaced = exprs.to_vec();
+                replaced[axis as usize] = len;
+                self.push(Expr::Stack { exprs: replaced.into() })
+            }
+        }
+    }
+
+    /// Returns shape for narrow replacing the `axis` dim of `shape_id` with
+    /// `len`. A bare dim expression is a rank-1 shape, so `axis` must be 0
+    /// and the result is `len` itself.
+    pub fn narrow_shape(&mut self, shape_id: ExprId, axis: UAxis, len: ExprId) -> ExprId {
+        if shape_id.is_scalar() {
+            panic!("narrow of scalar tensor");
+        }
+        match self.exprs[shape_id] {
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+                debug_assert_eq!(axis, 0, "narrow axis {axis} out of bounds for rank 1");
+                len
+            }
+            Expr::Stack2 { exprs } => {
+                let mut replaced = exprs;
+                replaced[axis as usize] = len;
+                self.push(Expr::Stack2 { exprs: replaced })
+            }
+            Expr::Stack3 { exprs } => {
+                let mut replaced = exprs;
+                replaced[axis as usize] = len;
+                self.push(Expr::Stack3 { exprs: replaced })
+            }
+            Expr::Stack4 { exprs } => {
+                let mut replaced = exprs;
+                replaced[axis as usize] = len;
+                self.push(Expr::Stack4 { exprs: replaced })
+            }
+            Expr::Stack5 { exprs } => {
+                let mut replaced = exprs;
+                replaced[axis as usize] = len;
+                self.push(Expr::Stack5 { exprs: replaced })
+            }
+            Expr::Stack { ref exprs } => {
+                let mut replaced = exprs.to_vec();
+                replaced[axis as usize] = len;
+                self.push(Expr::Stack { exprs: replaced.into() })
+            }
+        }
+    }
+
+    /// Returns shape for stack of `len` tensors with dims `shape_id`: `[len]`
+    /// prepended to the dims. A scalar operand contributes no dims, so the
+    /// result is the bare `len` dim (rank 1 skips the `Stack` node).
+    pub fn stack_prefix_shape(&mut self, len: ExprId, shape_id: ExprId) -> ExprId {
+        if shape_id.is_scalar() {
+            return len;
+        }
+        match self.exprs[shape_id] {
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+                self.push(Expr::Stack2 { exprs: [len, shape_id] })
+            }
+            Expr::Stack2 { exprs } => self.push(Expr::Stack3 { exprs: [len, exprs[0], exprs[1]] }),
+            Expr::Stack3 { exprs } => self.push(Expr::Stack4 { exprs: [len, exprs[0], exprs[1], exprs[2]] }),
+            Expr::Stack4 { exprs } => {
+                self.push(Expr::Stack5 { exprs: [len, exprs[0], exprs[1], exprs[2], exprs[3]] })
+            }
+            Expr::Stack5 { exprs } => {
+                self.push(Expr::Stack { exprs: [len, exprs[0], exprs[1], exprs[2], exprs[3], exprs[4]].into() })
+            }
+            Expr::Stack { ref exprs } => {
+                let mut prefixed = Vec::with_capacity(exprs.len() + 1);
+                prefixed.push(len);
+                prefixed.extend(exprs.iter().copied());
+                self.push(Expr::Stack { exprs: prefixed.into() })
+            }
+        }
+    }
+
+    /// Rank of the shape expression `shape_id` without resolving dims: 0
+    /// for scalars, 1 for bare dim expressions (1d shapes skip the `Stack`
+    /// node), else the stack arity.
+    pub fn rank(&self, shape_id: ExprId) -> Dim {
+        if shape_id.is_scalar() {
+            return 0;
+        }
+        match &self.exprs[shape_id] {
+            Expr::Constant { .. }
+            | Expr::Variable { .. }
+            | Expr::Cast { .. }
+            | Expr::Unary { .. }
+            | Expr::Binary { .. } => 1,
+            Expr::Stack2 { .. } => 2,
+            Expr::Stack3 { .. } => 3,
+            Expr::Stack4 { .. } => 4,
+            Expr::Stack5 { .. } => 5,
+            Expr::Stack { exprs } => exprs.len() as Dim,
+        }
+    }
+
+    /// Rank of tensor `x` without resolving dims or minting handles.
+    /// Exactly `resolve_shape(x).len()` minus the folding — the only rank
+    /// query movement-op validation needs.
+    pub fn tensor_rank(&self, x: TensorId) -> Dim {
+        let shape_id = match self.tensors[x] {
+            TensorData::Eager { shape_id, .. }
+            | TensorData::Leaf { shape_id, .. }
+            | TensorData::PendingLeaf { shape_id, .. }
+            | TensorData::Graph { shape_id, .. }
+            | TensorData::GraphLeaf { shape_id, .. }
+            | TensorData::Promoted { shape_id, .. } => shape_id,
+            // A symbolic holding a Stack is a shape-value tensor: 1d, rank 1.
+            // Any other symbolic is a scalar value: rank 0.
+            TensorData::Symbolic { expr, .. } => match &self.exprs[expr] {
+                Expr::Stack { .. }
+                | Expr::Stack2 { .. }
+                | Expr::Stack3 { .. }
+                | Expr::Stack4 { .. }
+                | Expr::Stack5 { .. } => return 1,
+                Expr::Constant { .. }
+                | Expr::Variable { .. }
+                | Expr::Cast { .. }
+                | Expr::Unary { .. }
+                | Expr::Binary { .. } => return 0,
+            },
+        };
+        self.rank(shape_id)
     }
 }
