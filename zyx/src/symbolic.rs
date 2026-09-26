@@ -19,7 +19,7 @@ use std::hash::BuildHasherDefault;
 use crate::{
     Map,
     dtype::{Constant, DType},
-    graph::{GraphId, Op},
+    graph::GraphId,
     kernel::{BOp, IDX_T, Op, OpId, UOp},
     runtime::{KernelId, ResolvedDim, Runtime, TensorData},
     shape::{Dim, UAxis},
@@ -733,11 +733,11 @@ impl Runtime {
                 }
                 Expr::Cast { x, dtype } => {
                     let a = class_map[&x];
-                    self.push_node(graph_id, Op::Cast { x: a, dtype }).1
+                    self.push_op(graph_id, Op::Cast { x: a, dtype })
                 }
                 Expr::Unary { x, uop } => {
                     let a = class_map[&x];
-                    self.push_node(graph_id, Op::Unary { x: a, uop }).1
+                    self.push_op(graph_id, Op::Unary { x: a, uop })
                 }
                 Expr::Binary { x, y, bop } => {
                     let a = class_map[&x];
@@ -749,7 +749,7 @@ impl Runtime {
                     match ops.len() {
                         0 => OpId::NULL,
                         1 => ops[0],
-                        _ => self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() }).1,
+                        _ => self.push_op(graph_id, Op::Stack { ops: ops.into_boxed_slice() }),
                     }
                 }
                 Expr::Stack2 { ref exprs } => {
@@ -757,7 +757,7 @@ impl Runtime {
                     match ops.len() {
                         0 => OpId::NULL,
                         1 => ops[0],
-                        _ => self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() }).1,
+                        _ => self.push_op(graph_id, Op::Stack { ops: ops.into_boxed_slice() }),
                     }
                 }
                 Expr::Stack3 { ref exprs } => {
@@ -765,7 +765,7 @@ impl Runtime {
                     match ops.len() {
                         0 => OpId::NULL,
                         1 => ops[0],
-                        _ => self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() }).1,
+                        _ => self.push_op(graph_id, Op::Stack { ops: ops.into_boxed_slice() }),
                     }
                 }
                 Expr::Stack4 { ref exprs } => {
@@ -773,7 +773,7 @@ impl Runtime {
                     match ops.len() {
                         0 => OpId::NULL,
                         1 => ops[0],
-                        _ => self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() }).1,
+                        _ => self.push_op(graph_id, Op::Stack { ops: ops.into_boxed_slice() }),
                     }
                 }
                 Expr::Stack5 { ref exprs } => {
@@ -781,7 +781,7 @@ impl Runtime {
                     match ops.len() {
                         0 => OpId::NULL,
                         1 => ops[0],
-                        _ => self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() }).1,
+                        _ => self.push_op(graph_id, Op::Stack { ops: ops.into_boxed_slice() }),
                     }
                 }
             };

@@ -184,9 +184,41 @@ pub enum Op {
     },
 
     // ops that exist before linearize and linearize converts them into these ops: index, loop and load
-    Move {
+    /// Reshape to a new shape.
+    Reshape {
         x: OpId,
-        mop: Box<MoveOp>,
+        shape: OpId,
+    },
+    /// Expand dimensions.
+    Expand {
+        x: OpId,
+        shape: OpId,
+    },
+    /// Permute axes.
+    Permute {
+        x: OpId,
+        axes: TinyVec<UAxis>,
+    },
+    /// Flip axes
+    Flip {
+        x: OpId,
+        axes: TinyVec<UAxis>,
+    },
+    /// Pad axis
+    /// Pad with `lp` zeros on the left, to total axis length `len`
+    /// (tinygrad convention). Right padding is `len - lp - orig_len`.
+    Pad {
+        x: OpId,
+        axis: UAxis,
+        lp: OpId,
+        len: OpId,
+    },
+    /// Slice axis
+    Narrow {
+        x: OpId,
+        axis: UAxis,
+        start: OpId,
+        len: OpId,
     },
     Reduce {
         x: OpId,
@@ -273,13 +305,18 @@ impl Op {
             Op::TransposeTile { .. } => 21,
             Op::BroadcastTile { .. } => 22,
             Op::Asm { .. } => 23,
-            Op::Move { .. } => 24,
             Op::Reduce { .. } => 25,
             Op::After { .. } => 26,
             Op::ToDevice { .. } => 27,
             Op::Contiguous { .. } => 28,
             Op::Kernel { .. } => 29,
             Op::Custom(_) => 30,
+            Op::Reshape { x, shape } => todo!(),
+            Op::Expand { x, shape } => todo!(),
+            Op::Permute { x, axes } => todo!(),
+            Op::Flip { x, axes } => todo!(),
+            Op::Pad { x, axis, lp, len } => todo!(),
+            Op::Narrow { x, axis, start, len } => todo!(),
         }
     }
 }
@@ -326,7 +363,6 @@ impl PartialEq for Op {
             (Op::TransposeTile { x: a }, Op::TransposeTile { x: b }) => a == b,
             (Op::BroadcastTile { x: a, kind: ak }, Op::BroadcastTile { x: b, kind: bk }) => a == b && ak == bk,
             (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => aa == ba && ao == bo,
-            (Op::Move { x: a, mop: am }, Op::Move { x: b, mop: bm }) => a == b && am == bm,
             (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
                 a == b && ar == br && aa == ba
             }
@@ -339,7 +375,7 @@ impl PartialEq for Op {
                 ai == bi && ao == bo && a.0 == b.0
             }
             (Op::Custom(_), Op::Custom(_)) => false,
-            _ => false,
+            _ => todo!(),
         }
     }
 }
@@ -439,10 +475,6 @@ impl Hash for Op {
                 asm.hash(state);
                 ops.hash(state);
             }
-            Op::Move { x, mop } => {
-                x.hash(state);
-                mop.hash(state);
-            }
             Op::Reduce { x, rop, reduce_axis } => {
                 x.hash(state);
                 rop.hash(state);
@@ -467,6 +499,12 @@ impl Hash for Op {
                 c.outputs.hash(state);
                 c.program_id.hash(state);
             }
+            Op::Reshape { x, shape } => todo!(),
+            Op::Expand { x, shape } => todo!(),
+            Op::Permute { x, axes } => todo!(),
+            Op::Flip { x, axes } => todo!(),
+            Op::Pad { x, axis, lp, len } => todo!(),
+            Op::Narrow { x, axis, start, len } => todo!(),
         }
     }
 }
@@ -517,7 +555,6 @@ impl Ord for Op {
             (Op::TransposeTile { x: a }, Op::TransposeTile { x: b }) => a.cmp(b),
             (Op::BroadcastTile { x: a, kind: ak }, Op::BroadcastTile { x: b, kind: bk }) => (a, ak).cmp(&(b, bk)),
             (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => (aa, ao).cmp(&(ba, bo)),
-            (Op::Move { x: a, mop: am }, Op::Move { x: b, mop: bm }) => (a, am).cmp(&(b, bm)),
             (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
                 (a, ar, aa).cmp(&(b, br, ba))
             }
@@ -531,7 +568,7 @@ impl Ord for Op {
                 (ai, ao, a.0).cmp(&(bi, bo, b.0))
             }
             (Op::Custom(_), Op::Custom(_)) => std::cmp::Ordering::Equal,
-            _ => self.disc().cmp(&other.disc()),
+            _ => todo!(),
         }
     }
 }
@@ -676,55 +713,6 @@ impl BOp {
     pub const fn returns_bool(self) -> bool {
         use BOp::{And, Cmpge, Cmpgt, Cmplt, Eq, NotEq, Or};
         matches!(self, Cmpgt | Cmpge | Cmplt | NotEq | Eq | And | Or)
-    }
-}
-
-/// Movement operations for tensor shape transformations.
-///
-/// These operations change the shape of tensors without changing their data.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-pub enum MoveOp {
-    /// Reshape to a new shape.
-    Reshape { shape: OpId },
-    /// Expand dimensions.
-    Expand { shape: OpId },
-    /// Permute axes.
-    Permute { axes: Box<[UAxis]> },
-    /// Flip axes
-    Flip { axes: Box<[UAxis]> },
-    /// Pad axis
-    /// Pad with `lp` zeros on the left, to total axis length `len`
-    /// (tinygrad convention). Right padding is `len - lp - orig_len`.
-    Pad { axis: UAxis, lp: OpId, len: OpId },
-    /// Slice axis
-    Narrow { axis: UAxis, start: OpId, len: OpId },
-}
-
-impl MoveOp {
-    /// Returns a copy with all `OpId` references remapped through `op_map`.
-    /// `fallback` is used for op ids not present in `op_map` (mirroring the
-    /// assign replay's handling of the movement-chain head).
-    pub(crate) fn remap(&self, op_map: &Map<OpId, OpId>) -> Box<Self> {
-        match self {
-            MoveOp::Reshape { shape } => Box::new(MoveOp::Reshape {
-                shape: op_map.get(shape).copied().expect("MoveOp::remap: referenced op not in mapping"),
-            }),
-            MoveOp::Expand { shape } => Box::new(MoveOp::Expand {
-                shape: op_map.get(shape).copied().expect("MoveOp::remap: referenced op not in mapping"),
-            }),
-            MoveOp::Permute { axes } => Box::new(MoveOp::Permute { axes: axes.clone() }),
-            MoveOp::Pad { axis, lp, len } => Box::new(MoveOp::Pad {
-                axis: *axis,
-                lp: op_map.get(lp).copied().expect("MoveOp::remap: referenced op not in mapping"),
-                len: op_map.get(len).copied().expect("MoveOp::remap: referenced op not in mapping"),
-            }),
-            MoveOp::Flip { axes } => Box::new(MoveOp::Flip { axes: axes.clone() }),
-            MoveOp::Narrow { axis, start, len } => {
-                let start = op_map.get(start).copied().expect("MoveOp::remap: referenced op not in mapping");
-                let len = op_map.get(len).copied().expect("MoveOp::remap: referenced op not in mapping");
-                Box::new(MoveOp::Narrow { axis: *axis, start, len })
-            }
-        }
     }
 }
 
@@ -885,12 +873,10 @@ impl Op {
                 RangeKind::Warp(local_id) => vec![local_id],
             },
             &Op::Loop { len, .. } => vec![len],
-            &Op::Move { x, ref mop } => match mop.as_ref() {
-                MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => vec![x, *shape],
-                MoveOp::Permute { .. } | MoveOp::Flip { .. } => vec![x],
-                MoveOp::Pad { lp, len, .. } => vec![x, *lp, *len],
-                MoveOp::Narrow { start, len, .. } => vec![x, *start, *len],
-            },
+            &Op::Reshape { x, shape, .. } | &Op::Expand { x, shape } => vec![x, shape],
+            &Op::Permute { x, .. } | &Op::Flip { x, .. } => vec![x],
+            &Op::Pad { x, lp, len, .. } => vec![x, lp, len],
+            &Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
             &Op::Store { dst, src, index, .. } => {
                 // Pre-linearize stores carry a NULL index (whole-view write).
@@ -936,12 +922,10 @@ impl Op {
                 RangeKind::Warp(local_id) => vec![local_id],
             },
             Op::Loop { len, .. } => vec![len],
-            Op::Move { x, mop } => match mop.as_mut() {
-                MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => vec![x, shape],
-                MoveOp::Permute { .. } | MoveOp::Flip { .. } => vec![x],
-                MoveOp::Pad { lp, len, .. } => vec![x, lp, len],
-                MoveOp::Narrow { start, len, .. } => vec![x, start, len],
-            },
+            Op::Reshape { x, shape, .. } | Op::Expand { x, shape } => vec![x, shape],
+            Op::Permute { x, .. } | Op::Flip { x, .. } => vec![x],
+            Op::Pad { x, lp, len, .. } => vec![x, lp, len],
+            Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![x, reduce_axis],
             Op::Store { dst, src: x, index, .. } => {
                 // Pre-linearize stores carry a NULL index (whole-view write).

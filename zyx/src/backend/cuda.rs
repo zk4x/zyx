@@ -116,7 +116,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{Graph, Op},
+    graph::Graph,
     kernel::{Kernel, MMADType, MMADims, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
     slab::{Slab, SlabId},
@@ -1575,18 +1575,22 @@ impl CUDADevice {
             let Ok(program_id) = reply_rx.recv().unwrap() else {
                 continue;
             };
+            let inputs = graph.push_op(Op::Stack { ops: Box::new([mm.a, mm.b]) });
+            let outputs = graph.push_op(Op::Stack { ops: Box::new([mm.out]) });
             graph.mint_node(
                 Op::Kernel {
-                    inputs: Box::new([mm.a, mm.b]),
-                    outputs: Box::new([mm.out]),
-                    program_id: ProgramId {
-                        dev: match self.memory_pool {
-                            Pool::Cuda(i) => Dev::Cuda(i),
-                            pool => unreachable!("CUDA device with non-CUDA pool {pool:?}"),
+                    inputs,
+                    outputs,
+                    info: Box::new((
+                        ProgramId {
+                            dev: match self.memory_pool {
+                                Pool::Cuda(i) => Dev::Cuda(i),
+                                pool => unreachable!("CUDA device with non-CUDA pool {pool:?}"),
+                            },
+                            program_id,
                         },
-                        program_id,
-                    },
-                    time: 1,
+                        1,
+                    )),
                 },
                 mm.out,
             );

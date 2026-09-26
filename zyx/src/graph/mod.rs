@@ -20,7 +20,7 @@ use crate::{
     DType, Map, Set, ZyxError,
     backend::{Buffer, Dev, LaunchArg, Pool, PoolBufferId, ProgramId},
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind},
     runtime::{KernelId, Runtime, TensorData},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::{Dim, UAxis},
@@ -129,7 +129,7 @@ pub struct JitKernelData {
 #[derive(Debug)]
 pub struct Graph {
     pub(crate) hashcons: Map<Op, OpId>,
-    pub(crate) nodes: Slab<OpId, OpNode>,
+    pub(crate) ops: Slab<OpId, OpNode>,
     pub(crate) jit_kernels: Slab<JitKernelId, JitKernelData>,
     pub(crate) leaf_classes: Vec<OpId>,
     pub(crate) leaf_map: Map<OpId, TensorId>,
@@ -145,48 +145,12 @@ pub struct Graph {
     pub(crate) max_cons_id: u32,
 }
 
-impl Op {
-    /// Classes this node references: operands, and metadata like shape
-    /// descriptors (a leaf's shape is a parameter of the leaf).
-    fn class_params(&self) -> impl Iterator<Item = OpId> {
-        // NULL is not a class: rank-0 nodes carry `shape: ClassId::NULL` and
-        // optional fields may be absent — a NULL is never a dependency.
-        let v = match self {
-            Self::Const { .. } => vec![],
-            Self::Param { shape, .. } => vec![*shape],
-            Self::Move { x, mop } => match mop.as_ref() {
-                MoveOp::Reshape { shape } => vec![*x, *shape],
-                MoveOp::Expand { shape } => vec![*x, *shape],
-                MoveOp::Permute { .. } => vec![*x],
-                MoveOp::Flip { .. } => vec![*x],
-                MoveOp::Pad { axis, lp, len } => vec![*x, *lp, *len],
-                MoveOp::Narrow { axis, start, len } => vec![*x, *start, *len],
-            },
-            Self::Stack { ops } => ops.to_vec(),
-            Self::Index { vec, .. } => vec![*vec],
-            Self::Reduce { x, .. } => vec![*x],
-            Self::Cast { x, .. } => vec![*x],
-            Self::Bitcast { x, .. } => vec![*x],
-            Self::Unary { x, .. } => vec![*x],
-            Self::Binary { x, y, .. } => vec![*x, *y],
-            Self::Store { dst, src, .. } => vec![*dst, *src],
-            Self::After { x, dep } => vec![*x, *dep],
-            Self::ToDevice { x, .. } => vec![*x],
-            Self::Contiguous { x, .. } => vec![*x],
-            Self::Kernel { inputs, .. } => vec![*inputs],
-            Self::Custom { .. } => todo!("return inputs"),
-            _ => todo!(),
-        };
-        v.into_iter().filter(|p| !p.is_null())
-    }
-}
-
 impl Graph {
     /// Cleanup - when graph is no longer needed, but cannot be dropped yet, so it's marked dead
     pub fn mark_dead(&mut self) {
         self.dead = true;
         self.hashcons = Map::default();
-        self.nodes = Slab::new();
+        self.ops = Slab::new();
         self.jit_kernels = Slab::new();
         self.leaf_map = Map::default();
     }
@@ -194,7 +158,7 @@ impl Graph {
     pub fn new() -> Self {
         Self {
             hashcons: Map::default(),
-            nodes: Slab::new(),
+            ops: Slab::new(),
             jit_kernels: Slab::new(),
             leaf_map: Map::default(),
             leaf_classes: Vec::new(),
@@ -202,6 +166,16 @@ impl Graph {
             dead: false,
             max_cons_id: 0,
         }
+    }
+
+    pub fn push_op(&mut self, op: Op) -> OpId {
+        if let Some(&nid) = self.hashcons.get(&op) {
+            return self.ops[nid].class_of;
+        }
+        let nid = self.ops.push(OpNode { op: op.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
+        self.ops[nid].class_of = nid;
+        self.hashcons.insert(op, nid);
+        nid
     }
 
     /// Iterates a class's variant nodes in insertion order (oldest first) by
@@ -213,19 +187,19 @@ impl Graph {
                 return None;
             }
             let nid = cur;
-            cur = self.nodes[cur].next_in_class;
+            cur = self.ops[cur].next_in_class;
             Some(nid)
         })
     }
 
     /// Appends a variant node to a class's intrusive chain (insertion order).
     pub(crate) fn class_push(&mut self, cid: OpId, nid: OpId) {
-        debug_assert_eq!(self.nodes[nid].next_in_class, OpId::NULL);
+        debug_assert_eq!(self.ops[nid].next_in_class, OpId::NULL);
         let mut cur = cid;
-        while !self.nodes[cur].next_in_class.is_null() {
-            cur = self.nodes[cur].next_in_class;
+        while !self.ops[cur].next_in_class.is_null() {
+            cur = self.ops[cur].next_in_class;
         }
-        self.nodes[cur].next_in_class = nid;
+        self.ops[cur].next_in_class = nid;
     }
 
     /// Mints `node` as a new variant of `class_of`: pushes it into the nodes
@@ -236,14 +210,14 @@ impl Graph {
     /// multi-output nodes are referenced through the node's own fields, never
     /// through extra chain membership.
     pub(crate) fn mint_node(&mut self, node: Op, class_of: OpId) -> OpId {
-        let nid = self.nodes.push(OpNode { op: node.clone(), class_of, next_in_class: OpId::NULL });
+        let nid = self.ops.push(OpNode { op: node.clone(), class_of, next_in_class: OpId::NULL });
         self.hashcons.insert(node, nid);
         self.class_push(class_of, nid);
         nid
     }
 
     pub fn is_leaf(&self, class_id: OpId) -> bool {
-        self.class_nodes(class_id).any(|nid| matches!(&self.nodes[nid].op, Op::Param { .. }))
+        self.class_nodes(class_id).any(|nid| matches!(&self.ops[nid].op, Op::Param { .. }))
     }
 
     /// Walks back through single-input movement nodes until reaching dst's base
@@ -256,7 +230,7 @@ impl Graph {
             }
             let mut next = None;
             for nid in self.class_nodes(c) {
-                match &self.nodes[nid].op {
+                match &self.ops[nid].op {
                     Op::Move { x, .. } | Op::ToDevice { x, .. } | Op::After { x, .. } => next = Some(*x),
                     _ => {}
                 }
@@ -268,16 +242,16 @@ impl Graph {
     /// Whether `class_id` is the output of an in-place `assign` — a class whose
     /// value lives in (aliases) dst's realized leaf buffer.
     pub fn is_after(&self, class_id: OpId) -> bool {
-        self.class_nodes(class_id).any(|nid| matches!(&self.nodes[nid].op, Op::After { .. }))
+        self.class_nodes(class_id).any(|nid| matches!(&self.ops[nid].op, Op::After { .. }))
     }
 
     pub fn push_to_device(&mut self, x: OpId, device: Dev, time: u64) -> OpId {
         let node = Op::ToDevice { x, device, time };
         if let Some(&nid) = self.hashcons.get(&node) {
-            return self.nodes[nid].class_of;
+            return self.ops[nid].class_of;
         }
-        let nid = self.nodes.push(OpNode { op: node.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
-        self.nodes[nid].class_of = nid;
+        let nid = self.ops.push(OpNode { op: node.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
+        self.ops[nid].class_of = nid;
         self.hashcons.insert(node, nid);
         nid
     }
@@ -360,13 +334,13 @@ impl Graph {
                     let r = rcs.get(&c).copied().unwrap_or(0);
                     let types: Vec<String> = self
                         .class_nodes(c)
-                        .map(|n| format!("{:?}", self.nodes[n].op))
+                        .map(|n| format!("{:?}", self.ops[n].op))
                         .map(|s| s.split(" NodeId").next().unwrap_or(&s).to_string())
                         .collect();
                     report.push_str(&format!("\n  {c:?} rc={r} visited={v} types={types:?}"));
                     let mut parents: Set<OpId> = Set::default();
-                    for (_, nd) in self.nodes.iter() {
-                        if nd.op.class_params().any(|q| q == c) && rcs.contains_key(&nd.class_of) {
+                    for (_, nd) in self.ops.iter() {
+                        if nd.op.parameters().any(|q| q == c) && rcs.contains_key(&nd.class_of) {
                             parents.insert(nd.class_of);
                         }
                     }
@@ -401,7 +375,7 @@ impl Graph {
         // Iterative colored DFS: 1 = on stack (gray), 2 = done (black).
         let mut color: Map<OpId, u8> = Map::default();
         let mut parent: Map<OpId, OpId> = Map::default();
-        for root in self.nodes.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
+        for root in self.ops.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
             let mut steps = 0;
             let mut stack = vec![(root, false)];
             while let Some((cid, processed)) = stack.pop() {
@@ -450,12 +424,12 @@ impl Graph {
     fn deps<const WITHOUT_KERNELS: bool>(&self, inputs: &Set<OpId>, cid: OpId) -> Vec<OpId> {
         let mut deps = Vec::new();
         for nid in self.class_nodes(cid) {
-            match self.nodes[nid].op {
+            match self.ops[nid].op {
                 Op::Kernel { inputs: kin, .. } => {
                     if WITHOUT_KERNELS && !inputs.contains(&cid) {
                         continue;
                     }
-                    let Op::Stack { ops } = self.nodes[kin].op else {
+                    let Op::Stack { ref ops } = self.ops[kin].op else {
                         unreachable!()
                     };
                     for p in ops.iter() {
@@ -469,7 +443,7 @@ impl Graph {
                     if WITHOUT_KERNELS && inputs.contains(&cid) {
                         continue;
                     }
-                    for p in node.class_params() {
+                    for p in node.parameters() {
                         if !deps.contains(&p) {
                             deps.push(p);
                         }
@@ -495,9 +469,9 @@ impl Graph {
     fn extract_deps(&self, cid: OpId) -> Vec<OpId> {
         let mut kdeps: Vec<OpId> = Vec::new();
         for nid in self.class_nodes(cid) {
-            match self.nodes[nid].op {
+            match self.ops[nid].op {
                 Op::Kernel { inputs, .. } => {
-                    let Op::Stack { ref ops } = self.nodes[inputs].op else {
+                    let Op::Stack { ref ops } = self.ops[inputs].op else {
                         unreachable!()
                     };
                     for p in ops.iter() {
@@ -518,14 +492,14 @@ impl Graph {
             return self.deps::<false>(&Set::default(), cid);
         }
         for nid in self.class_nodes(cid) {
-            if let Op::After { x, dep } = &self.nodes[nid].op {
+            if let Op::After { x, dep } = &self.ops[nid].op {
                 for p in [x, dep] {
                     if !kdeps.contains(p) {
                         kdeps.push(*p);
                     }
                 }
             }
-            if let Op::Store { dst, src, .. } = &self.nodes[nid].op {
+            if let Op::Store { dst, src, .. } = &self.ops[nid].op {
                 for p in [dst, src] {
                     if !kdeps.contains(p) {
                         kdeps.push(*p);
@@ -576,13 +550,13 @@ impl Graph {
         println!("\n{}", line);
         println!("  E-Graph");
         println!("{}", line);
-        for cid in self.nodes.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
+        for cid in self.ops.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
             let shape_str = format!("{:?}", self.shape(cid));
             let dtype_str = format!("{:?}", self.dtype(cid));
             println!("Class {:?} shape={} dtype={}", cid, shape_str, dtype_str);
             for nid in self.class_nodes(cid) {
-                let inputs: Vec<OpId> = self.nodes[nid].op.class_params();
-                let name = match self.nodes[nid].op {
+                let inputs: Vec<OpId> = self.ops[nid].op.parameters();
+                let name = match self.ops[nid].op {
                     Op::Reduce { rop, .. } => format!("Reduce {:?}", rop),
                     Op::Binary { bop, .. } => format!("Binary {:?}", bop),
                     Op::Store { .. } => "Store".into(),
@@ -597,7 +571,7 @@ impl Graph {
                     Op::Index { vec, idx } => format!("Index {vec:?}[{idx}]"),
                     Op::ToDevice { device, time, .. } => format!("ToDevice {:?} time={}", device, time),
                     Op::Contiguous { .. } => "Contiguous".into(),
-                    Op::Const { value: v, .. } => format!("Const {:?}", v),
+                    Op::Const(v) => format!("Const {:?}", v),
                     Op::Param { dtype, .. } => format!("Param {:?}", dtype),
                     _ => todo!(),
                 };
@@ -634,14 +608,14 @@ impl Graph {
         let mut repaired: Vec<OpId> = Vec::with_capacity(chosen.len());
         let mut emitted: Set<OpId> = Set::default();
         for &nid in chosen {
-            let (device_id, inputs, class_of) = match &self.nodes[nid].op {
+            let (device_id, inputs, class_of) = match &self.ops[nid].op {
                 Op::Kernel { info, inputs, .. } => {
                     debug_assert_ne!(info.0.dev, Dev::Auto);
-                    (info.0.dev, inputs.clone(), self.nodes[nid].class_of)
+                    (info.0.dev, inputs.clone(), self.ops[nid].class_of)
                 }
                 Op::ToDevice { device, .. } => {
                     // Pool is always derived from the device, never the reverse.
-                    pool_of.insert(self.nodes[nid].class_of, device.pool());
+                    pool_of.insert(self.ops[nid].class_of, device.pool());
                     if emitted.insert(nid) {
                         repaired.push(nid);
                     }
@@ -650,8 +624,8 @@ impl Graph {
                 _ => unreachable!("add_memory_ops runs on extracted nodes, which are only Kernel/ToDevice"),
             };
             let dev_pool = device_id.pool();
-            if let Op::Kernel { outputs, .. } = &self.nodes[nid].op {
-                let Op::Stack { ops } = self.nodes[outputs].op else {
+            if let Op::Kernel { outputs, .. } = self.ops[nid].op {
+                let Op::Stack { ref ops } = self.ops[outputs].op else {
                     unreachable!()
                 };
                 for &oc in ops {
@@ -681,7 +655,7 @@ impl Graph {
                 }
             }
             if let Some(new_inputs) = new_inputs
-                && let Op::Kernel { inputs: node_inputs, .. } = &mut self.nodes[nid].op
+                && let Op::Kernel { inputs: node_inputs, .. } = &mut self.ops[nid].op
             {
                 *node_inputs = new_inputs;
             }
@@ -743,11 +717,11 @@ impl Graph {
     pub fn extract(&self, outputs: &BTreeSet<OpId>) -> Vec<OpId> {
         let order = self.topo_sort_for_extract(outputs);
 
-        let n = self.nodes.ids().count();
+        let n = self.ops.ids().count();
         let is_leaf: Vec<bool> = (0..n)
             .map(|i| {
                 let cid = OpId(i as u32);
-                self.class_nodes(cid).any(|nid| matches!(&self.nodes[nid].op, Op::Param { .. }))
+                self.class_nodes(cid).any(|nid| matches!(&self.ops[nid].op, Op::Param { .. }))
             })
             .collect();
 
@@ -766,10 +740,10 @@ impl Graph {
         let mut node_time: Vec<u64> = vec![0; nn];
         for &cid in &order {
             for nid in self.class_nodes(cid) {
-                let (time, inputs, outputs) = match &self.nodes[nid].op {
+                let (time, inputs, outputs) = match &self.ops[nid].op {
                     Op::Kernel { inputs, outputs, time, .. } => (*time, inputs.to_vec(), outputs.to_vec()),
                     Op::ToDevice { x, time, .. } => {
-                        let outputs = vec![self.nodes[nid].class_of];
+                        let outputs = vec![self.ops[nid].class_of];
                         (*time, vec![*x], outputs)
                     }
                     _ => continue,
@@ -790,8 +764,8 @@ impl Graph {
         for &cid in &order {
             let mut chain = Vec::new();
             let mut cur = cid;
-            while let Some(nid2) = self.class_nodes(cur).find(|&nid| matches!(&self.nodes[nid].op, Op::After { .. })) {
-                let Op::After { x, dep } = &self.nodes[nid2].op else {
+            while let Some(nid2) = self.class_nodes(cur).find(|&nid| matches!(&self.ops[nid].op, Op::After { .. })) {
+                let Op::After { x, dep } = &self.ops[nid2].op else {
                     unreachable!()
                 };
                 chain.push(*x);
@@ -968,7 +942,7 @@ impl Graph {
                 if !needed[cid.0 as usize] {
                     needed[cid.0 as usize] = true;
                     if let Some(nid) = producer[cid.0 as usize] {
-                        match &self.nodes[nid].op {
+                        match &self.ops[nid].op {
                             Op::Kernel { inputs, .. } => stack.extend(inputs.iter().copied()),
                             Op::ToDevice { x, .. } => stack.push(*x),
                             _ => {}
@@ -980,8 +954,8 @@ impl Graph {
                     // needed, the assign that wrote it and every earlier
                     // After in the chain are needed too — otherwise extract
                     // drops the in-place store kernels of chained assigns.
-                    if let Some(nid2) = self.class_nodes(cid).find(|&nid| matches!(&self.nodes[nid].op, Op::After { .. }))
-                        && let Op::After { x, dep } = &self.nodes[nid2].op
+                    if let Some(nid2) = self.class_nodes(cid).find(|&nid| matches!(&self.ops[nid].op, Op::After { .. }))
+                        && let Op::After { x, dep } = &self.ops[nid2].op
                     {
                         stack.push(*x);
                         stack.push(*dep);
@@ -996,9 +970,9 @@ impl Graph {
             let mut add: Vec<OpId> = Vec::new();
             for &cid in &order {
                 if !needed[cid.0 as usize]
-                    && self.class_nodes(cid).any(
-                        |nid| matches!(&self.nodes[nid].op, Op::Assign { dst, .. } if needed[self.base_leaf(*dst).0 as usize]),
-                    )
+                    && self
+                        .class_nodes(cid)
+                        .any(|nid| matches!(&self.ops[nid].op, Op::Store { dst, .. } if needed[self.base_leaf(*dst).0 as usize]))
                 {
                     add.push(cid);
                 }
@@ -1036,16 +1010,16 @@ impl Graph {
     /// for static dims or a symbolic dim leaf otherwise. Empty vec for
     /// scalars.
     pub fn shape(&self, class: OpId) -> Vec<OpId> {
-        match &self.nodes[class].op {
+        match &self.ops[class].op {
             Op::Const { .. } | Op::Stack { .. } => Vec::new(),
-            Op::Index { vec, idx } => match &self.nodes[*vec].op {
+            Op::Index { vec, idx } => match &self.ops[*vec].op {
                 Op::Stack { ops } => self.shape(ops[*idx]),
                 // Projection of a multi-output kernel: the shape metadata of
                 // output `idx` lives in the Custom node's descriptor.
-                Op::Custom { outputs, .. } => self.dims(outputs[*idx].1),
+                Op::Custom(inner) => self.dims(inner.outputs[*idx].1),
                 n => panic!("Index vec must be a Stack or Custom class, got {n:?}"),
             },
-            Op::Leaf { shape, .. } => self.dims(*shape),
+            Op::Param { shape, .. } => self.dims(*shape),
             Op::Expand { shape, .. } | Op::Reshape { shape, .. } => self.dims(*shape),
             Op::Permute { x, axes } => {
                 let s = self.shape(*x);
@@ -1098,7 +1072,7 @@ impl Graph {
         if shape.is_null() {
             return Vec::new();
         }
-        match &self.nodes[shape].op {
+        match &self.ops[shape].op {
             Op::Stack { ops } => ops.to_vec(),
             _ => vec![shape],
         }
@@ -1133,7 +1107,7 @@ impl Graph {
         // flat pass emits with operands already mapped.
         fn flatten(graph: &Graph, cid: OpId, order: &mut Vec<OpId>) {
             debug_assert!(graph.class_nodes(cid).count() == 1, "symbolic dim class must have exactly one node");
-            let node = &graph.nodes[cid].op;
+            let node = &graph.ops[cid].op;
             match node {
                 Op::Const { .. } | Op::Leaf { .. } => (),
                 Op::Cast { x, .. } | Op::Unary { x, .. } => flatten(graph, *x, order),
@@ -1169,7 +1143,7 @@ impl Graph {
                     continue;
                 }
                 debug_assert!(self.class_nodes(c).count() == 1, "symbolic dim class must have exactly one node");
-                let node = self.nodes[c].op.clone();
+                let node = self.ops[c].op.clone();
                 let op_id = match node {
                     Op::Const { value, .. } => self.jit_kernels[kid].kernel.push_back(Op::Const(value)),
                     Op::Leaf { dtype, shape, .. } => {
@@ -1221,7 +1195,7 @@ impl Graph {
         if shape.is_null() {
             return OpId::NULL;
         }
-        match &self.nodes[shape].op {
+        match &self.ops[shape].op {
             Op::Stack { ops } => {
                 let ops: Vec<OpId> = ops.iter().copied().collect();
                 self.replay_symbolic_into_kernel(kid, &ops)
@@ -1231,9 +1205,9 @@ impl Graph {
     }
 
     pub fn dtype(&self, class: OpId) -> DType {
-        match &self.nodes[class].op {
+        match &self.ops[class].op {
             Op::Const { value: c, .. } => c.dtype(),
-            Op::Index { vec, idx } => match &self.nodes[*vec].op {
+            Op::Index { vec, idx } => match &self.ops[*vec].op {
                 Op::Stack { ops } => self.dtype(ops[*idx]),
                 // Projection of a multi-output kernel: the dtype of output
                 // `idx` lives in the Custom node's descriptor.
@@ -1283,7 +1257,7 @@ impl Graph {
             if !visited.insert(node_id) {
                 continue;
             }
-            match &self.nodes[node_id].op {
+            match &self.ops[node_id].op {
                 Op::Cast { x, .. } => stack.push(*x),
                 Op::Bitcast { x, .. } => stack.push(*x),
                 Op::Unary { x, .. } => stack.push(*x),
@@ -1291,7 +1265,7 @@ impl Graph {
                     stack.push(*y);
                     stack.push(*x);
                 }
-                Op::Index { vec, idx } => match &self.nodes[*vec].op {
+                Op::Index { vec, idx } => match &self.ops[*vec].op {
                     Op::Stack { ops } => stack.push(ops[*idx]),
                     _ => return None,
                 },
@@ -1324,12 +1298,12 @@ impl Graph {
         // consumer.
         let mut values: Map<OpId, Constant> = Map::default();
         for &node_id in order.iter().rev() {
-            let value = match &self.nodes[node_id].op {
+            let value = match &self.ops[node_id].op {
                 Op::Const { value, .. } => *value,
                 Op::Cast { x, dtype } => values[x].cast(*dtype),
                 Op::Bitcast { x, dtype } => values[x].bitcast(*dtype),
                 Op::Unary { x, uop } => values[x].unary(*uop),
-                Op::Index { vec, idx } => match &self.nodes[*vec].op {
+                Op::Index { vec, idx } => match &self.ops[*vec].op {
                     Op::Stack { ops } => values[&ops[*idx]].clone(),
                     n => unreachable!("Index vec must be a Stack class, got {n:?}"),
                 },
@@ -1542,7 +1516,7 @@ impl Runtime {
             let shape_class = match dim_classes.len() {
                 0 => OpId::NULL,
                 1 => dim_classes[0],
-                _ => self.push_node(graph_id, Op::Move(Box::new(MoveOp::Stack { ops: dim_classes.into_boxed_slice() }))).1,
+                _ => self.push_op(graph_id, Op::Move(Box::new(MoveOp::Stack { ops: dim_classes.into_boxed_slice() }))).1,
             };
             let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_class);
             self.graphs[graph_id].leaf_map.insert(class_id, tid);
@@ -1777,7 +1751,7 @@ impl Runtime {
                             let shape_class = match dim_classes.len() {
                                 0 => OpId::NULL,
                                 1 => dim_classes[0],
-                                _ => self.push_node(graph_id, Op::Stack { ops: dim_classes.into_boxed_slice() }).1,
+                                _ => self.push_op(graph_id, Op::Stack { ops: dim_classes.into_boxed_slice() }).1,
                             };
                             let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_class);
                             self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
@@ -1845,7 +1819,7 @@ impl Runtime {
                     }
                     Op::Unary { x, uop } => {
                         let x_class = op_to_class[&x];
-                        let (_, class_id) = self.push_node(graph_id, Op::Unary { x: x_class, uop });
+                        let (_, class_id) = self.push_op(graph_id, Op::Unary { x: x_class, uop });
                         class_id
                     }
                     Op::Binary { x, y, bop } => {
@@ -1855,22 +1829,22 @@ impl Runtime {
                     }
                     Op::Cast { x, dtype } => {
                         let x_class = op_to_class[&x];
-                        let (_, class_id) = self.push_node(graph_id, Op::Cast { x: x_class, dtype });
+                        let (_, class_id) = self.push_op(graph_id, Op::Cast { x: x_class, dtype });
                         class_id
                     }
                     Op::Bitcast { x, dtype } => {
                         let x_class = op_to_class[&x];
-                        let (_, class_id) = self.push_node(graph_id, Op::Bitcast { x: x_class, dtype });
+                        let (_, class_id) = self.push_op(graph_id, Op::Bitcast { x: x_class, dtype });
                         class_id
                     }
                     Op::Stack { ref ops } => {
                         let ops: Box<[OpId]> = ops.iter().map(|o| op_to_class[o]).collect();
-                        let (_, class_id) = self.push_node(graph_id, Op::Stack { ops });
+                        let (_, class_id) = self.push_op(graph_id, Op::Stack { ops });
                         class_id
                     }
                     Op::Reduce { x, rop, .. } => {
                         let x_class = op_to_class[&x];
-                        let (_, class_id) = self.push_node(graph_id, Op::ReduceLast { x: x_class, rop });
+                        let (_, class_id) = self.push_op(graph_id, Op::ReduceLast { x: x_class, rop });
                         class_id
                     }
                     Op::Move { x, ref mop } => {
@@ -1879,12 +1853,12 @@ impl Runtime {
                         match mop.as_ref() {
                             MoveOp::Reshape { shape } => {
                                 let shape = op_to_class[&shape];
-                                let (_, class_id) = self.push_node(graph_id, Op::Reshape { x: x_class, shape });
+                                let (_, class_id) = self.push_op(graph_id, Op::Reshape { x: x_class, shape });
                                 class_id
                             }
                             MoveOp::Expand { shape } => {
                                 let shape = op_to_class[&shape];
-                                let (_, class_id) = self.push_node(graph_id, Op::Expand { x: x_class, shape });
+                                let (_, class_id) = self.push_op(graph_id, Op::Expand { x: x_class, shape });
                                 class_id
                             }
                             MoveOp::Permute { axes } => {
@@ -1905,19 +1879,19 @@ impl Runtime {
                                     in_shape
                                 );*/
                                 let axes = axes.clone().into();
-                                let (_, class_id) = self.push_node(graph_id, Op::Permute { x: x_class, axes });
+                                let (_, class_id) = self.push_op(graph_id, Op::Permute { x: x_class, axes });
                                 class_id
                             }
                             MoveOp::Pad { axis, lp, len } => {
                                 let lp = op_to_class[&lp];
                                 let len = op_to_class[&len];
-                                let (_, class_id) = self.push_node(graph_id, Op::Pad { x: x_class, axis: *axis, lp, len });
+                                let (_, class_id) = self.push_op(graph_id, Op::Pad { x: x_class, axis: *axis, lp, len });
                                 class_id
                             }
                             MoveOp::Narrow { axis, start, len } => {
                                 let start = op_to_class[&start];
                                 let len = op_to_class[&len];
-                                let (_, class_id) = self.push_node(graph_id, Op::Narrow { x: x_class, axis: *axis, start, len });
+                                let (_, class_id) = self.push_op(graph_id, Op::Narrow { x: x_class, axis: *axis, start, len });
                                 class_id
                             }
                             MoveOp::Flip { axes } => {
@@ -1928,7 +1902,7 @@ impl Runtime {
                                     in_shape
                                 );
                                 let axes = axes.clone().into();
-                                let (_, class_id) = self.push_node(graph_id, Op::Flip { x: x_class, axes });
+                                let (_, class_id) = self.push_op(graph_id, Op::Flip { x: x_class, axes });
                                 class_id
                             }
                         }
@@ -1987,14 +1961,14 @@ impl Runtime {
                 continue;
             }
             stack.push((id, true));
-            match &graph.nodes[id].op {
+            match &graph.ops[id].op {
                 Op::Cast { x, .. } | Op::Unary { x, .. } => stack.push((*x, false)),
                 Op::Binary { x, y, .. } => {
                     stack.push((*x, false));
                     stack.push((*y, false));
                 }
                 Op::Index { vec, idx } => {
-                    if let Op::Stack { ops } = &graph.nodes[*vec].op {
+                    if let Op::Stack { ops } = &graph.ops[*vec].op {
                         stack.push((ops[*idx], false));
                     }
                 }
@@ -2007,13 +1981,13 @@ impl Runtime {
 
         let mut values: Map<OpId, Option<Constant>> = Map::default();
         for &id in &order {
-            let v = match &graph.nodes[id].op {
+            let v = match &graph.ops[id].op {
                 Op::Const { value } => Some(*value),
                 Op::Leaf { .. } => {
                     let tid = graph.leaf_map.get(&id)?;
                     self.resolve_symbolic(*tid)
                 }
-                Op::Index { vec, idx } => match &graph.nodes[*vec].op {
+                Op::Index { vec, idx } => match &graph.ops[*vec].op {
                     Op::Stack { ops } => values.get(&ops[*idx]).copied().flatten(),
                     _ => None,
                 },
@@ -2216,12 +2190,12 @@ impl Runtime {
 
         if cfg!(debug_assertions) {
             let mut seen: Set<OpId> = Set::default();
-            for cid in self.graphs[graph_id].nodes.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
+            for cid in self.graphs[graph_id].ops.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
                 for nid in self.graphs[graph_id].class_nodes(cid) {
                     if !seen.insert(nid) {
                         continue;
                     }
-                    if let Op::Kernel { time, .. } = &self.graphs[graph_id].nodes[nid].op {
+                    if let Op::Kernel { time, .. } = &self.graphs[graph_id].ops[nid].op {
                         debug_assert!(*time > 0, "Kernel node {nid:?} has zero cost after autotune");
                     }
                 }
@@ -2279,9 +2253,9 @@ impl Runtime {
             self.graphs[graph_id].debug();
         }
 
-        for cid in self.graphs[graph_id].nodes.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
+        for cid in self.graphs[graph_id].ops.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
             let has_leaf =
-                self.graphs[graph_id].class_nodes(cid).any(|nid| matches!(&self.graphs[graph_id].nodes[nid].op, Op::Leaf { .. }));
+                self.graphs[graph_id].class_nodes(cid).any(|nid| matches!(&self.graphs[graph_id].ops[nid].op, Op::Leaf { .. }));
             if has_leaf {
                 let &tid = self.graphs[graph_id].leaf_map.get(&cid).expect("class {cid:?} has Leaf node but not in leaf_map");
                 assert!(
@@ -2309,9 +2283,9 @@ impl Runtime {
 
         // AOT kernel output classes, grouped by the memory pool they run in.
         let mut pool_kernel_outputs: Map<Pool, Set<OpId>> = Map::default();
-        for cid in self.graphs[graph_id].nodes.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
+        for cid in self.graphs[graph_id].ops.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
             for nid in self.graphs[graph_id].class_nodes(cid) {
-                if let Op::Kernel { program_id, .. } = &self.graphs[graph_id].nodes[nid].op {
+                if let Op::Kernel { program_id, .. } = &self.graphs[graph_id].ops[nid].op {
                     let pool = program_id.dev.pool();
                     pool_kernel_outputs.entry(pool).or_default().insert(cid);
                 }
@@ -2417,7 +2391,7 @@ impl Runtime {
     /// Consts hashcons by value: pushing an equal constant twice returns the
     /// same class (see [`Node::Const`] for why that is sound).
     pub fn push_const(&mut self, graph_id: GraphId, value: Constant) -> OpId {
-        self.push_node(graph_id, Op::Const { value }).1
+        self.push_op(graph_id, Op::Const { value }).1
     }
 
     pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType, shape: OpId) -> (OpId, OpId) {
@@ -2427,24 +2401,17 @@ impl Runtime {
         self.graphs[graph_id].max_cons_id += 1;
         let node = Op::Leaf { cons_id, dtype, shape };
         let g = &mut self.graphs[graph_id];
-        let nid = g.nodes.push(OpNode { op: node.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
+        let nid = g.ops.push(OpNode { op: node.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
         let cid = nid;
-        g.nodes[nid].class_of = cid;
+        g.ops[nid].class_of = cid;
         g.hashcons.insert(node, nid);
         (nid, cid)
     }
 
+    // TODO delete this method
     /// Numeric shape of a class for the runtime's `shapes` cache: static dim
-    pub fn push_node(&mut self, graph_id: GraphId, node: Op) -> (OpId, OpId) {
-        let g = &mut self.graphs[graph_id];
-        if let Some(&nid) = g.hashcons.get(&node) {
-            return (nid, g.nodes[nid].class_of);
-        }
-        let nid = g.nodes.push(OpNode { op: node.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
-        let cid = nid;
-        g.nodes[nid].class_of = cid;
-        g.hashcons.insert(node, nid);
-        (nid, cid)
+    pub fn push_op(&mut self, graph_id: GraphId, op: Op) -> OpId {
+        self.graphs[graph_id].push_op(op)
     }
 
     pub fn push_binary_node(&mut self, graph_id: GraphId, x: OpId, y: OpId, bop: BOp) -> OpId {
@@ -2460,12 +2427,12 @@ impl Runtime {
         let (x, y) = match (rx, ry) {
             (_, 0) if rx > 0 => {
                 let shape = self.shape_class(graph_id, self.graphs[graph_id].shape(x));
-                let y = self.push_node(graph_id, Op::Expand { x: y, shape }).1;
+                let y = self.push_op(graph_id, Op::Expand { x: y, shape }).1;
                 (x, y)
             }
             (0, _) if ry > 0 => {
                 let shape = self.shape_class(graph_id, self.graphs[graph_id].shape(y));
-                let x = self.push_node(graph_id, Op::Expand { x, shape }).1;
+                let x = self.push_op(graph_id, Op::Expand { x, shape }).1;
                 (x, y)
             }
             _ => (x, y),
@@ -2488,6 +2455,6 @@ impl Runtime {
             concrete(&sy),
             "binary operands must be broadcast to equal shapes before Node::Binary (broadcasting is performed upstream); got {sx:?} vs {sy:?}"
         );
-        self.push_node(graph_id, Op::Binary { x, y, bop }).1
+        self.push_op(graph_id, Op::Binary { x, y, bop }).1
     }
 }

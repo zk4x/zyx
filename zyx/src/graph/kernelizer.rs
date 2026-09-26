@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, Set,
-    graph::{Graph, JitKernelData, JitKernelId, Op, OpId},
+    graph::{Graph, JitKernelData, JitKernelId, OpId},
     kernel::{Dev, IDX_T, Kernel, MoveOp, Op, ParamKind},
     slab::Slab,
 };
@@ -126,34 +126,36 @@ impl Graph {
                 // The same holds for user custom kernels (`Node::Custom` and its
                 // lowered `Node::Kernel` twin): their inputs are materialized via
                 // `kernel_inputs` in `fill_gaps`, not via reference counting here.
-                if matches!(&self.nodes[nid].op, Op::Kernel { .. } | Op::Custom { .. }) {
+                if matches!(&self.ops[nid].op, Op::Kernel { .. } | Op::Custom { .. }) {
                     continue;
                 }
                 // Everything counts — data operands and descriptor fields
                 // (Reshape/Expand shape, Pad lp/len, Narrow start/len, Leaf
                 // shape) alike. Symbolic classes never materialize; their
                 // consumers replay them on demand and decrement inline.
-                let data_slots: Vec<OpId> = match &self.nodes[nid].op {
+                let data_slots: Vec<OpId> = match self.ops[nid].op {
                     Op::Const { .. } => vec![],
-                    Op::Leaf { shape, .. } => {
+                    Op::Param { shape, .. } => {
                         if shape.is_null() {
                             vec![]
                         } else {
-                            vec![*shape]
+                            vec![shape]
                         }
                     }
-                    Op::Expand { x, shape, .. } | Op::Reshape { x, shape, .. } => vec![*x, *shape],
-                    Op::Pad { x, lp, len, .. } => vec![*x, *lp, *len],
-                    Op::Narrow { x, start, len, .. } => vec![*x, *start, *len],
-                    Op::Permute { x, .. } | Op::Flip { x, .. } => vec![*x],
+                    Op::Move { x, ref mop } => match mop.as_ref() {
+                        MoveOp::Reshape { shape } | MoveOp::Expand { shape } => vec![x, *shape],
+                        MoveOp::Permute { .. } | MoveOp::Flip { .. } => vec![x],
+                        MoveOp::Pad { lp, len, .. } => vec![x, *lp, *len],
+                        MoveOp::Narrow { start, len, .. } => vec![x, *start, *len],
+                    },
                     Op::Stack { ops } => ops.to_vec(),
-                    Op::ReduceLast { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => {
-                        vec![*x]
+                    Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => {
+                        vec![x]
                     }
-                    Op::Binary { x, y, .. } => vec![*x, *y],
-                    Op::Assign { dst, src } => vec![*dst, *src],
-                    Op::After { x, dep } => vec![*x, *dep],
-                    Op::ToDevice { x, .. } | Op::Contiguous { x, .. } => vec![*x],
+                    Op::Binary { x, y, .. } => vec![x, y],
+                    Op::Store { dst, src, .. } => vec![dst, src],
+                    Op::After { x, dep } => vec![x, dep],
+                    Op::ToDevice { x, .. } | Op::Contiguous { x, .. } => vec![x],
                     // For Index over a Stack the vec edge is shape metadata
                     // (a dim the consumer consumes). For Index over a
                     // multi-output kernel (Custom) the vec edge is the
@@ -161,14 +163,14 @@ impl Graph {
                     // producer boundary and must not pull the kernel class
                     // into the reference-count walk.
                     Op::Index { vec, .. } => {
-                        if matches!(&self.nodes[*vec].op, Op::Stack { .. }) {
-                            vec![*vec]
+                        if matches!(&self.ops[vec].op, Op::Stack { .. }) {
+                            vec![vec]
                         } else {
                             vec![]
                         }
                     }
-                    Op::Kernel { inputs, .. } => inputs.to_vec(),
-                    Op::Custom { inputs, .. } => inputs.to_vec(),
+                    Op::Custom(ref inner) => inner.inputs.to_vec(),
+                    _ => todo!(),
                 };
                 for child in data_slots {
                     *rcs.entry(child).or_default() += 1;
@@ -203,14 +205,14 @@ impl Graph {
                 // Boundary input: load the class from storage, same as a leaf.
                 // A shape-NULL leaf is a scalar variable — replayed on demand
                 // by its consumers, never materialized.
-                if matches!(&self.nodes[nid].op, Op::Leaf { shape, dtype, .. } if shape.is_null() && dtype == &IDX_T) {
+                if matches!(&self.ops[nid].op, Op::Param { shape, dtype, .. } if shape.is_null() && dtype == &IDX_T) {
                     continue;
                 }
                 let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
                 visited.insert(cid, (kid, op_id));
             } else {
-                match self.nodes[nid].op {
-                    Op::Leaf { shape, dtype, .. } => {
+                match self.ops[nid].op {
+                    Op::Param { shape, dtype, .. } => {
                         if shape.is_null() && dtype == IDX_T {
                             // Scalar dim variable: replayed on demand by its
                             // consumers, never materialized.
@@ -231,7 +233,7 @@ impl Graph {
                         // the expression on demand (missing from visited
                         // ⇒ replay).
                     }
-                    Op::Index { vec, .. } => match &self.nodes[vec].op {
+                    Op::Index { vec, .. } => match &self.ops[vec].op {
                         // Dim selection over a Stack of scalars: replayed on
                         // demand by consumers, never materialized.
                         Op::Stack { .. } => {}
@@ -469,7 +471,7 @@ impl Graph {
                             visited.insert(cid, (kid, result_op));
                         }
                     }
-                    Op::ReduceLast { x, rop } => {
+                    Op::Reduce { x, rop, .. } => {
                         // Last axis is already trailing: single reduce, no permute.
                         let rank = self.shape(x).len();
                         let (mut kid, mut op_id) = match visited.get(&x) {
@@ -482,12 +484,6 @@ impl Graph {
                         debug_assert!(!dims.is_empty(), "reduce_last of scalar");
                         let reduce_axis = *dims.last().unwrap();
                         op_id = kernel.push_back(Op::Reduce { x: op_id, rop, reduce_axis });
-                        // Rank-1 input reduces to scalar: reshape to [1].
-                        if rank == 1 {
-                            let kernel = &mut self.jit_kernels[kid].kernel;
-                            let shape_op = kernel.add_shape(&[1]);
-                            op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape_op }) });
-                        }
                         self.consume(x, kid, &mut visited, &mut rcs);
                         self.push_outputs(kid, cid, rcs[&cid]);
                         visited.insert(cid, (kid, op_id));
@@ -523,7 +519,7 @@ impl Graph {
                         let (new_kid, new_op) = self.new_load_kernel(cid, rcs[&cid]);
                         visited.insert(cid, (new_kid, new_op));
                     }
-                    Op::Assign { dst, src } => {
+                    Op::Store { dst, src, .. } => {
                         let (kid, src_op) = match visited.get(&src) {
                             Some(&kv) => kv,
                             None => todo!("assign with symbolic src {src:?}"),
@@ -539,7 +535,7 @@ impl Graph {
                         // exist — trace it instead of assuming a position,
                         // fail loud otherwise.
                         let dst_loads = self.jit_kernels[dst_kid].loads.clone();
-                        let is_var_class = |g: &Self, c: OpId| matches!(&g.nodes[c].op, Op::Leaf { dtype, shape, .. } if dtype == &IDX_T && shape.is_null());
+                        let is_var_class = |g: &Self, c: OpId| matches!(&g.ops[c].op, Op::Param { dtype, shape, .. } if dtype == &IDX_T && shape.is_null());
                         let mut buffer_classes = dst_loads.iter().copied().filter(|&c| !is_var_class(self, c));
                         let dst_leaf = match (buffer_classes.next(), buffer_classes.next()) {
                             (Some(c), None) => c,
@@ -563,7 +559,7 @@ impl Graph {
                             .iter()
                             .map(|&c| {
                                 self.class_nodes(c)
-                                    .filter(|&nid| matches!(&self.nodes[nid].op, Op::After { x, .. } if *x == dst))
+                                    .filter(|&nid| matches!(&self.ops[nid].op, Op::After { x, .. } if *x == dst))
                                     .count()
                             })
                             .sum();
@@ -890,6 +886,7 @@ impl Graph {
                     // Custom class is always a region input (its output class is
                     // an active kernel output), so it is loaded, never fused.
                     Op::Custom { .. } => {}
+                    _ => todo!(),
                 }
             }
 
@@ -897,7 +894,7 @@ impl Graph {
             // backend kernel, not by this fused kernel. Materialize the class into
             // storage and hand off to a fresh load kernel, so downstream ops (e.g.
             // relu) start from the stored class instead of fusing into this kernel.
-            if !inputs.contains(&cid) && self.class_nodes(cid).any(|nid| matches!(&self.nodes[nid].op, Op::Kernel { .. })) {
+            if !inputs.contains(&cid) && self.class_nodes(cid).any(|nid| matches!(&self.ops[nid].op, Op::Kernel { .. })) {
                 let (kid, op_id) = visited[&cid];
                 let _ = self.add_store(cid, kid, op_id, &mut visited, &rcs);
             }
@@ -924,7 +921,7 @@ impl Graph {
                 // fresh-buffer store. AOT kernel classes are already materialized
                 // into storage by the backend kernel — storing the load kernel
                 // again would produce a self-copying kernel.
-                if !self.class_nodes(cid).any(|nid| matches!(&self.nodes[nid].op, Op::After { .. } | Op::Kernel { .. })) {
+                if !self.class_nodes(cid).any(|nid| matches!(&self.ops[nid].op, Op::After { .. } | Op::Kernel { .. })) {
                     (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs);
                 }
                 *rcs.get_mut(&cid).unwrap() -= 1;
@@ -1040,11 +1037,11 @@ impl Graph {
                 for load in &kernel.loads {
                     let stored = self.jit_kernels.values().any(|k| k.stores.contains(load));
                     let in_outputs = self.jit_kernels.values().any(|k| k.outputs.contains(load));
-                    let is_input = inputs.contains(load) || matches!(self.nodes[*load].op, Op::Leaf { .. });
+                    let is_input = inputs.contains(load) || matches!(self.ops[*load].op, Op::Param { .. });
                     if !stored && !is_input {
                         panic!(
                             "DEBUG kernelize: load class {load:?} (node {:?}) of kernel {kid:?} is not stored anywhere (in_outputs={in_outputs}) and is not an input",
-                            self.nodes[*load].op
+                            self.ops[*load].op
                         );
                     }
                 }
@@ -1235,7 +1232,7 @@ impl Graph {
                 "DOS child={child:?} kid={kid:?} n_out={} force_store={force_store} preced_red={} node={:?}",
                 self.jit_kernels[kid].outputs.len(),
                 self.jit_kernels[kid].kernel.is_preceded_by_reduce(op_id),
-                self.nodes[self.class_nodes(child).last().unwrap()].op
+                self.ops[self.class_nodes(child).last().unwrap()].op
             );
         }
         if self.jit_kernels[kid].outputs.len() > 1 || force_store {
@@ -1341,22 +1338,23 @@ impl Graph {
     ///
     /// Must run before the kernel-output pool grouping in `compile_graph`.
     pub fn lower_custom_kernels(&mut self) {
-        let node_ids: Vec<OpId> = self.nodes.ids().collect();
+        let node_ids: Vec<OpId> = self.ops.ids().collect();
         for nid in node_ids {
-            let custom = match &self.nodes[nid].op {
-                Op::Custom { inputs, outputs, program_id, .. } => {
-                    Some((inputs.clone(), outputs.iter().map(|(c, _, _)| *c).collect::<Vec<OpId>>(), *program_id))
+            match self.ops[nid].op {
+                Op::Custom(ref inner) => {
+                    let class_of = inner.outputs[0].0;
+                    let info = Box::new((inner.program_id, inner.time));
+                    let ops = inner.outputs.iter().map(|x| x.0).collect();
+                    let inputs = self.push_op(Op::Stack { ops: inner.inputs.clone() });
+                    let outputs = self.push_op(Op::Stack { ops });
+                    // The twin joins the FIRST output class (the Index accessor
+                    // heading it), mirroring backend kernel twins whose
+                    // `class_of` is the output class — downstream discovery of
+                    // the twin's inputs walks `class_nodes(output_class)`.
+                    self.mint_node(Op::Kernel { inputs, outputs, info }, class_of);
                 }
-                _ => None,
+                _ => {}
             };
-            if let Some((inputs, outputs, program_id)) = custom {
-                // The twin joins the FIRST output class (the Index accessor
-                // heading it), mirroring backend kernel twins whose
-                // `class_of` is the output class — downstream discovery of
-                // the twin's inputs walks `class_nodes(output_class)`.
-                let class_of = outputs[0];
-                self.mint_node(Op::Kernel { inputs, outputs: outputs.clone().into(), program_id, time: 10 }, class_of);
-            }
         }
     }
 
@@ -1380,8 +1378,9 @@ impl Graph {
         let mut kernel_inputs: Set<OpId> = Set::default();
         for &cid in active_outputs {
             for nid in self.class_nodes(cid) {
-                if let Op::Kernel { inputs: kin, .. } = &self.nodes[nid].op {
-                    kernel_inputs.extend(kin.iter().copied());
+                if let Op::Kernel { inputs: kin, .. } = &self.ops[nid].op {
+                    let Op::Stack { ops } = self.ops[kin].op else { unreachable!() };
+                    kernel_inputs.extend(ops.iter().copied());
                 }
             }
         }
@@ -1401,7 +1400,7 @@ impl Graph {
         }
         for (i, &cid) in structural.iter().enumerate() {
             for nid in self.class_nodes(cid) {
-                for p in self.nodes[nid].op.class_params() {
+                for p in self.ops[nid].op.parameters() {
                     if let Some(&j) = idx.get(&p) {
                         let (a, b) = (find(&mut parent, i), find(&mut parent, j));
                         parent[a.max(b)] = a.min(b);
@@ -1422,7 +1421,7 @@ impl Graph {
         let mut cross_region_outputs: Map<usize, BTreeSet<OpId>> = Map::default();
         for (i, &cid) in structural.iter().enumerate() {
             for nid in self.class_nodes(cid) {
-                for p in self.nodes[nid].op.class_params() {
+                for p in self.ops[nid].op.parameters() {
                     if producer_boundaries.contains(&p) {
                         continue;
                     }
@@ -1441,7 +1440,7 @@ impl Graph {
             let mut region_inputs: Set<OpId> = Set::default();
             for &cid in &region {
                 for nid in self.class_nodes(cid) {
-                    for p in self.nodes[nid].op.class_params() {
+                    for p in self.ops[nid].op.parameters() {
                         if producer_boundaries.contains(&p) {
                             region_inputs.insert(p);
                         }

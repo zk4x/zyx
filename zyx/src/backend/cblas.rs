@@ -20,8 +20,8 @@ use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Pool, 
 use crate::{
     DType, Set,
     error::{BackendError, ErrorStatus},
-    graph::{Graph, Op},
-    kernel::{Kernel, OpId},
+    graph::Graph,
+    kernel::{Kernel, Op, OpId},
     shape::Dim,
     slab::{Slab, SlabId},
 };

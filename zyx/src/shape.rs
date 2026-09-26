@@ -15,7 +15,7 @@ use crate::{error::ZyxError, tensor::Axis};
 /// is a static, known length (emitted as a `Const`).
 pub type Dim = i64;
 /// Type alias for axis indices (usize)
-pub type UAxis = usize;
+pub type UAxis = u32;
 
 pub fn into_axis(axis: Axis, rank: UAxis) -> Result<UAxis, ZyxError> {
     TryInto::<Axis>::try_into(rank).map_or_else(

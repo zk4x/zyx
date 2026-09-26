@@ -15,8 +15,8 @@
 #![allow(unused)]
 
 use crate::{
-    graph::{Graph, Op},
-    kernel::{BOp, OpId},
+    graph::Graph,
+    kernel::{BOp, MoveOp, Op, OpId},
     shape::Dim,
 };
 
@@ -28,8 +28,8 @@ impl Graph {
     fn const_shape(&self, cid: OpId) -> Option<Vec<Dim>> {
         self.shape(cid)
             .into_iter()
-            .map(|dim| match &self.nodes[dim].op {
-                Op::Const { value: c, .. } => c.as_dim(),
+            .map(|dim| match &self.ops[dim].op {
+                Op::Const(c) => c.as_dim(),
                 _ => None,
             })
             .collect()
@@ -38,8 +38,8 @@ impl Graph {
     /// Finds a `ReduceLast(Add)` over the trailing axis of a 3D product.
     /// Returns the product class and the contraction dim `k`.
     fn reduce_add_last(&self, cid: OpId) -> Option<(OpId, Dim)> {
-        self.class_nodes(cid).find_map(|nid| match &self.nodes[nid].op {
-            Op::ReduceLast { x, rop: BOp::Add } => {
+        self.class_nodes(cid).find_map(|nid| match &self.ops[nid].op {
+            Op::Reduce { x, rop: BOp::Add, .. } => {
                 let prod_shape = self.const_shape(*x)?;
                 if prod_shape.len() == 3 {
                     Some((*x, prod_shape[2]))
@@ -54,17 +54,17 @@ impl Graph {
     /// Finds the elementwise `Mul` beneath the product class, through an optional
     /// accumulator `Cast` (`dot` casts the product before reducing).
     fn mul_of(&self, cid: OpId) -> Option<(OpId, OpId)> {
-        if let Some((x, y)) = self.class_nodes(cid).find_map(|nid| match &self.nodes[nid].op {
+        if let Some((x, y)) = self.class_nodes(cid).find_map(|nid| match &self.ops[nid].op {
             Op::Binary { x, y, bop: BOp::Mul } => Some((*x, *y)),
             _ => None,
         }) {
             return Some((x, y));
         }
-        let x = self.class_nodes(cid).find_map(|nid| match &self.nodes[nid].op {
+        let x = self.class_nodes(cid).find_map(|nid| match &self.ops[nid].op {
             Op::Cast { x, .. } => Some(*x),
             _ => None,
         })?;
-        self.class_nodes(x).find_map(|nid| match &self.nodes[nid].op {
+        self.class_nodes(x).find_map(|nid| match &self.ops[nid].op {
             Op::Binary { x, y, bop: BOp::Mul } => Some((*x, *y)),
             _ => None,
         })
@@ -76,8 +76,11 @@ impl Graph {
     /// depend on how the shape was produced (e.g. a `Reshape` in the canonical
     /// matmul form, or an eager tensor already at the broadcast shape).
     fn expand_src(&self, cid: OpId) -> Option<(OpId, Vec<Dim>)> {
-        let x = self.class_nodes(cid).find_map(|nid| match &self.nodes[nid].op {
-            Op::Expand { x, .. } => Some(*x),
+        let x = self.class_nodes(cid).find_map(|nid| match &self.ops[nid].op {
+            Op::Move { x, mop } => match mop.as_ref() {
+                MoveOp::Expand { .. } => Some(*x),
+                _ => None,
+            },
             _ => None,
         })?;
         Some((x, self.const_shape(x)?))
@@ -87,9 +90,12 @@ impl Graph {
     /// `[k, n]`), looking through shape-only wrappers such as the `Reshape` to
     /// `[1, n, k]` in the broadcast matmul form.
     fn transpose_src(&self, cid: OpId) -> Option<OpId> {
-        self.class_nodes(cid).find_map(|nid| match &self.nodes[nid].op {
-            Op::Reshape { x, .. } => self.transpose_src(*x),
-            Op::Permute { x, axes } if axes.len() == 2 && axes[0] == 1 && axes[1] == 0 => Some(*x),
+        self.class_nodes(cid).find_map(|nid| match &self.ops[nid].op {
+            Op::Move { x, mop } => match mop.as_ref() {
+                MoveOp::Reshape { .. } => self.transpose_src(*x),
+                MoveOp::Permute { axes } if axes.len() == 2 && axes[0] == 1 && axes[1] == 0 => Some(*x),
+                _ => None,
+            },
             _ => None,
         })
     }

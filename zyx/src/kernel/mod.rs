@@ -327,7 +327,7 @@ impl Kernel {
                 break;
             }
             match self.ops[op_id].op {
-                Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
+                Op::Reshape { .. } | Op::Permute { .. } | Op::Pad { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
@@ -453,6 +453,9 @@ impl Kernel {
                     *rcs.entry(condition).or_insert(0) += 1;
                 }
                 Op::Barrier | Op::EndIf | Op::EndLoop => {}
+                Op::Expand { x, shape } => todo!(),
+                Op::Flip { x, axes } => todo!(),
+                Op::Narrow { axis, start, len } => todo!(),
             }
             op_id = self.next_op(op_id);
         }
@@ -491,7 +494,6 @@ impl Kernel {
                 Op::Asm { ref ops, .. } => op_id = ops[0],
                 // Index extracts a single lane: a scalar, not the vec layout.
                 Op::Index { .. } => return MemLayout::Scalar,
-                Op::Move { x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
                 Op::ReduceTile { acc, .. } => op_id = acc,
                 Op::BroadcastTile { x, .. } => op_id = x,
@@ -500,6 +502,12 @@ impl Kernel {
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }
+                Op::Reshape { x, shape } => todo!(),
+                Op::Expand { x, shape } => todo!(),
+                Op::Permute { x, axes } => todo!(),
+                Op::Flip { x, axes } => todo!(),
+                Op::Pad { axis, lp, len } => todo!(),
+                Op::Narrow { axis, start, len } => todo!(),
             }
         }
         panic!("layout not found for too long time");
@@ -539,7 +547,6 @@ impl Kernel {
                 Op::Asm { ref ops, .. } => op_id = ops[0],
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
-                Op::Move { x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
                 Op::ReduceTile { acc, .. } => op_id = acc,
                 Op::BroadcastTile { x, .. } => op_id = x,
@@ -548,6 +555,12 @@ impl Kernel {
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }
+                Op::Reshape { x, shape } => todo!(),
+                Op::Expand { x, shape } => todo!(),
+                Op::Permute { x, axes } => todo!(),
+                Op::Flip { x, axes } => todo!(),
+                Op::Pad { axis, lp, len } => todo!(),
+                Op::Narrow { axis, start, len } => todo!(),
             }
         }
         panic!("dtype not found for too long time");
