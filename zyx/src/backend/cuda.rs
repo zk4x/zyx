@@ -116,7 +116,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{Graph, Node},
+    graph::{Graph, Op},
     kernel::{Kernel, MMADType, MMADims, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
     slab::{Slab, SlabId},
@@ -1576,7 +1576,7 @@ impl CUDADevice {
                 continue;
             };
             graph.mint_node(
-                Node::Kernel {
+                Op::Kernel {
                     inputs: Box::new([mm.a, mm.b]),
                     outputs: Box::new([mm.out]),
                     program_id: ProgramId {

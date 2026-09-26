@@ -226,7 +226,7 @@ use crate::{
     DType, Dev, Map, Scalar, Set, ZyxError,
     backend::{Buffer, DTypeCapability, DeviceProgramId, LaunchArg, Pool, ProgramId},
     dtype::Constant,
-    graph::{ExecPlan, Graph, GraphId, Node},
+    graph::{ExecPlan, Graph, GraphId, Op},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     rng::Rng,
     scalar::{bf16, f8e4m3, f8e5m2, f16},
@@ -1276,7 +1276,7 @@ impl Runtime {
             | TensorData::Graph { class_id, graph_id, shape_id, .. }
             | TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
                 self.assert_graph_alive(graph_id);
-                let (_, class_id) = self.push_node(graph_id, Node::Cast { x: class_id, dtype });
+                let (_, class_id) = self.push_node(graph_id, Op::Cast { x: class_id, dtype });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
                 debug_assert!(!shape_id.is_scalar(), "cast: input graph tensor {x} has no shape expression");
@@ -1325,7 +1325,7 @@ impl Runtime {
             | TensorData::Graph { class_id, graph_id, shape_id, .. }
             | TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
                 self.assert_graph_alive(graph_id);
-                let (_, class_id) = self.push_node(graph_id, Node::Bitcast { x: class_id, dtype });
+                let (_, class_id) = self.push_node(graph_id, Op::Bitcast { x: class_id, dtype });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
                 debug_assert!(!shape_id.is_scalar(), "bitcast: input graph tensor {x} has no shape expression");
@@ -1388,7 +1388,7 @@ impl Runtime {
             | TensorData::Graph { class_id, graph_id, shape_id, dtype, .. }
             | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
-                let (_node_id, class_id) = self.push_node(graph_id, Node::Unary { x: class_id, uop });
+                let (_node_id, class_id) = self.push_node(graph_id, Op::Unary { x: class_id, uop });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
                 debug_assert!(!shape_id.is_scalar(), "unary: input graph tensor {x} has no shape expression");
@@ -1789,7 +1789,7 @@ impl Runtime {
             | TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
                 assert!(!self.graphs[graph_id].dead, "tape scope has ended (tensor belongs to a dead tape scope");
                 // TODO measure actual time by running a test copy
-                let (_node_id, cid) = self.push_node(graph_id, Node::ToDevice { x: class_id, device, time: 0 });
+                let (_node_id, cid) = self.push_node(graph_id, Op::ToDevice { x: class_id, device, time: 0 });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression.
                 debug_assert!(!shape_id.is_scalar(), "to_device: input graph tensor {x} has no shape expression");
@@ -1837,7 +1837,7 @@ impl Runtime {
             TensorData::Graph { class_id, graph_id, shape_id, dtype, .. }
             | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
-                let (_node_id, cid) = self.push_node(graph_id, Node::Contiguous { x: class_id });
+                let (_node_id, cid) = self.push_node(graph_id, Op::Contiguous { x: class_id });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression.
                 debug_assert!(!shape_id.is_scalar(), "contiguous: input graph tensor {x} has no shape expression");
@@ -1885,7 +1885,7 @@ impl Runtime {
             | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
                 let shape_id = self.reduce_last_axis_shape(shape_id);
-                let (_, class_id) = self.push_node(graph_id, Node::ReduceLast { x: class_id, rop });
+                let (_, class_id) = self.push_node(graph_id, Op::ReduceLast { x: class_id, rop });
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 self.graphs[graph_id].ref_count += 1;
                 Ok(tid)
@@ -1974,7 +1974,7 @@ impl Runtime {
                     ref t => todo!("stack: promote symbolic scalar tid {t:?} into a graph"),
                 });
             }
-            let (_, class_id) = self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() });
+            let (_, class_id) = self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() });
             {
                 // Result shape mirrors the eager arm: [len] ++ first operand's
                 // dims. Same reachable set as the ops loop above: graph
@@ -2112,7 +2112,7 @@ impl Runtime {
                         panic!("reshape: shape operand {shape_id} is a data tensor, not a symbolic shape")
                     }
                 };
-                let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape: shape_class });
+                let (_, class_id) = self.push_node(graph_id, Op::Reshape { x: x_class, shape: shape_class });
                 self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id: shape_expr, dtype, rc: 1 });
                 Ok(tid)
@@ -2212,7 +2212,7 @@ impl Runtime {
                     | TensorData::PendingLeaf { .. }
                     | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, shape_id),
                 };
-                let (_, class_id) = self.push_node(graph_id, Node::Expand { x: x_class, shape: shape_class });
+                let (_, class_id) = self.push_node(graph_id, Op::Expand { x: x_class, shape: shape_class });
                 {
                     self.graphs[graph_id].ref_count += 1;
 
@@ -2309,7 +2309,7 @@ impl Runtime {
             | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
                 let shape_id = self.permute_shape(shape_id, &axes);
-                let (_, class_id) = self.push_node(graph_id, Node::Permute { x: class_id, axes: axes.into_boxed_slice() });
+                let (_, class_id) = self.push_node(graph_id, Op::Permute { x: class_id, axes: axes.into_boxed_slice() });
                 self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
@@ -2401,7 +2401,7 @@ impl Runtime {
                     | TensorData::PendingLeaf { .. }
                     | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, len),
                 };
-                let (_, class_id) = self.push_node(graph_id, Node::Pad { x: class_id, axis, lp: lp_class, len: len_class });
+                let (_, class_id) = self.push_node(graph_id, Op::Pad { x: class_id, axis, lp: lp_class, len: len_class });
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 self.graphs[graph_id].ref_count += 1;
                 #[cfg(feature = "debug_tensor_op")]
@@ -2528,7 +2528,7 @@ impl Runtime {
                     | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, len),
                 };
                 let (_, class_id) =
-                    self.push_node(graph_id, Node::Narrow { x: class_id, axis, start: start_class, len: len_class });
+                    self.push_node(graph_id, Op::Narrow { x: class_id, axis, start: start_class, len: len_class });
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 self.graphs[graph_id].ref_count += 1;
                 #[cfg(feature = "debug_tensor_op")]
@@ -2600,7 +2600,7 @@ impl Runtime {
             | TensorData::GraphLeaf { class_id, graph_id, dtype, .. }
             | TensorData::Promoted { class_id, graph_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
-                let (_, class_id) = self.push_node(graph_id, Node::Flip { x: class_id, axes: axes.into_boxed_slice() });
+                let (_, class_id) = self.push_node(graph_id, Op::Flip { x: class_id, axes: axes.into_boxed_slice() });
                 self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
@@ -2874,14 +2874,14 @@ impl Runtime {
                 // Walk graph to find the source of the lvalue
                 let graph = &self.graphs[graph_id];
                 loop {
-                    match graph.nodes[dst_leaf_cid].node {
-                        Node::Pad { x, .. }
-                        | Node::Flip { x, .. }
-                        | Node::Expand { x, .. }
-                        | Node::Reshape { x, .. }
-                        | Node::Narrow { x, .. }
-                        | Node::Permute { x, .. } => dst_leaf_cid = x,
-                        Node::After { .. } | Node::Leaf { .. } => break,
+                    match graph.nodes[dst_leaf_cid].op {
+                        Op::Pad { x, .. }
+                        | Op::Flip { x, .. }
+                        | Op::Expand { x, .. }
+                        | Op::Reshape { x, .. }
+                        | Op::Narrow { x, .. }
+                        | Op::Permute { x, .. } => dst_leaf_cid = x,
+                        Op::After { .. } | Op::Leaf { .. } => break,
                         ref op => unreachable!("{op:?}"),
                     }
                 }
@@ -2889,7 +2889,7 @@ impl Runtime {
                 // the same buffer) to find the base tensor. The After for this assign
                 // threads onto the previous After, not the original buffer.
                 let mut leaf_cid = dst_leaf_cid;
-                while let Node::After { x, .. } = &graph.nodes[leaf_cid].node {
+                while let Op::After { x, .. } = &graph.nodes[leaf_cid].op {
                     leaf_cid = *x;
                 }
                 let dst_leaf = graph.leaf_map[&leaf_cid];
@@ -2908,9 +2908,9 @@ impl Runtime {
                         unreachable!("{:?}", self.tensors[src])
                     }
                 };
-                let (_node_id, assign_cid) = self.push_node(graph_id, Node::Assign { dst: dst_cid, src: src_cid });
-                let leaf_class = self.push_node(graph_id, Node::After { x: dst_leaf_cid, dep: assign_cid }).1;
-                let dst_class = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }).1;
+                let (_node_id, assign_cid) = self.push_node(graph_id, Op::Assign { dst: dst_cid, src: src_cid });
+                let leaf_class = self.push_node(graph_id, Op::After { x: dst_leaf_cid, dep: assign_cid }).1;
+                let dst_class = self.push_node(graph_id, Op::After { x: dst_cid, dep: assign_cid }).1;
                 for (tid, class_id) in [(dst_leaf, leaf_class), (dst, dst_class)] {
                     match &mut self.tensors[tid] {
                         TensorData::Graph { class_id: c, .. }
@@ -2971,8 +2971,12 @@ impl Runtime {
                 }
             };
             let dst_shape_op = self.replay_expr(kernel_id, dst_shape_id);
-            let mut_param =
-                self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: dst_shape_op, cons_id: 0 });
+            let mut_param = self.kernels[kernel_id].kernel.push_back(Op::Param {
+                dtype,
+                kind: ParamKind::GlobalMut,
+                shape: dst_shape_op,
+                cons_id: 0,
+            });
             self.kernels[kernel_id].kernel.store(mut_param, src_op, OpId::NULL);
             self.kernels[kernel_id].stores.push(dst);
             // dst becomes pending: the store kernel owns the value now, mutating
@@ -3548,8 +3552,12 @@ impl Runtime {
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
             let store_shape_id = self.kernels[kid].kernel.stack_shape_dims(op_id);
-            let dst_id =
-                self.kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: store_shape_id, cons_id: 0 });
+            let dst_id = self.kernels[kid].kernel.push_back(Op::Param {
+                dtype,
+                kind: ParamKind::GlobalMut,
+                shape: store_shape_id,
+                cons_id: 0,
+            });
             self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL);
             self.kernels[kid].stores.push(x);
             kid

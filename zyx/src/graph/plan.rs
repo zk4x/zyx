@@ -6,7 +6,7 @@ use crate::{
     Map, Set, ZyxError,
     backend::{Buffer, LaunchArg, Pool, ProgramId},
     dtype::Constant,
-    graph::{Graph, Node, OpId},
+    graph::{Graph, Op, OpId},
     kernel::BOp,
     runtime::Runtime,
     shape::Dim,
@@ -94,13 +94,13 @@ impl ExecPlan {
     pub fn new(graph: &Graph, nodes: &[OpId], output_set: &BTreeSet<OpId>, leaf_pools: &Map<OpId, Pool>) -> Self {
         let mut rc: Map<OpId, u32> = Map::default();
         for &nid in nodes {
-            match &graph.nodes[nid].node {
-                Node::Kernel { inputs, .. } => {
+            match &graph.nodes[nid].op {
+                Op::Kernel { inputs, .. } => {
                     for &ic in &**inputs {
                         rc.entry(ic).and_modify(|c| *c += 1).or_insert(1);
                     }
                 }
-                Node::ToDevice { x, .. } => {
+                Op::ToDevice { x, .. } => {
                     rc.entry(*x).and_modify(|c| *c += 1).or_insert(1);
                 }
                 _ => unreachable!(),
@@ -117,15 +117,15 @@ impl ExecPlan {
         // leaf dims must terminate the walk; anything else is unreachable.
         fn alloc_spec(graph: &Graph, class: OpId) -> (Dim, Vec<PlanDim>) {
             fn dim_expr(graph: &Graph, dim: OpId) -> PlanDim {
-                match graph.nodes[dim].node {
-                    Node::Const { value: c, .. } => {
+                match graph.nodes[dim].op {
+                    Op::Const { value: c, .. } => {
                         PlanDim::Const(c.as_dim().unwrap_or_else(|| panic!("dim class {dim:?} is not a constant")))
                     }
-                    Node::Leaf { .. } => PlanDim::Leaf(dim),
-                    Node::Binary { x, y, bop } => {
+                    Op::Leaf { .. } => PlanDim::Leaf(dim),
+                    Op::Binary { x, y, bop } => {
                         PlanDim::Binary { x: Box::new(dim_expr(graph, x)), y: Box::new(dim_expr(graph, y)), bop }
                     }
-                    Node::Cast { x, dtype } => PlanDim::Cast { x: Box::new(dim_expr(graph, x)), dtype },
+                    Op::Cast { x, dtype } => PlanDim::Cast { x: Box::new(dim_expr(graph, x)), dtype },
                     ref op => unreachable!("alloc dim class {dim:?} must be a dim over Const/leaf leaves, got {op:?}"),
                 }
             }
@@ -142,7 +142,7 @@ impl ExecPlan {
         let mut aliases: Vec<(OpId, OpId, Dim, Vec<PlanDim>)> = Vec::new();
         let mut alias_classes: Set<OpId> = Set::default();
         for (cid, nd) in graph.nodes.iter().filter(|(id, nd)| nd.class_of == *id) {
-            if let Node::After { x, .. } = nd.node {
+            if let Op::After { x, .. } = nd.op {
                 let base = graph.base_leaf(x);
                 let (dtype_size, dims) = alloc_spec(graph, cid);
                 aliases.push((cid, base, dtype_size, dims));
@@ -154,7 +154,7 @@ impl ExecPlan {
         // binding below is decided at plan time, not execution time.
         let mut store_pool: Map<OpId, Pool> = Map::default();
         for &nid in nodes {
-            if let Node::Kernel { outputs, program_id, .. } = &graph.nodes[nid].node {
+            if let Op::Kernel { outputs, program_id, .. } = &graph.nodes[nid].op {
                 let pool = program_id.dev.pool();
                 for &oc in &**outputs {
                     store_pool.insert(oc, pool);
@@ -186,8 +186,8 @@ impl ExecPlan {
         }
 
         for &nid in nodes {
-            match &graph.nodes[nid].node {
-                Node::Kernel { inputs, outputs, program_id, .. } => {
+            match &graph.nodes[nid].op {
+                Op::Kernel { inputs, outputs, program_id, .. } => {
                     let pool = program_id.dev.pool();
                     for &oc in &**outputs {
                         if !allocated.insert(oc) {
@@ -218,7 +218,7 @@ impl ExecPlan {
                         }
                     }
                 }
-                &Node::ToDevice { x, device, .. } => {
+                &Op::ToDevice { x, device, .. } => {
                     // Pool is always derived from the device, never the reverse.
                     let pool = device.pool();
                     let class_of = graph.nodes[nid].class_of;

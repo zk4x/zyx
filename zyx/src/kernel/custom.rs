@@ -23,7 +23,7 @@ use std::sync::Arc;
 use crate::backend::{Buffer, DeviceInfo, LaunchArg, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
-use crate::graph::{Node, OpNode};
+use crate::graph::{Op, OpNode};
 use crate::kernel::{
     BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
     ops::TileDim,
@@ -1192,15 +1192,15 @@ impl Runtime {
             // descriptor is patched to the Index classes after they exist;
             // hashcons is bypassed for the Custom node because it references
             // classes that only exist once it does.
-            let node = Node::Custom { inputs: input_classes.into(), outputs: Box::new([]), program_id: program, time: 10 };
-            let nid = self.graphs[graph_id].nodes.push(OpNode { node, class_of: OpId::NULL, next_in_class: OpId::NULL });
+            let node = Op::Custom { inputs: input_classes.into(), outputs: Box::new([]), program_id: program, time: 10 };
+            let nid = self.graphs[graph_id].nodes.push(OpNode { op: node, class_of: OpId::NULL, next_in_class: OpId::NULL });
             self.graphs[graph_id].nodes[nid].class_of = nid;
 
             let mut out_cids = Vec::with_capacity(shapes.len());
             for (i, _) in shape_classes.iter().enumerate() {
-                let idx_node = Node::Index { vec: nid, idx: i };
+                let idx_node = Op::Index { vec: nid, idx: i };
                 let idx_id = self.graphs[graph_id].nodes.push(OpNode {
-                    node: idx_node.clone(),
+                    op: idx_node.clone(),
                     class_of: OpId::NULL,
                     next_in_class: OpId::NULL,
                 });
@@ -1217,8 +1217,8 @@ impl Runtime {
                 .zip(output_dtypes.iter().copied())
                 .map(|((cid, shape), dtype)| (cid, shape, dtype))
                 .collect();
-            match &mut self.graphs[graph_id].nodes[nid].node {
-                Node::Custom { outputs: slot, .. } => *slot = outputs.into(),
+            match &mut self.graphs[graph_id].nodes[nid].op {
+                Op::Custom { outputs: slot, .. } => *slot = outputs.into(),
                 n => unreachable!("patching outputs of non-Custom node {n:?}"),
             }
 

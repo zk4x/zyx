@@ -19,7 +19,7 @@ use std::hash::BuildHasherDefault;
 use crate::{
     Map,
     dtype::{Constant, DType},
-    graph::{GraphId, Node},
+    graph::{GraphId, Op},
     kernel::{BOp, IDX_T, Op, OpId, UOp},
     runtime::{KernelId, ResolvedDim, Runtime, TensorData},
     shape::{Dim, UAxis},
@@ -733,11 +733,11 @@ impl Runtime {
                 }
                 Expr::Cast { x, dtype } => {
                     let a = class_map[&x];
-                    self.push_node(graph_id, Node::Cast { x: a, dtype }).1
+                    self.push_node(graph_id, Op::Cast { x: a, dtype }).1
                 }
                 Expr::Unary { x, uop } => {
                     let a = class_map[&x];
-                    self.push_node(graph_id, Node::Unary { x: a, uop }).1
+                    self.push_node(graph_id, Op::Unary { x: a, uop }).1
                 }
                 Expr::Binary { x, y, bop } => {
                     let a = class_map[&x];
@@ -749,7 +749,7 @@ impl Runtime {
                     match ops.len() {
                         0 => OpId::NULL,
                         1 => ops[0],
-                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
+                        _ => self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
                 Expr::Stack2 { ref exprs } => {
@@ -757,7 +757,7 @@ impl Runtime {
                     match ops.len() {
                         0 => OpId::NULL,
                         1 => ops[0],
-                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
+                        _ => self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
                 Expr::Stack3 { ref exprs } => {
@@ -765,7 +765,7 @@ impl Runtime {
                     match ops.len() {
                         0 => OpId::NULL,
                         1 => ops[0],
-                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
+                        _ => self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
                 Expr::Stack4 { ref exprs } => {
@@ -773,7 +773,7 @@ impl Runtime {
                     match ops.len() {
                         0 => OpId::NULL,
                         1 => ops[0],
-                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
+                        _ => self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
                 Expr::Stack5 { ref exprs } => {
@@ -781,7 +781,7 @@ impl Runtime {
                     match ops.len() {
                         0 => OpId::NULL,
                         1 => ops[0],
-                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
+                        _ => self.push_node(graph_id, Op::Stack { ops: ops.into_boxed_slice() }).1,
                     }
                 }
             };
@@ -828,8 +828,12 @@ impl Runtime {
                 self.push(Expr::Stack3 { exprs: permuted })
             }
             Expr::Stack4 { exprs } => {
-                let permuted =
-                    [exprs[axes[0] as usize], exprs[axes[1] as usize], exprs[axes[2] as usize], exprs[axes[3] as usize]];
+                let permuted = [
+                    exprs[axes[0] as usize],
+                    exprs[axes[1] as usize],
+                    exprs[axes[2] as usize],
+                    exprs[axes[3] as usize],
+                ];
                 self.push(Expr::Stack4 { exprs: permuted })
             }
             Expr::Stack5 { exprs } => {
@@ -942,9 +946,7 @@ impl Runtime {
             }
             Expr::Stack2 { exprs } => self.push(Expr::Stack3 { exprs: [len, exprs[0], exprs[1]] }),
             Expr::Stack3 { exprs } => self.push(Expr::Stack4 { exprs: [len, exprs[0], exprs[1], exprs[2]] }),
-            Expr::Stack4 { exprs } => {
-                self.push(Expr::Stack5 { exprs: [len, exprs[0], exprs[1], exprs[2], exprs[3]] })
-            }
+            Expr::Stack4 { exprs } => self.push(Expr::Stack5 { exprs: [len, exprs[0], exprs[1], exprs[2], exprs[3]] }),
             Expr::Stack5 { exprs } => {
                 self.push(Expr::Stack { exprs: [len, exprs[0], exprs[1], exprs[2], exprs[3], exprs[4]].into() })
             }
@@ -965,11 +967,7 @@ impl Runtime {
             return 0;
         }
         match &self.exprs[shape_id] {
-            Expr::Constant { .. }
-            | Expr::Variable { .. }
-            | Expr::Cast { .. }
-            | Expr::Unary { .. }
-            | Expr::Binary { .. } => 1,
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => 1,
             Expr::Stack2 { .. } => 2,
             Expr::Stack3 { .. } => 3,
             Expr::Stack4 { .. } => 4,
@@ -992,16 +990,12 @@ impl Runtime {
             // A symbolic holding a Stack is a shape-value tensor: 1d, rank 1.
             // Any other symbolic is a scalar value: rank 0.
             TensorData::Symbolic { expr, .. } => match &self.exprs[expr] {
-                Expr::Stack { .. }
-                | Expr::Stack2 { .. }
-                | Expr::Stack3 { .. }
-                | Expr::Stack4 { .. }
-                | Expr::Stack5 { .. } => return 1,
-                Expr::Constant { .. }
-                | Expr::Variable { .. }
-                | Expr::Cast { .. }
-                | Expr::Unary { .. }
-                | Expr::Binary { .. } => return 0,
+                Expr::Stack { .. } | Expr::Stack2 { .. } | Expr::Stack3 { .. } | Expr::Stack4 { .. } | Expr::Stack5 { .. } => {
+                    return 1;
+                }
+                Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+                    return 0;
+                }
             },
         };
         self.rank(shape_id)
