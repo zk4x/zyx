@@ -30,16 +30,17 @@ pub enum ReduceOp {
 }
 
 impl Tensor {
-    /// Reduce resolved `axes` via permute-to-last + `reduce_last_axis`,
-    /// highest-axis-first so lower indices stay valid as the rank shrinks.
+    /// Reduce resolved `axes` via one permute (kept axes first, summed
+    /// axes trailing) followed by `reduce_last_axis` steps.
     pub(crate) fn reduce_axes(&self, axes: Vec<UAxis>, rop: BOp) -> Result<Tensor, ZyxError> {
+        let rank = self.resolve_shape().len();
+        let perm: Vec<Axis> =
+            (0..rank).filter(|i| !axes.contains(i)).chain(axes.iter().copied()).map(|i| i as Axis).collect();
         let mut cur = self.clone();
-        let mut desc = axes;
-        desc.sort_unstable_by(|a, b| b.cmp(a));
-        for ax in desc {
-            let r = cur.resolve_shape().len();
-            let perm: Vec<Axis> = (0..r).filter(|&i| i != ax).chain([ax]).map(|i| i as Axis).collect();
+        if !perm.iter().copied().enumerate().all(|(i, a)| a as usize == i) {
             cur = cur.permute(perm)?;
+        }
+        for _ in 0..axes.len() {
             cur = Tensor { id: RT.lock().reduce_last_axis(cur.id, rop)? };
         }
         Ok(cur)

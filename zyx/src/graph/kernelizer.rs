@@ -6,7 +6,6 @@ use crate::{
     Map, Set,
     graph::{Graph, JitKernelData, JitKernelId, Node, OpId},
     kernel::{Dev, IDX_T, Kernel, MoveOp, Op, ParamKind},
-    shape::UAxis,
     slab::Slab,
 };
 
@@ -148,7 +147,7 @@ impl Graph {
                     Node::Narrow { x, start, len, .. } => vec![*x, *start, *len],
                     Node::Permute { x, .. } | Node::Flip { x, .. } => vec![*x],
                     Node::Stack { ops } => ops.to_vec(),
-                    Node::Reduce { x, .. } | Node::ReduceLast { x, .. } | Node::Cast { x, .. } | Node::Bitcast { x, .. } | Node::Unary { x, .. } => vec![*x],
+                    Node::ReduceLast { x, .. } | Node::Cast { x, .. } | Node::Bitcast { x, .. } | Node::Unary { x, .. } => vec![*x],
                     Node::Binary { x, y, .. } => vec![*x, *y],
                     Node::Assign { dst, src } => vec![*dst, *src],
                     Node::After { x, dep } => vec![*x, *dep],
@@ -464,46 +463,6 @@ impl Graph {
                             self.push_outputs(kid, cid, rcs[&cid]);
                             visited.insert(cid, (kid, result_op));
                         }
-                    }
-                    Node::Reduce { x, rop, ref axes } => {
-                        // Assumed unique (backed by debug_assert) and in range
-                        // (asserted by push_node).
-                        debug_assert!(
-                            axes.iter().collect::<BTreeSet<_>>().len() == axes.len(),
-                            "Reduce: duplicate axes {axes:?}"
-                        );
-                        let axes: Vec<UAxis> = axes.to_vec();
-                        let rank = self.shape(x).len();
-                        let (mut kid, mut op_id) = match visited.get(&x) {
-                            Some(&kv) => kv,
-                            None => todo!("reduce of symbolic scalar operand {x:?}"),
-                        };
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
-                        // Single permute: non-reduced axes first, reduced axes
-                        // trailing (order preserved), so each reduce in the
-                        // sequence below sees its axis last.
-                        let perm: Vec<UAxis> = (0..rank).filter(|i| !axes.contains(i)).chain(axes.iter().copied()).collect();
-                        if !perm.iter().copied().eq(0..rank) {
-                            let kernel = &mut self.jit_kernels[kid].kernel;
-                            op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: perm.into() }) });
-                        }
-                        // Sequence of single trailing-axis reduces.
-                        for _ in 0..axes.len() {
-                            let kernel = &mut self.jit_kernels[kid].kernel;
-                            let dims = kernel.shape_ids(op_id);
-                            debug_assert!(!dims.is_empty(), "reduce of scalar");
-                            let reduce_axis = *dims.last().unwrap();
-                            op_id = kernel.push_back(Op::Reduce { x: op_id, rop, reduce_axis });
-                        }
-                        // All dims reduced: reshape the scalar to [1].
-                        if axes.len() == rank {
-                            let kernel = &mut self.jit_kernels[kid].kernel;
-                            let shape_op = kernel.add_shape(&[1]);
-                            op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape_op }) });
-                        }
-                        self.consume(x, kid, &mut visited, &mut rcs);
-                        self.push_outputs(kid, cid, rcs[&cid]);
-                        visited.insert(cid, (kid, op_id));
                     }
                     Node::ReduceLast { x, rop } => {
                         // Last axis is already trailing: single reduce, no permute.

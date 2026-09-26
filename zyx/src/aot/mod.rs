@@ -35,13 +35,13 @@ impl Graph {
             .collect()
     }
 
-    /// Finds a `Reduce(Add)` over the single trailing axis of a 3D product.
+    /// Finds a `ReduceLast(Add)` over the trailing axis of a 3D product.
     /// Returns the product class and the contraction dim `k`.
     fn reduce_add_last(&self, cid: OpId) -> Option<(OpId, Dim)> {
         self.class_nodes(cid).find_map(|nid| match &self.nodes[nid].node {
-            Node::Reduce { x, rop: BOp::Add, axes } => {
+            Node::ReduceLast { x, rop: BOp::Add } => {
                 let prod_shape = self.const_shape(*x)?;
-                if prod_shape.len() == 3 && axes.len() == 1 && axes[0] == prod_shape.len() - 1 {
+                if prod_shape.len() == 3 {
                     Some((*x, prod_shape[2]))
                 } else {
                     None

@@ -151,11 +151,6 @@ pub enum Node {
         x: OpId,
         rop: BOp,
     },
-    Reduce {
-        x: OpId,
-        rop: BOp,
-        axes: Box<[UAxis]>,
-    },
     Cast {
         x: OpId,
         dtype: DType,
@@ -219,9 +214,6 @@ impl PartialEq for Node {
                 a == b && aa == ba && al == bl && aln == bln
             }
             (Self::Flip { x: a, axes: aa }, Self::Flip { x: b, axes: ba }) => a == b && aa == ba,
-            (Self::Reduce { x: a, rop: ar, axes: aa }, Self::Reduce { x: b, rop: br, axes: ba }) => {
-                a == b && ar == br && aa == ba
-            }
             (Self::Cast { x: a, dtype: ad }, Self::Cast { x: b, dtype: bd }) => a == b && ad == bd,
             (Self::Bitcast { x: a, dtype: ad }, Self::Bitcast { x: b, dtype: bd }) => a == b && ad == bd,
             (Self::Unary { x: a, uop: au }, Self::Unary { x: b, uop: bu }) => a == b && au == bu,
@@ -291,12 +283,6 @@ impl std::hash::Hash for Node {
                 axis.hash(state);
                 start.hash(state);
                 len.hash(state);
-            }
-            Self::Reduce { x, rop: bop, axes } => {
-                6u8.hash(state);
-                x.hash(state);
-                bop.hash(state);
-                axes.hash(state);
             }
             Self::ReduceLast { x, rop: bop } => {
                 20u8.hash(state);
@@ -470,7 +456,6 @@ impl Node {
             Self::Flip { x, .. } => vec![*x],
             Self::Stack { ops } => ops.to_vec(),
             Self::Index { vec, .. } => vec![*vec],
-            Self::Reduce { x, .. } => vec![*x],
             Self::ReduceLast { x, .. } => vec![*x],
             Self::Cast { x, .. } => vec![*x],
             Self::Bitcast { x, .. } => vec![*x],
@@ -893,7 +878,6 @@ impl Graph {
                     _ => kind.class_params().collect(),
                 };
                 let name = match kind {
-                    Node::Reduce { rop: bop, .. } => format!("Reduce {:?}", bop),
                     Node::ReduceLast { rop: bop, .. } => format!("ReduceLast {:?}", bop),
                     Node::Binary { bop, .. } => format!("Binary {:?}", bop),
                     Node::Assign { .. } => "Assign".into(),
@@ -1387,10 +1371,6 @@ impl Graph {
                 let sx = self.shape(*x);
                 if !sx.is_empty() { sx } else { self.shape(*y) }
             }
-            Node::Reduce { x, axes, .. } => {
-                let s = self.shape(*x);
-                s.into_iter().enumerate().filter(|(i, _)| !axes.contains(&*i)).map(|(_, d)| d).collect()
-            }
             Node::ReduceLast { x, .. } => {
                 let mut s = self.shape(*x);
                 s.pop().expect("ReduceLast of scalar");
@@ -1573,7 +1553,6 @@ impl Graph {
             | Node::Pad { x, .. }
             | Node::Flip { x, .. }
             | Node::Narrow { x, .. }
-            | Node::Reduce { x, .. }
             | Node::ReduceLast { x, .. }
             | Node::Unary { x, .. }
             | Node::After { x, .. }
@@ -1623,7 +1602,6 @@ impl Graph {
                 | Node::Flip { .. }
                 | Node::Narrow { .. }
                 | Node::Stack { .. }
-                | Node::Reduce { .. }
                 | Node::ReduceLast { .. }
                 | Node::Assign { .. }
                 | Node::After { .. }
@@ -2178,10 +2156,8 @@ impl Runtime {
                     }
                     Op::Reduce { x, rop, .. } => {
                         let x_class = op_to_class[&x];
-                        let rank = self.graphs[graph_id].rank(x_class);
-                        debug_assert!(rank >= 1, "Reduce: input rank must be >= 1");
                         let (_, class_id) =
-                            self.push_node(graph_id, Node::Reduce { x: x_class, rop, axes: vec![rank - 1].into() });
+                            self.push_node(graph_id, Node::ReduceLast { x: x_class, rop });
                         class_id
                     }
                     Op::Move { x, ref mop } => {
