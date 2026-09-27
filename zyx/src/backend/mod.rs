@@ -127,37 +127,43 @@ pub(super) fn dlock<'a, T>(dev: Dev, mutex: &'a Mutex<T>) -> std::sync::MutexGua
 impl Dev {
     /// All currently available devices, triggering lazy init of every
     /// backend (backends that are configured out or whose hardware/driver
-    /// is missing contribute nothing).
+    /// is missing contribute nothing). Enumerated once per process:
+    /// failed backends are not re-probed (a failed init, e.g. Tenstorrent,
+    /// must not be retried), so every later call returns the same set.
     #[must_use]
     pub fn all() -> Vec<Dev> {
-        let mut out = Vec::new();
-        if c::device().is_ok() {
-            out.push(Dev::C);
-        }
-        if cblas::device().is_ok() {
-            out.push(Dev::Cblas);
-        }
-        for i in 0..cuda::device_count() {
-            out.push(Dev::Cuda(i));
-        }
-        #[cfg(feature = "tenstorrent")]
-        for i in 0..tenstorrent::device_count() {
-            out.push(Dev::TT(i));
-        }
-        for i in 0..vulkan::device_count() {
-            out.push(Dev::Vulkan(i));
-        }
-        for i in 0..opencl::device_count() {
-            out.push(Dev::OpenCL(i));
-        }
-        #[cfg(feature = "wgpu")]
-        for i in 0..wgpu::device_count() {
-            out.push(Dev::WGPU(i));
-        }
-        if dummy::device().is_ok() {
-            out.push(Dev::Dummy);
-        }
-        out
+        static ALL: std::sync::OnceLock<Vec<Dev>> = std::sync::OnceLock::new();
+        ALL.get_or_init(|| {
+            let mut out = Vec::new();
+            if c::device().is_ok() {
+                out.push(Dev::C);
+            }
+            if cblas::device().is_ok() {
+                out.push(Dev::Cblas);
+            }
+            for i in 0..cuda::device_count() {
+                out.push(Dev::Cuda(i));
+            }
+            #[cfg(feature = "tenstorrent")]
+            for i in 0..tenstorrent::device_count() {
+                out.push(Dev::TT(i));
+            }
+            for i in 0..vulkan::device_count() {
+                out.push(Dev::Vulkan(i));
+            }
+            for i in 0..opencl::device_count() {
+                out.push(Dev::OpenCL(i));
+            }
+            #[cfg(feature = "wgpu")]
+            for i in 0..wgpu::device_count() {
+                out.push(Dev::WGPU(i));
+            }
+            if dummy::device().is_ok() {
+                out.push(Dev::Dummy);
+            }
+            out
+        })
+        .clone()
     }
 
     /// The memory pool belonging to this device. Pure function — the pool
@@ -657,7 +663,7 @@ fn load_config_file() -> Config {
         .or_else(|| std::env::home_dir().map(|home| home.join(".config")))
         .map(|path| path.join("zyx/config.json"))
         .and_then(|path| std::fs::read_to_string(&path).ok());
-    config_file
+    let config = config_file
         .and_then(|file| {
             DeJson::deserialize_json(&file)
                 .map_err(|e| {
@@ -677,7 +683,8 @@ fn load_config_file() -> Config {
                 println!("Failed to get device config, using defaults.");
             }
             Config::default()
-        })
+        });
+    config
 }
 
 /// Whether backend debug printing is enabled (`ZYX_DEBUG` device bit).
