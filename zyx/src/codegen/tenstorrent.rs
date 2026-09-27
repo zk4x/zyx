@@ -3331,7 +3331,11 @@ impl Compiler {
                             TTOp::AsyncWrite { src_cb, addr, bytes, .. } => {
                                 next.push(TTOp::AsyncWrite { src_cb: *src_cb, addr: *addr, bytes: *bytes, off: Some(*counter) });
                             }
-                            TTOp::NocReadBarrier | TTOp::NocWriteBarrier => next.push(op.clone()),
+                            // Inner barriers are redundant: the trailing
+                            // barrier after EndLoop (below) drains every
+                            // transfer in the block, and all span transfers
+                            // target distinct slots of the same CB.
+                            TTOp::NocReadBarrier | TTOp::NocWriteBarrier => {}
                             other => next.push(other.clone()),
                         }
                     }
