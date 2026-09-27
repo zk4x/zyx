@@ -69,7 +69,12 @@ impl Kernel {
                 | Op::TransposeTile { .. }
                 | Op::BroadcastTile { .. }
                 | Op::Reduce { .. }
-                | Op::Move { .. }
+                | Op::Expand { .. }
+                | Op::Permute { .. }
+                | Op::Flip { .. }
+                | Op::Narrow { .. }
+                | Op::Reshape { ..}
+                | Op::Pad { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }

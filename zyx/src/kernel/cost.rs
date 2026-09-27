@@ -67,7 +67,13 @@ impl Kernel {
                             *rcs.entry(x).or_insert(0) += 1;
                         }
                     }
-                    Op::Move { .. } | Op::Reduce { .. } => {
+                    Op::Expand { .. }
+                    | Op::Permute { .. }
+                    | Op::Flip { .. }
+                    | Op::Narrow { .. }
+                    | Op::Reshape { .. }
+                    | Op::Pad { .. }
+                    | Op::Reduce { .. } => {
                         unreachable!()
                     }
                     Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
@@ -221,7 +227,12 @@ impl Kernel {
                 | Op::Const(_)
                 | Op::Range { .. } => true,
                 Op::Store { .. } | Op::EndLoop | Op::Barrier | Op::If { .. } | Op::EndIf => false,
-                Op::Move { .. } => todo!(),
+                Op::Expand { .. }
+                | Op::Permute { .. }
+                | Op::Flip { .. }
+                | Op::Narrow { .. }
+                | Op::Reshape { ..}
+                | Op::Pad { .. } => todo!(),
                 Op::Reduce { .. } => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
@@ -281,7 +292,12 @@ impl Kernel {
                 | Op::EndIf
                 | Op::Index { .. }
                 | Op::Stack { .. }
-                | Op::Move { .. }
+                | Op::Expand { .. }
+                | Op::Permute { .. }
+                | Op::Flip { .. }
+                | Op::Narrow { .. }
+                | Op::Reshape { ..}
+                | Op::Pad { .. }
                 | Op::Reduce { .. }
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }

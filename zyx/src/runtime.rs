@@ -234,6 +234,7 @@ use crate::{
     slab::{Slab, SlabId},
     symbolic::{Expr, ExprId},
     tensor::TensorId,
+    types::TinyVec,
 };
 
 /// Loads present in `old` but not in `new`, counting multiplicities.
@@ -2112,7 +2113,7 @@ impl Runtime {
                         panic!("reshape: shape operand {shape_id} is a data tensor, not a symbolic shape")
                     }
                 };
-                let class_id = self.push_op(graph_id, Op::Move { x: x_class, mop: Box::new(MoveOp::Reshape { shape }) });
+                let class_id = self.push_op(graph_id, Op::Reshape { x: x_class, shape });
                 self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id: shape_expr, dtype, rc: 1 });
                 Ok(tid)
@@ -2212,7 +2213,7 @@ impl Runtime {
                     | TensorData::PendingLeaf { .. }
                     | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, shape_id),
                 };
-                let class_id = self.push_op(graph_id, Op::Move { x, mop: Box::new(MoveOp::Expand { shape }) });
+                let class_id = self.push_op(graph_id, Op::Expand { x, shape });
                 self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id: shape_expr, dtype, rc: 1 });
                 Ok(tid)
@@ -2306,8 +2307,8 @@ impl Runtime {
             | TensorData::Promoted { class_id: x, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
                 let shape_id = self.permute_shape(shape_id, &axes);
-                let axes = axes.into_boxed_slice();
-                let x = self.push_op(graph_id, Op::Move { x, mop: Box::new(MoveOp::Permute { axes }) });
+                let axes = TinyVec::new(&axes);
+                let x = self.push_op(graph_id, Op::Permute { x, axes });
                 self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id: x, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
@@ -2319,9 +2320,8 @@ impl Runtime {
             | TensorData::PendingLeaf { shape_id, dtype, .. } => {
                 let shape_id = self.permute_shape(shape_id, &axes);
                 let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
-                let op_id = self.kernels[kernel_id]
-                    .kernel
-                    .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into() }) });
+                let axes = TinyVec::new(&axes);
+                let op_id = self.kernels[kernel_id].kernel.push_back(Op::Permute { x: op_id, axes });
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into permute must have empty outputs");
                 self.kernels[kernel_id].outputs.insert(tid);
@@ -2399,7 +2399,7 @@ impl Runtime {
                     | TensorData::PendingLeaf { .. }
                     | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, len),
                 };
-                let class_id = self.push_op(graph_id, Op::Move { x, mop: Box::new(MoveOp::Pad { axis, lp, len }) });
+                let class_id = self.push_op(graph_id, Op::Pad { x, axis, lp, len });
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 self.graphs[graph_id].ref_count += 1;
                 #[cfg(feature = "debug_tensor_op")]
@@ -2439,9 +2439,7 @@ impl Runtime {
                 let lp_op = self.replay_symbolic_into_kernel(kernel_id, lp);
                 let len_op = self.replay_symbolic_into_kernel(kernel_id, len);
 
-                let op_id = self.kernels[kernel_id]
-                    .kernel
-                    .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { axis, lp: lp_op, len: len_op }) });
+                let op_id = self.kernels[kernel_id].kernel.push_back(Op::Pad { x: op_id, axis, lp: lp_op, len: len_op });
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 self.kernels[kernel_id].outputs.insert(tid);
                 #[cfg(feature = "debug_tensor_op")]
@@ -2525,7 +2523,7 @@ impl Runtime {
                     | TensorData::PendingLeaf { .. }
                     | TensorData::Symbolic { .. } => self.replay_symbolic_into_graph(graph_id, len),
                 };
-                let class_id = self.push_op(graph_id, Op::Move { x, mop: Box::new(MoveOp::Narrow { axis, start, len }) });
+                let class_id = self.push_op(graph_id, Op::Narrow { x, axis, start, len });
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 self.graphs[graph_id].ref_count += 1;
                 #[cfg(feature = "debug_tensor_op")]
@@ -2546,10 +2544,7 @@ impl Runtime {
                 );
                 let start_op = self.replay_symbolic_into_kernel(kernel_id, start);
                 let len_op = self.replay_symbolic_into_kernel(kernel_id, len);
-
-                let op_id = self.kernels[kernel_id]
-                    .kernel
-                    .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Narrow { axis, start: start_op, len: len_op }) });
+                let op_id = self.kernels[kernel_id].kernel.push_back(Op::Narrow { x: op_id, axis, start: start_op, len: len_op });
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc: 1 });
                 self.kernels[kernel_id].outputs.insert(tid);
                 #[cfg(feature = "debug_tensor_op")]
@@ -2574,7 +2569,7 @@ impl Runtime {
             return Err(ZyxError::shape_error(format!("flip: axes must not be empty for tensor of shape {sh:?}").into()));
         }
         for &axis in &axes {
-            if axis >= sh.len() {
+            if axis as usize >= sh.len() {
                 return Err(ZyxError::shape_error(format!("Axis {axis} is out of range of rank {}", sh.len()).into()));
             }
         }
@@ -2597,8 +2592,8 @@ impl Runtime {
             | TensorData::GraphLeaf { class_id: x, graph_id, dtype, .. }
             | TensorData::Promoted { class_id: x, graph_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
-                let axes = axes.into_boxed_slice();
-                let class_id = self.push_op(graph_id, Op::Move { x, mop: Box::new(MoveOp::Flip { axes }) });
+                let axes = TinyVec::new(&axes);
+                let class_id = self.push_op(graph_id, Op::Flip { x, axes });
                 self.graphs[graph_id].ref_count += 1;
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
@@ -2873,7 +2868,12 @@ impl Runtime {
                 let graph = &self.graphs[graph_id];
                 loop {
                     match graph.ops[dst_leaf_cid].op {
-                        Op::Move { x, .. } => dst_leaf_cid = x,
+                        Op::Reshape { x, .. }
+                        | Op::Permute { x, .. }
+                        | Op::Pad { x, .. }
+                        | Op::Expand { x, .. }
+                        | Op::Flip { x, .. }
+                        | Op::Narrow { x, .. } => dst_leaf_cid = x,
                         Op::After { .. } | Op::Param { .. } => break,
                         ref op => unreachable!("{op:?}"),
                     }
@@ -2999,7 +2999,18 @@ impl Runtime {
             ));
         }
         for op in self.kernels[dst_kid].kernel.ops.values() {
-            if !matches!(op.op, Op::Param { .. } | Op::Move { .. } | Op::Const(_) | Op::Stack { .. }) {
+            if !matches!(
+                op.op,
+                Op::Param { .. }
+                    | Op::Reshape { .. }
+                    | Op::Permute { .. }
+                    | Op::Pad { .. }
+                    | Op::Expand { .. }
+                    | Op::Flip { .. }
+                    | Op::Narrow { .. }
+                    | Op::Const(_)
+                    | Op::Stack { .. }
+            ) {
                 return Err(ZyxError::ShapeError(
                     format!("assign: dst kernel {dst_kid:?} has unsupported op {:?}, only movement ops allowed", op.op).into(),
                 ));
@@ -3093,7 +3104,12 @@ impl Runtime {
         let mut dst_param = dst_op;
         for _ in 0..100 {
             match kernel.ops[dst_param].op {
-                Op::Move { x, .. } => {
+                Op::Reshape { x, .. }
+                | Op::Permute { x, .. }
+                | Op::Pad { x, .. }
+                | Op::Expand { x, .. }
+                | Op::Flip { x, .. }
+                | Op::Narrow { x, .. } => {
                     dst_param = x;
                 }
                 Op::Param { .. } => {
@@ -3154,11 +3170,19 @@ impl Runtime {
         while !op_id.is_null() {
             if required.contains(&op_id) {
                 let mut op = kernel.ops[op_id].op.clone();
-                if let Op::Move { x, .. } = &mut op {
-                    if op_map.get(x).is_none() {
-                        // this is the move on the load
-                        *x = op_map[&dst_param];
+                match &mut op {
+                    Op::Reshape { x, .. }
+                    | Op::Permute { x, .. }
+                    | Op::Pad { x, .. }
+                    | Op::Expand { x, .. }
+                    | Op::Flip { x, .. }
+                    | Op::Narrow { x, .. } => {
+                        if op_map.get(x).is_none() {
+                            // this is the move on the load
+                            *x = op_map[&dst_param];
+                        }
                     }
+                    _ => {}
                 }
                 // Single remap pass: `parameters_mut` covers the Move's `x`
                 // AND its `MoveOp` internals (reshape/expand shapes, pad

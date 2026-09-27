@@ -36,7 +36,7 @@ pub fn into_axis(axis: Axis, rank: UAxis) -> Result<UAxis, ZyxError> {
 }
 
 pub fn into_axes(axes: impl IntoIterator<Item = Axis>, rank: UAxis) -> Result<Vec<UAxis>, ZyxError> {
-    let mut res = Vec::with_capacity(rank);
+    let mut res = Vec::with_capacity(rank as usize);
     let mut visited = std::collections::BTreeSet::new();
     for axis in axes {
         let a = into_axis(axis, rank)?;

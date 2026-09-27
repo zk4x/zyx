@@ -1131,7 +1131,12 @@ impl Kernel {
                 }
                 match self.ops[op_id].op {
                     Op::ReduceTile { .. }
-                    | Op::Move { .. }
+                    | Op::Expand { .. }
+                    | Op::Permute { .. }
+                    | Op::Flip { .. }
+                    | Op::Narrow { .. }
+                    | Op::Reshape { ..}
+                    | Op::Pad { .. }
                     | Op::Reduce { .. }
                     | Op::Wmma { .. }
                     | Op::MatmulTile { .. }

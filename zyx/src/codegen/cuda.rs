@@ -185,7 +185,12 @@ impl Kernel {
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
                 | Op::BroadcastTile { .. }
-                | Op::Move { .. }
+                | Op::Expand { .. }
+                | Op::Permute { .. }
+                | Op::Flip { .. }
+                | Op::Narrow { .. }
+                | Op::Reshape { ..}
+                | Op::Pad { .. }
                 | Op::Reduce { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }

@@ -1005,7 +1005,7 @@ impl Graph {
         self.shape(class).len() as UAxis
     }
 
-    /// Shape of a class as dim classes (tinygrad-style symbolic shapes):
+    /// Shape of a class as dim classes:
     /// each element is a class evaluating to a dimension value — a `Const`
     /// for static dims or a symbolic dim leaf otherwise. Empty vec for
     /// scalars.
@@ -1101,7 +1101,7 @@ impl Graph {
     /// Panics loudly on any node outside the symbolic closed set — in
     /// particular on computed dims (`Reduce` results feeding shapes). Shapes
     /// are purely symbolic; a shape dimension may never be produced by a
-    /// kernel (jax/inductor/tinygrad convention adopted repo-wide).
+    /// kernel.
     pub(crate) fn replay_symbolic_into_kernel(&mut self, kid: JitKernelId, dims: &[OpId]) -> OpId {
         // Post-order flatten: every class lands after its operands, so one
         // flat pass emits with operands already mapped.

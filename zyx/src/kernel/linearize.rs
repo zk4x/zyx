@@ -554,8 +554,7 @@ impl Kernel {
                             // Bounds condition: valid where index is within the source
                             // extent. `len` is the literal shape, so the plain bounds
                             // check idx >= 0 && idx < len is exact; every movement op
-                            // bakes its shift into `idx` and adjusts `len` (tinygrad's
-                            // model), so no separate pad terms are needed.
+                            // bakes its shift into `idx` and adjusts `len`, so no separate pad terms are needed.
                             //   index = sum over axes of idx * stride
                             //   pc    = and over axes of (idx >= 0) && (idx < len)
                             // The propagated mask (from pad/narrow arms) is ANDed in
@@ -739,8 +738,7 @@ impl Kernel {
                         &MoveOp::Expand { .. } => {
                             // Broadcast determination is symbolic: an input axis is
                             // broadcast iff its dim resolves to 1 and the output dim
-                            // resolves to something != 1 (mirrors tinygrad's
-                            // broadcast_axes/resolve). A dynamic dim resolves to None
+                            // resolves to something != 1. A dynamic dim resolves to None
                             // and is treated as non-broadcast (identity), the safe
                             // default. No concrete shape() lookup is required.
                             let x_shape = self.shape_ids(x);
@@ -836,7 +834,7 @@ impl Kernel {
                             views.insert(x, SView { dims: new_dims, mask });
                         }
                         &MoveOp::Pad { axis, lp, len } => {
-                            // Pure backward pad (tinygrad): the input coordinate is
+                            // Pure backward pad: the input coordinate is
                             // the output coordinate shifted left by `lp` (a negative
                             // `lp` is a slice, shifting right), and the input extent
                             // is `len - lp - rp`, with `rp = len - lp - orig_len`

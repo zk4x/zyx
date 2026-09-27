@@ -242,8 +242,7 @@ impl Runtime {
                         // must be summed over *all* of these axes to drop back to the
                         // input shape.
                         //
-                        // Symbolic broadcast decision (tinygrad `broadcast_axes`
-                        // semantics): an axis needs summing iff the input dim is
+                        // Symbolic broadcast decision: an axis needs summing iff the input dim is
                         // provably a singleton (1); unknown symbolic dims default
                         // to NOT broadcast.
                         let pad = out_dims.len() - in_dims.len();

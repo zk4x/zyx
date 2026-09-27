@@ -205,8 +205,7 @@ pub enum Op {
         axes: TinyVec<UAxis>,
     },
     /// Pad axis
-    /// Pad with `lp` zeros on the left, to total axis length `len`
-    /// (tinygrad convention). Right padding is `len - lp - orig_len`.
+    /// Pad with `lp` zeros on the left, to total axis length `len`. Right padding is `len - lp - orig_len`.
     Pad {
         x: OpId,
         axis: UAxis,

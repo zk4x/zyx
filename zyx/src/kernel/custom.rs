@@ -199,14 +199,14 @@ impl Kernel {
 
     /// Permute tensor axes.
     pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
-        let axes = axes.into();
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Permute { axes }) })
+        let axes = TinyVec::new(axes);
+        self.push_back(Op::Permute { x, axes })
     }
 
     /// Reshape tensor. `shape` is the (pre-built) output shape op: a single
     /// const for rank-1, or a `stack` of per-dimension ops otherwise.
     pub fn reshape(&mut self, x: OpId, shape: OpId) -> OpId {
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
+        self.push_back(Op::Reshape { x, shape })
     }
 
     /// Expand tensor (adds singleton dims). `shape` is the pre-built output
@@ -216,7 +216,7 @@ impl Kernel {
     }
 
     /// Pad axis `axis` with `lp` zeros on the left, to total length `len`
-    /// (tinygrad convention; right padding is `len - lp - orig_len`).
+    /// (right padding is `len - lp - orig_len`).
     pub fn pad(&mut self, x: OpId, axis: UAxis, lp: impl IntoOp, len: impl IntoOp) -> OpId {
         let lp = lp.into_op(self);
         let len = len.into_op(self);
