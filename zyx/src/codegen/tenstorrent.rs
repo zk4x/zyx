@@ -1157,9 +1157,44 @@ impl Compiler {
         }
         let mut ops = vec![TTOp::DstMode { bf16: dst_bf16 }];
         let mut use_counts: Map<(CBId, OpId), u32> = Map::default();
+        // Static matmul-side use totals per (CB, load op). The slot
+        // simulation decrements these per side visit and closes the
+        // group at zero — the static last use, matching place_pops.
+        // Missing entries at lowering are a loud pre-scan bug, never a default.
+        let mut side_uses: Map<(CBId, OpId), u32> = Map::default();
+        {
+            let mut scan = kernel.head;
+            for _ in 0..10_000 {
+                if scan.is_null() {
+                    break;
+                }
+                if let Op::MatmulTile { x, y, .. } = &kernel.ops[scan].op {
+                    for side in [*x, *y] {
+                        if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = &kernel.ops[side].op
+                            && let Some(&cb) = cbs.get(src)
+                        {
+                            *side_uses.entry((cb, side)).or_default() += 1;
+                        }
+                    }
+                }
+                scan = kernel.next_op(scan);
+            }
+        }
+        let mut slot_left = side_uses.clone();
         // CB depth in 1024-element tiles, for front-relative slot
         // bounds checks on indexed consumers (`TileMatmul`).
         let mut cb_tiles: Map<CBId, u32> = Map::default();
+        // Front-relative slot simulation: per-CB insertion-ordered load
+        // ops currently waited-but-unpopped (open pages). A matmul side
+        // whose load is already open reuses its slot; a new load takes
+        // the next free one. Cleared at loop/branch boundaries: per-trip
+        // balance is enforced by verify's trip-multiplied accounting, so
+        // each trip starts empty. (Cross-boundary lifetimes were already
+        // unexpressible under the old always-slot-0 scheme; no regression.)
+        let mut cb_open: Map<CBId, Vec<OpId>> = Map::default();
+        // Memoized slot consts per (CB, slot): absolute front-relative
+        // numbers, valid wherever the open queue yields them.
+        let mut slot_consts: Map<(CBId, u32), VarId> = Map::default();
         for (cb, &st) in cb_order.iter().enumerate() {
             let Op::Storage { dtype, len, .. } = kernel.ops[st].op else {
                 return Err(BackendError {
@@ -1359,6 +1394,86 @@ impl Compiler {
                     free_vars.push((v, dtype, def_level));
                 }
                 Ok(v)
+            };
+            // Resolve a matmul side's front-relative CB slot: the position
+            // of its load among the CB's open (waited, unpopped) pages.
+            // Returns the scalar holding it: the index's own var when it
+            // already names that slot (the old path — zero behavior
+            // change for single-open programs), else a fresh memoized
+            // const. Open sets live in `cb_open`, cleared at loop/branch
+            // boundaries by the lowering arms below.
+            let slot_var = |cb_open: &mut Map<CBId, Vec<OpId>>,
+                            slot_consts: &mut Map<(CBId, u32), VarId>,
+                            slot_left: &mut Map<(CBId, OpId), u32>,
+                            ops: &mut Vec<TTOp>,
+                            next_var: &mut u32,
+                            var_info: &mut Map<VarId, (DType, u8)>,
+                            vars: &mut Map<OpId, VarId>,
+                            remaining: &mut Map<OpId, u32>,
+                            free_vars: &mut Vec<(VarId, DType, u8)>,
+                            loop_level: u8,
+                            cb_tiles: &Map<CBId, u32>,
+                            cb: CBId,
+                            load: OpId,
+                            idx: OpId|
+             -> Result<VarId, BackendError> {
+                let depth = cb_tiles.get(&cb).copied().unwrap_or(u32::MAX);
+                match const_shift_amt(idx) {
+                    Some(c) => {
+                        let open = cb_open.entry(cb).or_default();
+                        let slot = match open.iter().position(|&l| l == load) {
+                            Some(p) => p as u32,
+                            None => {
+                                open.push(load);
+                                open.len() as u32 - 1
+                            }
+                        };
+                        if slot >= depth {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: matmul side slot {slot} OOB for CB{cb} depth {depth}").into(),
+                            });
+                        }
+                        // Close at last static use (mirrors place_pops).
+                        let left = slot_left.get_mut(&(cb, load)).ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: slot sim missing side uses for ({cb}, {load:?})").into(),
+                        })?;
+                        if *left == 0 {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: slot sim over-consumed ({cb}, {load:?})").into(),
+                            });
+                        }
+                        *left -= 1;
+                        if *left == 0 {
+                            open.retain(|&l| l != load);
+                        }
+                        if slot == c {
+                            return use_var(vars, remaining, free_vars, var_info, loop_level, idx);
+                        }
+                        // Stacked page: the index's own const names an
+                        // occupied slot, so mint a memoized one.
+                        if let Some(&z) = slot_consts.get(&(cb, slot)) {
+                            return Ok(z);
+                        }
+                        let z = VarId(*next_var);
+                        *next_var += 1;
+                        var_info.insert(z, (DType::I64, loop_level));
+                        ops.push(TTOp::Const { z, value: Constant::I64((slot as i64).to_le_bytes()) });
+                        slot_consts.insert((cb, slot), z);
+                        Ok(z)
+                    }
+                    None => {
+                        if !cb_open.get(&cb).map_or(true, Vec::is_empty) {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: stacked runtime-index slot on CB{cb} unsupported").into(),
+                            });
+                        }
+                        use_var(vars, remaining, free_vars, var_info, loop_level, idx)
+                    }
+                }
             };
             // Bind the lowest dead DST slot (or a fresh one) to a tiled
             // value. Lowest-first matches the legacy slab scan, so slot
@@ -1958,16 +2073,28 @@ impl Compiler {
                         // Loop body nests one level deeper (PTX rule):
                         // inner uses must not consume outer temps.
                         loop_level += 1;
+                        // Trips start with empty CBs (per-trip balance is
+                        // verify-enforced), so open slots reset here.
+                        cb_open.clear();
+                        slot_left = side_uses.clone();
                     }
                     Op::EndLoop => {
                         loop_level -= 1;
                         ops.push(TTOp::EndLoop);
+                        cb_open.clear();
+                        slot_left = side_uses.clone();
                     }
                     Op::If { condition } => {
                         let cond = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, *condition)?;
                         ops.push(TTOp::If { cond });
+                        cb_open.clear();
+                        slot_left = side_uses.clone();
                     }
-                    Op::EndIf => ops.push(TTOp::EndIf),
+                    Op::EndIf => {
+                        ops.push(TTOp::EndIf);
+                        cb_open.clear();
+                        slot_left = side_uses.clone();
+                    }
                     Op::Barrier => {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
@@ -2095,8 +2222,38 @@ impl Compiler {
                                 cb_tiles[&cb_b]
                             );
                         }
-                        let in0 = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, ia)?;
-                        let in1 = use_var(&vars, &mut remaining, &mut free_vars, &var_info, loop_level, ib)?;
+                        let in0 = slot_var(
+                            &mut cb_open,
+                            &mut slot_consts,
+                            &mut slot_left,
+                            &mut ops,
+                            &mut next_var,
+                            &mut var_info,
+                            &mut vars,
+                            &mut remaining,
+                            &mut free_vars,
+                            loop_level,
+                            &cb_tiles,
+                            cb_a,
+                            *x,
+                            ia,
+                        )?;
+                        let in1 = slot_var(
+                            &mut cb_open,
+                            &mut slot_consts,
+                            &mut slot_left,
+                            &mut ops,
+                            &mut next_var,
+                            &mut var_info,
+                            &mut vars,
+                            &mut remaining,
+                            &mut free_vars,
+                            loop_level,
+                            &cb_tiles,
+                            cb_b,
+                            *y,
+                            ib,
+                        )?;
                         let Op::Load { src: lacc, .. } = kernel.ops[*acc].op else {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
@@ -2359,39 +2516,41 @@ impl Compiler {
     }
 
     /// Wait dedup: drop a `WaitFront(cb)` whose tile is already waited.
-    /// A wait merges into the nearest preceding wait on the same CB iff
-    /// both carry the same sharing group and no CB-affecting event
-    /// (`PopFront`/`PushBack`/`ReserveBack`) sits between. Opaque waits
-    /// (`grp: None`) never merge. Loop/branch/section markers reset all
-    /// chains (per-trip tiles stay per-trip). Single scan, straight-line
-    /// only.
+    /// A wait merges iff its sharing group is already open on the same
+    /// CB (its page is already reserved — e.g. interleaved matmul sides
+    /// taking turns on two live tiles). Any CB-affecting event
+    /// (`PopFront`/`PushBack`/`ReserveBack`) conservatively closes all
+    /// of that CB's open groups; opaque waits (`grp: None`) are always
+    /// kept and likewise close the CB. Loop/branch/section markers reset
+    /// everything (per-trip tiles stay per-trip). Single scan,
+    /// straight-line only.
     fn dedup_waits(&mut self) {
         let old = std::mem::take(&mut self.ops);
         let mut next = Vec::with_capacity(old.len());
-        let mut last: Map<CBId, Option<WaitGroup>> = Map::default();
+        let mut open: Map<CBId, Vec<WaitGroup>> = Map::default();
         for op in old {
             match &op {
                 TTOp::EndReader | TTOp::EndCompute | TTOp::EndWriter => {
-                    last.clear();
+                    open.clear();
                     next.push(op);
                 }
                 TTOp::Loop { .. } | TTOp::EndLoop | TTOp::If { .. } | TTOp::EndIf => {
-                    last.clear();
+                    open.clear();
                     next.push(op);
                 }
                 TTOp::PopFront { cb, .. } | TTOp::PushBack { cb, .. } | TTOp::ReserveBack { cb, .. } => {
-                    last.insert(*cb, None);
+                    open.remove(cb);
                     next.push(op);
                 }
                 TTOp::WaitFront { cb, m: 1, grp: Some(g) } => {
-                    if last.get(cb) == Some(&Some(*g)) {
+                    if open.get(cb).is_some_and(|groups| groups.contains(g)) {
                         continue;
                     }
-                    last.insert(*cb, Some(*g));
+                    open.entry(*cb).or_default().push(*g);
                     next.push(op);
                 }
                 TTOp::WaitFront { cb, .. } => {
-                    last.insert(*cb, None);
+                    open.remove(cb);
                     next.push(op);
                 }
                 _ => next.push(op),
@@ -3852,19 +4011,18 @@ impl Compiler {
                         status: ErrorStatus::KernelCompilation,
                         context: format!("tenstorrent2: verify: wait on undeclared CB").into(),
                     })?;
-                    if !(e.2 == 0) {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: format!("tenstorrent2: verify: wait on CB{cb} with open wait").into(),
-                        });
-                    }
+                    // Stacked waits accumulate: several pages may be waited
+                    // (reserved for back-to-back matmul sides) before any
+                    // pops, as long as each wait finds fresh available
+                    // pages. Front-relative slots stay valid because pops
+                    // advance the front in FIFO order (enforced at pop).
                     if !(e.1 >= *m * mult) {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: format!("tenstorrent2: verify: wait of {m} on CB{cb} with {e:?} available").into(),
                         });
                     }
-                    e.2 = *m * mult;
+                    e.2 += *m * mult;
                     e.1 -= *m * mult;
                 }
                 TTOp::PopFront { cb, n } => {

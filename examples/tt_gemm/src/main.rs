@@ -26,8 +26,13 @@ use zyx::{DType, Tensor, ZyxError};
 /// 32x32 hardware tile elements.
 const TILE_ELEMS: i64 = 1024;
 /// Output tiles owned by one core along M and N.
-const MT_PER_CORE: i64 = 4;
-const NT_PER_CORE: i64 = 4;
+const MT_PER_CORE: i64 = 8;
+const NT_PER_CORE: i64 = 8;
+/// Compute subblock: SB_H A-rows x SB_W B-cols per inner step. Each B
+/// tile feeds SB_H matmuls, so B is pushed once per row-pair (rereads
+/// halved vs one row at a time).
+const SB_H: i64 = 2;
+const SB_W: i64 = 4;
 /// K tiles accumulated per output tile (K = KT_TILES * 32).
 const KT_TILES: i64 = 32;
 /// Timed launches; the best time sets the reported TFLOPS.
@@ -40,7 +45,7 @@ fn main() -> Result<(), ZyxError> {
         println!("tt_gemm: no Tenstorrent device, skipping");
         return Ok(());
     }
-    let info = Dev::TT(0).info();
+    let info = Dev::TT(0).info()?;
     let rows = info.max_global_work_dims[0];
     let cols = info.max_global_work_dims[1];
 
@@ -70,67 +75,102 @@ fn main() -> Result<(), ZyxError> {
     let b = kernel.param(DType::BF16);
     let out = kernel.param_mut(DType::BF16);
 
-    let ca = kernel.circular_storage(DType::BF16, 1);
-    let cb = kernel.circular_storage(DType::BF16, 1);
-    let cout = kernel.circular_storage(DType::BF16, 1);
+    // Double-buffered: depth 2 gives the CB FIFOs slack so the reader
+    // runs ahead of compute (and compute ahead of the writer) instead
+    // of strict lockstep.
+    let ca = kernel.circular_storage(DType::BF16, 2);
+    let cb = kernel.circular_storage(DType::BF16, 2);
+    let cout = kernel.circular_storage(DType::BF16, 2);
 
     let gx = kernel.group_range(0, rows);
     let gy = kernel.group_range(1, cols);
 
-    // Reader: per (mt, kt) push one A tile, then the B row-block.
+    // Reader: per (mtp, nh, kt) push the A pair, then the B subblock row.
     // A tile (mt,kt) at mt*Kt+kt, B tile (kt,nt) at kt*Nt+nt.
-    kernel.loop_over(MT_PER_CORE, |kernel, mti| {
-        kernel.loop_over(KT_TILES, |kernel, kti| {
-            let mt_idx = kernel.mad(gx, MT_PER_CORE, mti);
-            let at = kernel.mad(mt_idx, KT_TILES, kti);
-            let abase = kernel.mad(at, TILE_ELEMS, 0);
-            let ta = kernel.load_global_tile(a, abase);
-            kernel.store_circular(ca, ta, 0);
-            kernel.loop_over(NT_PER_CORE, |kernel, nti| {
-                let nt_idx = kernel.mad(gy, NT_PER_CORE, nti);
-                let bt = kernel.mad(kti, nt, nt_idx);
-                let bbase = kernel.mad(bt, TILE_ELEMS, 0);
-                let tb = kernel.load_global_tile(b, bbase);
-                kernel.store_circular(cb, tb, 0);
+    // A is re-streamed per nh (2x, small); B is pushed once per row-pair.
+    // NOTE: barriers are section markers (reader|compute|writer), not
+    // runtime sync — cross-section sync is the CB FIFO itself. Exactly
+    // two barriers are required.
+    debug_assert_eq!(MT_PER_CORE % SB_H, 0, "tt_gemm: MT must split into row-pairs");
+    debug_assert_eq!(NT_PER_CORE % SB_W, 0, "tt_gemm: NT must split into subblock cols");
+    // Global row-base of this core's MT block (loop-invariant).
+    let mt_base = kernel.mad(gx, MT_PER_CORE, 0);
+    kernel.loop_over(MT_PER_CORE / SB_H, |kernel, mtp| {
+        kernel.loop_over(NT_PER_CORE / SB_W, |kernel, nhi| {
+            kernel.loop_over(KT_TILES, |kernel, kti| {
+                for r in 0..SB_H {
+                    let mt_loc = kernel.mad(mtp, SB_H, r);
+                    let mt_idx = kernel.add(mt_base, mt_loc);
+                    let at = kernel.mad(mt_idx, KT_TILES, kti);
+                    let abase = kernel.mad(at, TILE_ELEMS, 0);
+                    let ta = kernel.load_global_tile(a, abase);
+                    kernel.store_circular(ca, ta, 0);
+                }
+                let nt_off = kernel.mad(nhi, SB_W, 0);
+                kernel.loop_over(SB_W, |kernel, nti| {
+                    let nt_rel = kernel.add(nt_off, nti);
+                    let nt_idx = kernel.mad(gy, NT_PER_CORE, nt_rel);
+                    let bt = kernel.mad(kti, nt, nt_idx);
+                    let bbase = kernel.mad(bt, TILE_ELEMS, 0);
+                    let tb = kernel.load_global_tile(b, bbase);
+                    kernel.store_circular(cb, tb, 0);
+                });
             });
         });
     });
+    // Compute: per (mtp, nh) accumulate SB_H x SB_W outputs; one A pair
+    // feeds SB_H x SB_W back-to-back matmuls per K step (pop order matches
+    // reader push order exactly: A0, A1, B0..B3).
     kernel.barrier();
-    // Compute: one acc cone per output column of the row-block; a single
-    // shared A-load feeds all NT_PER_CORE matmuls per K step (row-stationary
-    // reuse: pop deferred past the 4 uses by construction).
-    debug_assert_eq!(NT_PER_CORE, 4, "tt_gemm: acc array sized for NT_PER_CORE == 4");
-    kernel.loop_over(MT_PER_CORE, |kernel, _mti| {
-        let accs = [
-            kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
-            kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
-            kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
-            kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
-        ];
-        kernel.loop_over(KT_TILES, |kernel, _kti| {
-            let va = kernel.load_circular(ca, 0);
+    debug_assert_eq!(NT_PER_CORE, 8, "tt_gemm: acc array sized for 2x4 subblocks over NT == 8");
+    kernel.loop_over(MT_PER_CORE / SB_H, |kernel, _mtp| {
+        kernel.loop_over(NT_PER_CORE / SB_W, |kernel, _nhi| {
+            let accs = [
+                kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+                kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+                kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+                kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+                kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+                kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+                kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+                kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS),
+            ];
+            kernel.loop_over(KT_TILES, |kernel, _kti| {
+                let va = [kernel.load_circular(ca, 0), kernel.load_circular(ca, 0)];
+                for n in 0..SB_W as usize {
+                    let vb = kernel.load_circular(cb, 0);
+                    for r in 0..SB_H as usize {
+                        let acc = accs[r * (SB_W as usize) + n];
+                        let av = kernel.load_register_tile(acc, 0);
+                        let f = kernel.matmul_tile(va[r], vb, av);
+                        kernel.store_register_tile(acc, f, 0);
+                    }
+                }
+            });
             for acc in accs {
-                let vb = kernel.load_circular(cb, 0);
-                let av = kernel.load_register_tile(acc, 0);
-                let f = kernel.matmul_tile(va, vb, av);
-                kernel.store_register_tile(acc, f, 0);
+                let f = kernel.load_register_tile(acc, 0);
+                kernel.store_circular(cout, f, 0);
             }
         });
-        for acc in accs {
-            let f = kernel.load_register_tile(acc, 0);
-            kernel.store_circular(cout, f, 0);
-        }
     });
     kernel.barrier();
-    // Writer: output tile (mt,nt) at mt*Nt+nt, row-major.
-    kernel.loop_over(MT_PER_CORE, |kernel, mti| {
-        kernel.loop_over(NT_PER_CORE, |kernel, nti| {
-            let mt_idx = kernel.mad(gx, MT_PER_CORE, mti);
-            let nt_idx = kernel.mad(gy, NT_PER_CORE, nti);
-            let ot = kernel.mad(mt_idx, nt, nt_idx);
-            let obase = kernel.mad(ot, TILE_ELEMS, 0);
-            let v = kernel.load_circular(cout, 0);
-            kernel.store_global_tile(out, v, obase);
+    // Writer: pops cout in push order (mtp, nh, r, n) and scatters to
+    // output tile (mt,nt) at mt*Nt+nt, row-major.
+    kernel.loop_over(MT_PER_CORE / SB_H, |kernel, mtp| {
+        kernel.loop_over(NT_PER_CORE / SB_W, |kernel, nhi| {
+            for r in 0..SB_H {
+                for n in 0..SB_W {
+                    let mt_loc = kernel.mad(mtp, SB_H, r);
+                    let mt_idx = kernel.add(mt_base, mt_loc);
+                    let nt_base = kernel.mad(nhi, SB_W, 0);
+                    let nt_rel = kernel.add(nt_base, n);
+                    let nt_idx = kernel.mad(gy, NT_PER_CORE, nt_rel);
+                    let ot = kernel.mad(mt_idx, nt, nt_idx);
+                    let obase = kernel.mad(ot, TILE_ELEMS, 0);
+                    let v = kernel.load_circular(cout, 0);
+                    kernel.store_global_tile(out, v, obase);
+                }
+            }
         });
     });
 

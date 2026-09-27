@@ -2583,16 +2583,6 @@ tt_shift_const!(
     ignore
 );
 tt_shift_const!(
-    tenstorrent_shl_u16_imm,
-    |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_left(x, y),
-    DType::U16,
-    1e-5,
-    tt_u16_small,
-    3,
-    |x: f32, a: u32| (x as u16).wrapping_shl(a) as f32,
-    ignore
-);
-tt_shift_const!(
     tenstorrent_shr_u16_imm,
     |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
     DType::U16,
