@@ -23,7 +23,7 @@ The `Slab<OpId, OpNode>` is a `Vec<OpNode>` with a free-list. `OpId` is a `u32` 
 
 ## Unfolding
 
-Before any optimization passes run, the kernel IR is **unfolded** — `LoadView`, `StoreView`, and `Move` ops are converted to direct index arithmetic (`Load`, `Store` with computed indices). After unfolding, all ops are fixed-size inline entries in the arena — no `Box`, no vtables, no per-op indirection.
+Before linearization, view ops (`Reshape`, `Expand`, `Permute`, `Flip`, `Pad`, `Narrow`) are represented directly as `Op` variants. They are unfolded into index arithmetic during the linearization pass — after unfolding, all ops are fixed-size inline entries in the arena — no `Box`, no vtables, no per-op indirection.
 
 The IR is in SSA form, except for `Loop`, `If`, and `Define` ops (which can carry mutable state).
 
@@ -86,10 +86,15 @@ Op::BroadcastTile { x, .. }
 Op::Asm { .. }  // inline assembly for backends with JIT asm (e.g. Tenstorrent)
 ```
 
-### View (before unfolding)
+### View Ops
 ```rust,ignore
-Op::Move { x: OpId, mop: Box<MoveOp> }
-Op::Reduce { x: OpId, rop, n_axes }
+Op::Reshape { x: OpId, shape: OpId }
+Op::Expand { x: OpId, shape: OpId }
+Op::Permute { x: OpId, axes: TinyVec<UAxis> }
+Op::Flip { x: OpId, axes: TinyVec<UAxis> }
+Op::Pad { x: OpId, axis: UAxis, lp: OpId, len: OpId }
+Op::Narrow { x: OpId, axis: UAxis, start: OpId, len: OpId }
+Op::Reduce { x: OpId, rop: BOp, reduce_axis: OpId }
 ```
 
 ## Memory Layouts and Scopes

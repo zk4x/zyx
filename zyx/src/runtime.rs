@@ -526,7 +526,10 @@ impl Runtime {
     pub fn supports_dtype(&mut self, dtype: DType) -> DTypeCapability {
         let mut caps = DTypeCapability::none();
         for dev in Dev::all() {
-            caps = caps.include(dev.info().supports_dtype(dtype));
+            // Dev::all yields available devices; a device that fails here
+            // contributes nothing.
+            let Ok(info) = dev.info() else { continue };
+            caps = caps.include(info.supports_dtype(dtype));
         }
         caps
     }
@@ -1886,7 +1889,8 @@ impl Runtime {
             | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. } => {
                 self.assert_graph_alive(graph_id);
                 let shape_id = self.reduce_last_axis_shape(shape_id);
-                let class_id = self.push_op(graph_id, Op::Reduce { x: class_id, rop, reduce_axis: OpId::NULL });
+                let reduce_axis = *self.graphs[graph_id].shape(class_id).last().expect("reduce_last of scalar");
+                let class_id = self.push_op(graph_id, Op::Reduce { x: class_id, rop, reduce_axis });
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 self.graphs[graph_id].ref_count += 1;
                 Ok(tid)
@@ -3141,10 +3145,10 @@ impl Runtime {
         let mut new_def_loads: Vec<TensorId> = Vec::new();
         // Pass A: transitive dependency closure over the removed kernel's ops
         // via `parameters()` — this pulls in every referenced id, including
-        // `Param { shape }` descriptors and `MoveOp` internals (narrow
-        // start/len, pad lp/len, reshape/expand shapes). Nothing may be left
-        // dangling: ids from the removed kernel would silently collide with
-        // unrelated ops in src's kernel.
+// `Param { shape }` descriptors and view op internals (narrow
+// start/len, pad lp/len, reshape/expand shapes). Nothing may be left
+// dangling: ids from the removed kernel would silently collide with
+// unrelated ops in src's kernel.
         let mut required: Set<OpId> = Set::default();
         {
             let mut stack: Vec<OpId> = Vec::new();
@@ -3184,10 +3188,9 @@ impl Runtime {
                     }
                     _ => {}
                 }
-                // Single remap pass: `parameters_mut` covers the Move's `x`
-                // AND its `MoveOp` internals (reshape/expand shapes, pad
-                // lp/len, narrow start/len) — no second mop.remap, that would
-                // look up already-remapped ids.
+// Single remap pass: `parameters_mut` covers the view op's `x`
+// AND its internals (reshape/expand shapes, pad lp/len, narrow start/len)
+// — no second remap, that would look up already-remapped ids.
                 for p in op.parameters_mut() {
                     *p =
                         op_map.get(p).copied().expect("assign replay: dependency was not copied before its user despite closure");
@@ -3656,7 +3659,7 @@ impl Runtime {
             }
             debug_assert_eq!(buffers.len(), n_params, "caller arg count must match kernel param count");
         }
-        let dev_info = device_id.info();
+        let dev_info = device_id.info()?;
         let mut base = kernel;
         base.linearize();
         base.common_subexpression_elimination();
@@ -3738,7 +3741,7 @@ impl Runtime {
         if devs.is_empty() {
             return Err(ZyxError::AllocationError(format!("no device with {bytes} bytes free").into()));
         }
-        devs.sort_unstable_by_key(|&dev| dev.free_compute());
+        devs.sort_unstable_by_key(|&dev| dev.free_compute().unwrap());
         devs.reverse();
         Ok(devs[0])
     }
@@ -4003,7 +4006,7 @@ impl Runtime {
             ));
         };
         kernel.dev = dev_id;
-        kernel.dev_info = Some(dev_id.info());
+        kernel.dev_info = Some(dev_id.info()?);
 
         // Ensure loads are in target pool. Variables and symbolic leaves are
         // not backed by any buffer — they bind at launch from `variable_map`.

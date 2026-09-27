@@ -19,14 +19,14 @@ tape.realize([&z])?;
 
 ## Fusion Logic
 
-In tape mode, the kernelizer processes graph nodes **bottom-up** in topological order. Each graph node type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.
+In tape mode, the kernelizer processes graph ops **bottom-up** in topological order. Each graph op type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.
 
-### Per-Node Type Behavior
+### Per-Op Type Behavior
 
-| Graph Node | Kernel Decision |
+| Graph Op | Kernel Decision |
 |------------|-----------------|
 | `Unary`, `Cast` | Always fuse — add op to the input's kernel |
-| `Expand`, `Permute`, `Reshape`, `Pad` | Add `Move` op to the input's kernel (free after unfolding) |
+| `Expand`, `Permute`, `Reshape`, `Pad`, `Flip`, `Narrow` | Fused into the input's kernel (unfolded to index arithmetic) |
 | `Binary` | Merge both input kernels into one |
 | `Reduce` | Add reduce op to the input's kernel |
 | `Const` | Create a new kernel with a constant |
@@ -61,23 +61,20 @@ struct Kernelizer<'a> {
 }
 ```
 
-The `visited` map tracks which graph nodes have been converted to kernel ops. When a graph node is already in `visited`, the kernelizer uses the existing kernel result instead of recomputing — this is how shared subgraphs are handled.
+The `visited` map tracks which graph ops have been converted to kernel ops. When a graph op is already in `visited`, the kernelizer uses the existing kernel result instead of recomputing — this is how shared subgraphs are handled.
 
 ## Building Kernel Ops
 
-Each graph node type maps to kernel IR operations:
+Each graph op type maps to kernel IR operations:
 
-| Graph Node | Kernel IR |
+| Graph Op | Kernel IR |
 |------------|-----------|
 | `Const` | `Op::Const` |
-| `Leaf` | `Op::Define` (global memory) |
+| `Param` | `Op::Param` (global memory) |
 | `Unary` | `Op::Unary` |
 | `Binary` | `Op::Binary` or `Op::Mad` |
 | `Reduce` | `Op::Reduce` |
-| `Reshape` | `Op::Move` (view unfolding) |
-| `Expand` | `Op::Move` (view unfolding) |
-| `Permute` | `Op::Move` (view unfolding) |
-| `Pad` | `Op::Move` (view unfolding) |
+| `Reshape`, `Expand`, `Permute`, `Flip`, `Pad`, `Narrow` | View ops folded into `Load`/`Store` index arithmetic |
 
 View operations (reshape, expand, permute, pad) are unfolded into index arithmetic rather than becoming separate ops. This is how they become "free" — the index computation is inlined into the load/store operations.
 

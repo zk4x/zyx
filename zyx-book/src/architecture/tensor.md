@@ -27,7 +27,7 @@ impl Clone for Tensor {
 }
 ```
 
-If we used `Arc` instead, we would still need `Mutex` for the `Runtime` — `Tensor(id, Arc<Mutex<Runtime>>)`. The current approach avoids the `Arc` overhead and keeps `Tensor` at 4 bytes. Since every tensor operation already locks the runtime to append a graph node, there's no additional lock contention from reference counting.
+If we used `Arc` instead, we would still need `Mutex` for the `Runtime` — `Tensor(id, Arc<Mutex<Runtime>>)`. The current approach avoids the `Arc` overhead and keeps `Tensor` at 4 bytes. Since every tensor operation already locks the runtime to append a graph op, there's no additional lock contention from reference counting.
 
 ### Execution
 
@@ -45,7 +45,7 @@ let z = y.tanh();     // appended to same kernel
 # }
 ```
 
-Inside a tape, operations build graph nodes lazily and execute when the tape is realized (dropping only cleans up graph state — no computation is performed). The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.
+Inside a tape, operations build graph ops lazily and execute when the tape is realized (dropping only cleans up graph state — no computation is performed). The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.
 
 ### Construction Methods
 

@@ -60,7 +60,7 @@ impl SlabId for GraphId {
 pub(crate) struct OpNode {
     pub(crate) op: Op,
     pub(crate) class_of: OpId,
-    /// Next node of the same e-class (intrusive chain), or `NodeId::NULL` if
+    /// Next node of the same e-class (intrusive chain), or `OpId::NULL` if
     /// this is the last variant. Chains preserve insertion order: a class's
     /// first node is its oldest, and later variants (e.g. lowered Kernel
     /// twins) are appended at the tail.
@@ -102,8 +102,8 @@ impl SlabId for JitKernelId {
 ///   **non-store** `Param` defines (`Global` buffers and scalar
 ///   `Param { kind: Variable }` dim params) in head order — each entry
 ///   corresponds to exactly one such define: a global buffer class
-///   (`Node::Leaf` with data dtype) for a `Global` param, or a dim-variable
-///   class (`Node::Leaf { dtype: IDX_T, shape: NULL }`) for a `Variable`
+///   (`Op::Param` with data dtype) for a `Global` param, or a dim-variable
+///   class (`Op::Param { dtype: IDX_T, shape: NULL }`) for a `Variable`
 ///   param. **A `GlobalMut` store target must NOT appear here**: an in-place
 ///   assign turns dst from a load into a pure store; its buffer slot is
 ///   carried by `stores` instead. Invariant
@@ -141,7 +141,7 @@ pub struct Graph {
     // The graph is removed from the slab only when dead && ref_count == 0, which
     // guarantees no stale tensor ever observes a reused GraphId.
     pub(crate) dead: bool,
-    /// Allocator for [`Node::Leaf`] `cons_id`s.
+    /// Allocator for [`Op::Param`] `cons_id`s.
     pub(crate) max_cons_id: u32,
 }
 
@@ -277,7 +277,7 @@ impl Graph {
     ///
     /// # Why boundary shape classes are absent from the order
     ///
-    /// Because `deps` prunes a boundary class's `class_params`, a boundary
+    /// Because `deps` prunes a boundary class's `parameters`, a boundary
     /// leaf's shape stack never enters the returned order — by design, not by
     /// accident: shapes are purely symbolic metadata, never values flowing
     /// between kernels ("a shape dimension is a result of a kernel" was
@@ -342,7 +342,7 @@ impl Graph {
                     let types: Vec<String> = self
                         .class_nodes(c)
                         .map(|n| format!("{:?}", self.ops[n].op))
-                        .map(|s| s.split(" NodeId").next().unwrap_or(&s).to_string())
+                        .map(|s| s.split(" OpId").next().unwrap_or(&s).to_string())
                         .collect();
                     report.push_str(&format!("\n  {c:?} rc={r} visited={v} types={types:?}"));
                     let mut parents: Set<OpId> = Set::default();
@@ -427,7 +427,7 @@ impl Graph {
     ///
     /// With `WITHOUT_KERNELS`, [`Node::Kernel`] nodes are ignored and a
     /// boundary class (in `inputs`) contributes only its non-boundary kernel
-    /// inputs; otherwise every node's [`Node::class_params`] is used.
+    /// inputs; otherwise every op's [`Op::parameters`] is used.
     fn deps<const WITHOUT_KERNELS: bool>(&self, inputs: &Set<OpId>, cid: OpId) -> Vec<OpId> {
         let mut deps = Vec::new();
         for nid in self.class_nodes(cid) {
@@ -1092,12 +1092,11 @@ impl Graph {
             }
             Op::Reduce { x, reduce_axis, .. } => {
                 let mut s = self.shape(*x);
-                if reduce_axis.is_null() {
-                    s.pop().expect("Reduce of scalar");
-                } else {
-                    let pos = s.iter().position(|&d| d == *reduce_axis).expect("Reduce axis not in operand shape");
-                    s.remove(pos);
-                }
+                debug_assert!(
+                    reduce_axis.is_null() || *s.last().expect("Reduce of scalar") == *reduce_axis,
+                    "Reduce axis must be trailing"
+                );
+                s.pop().expect("Reduce of scalar");
                 s
             }
             Op::Store { dst, .. } => self.shape(*dst),
@@ -1153,7 +1152,7 @@ impl Graph {
     /// - Operands are `ClassId`s, never TensorIds. TensorIds must not appear
     ///   inside the egraph or anything derived from it (graph hashing, replay,
     ///   plan caching all depend on this).
-    /// - Dim variables are `Node::Leaf { dtype: IDX_T, shape: NULL }` classes;
+    /// - Dim variables are `Op::Param { dtype: IDX_T, shape: NULL }` classes;
     ///   each distinct class becomes exactly one `Param { kind: Variable }`
     ///   define plus one entry in `jit_kernels[kid].loads` (registered at mint
     ///   time so define order == load order and positional binding holds).
@@ -1952,7 +1951,11 @@ impl Runtime {
                     }
                     Op::Reduce { x, rop, reduce_axis } => {
                         let x_class = op_to_class[&x];
-                        let reduce_axis = if reduce_axis.is_null() { OpId::NULL } else { op_to_class[&reduce_axis] };
+                        let reduce_axis = if reduce_axis.is_null() {
+                            *self.graphs[graph_id].shape(x_class).last().expect("Reduce of scalar")
+                        } else {
+                            op_to_class[&reduce_axis]
+                        };
                         let class_id = self.push_op(graph_id, Op::Reduce { x: x_class, rop, reduce_axis });
                         class_id
                     }
@@ -2200,7 +2203,7 @@ impl Runtime {
                 }
                 let mut kernel = ek.kernel.clone();
                 kernel.dev = dev_id;
-                kernel.dev_info = Some(dev_id.info());
+                kernel.dev_info = Some(dev_id.info()?);
                 progress_bar.inc(1, &format!("autotune {} on dev={dev_id:?}", kernel.name()));
                 // Allocate fresh timing buffers in this device's pool for
                 // every NULL slot, pre-filled with ones like eager inputs.

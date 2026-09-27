@@ -29,7 +29,7 @@
 use crate::{
     DebugMask,
     dtype::{Constant, DType},
-    error::{BackendError, ErrorStatus},
+    error::{BackendError, ErrorStatus, ZyxError},
     graph::Graph,
     kernel::{BOp, Kernel, MMADims, Op, OpId, ParamKind, RangeKind, UOp},
     shape::Dim,
@@ -179,36 +179,44 @@ impl Dev {
     }
 
     /// Device info for this device.
-    pub fn info(self) -> Arc<DeviceInfo> {
+    ///
+    /// # Errors
+    ///
+    /// If the device is unavailable (backend disabled or init failed).
+    pub fn info(self) -> Result<Arc<DeviceInfo>, ZyxError> {
         match self {
             Dev::Auto => panic!("Dev::Auto has no info; resolve it with Dev::auto() first"),
-            Dev::C => c::device().expect("C device unavailable").lock().unwrap().info(),
-            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().info(),
-            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).info(),
-            Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).info(),
+            Dev::C => Ok(c::device()?.lock().unwrap().info()),
+            Dev::Cblas => Ok(cblas::device()?.lock().unwrap().info()),
+            Dev::Cuda(id) => Ok(dlock(self, cuda::device(id)?).info()),
+            Dev::OpenCL(id) => Ok(dlock(self, opencl::device(id)?).info()),
             #[cfg(feature = "tenstorrent")]
-            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).info(),
-            Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).info(),
+            Dev::TT(id) => Ok(dlock(self, tenstorrent::device(id)?).info()),
+            Dev::Vulkan(id) => Ok(dlock(self, vulkan::device(id)?).info()),
             #[cfg(feature = "wgpu")]
-            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).info(),
-            Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().info(),
+            Dev::WGPU(id) => Ok(dlock(self, wgpu::device(id)?).info()),
+            Dev::Dummy => Ok(dummy::device()?.lock().unwrap().info()),
         }
     }
 
     /// How much compute is available on the device.
-    pub fn free_compute(self) -> u128 {
+    ///
+    /// # Errors
+    ///
+    /// If the device is unavailable (backend disabled or init failed).
+    pub fn free_compute(self) -> Result<u128, ZyxError> {
         match self {
             Dev::Auto => panic!("Dev::Auto has no compute; resolve it with Dev::auto() first"),
-            Dev::C => c::device().expect("C device unavailable").lock().unwrap().free_compute(),
-            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().free_compute(),
-            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).free_compute(),
-            Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).free_compute(),
+            Dev::C => Ok(c::device()?.lock().unwrap().free_compute()),
+            Dev::Cblas => Ok(cblas::device()?.lock().unwrap().free_compute()),
+            Dev::Cuda(id) => Ok(dlock(self, cuda::device(id)?).free_compute()),
+            Dev::OpenCL(id) => Ok(dlock(self, opencl::device(id)?).free_compute()),
             #[cfg(feature = "tenstorrent")]
-            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).free_compute(),
-            Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).free_compute(),
+            Dev::TT(id) => Ok(dlock(self, tenstorrent::device(id)?).free_compute()),
+            Dev::Vulkan(id) => Ok(dlock(self, vulkan::device(id)?).free_compute()),
             #[cfg(feature = "wgpu")]
-            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).free_compute(),
-            Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().free_compute(),
+            Dev::WGPU(id) => Ok(dlock(self, wgpu::device(id)?).free_compute()),
+            Dev::Dummy => Ok(dummy::device()?.lock().unwrap().free_compute()),
         }
     }
 

@@ -650,7 +650,7 @@ impl Runtime {
     /// Middle stage of the symbolic-shapes pipeline (see
     /// [`Runtime::replay_symbolic_into_kernel`] for the full contract):
     /// - `Constant` → `Const` class (merged by value — see [`Node::Const`]).
-    /// - `Variable` → a fresh `IDX_T` **dim-variable leaf**: a `Node::Leaf`
+    /// - `Variable` → a fresh `IDX_T` **dim-variable param**: a `Op::Param`
     ///   with `shape == NULL`. Leaves hashcons but never merge (fresh
     ///   `cons_id` every time), so the same logical variable appearing under
     ///   two tensors' shapes yields two distinct classes. This duplication is

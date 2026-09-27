@@ -27,16 +27,16 @@ let z = y * 2.0;
 # }
 ```
 
-Outside a `Tape`, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes — no graph, no separate realize step. Inside a `Tape`, ops build graph nodes lazily. Either way, each operation returns a lightweight `Tensor` handle.
+Outside a `Tape`, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes — no graph, no separate realize step. Inside a `Tape`, ops build graph ops lazily. Either way, each operation returns a lightweight `Tensor` handle.
 
 ### 2. The Graph
 
-The graph opset was taken from tinygrad, with changes to make it even smaller. This is the minimal set of operations that can express ALL linear algebra operations and ALL PyTorch ops — by stacking these nodes:
+The graph opset was taken from tinygrad, with changes to make it even smaller. This is the minimal set of operations that can express ALL linear algebra operations and ALL PyTorch ops — by stacking these ops:
 
 | Variant | Meaning |
 |---------|---------|
 | `Const` | A constant value baked into kernels |
-| `Leaf` | A tensor stored on device |
+| `Param` | A kernel parameter — one of the arguments passed to the compiled GPU kernel at launch |
 | `Expand` | Broadcast a dimension |
 | `Permute` | Transpose axes |
 | `Reshape` | Change shape without changing data |
@@ -49,8 +49,7 @@ The graph opset was taken from tinygrad, with changes to make it even smaller. T
 | `Bitcast` | Reinterpret raw bits |
 | `Unary` | Element-wise: relu, exp, sin, etc. |
 | `Binary` | Element-wise: add, mul, etc. |
-| `Assign` | In-place update |
-| `After` | Ordering for side-effecting nodes |
+| `After` | Ordering for side-effecting ops |
 | `ToDevice` | Move data between devices |
 | `Contiguous` | Materialize a layout |
 | `Kernel` | A compiled kernel boundary |
@@ -62,7 +61,7 @@ The graph is stored in a `Slab` — a dense array with free-list tracking. `Tens
 
 ### 3. The Kernelizer
 
-The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when `Tape::realize()` is called (dropping only cleans up graph state). The kernelizer uses heuristics to decide where kernel boundaries go — it's not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.
+The kernelizer fuses compatible graph ops into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when `Tape::realize()` is called (dropping only cleans up graph state). The kernelizer uses heuristics to decide where kernel boundaries go — it's not a simple rule. A reduce op used by multiple downstream ops does not necessarily force a split. If two downstream ops are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.
 
 View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming "free" — they don't create separate operations.
 
@@ -134,6 +133,6 @@ The scheduler picks a device based on free memory and compute capacity. Cross-de
 - **One graph for everything** — autograd and computation share the same graph. No need to specify which tensors require gradients.
 - **Symbolic dims everywhere** — the eager path and the graph path BOTH work with symbolic dimensions, always. Every symbolic dim bottoms out in a `Param { Variable }` scalar (`IDX_T`) whose value lives in a backend pool's variable slot, so any dim expression can be fully evaluated to a concrete constant at any time: walk the tree, fold `Const` leaves via `Constant::unary` / `Constant::binary`, and read variable slots at `Param { Variable }` leaves. Consumers must evaluate dims this way instead of fabricating placeholder values (`0`, `-1`, ...) where evaluation can produce the real value.
 - **Inline ops** — all ops live in the arena as flat 32-byte entries. No `Box`, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.
-- **Linear IR** — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.
+- **Linear IR** — linked list of fixed-size ops. Optimizations traverse front-to-back or back-to-back.
 - **Backend codegen is trivial** — the hard work is in the IR-level optimization passes.
-- **Tape-scoped lazy graph** — ops inside a tape build graph nodes instead of executing eagerly. Enables egraph fusion, device allocation search, and plan caching across iterations.
+- **Tape-scoped lazy graph** — ops inside a tape build graph ops instead of executing eagerly. Enables egraph fusion, device allocation search, and plan caching across iterations.

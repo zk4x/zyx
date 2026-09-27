@@ -2,7 +2,7 @@
 
 This book documents the internals of zyx — a machine learning library and compiler.
 
-Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a **single unified graph** — but only inside a `Tape` scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a `Tape`, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~20 node types.
+Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a **single unified graph** — but only inside a `Tape` scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a `Tape`, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~20 op types.
 
 ## Who This is For
 
@@ -18,7 +18,7 @@ Zyx operates in two modes:
 
 ## The Architecture at a Glance
 
-Every tensor operation creates a graph node. What happens next depends on the mode:
+Every tensor operation creates a graph op. What happens next depends on the mode:
 
 **Eager-ish (default) — direct fusion, no graph:**
 
@@ -31,7 +31,7 @@ Each op is appended directly to the kernel that produced its inputs. When a new 
 **Tape — lazy graph, egraph exploration:**
 
 ```text
-Tensor op ──► graph node (accumulates) ──► Autograd (reverse-mode on same graph)
+Tensor op ──► graph op (accumulates) ──► Autograd (reverse-mode on same graph)
                                   │
                                   ▼
                            Tape::realize()
@@ -44,7 +44,7 @@ Tensor op ──► graph node (accumulates) ──► Autograd (reverse-mode on
                     Kernel IR ──► Opt ──► Codegen ──► Execute
 ```
 
-Inside a tape, graph nodes accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph nodes — the tape prevents their deletion so the backward pass can traverse them.
+Inside a tape, graph ops accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph ops — the tape prevents their deletion so the backward pass can traverse them.
 
 ## Why This Design
 
@@ -53,7 +53,7 @@ Most deep learning libraries use two separate graphs:
 2. An autograd graph for backpropagation
 
 Zyx uses **one graph** for both. This means:
-- The autograd system doesn't need its own graph infrastructure — it reuses the same nodes
+- The autograd system doesn't need its own graph infrastructure — it reuses the same ops
 - Kernel fusion works across operation boundaries without special handling
 - The implementation is debuggable (one graph to inspect, not two)
 - Memory overhead is minimal: tensor handles are `u32` (4 bytes)

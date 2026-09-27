@@ -82,7 +82,9 @@ impl Kernel {
     pub fn new(dev: Dev) -> Self {
         // Auto is a late-bound placeholder: the device (and its info) is
         // resolved at compile time (see compile); concrete devices bind now.
-        let dev_info = if dev == Dev::Auto { None } else { Some(dev.info()) };
+        // An unavailable device binds None and fails at compile() with an
+        // error (never a panic), so callers can skip gracefully.
+        let dev_info = if dev == Dev::Auto { None } else { dev.info().ok() };
         Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev, dev_info, shape_cache: Map::default() }
     }
 
@@ -171,17 +173,20 @@ impl Kernel {
         let device_id = if self.dev == Dev::Auto {
             // Resolve Auto to the fastest available device (highest
             // free_compute, same ranking pick_device uses).
-            let mut devs: Vec<Dev> = Dev::all();
-            devs.sort_unstable_by_key(|&dev| dev.free_compute());
-            devs.reverse();
-            devs.into_iter().next().expect("no devices available")
+            let mut ranked: Vec<(Dev, u128)> = Vec::new();
+            for dev in Dev::all() {
+                ranked.push((dev, dev.free_compute()?));
+            }
+            ranked.sort_unstable_by_key(|&(_, compute)| compute);
+            ranked.reverse();
+            ranked.into_iter().next().map(|(dev, _)| dev).ok_or(ZyxError::NoBackendAvailable)?
         } else {
             self.dev
         };
         // Bind the resolved device so codegen can read dev_info
         // (mirrors Kernel::new; from_device_id placeholders carry None).
         self.dev = device_id;
-        self.dev_info = Some(device_id.info());
+        self.dev_info = Some(device_id.info()?);
         if crate::debug_mask().ir() {
             self.debug();
         }
@@ -1008,7 +1013,11 @@ impl Kernel {
 
 impl CompiledKernel {
     /// Returns the DeviceInfo for the device this kernel was compiled on.
-    pub fn device_info(&self) -> Arc<DeviceInfo> {
+    ///
+    /// # Errors
+    ///
+    /// If the device is unavailable (backend disabled or init failed).
+    pub fn device_info(&self) -> Result<Arc<DeviceInfo>, ZyxError> {
         self.program.dev.info()
     }
 

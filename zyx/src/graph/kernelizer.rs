@@ -27,7 +27,7 @@ impl Graph {
     /// # Inputs
     ///
     /// Classes in `inputs` are treated as realized boundary values — the kernelizer
-    /// never fuses *into* them, it only loads them (exactly like [`Node::Leaf`]s).
+    /// never fuses *into* them, it only loads them (exactly like [`Op::Param`]s).
     /// For the whole graph these are the leaf classes; for a subregion (the gap
     /// between two AOT kernels) they are the region's boundary inputs.
     /// Shape-NULL leaves (scalar variables) are the one exception: like all

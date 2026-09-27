@@ -277,7 +277,8 @@ impl Runtime {
                                 );
                             }
                             for _ in 0..sum_axes.len() {
-                                cur = self.push_op(graph_id, Op::Reduce { x: cur, rop: BOp::Add, reduce_axis: OpId::NULL });
+                                let axis = *self.graphs[graph_id].shape(cur).last().expect("Reduce of scalar");
+                                cur = self.push_op(graph_id, Op::Reduce { x: cur, rop: BOp::Add, reduce_axis: axis });
                             }
                             // The graph reduce drops the reduced dims; restore the
                             // original shape (keepdim) with an explicit reshape.
@@ -369,6 +370,7 @@ impl Runtime {
                         }
                         BOp::Mul => {
                             let x_dims = self.graphs[graph_id].shape(x);
+                            let axis = *x_dims.last().expect("Reduce of scalar");
                             let dtype = self.graphs[graph_id].dtype(x);
                             let zero = self.push_const(graph_id, Constant::new(0u8).cast(dtype));
                             let one = self.push_const(graph_id, Constant::new(1u8).cast(dtype));
@@ -380,8 +382,8 @@ impl Runtime {
                             let is_zero_b = self.push_binary_node(graph_id, x, zero, BOp::Eq);
                             let is_zero = self.push_op(graph_id, Op::Cast { x: is_zero_b, dtype });
                             let safe_x = self.push_binary_node(graph_id, x, is_zero, BOp::Add);
-                            let p = self.push_op(graph_id, Op::Reduce { x: safe_x, rop: BOp::Mul, reduce_axis: OpId::NULL });
-                            let nz = self.push_op(graph_id, Op::Reduce { x: is_zero, rop: BOp::Add, reduce_axis: OpId::NULL });
+                            let p = self.push_op(graph_id, Op::Reduce { x: safe_x, rop: BOp::Mul, reduce_axis: axis });
+                            let nz = self.push_op(graph_id, Op::Reduce { x: is_zero, rop: BOp::Add, reduce_axis: axis });
                             let p_r = self.push_op(graph_id, Op::Reshape { x: p, shape: kept_shape });
                             let p_e = self.push_op(graph_id, Op::Expand { x: p_r, shape: x_shape });
                             let nz_r = self.push_op(graph_id, Op::Reshape { x: nz, shape: kept_shape });

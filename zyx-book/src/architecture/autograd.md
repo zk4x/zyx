@@ -4,7 +4,7 @@ Zyx implements automatic differentiation through an explicit `Tape`. Unlike othe
 
 ## The Key Insight
 
-In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx's tape keeps all graph nodes alive until `realize()` or drop, and simply prevents their deletion until gradients are computed.
+In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx's tape keeps all graph ops alive until `realize()` or drop, and simply prevents their deletion until gradients are computed.
 
 ## Tape API
 
@@ -61,8 +61,8 @@ Many properties of the autograd system fall out of this fact:
 - **No separate backward graph** — backward ops live in the same graph as forward ops, so they get the same treatment: CSE, fusion, and kernel caching apply to backward code for free.
 - **Gradients are first-class tensors** — they can feed further computation, be stored, or be differentiated again.
 - **Nothing is snapshotted or frozen** — since the transform only appends, the tape needs no copy of the forward graph and no special "backward mode".
-- **Memory behavior is uniform** — graph nodes accumulate until `realize()` or drop, whether they came from forward ops or backward ops.
+- **Memory behavior is uniform** — graph ops accumulate until `realize()` or drop, whether they came from forward ops or backward ops.
 
 ## Memory Efficiency
 
-Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only `TensorId` values — not the actual data. When the tape is dropped, all tape-preserved nodes are released.
+Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only `TensorId` values — not the actual data. When the tape is dropped, all tape-preserved ops are released.

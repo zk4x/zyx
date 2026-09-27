@@ -52,7 +52,7 @@ pub enum Op {
         kind: ParamKind,
         shape: OpId,
         /// Buffer identity for egraph hashconsing (mirrors the former
-        /// `Node::Leaf.cons_id`): two params name the same buffer iff their
+        /// `Op::Param.cons_id`): two params name the same buffer iff their
         /// `cons_id`s agree. Kernel passes ignore it (params are bound
         /// positionally there); it is compared by `Eq` but skipped by `Hash`
         /// so program caches (`get_hash`) keep sharing across buffers.
@@ -219,6 +219,10 @@ pub enum Op {
         start: OpId,
         len: OpId,
     },
+    /// Reduce `x` with `rop` over the trailing dim. `reduce_axis` always
+    /// names the last dim's class (null is tolerated as shorthand for it).
+    /// Reductions over any other axis are permuted to trailing before
+    /// reaching this op.
     Reduce {
         x: OpId,
         rop: BOp,
@@ -921,10 +925,7 @@ impl Op {
             &Op::Permute { x, .. } | &Op::Flip { x, .. } => vec![x],
             &Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             &Op::Narrow { x, start, len, .. } => vec![x, start, len],
-            Op::Reduce { x, reduce_axis, .. } => {
-                // A null axis reduces the last dim and names no operand
-                if reduce_axis.is_null() { vec![*x] } else { vec![*x, *reduce_axis] }
-            }
+            Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
             &Op::Store { dst, src, index, .. } => {
                 // Pre-linearize stores carry a NULL index (whole-view write),
                 // which names no operand.
