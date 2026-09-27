@@ -42,6 +42,12 @@ cd zyx && cargo fmt
 ```
 
 - Tenstorrent: `TT_METAL_ROOT=/home/x/Dev/cpp/tt-metal cargo build --features tenstorrent`
+- **TT simulator** (no silicon required): the runtime process inherits the env, so export these before any `cargo test --features tenstorrent`:
+  ```
+  export TT_METAL_SIMULATOR=~/Dev/cpp/tt-sim/libttsim_bh.so   # .so must share a dir with soc_descriptor.yaml
+  export TT_METAL_SLOW_DISPATCH_MODE=1                        # recommended; fast dispatch is under-tested
+  ```
+  See `~/Dev/cpp/tt-sim` (ttsim, https://github.com/tenstorrent/ttsim). Bit-exact vs silicon; avoid timing-dependent reductions.
 - Clippy is NOT a gate — don't run it.
 - Tests live in `zyx/tests/` as `{number}_{category}.rs` (+ `mnist.rs` with `mnist.py`/`.safetensors` fixtures). They return `Result<(), ZyxError>` and use `assert!`/`is_equal()` for floats.
 - Python: use `python3.12`.

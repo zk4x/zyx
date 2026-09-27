@@ -2574,6 +2574,33 @@ impl Compiler {
         let mut section = 0u8;
         // Remaining static uses per (CB, source-load) group.
         let mut remaining: Map<(CBId, OpId), u32> = Map::default();
+        // Per-op pop spec: a CB consumed by this op is either popped
+        // unconditionally right after the op (today's shape: consumed
+        // once), or popped when its (CB, load) group's use count hits
+        // zero (matmul sides, which may be shared across trips).
+        enum PopKind {
+            Strict(CBId),
+            Counted { cb: CBId, load: OpId },
+        }
+        fn pops_for(op: &TTOp) -> Option<Vec<PopKind>> {
+            Some(match op {
+                TTOp::TileCopy { cb, .. } => vec![PopKind::Strict(*cb)],
+                TTOp::TileMatmul { cb_a, cb_b, x_load, y_load, .. } => vec![
+                    PopKind::Counted { cb: *cb_a, load: *x_load },
+                    PopKind::Counted { cb: *cb_b, load: *y_load },
+                ],
+                TTOp::TileReduce { cb_in, cb_sc, .. } => vec![
+                    PopKind::Strict(*cb_in),
+                    PopKind::Strict(*cb_sc),
+                ],
+                TTOp::TileTranspose { cb, .. } => vec![PopKind::Strict(*cb)],
+                TTOp::TileBcastBinary { cb_a, cb_b, .. } => vec![
+                    PopKind::Strict(*cb_a),
+                    PopKind::Strict(*cb_b),
+                ],
+                _ => return None,
+            })
+        }
         for op in old {
             match &op {
                 TTOp::EndReader | TTOp::EndCompute => {
@@ -2591,68 +2618,32 @@ impl Compiler {
                 next.push(op);
                 continue;
             }
-            // Countdown sides: pop at last use. Strict sides: pop
-            // immediately after the op (today's shape).
-            let counted: [(CBId, OpId); 2];
-            let n_counted: usize;
-            let strict: [Option<CBId>; 2];
-            match &op {
-                // One copy per load: the CB tile is consumed exactly
-                // once, here (a fan-out DST value shares the slot, not
-                // the CB tile).
-                TTOp::TileCopy { cb, .. } => {
-                    counted = [(CBId(u32::MAX), OpId::NULL); 2];
-                    n_counted = 0;
-                    strict = [Some(*cb), None];
-                }
-                TTOp::TileMatmul { cb_a, cb_b, x_load, y_load, .. } => {
-                    counted = [(*cb_a, *x_load), (*cb_b, *y_load)];
-                    n_counted = 2;
-                    strict = [None, None];
-                }
-                TTOp::TileReduce { cb_in, cb_sc, .. } => {
-                    counted = [(CBId(u32::MAX), OpId::NULL); 2];
-                    n_counted = 0;
-                    strict = [Some(*cb_in), Some(*cb_sc)];
-                }
-                TTOp::TileTranspose { cb, .. } => {
-                    counted = [(CBId(u32::MAX), OpId::NULL); 2];
-                    n_counted = 0;
-                    strict = [Some(*cb), None];
-                }
-                TTOp::TileBcastBinary { cb_a, cb_b, .. } => {
-                    counted = [(CBId(u32::MAX), OpId::NULL); 2];
-                    n_counted = 0;
-                    strict = [Some(*cb_a), Some(*cb_b)];
-                }
-                _ => {
-                    next.push(op);
-                    continue;
-                }
-            }
+            let pops = pops_for(&op);
             next.push(op);
-            for (cb, load) in counted.into_iter().take(n_counted) {
-                let Some(&total) = self.use_counts.get(&(cb, load)) else {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: place_pops: matmul side ({cb}, {load:?}) has no use count").into(),
-                    });
-                };
-                let left = remaining.entry((cb, load)).or_insert(total);
-                if *left == 0 {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: format!("tenstorrent2: place_pops: use beyond counted total on CB{cb}").into(),
-                    });
+            for kind in pops.into_iter().flatten() {
+                match kind {
+                    PopKind::Strict(cb) => next.push(TTOp::PopFront { cb, n: 1 }),
+                    PopKind::Counted { cb, load } => {
+                        let Some(&total) = self.use_counts.get(&(cb, load)) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: place_pops: matmul side ({cb}, {load:?}) has no use count").into(),
+                            });
+                        };
+                        let left = remaining.entry((cb, load)).or_insert(total);
+                        if *left == 0 {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tenstorrent2: place_pops: use beyond counted total on CB{cb}").into(),
+                            });
+                        }
+                        *left -= 1;
+                        if *left == 0 {
+                            remaining.remove(&(cb, load));
+                            next.push(TTOp::PopFront { cb, n: 1 });
+                        }
+                    }
                 }
-                *left -= 1;
-                if *left == 0 {
-                    remaining.remove(&(cb, load));
-                    next.push(TTOp::PopFront { cb, n: 1 });
-                }
-            }
-            for cb in strict.into_iter().flatten() {
-                next.push(TTOp::PopFront { cb, n: 1 });
             }
         }
         if !remaining.is_empty() {
