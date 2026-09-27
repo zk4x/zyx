@@ -84,17 +84,21 @@ impl Kernel {
                     | Op::Narrow { .. }
                     | Op::Flip { .. }
                     | Op::Reduce { .. } => has_move_or_reduce = true,
-                    Op::Param { .. } => todo!(),
-                    Op::Cast { .. } => todo!(),
-                    Op::Bitcast { .. } => todo!(),
-                    Op::Unary { .. } => todo!(),
-                    Op::Binary { .. } => todo!(),
-                    Op::Stack { .. } => todo!(),
-                    Op::After { .. } => todo!(),
-                    Op::ToDevice { .. } => todo!(),
-                    Op::Contiguous { .. } => todo!(),
-                    Op::Kernel { .. } => todo!(),
-                    Op::Custom(_) => todo!(),
+                    // Params and elementwise/compute ops appear in every
+                    // kernel, pre- and post-linearization; they carry no
+                    // linearization signal.
+                    Op::Param { .. }
+                    | Op::Cast { .. }
+                    | Op::Bitcast { .. }
+                    | Op::Unary { .. }
+                    | Op::Binary { .. }
+                    | Op::Stack { .. } => {}
+                    // Graph-only ops must never reach kernel IR.
+                    Op::After { .. }
+                    | Op::ToDevice { .. }
+                    | Op::Contiguous { .. }
+                    | Op::Kernel { .. }
+                    | Op::Custom(_) => unreachable!("graph-only op at {scan:?} in kernel IR"),
                 }
                 scan = self.next_op(scan);
             }

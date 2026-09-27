@@ -384,7 +384,9 @@ impl PartialEq for Op {
             (Op::Narrow { x: a, axis: aa, start: as_, len: al }, Op::Narrow { x: b, axis: ba, start: bs, len: bl }) => {
                 a == b && aa == ba && as_ == bs && al == bl
             }
-            _ => todo!(),
+            // Different variants are never equal (Hash carries no
+            // discriminant, so cross-variant collisions land here).
+            _ => false,
         }
     }
 }
@@ -609,7 +611,8 @@ impl Ord for Op {
             (Op::Narrow { x: a, axis: aa, start: as_, len: al }, Op::Narrow { x: b, axis: ba, start: bs, len: bl }) => {
                 (a, aa, as_, al).cmp(&(b, ba, bs, bl))
             }
-            _ => todo!(),
+            // Only different-variant pairs reach here: order by discriminant.
+            (a, b) => a.disc().cmp(&b.disc()),
         }
     }
 }
@@ -918,9 +921,13 @@ impl Op {
             &Op::Permute { x, .. } | &Op::Flip { x, .. } => vec![x],
             &Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             &Op::Narrow { x, start, len, .. } => vec![x, start, len],
-            Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
+            Op::Reduce { x, reduce_axis, .. } => {
+                // A null axis reduces the last dim and names no operand
+                if reduce_axis.is_null() { vec![*x] } else { vec![*x, *reduce_axis] }
+            }
             &Op::Store { dst, src, index, .. } => {
-                // Pre-linearize stores carry a NULL index (whole-view write).
+                // Pre-linearize stores carry a NULL index (whole-view write),
+                // which names no operand.
                 if index.is_null() {
                     vec![dst, src]
                 } else {
@@ -942,7 +949,10 @@ impl Op {
             &Op::TransposeTile { x } => vec![x],
             &Op::BroadcastTile { x, .. } => vec![x],
             &Op::ReduceTile { x, acc, scaler, .. } => vec![x, acc, scaler],
-            Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+            Op::After { x, dep } => vec![*x, *dep],
+            Op::ToDevice { x, .. } => vec![*x],
+            Op::Contiguous { x } => vec![*x],
+            Op::Kernel { .. } | Op::Custom(_) => {
                 todo!("parameters: graph-only op in ordered kernel")
             }
         }

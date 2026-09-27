@@ -444,7 +444,16 @@ impl Graph {
                             deps.push(*p);
                         }
                     }
-                    todo!()
+                }
+                Op::Custom(ref inner) => {
+                    if WITHOUT_KERNELS && !inputs.contains(&cid) {
+                        continue;
+                    }
+                    for p in inner.inputs.iter() {
+                        if !deps.contains(p) && !(WITHOUT_KERNELS && inputs.contains(p)) {
+                            deps.push(*p);
+                        }
+                    }
                 }
                 ref node => {
                     if WITHOUT_KERNELS && inputs.contains(&cid) {
@@ -1082,9 +1091,13 @@ impl Graph {
                 if !sx.is_empty() { sx } else { self.shape(*y) }
             }
             Op::Reduce { x, reduce_axis, .. } => {
-                debug_assert!(reduce_axis.is_null(), "graph Reduce always has null axis");
                 let mut s = self.shape(*x);
-                s.pop().expect("Reduce of scalar");
+                if reduce_axis.is_null() {
+                    s.pop().expect("Reduce of scalar");
+                } else {
+                    let pos = s.iter().position(|&d| d == *reduce_axis).expect("Reduce axis not in operand shape");
+                    s.remove(pos);
+                }
                 s
             }
             Op::Store { dst, .. } => self.shape(*dst),
@@ -1939,8 +1952,8 @@ impl Runtime {
                     }
                     Op::Reduce { x, rop, reduce_axis } => {
                         let x_class = op_to_class[&x];
-                        debug_assert!(reduce_axis.is_null(), "promote_to_graph: non-null reduce axis in eager kernel");
-                        let class_id = self.push_op(graph_id, Op::Reduce { x: x_class, rop, reduce_axis: OpId::NULL });
+                        let reduce_axis = if reduce_axis.is_null() { OpId::NULL } else { op_to_class[&reduce_axis] };
+                        let class_id = self.push_op(graph_id, Op::Reduce { x: x_class, rop, reduce_axis });
                         class_id
                     }
                     Op::Reshape { x, shape } => {

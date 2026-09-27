@@ -327,7 +327,7 @@ impl Kernel {
                 break;
             }
             match self.ops[op_id].op {
-                Op::Reshape { .. } | Op::Permute { .. } | Op::Pad { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
+                Op::Reshape { .. } | Op::Expand { .. } | Op::Permute { .. } | Op::Flip { .. } | Op::Pad { .. } | Op::Narrow { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
@@ -453,9 +453,6 @@ impl Kernel {
                     *rcs.entry(condition).or_insert(0) += 1;
                 }
                 Op::Barrier | Op::EndIf | Op::EndLoop => {}
-                Op::Expand { .. } => todo!(),
-                Op::Flip { .. } => todo!(),
-                Op::Narrow { .. } => todo!(),
             }
             op_id = self.next_op(op_id);
         }
@@ -502,12 +499,12 @@ impl Kernel {
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }
-                Op::Reshape { .. } => todo!(),
-                Op::Expand { .. } => todo!(),
-                Op::Permute { .. } => todo!(),
-                Op::Flip { .. } => todo!(),
-                Op::Pad { .. } => todo!(),
-                Op::Narrow { .. } => todo!(),
+                Op::Reshape { x, .. }
+                | Op::Expand { x, .. }
+                | Op::Permute { x, .. }
+                | Op::Flip { x, .. }
+                | Op::Pad { x, .. }
+                | Op::Narrow { x, .. } => op_id = x,
             }
         }
         panic!("layout not found for too long time");
@@ -555,12 +552,12 @@ impl Kernel {
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }
-                Op::Reshape { .. } => todo!(),
-                Op::Expand { .. } => todo!(),
-                Op::Permute { .. } => todo!(),
-                Op::Flip { .. } => todo!(),
-                Op::Pad { .. } => todo!(),
-                Op::Narrow { .. } => todo!(),
+                Op::Reshape { x, .. }
+                | Op::Expand { x, .. }
+                | Op::Permute { x, .. }
+                | Op::Flip { x, .. }
+                | Op::Pad { x, .. }
+                | Op::Narrow { x, .. } => op_id = x,
             }
         }
         panic!("dtype not found for too long time");
