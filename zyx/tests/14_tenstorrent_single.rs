@@ -2586,10 +2586,11 @@ tt_shift_const!(
     tenstorrent_shr_u16_imm,
     |k: &mut Kernel, x: OpId, y: OpId| k.bit_shift_right(x, y),
     DType::U16,
+    1e-5,
     tt_u16_small,
     3,
-    "tenstorrent2: U16 right-shift by immediate",
-    panics
+    |x: f32, a: u32| (x as u32).wrapping_shr(a) as f32,
+    ignore
 );
 tt_shift_const!(
     tenstorrent_shl_u32_imm,

@@ -26,7 +26,7 @@ use zyx::{DType, Tensor, ZyxError};
 /// 32x32 hardware tile elements.
 const TILE_ELEMS: i64 = 1024;
 /// Output tiles owned by one core along M and N.
-const MT_PER_CORE: i64 = 8;
+const MT_PER_CORE: i64 = 16;
 const NT_PER_CORE: i64 = 8;
 /// Compute subblock: SB_H A-rows x SB_W B-cols per inner step. Each B
 /// tile feeds SB_H matmuls, so B is pushed once per row-pair (rereads
