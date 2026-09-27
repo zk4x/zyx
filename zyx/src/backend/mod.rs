@@ -428,7 +428,7 @@ impl Pool {
         if result.is_ok() {
             if let Ok(x) = std::env::var("ZYX_DEBUG")
                 && let Ok(x) = x.parse::<u32>()
-                && DebugMask::new(x).dev()
+                && DebugMask::new(x).memory()
             {
                 println!("[{name}] allocate {bytes} -> free {free} B");
             }

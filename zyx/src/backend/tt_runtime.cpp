@@ -216,7 +216,7 @@ struct ProgramConfig {
 };
 
 int main() {
-  cerr << "[TT_CPP] runtime started" << endl;
+  // (no startup print: only failures print)
   if (!getenv("TT_METAL_RUNTIME_ROOT")) {
     setenv("TT_METAL_RUNTIME_ROOT", TT_METAL_ROOT_DEFAULT, 0);
   }
@@ -254,7 +254,6 @@ int main() {
       }
 
       try {
-        cerr << "[TT_CPP] calling create_unit_mesh(0)" << endl;
         mesh_device = MeshDevice::create_unit_mesh(0);
         cq = &mesh_device->mesh_command_queue();
         cout << R"({"status":"ready"})" << endl;
@@ -309,11 +308,6 @@ int main() {
 
         auto buf = MeshBuffer::create(buf_config, dram_config, mesh_device.get());
         uint32_t idx = buffers.size();
-        cerr << "[TT_ALLOC] idx=" << idx << " size=" << size
-             << " page=" << PAGE_SIZE << " addr=" << buf->address()
-             << " actual_sz=" << buf->size()
-             << " bank0pg0=" << buf->get_reference_buffer()->page_address(0, 0)
-             << " bank1pg0=" << buf->get_reference_buffer()->page_address(1, 0) << endl;
         buffers.push_back(buf);
         cout << R"({"status":"ok","index":")" << idx << R"("})" << endl;
       } catch (const exception &e) {
@@ -666,8 +660,6 @@ int main() {
         }
 
         // Create ONE reader kernel on all cores (standard TT SPMD pattern)
-        cerr << "[TT] creating reader kernel on cores [0,0.." << (gidx1_sz - 1)
-             << "," << (gidx0_sz - 1) << "]" << endl;
         auto reader = CreateKernelFromString(
             program, cfg.reader_source, all_cores,
             DataMovementConfig{
@@ -682,8 +674,6 @@ int main() {
             });
 
         // Create ONE writer kernel on all cores
-        cerr << "[TT] creating writer kernel on cores [0,0.." << (gidx1_sz - 1)
-             << "," << (gidx0_sz - 1) << "]" << endl;
         auto writer = CreateKernelFromString(
             program, cfg.writer_source, all_cores,
             DataMovementConfig{
@@ -698,8 +688,6 @@ int main() {
             });
 
         // Create ONE compute kernel on all cores
-        cerr << "[TT] creating compute kernel on cores [0,0.." << (gidx1_sz - 1)
-             << "," << (gidx0_sz - 1) << "]" << endl;
         // Per-CB unpack-to-dest mode: F32 CBs unpack straight to F32
         // (UnpackToDestFp32) instead of the conditional (Tf32) conversion,
         // so SFPU ops see full-precision inputs — but ONLY under 32-bit
@@ -732,22 +720,6 @@ int main() {
                                        .compiler_include_paths = {},
                                    });
 
-        // TEMP DIAG: log section runtime + compile args for core (0,0) to
-        // verify kernel-side addresses against TT_ALLOC.
-        {
-          auto rrt = section_rt_args(cfg.reader_params, 0, 0);
-          cerr << "[TT_ARGS] reader_rt:";
-          for (uint32_t v : rrt) cerr << " " << v;
-          cerr << " reader_ct:";
-          for (uint32_t v : reader_compile_args) cerr << " " << v;
-          cerr << endl;
-          auto wrt = section_rt_args(cfg.writer_params, 0, 0);
-          cerr << "[TT_ARGS] writer_rt:";
-          for (uint32_t v : wrt) cerr << " " << v;
-          cerr << " writer_ct:";
-          for (uint32_t v : writer_compile_args) cerr << " " << v;
-          cerr << endl;
-        }
         // Set per-core runtime args using the single kernel handle
         for (uint32_t row = 0; row < gidx0_sz; row++) {
           for (uint32_t col = 0; col < gidx1_sz; col++) {
@@ -761,15 +733,9 @@ int main() {
           }
         }
 
-        cerr << "[TT] before add_program" << endl;
         workload.add_program(device_range, std::move(program));
-        cerr << "[TT] after add_program" << endl;
-        cerr << "[TT] before EnqueueMeshWorkload" << endl;
         EnqueueMeshWorkload(*cq, workload, false);
-        cerr << "[TT] after EnqueueMeshWorkload" << endl;
-        cerr << "[TT] before Finish" << endl;
         Finish(*cq);
-cerr << "[TT] after Finish" << endl;
 
         cout << R"({"status":"ok"})" << endl;
 
@@ -789,7 +755,6 @@ cerr << "[TT] after Finish" << endl;
         uint32_t source_len = extract_u32(line, "source_len");
         string source(source_len, '\0');
         cin.read(&source[0], source_len);
-        cerr << "[PROBE] source read ok" << endl;
 
         DeviceLocalBufferConfig dram_config{
             .page_size = PAGE_SIZE,
@@ -819,12 +784,9 @@ cerr << "[TT] after Finish" << endl;
             });
         uint64_t a = buf->address();
         SetRuntimeArgs(program, kern, core, {static_cast<uint32_t>(a)});
-        cerr << "[PROBE] kernel created" << endl;
         workload.add_program(device_range, std::move(program));
         EnqueueMeshWorkload(*cq, workload, false);
-        cerr << "[PROBE] enqueued" << endl;
         Finish(*cq);
-        cerr << "[PROBE] finished" << endl;
         cout << R"({"status":"ok","index":")" << idx << R"("})" << endl;
       } catch (const exception &e) {
         cerr << "probe_scatter error: " << e.what() << endl;

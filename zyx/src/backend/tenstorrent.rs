@@ -490,7 +490,6 @@ impl RuntimeProcess {
     }
 
     fn send(&mut self, json: &str) -> Result<(), BackendError> {
-        eprintln!("[RUST_SEND] {}", &json[..json.len().min(200)]);
         self.stdin
             .write_all(json.as_bytes())
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime write: {e}").into() })?;
@@ -556,7 +555,6 @@ impl RuntimeProcess {
                         let trimmed = line.trim().to_string();
                         // Skip non-JSON lines (UMD log messages leaking to stdout)
                         if trimmed.starts_with('{') {
-                            eprintln!("[RUST_RECV] {trimmed}");
                             return Ok(trimmed);
                         }
                         // Log line — keep reading
@@ -703,7 +701,6 @@ impl RuntimeProcess {
             cmd.push_str(&format!(r#","wp{i}":{p}"#));
         }
         for (i, (cb, (fmt, tb, nt))) in cb_config.iter().enumerate() {
-            eprintln!("TEMP CB{cb} fmt={fmt} tile_bytes={tb} n_tiles={nt}"); // TEMP DEBUG: remove
             cmd.push_str(&format!(r#","cb_idx{i}":{cb},"cb_fmt{i}":{fmt},"cb_tb{i}":{tb},"cb_nt{i}":{nt}"#));
         }
         cmd.push('}');
@@ -855,8 +852,6 @@ impl TTDevice {
         let compute_params = program.compute_params.as_slice();
         let writer = program.writer_src.as_str();
         let writer_params = program.writer_params.as_slice();
-        eprintln!("TEMP NEW n_params={n_params} fp32={}", program.fp32); // TEMP DEBUG: remove
-        eprintln!("TEMP NEW rp={reader_params:?} cp={compute_params:?} wp={writer_params:?}"); // TEMP DEBUG: remove
         if debug_asm {
             eprintln!("[tenstorrent2] reader:\n{reader}");
             eprintln!("[tenstorrent2] compute:\n{compute}");

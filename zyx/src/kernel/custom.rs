@@ -127,11 +127,7 @@ impl Kernel {
     /// # Ok::<_, ZyxError>(())
     /// ```
     pub fn compile(mut self) -> Result<CompiledKernel, ZyxError> {
-        let _compile_start = std::time::Instant::now();
-        let mut _t = std::time::Instant::now();
-        _t = std::time::Instant::now();
         self.linearize();
-        eprintln!("[compile] linearize {}us", _t.elapsed().as_micros());
         // After linearization the parameter shapes are no longer meaningful
         // (the same clear happens inside `linearize` for kernels it processes);
         // clear them here too so kernels that skip linearization (already
@@ -191,10 +187,7 @@ impl Kernel {
             self.debug();
         }
         let debug_asm = crate::debug_mask().asm();
-        _t = std::time::Instant::now();
         let program_id = device_id.compile(&self, debug_asm)?;
-        eprintln!("[compile] device.compile {}us", _t.elapsed().as_micros());
-        eprintln!("[compile] total {}us", _compile_start.elapsed().as_micros());
         // Dev debug bit: record the compile-time perf estimate so eager
         // launches can time themselves with `launch_timed`.
         let perf = crate::debug_mask().dev().then(|| self.flop_mem_rw());

@@ -129,7 +129,19 @@ impl Kernel {
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
+        // Warmup: the first device execution pays cold-start overhead
+        // (kernel load, fabric init) that would otherwise dominate
+        // single-launch timings and drown real config differences.
+        // Plain `launch` is async (enqueue only), so the warmup must
+        // itself be timed (synchronous) to actually execute.
+        let _ = device.launch_timed(program_id, buffers)?;
         let nanos = device.launch_timed(program_id, buffers)?;
+        // Same perf line as the eager `forward` path (custom.rs): flop and
+        // byte counts are compile-time estimates, nanos device-measured.
+        if debug.dev() {
+            let (flop, read, write) = self.flop_mem_rw();
+            println!("{}", crate::get_perf(flop, read, write, nanos));
+        }
         Ok((program_id, nanos))
     }
 }
