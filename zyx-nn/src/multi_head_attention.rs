@@ -195,10 +195,7 @@ impl MultiheadAttention {
         }
 
         if self.add_zero_attn {
-            let b_dim = b.item::<i64>();
-            let h_dim = h.item::<i64>();
-            let d_dim = d.item::<i64>();
-            let zero = Tensor::zeros([b_dim, h_dim, 1, d_dim], k.dtype());
+            let zero = Tensor::zeros([b.clone(), h.clone(), 1i64.into(), d.clone()], k.dtype());
             k = Tensor::cat([&k, &zero], 2)?;
             v = Tensor::cat([&v, &zero], 2)?;
         }
@@ -215,9 +212,8 @@ impl MultiheadAttention {
 
         // Causal mask
         if is_causal {
-            let t_q_dim = t_q.item::<i64>();
-            let t_kv_dim = t_kv.item::<i64>();
-            let causal_mask = Tensor::ones([t_q_dim, t_kv_dim], attn_scores.dtype()).tril(0)?;
+            let causal_mask =
+                Tensor::ones([t_q.clone(), t_kv.clone()], attn_scores.dtype()).tril(0)?;
             attn_scores = attn_scores.masked_fill(causal_mask.equal(0)?, f32::NEG_INFINITY)?;
         }
 

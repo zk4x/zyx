@@ -58,7 +58,7 @@ impl LSTMCell {
     /// A `Result` wrapping the created `LSTMCell` or a `ZyxError` if initialization fails.
     pub fn new(
         input_size: i64,
-    hidden_size: i64,
+        hidden_size: i64,
         bias: bool,
         dtype: Option<DType>,
     ) -> Result<Self, ZyxError> {

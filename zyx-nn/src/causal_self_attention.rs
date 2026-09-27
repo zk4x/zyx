@@ -20,7 +20,7 @@ impl CausalSelfAttention {
     /// New causal self attention
     pub fn new(
         n_embd: i64,
-    n_head: i64,
+        n_head: i64,
         bias: bool,
         dropout_p: f32,
         dtype: DType,
@@ -37,13 +37,15 @@ impl CausalSelfAttention {
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x: Tensor = x.into();
         let [b, t, c] = x.dims::<3>()?;
-        let c_dim = c.item::<i64>();
-        let mut splits = self.c_attn.forward(x)?.split([c_dim, c_dim, c_dim], 2)?;
+        let head_dim = &c / &self.n_head;
+        let mut splits = self
+            .c_attn
+            .forward(x)?
+            .split([c.clone(), c.clone(), c.clone()], 2)?;
         let mut v = splits.pop().unwrap();
         let mut k = splits.pop().unwrap();
         let mut q = splits.pop().unwrap();
 
-        let head_dim = &c / &self.n_head;
         k = k
             .reshape([&b, &t, &self.n_head, &head_dim])?
             .transpose(1, 2)?;
@@ -54,7 +56,7 @@ impl CausalSelfAttention {
             .reshape([&b, &t, &self.n_head, &head_dim])?
             .transpose(1, 2)?;
 
-        let scale = (1.0 / (*k.resolve_shape().last().unwrap() as f64).sqrt()) as f32;
+        let scale = (1.0 / (head_dim.item::<f32>().sqrt())) as f32;
         //println!("scale = {scale}");
         let mut att = q.dot(k.t())? * scale;
         //println!("{att}");

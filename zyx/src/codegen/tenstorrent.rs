@@ -1981,10 +1981,15 @@ impl Compiler {
                             context: "tenstorrent2: Wmma has no Tenstorrent lowering".into(),
                         })
                     }
-                    Op::Move { .. } => {
+                    Op::Reshape { .. }
+                    | Op::Expand { .. }
+                    | Op::Permute { .. }
+                    | Op::Flip { .. }
+                    | Op::Pad { .. }
+                    | Op::Narrow { .. } => {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: "tenstorrent2: Move never survives linearization".into(),
+                            context: "tenstorrent2: movement op never survives linearization".into(),
                         })
                     }
                     Op::Reduce { .. } => {
@@ -5174,8 +5179,17 @@ impl Kernel {
                 Op::Asm { ref ops, .. } => {
                     stack.extend(ops.iter().copied());
                 }
-                Op::Move { x, .. } => {
+                Op::Reshape { x, shape } | Op::Expand { x, shape } => {
                     stack.push(x);
+                    stack.push(shape);
+                }
+                Op::Permute { x, .. } | Op::Flip { x, .. } => {
+                    stack.push(x);
+                }
+                Op::Pad { x, lp, len, .. } | Op::Narrow { x, start: lp, len, .. } => {
+                    stack.push(x);
+                    stack.push(lp);
+                    stack.push(len);
                 }
                 Op::Reduce { x, reduce_axis, .. } => {
                     stack.push(x);
@@ -5210,10 +5224,16 @@ impl Kernel {
                 // downstream is a phase-3 bug, never a default.
                 rcs.entry(op_id).or_insert(0);
                 match self.ops[op_id].op {
-                    Op::Move { .. } | Op::Reduce { .. } => {
+                    Op::Reshape { .. }
+                    | Op::Expand { .. }
+                    | Op::Permute { .. }
+                    | Op::Flip { .. }
+                    | Op::Pad { .. }
+                    | Op::Narrow { .. }
+                    | Op::Reduce { .. } => {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: "tenstorrent2: get_needed_ops collected a Move/Reduce (never lowered)".into(),
+                            context: "tenstorrent2: get_needed_ops collected a movement/Reduce op (never lowered)".into(),
                         });
                     }
                     Op::ReduceTile { x, scaler, acc, .. } => {

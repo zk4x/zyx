@@ -29,6 +29,7 @@
     - [x] reduce tile (Op::ReduceTile + emitting pass)
     - [x] matmul tile (matmul_tile builder, exercised by tt_gemm)
     - [x] transpose tile (transpose_tile builder)
+    - [ ] core-to-core memory copy (NoC unicast/multicast between Tensix cores; needed for cooperative kernels: multicast-A scaling, cross-core reductions, halo exchange)
 - [ ] runtime
   - [x] fix event handling
   - [x] node deallocation after realization

@@ -26,8 +26,12 @@ impl Embedding {
         let vocab_size_t: Tensor = vocab_size.into();
         let embed_size_t: Tensor = embed_size.into();
         let one: Tensor = 1i64.into();
-        let weight = Tensor::glorot_uniform([vocab_size, embed_size], dtype)?
-            .reshape([one.clone(), one.clone(), vocab_size_t.clone(), embed_size_t.clone()])?;
+        let weight = Tensor::glorot_uniform([vocab_size, embed_size], dtype)?.reshape([
+            one.clone(),
+            one.clone(),
+            vocab_size_t.clone(),
+            embed_size_t.clone(),
+        ])?;
         let arange = Tensor::arange(0, vocab_size, 1)?
             .reshape([one.clone(), one, vocab_size_t.clone(), 1i64.into()])?
             .cast(dtype);
@@ -66,7 +70,8 @@ impl Embedding {
         let wdt = self.weight.dtype();
         if !xdt.is_int() {
             return Err(ZyxError::DTypeError(
-                format!("Embedding::forward input x must be an integer index dtype, got {xdt}").into(),
+                format!("Embedding::forward input x must be an integer index dtype, got {xdt}")
+                    .into(),
             ));
         }
         if x.numel().item::<i64>() == 0 {
@@ -91,11 +96,13 @@ impl Embedding {
         let mut ar_shp: Vec<Tensor> = vec![one.clone(); x_rank];
         ar_shp.push(self.vocab_size.clone());
         ar_shp.push(one.clone());
-        let arange = self.arange.reshape(ar_shp)?.cast(xdt).expand(big_shp.clone())?;
-        let reshape_shape: Vec<Tensor> = x_sh
-            .into_iter()
-            .chain([one.clone(), one.clone()])
-            .collect();
+        let arange = self
+            .arange
+            .reshape(ar_shp)?
+            .cast(xdt)
+            .expand(big_shp.clone())?;
+        let reshape_shape: Vec<Tensor> =
+            x_sh.into_iter().chain([one.clone(), one.clone()]).collect();
         let idx = x.reshape(reshape_shape)?.expand(big_shp.clone())?;
         let mut w_shp: Vec<Tensor> = vec![one.clone(); x_rank];
         w_shp.push(self.vocab_size.clone());

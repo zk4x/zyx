@@ -103,7 +103,11 @@ impl GroupNorm {
 
         if shape.len() < 2 {
             return Err(ZyxError::ShapeError(
-                format!("GroupNorm requires at least 2D input, got rank {}", shape.len()).into(),
+                format!(
+                    "GroupNorm requires at least 2D input, got rank {}",
+                    shape.len()
+                )
+                .into(),
             ));
         }
 
@@ -123,7 +127,7 @@ impl GroupNorm {
             ));
         }
 
-        let group_size: Tensor = (c_dim / ng_dim).into();
+        let group_size: Tensor = c.clone() / self.num_groups.clone();
 
         // Reshape: [N, C, ...] -> [N, G, C//G, ...]
         let mut new_shape: Vec<Tensor> = vec![n.clone(), self.num_groups.clone(), group_size];

@@ -11,7 +11,8 @@ use zyx_derive::Module;
 #[derive(Debug, Module)]
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct LayerNorm {
-    normalized_shape: Vec<i64>,
+    #[no_param]
+    normalized_shape: Vec<Tensor>,
     eps: f64,
     weight: Option<Tensor>,
     bias_tensor: Option<Tensor>,
@@ -46,20 +47,17 @@ impl LayerNorm {
         bias: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        let normalized_shape: Vec<i64> = normalized_shape
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
+        let normalized_shape: Vec<Tensor> =
+            normalized_shape.into_iter().map(|s| s.into()).collect();
 
-        // Optional learnable parameters
         let weight = if elementwise_affine {
-            Some(Tensor::ones(normalized_shape.iter().copied(), dtype))
+            Some(Tensor::ones(normalized_shape.iter().cloned(), dtype))
         } else {
             None
         };
 
         let bias_tensor = if bias {
-            Some(Tensor::zeros(normalized_shape.iter().copied(), dtype))
+            Some(Tensor::zeros(normalized_shape.iter().cloned(), dtype))
         } else {
             None
         };

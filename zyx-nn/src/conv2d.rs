@@ -10,10 +10,10 @@ use zyx_derive::Module;
 #[derive(Debug, Module)]
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Conv2d {
-    stride: Vec<i64>,
-    dilation: Vec<i64>,
-        groups: u64,
-    padding: Vec<i64>,
+    stride: Vec<Tensor>,
+    dilation: Vec<Tensor>,
+    groups: u64,
+    padding: Vec<Tensor>,
     /// weight
     pub weight: Tensor,
     /// bias
@@ -30,35 +30,28 @@ impl Conv2d {
         stride: impl IntoIterator<Item = impl Into<Tensor>>,
         padding: impl IntoIterator<Item = impl Into<Tensor>>,
         dilation: impl IntoIterator<Item = impl Into<Tensor>>,
-    groups: u64,
+        groups: u64,
         bias: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        let mut kernel_size: Vec<i64> = kernel_size
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
+        let mut kernel_size: Vec<Tensor> = kernel_size.into_iter().map(|s| s.into()).collect();
         if kernel_size.len() == 1 {
-            kernel_size.push(kernel_size[0]);
+            kernel_size.push(kernel_size[0].clone());
         }
-        let scale = 1f32 / ((in_channels * kernel_size.iter().product::<i64>()) as f32).sqrt();
-        let mut weight_shape = vec![out_channels, in_channels / groups as i64];
-        weight_shape.extend(kernel_size);
+        let scale = 1f32
+            / ((in_channels * kernel_size.iter().map(|s| s.item::<i64>()).product::<i64>()) as f32)
+                .sqrt();
+        let weight_shape: Vec<Tensor> = {
+            let mut shape = vec![out_channels.into(), (in_channels / groups as i64).into()];
+            shape.extend(kernel_size.iter().cloned());
+            shape
+        };
         Ok(Conv2d {
-            stride: stride
-                .into_iter()
-                .map(|s| s.into().item::<i64>())
-                .collect(),
-            dilation: dilation
-                .into_iter()
-                .map(|s| s.into().item::<i64>())
-                .collect(),
+            stride: stride.into_iter().map(|s| s.into()).collect(),
+            dilation: dilation.into_iter().map(|s| s.into()).collect(),
             groups,
-            padding: padding
-                .into_iter()
-                .map(|s| s.into().item::<i64>())
-                .collect(),
-            weight: Tensor::uniform(weight_shape.iter().copied(), -scale..scale)?.cast(dtype),
+            padding: padding.into_iter().map(|s| s.into()).collect(),
+            weight: Tensor::uniform(weight_shape, -scale..scale)?.cast(dtype),
             bias: if bias {
                 Some(Tensor::uniform([out_channels], -scale..scale)?.cast(dtype))
             } else {
