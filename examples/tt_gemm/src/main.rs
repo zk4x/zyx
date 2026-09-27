@@ -277,3 +277,18 @@ fn main() -> Result<(), ZyxError> {
     println!("tt_gemm: overall best {best_tflops:.3} TFLOPS");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TEMP: revert. Host-side dump (no device).
+    #[test]
+    fn dump_all() {
+        let kernel = build_gemm(10, 11, 8, 8, 1, 4, 1).unwrap();
+        let prog = kernel.generate_tenstorrent().unwrap();
+        std::fs::write("/tmp/opencode/r.c", &prog.reader_src).unwrap();
+        std::fs::write("/tmp/opencode/c.c", &prog.compute_src).unwrap();
+        std::fs::write("/tmp/opencode/w.c", &prog.writer_src).unwrap();
+    }
+}

@@ -71,7 +71,7 @@ use crate::{
     slab::{Slab, SlabId},
     types::TinyString,
 };
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write as _};
 
 fn is_one_const(kernel: &Kernel, op: OpId) -> bool {
     kernel.resolve_const(op).is_some_and(|c| c.is_one())
@@ -4302,25 +4302,40 @@ impl Compiler {
         let mut arg_count = [0u32; 3];
         let mut const_vals: Map<(u8, VarId), String> = Map::default();
         let mut reg: Map<(u8, VarId), u32> = Map::default();
-        let mut declared: Set<(u8, VarId)> = Set::default();
         let mut noc_names: Map<(u8, VarId), String> = Map::default();
         let mut arg_idx: Map<(u8, u32), u32> = Map::default();
         let mut acc_prev: [Option<String>; 3] = [None, None, None];
         let mut cb_declares: Vec<CBId> = Vec::new();
-        // Fresh `r` slot for a def (a reused VarId keeps its slot and
-        // emits a typeless assignment instead of a declaration).
+        // PTX-style (like CUDA/OpenCL): scalar `r` declarations are
+        // hoisted to section top; bodies carry bare assignments only.
+        // Section preambles, per-slot dtypes (slot order), and bodies
+        // buffer separately and assemble at the end, so a slot reused
+        // across a loop boundary stays in scope.
+        let mut pre: [String; 3] = Default::default();
+        let mut bodies: [String; 3] = Default::default();
+        let mut reg_dtypes: [Vec<String>; 3] = Default::default();
+        // Fresh `r` slot for a def; a reused VarId keeps its slot.
+        // Dtype is recorded indexed by slot (CUDA/OpenCL `registers`
+        // vec style) for the hoisted declaration block; returns the slot.
         let def_reg = |reg: &mut Map<(u8, VarId), u32>,
                        next_r: &mut [u32; 3],
-                       declared: &mut Set<(u8, VarId)>,
+                       reg_dtypes: &mut [Vec<String>; 3],
                        s: u8,
-                       z: VarId|
-         -> (u32, bool) {
-            let n = *reg.entry((s, z)).or_insert_with(|| {
-                let n = next_r[s as usize];
-                next_r[s as usize] += 1;
-                n
-            });
-            (n, declared.insert((s, z)))
+                       z: VarId,
+                       dtype: &str|
+         -> u32 {
+            let si = s as usize;
+            if let Some(&n) = reg.get(&(s, z)) {
+                return n;
+            }
+            let n = next_r[si];
+            next_r[si] += 1;
+            reg.insert((s, z), n);
+            if reg_dtypes[si].len() <= n as usize {
+                reg_dtypes[si].resize(n as usize + 1, String::new());
+            }
+            reg_dtypes[si][n as usize] = dtype.to_string();
+            n
         };
         // Operand text: consts inline as literals, regs as `r{n}`.
         let operand = |const_vals: &Map<(u8, VarId), String>,
@@ -4356,58 +4371,58 @@ impl Compiler {
             if !started[si] {
                 match s {
                     0 => {
-                        writeln!(out, "#include <cstdint>")?;
-                        writeln!(out, "#include \"api/dataflow/dataflow_api.h\"")?;
-                        writeln!(out, "#include \"api/dataflow/noc.h\"")?;
-                        writeln!(out, "#include \"api/dataflow/circular_buffer.h\"")?;
-                        writeln!(out, "#include \"api/tensor/noc_traits.h\"")?;
-                        writeln!(out, "#include \"api/debug/device_print.h\"")?;
-                        writeln!(out, "void kernel_main() {{")?;
+                        writeln!(pre[si], "#include <cstdint>")?;
+                        writeln!(pre[si], "#include \"api/dataflow/dataflow_api.h\"")?;
+                        writeln!(pre[si], "#include \"api/dataflow/noc.h\"")?;
+                        writeln!(pre[si], "#include \"api/dataflow/circular_buffer.h\"")?;
+                        writeln!(pre[si], "#include \"api/tensor/noc_traits.h\"")?;
+                        writeln!(pre[si], "#include \"api/debug/device_print.h\"")?;
+                        writeln!(pre[si], "void kernel_main() {{")?;
                     }
                     1 => {
-                        writeln!(out, "#include <cstdint>")?;
-                        writeln!(out, "#include \"api/compute/common.h\"")?;
-                        writeln!(out, "#include \"api/compute/compute_kernel_api.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_binary_sfpu.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/binop_with_scalar.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/left_shift.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/right_shift.h\"")?;
-                        writeln!(out, "#include \"api/compute/tile_move_copy.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/eltwise_unary.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/trigonometry.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/exp.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/recip.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/rsqrt.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/sqrt.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/rounding.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/negative.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/bitwise_not.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/typecast.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/logical_not.h\"")?;
-                        writeln!(out, "#include \"api/compute/binary_max_min.h\"")?;
-                        writeln!(out, "#include \"api/compute/binary_shift.h\"")?;
-                        writeln!(out, "#include \"api/compute/eltwise_unary/fill.h\"")?;
-                        writeln!(out, "#include \"api/compute/matmul.h\"")?;
-                        writeln!(out, "#include \"api/compute/bcast.h\"")?;
-                        writeln!(out, "#include \"api/compute/reduce.h\"")?;
-                        writeln!(out, "#include \"api/compute/transpose_wh.h\"")?;
-                        writeln!(out, "#include \"api/compute/reconfig_data_format.h\"")?;
-                        writeln!(out, "#include \"api/dataflow/circular_buffer.h\"")?;
-                        writeln!(out, "#include \"api/debug/device_print.h\"")?;
-                        writeln!(out, "void kernel_main() {{")?;
+                        writeln!(pre[si], "#include <cstdint>")?;
+                        writeln!(pre[si], "#include \"api/compute/common.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/compute_kernel_api.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_binary_sfpu.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/binop_with_scalar.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/left_shift.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/right_shift.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/tile_move_copy.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/eltwise_unary.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/trigonometry.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/exp.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/recip.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/rsqrt.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/sqrt.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/rounding.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/negative.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/bitwise_not.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/typecast.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/logical_not.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/binary_max_min.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/binary_shift.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/eltwise_unary/fill.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/matmul.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/bcast.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/reduce.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/transpose_wh.h\"")?;
+                        writeln!(pre[si], "#include \"api/compute/reconfig_data_format.h\"")?;
+                        writeln!(pre[si], "#include \"api/dataflow/circular_buffer.h\"")?;
+                        writeln!(pre[si], "#include \"api/debug/device_print.h\"")?;
+                        writeln!(pre[si], "void kernel_main() {{")?;
                     }
                     _ => {
-                        writeln!(out, "#include <cstdint>")?;
-                        writeln!(out, "#include \"api/dataflow/dataflow_api.h\"")?;
-                        writeln!(out, "#include \"api/dataflow/noc.h\"")?;
-                        writeln!(out, "#include \"api/dataflow/circular_buffer.h\"")?;
-                        writeln!(out, "#include \"api/tensor/noc_traits.h\"")?;
-                        writeln!(out, "#include \"api/debug/dprint.h\"")?;
-                        writeln!(out, "void kernel_main() {{")?;
+                        writeln!(pre[si], "#include <cstdint>")?;
+                        writeln!(pre[si], "#include \"api/dataflow/dataflow_api.h\"")?;
+                        writeln!(pre[si], "#include \"api/dataflow/noc.h\"")?;
+                        writeln!(pre[si], "#include \"api/dataflow/circular_buffer.h\"")?;
+                        writeln!(pre[si], "#include \"api/tensor/noc_traits.h\"")?;
+                        writeln!(pre[si], "#include \"api/debug/dprint.h\"")?;
+                        writeln!(pre[si], "void kernel_main() {{")?;
                     }
                 }
                 for cb in &cb_declares {
-                    writeln!(out, "  CircularBuffer cb{cb}(tt::CBIndex::c_{cb});")?;
+                    writeln!(pre[si], "  CircularBuffer cb{cb}(tt::CBIndex::c_{cb});")?;
                 }
                 started[si] = true;
             }
@@ -4415,19 +4430,19 @@ impl Compiler {
             match op {
                 TTOp::EndReader => {
                     if started[0] {
-                        writeln!(out, "}}")?;
+                        writeln!(bodies[si], "}}")?;
                     }
                     section = 1;
                 }
                 TTOp::EndCompute => {
                     if started[1] {
-                        writeln!(out, "}}")?;
+                        writeln!(bodies[si], "}}")?;
                     }
                     section = 2;
                 }
                 TTOp::EndWriter => {
                     if started[2] {
-                        writeln!(out, "}}")?;
+                        writeln!(bodies[si], "}}")?;
                     }
                     section = 3;
                 }
@@ -4439,7 +4454,7 @@ impl Compiler {
                     // its section started (never happens from lowering)
                     // emits inline to stay loud-safe.
                     if started[si] {
-                        writeln!(out, "{ind}CircularBuffer cb{cb}(tt::CBIndex::c_{cb});")?;
+                        writeln!(bodies[si], "{ind}CircularBuffer cb{cb}(tt::CBIndex::c_{cb});")?;
                     }
                     if !cb_declares.contains(cb) {
                         cb_declares.push(*cb);
@@ -4448,36 +4463,39 @@ impl Compiler {
                 TTOp::Loop { len, counter, .. } => {
                     let bound = operand(&const_vals, &reg, s, *len)?;
                     const_vals.remove(&(s, *counter));
-                    let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *counter);
-                    debug_assert!(fresh_decl, "tenstorrent2: render: loop counter reuses a live register");
-                    writeln!(out, "{ind}for (uint32_t r{n} = 0; r{n} < {bound}; r{n}++) {{")?;
+                    // Loop counters stay scoped (CUDA/OpenCL `idx` style):
+                    // fresh slot, self-declared in the `for` header, so the
+                    // hoisted block skips it (empty marker).
+                    let n = next_r[si];
+                    next_r[si] += 1;
+                    reg.insert((s, *counter), n);
+                    if reg_dtypes[si].len() <= n as usize {
+                        reg_dtypes[si].resize(n as usize + 1, String::new());
+                    }
+                    writeln!(bodies[si], "{ind}for (uint32_t r{n} = 0; r{n} < {bound}; r{n}++) {{")?;
                     indent[si] += "  ";
                 }
                 TTOp::EndLoop => {
                     indent[si].pop();
                     indent[si].pop();
-                    writeln!(out, "{ind}}}", ind = indent[si].clone())?;
+                    writeln!(bodies[si], "{ind}}}", ind = indent[si].clone())?;
                 }
                 TTOp::If { cond } => {
                     let c = operand(&const_vals, &reg, s, *cond)?;
-                    writeln!(out, "{ind}if ({c}) {{")?;
+                    writeln!(bodies[si], "{ind}if ({c}) {{")?;
                     indent[si] += "  ";
                 }
                 TTOp::EndIf => {
                     indent[si].pop();
                     indent[si].pop();
-                    writeln!(out, "{ind}}}", ind = indent[si].clone())?;
+                    writeln!(bodies[si], "{ind}}}", ind = indent[si].clone())?;
                 }
                 TTOp::Arg { z, dtype, ordinal } => {
                     let ai = arg_index(&mut arg_idx, &mut arg_count, s, *ordinal);
                     const_vals.remove(&(s, *z));
                     let t = dtype.c_type();
-                    let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *z);
-                    if fresh_decl {
-                        writeln!(out, "{ind}{t} r{n} = ({t})get_arg_val<uint32_t>({ai});")?;
-                    } else {
-                        writeln!(out, "{ind}r{n} = ({t})get_arg_val<uint32_t>({ai});")?;
-                    }
+                    let n = def_reg(&mut reg, &mut next_r, &mut reg_dtypes, s, *z, &t);
+                    writeln!(bodies[si], "{ind}r{n} = ({t})get_arg_val<uint32_t>({ai});")?;
                 }
                 TTOp::Const { z, value } => {
                     const_vals.insert((s, *z), format!("{}", value.c_code()));
@@ -4487,31 +4505,26 @@ impl Compiler {
                     let yo = operand(&const_vals, &reg, s, *y)?;
                     const_vals.remove(&(s, *z));
                     let t = dtype.c_type();
-                    let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *z);
-                    let decl = if fresh_decl {
-                        format!("{t} r{n} = ")
-                    } else {
-                        format!("r{n} = ")
-                    };
-                    match bop {
-                        BOp::Add => writeln!(out, "{ind}{decl}{xo} + {yo};")?,
-                        BOp::Sub => writeln!(out, "{ind}{decl}{xo} - {yo};")?,
-                        BOp::Mul => writeln!(out, "{ind}{decl}{xo} * {yo};")?,
-                        BOp::Div => writeln!(out, "{ind}{decl}{xo} / {yo};")?,
-                        BOp::Mod => writeln!(out, "{ind}{decl}{xo} % {yo};")?,
-                        BOp::Max => writeln!(out, "{ind}{decl}{xo} > {yo} ? {xo} : {yo};")?,
-                        BOp::Cmplt => writeln!(out, "{ind}{decl}{xo} < {yo};")?,
-                        BOp::Cmpgt => writeln!(out, "{ind}{decl}{xo} > {yo};")?,
-                        BOp::Cmpge => writeln!(out, "{ind}{decl}{xo} >= {yo};")?,
-                        BOp::Eq => writeln!(out, "{ind}{decl}{xo} == {yo};")?,
-                        BOp::NotEq => writeln!(out, "{ind}{decl}{xo} != {yo};")?,
-                        BOp::And => writeln!(out, "{ind}{decl}{xo} && {yo};")?,
-                        BOp::Or => writeln!(out, "{ind}{decl}{xo} || {yo};")?,
-                        BOp::BitXor => writeln!(out, "{ind}{decl}{xo} ^ {yo};")?,
-                        BOp::BitOr => writeln!(out, "{ind}{decl}{xo} | {yo};")?,
-                        BOp::BitAnd => writeln!(out, "{ind}{decl}{xo} & {yo};")?,
-                        BOp::BitShiftLeft => writeln!(out, "{ind}{decl}{xo} << {yo};")?,
-                        BOp::BitShiftRight => writeln!(out, "{ind}{decl}{xo} >> {yo};")?,
+                    let n = def_reg(&mut reg, &mut next_r, &mut reg_dtypes, s, *z, &t);
+                    let decl = format!("r{n} = ");
+                    match bop {                        BOp::Add => writeln!(bodies[si], "{ind}{decl}{xo} + {yo};")?,
+                        BOp::Sub => writeln!(bodies[si], "{ind}{decl}{xo} - {yo};")?,
+                        BOp::Mul => writeln!(bodies[si], "{ind}{decl}{xo} * {yo};")?,
+                        BOp::Div => writeln!(bodies[si], "{ind}{decl}{xo} / {yo};")?,
+                        BOp::Mod => writeln!(bodies[si], "{ind}{decl}{xo} % {yo};")?,
+                        BOp::Max => writeln!(bodies[si], "{ind}{decl}{xo} > {yo} ? {xo} : {yo};")?,
+                        BOp::Cmplt => writeln!(bodies[si], "{ind}{decl}{xo} < {yo};")?,
+                        BOp::Cmpgt => writeln!(bodies[si], "{ind}{decl}{xo} > {yo};")?,
+                        BOp::Cmpge => writeln!(bodies[si], "{ind}{decl}{xo} >= {yo};")?,
+                        BOp::Eq => writeln!(bodies[si], "{ind}{decl}{xo} == {yo};")?,
+                        BOp::NotEq => writeln!(bodies[si], "{ind}{decl}{xo} != {yo};")?,
+                        BOp::And => writeln!(bodies[si], "{ind}{decl}{xo} && {yo};")?,
+                        BOp::Or => writeln!(bodies[si], "{ind}{decl}{xo} || {yo};")?,
+                        BOp::BitXor => writeln!(bodies[si], "{ind}{decl}{xo} ^ {yo};")?,
+                        BOp::BitOr => writeln!(bodies[si], "{ind}{decl}{xo} | {yo};")?,
+                        BOp::BitAnd => writeln!(bodies[si], "{ind}{decl}{xo} & {yo};")?,
+                        BOp::BitShiftLeft => writeln!(bodies[si], "{ind}{decl}{xo} << {yo};")?,
+                        BOp::BitShiftRight => writeln!(bodies[si], "{ind}{decl}{xo} >> {yo};")?,
                         BOp::Pow => {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
@@ -4530,12 +4543,8 @@ impl Compiler {
                     let xo = operand(&const_vals, &reg, s, *x)?;
                     const_vals.remove(&(s, *z));
                     let t = dtype.c_type();
-                    let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *z);
-                    if fresh_decl {
-                        writeln!(out, "{ind}{t} r{n} = ({t}){xo};")?;
-                    } else {
-                        writeln!(out, "{ind}r{n} = ({t}){xo};")?;
-                    }
+                    let n = def_reg(&mut reg, &mut next_r, &mut reg_dtypes, s, *z, &t);
+                    writeln!(bodies[si], "{ind}r{n} = ({t}){xo};")?;
                 }
                 TTOp::Mad { z, x, y, w, dtype, .. } => {
                     let xo = operand(&const_vals, &reg, s, *x)?;
@@ -4543,12 +4552,8 @@ impl Compiler {
                     let wo = operand(&const_vals, &reg, s, *w)?;
                     const_vals.remove(&(s, *z));
                     let t = dtype.c_type();
-                    let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *z);
-                    if fresh_decl {
-                        writeln!(out, "{ind}{t} r{n} = {xo} * {yo} + {wo};")?;
-                    } else {
-                        writeln!(out, "{ind}r{n} = {xo} * {yo} + {wo};")?;
-                    }
+                    let n = def_reg(&mut reg, &mut next_r, &mut reg_dtypes, s, *z, &t);
+                    writeln!(bodies[si], "{ind}r{n} = {xo} * {yo} + {wo};")?;
                 }
                 TTOp::Asm { .. } => {
                     return Err(BackendError {
@@ -4558,12 +4563,8 @@ impl Compiler {
                 }
                 TTOp::TensixGridX { z, arg, .. } | TTOp::TensixGridY { z, arg, .. } => {
                     const_vals.remove(&(s, *z));
-                    let (n, fresh_decl) = def_reg(&mut reg, &mut next_r, &mut declared, s, *z);
-                    if fresh_decl {
-                        writeln!(out, "{ind}uint32_t r{n} = get_arg_val<uint32_t>({arg});")?;
-                    } else {
-                        writeln!(out, "{ind}r{n} = get_arg_val<uint32_t>({arg});")?;
-                    }
+                    let n = def_reg(&mut reg, &mut next_r, &mut reg_dtypes, s, *z, "uint32_t");
+                    writeln!(bodies[si], "{ind}r{n} = get_arg_val<uint32_t>({arg});")?;
                 }
                 TTOp::NocAccessor { ordinal, kind, .. } => {
                     let ai = arg_index(&mut arg_idx, &mut arg_count, s, *ordinal);
@@ -4574,21 +4575,21 @@ impl Compiler {
                     let page = TT_DRAM_PAGE_BYTES;
                     match (s, kind) {
                         (0, ParamKind::Global) => {
-                            writeln!(out, "{ind}uint32_t src{ordinal} = get_arg_val<uint32_t>({ai});")?;
-                            writeln!(out, "{ind}auto args{ordinal} = TensorAccessorArgs<{cta}>({ai});")?;
-                            writeln!(out, "{ind}auto p{ordinal} = TensorAccessor(args{ordinal}, src{ordinal}, {page});")?;
+                            writeln!(bodies[si], "{ind}uint32_t src{ordinal} = get_arg_val<uint32_t>({ai});")?;
+                            writeln!(bodies[si], "{ind}auto args{ordinal} = TensorAccessorArgs<{cta}>({ai});")?;
+                            writeln!(bodies[si], "{ind}auto p{ordinal} = TensorAccessor(args{ordinal}, src{ordinal}, {page});")?;
                             acc_prev[si] = Some(format!("args{ordinal}"));
                         }
                         (0, ParamKind::GlobalMut) => {
-                            writeln!(out, "{ind}uint32_t dst{ordinal} = get_arg_val<uint32_t>({ai});")?;
-                            writeln!(out, "{ind}auto args{ordinal} = TensorAccessorArgs<{cta}>({ai});")?;
-                            writeln!(out, "{ind}auto p{ordinal} = TensorAccessor(args{ordinal}, dst{ordinal}, {page});")?;
+                            writeln!(bodies[si], "{ind}uint32_t dst{ordinal} = get_arg_val<uint32_t>({ai});")?;
+                            writeln!(bodies[si], "{ind}auto args{ordinal} = TensorAccessorArgs<{cta}>({ai});")?;
+                            writeln!(bodies[si], "{ind}auto p{ordinal} = TensorAccessor(args{ordinal}, dst{ordinal}, {page});")?;
                             acc_prev[si] = Some(format!("args{ordinal}"));
                         }
                         (2, ParamKind::GlobalMut) => {
-                            writeln!(out, "{ind}uint32_t out{ordinal} = get_arg_val<uint32_t>({ai});")?;
-                            writeln!(out, "{ind}auto args_out{ordinal} = TensorAccessorArgs<{cta}>({ai});")?;
-                            writeln!(out, "{ind}auto p_out{ordinal} = TensorAccessor(args_out{ordinal}, out{ordinal}, {page});")?;
+                            writeln!(bodies[si], "{ind}uint32_t out{ordinal} = get_arg_val<uint32_t>({ai});")?;
+                            writeln!(bodies[si], "{ind}auto args_out{ordinal} = TensorAccessorArgs<{cta}>({ai});")?;
+                            writeln!(bodies[si], "{ind}auto p_out{ordinal} = TensorAccessor(args_out{ordinal}, out{ordinal}, {page});")?;
                             acc_prev[si] = Some(format!("args_out{ordinal}"));
                         }
                         _ => {
@@ -4610,15 +4611,15 @@ impl Compiler {
                         (format!("rnoc{k}"), format!("p{ordinal}"))
                     };
                     writeln!(
-                        out,
+                        bodies[si],
                         "{ind}uint64_t {name} = {acc}.get_noc_addr((uint32_t)(({idx}*{elem_size})/{page}), (uint32_t)(({idx}*{elem_size})%{page}));"
                     )?;
                     noc_names.insert((s, *z), name);
                 }
-                TTOp::ReserveBack { cb, n } => writeln!(out, "{ind}cb{cb}.reserve_back({n});")?,
-                TTOp::PushBack { cb, n } => writeln!(out, "{ind}cb{cb}.push_back({n});")?,
-                TTOp::WaitFront { cb, m, .. } => writeln!(out, "{ind}cb{cb}.wait_front({m});")?,
-                TTOp::PopFront { cb, n } => writeln!(out, "{ind}cb{cb}.pop_front({n});")?,
+                TTOp::ReserveBack { cb, n } => writeln!(bodies[si], "{ind}cb{cb}.reserve_back({n});")?,
+                TTOp::PushBack { cb, n } => writeln!(bodies[si], "{ind}cb{cb}.push_back({n});")?,
+                TTOp::WaitFront { cb, m, .. } => writeln!(bodies[si], "{ind}cb{cb}.wait_front({m});")?,
+                TTOp::PopFront { cb, n } => writeln!(bodies[si], "{ind}cb{cb}.pop_front({n});")?,
                 TTOp::AsyncRead { addr, dst_cb, bytes, off } => {
                     let an = noc_names
                         .get(&(s, *addr))
@@ -4629,12 +4630,12 @@ impl Compiler {
                         .clone();
                     if let Some(o) = off {
                         let os = operand(&const_vals, &reg, s, *o)?;
-                        writeln!(out, "{ind}noc_async_read({an}, cb{dst_cb}.get_write_ptr() + {os}*{bytes}, {bytes});")?;
+                        writeln!(bodies[si], "{ind}noc_async_read({an}, cb{dst_cb}.get_write_ptr() + {os}*{bytes}, {bytes});")?;
                     } else {
-                        writeln!(out, "{ind}noc_async_read({an}, cb{dst_cb}.get_write_ptr(), {bytes});")?;
+                        writeln!(bodies[si], "{ind}noc_async_read({an}, cb{dst_cb}.get_write_ptr(), {bytes});")?;
                     }
                 }
-                TTOp::NocReadBarrier => writeln!(out, "{ind}noc_async_read_barrier();")?,
+                TTOp::NocReadBarrier => writeln!(bodies[si], "{ind}noc_async_read_barrier();")?,
                 TTOp::AsyncWrite { src_cb, addr, bytes, off } => {
                     let an = noc_names
                         .get(&(s, *addr))
@@ -4645,24 +4646,24 @@ impl Compiler {
                         .clone();
                     if let Some(o) = off {
                         let os = operand(&const_vals, &reg, s, *o)?;
-                        writeln!(out, "{ind}noc_async_write(cb{src_cb}.get_read_ptr() + {os}*{bytes}, {an}, {bytes});")?;
+                        writeln!(bodies[si], "{ind}noc_async_write(cb{src_cb}.get_read_ptr() + {os}*{bytes}, {an}, {bytes});")?;
                     } else {
-                        writeln!(out, "{ind}noc_async_write(cb{src_cb}.get_read_ptr(), {an}, {bytes});")?;
+                        writeln!(bodies[si], "{ind}noc_async_write(cb{src_cb}.get_read_ptr(), {an}, {bytes});")?;
                     }
                 }
-                TTOp::NocWriteBarrier => writeln!(out, "{ind}noc_async_write_barrier();")?,
-                TTOp::MathLock => writeln!(out, "{ind}tile_regs_acquire();")?,
-                TTOp::MathUnlock => writeln!(out, "{ind}tile_regs_commit();")?,
-                TTOp::PackLock => writeln!(out, "{ind}tile_regs_wait();")?,
-                TTOp::PackUnlock => writeln!(out, "{ind}tile_regs_release();")?,
-                TTOp::CopyInit { cb } => writeln!(out, "{ind}copy_tile_init({cb});")?,
+                TTOp::NocWriteBarrier => writeln!(bodies[si], "{ind}noc_async_write_barrier();")?,
+                TTOp::MathLock => writeln!(bodies[si], "{ind}tile_regs_acquire();")?,
+                TTOp::MathUnlock => writeln!(bodies[si], "{ind}tile_regs_commit();")?,
+                TTOp::PackLock => writeln!(bodies[si], "{ind}tile_regs_wait();")?,
+                TTOp::PackUnlock => writeln!(bodies[si], "{ind}tile_regs_release();")?,
+                TTOp::CopyInit { cb } => writeln!(bodies[si], "{ind}copy_tile_init({cb});")?,
                 TTOp::CopyInitWithDt { prev, cb } => {
-                    writeln!(out, "{ind}copy_tile_to_dst_init_short_with_dt({prev}, {cb});")?;
+                    writeln!(bodies[si], "{ind}copy_tile_to_dst_init_short_with_dt({prev}, {cb});")?;
                 }
-                TTOp::PackReconfig { cb } => writeln!(out, "{ind}pack_reconfig_data_format({cb});")?,
-                TTOp::UnaryInit { uop } => writeln!(out, "{ind}{}", unary_init_name(*uop))?,
+                TTOp::PackReconfig { cb } => writeln!(bodies[si], "{ind}pack_reconfig_data_format({cb});")?,
+                TTOp::UnaryInit { uop } => writeln!(bodies[si], "{ind}{}", unary_init_name(*uop))?,
                 TTOp::BinaryInit { bop } => writeln!(
-                    out,
+                    bodies[si],
                     "{ind}{}",
                     binary_init_name(*bop).ok_or_else(|| BackendError {
                         status: ErrorStatus::KernelCompilation,
@@ -4670,9 +4671,9 @@ impl Compiler {
                     })?
                 )?,
                 TTOp::BinScalarInit { bop } => match bop {
-                    BOp::Add | BOp::Sub | BOp::Mul | BOp::Div => writeln!(out, "{ind}binop_with_scalar_tile_init();")?,
-                    BOp::BitShiftLeft => writeln!(out, "{ind}left_shift_tile_init();")?,
-                    BOp::BitShiftRight => writeln!(out, "{ind}right_shift_tile_init();")?,
+                    BOp::Add | BOp::Sub | BOp::Mul | BOp::Div => writeln!(bodies[si], "{ind}binop_with_scalar_tile_init();")?,
+                    BOp::BitShiftLeft => writeln!(bodies[si], "{ind}left_shift_tile_init();")?,
+                    BOp::BitShiftRight => writeln!(bodies[si], "{ind}right_shift_tile_init();")?,
                     BOp::Pow
                     | BOp::Mod
                     | BOp::Cmplt
@@ -4692,14 +4693,14 @@ impl Compiler {
                         });
                     }
                 },
-                TTOp::FusedInit { kind } => writeln!(out, "{ind}{}", kind.init_name())?,
+                TTOp::FusedInit { kind } => writeln!(bodies[si], "{ind}{}", kind.init_name())?,
                 TTOp::CastInit { in_dtype, out_dtype } => {
-                    writeln!(out, "{ind}typecast_tile_init<{}, {}>();", tt_fmt(*in_dtype)?, tt_fmt(*out_dtype)?)?;
+                    writeln!(bodies[si], "{ind}typecast_tile_init<{}, {}>();", tt_fmt(*in_dtype)?, tt_fmt(*out_dtype)?)?;
                 }
-                TTOp::TransposeInit { cb, out: cb_out } => writeln!(out, "{ind}transpose_wh_init({cb}, {cb_out});")?,
-                TTOp::MatmulInit { a, b, out: cb_out } => writeln!(out, "{ind}mm_init({a}, {b}, {cb_out});")?,
+                TTOp::TransposeInit { cb, out: cb_out } => writeln!(bodies[si], "{ind}transpose_wh_init({cb}, {cb_out});")?,
+                TTOp::MatmulInit { a, b, out: cb_out } => writeln!(bodies[si], "{ind}mm_init({a}, {b}, {cb_out});")?,
                 TTOp::ComputeStartup { in0, in1, out: cb_out } => {
-                    writeln!(out, "{ind}compute_kernel_hw_startup({in0}, {in1}, {cb_out});")?
+                    writeln!(bodies[si], "{ind}compute_kernel_hw_startup({in0}, {in1}, {cb_out});")?
                 }
                 TTOp::ReduceInit { ci, cs, acc, rop, kind } => {
                     let (op_name, dim_name) = match rop {
@@ -4712,9 +4713,9 @@ impl Compiler {
                             });
                         }
                     };
-                    writeln!(out, "{ind}reduce_init<{op_name}, {dim_name}>({ci}, {cs}, {});", acc.0)?;
+                    writeln!(bodies[si], "{ind}reduce_init<{op_name}, {dim_name}>({ci}, {cs}, {});", acc.0)?;
                 }
-                TTOp::ReduceUninit => writeln!(out, "{ind}reduce_uninit();")?,
+                TTOp::ReduceUninit => writeln!(bodies[si], "{ind}reduce_uninit();")?,
                 TTOp::BcastInit { bop, kind, cb_a, cb_b } => {
                     let Some(init) = bcast_init_name(*bop, *kind) else {
                         return Err(BackendError {
@@ -4722,7 +4723,7 @@ impl Compiler {
                             context: format!("tenstorrent2: broadcast ({bop:?}, {kind:?}) has no init call").into(),
                         });
                     };
-                    writeln!(out, "{ind}{init}({cb_a}, {cb_b});")?;
+                    writeln!(bodies[si], "{ind}{init}({cb_a}, {cb_b});")?;
                 }
                 TTOp::TileCopy { slot, cb, .. } => {
                     // v1 sync wraps every transaction singly (Reserve/Wait
@@ -4730,10 +4731,10 @@ impl Compiler {
                     // legacy `slot_offset` per_op == 1 rule. The stored
                     // index names the DRAM tile (consumed by the reader
                     // address); it never addresses the CB.
-                    writeln!(out, "{ind}copy_tile({cb}, 0, {});", slot.0)?;
+                    writeln!(bodies[si], "{ind}copy_tile({cb}, 0, {});", slot.0)?;
                 }
                 TTOp::TilePack { slot, cb } => {
-                    writeln!(out, "{ind}pack_tile({}, {cb});", slot.0)?;
+                    writeln!(bodies[si], "{ind}pack_tile({}, {cb});", slot.0)?;
                 }
                 TTOp::TileBinary { dst, x, y, bop, dtype } => {
                     // Shift LLKs are `template <DataFormat>` over
@@ -4771,15 +4772,15 @@ impl Compiler {
                             });
                         }
                     };
-                    writeln!(out, "{ind}{name}{tmpl}({}, {}, {});", x.0, y.0, dst.0)?;
+                    writeln!(bodies[si], "{ind}{name}{tmpl}({}, {}, {});", x.0, y.0, dst.0)?;
                 }
                 TTOp::TileFused { slot, kind } => {
-                    writeln!(out, "{ind}{}({});", kind.call_name(), slot.0)?;
+                    writeln!(bodies[si], "{ind}{}({});", kind.call_name(), slot.0)?;
                 }
                 TTOp::TileUnary { slot, uop } => {
                     // Log2 passes its base scale explicitly (legacy form).
                     if *uop == UOp::Log2 {
-                        writeln!(out, "{ind}log_with_base_tile({}, 0x3fb8aa3b);", slot.0)?;
+                        writeln!(bodies[si], "{ind}log_with_base_tile({}, 0x3fb8aa3b);", slot.0)?;
                     } else {
                         let name = match uop {
                             UOp::Neg => "negative_tile",
@@ -4802,19 +4803,19 @@ impl Compiler {
                             UOp::Abs => "abs_tile",
                             UOp::Not => "logical_not_tile",
                         };
-                        writeln!(out, "{ind}{name}({});", slot.0)?;
+                        writeln!(bodies[si], "{ind}{name}({});", slot.0)?;
                     }
                 }
                 TTOp::TileCast { slot, in_dtype, out_dtype } => {
-                    writeln!(out, "{ind}typecast_tile<{}, {}>({});", tt_fmt(*in_dtype)?, tt_fmt(*out_dtype)?, slot.0)?;
+                    writeln!(bodies[si], "{ind}typecast_tile<{}, {}>({});", tt_fmt(*in_dtype)?, tt_fmt(*out_dtype)?, slot.0)?;
                 }
                 TTOp::TileTranspose { dst, cb, .. } => {
-                    writeln!(out, "{ind}transpose_wh_tile({cb}, 0, {});", dst.0)?;
+                    writeln!(bodies[si], "{ind}transpose_wh_tile({cb}, 0, {});", dst.0)?;
                 }
                 TTOp::TileMatmul { acc, cb_a, cb_b, in0, in1, .. } => {
                     let a = operand(&const_vals, &reg, s, *in0)?;
                     let b = operand(&const_vals, &reg, s, *in1)?;
-                    writeln!(out, "{ind}matmul_tiles({cb_a}, {cb_b}, {a}, {b}, {});", acc.0)?;
+                    writeln!(bodies[si], "{ind}matmul_tiles({cb_a}, {cb_b}, {a}, {b}, {});", acc.0)?;
                 }
                 TTOp::TileReduce { acc, cb_in, cb_sc, rop, kind } => {
                     let (op_name, dim_name) = match rop {
@@ -4827,7 +4828,7 @@ impl Compiler {
                             });
                         }
                     };
-                    writeln!(out, "{ind}reduce_tile<{op_name}, {dim_name}>({cb_in}, {cb_sc}, 0, 0, {});", acc.0)?;
+                    writeln!(bodies[si], "{ind}reduce_tile<{op_name}, {dim_name}>({cb_in}, {cb_sc}, 0, 0, {});", acc.0)?;
                 }
                 TTOp::TileBcastBinary { dst, cb_a, cb_b, bop, kind, .. } => {
                     let name = match (bop, kind) {
@@ -4848,9 +4849,9 @@ impl Compiler {
                         }
                     };
                     if matches!(kind, TileDim::Row) {
-                        writeln!(out, "{ind}{name}({cb_a}, {cb_b}, 0, 0, {}, 0);", dst.0)?;
+                        writeln!(bodies[si], "{ind}{name}({cb_a}, {cb_b}, 0, 0, {}, 0);", dst.0)?;
                     } else {
-                        writeln!(out, "{ind}{name}({cb_a}, {cb_b}, 0, 0, {});", dst.0)?;
+                        writeln!(bodies[si], "{ind}{name}({cb_a}, {cb_b}, 0, 0, {});", dst.0)?;
                     }
                 }
                 TTOp::TileBinScalar { slot, bop, value } => {
@@ -4868,7 +4869,7 @@ impl Compiler {
                         } else {
                             "right_shift_tile"
                         };
-                        writeln!(out, "{ind}{name}({}, {amount});", slot.0)?
+                        writeln!(bodies[si], "{ind}{name}({}, {amount});", slot.0)?
                     } else {
                         let bits = match value {
                             Constant::F32(b) => f32::from_le_bytes(*b).to_bits(),
@@ -4882,9 +4883,9 @@ impl Compiler {
                             }
                         };
                         match bop {
-                            BOp::Add => writeln!(out, "{ind}add_unary_tile({}, {bits:#x});", slot.0)?,
-                            BOp::Mul => writeln!(out, "{ind}mul_unary_tile({}, {bits:#x});", slot.0)?,
-                            BOp::Div => writeln!(out, "{ind}div_unary_tile({}, {bits:#x});", slot.0)?,
+                            BOp::Add => writeln!(bodies[si], "{ind}add_unary_tile({}, {bits:#x});", slot.0)?,
+                            BOp::Mul => writeln!(bodies[si], "{ind}mul_unary_tile({}, {bits:#x});", slot.0)?,
+                            BOp::Div => writeln!(bodies[si], "{ind}div_unary_tile({}, {bits:#x});", slot.0)?,
                             BOp::Sub => {
                                 return Err(BackendError {
                                     status: ErrorStatus::KernelCompilation,
@@ -4908,6 +4909,21 @@ impl Compiler {
                 }
             }
         }
+        // Assemble sections: preamble, hoisted scalar declarations,
+        // body (CUDA/OpenCL style). Dtypes are in slot order (slots
+        // only grow), so declarations dominate every use regardless
+        // of loop scope.
+        for si in 0..3 {
+            if started[si] {
+                out.write_str(&pre[si])?;
+                for (n, t) in reg_dtypes[si].iter().enumerate() {
+                    if !t.is_empty() {
+                        writeln!(out, "  {t} r{n};")?;
+                    }
+                }
+                out.write_str(&bodies[si])?;
+            }
+        }
         writeln!(out)?;
         Ok(())
     }
@@ -4918,11 +4934,11 @@ impl Compiler {
 /// dtypes, and DST mode the backend needs.
 pub struct TTProgram {
     /// Reader section source.
-    pub(crate) reader_src: String,
+    pub reader_src: String, // TEMP: revert
     /// Compute section source (empty when the kernel is pure copy).
-    pub(crate) compute_src: String,
+    pub compute_src: String, // TEMP: revert
     /// Writer section source.
-    pub(crate) writer_src: String,
+    pub writer_src: String, // TEMP: revert
     /// Global head-order ordinals of the reader section params.
     pub(crate) reader_params: Vec<u32>,
     /// Global head-order ordinals of the compute section params.
