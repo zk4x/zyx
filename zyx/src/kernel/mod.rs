@@ -97,7 +97,7 @@
 pub use crate::backend::{Dev, DeviceInfo};
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{BOp, MMADType, MMADims, MMALayout, OpId, ParamKind, TileDim};
-pub(crate) use ops::{MoveOp, Op, OpLinked, RangeKind, UOp};
+pub(crate) use ops::{Op, OpLinked, RangeKind, UOp};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
@@ -453,9 +453,9 @@ impl Kernel {
                     *rcs.entry(condition).or_insert(0) += 1;
                 }
                 Op::Barrier | Op::EndIf | Op::EndLoop => {}
-                Op::Expand { x, shape } => todo!(),
-                Op::Flip { x, axes } => todo!(),
-                Op::Narrow { axis, start, len } => todo!(),
+                Op::Expand { .. } => todo!(),
+                Op::Flip { .. } => todo!(),
+                Op::Narrow { .. } => todo!(),
             }
             op_id = self.next_op(op_id);
         }
@@ -502,12 +502,12 @@ impl Kernel {
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }
-                Op::Reshape { x, shape } => todo!(),
-                Op::Expand { x, shape } => todo!(),
-                Op::Permute { x, axes } => todo!(),
-                Op::Flip { x, axes } => todo!(),
-                Op::Pad { axis, lp, len } => todo!(),
-                Op::Narrow { axis, start, len } => todo!(),
+                Op::Reshape { .. } => todo!(),
+                Op::Expand { .. } => todo!(),
+                Op::Permute { .. } => todo!(),
+                Op::Flip { .. } => todo!(),
+                Op::Pad { .. } => todo!(),
+                Op::Narrow { .. } => todo!(),
             }
         }
         panic!("layout not found for too long time");
@@ -555,12 +555,12 @@ impl Kernel {
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }
-                Op::Reshape { x, shape } => todo!(),
-                Op::Expand { x, shape } => todo!(),
-                Op::Permute { x, axes } => todo!(),
-                Op::Flip { x, axes } => todo!(),
-                Op::Pad { axis, lp, len } => todo!(),
-                Op::Narrow { axis, start, len } => todo!(),
+                Op::Reshape { .. } => todo!(),
+                Op::Expand { .. } => todo!(),
+                Op::Permute { .. } => todo!(),
+                Op::Flip { .. } => todo!(),
+                Op::Pad { .. } => todo!(),
+                Op::Narrow { .. } => todo!(),
             }
         }
         panic!("dtype not found for too long time");
@@ -1081,42 +1081,40 @@ impl Kernel {
                         stack.push(ops[0]);
                     }
                 }
-                Op::Move { x, ref mop } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
-                        visited.insert(op_id, descriptor(self, *shape));
+                Op::Reshape { shape, .. } | Op::Expand { shape, .. } => {
+                    visited.insert(op_id, descriptor(self, shape));
+                }
+                Op::Permute { x, ref axes } => match visited.get(&x) {
+                    Some(dims) => {
+                        visited.insert(op_id, crate::shape::permute(dims, axes));
                     }
-                    MoveOp::Permute { axes } => match visited.get(&x) {
-                        Some(dims) => {
-                            visited.insert(op_id, crate::shape::permute(dims, axes));
+                    None => {
+                        stack.push(op_id);
+                        stack.push(x);
+                    }
+                },
+                Op::Flip { x, .. } => match visited.get(&x) {
+                    Some(dims) => {
+                        visited.insert(op_id, dims.clone());
+                    }
+                    None => {
+                        stack.push(op_id);
+                        stack.push(x);
+                    }
+                },
+                Op::Narrow { x, axis, len, .. } | Op::Pad { x, axis, len, .. } => match visited.get(&x).cloned() {
+                    Some(mut dims) => {
+                        if dims.is_empty() {
+                            dims = vec![len];
+                        } else {
+                            dims[axis as usize] = len;
                         }
-                        None => {
-                            stack.push(op_id);
-                            stack.push(x);
-                        }
-                    },
-                    MoveOp::Flip { .. } => match visited.get(&x) {
-                        Some(dims) => {
-                            visited.insert(op_id, dims.clone());
-                        }
-                        None => {
-                            stack.push(op_id);
-                            stack.push(x);
-                        }
-                    },
-                    &MoveOp::Narrow { axis, len, .. } | &MoveOp::Pad { axis, len, .. } => match visited.get(&x).cloned() {
-                        Some(mut dims) => {
-                            if dims.is_empty() {
-                                dims = vec![len];
-                            } else {
-                                dims[axis as usize] = len;
-                            }
-                            visited.insert(op_id, dims);
-                        }
-                        None => {
-                            stack.push(op_id);
-                            stack.push(x);
-                        }
-                    },
+                        visited.insert(op_id, dims);
+                    }
+                    None => {
+                        stack.push(op_id);
+                        stack.push(x);
+                    }
                 },
                 // Scalars broadcast implicitly: if `x` is a scalar (empty
                 // shape), the binary takes `y`'s shape.
@@ -1243,49 +1241,46 @@ impl Kernel {
                         stack.push(ops[0]);
                     }
                 }
-                Op::Move { x, ref mop } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
-                        visited.insert(
-                            id,
-                            descriptor(self, *shape)
-                                .iter()
-                                .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
-                                .collect(),
-                        );
+                Op::Reshape { shape, .. } | Op::Expand { shape, .. } => {
+                    visited.insert(
+                        id,
+                        descriptor(self, shape)
+                            .iter()
+                            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
+                            .collect(),
+                    );
+                }
+                Op::Permute { x, ref axes } => match visited.get(&x) {
+                    Some(dims) => {
+                        visited.insert(id, crate::shape::permute(dims, axes));
                     }
-                    MoveOp::Permute { axes } => match visited.get(&x) {
-                        Some(dims) => {
-                            visited.insert(id, crate::shape::permute(dims, axes));
+                    None => {
+                        stack.push(id);
+                        stack.push(x);
+                    }
+                },
+                Op::Flip { x, .. } => match visited.get(&x) {
+                    Some(dims) => {
+                        visited.insert(id, dims.clone());
+                    }
+                    None => {
+                        stack.push(id);
+                        stack.push(x);
+                    }
+                },
+                Op::Narrow { x, axis, len, .. } | Op::Pad { x, axis, len, .. } => match visited.get(&x).cloned() {
+                    Some(mut dims) => {
+                        if dims.is_empty() {
+                            dims = vec![self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)];
+                        } else {
+                            dims[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1);
                         }
-                        None => {
-                            stack.push(id);
-                            stack.push(x);
-                        }
-                    },
-                    MoveOp::Flip { .. } => match visited.get(&x) {
-                        Some(dims) => {
-                            visited.insert(id, dims.clone());
-                        }
-                        None => {
-                            stack.push(id);
-                            stack.push(x);
-                        }
-                    },
-                    &MoveOp::Narrow { axis, len, .. } | &MoveOp::Pad { axis, len, .. } => match visited.get(&x).cloned() {
-                        Some(mut dims) => {
-                            if dims.is_empty() {
-                                dims = vec![self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)];
-                            } else {
-                                dims[axis as usize] =
-                                    self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1);
-                            }
-                            visited.insert(id, dims);
-                        }
-                        None => {
-                            stack.push(id);
-                            stack.push(x);
-                        }
-                    },
+                        visited.insert(id, dims);
+                    }
+                    None => {
+                        stack.push(id);
+                        stack.push(x);
+                    }
                 },
                 // Scalars broadcast implicitly: if `x` is a scalar (empty
                 // shape), the binary takes `y`'s shape.

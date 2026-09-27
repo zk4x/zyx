@@ -227,7 +227,7 @@ use crate::{
     backend::{Buffer, DTypeCapability, DeviceProgramId, LaunchArg, Pool, ProgramId},
     dtype::Constant,
     graph::{ExecPlan, Graph, GraphId},
-    kernel::{BOp, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, ParamKind, UOp},
     rng::Rng,
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::{Dim, UAxis},

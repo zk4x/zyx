@@ -310,12 +310,12 @@ impl Op {
             Op::Contiguous { .. } => 28,
             Op::Kernel { .. } => 29,
             Op::Custom(_) => 30,
-            Op::Reshape { x, shape } => todo!(),
-            Op::Expand { x, shape } => todo!(),
-            Op::Permute { x, axes } => todo!(),
-            Op::Flip { x, axes } => todo!(),
-            Op::Pad { x, axis, lp, len } => todo!(),
-            Op::Narrow { x, axis, start, len } => todo!(),
+            Op::Reshape { .. } => 31,
+            Op::Expand { .. } => 32,
+            Op::Permute { .. } => 33,
+            Op::Flip { .. } => 34,
+            Op::Pad { .. } => 35,
+            Op::Narrow { .. } => 36,
         }
     }
 }
@@ -374,6 +374,16 @@ impl PartialEq for Op {
                 ai == bi && ao == bo && a.0 == b.0
             }
             (Op::Custom(_), Op::Custom(_)) => false,
+            (Op::Reshape { x: a, shape: as_ }, Op::Reshape { x: b, shape: bs }) => a == b && as_ == bs,
+            (Op::Expand { x: a, shape: as_ }, Op::Expand { x: b, shape: bs }) => a == b && as_ == bs,
+            (Op::Permute { x: a, axes: aa }, Op::Permute { x: b, axes: ba }) => a == b && aa.as_slice() == ba.as_slice(),
+            (Op::Flip { x: a, axes: aa }, Op::Flip { x: b, axes: ba }) => a == b && aa.as_slice() == ba.as_slice(),
+            (Op::Pad { x: a, axis: aa, lp: al, len: alen }, Op::Pad { x: b, axis: ba, lp: bl, len: blen }) => {
+                a == b && aa == ba && al == bl && alen == blen
+            }
+            (Op::Narrow { x: a, axis: aa, start: as_, len: al }, Op::Narrow { x: b, axis: ba, start: bs, len: bl }) => {
+                a == b && aa == ba && as_ == bs && al == bl
+            }
             _ => todo!(),
         }
     }
@@ -498,12 +508,34 @@ impl Hash for Op {
                 c.outputs.hash(state);
                 c.program_id.hash(state);
             }
-            Op::Reshape { x, shape } => todo!(),
-            Op::Expand { x, shape } => todo!(),
-            Op::Permute { x, axes } => todo!(),
-            Op::Flip { x, axes } => todo!(),
-            Op::Pad { x, axis, lp, len } => todo!(),
-            Op::Narrow { x, axis, start, len } => todo!(),
+            Op::Reshape { x, shape } => {
+                x.hash(state);
+                shape.hash(state);
+            }
+            Op::Expand { x, shape } => {
+                x.hash(state);
+                shape.hash(state);
+            }
+            Op::Permute { x, axes } => {
+                x.hash(state);
+                axes.as_slice().hash(state);
+            }
+            Op::Flip { x, axes } => {
+                x.hash(state);
+                axes.as_slice().hash(state);
+            }
+            Op::Pad { x, axis, lp, len } => {
+                x.hash(state);
+                axis.hash(state);
+                lp.hash(state);
+                len.hash(state);
+            }
+            Op::Narrow { x, axis, start, len } => {
+                x.hash(state);
+                axis.hash(state);
+                start.hash(state);
+                len.hash(state);
+            }
         }
     }
 }
@@ -567,6 +599,16 @@ impl Ord for Op {
                 (ai, ao, a.0).cmp(&(bi, bo, b.0))
             }
             (Op::Custom(_), Op::Custom(_)) => std::cmp::Ordering::Equal,
+            (Op::Reshape { x: a, shape: as_ }, Op::Reshape { x: b, shape: bs }) => (a, as_).cmp(&(b, bs)),
+            (Op::Expand { x: a, shape: as_ }, Op::Expand { x: b, shape: bs }) => (a, as_).cmp(&(b, bs)),
+            (Op::Permute { x: a, axes: aa }, Op::Permute { x: b, axes: ba }) => (a, aa.as_slice()).cmp(&(b, ba.as_slice())),
+            (Op::Flip { x: a, axes: aa }, Op::Flip { x: b, axes: ba }) => (a, aa.as_slice()).cmp(&(b, ba.as_slice())),
+            (Op::Pad { x: a, axis: aa, lp: al, len: alen }, Op::Pad { x: b, axis: ba, lp: bl, len: blen }) => {
+                (a, aa, al, alen).cmp(&(b, ba, bl, blen))
+            }
+            (Op::Narrow { x: a, axis: aa, start: as_, len: al }, Op::Narrow { x: b, axis: ba, start: bs, len: bl }) => {
+                (a, aa, as_, al).cmp(&(b, ba, bs, bl))
+            }
             _ => todo!(),
         }
     }

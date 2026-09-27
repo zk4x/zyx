@@ -53,7 +53,7 @@ pub fn into_axes(axes: impl IntoIterator<Item = Axis>, rank: UAxis) -> Result<Ve
 #[must_use]
 pub fn permute<T: Clone>(shape: &[T], axes: &[UAxis]) -> Vec<T> {
     debug_assert_eq!(shape.len(), axes.len());
-    axes.iter().map(|a| shape[*a].clone()).collect()
+    axes.iter().map(|a| shape[*a as usize].clone()).collect()
 }
 
 pub fn pad(shape: &mut [Dim], padding: &[(i64, i64)]) {

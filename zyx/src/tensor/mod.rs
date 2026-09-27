@@ -1440,7 +1440,7 @@ impl Tensor {
     /// Returns a shape error if the axis is out of bounds.
     pub fn expand_axis(&self, axis: Axis, dim: Dim) -> Result<Tensor, ZyxError> {
         let rank = self.resolve_shape().len();
-        let axis = into_axis(axis, rank)?;
+        let axis = into_axis(axis, rank as u32)? as usize;
         let mut dims = self.shape();
         // Only the NEW dim is a fresh constant — the user passed it concretely.
         // All other dims stay symbolic so variable-backed dims survive.
@@ -1468,7 +1468,7 @@ impl Tensor {
     /// Returns a shape error if the axes do not match the tensor's rank.
     pub fn permute(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
-        let axes = into_axes(axes, rank as usize)?;
+        let axes = into_axes(axes, rank as u32)?;
         if rank != axes.len() as i64 {
             return Err(ZyxError::shape_error(
                 format!("Axes has rank {}, but tensor has rank {}. It must be the same for permute.", axes.len(), rank).into(),
@@ -1496,7 +1496,7 @@ impl Tensor {
     /// Returns a shape error if the axes list is empty or an axis is out of range.
     pub fn flip(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
-        let mut axes: Vec<UAxis> = axes.into_iter().map(|a| into_axis(a, rank as usize)).collect::<Result<_, _>>()?;
+        let mut axes: Vec<UAxis> = axes.into_iter().map(|a| into_axis(a, rank as u32)).collect::<Result<_, _>>()?;
         if axes.is_empty() {
             return Err(ZyxError::shape_error(format!("Axes must not be empty for a tensor of rank {rank}").into()));
         }
@@ -1652,7 +1652,7 @@ impl Tensor {
                 format!("Cannot pad tensor with dtype {} with value of dtype {}", dtype, value.dtype()).into(),
             ));
         }
-        if !padding.len() as UAxis <= sh.len() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
+        if !padding.len() <= sh.len() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
             return Err(ZyxError::shape_error(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}").into()));
         }
         let t0 = self.pad_zeros(padding.clone())?;
@@ -1832,7 +1832,7 @@ impl Tensor {
             ));
         }
         let mut axes: Vec<Axis> = (0..Axis::try_from(rank).unwrap()).collect();
-        axes.swap(into_axis(dim0, rank as usize)?, into_axis(dim1, rank as usize)?);
+        axes.swap(into_axis(dim0, rank as UAxis)? as usize, into_axis(dim1, rank as UAxis)? as usize);
         self.permute(axes)
     }
 
@@ -2625,14 +2625,14 @@ impl Tensor {
     ///
     /// Returns a shape error if the axis range is invalid.
     pub fn flatten(&self, axes: impl RangeBounds<Axis>) -> Result<Tensor, ZyxError> {
-        let rank = self.rank() as usize;
+        let rank = self.rank();
         let start_dim = into_axis(
             match axes.start_bound() {
                 Bound::Included(dim) => *dim,
                 Bound::Excluded(dim) => *dim + 1,
                 Bound::Unbounded => 0,
             },
-            rank,
+            rank as UAxis,
         )?;
         let end_dim = into_axis(
             match axes.end_bound() {
@@ -2640,12 +2640,12 @@ impl Tensor {
                 Bound::Excluded(dim) => *dim - 1,
                 Bound::Unbounded => -1,
             },
-            rank,
+            rank as UAxis,
         )? + 1;
         // The joined dim is a SYMBOLIC product (mul chain over the dim
         // expression tensors) so a variable-backed seq dim stays symbolic.
         let symbolic = self.shape();
-        let mut dim_iter = symbolic[start_dim..end_dim].iter();
+        let mut dim_iter = symbolic[start_dim as usize..end_dim as usize].iter();
         let mut dim = match dim_iter.next() {
             Some(d) => d.clone(),
             None => Tensor::from(1),
@@ -2655,7 +2655,7 @@ impl Tensor {
             dim = Tensor { id };
         }
         let new_shape: Vec<Tensor> =
-            symbolic[..start_dim].to_vec().into_iter().chain(std::iter::once(dim)).chain(symbolic[end_dim..].to_vec()).collect();
+            symbolic[..start_dim as usize].to_vec().into_iter().chain(std::iter::once(dim)).chain(symbolic[end_dim as usize..].to_vec()).collect();
         self.reshape(new_shape)
     }
 
@@ -2746,8 +2746,8 @@ impl Tensor {
         let symbolic = self.shape();
         let mut naxes = Vec::new();
         for axis in axes.into_iter().take(resolved.len()) {
-            if let Ok(axis) = into_axis(axis, resolved.len()) {
-                naxes.push(axis);
+            if let Ok(axis) = into_axis(axis, resolved.len() as UAxis) {
+                naxes.push(axis as usize);
             }
         }
         let mut new_shape = Vec::new();
@@ -2840,7 +2840,7 @@ impl Tensor {
     /// Returns a shape error if the axis is out of bounds.
     pub fn argmax_axis(&self, axis: Axis) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
-        let _ = into_axis(axis, rank as usize)?;
+        let _ = into_axis(axis, rank as UAxis)?;
         self.argmax_impl(axis, false)
     }
 
@@ -2854,12 +2854,12 @@ impl Tensor {
 
         // correct axis
         let shape = self.resolve_shape();
-        let uaxis = into_axis(axis, shape.len())?;
+        let uaxis = into_axis(axis, shape.len() as UAxis)?;
 
         // create a range tensor [0, 1, 2, ...] along the axis
-        let range = Tensor::arange(0, shape[uaxis] as i32, 1)?;
+        let range = Tensor::arange(0, shape[uaxis as usize] as i32, 1)?;
         let mut reshape_shape = vec![1; shape.len()];
-        reshape_shape[uaxis] = shape[uaxis];
+        reshape_shape[uaxis as usize] = shape[uaxis as usize];
         let reshaped_range = range.reshape(reshape_shape)?;
 
         // mask * range -> positions of max values
@@ -2896,7 +2896,7 @@ impl Tensor {
         let tensors: Vec<Tensor> = tensors.into_iter().cloned().collect();
         let ret = Tensor::stack(&tensors)?;
         let rank = ret.rank();
-        let dim = into_axis(dim, rank as usize)?;
+        let dim = into_axis(dim, rank as UAxis)?;
         if dim == 0 {
             Ok(ret)
         } else {

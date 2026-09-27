@@ -51,7 +51,14 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.ops[op_id].op {
-                Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
+                Op::Reshape { .. }
+                | Op::Pad { .. }
+                | Op::Permute { .. }
+                | Op::Expand { .. }
+                | Op::Flip { .. }
+                | Op::Narrow { .. }
+                | Op::Reduce { .. }
+                | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
@@ -113,7 +120,13 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::Move { .. } | Op::Reduce { .. } => {
+                Op::Reshape { .. }
+                | Op::Pad { .. }
+                | Op::Permute { .. }
+                | Op::Expand { .. }
+                | Op::Flip { .. }
+                | Op::Narrow { .. }
+                | Op::Reduce { .. } => {
                     unreachable!()
                 }
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {

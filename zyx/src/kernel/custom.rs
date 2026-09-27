@@ -25,7 +25,7 @@ use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;
 use crate::kernel::{
-    BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
+    BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp,
     ops::TileDim,
 };
 use crate::runtime::{Runtime, TensorData};
@@ -212,7 +212,7 @@ impl Kernel {
     /// Expand tensor (adds singleton dims). `shape` is the pre-built output
     /// shape op (const for rank-1, or a `stack` of per-dimension ops).
     pub fn expand(&mut self, x: OpId, shape: OpId) -> OpId {
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Expand { shape }) })
+        self.push_back(Op::Expand { x, shape })
     }
 
     /// Pad axis `axis` with `lp` zeros on the left, to total length `len`
@@ -220,14 +220,14 @@ impl Kernel {
     pub fn pad(&mut self, x: OpId, axis: UAxis, lp: impl IntoOp, len: impl IntoOp) -> OpId {
         let lp = lp.into_op(self);
         let len = len.into_op(self);
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { axis, lp, len }) })
+        self.push_back(Op::Pad { x, axis, lp, len })
     }
 
     /// Flip tensor axes.
     pub fn flip(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
-        let axes: Box<[UAxis]> = axes.into();
         debug_assert!(!axes.is_empty(), "flip: axes must not be empty");
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Flip { axes }) })
+        let axes = TinyVec::new(axes);
+        self.push_back(Op::Flip { x, axes })
     }
 
     /// Sum over the last dimension (given by `reduce_axis`).
@@ -2470,13 +2470,13 @@ impl Kernel {
         assert!(axes.len() == rank, "permute_view: axes len {} != rank {rank}", axes.len());
         let mut seen = vec![false; rank];
         for &a in axes {
-            assert!(a < rank, "permute_view: axis {a} out of range for rank {rank}");
-            assert!(!seen[a], "permute_view: duplicate axis {a}");
-            seen[a] = true;
+            assert!(a < rank as u32, "permute_view: axis {a} out of range for rank {rank}");
+            assert!(!seen[a as usize], "permute_view: duplicate axis {a}");
+            seen[a as usize] = true;
         }
-        let shape = axes.iter().map(|&a| view.shape[a]).collect();
-        let strides = axes.iter().map(|&a| view.strides[a]).collect();
-        let mask = view.mask.as_ref().map(|m| axes.iter().map(|&a| m[a]).collect());
+        let shape = axes.iter().map(|&a| view.shape[a as usize]).collect();
+        let strides = axes.iter().map(|&a| view.strides[a as usize]).collect();
+        let mask = view.mask.as_ref().map(|m| axes.iter().map(|&a| m[a as usize]).collect());
         View { x: view.x, shape, strides, offset: view.offset, mask }
     }
 

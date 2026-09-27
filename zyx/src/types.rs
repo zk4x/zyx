@@ -232,6 +232,11 @@ impl<T: Copy> TinyVec<T> {
     }
 
     #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
     fn data_ptr(&self) -> *const T {
         unsafe {
             // SAFETY:
@@ -275,6 +280,15 @@ impl<T: Copy> TinyVec<T> {
         }
     }
 
+    pub fn as_slice(&self) -> &[T] {
+        unsafe {
+            // SAFETY:
+            // data_ptr is properly aligned and points to len initialized
+            // T values.
+            slice::from_raw_parts(self.data_ptr(), self.len())
+        }
+    }
+
     pub fn iter(&self) -> slice::Iter<'_, T> {
         unsafe {
             // SAFETY:
@@ -291,6 +305,22 @@ impl<T: Copy> TinyVec<T> {
             // T values.
             slice::from_raw_parts_mut(self.data_ptr_mut(), self.len()).iter_mut()
         }
+    }
+
+    #[inline]
+    pub fn contains(&self, value: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        self.iter().any(|v| v == value)
+    }
+}
+
+impl<T: Copy> std::ops::Deref for TinyVec<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        self.as_slice()
     }
 }
 

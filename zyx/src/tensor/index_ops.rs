@@ -263,8 +263,8 @@ impl Tensor {
     /// exceeds the dim size, or if the bounds cannot be resolved.
     #[allow(clippy::missing_panics_doc)]
     pub fn narrow(&self, axis: Axis, start: impl Into<Tensor>, length: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let rank = self.rank() as usize;
-        let axis = into_axis(axis, rank)?;
+        let rank = self.rank();
+        let axis = into_axis(axis, rank as u32)?;
         let start = start.into();
         let length = length.into();
         // Shape inputs must be IDX_T (I64). Other dtypes would get silently
@@ -326,7 +326,7 @@ impl Tensor {
 
         let shape = self.resolve_shape();
         let index_shape = indices.resolve_shape();
-        let dim = into_axis(axis, shape.len())?;
+        let dim = into_axis(axis, shape.len() as u32)? as usize;
 
         if shape.len() != index_shape.len() {
             return Err(ZyxError::shape_error(
@@ -388,7 +388,7 @@ impl Tensor {
         let src = src.into();
         let shape = self.resolve_shape();
         let index_shape = indices.resolve_shape();
-        let dim = into_axis(axis, shape.len())?;
+        let dim = into_axis(axis, shape.len() as u32)? as usize;
         let dim_size = shape[dim];
 
         if shape.len() != index_shape.len() {
@@ -456,7 +456,7 @@ impl Tensor {
         let index = index.into();
         let mut shape = self.resolve_shape();
         let rank = shape.len();
-        let dim = into_axis(dim, rank)?;
+        let dim = into_axis(dim, rank as u32)? as usize;
 
         shape[dim] = index.resolve_shape()[0];
         let mut view_shape: Vec<Dim> = vec![1; rank];

@@ -4,10 +4,11 @@ use crate::{
     Map, Set,
     dtype::Constant,
     graph::{Graph, GraphId, Op, OpId},
-    kernel::{BOp, MoveOp, UOp},
+    kernel::{BOp, UOp},
     runtime::{Runtime, TensorData},
     shape::{Dim, UAxis},
     tensor::TensorId,
+    types::TinyVec,
 };
 use std::collections::BTreeSet;
 
@@ -52,7 +53,7 @@ impl Runtime {
             one_cid
         } else {
             let shape_class = self.shape_class(graph_id, target_dims);
-            self.push_op(graph_id, Op::Move { x: one_cid, mop: Box::new(MoveOp::Expand { shape: shape_class }) })
+            self.push_op(graph_id, Op::Expand { x: one_cid, shape: shape_class })
         };
         grads.insert(target_class, ones);
 
@@ -212,8 +213,7 @@ impl Runtime {
                     let g = self.push_op(graph_id, Op::Bitcast { x: grad, dtype: self.graphs[graph_id].dtype(x) });
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
-                Op::Move { x, mop } => match mop.as_ref() {
-                    MoveOp::Reshape { .. } => {
+                Op::Reshape { x, .. } => {
                         let in_dims = self.graphs[graph_id].shape(x);
                         let shape = self.shape_class(graph_id, in_dims.clone());
                         let in_conc: Vec<Dim> = in_dims
@@ -228,10 +228,10 @@ impl Runtime {
                         if in_conc.iter().any(|&v| v != 0) && xc_conc.iter().any(|&v| v != 0) && in_conc != xc_conc {
                             eprintln!("RESGRAD in={:?} x_shape={:?}", in_conc, xc_conc);
                         }
-                        let g = self.push_op(graph_id, Op::Move { x: grad, mop: Box::new(MoveOp::Reshape { shape }) });
+                        let g = self.push_op(graph_id, Op::Reshape { x: grad, shape });
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
-                    MoveOp::Expand { .. } => {
+                Op::Expand { x, .. } => {
                         let out_dims = self.graphs[graph_id].shape(cid);
                         let in_dims = self.graphs[graph_id].shape(x);
                         // Right-align the input against the expanded output per broadcast
@@ -265,14 +265,15 @@ impl Runtime {
                             // summed axes trailing) followed by ReduceLast steps.
                             let rank = out_dims.len();
                             let perm: Vec<UAxis> = (0..rank)
-                                .filter(|i| !sum_axes.contains(&(*i as UAxis)))
+                                .map(|i| i as UAxis)
+                                .filter(|i| !sum_axes.contains(i))
                                 .chain(sum_axes.iter().copied())
                                 .collect();
                             let mut cur = grad;
-                            if !perm.iter().copied().eq(0..rank) {
+                            if !perm.iter().copied().eq(0..rank as UAxis) {
                                 cur = self.push_op(
                                     graph_id,
-                                    Op::Move { x: cur, mop: Box::new(MoveOp::Permute { axes: perm.into_boxed_slice() }) },
+                                    Op::Permute { x: cur, axes: TinyVec::new(&perm) },
                                 );
                             }
                             for _ in 0..sum_axes.len() {
@@ -284,48 +285,47 @@ impl Runtime {
                                 cur
                             } else {
                                 let xs = self.shape_class(graph_id, in_dims);
-                                self.push_op(graph_id, Op::Move { x: cur, mop: Box::new(MoveOp::Reshape { shape: xs }) })
+                                self.push_op(graph_id, Op::Reshape { x: cur, shape: xs })
                             };
                             accum_grad(self, graph_id, &mut grads, x, reduced);
                         }
                     }
-                    MoveOp::Permute { ref axes } => {
+                Op::Permute { x, ref axes, .. } => {
                         let mut inv_axes: Vec<UAxis> = vec![0; axes.len()];
                         for (i, &a) in axes.iter().enumerate() {
-                            inv_axes[a] = i as UAxis;
+                            inv_axes[a as usize] = i as UAxis;
                         }
                         let g = self.push_op(
                             graph_id,
-                            Op::Move { x: grad, mop: Box::new(MoveOp::Permute { axes: inv_axes.into_boxed_slice() }) },
+                            Op::Permute { x: grad, axes: TinyVec::new(&inv_axes) },
                         );
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
-                    &MoveOp::Pad { axis, lp, .. } => {
+                Op::Pad { x, axis, lp, .. } => {
                         // Pad backward: narrow the gradient back to the original extent.
-                        let orig_len = self.graphs[graph_id].shape(x)[axis];
+                        let orig_len = self.graphs[graph_id].shape(x)[axis as usize];
                         let g = self.push_op(
                             graph_id,
-                            Op::Move { x: grad, mop: Box::new(MoveOp::Narrow { axis, start: lp, len: orig_len }) },
+                            Op::Narrow { x: grad, axis, start: lp, len: orig_len },
                         );
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
-                    &MoveOp::Narrow { axis, start, .. } => {
+                Op::Narrow { x, axis, start, .. } => {
                         // Narrow backward: pad the gradient with zeros back to the
                         // original extent.
-                        let orig_len = self.graphs[graph_id].shape(x)[axis];
+                        let orig_len = self.graphs[graph_id].shape(x)[axis as usize];
                         let g = self.push_op(
                             graph_id,
-                            Op::Move { x: grad, mop: Box::new(MoveOp::Pad { axis, lp: start, len: orig_len }) },
+                            Op::Pad { x: grad, axis, lp: start, len: orig_len },
                         );
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
-                    MoveOp::Flip { ref axes } => {
+                Op::Flip { x, ref axes, .. } => {
                         // Flip is its own inverse: the gradient back-propagates by
                         // flipping along the same axes.
-                        let g = self.push_op(graph_id, Op::Move { x: grad, mop: Box::new(MoveOp::Flip { axes: axes.clone() }) });
+                        let g = self.push_op(graph_id, Op::Flip { x: grad, axes: axes.clone() });
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
-                },
                 Op::Reduce { x, rop: bop, .. } => {
                     let x_dims = self.graphs[graph_id].shape(x);
                     let last = x_dims.len() - 1;
@@ -337,10 +337,10 @@ impl Runtime {
                             let kept_shape = self.shape_class(graph_id, kept);
                             let grad_r = self.push_op(
                                 graph_id,
-                                Op::Move { x: grad, mop: Box::new(MoveOp::Reshape { x: grad, shape: kept_shape }) },
+                                Op::Reshape { x: grad, shape: kept_shape },
                             );
                             let shape = self.shape_class(graph_id, x_dims);
-                            let g = self.push_op(graph_id, Op::Move { x: grad_r, mop: Box::new(MoveOp::Expand { shape }) });
+                            let g = self.push_op(graph_id, Op::Expand { x: grad_r, shape });
                             accum_grad(self, graph_id, &mut grads, x, g);
                         }
                         BOp::Max => {
@@ -353,16 +353,16 @@ impl Runtime {
                             let kept_shape = self.shape_class(graph_id, kept);
                             let x_shape = self.shape_class(graph_id, x_dims);
                             let z_reshaped =
-                                self.push_op(graph_id, Op::Move { x: cid, mop: Box::new(MoveOp::Reshape { shape: kept_shape }) });
+                                self.push_op(graph_id, Op::Reshape { x: cid, shape: kept_shape });
                             let z_broadcasted = self
-                                .push_op(graph_id, Op::Move { x: z_reshaped, mop: Box::new(MoveOp::Expand { shape: x_shape }) });
+                                .push_op(graph_id, Op::Expand { x: z_reshaped, shape: x_shape });
                             let cmp = self.push_binary_node(graph_id, x, z_broadcasted, BOp::Cmplt);
                             let cmp_f = self.push_op(graph_id, Op::Cast { x: cmp, dtype });
                             let one_e =
-                                self.push_op(graph_id, Op::Move { x: one, mop: Box::new(MoveOp::Expand { shape: x_shape }) });
+                                self.push_op(graph_id, Op::Expand { x: one, shape: x_shape });
                             let mask = self.push_binary_node(graph_id, one_e, cmp_f, BOp::Sub);
                             let grad_r = self
-                                .push_op(graph_id, Op::Move { x: grad, mop: Box::new(MoveOp::Reshape { shape: kept_shape }) });
+                                .push_op(graph_id, Op::Reshape { x: grad, shape: kept_shape });
                             let grad_e = self.push_op(graph_id, Op::Expand { x: grad_r, shape: x_shape });
                             let grad_x = self.push_binary_node(graph_id, mask, grad_e, BOp::Mul);
                             accum_grad(self, graph_id, &mut grads, x, grad_x);
@@ -380,8 +380,8 @@ impl Runtime {
                             let is_zero_b = self.push_binary_node(graph_id, x, zero, BOp::Eq);
                             let is_zero = self.push_op(graph_id, Op::Cast { x: is_zero_b, dtype });
                             let safe_x = self.push_binary_node(graph_id, x, is_zero, BOp::Add);
-                            let p = self.push_op(graph_id, Op::Reduce { x: safe_x, rop: BOp::Mul });
-                            let nz = self.push_op(graph_id, Op::Reduce { x: is_zero, rop: BOp::Add });
+                            let p = self.push_op(graph_id, Op::Reduce { x: safe_x, rop: BOp::Mul, reduce_axis: OpId::NULL });
+                            let nz = self.push_op(graph_id, Op::Reduce { x: is_zero, rop: BOp::Add, reduce_axis: OpId::NULL });
                             let p_r = self.push_op(graph_id, Op::Reshape { x: p, shape: kept_shape });
                             let p_e = self.push_op(graph_id, Op::Expand { x: p_r, shape: x_shape });
                             let nz_r = self.push_op(graph_id, Op::Reshape { x: nz, shape: kept_shape });
@@ -424,6 +424,23 @@ impl Runtime {
                 Op::Param { .. } | Op::Const { .. } => {}
                 Op::Kernel { .. } => todo!("backward through custom kernel"),
                 Op::Custom { .. } => todo!("backward through custom kernel"),
+                Op::Storage { .. }
+                | Op::Load { .. }
+                | Op::Range { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop
+                | Op::If { .. }
+                | Op::EndIf
+                | Op::Mad { .. }
+                | Op::Barrier
+                | Op::Wmma { .. }
+                | Op::ReduceTile { .. }
+                | Op::MatmulTile { .. }
+                | Op::TransposeTile { .. }
+                | Op::BroadcastTile { .. }
+                | Op::Asm { .. } => {
+                    unreachable!("gradient runs on graph ops, never kernel-only: {:?}", self.graphs[graph_id].ops[nid].op)
+                }
             }
         }
 
@@ -468,7 +485,7 @@ impl Runtime {
                     } else {
                         self.push_op(graph_id, Op::Stack { ops })
                     };
-                    self.push_op(graph_id, Op::Move { x: zero_cid, mop: Box::new(MoveOp::Expand { shape: shape_cid }) })
+                    self.push_op(graph_id, Op::Expand { x: zero_cid, shape: shape_cid })
                 }
             };
             self.graphs[graph_id].ref_count += 1;

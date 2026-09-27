@@ -220,13 +220,10 @@ impl CblasDevice {
             }
             println!("[cblas] matched matmul m={}, n={}, k={}", mm.m, mm.n, mm.k);
             let program_id = self.programs.push(CblasProgram { kernel: CblasKernelId::ZERO, m: mm.m, n: mm.n, k: mm.k });
+            let inputs = graph.push_op(Op::Stack { ops: Box::new([mm.a, mm.b]) });
+            let outputs = graph.push_op(Op::Stack { ops: Box::new([mm.out]) });
             graph.mint_node(
-                Op::Kernel {
-                    inputs: Box::new([mm.a, mm.b]),
-                    outputs: Box::new([mm.out]),
-                    program_id: ProgramId { dev: Dev::Cblas, program_id },
-                    time: 1,
-                },
+                Op::Kernel { inputs, outputs, info: Box::new((ProgramId { dev: Dev::Cblas, program_id }, 1)) },
                 mm.out,
             );
         }

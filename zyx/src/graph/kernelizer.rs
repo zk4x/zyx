@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, Set,
     graph::{Graph, JitKernelData, JitKernelId, OpId},
-    kernel::{Dev, IDX_T, Kernel, MoveOp, Op, ParamKind},
+    kernel::{Dev, IDX_T, Kernel, Op, ParamKind},
     slab::Slab,
 };
 
@@ -142,13 +142,11 @@ impl Graph {
                             vec![shape]
                         }
                     }
-                    Op::Move { x, ref mop } => match mop.as_ref() {
-                        MoveOp::Reshape { shape } | MoveOp::Expand { shape } => vec![x, *shape],
-                        MoveOp::Permute { .. } | MoveOp::Flip { .. } => vec![x],
-                        MoveOp::Pad { lp, len, .. } => vec![x, *lp, *len],
-                        MoveOp::Narrow { start, len, .. } => vec![x, *start, *len],
-                    },
-                    Op::Stack { ops } => ops.to_vec(),
+                    Op::Reshape { x, shape } | Op::Expand { x, shape } => vec![x, shape],
+                    Op::Permute { x, .. } | Op::Flip { x, .. } => vec![x],
+                    Op::Pad { x, lp, len, .. } => vec![x, lp, len],
+                    Op::Narrow { x, start, len, .. } => vec![x, start, len],
+                    Op::Stack { ref ops } => ops.to_vec(),
                     Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => {
                         vec![x]
                     }
@@ -473,7 +471,6 @@ impl Graph {
                     }
                     Op::Reduce { x, rop, .. } => {
                         // Last axis is already trailing: single reduce, no permute.
-                        let rank = self.shape(x).len();
                         let (mut kid, mut op_id) = match visited.get(&x) {
                             Some(&kv) => kv,
                             None => todo!("reduce_last of symbolic scalar operand {x:?}"),
@@ -581,7 +578,7 @@ impl Graph {
                         let mut dst_param = dst_op;
                         for _ in 0..100 {
                             match dst_kernel.ops[dst_param].op {
-                                Op::Move { x, .. } => dst_param = x,
+                                Op::Reshape { x, .. } | Op::Expand { x, .. } | Op::Permute { x, .. } | Op::Flip { x, .. } | Op::Pad { x, .. } | Op::Narrow { x, .. } => dst_param = x,
                                 Op::Storage { .. } => break,
                                 _ => {}
                             }
@@ -613,7 +610,7 @@ impl Graph {
                                     // The shape descriptor is an OpId into the
                                     // dst kernel; ops are re-pushed into the
                                     // merged kernel with new IDs, so it must be
-                                    // remapped like MoveOp's refs (the shape
+                                    // remapped like the movement refs (the shape
                                     // stack ops precede the param in head
                                     // order, so the mapping always exists).
                                     let shape = if shape.is_null() { shape } else { op_map[&shape] };
@@ -627,10 +624,34 @@ impl Graph {
                                     def_i += 1;
                                     op_map.insert(op_id, id);
                                 }
-                                Op::Move { x, ref mop } => {
+                                Op::Reshape { x, shape } => {
                                     let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
-                                    let mop = mop.remap(&op_map);
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Move { x, mop });
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Reshape { x, shape: op_map[&shape] });
+                                    op_map.insert(op_id, id);
+                                }
+                                Op::Expand { x, shape } => {
+                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Expand { x, shape: op_map[&shape] });
+                                    op_map.insert(op_id, id);
+                                }
+                                Op::Permute { x, ref axes } => {
+                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Permute { x, axes: axes.clone() });
+                                    op_map.insert(op_id, id);
+                                }
+                                Op::Flip { x, ref axes } => {
+                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Flip { x, axes: axes.clone() });
+                                    op_map.insert(op_id, id);
+                                }
+                                Op::Pad { x, axis, lp, len } => {
+                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Pad { x, axis, lp: op_map[&lp], len: op_map[&len] });
+                                    op_map.insert(op_id, id);
+                                }
+                                Op::Narrow { x, axis, start, len } => {
+                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Narrow { x, axis, start: op_map[&start], len: op_map[&len] });
                                     op_map.insert(op_id, id);
                                 }
                                 Op::Stack { ref ops } => {
@@ -732,12 +753,34 @@ impl Graph {
                         *rcs.get_mut(&shape).unwrap() -= 1;
                         let result_op = self.jit_kernels[kid]
                             .kernel
-                            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape: sop }) });
+                            .push_back(Op::Expand { x: op_id, shape: sop });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
                     Op::Permute { x, ref axes } => {
-                        self.add_move(cid, x, MoveOp::Permute { axes: axes.clone() }, false, &mut visited, &mut rcs);
+                        let axes = axes.clone();
+                        let (kid, op_id) = if !visited.contains_key(&x) {
+                            // Scalar x: fresh kernel, replay the expression
+                            // into it and apply the movement on the replayed op.
+                            *rcs.get_mut(&x).unwrap() -= 1;
+                            let kid = self.jit_kernels.push(JitKernelData {
+                                kernel: Kernel::from_device_id(Dev::Auto, None),
+                                outputs: Vec::new(),
+                                loads: Vec::new(),
+                                stores: Vec::new(),
+                            });
+                            let op = self.replay_shape_into_kernel(kid, x);
+                            (kid, op)
+                        } else {
+                            let (mut kid, mut op_id) = visited[&x];
+                            let force_store = false;
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            self.consume(x, kid, &mut visited, &mut rcs);
+                            (kid, op_id)
+                        };
+                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Permute { x: op_id, axes });
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
                     }
                     Op::Reshape { x, shape } => {
                         // Dtypes are fully static: every dim of the result
@@ -773,7 +816,7 @@ impl Graph {
                         *rcs.get_mut(&shape).unwrap() -= 1;
                         let result_op = self.jit_kernels[kid]
                             .kernel
-                            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: sop }) });
+                            .push_back(Op::Reshape { x: op_id, shape: sop });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
@@ -805,7 +848,7 @@ impl Graph {
                         *rcs.get_mut(&len).unwrap() -= 1;
                         let result_op = self.jit_kernels[kid]
                             .kernel
-                            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { axis, lp: lp_op, len: len_op }) });
+                            .push_back(Op::Pad { x: op_id, axis, lp: lp_op, len: len_op });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
@@ -844,15 +887,35 @@ impl Graph {
                             self.jit_kernels[kid].outputs.is_empty(),
                             "narrow: input kernel must have empty outputs before the narrow merges (eager parity)"
                         );
-                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Move {
-                            x: op_id,
-                            mop: Box::new(MoveOp::Narrow { axis, start: start_op, len: len_op }),
-                        });
+                        let result_op =
+                            self.jit_kernels[kid].kernel.push_back(Op::Narrow { x: op_id, axis, start: start_op, len: len_op });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
                     Op::Flip { x, ref axes } => {
-                        self.add_move(cid, x, MoveOp::Flip { axes: axes.clone() }, false, &mut visited, &mut rcs);
+                        let axes = axes.clone();
+                        let (kid, op_id) = if !visited.contains_key(&x) {
+                            // Scalar x: fresh kernel, replay the expression
+                            // into it and apply the movement on the replayed op.
+                            *rcs.get_mut(&x).unwrap() -= 1;
+                            let kid = self.jit_kernels.push(JitKernelData {
+                                kernel: Kernel::from_device_id(Dev::Auto, None),
+                                outputs: Vec::new(),
+                                loads: Vec::new(),
+                                stores: Vec::new(),
+                            });
+                            let op = self.replay_shape_into_kernel(kid, x);
+                            (kid, op)
+                        } else {
+                            let (mut kid, mut op_id) = visited[&x];
+                            let force_store = false;
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            self.consume(x, kid, &mut visited, &mut rcs);
+                            (kid, op_id)
+                        };
+                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Flip { x: op_id, axes });
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
                     }
                     Op::ToDevice { x, .. } => {
                         let (kid, op_id) = match visited.get(&x) {
@@ -1291,40 +1354,6 @@ impl Graph {
         self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(cid, n as usize));
     }
 
-    #[allow(clippy::too_many_arguments)] // graph kernel API, arguments are structural parameters
-    fn add_move(
-        &mut self,
-        cid: OpId,
-        child: OpId,
-        mop: MoveOp,
-        force_store: bool,
-        visited: &mut Map<OpId, (JitKernelId, OpId)>,
-        rcs: &mut Map<OpId, u32>,
-    ) {
-        let (kid, op_id) = if !visited.contains_key(&child) {
-            // Scalar child: fresh kernel, replay the expression into it and
-            // apply the movement on the replayed op.
-            *rcs.get_mut(&child).unwrap() -= 1;
-            let kid = self.jit_kernels.push(JitKernelData {
-                kernel: Kernel::from_device_id(Dev::Auto, None),
-                outputs: Vec::new(),
-                loads: Vec::new(),
-                stores: Vec::new(),
-            });
-            let op = self.replay_shape_into_kernel(kid, child);
-            (kid, op)
-        } else {
-            let (mut kid, mut op_id) = visited[&child];
-            (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, force_store);
-            self.consume(child, kid, visited, rcs);
-            (kid, op_id)
-        };
-        let kernel = &mut self.jit_kernels[kid].kernel;
-        let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(mop) });
-        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
-        visited.insert(cid, (kid, result_op));
-    }
-
     /// Lowers user custom kernels (`Node::Custom`) into producer `Node::Kernel`
     /// twins so every downstream AOT consumer — pool grouping, gap filling,
     /// extraction, plan launch — treats them like any backend kernel.
@@ -1379,7 +1408,7 @@ impl Graph {
         for &cid in active_outputs {
             for nid in self.class_nodes(cid) {
                 if let Op::Kernel { inputs: kin, .. } = &self.ops[nid].op {
-                    let Op::Stack { ops } = self.ops[kin].op else { unreachable!() };
+                    let Op::Stack { ref ops } = self.ops[*kin].op else { unreachable!() };
                     kernel_inputs.extend(ops.iter().copied());
                 }
             }

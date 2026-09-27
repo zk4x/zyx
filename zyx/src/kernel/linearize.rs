@@ -83,7 +83,7 @@ use std::collections::BinaryHeap;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind},
     shape::{Dim, UAxis},
 };
 
@@ -118,7 +118,18 @@ impl Kernel {
         #[cfg(debug_assertions)]
         {
             let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Range { kind: RangeKind::Group(_), .. }));
-            let has_moves = self.ops.values().any(|n| matches!(n.op, Op::Move { .. }));
+            let has_moves = self.ops.values().any(|n| {
+                matches!(
+                    n.op,
+                    Op::Reshape { .. }
+                        | Op::Pad { .. }
+                        | Op::Permute { .. }
+                        | Op::Expand { .. }
+                        | Op::Flip { .. }
+                        | Op::Narrow { .. }
+                        | Op::Stack { .. }
+                )
+            });
             if has_gidx && has_moves {
                 panic!("unfold_movement_ops: cannot have both explicit gidx and LoadView/StoreView/Move ops");
             }
@@ -240,7 +251,16 @@ impl Kernel {
         // scaffold) and duplicate arithmetic behind; CSE and DCE clean those up
         // now that the ops are ordered.
         assert!(
-            self.ops.values().all(|node| !matches!(node.op, Op::Move { .. } | Op::Stack { .. })),
+            self.ops.values().all(|node| !matches!(
+                node.op,
+                Op::Reshape { .. }
+                    | Op::Pad { .. }
+                    | Op::Permute { .. }
+                    | Op::Expand { .. }
+                    | Op::Flip { .. }
+                    | Op::Narrow { .. }
+                    | Op::Stack { .. }
+            )),
             "linearize left a movement or stack operation in the kernel"
         );
 
@@ -611,10 +631,27 @@ impl Kernel {
                     // that shifted view.
                     let mut dst_param = dst;
                     for _ in 0..50_000 {
-                        let Op::Move { x, .. } = self.ops[dst_param].op else { break };
-                        dst_param = x;
+                        match self.ops[dst_param].op {
+                            Op::Reshape { x, .. }
+                            | Op::Pad { x, .. }
+                            | Op::Permute { x, .. }
+                            | Op::Expand { x, .. }
+                            | Op::Flip { x, .. }
+                            | Op::Narrow { x, .. } => {
+                                dst_param = x;
+                            }
+                            _ => break,
+                        }
                     }
-                    if matches!(self.ops[dst_param].op, Op::Move { .. }) {
+                    if matches!(
+                        self.ops[dst_param].op,
+                        Op::Reshape { .. }
+                            | Op::Pad { .. }
+                            | Op::Permute { .. }
+                            | Op::Expand { .. }
+                            | Op::Flip { .. }
+                            | Op::Narrow { .. }
+                    ) {
                         panic!("add_indexing store dst chain did not finish in 10000 steps");
                     }
                     let dst_param_op = &self.ops[dst_param].op;
@@ -666,245 +703,240 @@ impl Kernel {
                     views.insert(x, SView { dims: view, mask: out_view.mask });
                     self.ops[op_id].op = Op::Reduce { x, rop, reduce_axis: loop_id };
                 }
-                Op::Move { x, ref mop } => {
-                    match mop.as_ref() {
-                        MoveOp::Reshape { .. } => {
-                            // Reshape merges/splits contiguous dims, so axis indices don't
-                            // align 1:1. The input is read as a single flat index over the
-                            // whole (contiguous) input, which equals the flat index over the
-                            // output. Build `base` from the output view using each axis's
-                            // stored stride, then recover each input axis by successive
-                            // div/mod against the input's contiguous strides. Any pad/crop
-                            // offsets on the reshape output's axes have already been baked
-                            // into `d.idx` by the pad handlers, so no lp handling is needed
-                            // here.
-                            let out_view = views[&op_id].clone();
-                            let x_shape = self.shape_ids(x);
-                            let n = x_shape.len();
-                            let mut x_strides = vec![one; n];
-                            let mut st = one;
-                            for a in (0..n).rev() {
-                                x_strides[a] = st;
-                                st = self.mul(x_shape[a], st);
-                            }
-                            // Validity mask over the output view: a recovered input
-                            // coordinate is only meaningful where the output is within
-                            // its own source extent (idx >= 0 && idx < len).
-                            // Padded output regions must read as zero, so invalid
-                            // recovered indices are clamped to len + 1 (out of bounds).
-                            let mut valid = self.const_val(true);
-                            for d in &out_view.dims {
-                                let lo = self.cmpge(d.idx, zero);
-                                // A dim length of 0 is the inferred-dim marker and must
-                                // never reach the kernel IR (Tensor::reshape rejects it).
-                                debug_assert!(
-                                    self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
-                                    "inferred dim (0) must not reach linearize"
-                                );
-                                let hi = self.cmplt(d.idx, d.len);
-                                let in_axis = self.and(lo, hi);
-                                valid = self.and(valid, in_axis);
-                            }
-                            let mut base = zero;
-                            let mut stride = one;
-                            let mut out_strides = Vec::with_capacity(out_view.dims.len());
-                            for d in out_view.dims.iter().rev() {
-                                out_strides.push(stride);
-                                stride = self.mul(stride, d.len);
-                            }
-                            out_strides.reverse();
-                            for (d, s) in out_view.dims.iter().zip(out_strides) {
-                                base = self.mad(d.idx, s, base);
-                            }
-                            let mut view = Vec::with_capacity(n);
-                            let mut q = base;
-                            for a in 0..n {
-                                let s = x_strides[a];
-                                let idx_expr = if a == n - 1 {
-                                    q
-                                } else {
-                                    let div = self.div(q, s);
-                                    let rem = self.mod_(q, s);
-                                    q = rem;
-                                    div
-                                };
-                                let len = x_shape[a];
-                                let invalid = self.add(len, one);
-                                let idx_expr = self.branchless_where(valid, idx_expr, invalid);
-                                view.push(SDim::new(idx_expr, len));
-                            }
-                            views.insert(x, SView { dims: view, mask: out_view.mask });
+                Op::Reshape { x, .. } => {
+                    // Reshape merges/splits contiguous dims, so axis indices don't
+                    // align 1:1. The input is read as a single flat index over the
+                    // whole (contiguous) input, which equals the flat index over the
+                    // output. Build `base` from the output view using each axis's
+                    // stored stride, then recover each input axis by successive
+                    // div/mod against the input's contiguous strides. Any pad/crop
+                    // offsets on the reshape output's axes have already been baked
+                    // into `d.idx` by the pad handlers, so no lp handling is needed
+                    // here.
+                    let out_view = views[&op_id].clone();
+                    let x_shape = self.shape_ids(x);
+                    let n = x_shape.len();
+                    let mut x_strides = vec![one; n];
+                    let mut st = one;
+                    for a in (0..n).rev() {
+                        x_strides[a] = st;
+                        st = self.mul(x_shape[a], st);
+                    }
+                    // Validity mask over the output view: a recovered input
+                    // coordinate is only meaningful where the output is within
+                    // its own source extent (idx >= 0 && idx < len).
+                    // Padded output regions must read as zero, so invalid
+                    // recovered indices are clamped to len + 1 (out of bounds).
+                    let mut valid = self.const_val(true);
+                    for d in &out_view.dims {
+                        let lo = self.cmpge(d.idx, zero);
+                        // A dim length of 0 is the inferred-dim marker and must
+                        // never reach the kernel IR (Tensor::reshape rejects it).
+                        debug_assert!(
+                            self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
+                            "inferred dim (0) must not reach linearize"
+                        );
+                        let hi = self.cmplt(d.idx, d.len);
+                        let in_axis = self.and(lo, hi);
+                        valid = self.and(valid, in_axis);
+                    }
+                    let mut base = zero;
+                    let mut stride = one;
+                    let mut out_strides = Vec::with_capacity(out_view.dims.len());
+                    for d in out_view.dims.iter().rev() {
+                        out_strides.push(stride);
+                        stride = self.mul(stride, d.len);
+                    }
+                    out_strides.reverse();
+                    for (d, s) in out_view.dims.iter().zip(out_strides) {
+                        base = self.mad(d.idx, s, base);
+                    }
+                    let mut view = Vec::with_capacity(n);
+                    let mut q = base;
+                    for a in 0..n {
+                        let s = x_strides[a];
+                        let idx_expr = if a == n - 1 {
+                            q
+                        } else {
+                            let div = self.div(q, s);
+                            let rem = self.mod_(q, s);
+                            q = rem;
+                            div
+                        };
+                        let len = x_shape[a];
+                        let invalid = self.add(len, one);
+                        let idx_expr = self.branchless_where(valid, idx_expr, invalid);
+                        view.push(SDim::new(idx_expr, len));
+                    }
+                    views.insert(x, SView { dims: view, mask: out_view.mask });
+                    self.remap(op_id, x);
+                    self.remove_op(op_id);
+                }
+                Op::Expand { x, shape } => {
+                    // Broadcast determination is symbolic: an input axis is
+                    // broadcast iff its dim resolves to 1 and the output dim
+                    // resolves to something != 1. A dynamic dim resolves to None
+                    // and is treated as non-broadcast (identity), the safe
+                    // default. No concrete shape() lookup is required.
+                    let x_shape = self.shape_ids(x);
+                    let shape = match &self.ops[shape].op {
+                        Op::Stack { ops } => ops.to_vec(),
+                        // Bare descriptor: a single dim value (const,
+                        // runtime-loaded scalar, or a dim *expression*
+                        // over them) — mirrors `shape_ids`'s `descriptor`.
+                        Op::Const(_) | Op::Param { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Load { .. } => {
+                            vec![shape]
                         }
-                        &MoveOp::Expand { .. } => {
-                            // Broadcast determination is symbolic: an input axis is
-                            // broadcast iff its dim resolves to 1 and the output dim
-                            // resolves to something != 1. A dynamic dim resolves to None
-                            // and is treated as non-broadcast (identity), the safe
-                            // default. No concrete shape() lookup is required.
-                            let x_shape = self.shape_ids(x);
-                            let shape = match &self.ops[op_id].op {
-                                Op::Move { mop, .. } => match mop.as_ref() {
-                                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => match &self.ops[*shape].op {
-                                        Op::Stack { ops } => ops.to_vec(),
-                                        // Bare descriptor: a single dim value (const,
-                                        // runtime-loaded scalar, or a dim *expression*
-                                        // over them) — mirrors `shape_ids`'s `descriptor`.
-                                        Op::Const(_)
-                                        | Op::Param { .. }
-                                        | Op::Unary { .. }
-                                        | Op::Binary { .. }
-                                        | Op::Load { .. } => {
-                                            vec![*shape]
-                                        }
-                                        op => todo!("invalid shape descriptor {op:?}"),
-                                    },
-                                    _ => unreachable!(),
-                                },
-                                _ => unreachable!(),
-                            };
-                            // New leading axes are prepended broadcasts; the input axes
-                            // align to the tail of the output shape. A broadcast input
-                            // axis reads a single constant element (index 0 over an
-                            // input length of 1); a non-broadcast axis keeps the input's
-                            // own index and length, so the load indexes the compact input.
-                            let offset = shape.len() - x_shape.len();
-                            let n = x_shape.len();
-                            let out_view = views[&op_id].clone();
-                            let view = if n == 0 {
-                                // Scalar input broadcasts to every axis: it reads
-                                // a single element, so its view is empty (load
-                                // index 0), not the output view. The output
-                                // mask propagates so padded regions read zero.
-                                SView { dims: Vec::new(), mask: out_view.mask }
+                        op => todo!("invalid shape descriptor {op:?}"),
+                    };
+                    // New leading axes are prepended broadcasts; the input axes
+                    // align to the tail of the output shape. A broadcast input
+                    // axis reads a single constant element (index 0 over an
+                    // input length of 1); a non-broadcast axis keeps the input's
+                    // own index and length, so the load indexes the compact input.
+                    let offset = shape.len() - x_shape.len();
+                    let n = x_shape.len();
+                    let out_view = views[&op_id].clone();
+                    let view = if n == 0 {
+                        // Scalar input broadcasts to every axis: it reads
+                        // a single element, so its view is empty (load
+                        // index 0), not the output view. The output
+                        // mask propagates so padded regions read zero.
+                        SView { dims: Vec::new(), mask: out_view.mask }
+                    } else {
+                        let mut v = Vec::with_capacity(n);
+                        for a in 0..n {
+                            let broadcast = self.resolve_const(x_shape[a]).and_then(Constant::as_dim) == Some(1)
+                                && self.resolve_const(shape[offset + a]).and_then(Constant::as_dim) != Some(1);
+                            let d = out_view.dims[offset + a];
+                            let d = if broadcast {
+                                // The broadcast axis reads a constant element, so
+                                // the output coordinate carries no position info
+                                // (idx is reset to zero). Any validity constraint
+                                // living in the idx expression would be lost here
+                                // — which is exactly why pad/narrow also record
+                                // their terms in the view's explicit mask, which
+                                // propagates through this arm unchanged.
+                                SDim::new(zero, x_shape[a])
                             } else {
-                                let mut v = Vec::with_capacity(n);
-                                for a in 0..n {
-                                    let broadcast = self.resolve_const(x_shape[a]).and_then(Constant::as_dim) == Some(1)
-                                        && self.resolve_const(shape[offset + a]).and_then(Constant::as_dim) != Some(1);
-                                    let d = out_view.dims[offset + a];
-                                    let d = if broadcast {
-                                        // The broadcast axis reads a constant element, so
-                                        // the output coordinate carries no position info
-                                        // (idx is reset to zero). Any validity constraint
-                                        // living in the idx expression would be lost here
-                                        // — which is exactly why pad/narrow also record
-                                        // their terms in the view's explicit mask, which
-                                        // propagates through this arm unchanged.
-                                        SDim::new(zero, x_shape[a])
-                                    } else {
-                                        SDim::new(d.idx, x_shape[a])
-                                    };
-                                    v.push(d);
-                                }
-                                SView { dims: v, mask: out_view.mask }
+                                SDim::new(d.idx, x_shape[a])
                             };
-                            views.insert(x, view);
+                            v.push(d);
                         }
-                        MoveOp::Permute { axes } => {
-                            // Pure backwards permutation: input axis j is consumed by
-                            // output axis inv_axes[j], so the input view's axis j is
-                            // exactly the output view's axis inv_axes[j]. No shape
-                            // lookup or stride recomputation is needed -- the SDims are
-                            // simply reordered.
-                            let axes = axes.clone();
-                            let view = views[&op_id].clone();
-                            let SView { dims, mask } = view;
-                            let mut inv_axes = vec![0; axes.len()];
-                            for (i, &a) in axes.iter().enumerate() {
-                                inv_axes[a] = i;
-                            }
-                            let dims: Vec<SDim> = inv_axes.iter().map(|&j| dims[j]).collect();
-                            views.insert(x, SView { dims, mask });
-                        }
-                        MoveOp::Flip { axes } => {
-                            let axes = axes.clone();
-                            let view = views[&op_id].clone();
-                            let SView { dims, mask } = view;
-                            let mut new_dims = Vec::with_capacity(dims.len());
-                            for (a, d) in dims.into_iter().enumerate() {
-                                if axes.contains(&(a as UAxis)) {
-                                    // Reverse the axis: input coord = len - 1 - out_idx.
-                                    let len_m1 = self.sub(d.len, one);
-                                    let idx = self.sub(len_m1, d.idx);
-                                    new_dims.push(SDim::new(idx, d.len));
-                                } else {
-                                    new_dims.push(d);
-                                }
-                            }
-                            views.insert(x, SView { dims: new_dims, mask });
-                        }
-                        &MoveOp::Pad { axis, lp, len } => {
-                            // Pure backward pad: the input coordinate is
-                            // the output coordinate shifted left by `lp` (a negative
-                            // `lp` is a slice, shifting right), and the input extent
-                            // is `len - lp - rp`, with `rp = len - lp - orig_len`
-                            // recovered from x's own axis length. The resulting
-                            // `idx >= 0 && idx < len` bounds check at the load is the
-                            // exact validity mask -- no separate pad terms.
-                            let mut view = views[&op_id].clone();
-                            let d = view.dims[axis];
-                            let idx = self.sub(d.idx, lp);
-                            let orig = {
-                                let dims = self.shape_ids(x);
-                                dims[axis as usize]
-                            };
-                            let rp = self.sub(len, lp);
-                            let rp = self.sub(rp, orig);
-                            let in_len = self.sub(d.len, lp);
-                            let in_len = self.sub(in_len, rp);
-                            view.dims[axis] = SDim::new(idx, in_len);
-                            // Validity as an explicit mask term in output coordinates:
-                            // the input has an element exactly where the shifted
-                            // coordinate lands inside [0, in_len). The idx/len encoding
-                            // holds the same constraint, but a downstream arm (e.g.
-                            // Expand broadcast) may overwrite idx, so the mask carries
-                            // it independently of the coordinate encoding.
-                            let lo = self.cmpge(idx, zero);
-                            let hi = self.cmplt(idx, in_len);
-                            let term = self.and(lo, hi);
-                            view.mask = Some(match view.mask {
-                                Some(m) => self.and(term, m),
-                                None => term,
-                            });
-                            views.insert(x, view);
-                        }
-                        &MoveOp::Narrow { axis, start, .. } => {
-                            let x_shape = self.shape_ids(x);
-                            let mut view = views[&op_id].clone();
-                            // Pure backward narrow: the input coordinate along the
-                            // narrowed axis is `start + out_idx`, and the axis length
-                            // is the input's own length on that axis. Other axes pass
-                            // through unchanged.
-                            let mut new_dims = Vec::with_capacity(view.dims.len());
-                            let mut narrow_idx = None;
-                            for (a, d) in view.dims.clone().into_iter().enumerate() {
-                                if a as UAxis == axis {
-                                    let idx = self.add(d.idx, start);
-                                    narrow_idx = Some(idx);
-                                    new_dims.push(SDim::new(idx, x_shape[a]));
-                                } else {
-                                    new_dims.push(d);
-                                }
-                            }
-                            view.dims = new_dims;
-                            // Validity as an explicit mask term in output coordinates:
-                            // the source element exists exactly where the shifted
-                            // coordinate lands inside the input's own extent. The
-                            // idx/len encoding holds the same constraint, but a
-                            // downstream arm (e.g. Expand broadcast) may overwrite idx,
-                            // so the mask carries it independently of the coordinate
-                            // encoding.
-                            let idx = narrow_idx.expect("narrow axis must be within the view");
-                            let lo = self.cmpge(idx, zero);
-                            let hi = self.cmplt(idx, x_shape[axis as usize]);
-                            let term = self.and(lo, hi);
-                            view.mask = Some(match view.mask {
-                                Some(m) => self.and(term, m),
-                                None => term,
-                            });
-                            views.insert(x, view);
+                        SView { dims: v, mask: out_view.mask }
+                    };
+                    views.insert(x, view);
+                    self.remap(op_id, x);
+                    self.remove_op(op_id);
+                }
+                Op::Permute { x, ref axes } => {
+                    // Pure backwards permutation: input axis j is consumed by
+                    // output axis inv_axes[j], so the input view's axis j is
+                    // exactly the output view's axis inv_axes[j]. No shape
+                    // lookup or stride recomputation is needed -- the SDims are
+                    // simply reordered.
+                    let view = views[&op_id].clone();
+                    let SView { dims, mask } = view;
+                    let mut inv_axes = vec![0; axes.len()];
+                    for (i, &a) in axes.iter().enumerate() {
+                        inv_axes[a as usize] = i;
+                    }
+                    let dims: Vec<SDim> = inv_axes.iter().map(|&j| dims[j]).collect();
+                    views.insert(x, SView { dims, mask });
+                    self.remap(op_id, x);
+                    self.remove_op(op_id);
+                }
+                Op::Flip { x, ref axes } => {
+                    let axes = axes.clone();
+                    let view = views[&op_id].clone();
+                    let SView { dims, mask } = view;
+                    let mut new_dims = Vec::with_capacity(dims.len());
+                    for (a, d) in dims.into_iter().enumerate() {
+                        if axes.contains(&(a as UAxis)) {
+                            // Reverse the axis: input coord = len - 1 - out_idx.
+                            let len_m1 = self.sub(d.len, one);
+                            let idx = self.sub(len_m1, d.idx);
+                            new_dims.push(SDim::new(idx, d.len));
+                        } else {
+                            new_dims.push(d);
                         }
                     }
+                    views.insert(x, SView { dims: new_dims, mask });
+                    self.remap(op_id, x);
+                    self.remove_op(op_id);
+                }
+                Op::Pad { x, axis, lp, len } => {
+                    // Pure backward pad: the input coordinate is
+                    // the output coordinate shifted left by `lp` (a negative
+                    // `lp` is a slice, shifting right), and the input extent
+                    // is `len - lp - rp`, with `rp = len - lp - orig_len`
+                    // recovered from x's own axis length. The resulting
+                    // `idx >= 0 && idx < len` bounds check at the load is the
+                    // exact validity mask -- no separate pad terms.
+                    let mut view = views[&op_id].clone();
+                    let d = view.dims[axis as usize];
+                    let idx = self.sub(d.idx, lp);
+                    let orig = {
+                        let dims = self.shape_ids(x);
+                        dims[axis as usize]
+                    };
+                    let rp = self.sub(len, lp);
+                    let rp = self.sub(rp, orig);
+                    let in_len = self.sub(d.len, lp);
+                    let in_len = self.sub(in_len, rp);
+                    view.dims[axis as usize] = SDim::new(idx, in_len);
+                    // Validity as an explicit mask term in output coordinates:
+                    // the input has an element exactly where the shifted
+                    // coordinate lands inside [0, in_len). The idx/len encoding
+                    // holds the same constraint, but a downstream arm (e.g.
+                    // Expand broadcast) may overwrite idx, so the mask carries
+                    // it independently of the coordinate encoding.
+                    let lo = self.cmpge(idx, zero);
+                    let hi = self.cmplt(idx, in_len);
+                    let term = self.and(lo, hi);
+                    view.mask = Some(match view.mask {
+                        Some(m) => self.and(term, m),
+                        None => term,
+                    });
+                    views.insert(x, view);
+                    self.remap(op_id, x);
+                    self.remove_op(op_id);
+                }
+                Op::Narrow { x, axis, start, .. } => {
+                    let x_shape = self.shape_ids(x);
+                    let mut view = views[&op_id].clone();
+                    // Pure backward narrow: the input coordinate along the
+                    // narrowed axis is `start + out_idx`, and the axis length
+                    // is the input's own length on that axis. Other axes pass
+                    // through unchanged.
+                    let mut new_dims = Vec::with_capacity(view.dims.len());
+                    let mut narrow_idx = None;
+                    for (a, d) in view.dims.clone().into_iter().enumerate() {
+                        if a as UAxis == axis {
+                            let idx = self.add(d.idx, start);
+                            narrow_idx = Some(idx);
+                            new_dims.push(SDim::new(idx, x_shape[a]));
+                        } else {
+                            new_dims.push(d);
+                        }
+                    }
+                    view.dims = new_dims;
+                    // Validity as an explicit mask term in output coordinates:
+                    // the source element exists exactly where the shifted
+                    // coordinate lands inside the input's own extent. The
+                    // idx/len encoding holds the same constraint, but a
+                    // downstream arm (e.g. Expand broadcast) may overwrite idx,
+                    // so the mask carries it independently of the coordinate
+                    // encoding.
+                    let idx = narrow_idx.expect("narrow axis must be within the view");
+                    let lo = self.cmpge(idx, zero);
+                    let hi = self.cmplt(idx, x_shape[axis as usize]);
+                    let term = self.and(lo, hi);
+                    view.mask = Some(match view.mask {
+                        Some(m) => self.and(term, m),
+                        None => term,
+                    });
+                    views.insert(x, view);
                     self.remap(op_id, x);
                     self.remove_op(op_id);
                 }

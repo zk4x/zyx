@@ -77,8 +77,24 @@ impl Kernel {
                     | Op::TransposeTile { .. }
                     | Op::BroadcastTile { .. }
                     | Op::Asm { .. } => has_post_linearize_ops = true,
-                    Op::Move { .. } | Op::Reduce { .. } => has_move_or_reduce = true,
-                    _ => {}
+                    Op::Permute { .. }
+                    | Op::Expand { .. }
+                    | Op::Reshape { .. }
+                    | Op::Pad { .. }
+                    | Op::Narrow { .. }
+                    | Op::Flip { .. }
+                    | Op::Reduce { .. } => has_move_or_reduce = true,
+                    Op::Param { .. } => todo!(),
+                    Op::Cast { .. } => todo!(),
+                    Op::Bitcast { .. } => todo!(),
+                    Op::Unary { .. } => todo!(),
+                    Op::Binary { .. } => todo!(),
+                    Op::Stack { .. } => todo!(),
+                    Op::After { .. } => todo!(),
+                    Op::ToDevice { .. } => todo!(),
+                    Op::Contiguous { .. } => todo!(),
+                    Op::Kernel { .. } => todo!(),
+                    Op::Custom(_) => todo!(),
                 }
                 scan = self.next_op(scan);
             }
@@ -228,7 +244,13 @@ impl Kernel {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
-                Op::Unary { x, .. } | Op::Move { x, .. } => {
+                Op::Unary { x, .. }
+                | Op::Permute { x, .. }
+                | Op::Pad { x, .. }
+                | Op::Expand { x, .. }
+                | Op::Reshape { x, .. }
+                | Op::Flip { x, .. }
+                | Op::Narrow { x, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }

@@ -35,7 +35,7 @@ impl Tensor {
     pub(crate) fn reduce_axes(&self, axes: Vec<UAxis>, rop: BOp) -> Result<Tensor, ZyxError> {
         let rank = self.resolve_shape().len();
         let perm: Vec<Axis> =
-            (0..rank).filter(|i| !axes.contains(i)).chain(axes.iter().copied()).map(|i| i as Axis).collect();
+            (0..rank as UAxis).filter(|i| !axes.contains(i)).chain(axes.iter().copied()).map(|i| i as Axis).collect();
         let mut cur = self.clone();
         if !perm.iter().copied().enumerate().all(|(i, a)| a as usize == i) {
             cur = cur.permute(perm)?;
@@ -88,7 +88,7 @@ impl Tensor {
         let rank = shape.len();
         let x_dtype = self.dtype();
         let axes: Vec<_> = axes.into_iter().collect();
-        let axes_vec: Vec<UAxis> = into_axes(axes.clone(), rank)?;
+        let axes_vec: Vec<UAxis> = into_axes(axes.clone(), rank as UAxis)?;
 
         // Start with the base reduction for ops runtime supports
         let mut tensor = match op {
@@ -130,7 +130,7 @@ impl Tensor {
                 // dims become a runtime divide (no recompile per value).
                 let mut n_t = Tensor::from(1i64);
                 for &a in &axes_vec {
-                    n_t = n_t * shape_dims[a].clone();
+                    n_t = n_t * shape_dims[a as usize].clone();
                 }
                 let x = if let Some(dtype) = dtype {
                     self.sum_dtype(axes, dtype)?
@@ -143,13 +143,13 @@ impl Tensor {
             ReduceOp::Var => {
                 if let Some(dtype) = dtype {
                     let x = self - self.mean_keepdim_dtype(axes.clone(), dtype)?;
-                    let shape_dims: Vec<Dim> = axes_vec.iter().map(|&a| shape[a]).collect();
+                    let shape_dims: Vec<Dim> = axes_vec.iter().map(|&a| shape[a as usize]).collect();
                     let d =
                         Axis::try_from(shape_dims.iter().product::<Dim>() as u64).unwrap() - Axis::try_from(correction).unwrap();
                     (x.clone() * x).sum_dtype(axes, dtype)? / Tensor::from(d).cast(dtype)
                 } else {
                     let x = self - self.mean_keepdim(axes.clone())?;
-                    let shape_dims: Vec<Dim> = axes_vec.iter().map(|&a| shape[a]).collect();
+                    let shape_dims: Vec<Dim> = axes_vec.iter().map(|&a| shape[a as usize]).collect();
                     let d =
                         Axis::try_from(shape_dims.iter().product::<Dim>() as u64).unwrap() - Axis::try_from(correction).unwrap();
                     let num = (x.clone() * x).sum(axes)?;
@@ -1492,11 +1492,11 @@ impl Tensor {
     /// Cumulative reduce along axis
     fn cum_reduce(&self, axis: Axis, rop: BOp) -> Result<Tensor, ZyxError> {
         let shape = self.resolve_shape();
-        let uaxis = into_axis(axis, shape.len())?;
-        let pl_sz = i64::try_from(shape[uaxis] - 1).unwrap();
+        let uaxis = into_axis(axis, shape.len() as UAxis)?;
+        let pl_sz = i64::try_from(shape[uaxis as usize] - 1).unwrap();
         let mut x = self.transpose(axis, -1)?;
         x = x.rpad_zeros([(pl_sz, 0i64)])?;
-        x = x.pool([shape[uaxis]], [1i64], [1i64])?;
+        x = x.pool([shape[uaxis as usize]], [1i64], [1i64])?;
         x = match rop {
             BOp::Add => x.sum([-1])?,
             BOp::Max => x.max([-1])?,

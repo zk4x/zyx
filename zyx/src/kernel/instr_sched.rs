@@ -153,7 +153,16 @@ impl Kernel {
                 }};
             }
             match self.at(id) {
-                Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } | Op::Move { x, .. } | Op::Reduce { x, .. } => {
+                Op::Cast { x, .. }
+                | Op::Bitcast { x, .. }
+                | Op::Unary { x, .. }
+                | Op::Reshape { x, .. }
+                | Op::Pad { x, .. }
+                | Op::Permute { x, .. }
+                | Op::Expand { x, .. }
+                | Op::Flip { x, .. }
+                | Op::Narrow { x, ..}
+                | Op::Reduce { x, .. } => {
                     add_param!(x)
                 }
                 Op::ReduceTile { x, scaler, acc, .. } => {

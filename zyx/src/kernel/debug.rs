@@ -22,7 +22,7 @@
 /// ZYX_DEBUG=8 cargo run  # Print IR during kernel compilation
 /// ZYX_DEBUG=16 cargo run # Print generated assembly
 /// ```
-use crate::kernel::{BOp, IDX_T, MoveOp, RangeKind, UOp};
+use crate::kernel::{BOp, IDX_T, RangeKind, UOp};
 use crate::slab::SlabId;
 use crate::{
     BLUE, BOLD, CYAN, DType, GREEN, GREY, MAGENTA, Map, ORANGE, RED, RESET, YELLOW,
@@ -80,7 +80,7 @@ impl Display for Kernel {
                 id_map.insert(op_id, op_id);
                 op_id
             };
-            match *self.at(op_id) {
+            match self.ops[op_id].op {
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }
@@ -377,44 +377,55 @@ impl Display for Kernel {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = r{vec}{orange}.s{idx}{reset}").unwrap();
                     }
                 }
-                Op::Move { x, ref mop } => {
+                Op::Reshape { x, shape, .. } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
-                    match mop.as_ref() {
-                        &MoveOp::Reshape { shape, .. } => {
-                            let shape = id_map.get(&shape).copied().unwrap_or(shape);
-                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}reshape{reset} r{x} -> {shape:?}")
-                                .unwrap();
-                        }
-                        &MoveOp::Expand { shape } => {
-                            let shape = id_map.get(&shape).copied().unwrap_or(shape);
-                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}expand{reset} r{x} -> {shape:?}")
-                                .unwrap();
-                        }
-                        MoveOp::Permute { axes } => {
-                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}permute{reset} r{x} axes={axes:?}")
-                                .unwrap();
-                        }
-                        &MoveOp::Pad { ref axis, lp, len } => {
-                            let lp = id_map.get(&lp).copied().unwrap_or(lp);
-                            let len = id_map.get(&len).copied().unwrap_or(len);
-                            writeln!(
-                                f,
-                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} axis={axis} lp=r{lp} len=r{len}"
-                            )
-                            .unwrap();
-                        }
-                        &MoveOp::Narrow { ref axis, start, len } => {
-                            let start = id_map.get(&start).copied().unwrap_or(start);
-                            let len = id_map.get(&len).copied().unwrap_or(len);
-                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}narrow{reset} r{x} axis={axis} start=r{start} len=r{len}").unwrap();
-                        }
-                        MoveOp::Flip { axes } => {
-                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}flip{reset} r{x} axes={axes:?}")
-                                .unwrap();
-                        }
-                    }
+                    let shape = id_map.get(&shape).copied().unwrap_or(shape);
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}reshape{reset} r{x} -> {shape:?}").unwrap();
+                }
+                Op::Expand { x, shape } => {
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    let shape = id_map.get(&shape).copied().unwrap_or(shape);
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}expand{reset} r{x} -> {shape:?}").unwrap();
+                }
+                Op::Permute { x, ref axes } => {
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}permute{reset} r{x} axes={axes:?}").unwrap();
+                }
+                Op::Pad { x, ref axis, lp, len } => {
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    let lp = id_map.get(&lp).copied().unwrap_or(lp);
+                    let len = id_map.get(&len).copied().unwrap_or(len);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} axis={axis} lp=r{lp} len=r{len}"
+                    )
+                    .unwrap();
+                }
+                Op::Narrow { x, axis, start, len } => {
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    let start = id_map.get(&start).copied().unwrap_or(start);
+                    let len = id_map.get(&len).copied().unwrap_or(len);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}narrow{reset} r{x} axis={axis} start=r{start} len=r{len}"
+                    )
+                    .unwrap();
+                }
+                Op::Flip { x, ref axes } => {
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}flip{reset} r{x} axes={axes:?}").unwrap();
                 }
                 Op::Barrier => {
                     writeln!(f, "{indent}barrier").unwrap();

@@ -16,7 +16,7 @@
 
 use crate::{
     graph::Graph,
-    kernel::{BOp, MoveOp, Op, OpId},
+    kernel::{BOp, Op, OpId},
     shape::Dim,
 };
 
@@ -76,11 +76,8 @@ impl Graph {
     /// depend on how the shape was produced (e.g. a `Reshape` in the canonical
     /// matmul form, or an eager tensor already at the broadcast shape).
     fn expand_src(&self, cid: OpId) -> Option<(OpId, Vec<Dim>)> {
-        let x = self.class_nodes(cid).find_map(|nid| match &self.ops[nid].op {
-            Op::Move { x, mop } => match mop.as_ref() {
-                MoveOp::Expand { .. } => Some(*x),
-                _ => None,
-            },
+        let x = self.class_nodes(cid).find_map(|nid| match self.ops[nid].op {
+            Op::Expand { x, .. } => Some(x),
             _ => None,
         })?;
         Some((x, self.const_shape(x)?))
@@ -90,12 +87,9 @@ impl Graph {
     /// `[k, n]`), looking through shape-only wrappers such as the `Reshape` to
     /// `[1, n, k]` in the broadcast matmul form.
     fn transpose_src(&self, cid: OpId) -> Option<OpId> {
-        self.class_nodes(cid).find_map(|nid| match &self.ops[nid].op {
-            Op::Move { x, mop } => match mop.as_ref() {
-                MoveOp::Reshape { .. } => self.transpose_src(*x),
-                MoveOp::Permute { axes } if axes.len() == 2 && axes[0] == 1 && axes[1] == 0 => Some(*x),
-                _ => None,
-            },
+        self.class_nodes(cid).find_map(|nid| match self.ops[nid].op {
+            Op::Reshape { x, .. } => self.transpose_src(x),
+            Op::Permute { x, ref axes } if axes.len() == 2 && axes[0] == 1 && axes[1] == 0 => Some(x),
             _ => None,
         })
     }
