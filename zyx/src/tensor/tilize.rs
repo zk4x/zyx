@@ -80,7 +80,14 @@ impl Tensor {
             .unwrap();
         // Split each padded dim into tiles x faces x rows: [..., ntr, 2, 16, ntc, 2, 16].
         let mut split = shape[..rank - 2].to_vec();
-        split.extend([ntr, Tensor::from(2i64), Tensor::from(16i64), ntc, Tensor::from(2i64), Tensor::from(16i64)]);
+        split.extend([
+            ntr,
+            Tensor::from(2i64),
+            Tensor::from(16i64),
+            ntc,
+            Tensor::from(2i64),
+            Tensor::from(16i64),
+        ]);
         let split = padded.reshape(split).unwrap();
         // Bring tile/face axes out front: [..., ntr, ntc, 2, 2, 16, 16].
         let k = (rank - 2) as i32;
@@ -138,9 +145,7 @@ impl Tensor {
                     ));
                 }
                 if len < 0 || len > p {
-                    return Err(ZyxError::shape_error(
-                        format!("untilize: {name}={len} out of range for padded dim {p}").into(),
-                    ));
+                    return Err(ZyxError::shape_error(format!("untilize: {name}={len} out of range for padded dim {p}").into()));
                 }
             }
         }

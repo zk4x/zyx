@@ -1135,7 +1135,7 @@ impl Kernel {
                     | Op::Permute { .. }
                     | Op::Flip { .. }
                     | Op::Narrow { .. }
-                    | Op::Reshape { ..}
+                    | Op::Reshape { .. }
                     | Op::Pad { .. }
                     | Op::Reduce { .. }
                     | Op::Wmma { .. }

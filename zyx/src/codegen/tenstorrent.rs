@@ -4507,7 +4507,8 @@ impl Compiler {
                     let t = dtype.c_type();
                     let n = def_reg(&mut reg, &mut next_r, &mut reg_dtypes, s, *z, &t);
                     let decl = format!("r{n} = ");
-                    match bop {                        BOp::Add => writeln!(bodies[si], "{ind}{decl}{xo} + {yo};")?,
+                    match bop {
+                        BOp::Add => writeln!(bodies[si], "{ind}{decl}{xo} + {yo};")?,
                         BOp::Sub => writeln!(bodies[si], "{ind}{decl}{xo} - {yo};")?,
                         BOp::Mul => writeln!(bodies[si], "{ind}{decl}{xo} * {yo};")?,
                         BOp::Div => writeln!(bodies[si], "{ind}{decl}{xo} / {yo};")?,
@@ -4589,7 +4590,10 @@ impl Compiler {
                         (2, ParamKind::GlobalMut) => {
                             writeln!(bodies[si], "{ind}uint32_t out{ordinal} = get_arg_val<uint32_t>({ai});")?;
                             writeln!(bodies[si], "{ind}auto args_out{ordinal} = TensorAccessorArgs<{cta}>({ai});")?;
-                            writeln!(bodies[si], "{ind}auto p_out{ordinal} = TensorAccessor(args_out{ordinal}, out{ordinal}, {page});")?;
+                            writeln!(
+                                bodies[si],
+                                "{ind}auto p_out{ordinal} = TensorAccessor(args_out{ordinal}, out{ordinal}, {page});"
+                            )?;
                             acc_prev[si] = Some(format!("args_out{ordinal}"));
                         }
                         _ => {
@@ -4934,11 +4938,11 @@ impl Compiler {
 /// dtypes, and DST mode the backend needs.
 pub struct TTProgram {
     /// Reader section source.
-    pub reader_src: String, // TEMP: revert
+    pub(crate) reader_src: String,
     /// Compute section source (empty when the kernel is pure copy).
-    pub compute_src: String, // TEMP: revert
+    pub(crate) compute_src: String,
     /// Writer section source.
-    pub writer_src: String, // TEMP: revert
+    pub(crate) writer_src: String,
     /// Global head-order ordinals of the reader section params.
     pub(crate) reader_params: Vec<u32>,
     /// Global head-order ordinals of the compute section params.

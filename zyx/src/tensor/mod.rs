@@ -2659,8 +2659,12 @@ impl Tensor {
             let id = RT.lock().binary(dim.id, d.id, BOp::Mul).expect("flatten: failed to build symbolic mul chain");
             dim = Tensor { id };
         }
-        let new_shape: Vec<Tensor> =
-            symbolic[..start_dim as usize].to_vec().into_iter().chain(std::iter::once(dim)).chain(symbolic[end_dim as usize..].to_vec()).collect();
+        let new_shape: Vec<Tensor> = symbolic[..start_dim as usize]
+            .to_vec()
+            .into_iter()
+            .chain(std::iter::once(dim))
+            .chain(symbolic[end_dim as usize..].to_vec())
+            .collect();
         self.reshape(new_shape)
     }
 

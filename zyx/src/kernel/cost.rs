@@ -231,7 +231,7 @@ impl Kernel {
                 | Op::Permute { .. }
                 | Op::Flip { .. }
                 | Op::Narrow { .. }
-                | Op::Reshape { ..}
+                | Op::Reshape { .. }
                 | Op::Pad { .. } => todo!(),
                 Op::Reduce { .. } => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
@@ -296,7 +296,7 @@ impl Kernel {
                 | Op::Permute { .. }
                 | Op::Flip { .. }
                 | Op::Narrow { .. }
-                | Op::Reshape { ..}
+                | Op::Reshape { .. }
                 | Op::Pad { .. }
                 | Op::Reduce { .. }
                 | Op::ReduceTile { .. }

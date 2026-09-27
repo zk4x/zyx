@@ -3145,10 +3145,10 @@ impl Runtime {
         let mut new_def_loads: Vec<TensorId> = Vec::new();
         // Pass A: transitive dependency closure over the removed kernel's ops
         // via `parameters()` — this pulls in every referenced id, including
-// `Param { shape }` descriptors and view op internals (narrow
-// start/len, pad lp/len, reshape/expand shapes). Nothing may be left
-// dangling: ids from the removed kernel would silently collide with
-// unrelated ops in src's kernel.
+        // `Param { shape }` descriptors and view op internals (narrow
+        // start/len, pad lp/len, reshape/expand shapes). Nothing may be left
+        // dangling: ids from the removed kernel would silently collide with
+        // unrelated ops in src's kernel.
         let mut required: Set<OpId> = Set::default();
         {
             let mut stack: Vec<OpId> = Vec::new();
@@ -3188,9 +3188,9 @@ impl Runtime {
                     }
                     _ => {}
                 }
-// Single remap pass: `parameters_mut` covers the view op's `x`
-// AND its internals (reshape/expand shapes, pad lp/len, narrow start/len)
-// — no second remap, that would look up already-remapped ids.
+                // Single remap pass: `parameters_mut` covers the view op's `x`
+                // AND its internals (reshape/expand shapes, pad lp/len, narrow start/len)
+                // — no second remap, that would look up already-remapped ids.
                 for p in op.parameters_mut() {
                     *p =
                         op_map.get(p).copied().expect("assign replay: dependency was not copied before its user despite closure");

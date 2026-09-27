@@ -578,7 +578,12 @@ impl Graph {
                         let mut dst_param = dst_op;
                         for _ in 0..100 {
                             match dst_kernel.ops[dst_param].op {
-                                Op::Reshape { x, .. } | Op::Expand { x, .. } | Op::Permute { x, .. } | Op::Flip { x, .. } | Op::Pad { x, .. } | Op::Narrow { x, .. } => dst_param = x,
+                                Op::Reshape { x, .. }
+                                | Op::Expand { x, .. }
+                                | Op::Permute { x, .. }
+                                | Op::Flip { x, .. }
+                                | Op::Pad { x, .. }
+                                | Op::Narrow { x, .. } => dst_param = x,
                                 Op::Storage { .. } => break,
                                 _ => {}
                             }
@@ -646,12 +651,22 @@ impl Graph {
                                 }
                                 Op::Pad { x, axis, lp, len } => {
                                     let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Pad { x, axis, lp: op_map[&lp], len: op_map[&len] });
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Pad {
+                                        x,
+                                        axis,
+                                        lp: op_map[&lp],
+                                        len: op_map[&len],
+                                    });
                                     op_map.insert(op_id, id);
                                 }
                                 Op::Narrow { x, axis, start, len } => {
                                     let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Narrow { x, axis, start: op_map[&start], len: op_map[&len] });
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Narrow {
+                                        x,
+                                        axis,
+                                        start: op_map[&start],
+                                        len: op_map[&len],
+                                    });
                                     op_map.insert(op_id, id);
                                 }
                                 Op::Stack { ref ops } => {
@@ -751,9 +766,7 @@ impl Graph {
                         // symbolic expression directly into this kernel.
                         let sop = self.replay_shape_into_kernel(kid, shape);
                         *rcs.get_mut(&shape).unwrap() -= 1;
-                        let result_op = self.jit_kernels[kid]
-                            .kernel
-                            .push_back(Op::Expand { x: op_id, shape: sop });
+                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Expand { x: op_id, shape: sop });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
@@ -814,9 +827,7 @@ impl Graph {
                         // symbolic expression directly into this kernel.
                         let sop = self.replay_shape_into_kernel(kid, shape);
                         *rcs.get_mut(&shape).unwrap() -= 1;
-                        let result_op = self.jit_kernels[kid]
-                            .kernel
-                            .push_back(Op::Reshape { x: op_id, shape: sop });
+                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Reshape { x: op_id, shape: sop });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
@@ -846,9 +857,8 @@ impl Graph {
                         let len_op = self.replay_shape_into_kernel(kid, len);
                         *rcs.get_mut(&lp).unwrap() -= 1;
                         *rcs.get_mut(&len).unwrap() -= 1;
-                        let result_op = self.jit_kernels[kid]
-                            .kernel
-                            .push_back(Op::Pad { x: op_id, axis, lp: lp_op, len: len_op });
+                        let result_op =
+                            self.jit_kernels[kid].kernel.push_back(Op::Pad { x: op_id, axis, lp: lp_op, len: len_op });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
@@ -1408,7 +1418,9 @@ impl Graph {
         for &cid in active_outputs {
             for nid in self.class_nodes(cid) {
                 if let Op::Kernel { inputs: kin, .. } = &self.ops[nid].op {
-                    let Op::Stack { ref ops } = self.ops[*kin].op else { unreachable!() };
+                    let Op::Stack { ref ops } = self.ops[*kin].op else {
+                        unreachable!()
+                    };
                     kernel_inputs.extend(ops.iter().copied());
                 }
             }

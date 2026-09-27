@@ -93,33 +93,36 @@ fn build_gemm(
     let strips = mt_groups / groups_per_strip;
     kernel.loop_over(nt_per_core / sb_w, |kernel, nhi| {
         kernel.loop_over(strips, |kernel, strip| {
-            kernel.loop_over(KT_TILES, |kernel, kti| {
-                let nt_off = kernel.mad(nhi, sb_w, 0);
-                kernel.loop_over(sb_w, |kernel, nti| {
-                    let nt_rel = kernel.add(nt_off, nti);
-                    let nt_idx = kernel.mad(gy, nt_per_core, nt_rel);
-                    let bt = kernel.mad(kti, nt, nt_idx);
-                    let bbase = kernel.mad(bt, TILE_ELEMS, 0);
-                    let tb = kernel.load_global_tile(b, bbase);
-                    kernel.store_circular(cb, tb, 0);
-                });
-                for gi in 0..groups_per_strip {
-                    let mtp = kernel.mad(strip, groups_per_strip, gi);
-                    for r in 0..sb_h {
-                        let mt_loc = kernel.mad(mtp, sb_h, r);
-                        let mt_idx = kernel.add(mt_base, mt_loc);
-                        let at = kernel.mad(mt_idx, KT_TILES, kti);
-                        let abase = kernel.mad(at, TILE_ELEMS, 0);
-                        let ta = kernel.load_global_tile(a, abase);
-                        kernel.store_circular(ca, ta, 0);
-                    }
-                }
-            });
-        });
-    });
-    // Compute: per (nhi, strip) accumulate the strip's outputs; one B row
-    // feeds every row group in the strip per K step (pop order matches
-    // reader push order exactly: B row, then A groups in strip order).
+             kernel.loop_over(KT_TILES, |kernel, kti| {
+                 // Push A tiles first, then B rows — must match
+                 // the compute section's wait order
+                 // (WaitFront CBId(1)=MatA before CBId(0)=MatB).
+                 for gi in 0..groups_per_strip {
+                     let mtp = kernel.mad(strip, groups_per_strip, gi);
+                     for r in 0..sb_h {
+                         let mt_loc = kernel.mad(mtp, sb_h, r);
+                         let mt_idx = kernel.add(mt_base, mt_loc);
+                         let at = kernel.mad(mt_idx, KT_TILES, kti);
+                         let abase = kernel.mad(at, TILE_ELEMS, 0);
+                         let ta = kernel.load_global_tile(a, abase);
+                         kernel.store_circular(ca, ta, 0);
+                     }
+                 }
+                 let nt_off = kernel.mad(nhi, sb_w, 0);
+                 kernel.loop_over(sb_w, |kernel, nti| {
+                     let nt_rel = kernel.add(nt_off, nti);
+                     let nt_idx = kernel.mad(gy, nt_per_core, nt_rel);
+                     let bt = kernel.mad(kti, nt, nt_idx);
+                     let bbase = kernel.mad(bt, TILE_ELEMS, 0);
+                     let tb = kernel.load_global_tile(b, bbase);
+                     kernel.store_circular(cb, tb, 0);
+                 });
+             });
+         });
+     });
+     // Compute: per (nhi, strip) accumulate the strip's outputs; one B row
+     // feeds every row group in the strip per K step (pop order matches
+     // reader push order exactly: A groups, then B row).
     kernel.barrier();
     kernel.loop_over(nt_per_core / sb_w, |kernel, _nhi| {
         kernel.loop_over(strips, |kernel, _strip| {
@@ -276,19 +279,4 @@ fn main() -> Result<(), ZyxError> {
     }
     println!("tt_gemm: overall best {best_tflops:.3} TFLOPS");
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // TEMP: revert. Host-side dump (no device).
-    #[test]
-    fn dump_all() {
-        let kernel = build_gemm(10, 11, 8, 8, 1, 4, 1).unwrap();
-        let prog = kernel.generate_tenstorrent().unwrap();
-        std::fs::write("/tmp/opencode/r.c", &prog.reader_src).unwrap();
-        std::fs::write("/tmp/opencode/c.c", &prog.compute_src).unwrap();
-        std::fs::write("/tmp/opencode/w.c", &prog.writer_src).unwrap();
-    }
 }

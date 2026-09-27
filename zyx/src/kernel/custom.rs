@@ -25,8 +25,7 @@ use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;
 use crate::kernel::{
-    BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp,
-    ops::TileDim,
+    BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp, ops::TileDim,
 };
 use crate::runtime::{Runtime, TensorData};
 use crate::shape::UAxis;

@@ -214,119 +214,107 @@ impl Runtime {
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
                 Op::Reshape { x, .. } => {
-                        let in_dims = self.graphs[graph_id].shape(x);
-                        let shape = self.shape_class(graph_id, in_dims.clone());
-                        let in_conc: Vec<Dim> = in_dims
-                            .iter()
-                            .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1))
-                            .collect();
-                        let xc_conc: Vec<Dim> = self.graphs[graph_id]
-                            .shape(shape)
-                            .iter()
-                            .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1))
-                            .collect();
-                        if in_conc.iter().any(|&v| v != 0) && xc_conc.iter().any(|&v| v != 0) && in_conc != xc_conc {
-                            eprintln!("RESGRAD in={:?} x_shape={:?}", in_conc, xc_conc);
-                        }
-                        let g = self.push_op(graph_id, Op::Reshape { x: grad, shape });
-                        accum_grad(self, graph_id, &mut grads, x, g);
+                    let in_dims = self.graphs[graph_id].shape(x);
+                    let shape = self.shape_class(graph_id, in_dims.clone());
+                    let in_conc: Vec<Dim> = in_dims
+                        .iter()
+                        .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1))
+                        .collect();
+                    let xc_conc: Vec<Dim> = self.graphs[graph_id]
+                        .shape(shape)
+                        .iter()
+                        .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1))
+                        .collect();
+                    if in_conc.iter().any(|&v| v != 0) && xc_conc.iter().any(|&v| v != 0) && in_conc != xc_conc {
+                        eprintln!("RESGRAD in={:?} x_shape={:?}", in_conc, xc_conc);
                     }
+                    let g = self.push_op(graph_id, Op::Reshape { x: grad, shape });
+                    accum_grad(self, graph_id, &mut grads, x, g);
+                }
                 Op::Expand { x, .. } => {
-                        let out_dims = self.graphs[graph_id].shape(cid);
-                        let in_dims = self.graphs[graph_id].shape(x);
-                        // Right-align the input against the expanded output per broadcast
-                        // semantics. The input is broadcast to the output by (a) leading
-                        // `pad` dims that the input did not have at all (implicitly size 1)
-                        // and (b) trailing-aligned dims where the input is a singleton (1)
-                        // broadcast to a larger output extent. The gradient of a broadcast
-                        // must be summed over *all* of these axes to drop back to the
-                        // input shape.
-                        //
-                        // Symbolic broadcast decision: an axis needs summing iff the input dim is
-                        // provably a singleton (1); unknown symbolic dims default
-                        // to NOT broadcast.
-                        let pad = out_dims.len() - in_dims.len();
-                        let mut sum_axes: Vec<UAxis> = (0..pad).map(|i| i as UAxis).collect();
-                        for (i, &xd) in in_dims.iter().enumerate() {
-                            if self.graph_const_dim(graph_id, xd) == Some(1) {
-                                sum_axes.push((pad + i) as UAxis);
-                            }
+                    let out_dims = self.graphs[graph_id].shape(cid);
+                    let in_dims = self.graphs[graph_id].shape(x);
+                    // Right-align the input against the expanded output per broadcast
+                    // semantics. The input is broadcast to the output by (a) leading
+                    // `pad` dims that the input did not have at all (implicitly size 1)
+                    // and (b) trailing-aligned dims where the input is a singleton (1)
+                    // broadcast to a larger output extent. The gradient of a broadcast
+                    // must be summed over *all* of these axes to drop back to the
+                    // input shape.
+                    //
+                    // Symbolic broadcast decision: an axis needs summing iff the input dim is
+                    // provably a singleton (1); unknown symbolic dims default
+                    // to NOT broadcast.
+                    let pad = out_dims.len() - in_dims.len();
+                    let mut sum_axes: Vec<UAxis> = (0..pad).map(|i| i as UAxis).collect();
+                    for (i, &xd) in in_dims.iter().enumerate() {
+                        if self.graph_const_dim(graph_id, xd) == Some(1) {
+                            sum_axes.push((pad + i) as UAxis);
                         }
-                        if sum_axes.is_empty() {
-                            accum_grad(self, graph_id, &mut grads, x, grad);
+                    }
+                    if sum_axes.is_empty() {
+                        accum_grad(self, graph_id, &mut grads, x, grad);
+                    } else {
+                        let reduced_dims: Vec<OpId> = out_dims
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| !sum_axes.contains(&(*i as UAxis)))
+                            .map(|(_, &d)| d)
+                            .collect();
+                        // Multi-axis sum as one permute (kept axes first,
+                        // summed axes trailing) followed by ReduceLast steps.
+                        let rank = out_dims.len();
+                        let perm: Vec<UAxis> = (0..rank)
+                            .map(|i| i as UAxis)
+                            .filter(|i| !sum_axes.contains(i))
+                            .chain(sum_axes.iter().copied())
+                            .collect();
+                        let mut cur = grad;
+                        if !perm.iter().copied().eq(0..rank as UAxis) {
+                            cur = self.push_op(graph_id, Op::Permute { x: cur, axes: TinyVec::new(&perm) });
+                        }
+                        for _ in 0..sum_axes.len() {
+                            let axis = *self.graphs[graph_id].shape(cur).last().expect("Reduce of scalar");
+                            cur = self.push_op(graph_id, Op::Reduce { x: cur, rop: BOp::Add, reduce_axis: axis });
+                        }
+                        // The graph reduce drops the reduced dims; restore the
+                        // original shape (keepdim) with an explicit reshape.
+                        let reduced = if reduced_dims == in_dims {
+                            cur
                         } else {
-                            let reduced_dims: Vec<OpId> = out_dims
-                                .iter()
-                                .enumerate()
-                                .filter(|(i, _)| !sum_axes.contains(&(*i as UAxis)))
-                                .map(|(_, &d)| d)
-                                .collect();
-                            // Multi-axis sum as one permute (kept axes first,
-                            // summed axes trailing) followed by ReduceLast steps.
-                            let rank = out_dims.len();
-                            let perm: Vec<UAxis> = (0..rank)
-                                .map(|i| i as UAxis)
-                                .filter(|i| !sum_axes.contains(i))
-                                .chain(sum_axes.iter().copied())
-                                .collect();
-                            let mut cur = grad;
-                            if !perm.iter().copied().eq(0..rank as UAxis) {
-                                cur = self.push_op(
-                                    graph_id,
-                                    Op::Permute { x: cur, axes: TinyVec::new(&perm) },
-                                );
-                            }
-                            for _ in 0..sum_axes.len() {
-                                let axis = *self.graphs[graph_id].shape(cur).last().expect("Reduce of scalar");
-                                cur = self.push_op(graph_id, Op::Reduce { x: cur, rop: BOp::Add, reduce_axis: axis });
-                            }
-                            // The graph reduce drops the reduced dims; restore the
-                            // original shape (keepdim) with an explicit reshape.
-                            let reduced = if reduced_dims == in_dims {
-                                cur
-                            } else {
-                                let xs = self.shape_class(graph_id, in_dims);
-                                self.push_op(graph_id, Op::Reshape { x: cur, shape: xs })
-                            };
-                            accum_grad(self, graph_id, &mut grads, x, reduced);
-                        }
+                            let xs = self.shape_class(graph_id, in_dims);
+                            self.push_op(graph_id, Op::Reshape { x: cur, shape: xs })
+                        };
+                        accum_grad(self, graph_id, &mut grads, x, reduced);
                     }
+                }
                 Op::Permute { x, ref axes, .. } => {
-                        let mut inv_axes: Vec<UAxis> = vec![0; axes.len()];
-                        for (i, &a) in axes.iter().enumerate() {
-                            inv_axes[a as usize] = i as UAxis;
-                        }
-                        let g = self.push_op(
-                            graph_id,
-                            Op::Permute { x: grad, axes: TinyVec::new(&inv_axes) },
-                        );
-                        accum_grad(self, graph_id, &mut grads, x, g);
+                    let mut inv_axes: Vec<UAxis> = vec![0; axes.len()];
+                    for (i, &a) in axes.iter().enumerate() {
+                        inv_axes[a as usize] = i as UAxis;
                     }
+                    let g = self.push_op(graph_id, Op::Permute { x: grad, axes: TinyVec::new(&inv_axes) });
+                    accum_grad(self, graph_id, &mut grads, x, g);
+                }
                 Op::Pad { x, axis, lp, .. } => {
-                        // Pad backward: narrow the gradient back to the original extent.
-                        let orig_len = self.graphs[graph_id].shape(x)[axis as usize];
-                        let g = self.push_op(
-                            graph_id,
-                            Op::Narrow { x: grad, axis, start: lp, len: orig_len },
-                        );
-                        accum_grad(self, graph_id, &mut grads, x, g);
-                    }
+                    // Pad backward: narrow the gradient back to the original extent.
+                    let orig_len = self.graphs[graph_id].shape(x)[axis as usize];
+                    let g = self.push_op(graph_id, Op::Narrow { x: grad, axis, start: lp, len: orig_len });
+                    accum_grad(self, graph_id, &mut grads, x, g);
+                }
                 Op::Narrow { x, axis, start, .. } => {
-                        // Narrow backward: pad the gradient with zeros back to the
-                        // original extent.
-                        let orig_len = self.graphs[graph_id].shape(x)[axis as usize];
-                        let g = self.push_op(
-                            graph_id,
-                            Op::Pad { x: grad, axis, lp: start, len: orig_len },
-                        );
-                        accum_grad(self, graph_id, &mut grads, x, g);
-                    }
+                    // Narrow backward: pad the gradient with zeros back to the
+                    // original extent.
+                    let orig_len = self.graphs[graph_id].shape(x)[axis as usize];
+                    let g = self.push_op(graph_id, Op::Pad { x: grad, axis, lp: start, len: orig_len });
+                    accum_grad(self, graph_id, &mut grads, x, g);
+                }
                 Op::Flip { x, ref axes, .. } => {
-                        // Flip is its own inverse: the gradient back-propagates by
-                        // flipping along the same axes.
-                        let g = self.push_op(graph_id, Op::Flip { x: grad, axes: axes.clone() });
-                        accum_grad(self, graph_id, &mut grads, x, g);
-                    }
+                    // Flip is its own inverse: the gradient back-propagates by
+                    // flipping along the same axes.
+                    let g = self.push_op(graph_id, Op::Flip { x: grad, axes: axes.clone() });
+                    accum_grad(self, graph_id, &mut grads, x, g);
+                }
                 Op::Reduce { x, rop: bop, .. } => {
                     let x_dims = self.graphs[graph_id].shape(x);
                     let last = x_dims.len() - 1;
@@ -336,10 +324,7 @@ impl Runtime {
                             let kept: Vec<OpId> =
                                 x_dims.iter().enumerate().map(|(i, &d)| if i == last { one_dim } else { d }).collect();
                             let kept_shape = self.shape_class(graph_id, kept);
-                            let grad_r = self.push_op(
-                                graph_id,
-                                Op::Reshape { x: grad, shape: kept_shape },
-                            );
+                            let grad_r = self.push_op(graph_id, Op::Reshape { x: grad, shape: kept_shape });
                             let shape = self.shape_class(graph_id, x_dims);
                             let g = self.push_op(graph_id, Op::Expand { x: grad_r, shape });
                             accum_grad(self, graph_id, &mut grads, x, g);
@@ -353,17 +338,13 @@ impl Runtime {
                                 x_dims.iter().enumerate().map(|(i, &d)| if i == last { one_dim } else { d }).collect();
                             let kept_shape = self.shape_class(graph_id, kept);
                             let x_shape = self.shape_class(graph_id, x_dims);
-                            let z_reshaped =
-                                self.push_op(graph_id, Op::Reshape { x: cid, shape: kept_shape });
-                            let z_broadcasted = self
-                                .push_op(graph_id, Op::Expand { x: z_reshaped, shape: x_shape });
+                            let z_reshaped = self.push_op(graph_id, Op::Reshape { x: cid, shape: kept_shape });
+                            let z_broadcasted = self.push_op(graph_id, Op::Expand { x: z_reshaped, shape: x_shape });
                             let cmp = self.push_binary_node(graph_id, x, z_broadcasted, BOp::Cmplt);
                             let cmp_f = self.push_op(graph_id, Op::Cast { x: cmp, dtype });
-                            let one_e =
-                                self.push_op(graph_id, Op::Expand { x: one, shape: x_shape });
+                            let one_e = self.push_op(graph_id, Op::Expand { x: one, shape: x_shape });
                             let mask = self.push_binary_node(graph_id, one_e, cmp_f, BOp::Sub);
-                            let grad_r = self
-                                .push_op(graph_id, Op::Reshape { x: grad, shape: kept_shape });
+                            let grad_r = self.push_op(graph_id, Op::Reshape { x: grad, shape: kept_shape });
                             let grad_e = self.push_op(graph_id, Op::Expand { x: grad_r, shape: x_shape });
                             let grad_x = self.push_binary_node(graph_id, mask, grad_e, BOp::Mul);
                             accum_grad(self, graph_id, &mut grads, x, grad_x);

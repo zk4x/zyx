@@ -327,7 +327,14 @@ impl Kernel {
                 break;
             }
             match self.ops[op_id].op {
-                Op::Reshape { .. } | Op::Expand { .. } | Op::Permute { .. } | Op::Flip { .. } | Op::Pad { .. } | Op::Narrow { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
+                Op::Reshape { .. }
+                | Op::Expand { .. }
+                | Op::Permute { .. }
+                | Op::Flip { .. }
+                | Op::Pad { .. }
+                | Op::Narrow { .. }
+                | Op::Reduce { .. }
+                | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {

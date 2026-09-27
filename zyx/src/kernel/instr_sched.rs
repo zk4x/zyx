@@ -161,7 +161,7 @@ impl Kernel {
                 | Op::Permute { x, .. }
                 | Op::Expand { x, .. }
                 | Op::Flip { x, .. }
-                | Op::Narrow { x, ..}
+                | Op::Narrow { x, .. }
                 | Op::Reduce { x, .. } => {
                     add_param!(x)
                 }
