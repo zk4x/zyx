@@ -26,9 +26,9 @@
     - [x] memory pool, allocation, movement
     - [x] cpp runtime
     - [x] elementwise
-    - [ ] reduce tile
-    - [ ] matmul tile
-    - [ ] transpose tile
+    - [x] reduce tile (Op::ReduceTile + emitting pass)
+    - [x] matmul tile (matmul_tile builder, exercised by tt_gemm)
+    - [x] transpose tile (transpose_tile builder)
 - [ ] runtime
   - [x] fix event handling
   - [x] node deallocation after realization
@@ -58,6 +58,7 @@
     - [x] global memory pressure (loads + stores)
   - [x] fix is expandable conditions
   - [ ] binary op improved fusion (with dependent loads and stores)/ full fusion
+  - [ ] tenstorrent tilization pass inside egraph as a variant (timing decides; settle boundary placement vs opaque custom kernels)
   - [ ] improve heuristics for cost based duplication and splitting for both movement and reduce ops separately in the egraph
   - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
     - [x] softmax fusion test (eventually should be single kernel)
@@ -101,10 +102,10 @@
       - [x] of ops
   - [x] register tiling (needs improvement)
   - [x] variable op for dynamic constants (that is scalars that should be kernel args, not baked)
-  - [ ] fully symbolic shapes
+  - [x] fully symbolic shapes (ExprId/shape_id, dim tensors, resolve_symbolic; only serialize-by-value remains, tracked separately)
   - [ ] local memory tiling for matmul like kernels
-  - [ ] wmma optimization pass
-  - [ ] tiling optimization passes for tenstorrent
+  - [ ] wmma optimization pass (automatic tensorization: revive `fuse_mma` as autotuner MakeOpt, timing decides; CUDA/WMMA first, TT `matmul_tile` after; matcher stays linear-time, 30us budget)
+  - [ ] tiling optimization passes for tenstorrent (epilogue passes: tiling + reader/writer section generation, extends `opt_tenstorrent_tile`; remove TEMP DEBUG eprints in backend/tenstorrent.rs first)
     - [x] elementwise
     - [ ] reduce
       - [ ] scalar
@@ -141,21 +142,21 @@
   - [ ] sort
 
 - [ ] dtype
-  - [ ] quantized dtypes
+  - [x] quantized dtypes (full QDType enum Q4_0..IQ4_XS with GGUF codes; 16_quantization green)
   - [ ] make binary if one side is scalar do autopromotion to the dtype of the dtype of the non-scalar tensor
   - [x] optional implicit dtype casts
 - [x] index select, gather, remove last loop
 - [ ] better spreading of kernel variants in autotune across threads (instead of batched, where one thread can have complex kernel, blocking other threads with simpler kernels)
 - [ ] improved memory mapper with graph-level decision making
-- [ ] tensor layout (RowMajor, TileMajor for Tenstorrent, Sharded for multi-device)
+- [x] tensor layout (RowMajor, TileMajor for Tenstorrent, Sharded for multi-device) — OBSOLETE, will not implement: layout lives structurally in movement ops (tilize/untilize chains), no per-tensor layout tags, no layout_map, no native_layout
       - Runtime stores layout per-tensor in `layout_map`
       - Scheduler converts layout during pool migration when `src_layout != dst_layout`
       - Backends declare native layout via `DeviceInfo::native_layout`
       - Conversion utility: row-major ↔ tile-major byte rearrangement
 - [ ] tensor cores
     - [ ] tensor core ops
-- [ ] local memory tiling
-  - [x] merge all mul + add into mad instructions
+  - [ ] local memory tiling (automatic shared memory tiling: loop tiling + smem staging as MakeOpt with per-backend `local_mem_size` budgets; watch BeamSearch growth)
+    - [x] merge all mul + add into mad instructions
   - [ ] local memory tiling
     - [x] local tiling for accumulators in large reduces
     - [ ] local tiling for caching
@@ -200,7 +201,9 @@
   - [x] RNN
   - [ ] resnet
   - [ ] llama
+    - [ ] optimize speed of llama 3b example (after tensorize + smem tiling land; profile first: matmul vs bandwidth vs fusion bound)
   - [ ] phi LLM
+  - [ ] tenstorrent 300 tflop gemm (autotune MT/NT/KT tile sizes; keep as vendor-kernel competitor)
 
 - [x] device/pool global handles (device-layer rewrite, RT/slab/TensorId/tape unchanged) — DONE (commits `1c9ef7bb` separate pool locks, `362f344f` device API refactor, `3343d4ea` backend rewrite)
   - [x] add Copy `Pool` enum (Host, Disk(u16), Cuda(u16), TT(u16), ...) as the only way to access memory pools
