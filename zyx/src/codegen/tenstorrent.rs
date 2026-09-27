@@ -3167,9 +3167,6 @@ impl Compiler {
     /// that does not match the shape stays per-tile (correct, just
     /// unbatched). Traffic totals are unchanged.
     fn batch_cbs(&mut self) {
-        if std::env::var("ZYX_DEBUG").is_ok_and(|v| v == "4") {
-            eprintln!("TTIR OPS BEFORE BATCH:\n{:?}", self.ops); // TEMP DEBUG: remove
-        }
         let old = std::mem::take(&mut self.ops);
         // Tile capacity per CB (from its CbDeclare): a batched
         // ReserveBack/WaitFront of `n` tiles deadlocks a CB that only
