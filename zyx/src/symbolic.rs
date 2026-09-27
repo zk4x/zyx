@@ -67,16 +67,35 @@ impl SlabId for ExprId {
 /// Leaves are [`Expr::Constant`] (baked into cache keys) and [`Expr::Variable`]
 /// (bound per launch, excluded from cache keys). Shapes are `Stack*` nodes
 /// over dim expressions.
+///
+/// # Const vs Variable mechanics
+///
+/// Users always specify concrete dims — there are no string-valued or
+/// otherwise unknown symbols. The distinction is purely about baking:
+/// - [`Expr::Constant`] is baked into compiled kernels (emitted as an
+///   immediate) and participates in hashing and program cache keys.
+/// - [`Expr::Variable`] is read from backend variable slots per launch
+///   (a `Param { Variable }` scalar argument) and is excluded from cache
+///   keys, so one compiled program serves many values.
+///
+/// Both leaves carry their value host-side, so every dim expression folds
+/// to a concrete value (folding is total over the scalar closed set).
+/// Host-side shape checks therefore never fail spuriously: if a dim
+/// cannot be resolved, that is a library bug, not user input.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expr {
     /// Baked constant: value participates in hashing and cache keys.
+    /// The value is emitted as an immediate into compiled kernels, and it
+    /// is always available host-side for folding dim expressions.
     Constant {
         /// The value (carries its own dtype).
         value: Constant,
     },
     /// Launch-bound variable: same layout as [`Expr::Constant`], but the value
     /// is read from backend variable slots per launch and never baked into
-    /// cache keys.
+    /// cache keys. The node still carries its value host-side (used as the
+    /// default and for folding), so dim expressions over variables always
+    /// resolve — a variable is "don't bake this in", never "unknown".
     Variable {
         /// The default/fallback value (carries its own dtype).
         value: Constant,

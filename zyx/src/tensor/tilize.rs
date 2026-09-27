@@ -1,25 +1,38 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-//! Tenstorrent tilized layouts (host-side only).
+//! Tenstorrent tilized layouts as ordinary movement ops.
 //!
 //! A tilized tensor stores each 32x32 tile contiguously, with the four
 //! 16x16 faces inside each tile in face order (the same convention as the
 //! `14_tenstorrent` golden kernel's `lin()` mapping). Outer dims are
-//! zero-padded up to multiples of 32. This is a pure host-side byte
-//! permutation. Tilize once at load time (weights) or once per forward
-//! (inputs); on-device kernels chain tilized layouts with no conversion
-//! between layers.
+//! zero-padded up to multiples of 32.
+//!
+//! Tilize is exactly pad-to-32 + reshape + permute + reshape back to the
+//! padded shape — no custom kernel, no host roundtrip, no layout tag. The
+//! chain is lazy like any movement op: it fuses, cancels (`tilize` followed
+//! by `untilize` simplifies through the existing algebraic rewrites), and is
+//! visible to the egraph as dataflow. Tilize once at load time (weights) or
+//! once per forward (inputs); on-device kernels chain tilized layouts with
+//! no conversion between layers.
+//!
+//! Both ops need concrete dims (pad amounts and split sizes are constants)
+//! and rank >= 2.
 
-use crate::{Tensor, ZyxError, dtype::DType, scalar::Scalar, shape::Dim};
+use crate::{RT, Tensor, ZyxError, dtype::Constant, dtype::DType, shape::UAxis};
 
 impl Tensor {
-    /// Permutes the last two dims into Tenstorrent tilized face order
-    /// (host-side), zero-padding them to multiples of 32; dtype is preserved.
+    /// Permutes the last two dims into Tenstorrent tilized face order,
+    /// zero-padding them to multiples of 32; dtype is preserved.
+    ///
+    /// This is exactly `pad_zeros` + `reshape` + `permute` + `reshape` back
+    /// to the padded shape — a lazy movement chain, not a host roundtrip.
+    /// Dims stay symbolic throughout: pad amounts and split sizes are dim
+    /// expressions, never realized values.
     ///
     /// # Example
     ///
-    /// ```rust no_run
+    /// ```rust
     /// use zyx::{Tensor, DType};
     /// let t = Tensor::zeros([32, 48], DType::F32);
     /// let til = t.tilize()?;
@@ -27,80 +40,69 @@ impl Tensor {
     /// ```
     ///
     /// # Errors
-    /// Returns a device error if the tensor cannot be read to host, or
-    /// [`ZyxError::AllocationError`] if the result cannot be allocated.
+    /// Returns a shape error if rank < 2.
     pub fn tilize(&self) -> Result<Tensor, ZyxError> {
-        fn ceil32(d: i64) -> i64 {
-            debug_assert!(d >= 0, "tilize needs a concrete non-negative dim, got {d}");
-            (d + 31) / 32 * 32
+        let shape = self.shape();
+        let rank = shape.len();
+        if rank < 2 {
+            return Err(ZyxError::shape_error(format!("tilize needs rank >= 2, got {rank}").into()));
         }
-        fn permute<T: Scalar>(input: &[T], batches: usize, rows: i64, cols: i64, pr: i64, pc: i64) -> Vec<T> {
-            let ntc = pc / 32;
-            let mut out = vec![T::zero(); batches * (pr * pc) as usize];
-            for b in 0..batches {
-                for tr in 0..pr / 32 {
-                    for tc in 0..ntc {
-                        for f in 0..4 {
-                            let fr = f / 2;
-                            let fc = f % 2;
-                            for l in 0..256 {
-                                let lr = l / 16;
-                                let lc = l % 16;
-                                let r = tr * 32 + fr * 16 + lr;
-                                let c = tc * 32 + fc * 16 + lc;
-                                let p = ((tr * ntc + tc) * 4 + f) * 256 + l;
-                                let v = if r < rows && c < cols {
-                                    input[b * (rows * cols) as usize + (r * cols + c) as usize]
-                                } else {
-                                    T::zero()
-                                };
-                                out[b * (pr * pc) as usize + p as usize] = v;
-                            }
-                        }
-                    }
-                }
+        let rows = shape[rank - 2].cast_to_dim();
+        let cols = shape[rank - 1].cast_to_dim();
+        // Dims always resolve (Const/Variable leaves carry values); these
+        // asserts document that pad inputs are valid by construction.
+        for (name, d) in [("rows", &rows), ("cols", &cols)] {
+            let v = {
+                let rt = RT.lock();
+                rt.resolve_symbolic(d.id).and_then(|c| match c.cast(DType::I64) {
+                    Constant::I64(b) => Some(i64::from_le_bytes(b)),
+                    _ => None,
+                })
+            };
+            if let Some(v) = v {
+                debug_assert!(v >= 0, "tilize: {name} must be non-negative, got {v}");
             }
-            out
         }
-        fn run<T: Scalar>(t: &Tensor, shape: &[i64]) -> Result<Tensor, ZyxError> {
-            let rank = shape.len();
-            debug_assert!(rank >= 2, "tilize needs rank >= 2, got {rank}");
-            let (rows, cols) = (shape[rank - 2], shape[rank - 1]);
-            let batches: usize = shape[..rank - 2].iter().product::<i64>() as usize;
-            let input: Vec<T> = t.to_vec()?;
-            let (pr, pc) = (ceil32(rows), ceil32(cols));
-            let out = permute(&input, batches, rows, cols, pr, pc);
-            let mut new_shape: Vec<i64> = shape[..rank - 2].to_vec();
-            new_shape.push(pr);
-            new_shape.push(pc);
-            Tensor::from_vec(out, new_shape)
-        }
-        let shape: Vec<i64> = self.shape().iter().map(|d| d.item::<Dim>() as i64).collect();
-        match self.dtype() {
-            DType::F32 => run::<f32>(self, &shape),
-            DType::F16 => run::<crate::scalar::f16>(self, &shape),
-            DType::BF16 => run::<crate::scalar::bf16>(self, &shape),
-            DType::F8E4M3 => run::<crate::scalar::f8e4m3>(self, &shape),
-            DType::F8E5M2 => run::<crate::scalar::f8e5m2>(self, &shape),
-            DType::F64 => run::<f64>(self, &shape),
-            DType::U8 => run::<u8>(self, &shape),
-            DType::I8 => run::<i8>(self, &shape),
-            DType::U16 => run::<u16>(self, &shape),
-            DType::I16 => run::<i16>(self, &shape),
-            DType::U32 => run::<u32>(self, &shape),
-            DType::I32 => run::<i32>(self, &shape),
-            DType::U64 => run::<u64>(self, &shape),
-            DType::I64 => run::<i64>(self, &shape),
-            DType::Bool => run::<bool>(self, &shape),
-        }
+        // Padded dims, still symbolic: pr = ceil(rows / 32) * 32.
+        let c32 = Tensor::from(32i64);
+        let pr = &(&(&rows + 31i64) / &c32) * &c32;
+        let pc = &(&(&cols + 31i64) / &c32) * &c32;
+        let ntr = &pr / &c32;
+        let ntc = &pc / &c32;
+        // Zero-pad the last two dims up to multiples of 32 (right pad is
+        // implicit in `len`, so no pad amount is ever computed). Valid by
+        // construction: pr >= rows, pc >= cols.
+        let zero = Tensor::from(0i64);
+        let padded = self
+            .pad_zeros_axis((rank - 2) as UAxis, zero.clone(), pr.clone())
+            .unwrap()
+            .pad_zeros_axis((rank - 1) as UAxis, zero, pc.clone())
+            .unwrap();
+        // Split each padded dim into tiles x faces x rows: [..., ntr, 2, 16, ntc, 2, 16].
+        let mut split = shape[..rank - 2].to_vec();
+        split.extend([ntr, Tensor::from(2i64), Tensor::from(16i64), ntc, Tensor::from(2i64), Tensor::from(16i64)]);
+        let split = padded.reshape(split).unwrap();
+        // Bring tile/face axes out front: [..., ntr, ntc, 2, 2, 16, 16].
+        let k = (rank - 2) as i32;
+        let axes: Vec<i32> = (0..k).chain([k, k + 3, k + 1, k + 4, k + 2, k + 5]).collect();
+        let permuted = split.permute(axes).unwrap();
+        // Merge back to the padded shape; contents are now in face order.
+        let mut merged = shape[..rank - 2].to_vec();
+        merged.extend([pr, pc]);
+        Ok(permuted.reshape(merged).unwrap())
     }
 
-    /// Inverse of [`Tensor::tilize`]: strips the 32-aligned padding from the
-    /// last two dims, restoring the true `rows` and `cols` shape.
+    /// Inverse of [`Tensor::tilize`]: undoes the face-order permutation,
+    /// then narrows the last two dims to the true `rows` and `cols`,
+    /// stripping the 32-aligned padding.
+    ///
+    /// This is exactly `reshape` + `permute` + `reshape` + `narrow` — the
+    /// mirror of [`Tensor::tilize`], a lazy movement chain with symbolic
+    /// dims throughout.
     ///
     /// # Example
     ///
-    /// ```rust no_run
+    /// ```rust
     /// use zyx::{Tensor, DType};
     /// let til = Tensor::zeros([64, 64], DType::F32);
     /// let back = til.untilize(32, 48)?;
@@ -108,67 +110,64 @@ impl Tensor {
     /// ```
     ///
     /// # Errors
-    /// Returns a device error if the tensor cannot be read to host, or
-    /// [`ZyxError::AllocationError`] if the result cannot be allocated.
+    /// Returns a shape error if rank < 2, the last two dims are not
+    /// multiples of 32, or `rows`/`cols` are negative or exceed them.
     pub fn untilize(&self, rows: i64, cols: i64) -> Result<Tensor, ZyxError> {
-        fn permute<T: Scalar>(input: &[T], batches: usize, pr: i64, pc: i64, rows: i64, cols: i64) -> Vec<T> {
-            let ntc = pc / 32;
-            let mut out = vec![T::zero(); batches * (rows * cols) as usize];
-            for b in 0..batches {
-                for tr in 0..pr / 32 {
-                    for tc in 0..ntc {
-                        for f in 0..4 {
-                            let fr = f / 2;
-                            let fc = f % 2;
-                            for l in 0..256 {
-                                let lr = l / 16;
-                                let lc = l % 16;
-                                let r = tr * 32 + fr * 16 + lr;
-                                let c = tc * 32 + fc * 16 + lc;
-                                let p = ((tr * ntc + tc) * 4 + f) * 256 + l;
-                                if r < rows && c < cols {
-                                    out[b * (rows * cols) as usize + (r * cols + c) as usize] =
-                                        input[b * (pr * pc) as usize + p as usize];
-                                }
-                            }
-                        }
-                    }
+        let shape = self.shape();
+        let rank = shape.len();
+        if rank < 2 {
+            return Err(ZyxError::shape_error(format!("untilize needs rank >= 2, got {rank}").into()));
+        }
+        let prt = shape[rank - 2].cast_to_dim();
+        let pct = shape[rank - 1].cast_to_dim();
+        // Dims always resolve; when they do, wrong user input is a real
+        // error here (not a panic). Unresolvable dims skip this and defer
+        // to realize time, where narrow fails loudly on the same violation.
+        for (name, d, len) in [("rows", &prt, rows), ("cols", &pct, cols)] {
+            let v = {
+                let rt = RT.lock();
+                rt.resolve_symbolic(d.id).and_then(|c| match c.cast(DType::I64) {
+                    Constant::I64(b) => Some(i64::from_le_bytes(b)),
+                    _ => None,
+                })
+            };
+            if let Some(p) = v {
+                if p % 32 != 0 {
+                    return Err(ZyxError::shape_error(
+                        format!("untilize needs the last two dims to be multiples of 32, got {p}").into(),
+                    ));
+                }
+                if len < 0 || len > p {
+                    return Err(ZyxError::shape_error(
+                        format!("untilize: {name}={len} out of range for padded dim {p}").into(),
+                    ));
                 }
             }
-            out
         }
-        fn run<T: Scalar>(t: &Tensor, shape: &[i64], rows: i64, cols: i64) -> Result<Tensor, ZyxError> {
-            let rank = shape.len();
-            debug_assert!(rank >= 2, "untilize needs rank >= 2, got {rank}");
-            debug_assert!(shape[rank - 2] % 32 == 0 && shape[rank - 1] % 32 == 0);
-            let (pr, pc) = (shape[rank - 2], shape[rank - 1]);
-            debug_assert!(rows <= pr && cols <= pc);
-            let batches: usize = shape[..rank - 2].iter().product::<i64>() as usize;
-            let input: Vec<T> = t.to_vec()?;
-            let out = permute(&input, batches, pr, pc, rows, cols);
-            let mut new_shape: Vec<i64> = shape[..rank - 2].to_vec();
-            new_shape.push(rows);
-            new_shape.push(cols);
-            Tensor::from_vec(out, new_shape)
-        }
-        let shape: Vec<i64> = self.shape().iter().map(|d| d.item::<Dim>() as i64).collect();
-        match self.dtype() {
-            DType::F32 => run::<f32>(self, &shape, rows, cols),
-            DType::F16 => run::<crate::scalar::f16>(self, &shape, rows, cols),
-            DType::BF16 => run::<crate::scalar::bf16>(self, &shape, rows, cols),
-            DType::F8E4M3 => run::<crate::scalar::f8e4m3>(self, &shape, rows, cols),
-            DType::F8E5M2 => run::<crate::scalar::f8e5m2>(self, &shape, rows, cols),
-            DType::F64 => run::<f64>(self, &shape, rows, cols),
-            DType::U8 => run::<u8>(self, &shape, rows, cols),
-            DType::I8 => run::<i8>(self, &shape, rows, cols),
-            DType::U16 => run::<u16>(self, &shape, rows, cols),
-            DType::I16 => run::<i16>(self, &shape, rows, cols),
-            DType::U32 => run::<u32>(self, &shape, rows, cols),
-            DType::I32 => run::<i32>(self, &shape, rows, cols),
-            DType::U64 => run::<u64>(self, &shape, rows, cols),
-            DType::I64 => run::<i64>(self, &shape, rows, cols),
-            DType::Bool => run::<bool>(self, &shape, rows, cols),
-        }
+        let c32 = Tensor::from(32i64);
+        let ntr = &prt / &c32;
+        let ntc = &pct / &c32;
+        // Split the face-ordered dims back out: [..., ntr, ntc, 2, 2, 16, 16].
+        // Valid by construction once the preconditions above hold.
+        let mut split = shape[..rank - 2].to_vec();
+        split.extend([
+            ntr,
+            ntc,
+            Tensor::from(2i64),
+            Tensor::from(2i64),
+            Tensor::from(16i64),
+            Tensor::from(16i64),
+        ]);
+        let split = self.reshape(split).unwrap();
+        // Inverse permutation: [..., ntr, 2, 16, ntc, 2, 16].
+        let k = (rank - 2) as i32;
+        let axes: Vec<i32> = (0..k).chain([k, k + 2, k + 4, k + 1, k + 3, k + 5]).collect();
+        let permuted = split.permute(axes).unwrap();
+        // Merge back to the padded shape, then strip the padding.
+        let mut merged = shape[..rank - 2].to_vec();
+        merged.extend([prt, pct]);
+        let merged = permuted.reshape(merged).unwrap();
+        Ok(merged.narrow((rank - 2) as i32, 0i64, rows).unwrap().narrow((rank - 1) as i32, 0i64, cols).unwrap())
     }
 }
 
@@ -184,7 +183,7 @@ mod tests {
         let data: Vec<f32> = (0..rows * cols).map(|i| i as f32 * 0.5 - 100.0).collect();
         let t = Tensor::from_vec(data.clone(), [rows, cols])?;
         let til = Tensor::tilize(&t)?;
-        let shape: Vec<i64> = til.shape().iter().map(|d| d.item::<Dim>() as i64).collect();
+        let shape: Vec<i64> = til.shape().iter().map(|d| d.item::<i64>()).collect();
         assert_eq!(shape, vec![64, 64]);
         // First tile, first face must hold rows 0..16, cols 0..16 in order.
         let flat: Vec<f32> = til.to_vec()?;
@@ -196,7 +195,7 @@ mod tests {
         // Padded region reads back as zero.
         assert_eq!(flat[((63 * 64 + 63) % (64 * 64)) as usize], 0.0);
         let back = Tensor::untilize(&til, rows, cols)?;
-        let shape: Vec<i64> = back.shape().iter().map(|d| d.item::<Dim>() as i64).collect();
+        let shape: Vec<i64> = back.shape().iter().map(|d| d.item::<i64>()).collect();
         assert_eq!(shape, vec![rows, cols]);
         let rt: Vec<f32> = back.to_vec()?;
         assert_eq!(rt, data);
@@ -227,7 +226,7 @@ mod tests {
         let data: Vec<crate::scalar::f16> = (0..2 * 6 * 40).map(|i| crate::scalar::f16::from_f32(i as f32)).collect();
         let t = Tensor::from_vec(data.clone(), [2, 6, 40])?;
         let til = Tensor::tilize(&t)?;
-        let shape: Vec<i64> = til.shape().iter().map(|d| d.item::<Dim>() as i64).collect();
+        let shape: Vec<i64> = til.shape().iter().map(|d| d.item::<i64>()).collect();
         assert_eq!(shape, vec![2, 32, 64]);
         let back = Tensor::untilize(&til, 6, 40)?;
         let rt: Vec<crate::scalar::f16> = back.to_vec()?;

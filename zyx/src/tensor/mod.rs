@@ -449,6 +449,11 @@ impl Tensor {
     /// Create a dynamic scalar tensor from a scalar value, not baked into the
     /// kernel.
     ///
+    /// The value is bound per launch through backend variable slots (and
+    /// excluded from program cache keys), but it is still a concrete value
+    /// host-side: dim expressions over variables always fold. See the
+    /// Const vs Variable mechanics documented on the symbolic `Expr` type.
+    ///
     /// # Example
     ///
     /// ```rust
