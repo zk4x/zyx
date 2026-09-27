@@ -249,13 +249,13 @@ impl BeamSearch {
     /// See [`BeamSearch::run_`] for the search semantics.
     pub fn run(
         &self,
-        rt: &mut Runtime,
         seeds: impl IntoIterator<Item = Kernel>,
         tensors: &[&Tensor],
         optimizations: &[fn(&Kernel) -> Box<dyn Optimization>],
         epilogue: impl Fn(&mut Kernel),
         cost: impl Fn(&Kernel) -> u64,
     ) -> Result<(Kernel, u64), ZyxError> {
+        let mut rt = crate::RT.lock();
         let mut args: Vec<LaunchArg> = Vec::with_capacity(tensors.len());
         for tensor in tensors {
             if let Some(buf_id) = rt.leaf_buffer(tensor.id()) {
@@ -266,11 +266,14 @@ impl BeamSearch {
                 return Err(ZyxError::kernel_error(format!("autotune: tensor {} is not realized", tensor.id()).into()));
             }
         }
-        self.run_(rt, seeds, &args, optimizations, epilogue, cost)
+        self.run_(&mut rt, seeds, &args, optimizations, epilogue, cost)
     }
 
     /// Autotune using beam search.
     ///
+    /// Raw-args entry for in-crate callers that already hold launch
+    /// buffers ([`BeamSearch::run`] is the tensor-bound public entry;
+    /// positional raw args misbind silently, so this stays private).
     /// The seeds must be prepared by the caller: already linearized
     /// ([`Kernel::is_linearized`]), with basic optimizations and the epilogue
     /// applied — the search does no seed preprocessing. All seeds must belong
@@ -282,7 +285,7 @@ impl BeamSearch {
     /// sequence is exactly what gets launched. Every program compiled during
     /// measurement is released; the winner is returned as a kernel together
     /// with its measured time in nanoseconds.
-    pub fn run_(
+    pub(crate) fn run_(
         &self,
         _rt: &mut Runtime,
         seeds: impl IntoIterator<Item = Kernel>,

@@ -27,7 +27,7 @@ use zyx::{DType, Tensor, ZyxError};
 const TILE_ELEMS: i64 = 1024;
 /// Output tiles owned by one core along M and N.
 const MT_PER_CORE: i64 = 16;
-const NT_PER_CORE: i64 = 8;
+const NT_PER_CORE: i64 = 16;
 /// Compute subblock: SB_H A-rows x SB_W B-cols per inner step. Each B
 /// tile feeds SB_H matmuls, so B is pushed once per row-pair (rereads
 /// halved vs one row at a time).
@@ -122,7 +122,7 @@ fn main() -> Result<(), ZyxError> {
     // feeds SB_H x SB_W back-to-back matmuls per K step (pop order matches
     // reader push order exactly: A0, A1, B0..B3).
     kernel.barrier();
-    debug_assert_eq!(NT_PER_CORE, 8, "tt_gemm: acc array sized for 2x4 subblocks over NT == 8");
+    debug_assert_eq!(SB_H * SB_W, 8, "tt_gemm: acc array sized for SB_H x SB_W subblocks");
     kernel.loop_over(MT_PER_CORE / SB_H, |kernel, _mtp| {
         kernel.loop_over(NT_PER_CORE / SB_W, |kernel, _nhi| {
             let accs = [
