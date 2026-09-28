@@ -14,5 +14,21 @@ Set `ZYX_DEBUG` environment variable to enable debugging. It is a bitmask with t
 
 Combine flags by summing values (e.g., `ZYX_DEBUG=24` enables ir + asm).
 
+## ZYX_DRY_RUN
+
+Set `ZYX_DRY_RUN=1` to skip all device launches across every backend.
+`Dev::launch` returns `Ok(())` immediately and `Dev::launch_timed`
+returns a fixed 1s placeholder (1_000_000_000 nanos, never a measurement).
+Compile still runs (codegen + JIT + compile-time checks), so combine with
+`ZYX_DEBUG=8`/`16` to capture IR and generated code without executing:
+
+```bash
+ZYX_DRY_RUN=1 ZYX_DEBUG=24 cargo run   # IR + code, no launch
+```
+
+Output buffers hold uninitialized contents under dry run — callers must not
+read them. Autotune winner-picking under dry run is arbitrary (first seed
+wins on the fixed placeholder).
+
 **First debug step**: run with `ZYX_DEBUG=1` to see which backends initialized and how many devices.
 If no devices appear, check whether a [config file](CONFIG.md) is disabling them.

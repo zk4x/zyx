@@ -328,6 +328,11 @@ impl Dev {
         // no args means buffer binding failed upstream — backends would pass
         // garbage param pointers to the driver.
         debug_assert!(!args.is_empty(), "launch with empty args: buffer binding failed upstream");
+        // Dry run: skip device execution, keep compile + arg binding validation.
+        // Output buffers hold uninitialized contents; callers must not read them.
+        if std::env::var("ZYX_DRY_RUN").is_ok() {
+            return Ok(());
+        }
         let pool = self.pool();
         match self {
             Dev::Auto => panic!("Dev::Auto cannot launch; resolve it with Dev::auto() first"),
@@ -356,6 +361,12 @@ impl Dev {
         // no args means buffer binding failed upstream — backends would pass
         // garbage param pointers to the driver.
         debug_assert!(!args.is_empty(), "launch_timed with empty args: buffer binding failed upstream");
+        // Dry run: skip device execution. Fixed 1s placeholder, never a
+        // measurement — autotune winner-picking under dry run is arbitrary
+        // (first seed wins) and output buffers hold uninitialized contents.
+        if std::env::var("ZYX_DRY_RUN").is_ok() {
+            return Ok(1_000_000_000);
+        }
         match self {
             Dev::Auto => panic!("Dev::Auto cannot launch; resolve it with Dev::auto() first"),
             Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).launch_timed(program_id, args),

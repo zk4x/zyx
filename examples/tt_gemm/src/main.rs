@@ -73,8 +73,10 @@ fn build_gemm(
 
     // Double-buffered: depth 2 gives the CB FIFOs slack so the reader
     // runs ahead of compute (and compute ahead of the writer) instead
-    // of strict lockstep.
-    let ca = kernel.circular_storage(DType::BF16, 2);
+    // of strict lockstep. ca holds up to groups_per_strip * sb_h A tiles
+    // per trip before any B tile is pushed, so its depth covers that
+    // (verify rejects deeper-than-declared producer runs as deadlocks).
+    let ca = kernel.circular_storage(DType::BF16, 4);
     let cb = kernel.circular_storage(DType::BF16, 2);
     let cout = kernel.circular_storage(DType::BF16, 2);
 

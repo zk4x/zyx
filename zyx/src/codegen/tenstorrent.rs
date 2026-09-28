@@ -3170,6 +3170,31 @@ impl Compiler {
                         i += 1;
                         continue;
                     }
+                    // Cumulative capacity guard: hoisting moves the whole
+                    // block's sync upfront (one ReserveBack/WaitFront of `n`
+                    // tiles per span, all on entry). A producer-side reserve
+                    // stalls past depth free slots and a consumer-side wait
+                    // stalls past depth present tiles, with no drain in
+                    // between — either deadlocks once the hoisted total on
+                    // one CB exceeds its depth (e.g. 8 writer spans x 2 tiles
+                    // on a depth-2 CB waits for 16 while the producer blocks
+                    // after 2). The per-span trip check above is necessary
+                    // but not sufficient. Refuse the whole loop on overflow;
+                    // the per-tile fallback is the proven streaming shape.
+                    {
+                        let mut per_cb: Map<CBId, u32> = Map::default();
+                        for &(_, _, cb, _, _) in &spans {
+                            *per_cb.entry(cb).or_default() += *n;
+                        }
+                        if per_cb.iter().any(|(cb, total)| *total > cb_tiles.get(cb).copied().unwrap_or(0)) {
+                            spans.clear();
+                        }
+                    }
+                    if spans.is_empty() {
+                        next.push(old[i].clone());
+                        i += 1;
+                        continue;
+                    }
                     let mut in_span = vec![false; body.len()];
                     for &(a, b, _, _, _) in &spans {
                         for k in a..=b {
@@ -3564,8 +3589,19 @@ impl Compiler {
         // CB FIFO: declared set, per-CB (reserved, avail, waited),
         // program-wide (pushed, popped).
         let mut declared: Set<CBId> = Set::default();
+        let mut cb_depth: Map<CBId, u32> = Map::default();
         let mut fifo: Map<CBId, (u32, u32, u32)> = Map::default();
         let mut totals: Map<CBId, (u32, u32)> = Map::default();
+        // Producer-order run: consecutive pushes to one CB with no push
+        // to another CB between them (single body execution — raw `n`,
+        // never trip-multiplied; loop/branch/section ends reset it).
+        // A run longer than the CB's depth can stall the producer before
+        // it pushes any other CB, while the consumer waits on that later
+        // CB before popping this one: deterministic deadlock. Complements
+        // the batch-hoist guard (which covers hoisted multi-tile sync);
+        // loop-carried accumulation is NOT covered (documented gap).
+        let mut run_cb: Option<CBId> = None;
+        let mut run_tiles: u32 = 0;
         // Per-section defined values (cleared at each End*).
         let mut scalars: Set<VarId> = Set::default();
         let mut accessors: Set<u32> = Set::default();
@@ -3641,7 +3677,9 @@ impl Compiler {
         for op in self.ops.iter() {
             match op {
                 TTOp::EndReader => {
-                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 1)?
+                    end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 1)?;
+                    run_cb = None;
+                    run_tiles = 0;
                 }
                 TTOp::EndCompute => {
                     if !(seen & 1 != 0) {
@@ -3651,6 +3689,8 @@ impl Compiler {
                         });
                     }
                     end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 2)?;
+                    run_cb = None;
+                    run_tiles = 0;
                 }
                 TTOp::EndWriter => {
                     if !(seen & 3 != 0) {
@@ -3660,6 +3700,8 @@ impl Compiler {
                         });
                     }
                     end_section(&mut seen, &mut section, &mut lock, &mut fifo, &mut scalars, &mut accessors, &mut depth, 4)?;
+                    run_cb = None;
+                    run_tiles = 0;
                 }
                 _ => {}
             }
@@ -3703,6 +3745,8 @@ impl Compiler {
                     } else {
                         mult /= t;
                     }
+                    run_cb = None;
+                    run_tiles = 0;
                 }
                 TTOp::If { .. } => {
                     depth += 1;
@@ -3715,6 +3759,8 @@ impl Compiler {
                         });
                     }
                     depth -= 1;
+                    run_cb = None;
+                    run_tiles = 0;
                 }
                 TTOp::Arg { .. } | TTOp::Const { .. } | TTOp::TensixGridX { .. } | TTOp::TensixGridY { .. } => {}
                 TTOp::Binary { .. } => {}
@@ -3807,13 +3853,14 @@ impl Compiler {
                     }
                 }
                 TTOp::NocReadBarrier | TTOp::NocWriteBarrier => {}
-                TTOp::CbDeclare { cb, .. } => {
+                TTOp::CbDeclare { cb, n_tiles, .. } => {
                     if !declared.insert(*cb) {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: format!("tenstorrent2: verify: duplicate CB{cb} declaration").into(),
                         });
                     }
+                    cb_depth.insert(*cb, *n_tiles);
                     fifo.insert(*cb, (0, 0, 0));
                     totals.insert(*cb, (0, 0));
                 }
@@ -3868,6 +3915,30 @@ impl Compiler {
                             context: format!("tenstorrent2: verify: push on undeclared CB").into(),
                         })?
                         .0 += *n * mult;
+                    // Producer-order run: consecutive pushes to one CB with
+                    // no push to another CB between them. Past the CB's
+                    // depth the producer can stall while the consumer waits
+                    // on the later CB before popping this one (deadlock) —
+                    // the consumer runs concurrently, so worst case it made
+                    // zero progress. Raw `n` (single body execution).
+                    if run_cb == Some(*cb) {
+                        run_tiles += *n;
+                    } else {
+                        if let Some(prev) = run_cb {
+                            let depth = cb_depth.get(&prev).copied().unwrap_or(u32::MAX);
+                            if run_tiles > depth {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!(
+                                        "tenstorrent2: verify: producer pushes {run_tiles} tiles to CB{prev} (depth {depth}) before any other CB: deadlock once the consumer waits on the later CB"
+                                    )
+                                    .into(),
+                                });
+                            }
+                        }
+                        run_cb = Some(*cb);
+                        run_tiles = *n;
+                    }
                 }
                 TTOp::WaitFront { cb, m, .. } => {
                     if sym_loops != 0 {

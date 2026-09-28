@@ -153,6 +153,12 @@ All passes live in `zyx/src/kernel/` (`autotune.rs` driver + one file per pass).
 
 Capture without a GPU hang: `timeout 10 bash -c 'ZYX_DEBUG=8 cargo run 2>&1' > /tmp/ir.txt`.
 
+### ZYX_DRY_RUN (all backends, `ENV_VARS.md`)
+
+- `ZYX_DRY_RUN=1` skips every device launch (`Dev::launch` → `Ok(())`, `Dev::launch_timed` → fixed 1s placeholder, never a measurement). Compile still runs (codegen + JIT + compile-time checks).
+- Combine with `ZYX_DEBUG=8`/`16` to capture IR + generated code without executing: `ZYX_DRY_RUN=1 ZYX_DEBUG=24 cargo run`.
+- Output buffers are uninitialized under dry run — never read them. Autotune winners under dry run are arbitrary (first seed wins); perf numbers are placeholders.
+
 ## Tape Design (`src/tape.rs`)
 
 Training-loop API around the graph.
