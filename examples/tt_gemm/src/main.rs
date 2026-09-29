@@ -42,6 +42,10 @@ fn build_gemm(
     sb_h: i64,
     sb_w: i64,
     groups_per_strip: i64,
+    ca_depth: i64,
+    cb_depth: i64,
+    cout_depth: i64,
+    unroll: i64,
 ) -> Result<Kernel, ZyxError> {
     let nt = cols * nt_per_core;
     let mt_groups = mt_per_core / sb_h;
@@ -77,9 +81,9 @@ fn build_gemm(
     // of strict lockstep. ca holds up to groups_per_strip * sb_h A tiles
     // per trip before any B tile is pushed, so its depth covers that
     // (verify rejects deeper-than-declared producer runs as deadlocks).
-    let ca = kernel.circular_storage(DType::BF16, 4);
-    let cb = kernel.circular_storage(DType::BF16, 2);
-    let cout = kernel.circular_storage(DType::BF16, 2);
+    let ca = kernel.circular_storage(DType::BF16, ca_depth);
+    let cb = kernel.circular_storage(DType::BF16, cb_depth);
+    let cout = kernel.circular_storage(DType::BF16, cout_depth);
 
     let gx = kernel.group_range(0, rows);
     let gy = kernel.group_range(1, cols);
@@ -94,35 +98,51 @@ fn build_gemm(
     // Global row-base of this core's MT block (loop-invariant).
     let mt_base = kernel.mad(gx, mt_per_core, 0);
     let strips = mt_groups / groups_per_strip;
+    assert_eq!(
+        KT_TILES % unroll,
+        0,
+        "tt_gemm: KT_TILES must split into unrolled steps"
+    );
     kernel.loop_over(nt_per_core / sb_w, |kernel, nhi| {
         kernel.loop_over(strips, |kernel, strip| {
-             kernel.loop_over(KT_TILES, |kernel, kti| {
-                 // Push A tiles first, then B rows — must match
-                 // the compute section's wait order
-                 // (WaitFront CBId(1)=MatA before CBId(0)=MatB).
-                 for gi in 0..groups_per_strip {
-                     let mtp = kernel.mad(strip, groups_per_strip, gi);
-                     for r in 0..sb_h {
-                         let mt_loc = kernel.mad(mtp, sb_h, r);
-                         let mt_idx = kernel.add(mt_base, mt_loc);
-                         let at = kernel.mad(mt_idx, KT_TILES, kti);
-                         let abase = kernel.mad(at, TILE_ELEMS, 0);
-                         let ta = kernel.load_global_tile(a, abase);
-                         kernel.store_circular(ca, ta, 0);
-                     }
+             kernel.loop_over(KT_TILES / unroll, |kernel, kti| {
+                 for u in 0..unroll {
+                     // Unrolled K step (u=0 is the plain step; mad folds
+                     // away only via constant_folding when unroll == 1,
+                     // so the u==0 path reuses kti directly to keep the
+                     // baseline IR bit-identical).
+                     let k = if unroll == 1 {
+                         kti
+                     } else {
+                         kernel.mad(kti, unroll, u)
+                     };
+                  // Push A tiles first, then B rows — must match
+                  // the compute section's wait order
+                  // (WaitFront CBId(1)=MatA before CBId(0)=MatB).
+                  for gi in 0..groups_per_strip {
+                      let mtp = kernel.mad(strip, groups_per_strip, gi);
+                      for r in 0..sb_h {
+                          let mt_loc = kernel.mad(mtp, sb_h, r);
+                          let mt_idx = kernel.add(mt_base, mt_loc);
+                          let at = kernel.mad(mt_idx, KT_TILES, k);
+                          let abase = kernel.mad(at, TILE_ELEMS, 0);
+                          let ta = kernel.load_global_tile(a, abase);
+                          kernel.store_circular(ca, ta, 0);
+                      }
+                  }
+                  let nt_off = kernel.mad(nhi, sb_w, 0);
+                  kernel.loop_over(sb_w, |kernel, nti| {
+                      let nt_rel = kernel.add(nt_off, nti);
+                      let nt_idx = kernel.mad(gy, nt_per_core, nt_rel);
+                      let bt = kernel.mad(k, nt, nt_idx);
+                      let bbase = kernel.mad(bt, TILE_ELEMS, 0);
+                      let tb = kernel.load_global_tile(b, bbase);
+                      kernel.store_circular(cb, tb, 0);
+                  });
                  }
-                 let nt_off = kernel.mad(nhi, sb_w, 0);
-                 kernel.loop_over(sb_w, |kernel, nti| {
-                     let nt_rel = kernel.add(nt_off, nti);
-                     let nt_idx = kernel.mad(gy, nt_per_core, nt_rel);
-                     let bt = kernel.mad(kti, nt, nt_idx);
-                     let bbase = kernel.mad(bt, TILE_ELEMS, 0);
-                     let tb = kernel.load_global_tile(b, bbase);
-                     kernel.store_circular(cb, tb, 0);
-                 });
-             });
-         });
-     });
+              });
+          });
+      });
      // Compute: per (nhi, strip) accumulate the strip's outputs; one B row
      // feeds every row group in the strip per K step (pop order matches
      // reader push order exactly: A groups, then B row).
@@ -132,7 +152,8 @@ fn build_gemm(
             let accs: Vec<_> = (0..groups_per_strip * sb_h * sb_w)
                 .map(|_| kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS))
                 .collect();
-            kernel.loop_over(KT_TILES, |kernel, _kti| {
+            kernel.loop_over(KT_TILES / unroll, |kernel, _kti| {
+                for _u in 0..unroll {
                 let vb: Vec<_> = (0..sb_w).map(|_| kernel.load_circular(cb, 0)).collect();
                 for gi in 0..groups_per_strip as usize {
                     let va: Vec<_> = (0..sb_h).map(|_| kernel.load_circular(ca, 0)).collect();
@@ -146,6 +167,7 @@ fn build_gemm(
                             kernel.store_register_tile(acc, f, 0);
                         }
                     }
+                }
                 }
             });
             for acc in accs {
@@ -359,7 +381,7 @@ fn main() -> Result<(), ZyxError> {
     // the problem size, so inputs + reference are rebuilt per pair;
     // subblocks only change the kernel. TFLOPS normalizes across sizes.
     let mut best_tflops = 0f64;
-    for (mt_per_core, nt_per_core) in [(8, 8), (8, 16), (16, 8), (16, 16), (16, 32), (32, 16)] {
+    for (mt_per_core, nt_per_core) in [(8, 8), (8, 16), (16, 8), (16, 16), (16, 32), (32, 16), (32, 32), (16, 64)] {
         let m = rows * mt_per_core * 32;
         let n = cols * nt_per_core * 32;
         let k = KT_TILES * 32;
@@ -387,8 +409,38 @@ fn main() -> Result<(), ZyxError> {
                 sb_h,
                 sb_w,
                 g,
+                4,
+                2,
+                2,
+                1,
             )?);
             names.push(format!("MT{mt_per_core}NT{nt_per_core}SB{sb_h}x{sb_w}G{g}"));
+            // Depth + unroll variants on shortlisted shapes: deeper CB
+            // slack (ca 16, cb 8, cout 4) alone, and with x2 unrolled K
+            // steps (unrolling doubles the per-trip producer run, so it
+            // rides on the deeper depths).
+            if [(16, 32), (32, 32), (16, 64)].contains(&(mt_per_core, nt_per_core))
+                && [(2, 4, 1), (4, 2, 1), (2, 2, 2)].contains(&(sb_h, sb_w, g))
+            {
+                for (suffix, u) in [("-DEEP", 1), ("-U2", 2)] {
+                    seeds.push(build_gemm(
+                        rows,
+                        cols,
+                        mt_per_core,
+                        nt_per_core,
+                        sb_h,
+                        sb_w,
+                        g,
+                        16,
+                        8,
+                        4,
+                        u,
+                    )?);
+                    names.push(format!(
+                        "MT{mt_per_core}NT{nt_per_core}SB{sb_h}x{sb_w}G{g}{suffix}"
+                    ));
+                }
+            }
             // A-reuse variant: admissible only within the DST budget (same
             // formula as the builder assert; duplicates it deliberately).
             if nt_per_core * g * sb_h + sb_w + 1 <= 16 {
@@ -405,10 +457,16 @@ fn main() -> Result<(), ZyxError> {
             }
         }
         let (winner, nanos) =
-            BeamSearch::new().run(seeds, &[&a_t, &b_t, &out_t], &[], |_| {}, |_| 0)?;
+            BeamSearch::new().run(seeds.clone(), &[&a_t, &b_t, &out_t], &[], |_| {}, |_| 0)?;
         let flops = 2.0 * m as f64 * n as f64 * k as f64;
         let tflops = flops / nanos as f64 / 1e3;
-        println!("tt_gemm: M={m} N={n} K={k}: winner {tflops:.3} TFLOPS ({nanos}ns)");
+        let winner_name = seeds
+            .iter()
+            .zip(names.iter())
+            .find(|(s, _)| **s == winner)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        println!("tt_gemm: M={m} N={n} K={k}: winner {tflops:.3} TFLOPS ({nanos}ns) [{winner_name}]");
         for name in &names {
             println!("tt_gemm:   seed {name}");
         }
