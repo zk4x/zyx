@@ -142,12 +142,7 @@ fn pad_passthrough_tt_run() -> Result<(), ZyxError> {
     let kk2 = pad_cast_tt(S, M_PAD, HIDDEN);
     let k1 = kk1.compile()?;
     let k2 = kk2.compile()?;
-    // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
-    // compile so generated sources (ZYX_DEBUG=16) can be compared against
-    // the official tt-metal kernels before anything executes on the board.
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        return Ok(());
-    }
+
     const TILES: i64 = 160;
     let mid = k1.forward(&[&data_t], vec![[TILES * 1024]])?;
     let out = k2.forward(&[&mid[0]], vec![[TILES * 1024]])?;
@@ -200,12 +195,7 @@ fn pad_move_tt_run() -> Result<(), ZyxError> {
 
     let kk = pad_move_tt(S, M_PAD, HIDDEN);
     let k = kk.compile()?;
-    // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
-    // compile so generated sources (ZYX_DEBUG=16) can be compared against
-    // the official tt-metal kernels before anything executes on the board.
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        return Ok(());
-    }
+
     const TILES: i64 = 160;
     let out = k.forward(&[&data_t], vec![[TILES * 1024]])?;
     let moved: Vec<f32> = out[0].to_vec()?;
@@ -246,12 +236,7 @@ fn pad_move_tt_mc_run() -> Result<(), ZyxError> {
     const CORES: i64 = 4;
     let kk = pad_move_mc(TILES, CORES);
     let k = kk.compile()?;
-    // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
-    // compile so generated sources (ZYX_DEBUG=16) can be compared against
-    // the official tt-metal kernels before anything executes on the board.
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        return Ok(());
-    }
+
     let out = k.forward(&[&data_t], vec![[TILES * 1024]])?;
     let moved: Vec<f32> = out[0].to_vec()?;
     let til = Tensor::from_vec(moved, [32, HIDDEN])?;
@@ -291,12 +276,7 @@ fn pad_move_tt_sym_run() -> Result<(), ZyxError> {
 
     let kk = pad_move_sym();
     let k = kk.compile()?;
-    // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
-    // compile so generated sources (ZYX_DEBUG=16) can be compared against
-    // the official tt-metal kernels before anything executes on the board.
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        return Ok(());
-    }
+
     let out = k.forward(&[&data_t, &n_t], vec![[TILES * 1024]])?;
     let moved: Vec<f32> = out[0].to_vec()?;
     let til = Tensor::from_vec(moved, [32, HIDDEN])?;
@@ -333,12 +313,7 @@ fn pad_copy_tt_run() -> Result<(), ZyxError> {
 
     let kk = pad_copy_tt(S, M_PAD, HIDDEN);
     let k = kk.compile()?;
-    // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
-    // compile so generated sources (ZYX_DEBUG=16) can be compared against
-    // the official tt-metal kernels before anything executes on the board.
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        return Ok(());
-    }
+
     const TILES: i64 = 160;
     let out = k.forward(&[&data_t], vec![[TILES * 1024]])?;
     let moved: Vec<f32> = out[0].to_vec()?;

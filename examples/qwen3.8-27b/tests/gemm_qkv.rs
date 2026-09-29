@@ -70,12 +70,7 @@ fn gemm_qkv_tt() -> Result<(), ZyxError> {
     let kk = gemm_tt(M32, HIDDEN, CONV_DIM);
     let (flops, read, write) = kk.flop_mem_rw();
     let k = kk.compile()?;
-    // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
-    // compile so generated sources (ZYX_DEBUG=16) can be compared against
-    // the official tt-metal kernels before anything executes on the board.
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        return Ok(());
-    }
+
     let t0 = std::time::Instant::now();
     let out = k.forward(&[&a_t, &w_t, &z_t], vec![[NT * 1024]])?;
     let total_us = t0.elapsed().as_micros() as f64;
@@ -150,12 +145,7 @@ fn gemm_qkv_tt_mt2() -> Result<(), ZyxError> {
 
     let kk = gemm_tt(M64, HIDDEN, CONV_DIM);
     let k = kk.compile()?;
-    // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
-    // compile so generated sources (ZYX_DEBUG=16) can be compared against
-    // the official tt-metal kernels before anything executes on the board.
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        return Ok(());
-    }
+
     let out = k.forward(&[&a_t, &w_t, &z_t], vec![[(MT * NT * 1024)]])?;
     let flat: Vec<f32> = out[0].to_vec()?;
     let back = Tensor::from_vec(flat, [M64, CONV_DIM])?.untilize(M64, CONV_DIM)?;

@@ -5498,3 +5498,47 @@ impl Kernel {
         Ok(SectionData { ops, dtypes, rcs })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Map, error::ErrorStatus};
+
+    // tt_gemm seed SB2x2G2 hung the board: the reader pushed 4 A-tiles to
+    // CB0 (depth 2) before any B-tile, while compute waits on CB1 first —
+    // a deterministic reader/compute deadlock with perfect push/pop
+    // totals. `verify` must reject this producer-order run at compile
+    // time, loudly, before anything reaches the device.
+    #[test]
+    fn verify_rejects_producer_run_past_cb_depth() {
+        let mut ops = vec![
+            TTOp::DstMode { bf16: true },
+            TTOp::CbDeclare { cb: CBId(0), n_tiles: 2, format: 0 },
+            TTOp::CbDeclare { cb: CBId(1), n_tiles: 2, format: 0 },
+        ];
+        for _ in 0..4 {
+            ops.push(TTOp::ReserveBack { cb: CBId(0), n: 1 });
+            ops.push(TTOp::PushBack { cb: CBId(0), n: 1 });
+        }
+        ops.push(TTOp::ReserveBack { cb: CBId(1), n: 1 });
+        ops.push(TTOp::PushBack { cb: CBId(1), n: 1 });
+        let mut c = Compiler {
+            ops,
+            startup_loads: Vec::new(),
+            startup_store: None,
+            use_counts: Map::default(),
+            next_var: 0,
+        };
+        let err = c.verify().expect_err("4-tile run on a depth-2 CB must not verify");
+        assert!(
+            matches!(err.status, ErrorStatus::KernelCompilation),
+            "must fail loudly at compile time, got {:?}",
+            err.status
+        );
+        assert!(
+            err.context.contains("producer pushes 4 tiles"),
+            "wrong rejection: {}",
+            err.context
+        );
+    }
+}

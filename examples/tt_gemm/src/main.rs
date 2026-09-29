@@ -16,7 +16,8 @@
 //! a reference matmul on CUDA (C when CUDA is absent). The best of
 //! `TIMED_ITERS` launches sets the reported TFLOPS.
 //!
-//! Run with `./run.sh`. `ZYX_TT_DUMP_ONLY=1` compiles without launching.
+//! Run with `./run.sh`. `ZYX_DRY_RUN=1` compiles without launching
+//! (see `ENV_VARS.md`; value assertions fail under dry run by design).
 
 use zyx::kernel::autotune::BeamSearch;
 use zyx::kernel::{Dev, Kernel, MemScope};
@@ -186,6 +187,158 @@ fn build_gemm(
     Ok(kernel)
 }
 
+/// A-reuse variant of [`build_gemm`]: the reader hoists A loads out of the
+/// nhi loop, so each A tile is read from DRAM once per (strip, kti) instead
+/// of once per nhi (A traffic divided by nt_per_core/sb_w). Nesting becomes
+/// strip -> kti -> [A groups once] -> nhi -> [B row] in the reader; compute
+/// pops the A group once per (strip, kti) and feeds the same tiles to every
+/// nhi's matmuls (resident until last-use pop) while B rows stream per nhi;
+/// the writer pops per (strip, nhi).
+/// Consequences, both enforced loudly: accs for ALL nhi live at once, so
+/// this fits only when nt_per_core*g*sb_h + g*sb_h + sb_w + 1 <= 16 (DST
+/// budget), and the B push run per (strip, kti) is nt_per_core, so cb depth
+/// covers it (verify rejects longer-than-depth producer runs as deadlocks).
+fn build_gemm_a_reuse(
+    rows: i64,
+    cols: i64,
+    mt_per_core: i64,
+    nt_per_core: i64,
+    sb_h: i64,
+    sb_w: i64,
+    groups_per_strip: i64,
+) -> Result<Kernel, ZyxError> {
+    let nt = cols * nt_per_core;
+    let mt_groups = mt_per_core / sb_h;
+    assert_eq!(mt_per_core % sb_h, 0, "tt_gemm: MT must split into row groups");
+    assert_eq!(nt_per_core % sb_w, 0, "tt_gemm: NT must split into subblock cols");
+    assert_eq!(
+        mt_groups % groups_per_strip,
+        0,
+        "tt_gemm: row groups must split into strips"
+    );
+    // Live DST tiles: accs for every nhi at once + B row + matmul temp.
+    // (No A regs: the A group is popped once per (strip, kti) and the SAME
+    // load_circular tile feeds every nhi's matmuls — the backend's
+    // use-count pop placement keeps it resident until last use. The
+    // unpacker programs CB operands itself and cannot consume DST
+    // registers, so register-held A is impossible.) Budget is 16 in BF16.
+    assert!(
+        nt_per_core * groups_per_strip * sb_h + sb_w + 1 <= 16,
+        "tt_gemm: A-reuse strip exceeds DST budget"
+    );
+
+    let mut kernel = Kernel::new(Dev::TT(0));
+    let a = kernel.param(DType::BF16);
+    let b = kernel.param(DType::BF16);
+    let out = kernel.param_mut(DType::BF16);
+
+    // ca holds one (strip, kti) A group before the first B row (unchanged
+    // run length vs build_gemm); cb holds every nhi's B row per (strip,
+    // kti), so its depth covers nt_per_core.
+    let ca = kernel.circular_storage(DType::BF16, 4);
+    let cb = kernel.circular_storage(DType::BF16, nt_per_core);
+    let cout = kernel.circular_storage(DType::BF16, 2);
+
+    let gx = kernel.group_range(0, rows);
+    let gy = kernel.group_range(1, cols);
+
+    // Reader: per (strip, kti) push the A groups once, then one B row per
+    // nhi. Same tile addressing as build_gemm; only the nesting changes.
+    let mt_base = kernel.mad(gx, mt_per_core, 0);
+    let strips = mt_groups / groups_per_strip;
+    let n_nhi = nt_per_core / sb_w;
+    kernel.loop_over(strips, |kernel, strip| {
+        kernel.loop_over(KT_TILES, |kernel, kti| {
+            for gi in 0..groups_per_strip {
+                let mtp = kernel.mad(strip, groups_per_strip, gi);
+                for r in 0..sb_h {
+                    let mt_loc = kernel.mad(mtp, sb_h, r);
+                    let mt_idx = kernel.add(mt_base, mt_loc);
+                    let at = kernel.mad(mt_idx, KT_TILES, kti);
+                    let abase = kernel.mad(at, TILE_ELEMS, 0);
+                    let ta = kernel.load_global_tile(a, abase);
+                    kernel.store_circular(ca, ta, 0);
+                }
+            }
+            kernel.loop_over(n_nhi, |kernel, nhi| {
+                let nt_off = kernel.mad(nhi, sb_w, 0);
+                kernel.loop_over(sb_w, |kernel, nti| {
+                    let nt_rel = kernel.add(nt_off, nti);
+                    let nt_idx = kernel.mad(gy, nt_per_core, nt_rel);
+                    let bt = kernel.mad(kti, nt, nt_idx);
+                    let bbase = kernel.mad(bt, TILE_ELEMS, 0);
+                    let tb = kernel.load_global_tile(b, bbase);
+                    kernel.store_circular(cb, tb, 0);
+                });
+            });
+        });
+    });
+    // Compute: per strip accumulate every nhi's outputs; per (strip, kti)
+    // pop the A group ONCE and reuse the same tiles across nhi (pop at
+    // last use keeps them resident), then per nhi pop that nhi's B row
+    // and fold it into the nhi's accs. Pop order matches reader push
+    // order exactly: A group, then B rows in nhi order.
+    kernel.barrier();
+    kernel.loop_over(strips, |kernel, _strip| {
+        let g = groups_per_strip as usize;
+        let sh = sb_h as usize;
+        let sw = sb_w as usize;
+        let accs: Vec<_> = (0..n_nhi as usize * g * sh * sw)
+            .map(|_| kernel.storage(DType::BF16, MemScope::Register, TILE_ELEMS))
+            .collect();
+        kernel.loop_over(KT_TILES, |kernel, _kti| {
+            let va: Vec<_> = (0..g * sh).map(|_| kernel.load_circular(ca, 0)).collect();
+            // nhi unrolled host-side: accs is a host Vec, and the B
+            // pops stay in nhi order either way.
+            for nhi_i in 0..n_nhi as usize {
+                let vb: Vec<_> = (0..sw).map(|_| kernel.load_circular(cb, 0)).collect();
+                for gi in 0..g {
+                    for r in 0..sh {
+                        for n in 0..sw {
+                            let acc = accs[nhi_i * g * sh * sw + gi * sh * sw + r * sw + n];
+                            let av_old = kernel.load_register_tile(acc, 0);
+                            let f = kernel.matmul_tile(va[gi * sh + r], vb[n], av_old);
+                            kernel.store_register_tile(acc, f, 0);
+                        }
+                    }
+                }
+            }
+        });
+        for acc in accs {
+            let f = kernel.load_register_tile(acc, 0);
+            kernel.store_circular(cout, f, 0);
+        }
+    });
+    kernel.barrier();
+    // Writer: pops cout in push order (strip, nhi, g, r, n) and scatters
+    // to output tile (mt,nt) at mt*Nt+nt, row-major.
+    kernel.loop_over(strips, |kernel, strip| {
+        kernel.loop_over(n_nhi, |kernel, nhi| {
+            for gi in 0..groups_per_strip {
+                let mtp = kernel.mad(strip, groups_per_strip, gi);
+                for r in 0..sb_h {
+                    for n in 0..sb_w {
+                        let mt_loc = kernel.mad(mtp, sb_h, r);
+                        let mt_idx = kernel.add(mt_base, mt_loc);
+                        let nt_base = kernel.mad(nhi, sb_w, 0);
+                        let nt_rel = kernel.add(nt_base, n);
+                        let nt_idx = kernel.mad(gy, nt_per_core, nt_rel);
+                        let ot = kernel.mad(mt_idx, nt, nt_idx);
+                        let obase = kernel.mad(ot, TILE_ELEMS, 0);
+                        let v = kernel.load_circular(cout, 0);
+                        kernel.store_global_tile(out, v, obase);
+                    }
+                }
+            }
+        });
+    });
+
+    kernel.constant_folding();
+    kernel.dead_code_elimination();
+    kernel.verify();
+    Ok(kernel)
+}
+
 fn main() -> Result<(), ZyxError> {
     if !Dev::all().iter().any(|d| matches!(d, Dev::TT(0))) {
         println!("tt_gemm: no Tenstorrent device, skipping");
@@ -236,6 +389,20 @@ fn main() -> Result<(), ZyxError> {
                 g,
             )?);
             names.push(format!("MT{mt_per_core}NT{nt_per_core}SB{sb_h}x{sb_w}G{g}"));
+            // A-reuse variant: admissible only within the DST budget (same
+            // formula as the builder assert; duplicates it deliberately).
+            if nt_per_core * g * sb_h + sb_w + 1 <= 16 {
+                seeds.push(build_gemm_a_reuse(
+                    rows,
+                    cols,
+                    mt_per_core,
+                    nt_per_core,
+                    sb_h,
+                    sb_w,
+                    g,
+                )?);
+                names.push(format!("MT{mt_per_core}NT{nt_per_core}SB{sb_h}x{sb_w}G{g}-AREUSE"));
+            }
         }
         let (winner, nanos) =
             BeamSearch::new().run(seeds, &[&a_t, &b_t, &out_t], &[], |_| {}, |_| 0)?;
@@ -249,10 +416,6 @@ fn main() -> Result<(), ZyxError> {
         // Verify the winner against the reference with a single launch.
         // Perf comes from beam search's device-side nanos, not host timing.
         let compiled = winner.compile()?;
-        if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-            println!("tt_gemm: dump only, skipping launch");
-            return Ok(());
-        }
         let outs = compiled.forward(&[&a_t, &b_t], vec![[m, n]])?;
         let z: Vec<f32> = outs[0]
             .to(Dev::C)?

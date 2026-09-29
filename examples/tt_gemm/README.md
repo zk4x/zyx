@@ -9,7 +9,7 @@ CUDA (or CPU) reference matmul.
 
 ```bash
 ./run.sh                        # needs TT_METAL_ROOT for the TT runtime build
-ZYX_TT_DUMP_ONLY=1 cargo run -p tt_gemm   # compile only, no board launch
+ZYX_DRY_RUN=1 cargo run -p tt_gemm   # compile only, no board launch (value check fails by design)
 ```
 
 ## Reading perf (use the device lines, not the summary line)

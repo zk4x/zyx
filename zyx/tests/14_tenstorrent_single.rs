@@ -253,11 +253,6 @@ fn run_tt_unary(
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let a_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(dtype).to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
 
@@ -314,11 +309,6 @@ fn run_tt_binary(
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let to_tt = |v: Vec<f32>| -> Result<Tensor, ZyxError> { Tensor::from_vec(v, [32, 32])?.tilize()?.cast(dtype).to(Dev::TT(0)) };
     let a_t = to_tt(data_a.clone())?;
     let b_t = to_tt(data_b.clone())?;
@@ -403,11 +393,6 @@ fn run_tt_cast(
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let a_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(in_dtype).to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
 
@@ -492,11 +477,6 @@ fn elementwise_golden_kernel() -> Result<(), ZyxError> {
     k.debug();
 
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     // Face slot -> linear index within a tile.
     let lin = |s: usize| {
         let (face, local) = (s / 256, s % 256);
@@ -583,11 +563,6 @@ fn tenstorrent_nine_page_read() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let lin = |s: usize| {
         let (face, local) = (s / 256, s % 256);
         let (fr0, fc0) = (face / 2, face % 2);
@@ -662,11 +637,6 @@ fn tenstorrent_copy() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let data: Vec<f32> = (0..32 * 128).map(|j| j as f32 * 0.015625).collect();
     let x_t = Tensor::from_vec(data.clone(), [32, 128])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&x_t], vec![[32, 128]])?;
@@ -728,11 +698,6 @@ fn tenstorrent_pad_move() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let data: Vec<f32> = (0..32 * 128).map(|j| j as f32 * 0.015625).collect();
     let x_t = Tensor::from_vec(data.clone(), [32, 128])?.tilize()?.to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&x_t], vec![[32, 128]])?;
@@ -777,11 +742,6 @@ fn tenstorrent_pad_move_f8() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let data = tt_f8_exact();
     let x_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(DType::F8E4M3).to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&x_t], vec![[32, 32]])?;
@@ -827,11 +787,6 @@ fn tenstorrent_pad_move_u8() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let data = tt_u8_full();
     let x_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(DType::U8).to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&x_t], vec![[32, 32]])?;
@@ -891,11 +846,6 @@ fn tenstorrent_copy_f8_xfmt() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let data_a = tt_f8_exact();
     let data_b: Vec<f32> = tt_centered();
     let a_t = Tensor::from_vec(data_a.clone(), [32, 32])?.tilize()?.cast(DType::F8E4M3).to(Dev::TT(0))?;
@@ -959,11 +909,6 @@ fn tenstorrent_copy_f8() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let data = tt_f8_exact();
     let a_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(DType::F8E4M3).to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
@@ -1033,11 +978,6 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     // val(r, c) = r*0.5 + c*2^-7: col max at r=31 of WT tile 3
     // (c = 96+j): 31*0.5 + (96+j)*2^-7 = 16.25 + j*2^-7.
     let data: Vec<f32> = (0..32 * 128)
@@ -1097,11 +1037,6 @@ fn tenstorrent_transpose_tile() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     // val(r, c) = r*32 + c: exact in F16, transpose swaps to c*32 + r.
     let data: Vec<f32> = (0..32 * 32).map(|j| j as f32).collect();
     let x_t = Tensor::from_vec(data, [32, 32])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
@@ -1163,11 +1098,6 @@ fn tenstorrent_eltwise_exp_sfpu() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     // Exp inputs kept in [0, 2): F16-exact steps, no overflow.
     let data: Vec<f32> = (0..32 * 128).map(|j| (j % 32) as f32 * 0.0625).collect();
     let x_t = Tensor::from_vec(data.clone(), [32, 128])?.tilize()?.cast(DType::F16).to(Dev::TT(0))?;
@@ -1221,11 +1151,6 @@ fn tenstorrent_eltwise_add() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let data_a: Vec<f32> = (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect();
     let data_b: Vec<f32> = (0..32 * 32).map(|j| ((j + 7) % 32) as f32 * 0.0625).collect();
     let to_tt =
@@ -1312,11 +1237,6 @@ fn tenstorrent_matmul_single_core() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     // A[32,64] @ B[64,64], values kept small for F16 exactness.
     let a_data: Vec<f32> = (0..32 * 64).map(|j| (j % 4) as f32 * 0.0625).collect();
     let b_data: Vec<f32> = (0..64 * 64).map(|j| ((j / 4) % 4) as f32 * 0.0625).collect();
@@ -1413,11 +1333,6 @@ fn tenstorrent_matmul_bf16_acc() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     // A[32,64] @ B[64,64], values kept small; BF16 accumulation
     // over 64 terms, tolerance covers it.
     let a_data: Vec<f32> = (0..32 * 64).map(|j| (j % 4) as f32 * 0.0625).collect();
@@ -2510,11 +2425,6 @@ fn run_tt_shift_const(
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let a_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(dtype).to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
 
@@ -2796,11 +2706,6 @@ fn tenstorrent_broadcast_row_add() -> Result<(), ZyxError> {
 
     k.verify();
     let compiled = k.compile()?;
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        println!("dump only, skipping launch");
-        return Ok(());
-    }
-
     let a_data: Vec<f32> = (0..32 * 32).map(|j| (j % 8) as f32 * 0.0625).collect();
     let b_data: Vec<f32> = (0..32).map(|j| (j % 4) as f32 * 0.125).collect();
     let a_t = Tensor::from_vec(a_data.clone(), [32, 32])?.tilize()?.cast(DType::BF16).to(Dev::TT(0))?;

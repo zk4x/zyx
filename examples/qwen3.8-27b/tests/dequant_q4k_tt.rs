@@ -33,12 +33,7 @@ fn dequant_q4k_tt_run() -> Result<(), ZyxError> {
 
     let kk = dequant_q4k_tt(4);
     let k = kk.compile()?;
-    // REVIEW-THEN-LAUNCH (AGENTS.md): with ZYX_TT_DUMP_ONLY=1, stop after
-    // compile so generated sources (ZYX_DEBUG=16) can be compared against
-    // the official tt-metal kernels before anything executes on the board.
-    if std::env::var("ZYX_TT_DUMP_ONLY").is_ok() {
-        return Ok(());
-    }
+
     let out = k.forward(&[&packed, &scales, &mins], vec![[4 * 1024]])?;
     let v: Vec<f32> = out[0].to_vec()?; // TEMP-DIAG: F32 out
 
