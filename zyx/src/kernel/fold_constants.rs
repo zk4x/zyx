@@ -873,3 +873,43 @@ impl Kernel {
         self.verify();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::types::{TinyString, TinyVec};
+    use crate::kernel::{Dev, Kernel, MemScope, Op, TTOp};
+    use crate::DType;
+
+    /// Two identical LLK calls are two traffic events: CSE must not
+    /// merge them (the unpacker streams each CB read separately).
+    #[test]
+    fn cse_does_not_dedup_llk_calls() {
+        let mut k = Kernel::from_device_id(Dev::Auto, None);
+        let out = k.param_mut(DType::F32);
+        let cb = k.storage(DType::F32, MemScope::Circular, 1);
+        let idx = k.const_val(0i64);
+        let a = k.push_back(Op::TT(TTOp::LLK {
+            asm: TinyString::new("copy_tile({0}, {1});"),
+            ops: TinyVec::new(&[cb, idx]),
+        }));
+        let b = k.push_back(Op::TT(TTOp::LLK {
+            asm: TinyString::new("copy_tile({0}, {1});"),
+            ops: TinyVec::new(&[cb, idx]),
+        }));
+        let load_a = k.load(cb, idx);
+        let load_b = k.load(cb, idx);
+        k.store(out, load_a, idx);
+        k.store(out, load_b, idx);
+        k.common_subexpression_elimination();
+        // Both calls survive; neither is remapped to the other.
+        let mut llk_count = 0;
+        for (_, op) in k.iter_unordered() {
+            if matches!(op, Op::TT(TTOp::LLK { .. })) {
+                llk_count += 1;
+            }
+        }
+        assert_eq!(llk_count, 2, "CSE must not merge two identical LLK calls");
+        assert!(matches!(k.at(a), Op::TT(TTOp::LLK { .. })));
+        assert!(matches!(k.at(b), Op::TT(TTOp::LLK { .. })));
+    }
+}

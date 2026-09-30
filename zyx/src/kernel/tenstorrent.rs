@@ -15,7 +15,6 @@
 //! `tt_sync_cbs`) is already here from slice 1.
 
 use crate::DType;
-use crate::Map;
 use crate::kernel::{BOp, FusedKind, Kernel, MemScope, Op, OpId, TTOp, TileDim, UOp};
 
 impl Kernel {
@@ -288,110 +287,80 @@ impl Kernel {
         self.asm(init, &[])
     }
 
-    /// CB sync insertion: wrap every CB traffic op with straight-line
-    /// single-tile syncs (`n = 1`; hoisted batches land with batching).
-    /// Direction reads off which copy side is circular:
-    /// - publish (`dst` GEP over a Circular storage): `ReserveBack`
-    ///   immediately before, `PushBack` immediately after;
-    /// - drain (`src` GEP over a Circular storage): `WaitFront`
-    ///   immediately before, no pop yet;
-    /// - CB-to-CB copy: `TileCopy` rule — `WaitFront` on the read side
-    ///   immediately before, no pop yet.
-    /// A circular `Load` is the compute-consume read (the kernel Load IS
-    /// the CB read; codegen bundles read+consume, so its wait sits at the
-    /// consumer — here it sits before the Load): `WaitFront` immediately
-    /// before iff every user is a tile compute op, loud `panic!`
-    /// otherwise. A circular buffer reached outside a GEP is malformed
-    /// CB traffic — loud, never silently skipped.
-    pub(crate) fn tt_sync_cbs(&mut self) {
-        // Linear user map: users[v] = ops taking v as a data operand.
-        let mut users: Map<OpId, Vec<OpId>> = Map::default();
-        let mut scan = self.head;
-        while !scan.is_null() {
-            for p in self.at(scan).parameters() {
-                users.entry(p).or_default().push(scan);
-            }
-            scan = self.next_op(scan);
-        }
-
+    /// DST lock insertion. MATH tile-compute ops run under
+    /// `tile_regs_acquire()..commit()`; PACK drains (a `Register` slot
+    /// stored into a Circular buffer) run under `tile_regs_wait()..release()`.
+    /// Pure insertion, no allocation: the physical DST slots are the
+    /// `MemScope::Register` storages already in the IR, and the CBs are
+    /// the `MemScope::Circular` storages — this pass never assigns a
+    /// number. Per section (delimited by `Op::Barrier`): one MATH block
+    /// and one PACK block. Acquire precedes the first MATH op, commit
+    /// follows the last; wait precedes the first pack store, release
+    /// follows the last. A section with no MATH ops emits no MATH
+    /// locks; a section with no pack stores emits no pack locks.
+    pub(crate) fn tt_lock_dst(&mut self) {
+        let is_math = |op: &Op| {
+            matches!(
+                op,
+                Op::TT(TTOp::MatmulTile { .. })
+                    | Op::TT(TTOp::ReduceTile { .. })
+                    | Op::TT(TTOp::TransposeTile { .. })
+                    | Op::TT(TTOp::BroadcastTile { .. })
+            )
+        };
         let mut op_id = self.head;
         while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            match self.ops[op_id].op {
-                Op::Copy { src, dst } => {
-                    let src_cb = match self.ops[src].op {
-                        Op::GEP { x, .. }
-                            if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                        {
-                            Some(x)
-                        }
-                        Op::GEP { .. } => None,
-                        Op::Storage { scope: MemScope::Circular, .. } => {
-                            panic!("tt_sync_cbs: copy src {src:?} names a Circular storage directly, must go through a GEP")
-                        }
-                        _ => None,
-                    };
-                    let dst_cb = match self.ops[dst].op {
-                        Op::GEP { x, .. }
-                            if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                        {
-                            Some(x)
-                        }
-                        Op::GEP { .. } => None,
-                        Op::Storage { scope: MemScope::Circular, .. } => {
-                            panic!("tt_sync_cbs: copy dst {dst:?} names a Circular storage directly, must go through a GEP")
-                        }
-                        _ => None,
-                    };
-                    match (src_cb, dst_cb) {
-                        (None, None) => {}
-                        (None, Some(cb)) => {
-                            self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb, n: 1 }));
-                            self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
-                        }
-                        (Some(cb), None) => {
-                            self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
-                        }
-                        (Some(scb), Some(_dcb)) => {
-                            self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb: scb, n: 1 }));
-                        }
-                    }
+            let mut math_first: Option<OpId> = None;
+            let mut math_last: Option<OpId> = None;
+            let mut pack_first: Option<OpId> = None;
+            let mut pack_last: Option<OpId> = None;
+            let mut scan = op_id;
+            let mut section_end: Option<OpId> = None;
+            while !scan.is_null() {
+                if matches!(self.at(scan), Op::Barrier) {
+                    section_end = Some(scan);
+                    break;
                 }
-                Op::Load { src } => {
-                    // Non-CB reads are not sync business. Circularity gates
-                    // the whole arm as a nested `if` — a `continue` here
-                    // would skip the cursor advance at the loop bottom and
-                    // spin forever.
-                    if let Op::GEP { x: cb, .. } = self.ops[src].op
-                        && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
+                if is_math(self.at(scan)) {
+                    if math_first.is_none() {
+                        math_first = Some(scan);
+                    }
+                    math_last = Some(scan);
+                }
+                // Pack drain: a Store whose src Load reads a Register
+                // slot — the drain that empties DST into a CB.
+                if let Op::Store { src: x, .. } = self.at(scan) {
+                    if let Op::Load { src: gep, .. } = self.at(*x)
+                        && let Op::GEP { x: g, .. } = self.at(*gep)
+                        && matches!(self.at(*g), Op::Storage { scope: MemScope::Register, .. })
                     {
-                        match users.get(&op_id) {
-                            // Dead load: no consumer reads, no wait needed.
-                            None => {}
-                            Some(use_list) => {
-                                for &u in use_list {
-                                    if !matches!(
-                                        self.ops[u].op,
-                                        Op::TT(
-                                            TTOp::MatmulTile { .. }
-                                                | TTOp::TransposeTile { .. }
-                                                | TTOp::ReduceTile { .. }
-                                                | TTOp::BroadcastTile { .. }
-                                        )
-                                    ) {
-                                        panic!(
-                                            "tt_sync_cbs: circular load {op_id:?} feeds non-compute {u:?}"
-                                        );
-                                    }
-                                }
-                                self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
-                            }
+                        if pack_first.is_none() {
+                            pack_first = Some(scan);
                         }
+                        pack_last = Some(scan);
                     }
                 }
-                _ => {}
+                scan = self.next_op(scan);
             }
-            op_id = next;
+            // Commit before wait: MATH drains to registers, then packs
+            // read them. Inserts are by OpId, so order among the four
+            // is independent of position.
+            if let Some(first) = math_first {
+                self.insert_before(first, Op::TT(TTOp::MathLock));
+            }
+            if let Some(last) = math_last {
+                self.insert_after(last, Op::TT(TTOp::MathUnlock));
+            }
+            if let Some(first) = pack_first {
+                self.insert_before(first, Op::TT(TTOp::PackLock));
+            }
+            if let Some(last) = pack_last {
+                self.insert_after(last, Op::TT(TTOp::PackUnlock));
+            }
+            op_id = match section_end {
+                Some(b) => self.next_op(b),
+                None => break,
+            }
         }
 
         self.verify();
@@ -413,5 +382,54 @@ fn tt_tile_fmt(dtype: DType) -> u32 {
         DType::F8E4M3 => 26,
         DType::U8 => 30,
         dt => panic!("tt_tile_fmt: dtype {dt:?} has no tt tile format"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::DType;
+    use crate::kernel::{Dev, Kernel, MemScope, Op, TTOp};
+
+    /// MATH tile-compute runs under `tile_regs_acquire..commit`;
+    /// the pack drain (Register slot stored into a Circular buffer)
+    /// runs under `tile_regs_wait..release`. Pure insertion: the
+    /// physical DST slots are the `MemScope::Register` storages
+    /// already in the IR, this pass assigns no numbers.
+    #[test]
+    fn lock_dst_wraps_math_and_pack() {
+        let mut k = Kernel::from_device_id(Dev::Auto, None);
+        let cb_a = k.storage(DType::F32, MemScope::Circular, 1024);
+        let cb_b = k.storage(DType::F32, MemScope::Circular, 1024);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let cout = k.storage(DType::F32, MemScope::Circular, 1024);
+        let zero = k.const_val(0i64);
+        k.barrier();
+let va = k.load_circular(cb_a, zero);
+            let vb = k.load_circular(cb_b, zero);
+            let av = k.load_register_tile(acc, zero);
+            let f = k.matmul_tile(va, vb, av);
+            k.store_register_tile(acc, f, zero);
+            let out = k.load_register_tile(acc, zero);
+            k.store_circular(cout, out, zero);
+            k.tt_lock_dst();
+
+        let mut ops: Vec<Op> = Vec::new();
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            ops.push(k.at(op_id).clone());
+            op_id = k.next_op(op_id);
+        }
+        let math_locks = ops.iter().filter(|op| matches!(op, Op::TT(TTOp::MathLock))).count();
+        let math_unlocks = ops.iter().filter(|op| matches!(op, Op::TT(TTOp::MathUnlock))).count();
+        let pack_locks = ops.iter().filter(|op| matches!(op, Op::TT(TTOp::PackLock))).count();
+        let pack_unlocks = ops.iter().filter(|op| matches!(op, Op::TT(TTOp::PackUnlock))).count();
+        assert_eq!(math_locks, 1, "one MATH acquire per section with MATH ops");
+        assert_eq!(math_unlocks, 1, "one MATH commit per section with MATH ops");
+        assert_eq!(pack_locks, 1, "one pack wait per section with a pack drain");
+        assert_eq!(pack_unlocks, 1, "one pack release per section with a pack drain");
+        // Acquire precedes the matmul; release follows the store.
+        let pos = |op: &Op| ops.iter().position(|o| o == op).unwrap();
+        assert!(pos(&Op::TT(TTOp::MathLock)) < pos(&k.at(f).clone()));
+        assert!(pos(&Op::TT(TTOp::PackUnlock)) > pos(&k.at(f).clone()));
     }
 }

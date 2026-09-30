@@ -832,15 +832,15 @@ impl Kernel {
     /// and cannot consume DST registers.
     pub fn matmul_tile(&mut self, x: OpId, y: OpId, acc: OpId) -> OpId {
         debug_assert!(
-            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
             "matmul_tile: x {x} is not a load_circular tile"
         );
         debug_assert!(
-            matches!(self.ops[y].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            matches!(self.ops[y].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
             "matmul_tile: y {y} is not a load_circular tile"
         );
         debug_assert!(
-            matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })),
+            matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Register, .. }))),
             "matmul_tile: acc {acc} is not a load_register_tile tile"
         );
         self.push_back(Op::TT(TTOp::MatmulTile { x, y, acc }))
@@ -851,7 +851,7 @@ impl Kernel {
     /// DST register.
     pub fn transpose_tile(&mut self, x: OpId) -> OpId {
         debug_assert!(
-            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
             "transpose_tile: x {x} is not a load_circular tile"
         );
         self.push_back(Op::TT(TTOp::TransposeTile { x }))
@@ -864,15 +864,15 @@ impl Kernel {
     /// values in its first row, rest zeros/unchanged.
     pub fn reduce_tile(&mut self, x: OpId, scaler: OpId, acc: OpId, rop: BOp, kind: TileDim) -> OpId {
         debug_assert!(
-            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
             "reduce_tile: x {x} is not a load_circular tile"
         );
         debug_assert!(
-            matches!(self.ops[scaler].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            matches!(self.ops[scaler].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
             "reduce_tile: scaler {scaler} is not a load_circular tile"
         );
         debug_assert!(
-            matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })),
+            matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Register, .. }))),
             "reduce_tile: acc {acc} is not a load_register_tile tile"
         );
         self.push_back(Op::TT(TTOp::ReduceTile { x, scaler, acc, rop, kind }))
@@ -883,7 +883,7 @@ impl Kernel {
     /// fused broadcast form. Carries no traffic itself; forwards `x`.
     pub fn broadcast_tile(&mut self, x: OpId, kind: TileDim) -> OpId {
         debug_assert!(
-            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
             "broadcast_tile: x {x} is not a load_circular tile"
         );
         self.push_back(Op::TT(TTOp::BroadcastTile { x, kind }))
