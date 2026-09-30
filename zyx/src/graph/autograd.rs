@@ -415,10 +415,7 @@ impl Runtime {
                 | Op::Mad { .. }
                 | Op::Barrier
                 | Op::Wmma { .. }
-                | Op::ReduceTile { .. }
-                | Op::MatmulTile { .. }
-                | Op::TransposeTile { .. }
-                | Op::BroadcastTile { .. }
+                | Op::TT { .. }
                 | Op::Asm { .. } => {
                     unreachable!("gradient runs on graph ops, never kernel-only: {:?}", self.graphs[graph_id].ops[nid].op)
                 }

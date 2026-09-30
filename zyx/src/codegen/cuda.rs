@@ -181,10 +181,7 @@ impl Kernel {
                 panic!("generate_cuda did not finish in 10000 steps");
             }
             match self.ops[op_id].op {
-                Op::ReduceTile { .. }
-                | Op::MatmulTile { .. }
-                | Op::TransposeTile { .. }
-                | Op::BroadcastTile { .. }
+                Op::TT { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }

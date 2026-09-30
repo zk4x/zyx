@@ -6,7 +6,7 @@
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, RangeKind},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, RangeKind, TTOp},
     shape::Dim,
     slab::SlabId,
 };
@@ -792,13 +792,13 @@ impl Kernel {
         // the IR stays structurally valid until then.
         let reduce_tile = self.insert_after(
             endloop_id,
-            Op::ReduceTile {
+            Op::TT(TTOp::ReduceTile {
                 x: accumulator,
                 scaler: accumulator,
                 acc: accumulator,
                 rop: accumulation_bop,
                 kind: crate::kernel::ops::TileDim::Scalar,
-            },
+            }),
         );
 
         // Remap all uses of the accumulator after the loop to the ReduceTile result

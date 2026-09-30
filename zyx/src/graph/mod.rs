@@ -20,7 +20,7 @@ use crate::{
     DType, Map, Set, ZyxError,
     backend::{Buffer, Dev, LaunchArg, Pool, PoolBufferId, ProgramId},
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId, ParamKind},
+    kernel::{BOp, IDX_T, Kernel, Op, OpId, ParamKind, TTOp},
     runtime::{KernelId, Runtime, TensorData},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::{Dim, UAxis},
@@ -1121,10 +1121,7 @@ impl Graph {
             | Op::Mad { .. }
             | Op::Barrier
             | Op::Wmma { .. }
-            | Op::ReduceTile { .. }
-            | Op::MatmulTile { .. }
-            | Op::TransposeTile { .. }
-            | Op::BroadcastTile { .. }
+            | Op::TT { .. }
             | Op::Asm { .. } => unreachable!("shape: kernel-internal op never appears in graph classes"),
         }
     }
@@ -1313,10 +1310,7 @@ impl Graph {
             | Op::Mad { .. }
             | Op::Barrier
             | Op::Wmma { .. }
-            | Op::ReduceTile { .. }
-            | Op::MatmulTile { .. }
-            | Op::TransposeTile { .. }
-            | Op::BroadcastTile { .. }
+            | Op::TT { .. }
             | Op::Asm { .. } => unreachable!("dtype: kernel-internal op never appears in graph classes"),
         }
     }
@@ -1371,10 +1365,10 @@ impl Graph {
                 | Op::Mad { .. }
                 | Op::Barrier
                 | Op::Wmma { .. }
-                | Op::ReduceTile { .. }
-                | Op::MatmulTile { .. }
-                | Op::TransposeTile { .. }
-                | Op::BroadcastTile { .. }
+                | Op::TT(TTOp::ReduceTile { .. })
+                | Op::TT(TTOp::MatmulTile { .. })
+                | Op::TT(TTOp::TransposeTile { .. })
+                | Op::TT(TTOp::BroadcastTile { .. })
                 | Op::Asm { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }
@@ -1680,7 +1674,7 @@ impl Runtime {
                         stack.push(*dst);
                         stack.push(*src);
                     }
-                    Op::ReduceTile { x, scaler, acc, .. } => {
+                    Op::TT(TTOp::ReduceTile { x, scaler, acc, .. }) => {
                         stack.push(*x);
                         stack.push(*scaler);
                         stack.push(*acc);
@@ -1694,9 +1688,7 @@ impl Runtime {
                     | Op::Asm { .. }
                     | Op::Index { .. }
                     | Op::Wmma { .. }
-                    | Op::MatmulTile { .. }
-                    | Op::TransposeTile { .. }
-                    | Op::BroadcastTile { .. }
+                    | Op::TT { .. }
                     | Op::After { .. }
                     | Op::ToDevice { .. }
                     | Op::Contiguous { .. }
@@ -1826,16 +1818,13 @@ impl Runtime {
                                     | Op::Pad { .. }
                                     | Op::Narrow { .. }
                                     | Op::Reduce { .. }
-                                    | Op::ReduceTile { .. }
                                     | Op::Store { .. }
                                     | Op::Load { .. }
                                     | Op::Mad { .. }
                                     | Op::Asm { .. }
                                     | Op::Index { .. }
                                     | Op::Wmma { .. }
-                                    | Op::MatmulTile { .. }
-                                    | Op::TransposeTile { .. }
-                                    | Op::BroadcastTile { .. }
+                                    | Op::TT { .. }
                                     | Op::After { .. }
                                     | Op::ToDevice { .. }
                                     | Op::Contiguous { .. }

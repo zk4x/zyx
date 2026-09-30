@@ -458,10 +458,7 @@ impl Kernel {
                 }
                 Op::Barrier => {}
                 Op::Asm { .. } => todo!(),
-                Op::ReduceTile { .. }
-                | Op::MatmulTile { .. }
-                | Op::TransposeTile { .. }
-                | Op::BroadcastTile { .. }
+                Op::TT { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }

@@ -24,6 +24,7 @@ use crate::backend::{Buffer, DeviceInfo, LaunchArg, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;
+use crate::kernel::TTOp;
 use crate::kernel::{
     BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp, ops::TileDim,
 };
@@ -832,7 +833,7 @@ impl Kernel {
             matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })),
             "matmul_tile: acc {acc} is not a load_register_tile tile"
         );
-        self.push_back(Op::MatmulTile { x, y, acc })
+        self.push_back(Op::TT(TTOp::MatmulTile { x, y, acc }))
     }
 
     /// Hardware tile transpose. `x` is a circular (`load_circular`)
@@ -843,7 +844,7 @@ impl Kernel {
             matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
             "transpose_tile: x {x} is not a load_circular tile"
         );
-        self.push_back(Op::TransposeTile { x })
+        self.push_back(Op::TT(TTOp::TransposeTile { x }))
     }
 
     /// Hardware tile reduce: folds tile `x` into accumulator tile `acc`
@@ -864,7 +865,7 @@ impl Kernel {
             matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })),
             "reduce_tile: acc {acc} is not a load_register_tile tile"
         );
-        self.push_back(Op::ReduceTile { x, scaler, acc, rop, kind })
+        self.push_back(Op::TT(TTOp::ReduceTile { x, scaler, acc, rop, kind }))
     }
 
     /// Marker: tile `x` (a `load_circular` tile) is consumed with
@@ -875,7 +876,7 @@ impl Kernel {
             matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
             "broadcast_tile: x {x} is not a load_circular tile"
         );
-        self.push_back(Op::BroadcastTile { x, kind })
+        self.push_back(Op::TT(TTOp::BroadcastTile { x, kind }))
     }
 
     /// Backend-specific assembly instruction applied to `ops`.

@@ -19,7 +19,7 @@
 use super::predict_cost::predict_time_us;
 use crate::{
     DType, Map, Set,
-    kernel::{IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind},
+    kernel::{IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
     shape::Dim,
 };
 
@@ -156,26 +156,28 @@ impl Kernel {
                             *rcs.entry(len).or_insert(0) += 1;
                         }
                     }
-                    Op::ReduceTile { x, scaler, acc, .. } => {
-                        dtypes.insert(op_id, dtypes[&acc]);
-                        *rcs.entry(x).or_insert(0) += 1;
-                        *rcs.entry(scaler).or_insert(0) += 1;
-                        *rcs.entry(acc).or_insert(0) += 1;
-                    }
-                    Op::MatmulTile { x, y, acc } => {
-                        dtypes.insert(op_id, dtypes[&acc]);
-                        *rcs.entry(x).or_insert(0) += 1;
-                        *rcs.entry(y).or_insert(0) += 1;
-                        *rcs.entry(acc).or_insert(0) += 1;
-                    }
-                    Op::TransposeTile { x } => {
-                        dtypes.insert(op_id, dtypes[&x]);
-                        *rcs.entry(x).or_insert(0) += 1;
-                    }
-                    Op::BroadcastTile { x, .. } => {
-                        dtypes.insert(op_id, dtypes[&x]);
-                        *rcs.entry(x).or_insert(0) += 1;
-                    }
+                    Op::TT(ttop) => match ttop {
+                        TTOp::ReduceTile { x, scaler, acc, .. } => {
+                            dtypes.insert(op_id, dtypes[&acc]);
+                            *rcs.entry(x).or_insert(0) += 1;
+                            *rcs.entry(scaler).or_insert(0) += 1;
+                            *rcs.entry(acc).or_insert(0) += 1;
+                        }
+                        TTOp::MatmulTile { x, y, acc } => {
+                            dtypes.insert(op_id, dtypes[&acc]);
+                            *rcs.entry(x).or_insert(0) += 1;
+                            *rcs.entry(y).or_insert(0) += 1;
+                            *rcs.entry(acc).or_insert(0) += 1;
+                        }
+                        TTOp::TransposeTile { x } => {
+                            dtypes.insert(op_id, dtypes[&x]);
+                            *rcs.entry(x).or_insert(0) += 1;
+                        }
+                        TTOp::BroadcastTile { x, .. } => {
+                            dtypes.insert(op_id, dtypes[&x]);
+                            *rcs.entry(x).or_insert(0) += 1;
+                        }
+                    },
                     Op::Barrier | Op::EndLoop => {}
                 }
                 op_id = self.next_op(op_id);
@@ -222,10 +224,7 @@ impl Kernel {
                 | Op::Mad { .. }
                 | Op::Stack { .. }
                 | Op::Wmma { .. }
-                | Op::ReduceTile { .. }
-                | Op::MatmulTile { .. }
-                | Op::TransposeTile { .. }
-                | Op::BroadcastTile { .. }
+                | Op::TT { .. }
                 | Op::Index { .. }
                 | Op::Param { .. }
                 | Op::Storage { .. }
@@ -308,11 +307,8 @@ impl Kernel {
                 | Op::Reshape { .. }
                 | Op::Pad { .. }
                 | Op::Reduce { .. }
-                | Op::ReduceTile { .. }
-                | Op::MatmulTile { .. }
-                | Op::Asm { .. }
-                | Op::TransposeTile { .. }
-                | Op::BroadcastTile { .. } => {}
+                | Op::TT { .. }
+                | Op::Asm { .. } => {}
                 Op::Load { src, index, layout } => {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {

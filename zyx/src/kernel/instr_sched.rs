@@ -17,7 +17,7 @@ use std::collections::BinaryHeap;
 
 use crate::{
     Map,
-    kernel::{Kernel, MemScope, Op, OpId, ParamKind, RangeKind},
+    kernel::{Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
 };
 
 impl Kernel {
@@ -165,18 +165,18 @@ impl Kernel {
                 | Op::Reduce { x, .. } => {
                     add_param!(x)
                 }
-                Op::ReduceTile { x, scaler, acc, .. } => {
+                Op::TT(TTOp::ReduceTile { x, scaler, acc, .. }) => {
                     add_param!(x);
                     add_param!(scaler);
                     add_param!(acc);
                 }
-                Op::MatmulTile { x, y, acc } => {
+                Op::TT(TTOp::MatmulTile { x, y, acc }) => {
                     add_param!(x);
                     add_param!(y);
                     add_param!(acc);
                 }
-                Op::TransposeTile { x } => add_param!(x),
-                Op::BroadcastTile { x, .. } => add_param!(x),
+                Op::TT(TTOp::TransposeTile { x }) => add_param!(x),
+                Op::TT(TTOp::BroadcastTile { x, .. }) => add_param!(x),
                 Op::Binary { x, y, .. } => {
                     add_param!(x);
                     add_param!(y);

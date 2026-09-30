@@ -46,12 +46,9 @@ impl Kernel {
                 | Op::Pad { .. }
                 | Op::Reshape { .. }
                 | Op::Reduce { .. }
-                | Op::ReduceTile { .. }
+                | Op::TT { .. }
                 | Op::Wmma { .. }
                 | Op::Barrier
-                | Op::MatmulTile { .. }
-                | Op::TransposeTile { .. }
-                | Op::BroadcastTile { .. }
                 | Op::Index { .. }
                 | Op::Const(_)
                 | Op::Param { .. }

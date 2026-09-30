@@ -26,7 +26,7 @@ use crate::kernel::{BOp, IDX_T, RangeKind, UOp};
 use crate::slab::SlabId;
 use crate::{
     BLUE, BOLD, CYAN, DType, GREEN, GREY, MAGENTA, Map, ORANGE, RED, RESET, YELLOW,
-    kernel::{Kernel, Op, OpId},
+    kernel::{Kernel, Op, OpId, TTOp},
     shape::Dim,
 };
 use std::fmt::{Display, Formatter};
@@ -105,7 +105,7 @@ impl Display for Kernel {
                     )
                     .unwrap();
                 }
-                Op::ReduceTile { x, scaler, acc, rop, .. } => {
+                Op::TT(TTOp::ReduceTile { x, scaler, acc, rop, .. }) => {
                     let dtype = dtypes.get(&acc).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
@@ -123,7 +123,7 @@ impl Display for Kernel {
                     )
                     .unwrap();
                 }
-                Op::MatmulTile { x, y, acc } => {
+                Op::TT(TTOp::MatmulTile { x, y, acc }) => {
                     let dtype = dtypes.get(&acc).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
@@ -131,13 +131,13 @@ impl Display for Kernel {
                     let acc = id_map[&acc];
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}matmul_tile{reset} r{x}, r{y}, r{acc}").unwrap();
                 }
-                Op::TransposeTile { x } => {
+                Op::TT(TTOp::TransposeTile { x }) => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}").unwrap();
                 }
-                Op::BroadcastTile { x, kind } => {
+                Op::TT(TTOp::BroadcastTile { x, kind }) => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];

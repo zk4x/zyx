@@ -867,27 +867,27 @@ impl Kernel {
                         // no loop consts needed.
                         if dtypes[&len].0 != DType::Bool {
                             let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
-                        for &val in &[0u32, 1, len as u32] {
-                            let key = match IDX_T {
-                                DType::U32 => Constant::U32(val),
-                                DType::I32 => Constant::I32(val as i32),
-                                DType::U64 => Constant::U64((val as i64).to_le_bytes()),
-                                DType::I64 => Constant::I64((val as i64).to_le_bytes()),
-                                dt => {
-                                    return Err(BackendError {
-                                        status: ErrorStatus::KernelCompilation,
-                                        context: format!("SPIR-V: unexpected index type {dt:?} for const value").into(),
-                                    });
-                                }
-                            };
-                            const_pool.entry(key).or_insert_with(|| {
-                                let tid = type_cache[&IDX_T];
-                                let cid = asm.id();
-                                let words = const_to_words(&key);
-                                const_entries.push((tid, cid, words));
-                                cid
-                            });
-                        }
+                            for &val in &[0u32, 1, len as u32] {
+                                let key = match IDX_T {
+                                    DType::U32 => Constant::U32(val),
+                                    DType::I32 => Constant::I32(val as i32),
+                                    DType::U64 => Constant::U64((val as i64).to_le_bytes()),
+                                    DType::I64 => Constant::I64((val as i64).to_le_bytes()),
+                                    dt => {
+                                        return Err(BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!("SPIR-V: unexpected index type {dt:?} for const value").into(),
+                                        });
+                                    }
+                                };
+                                const_pool.entry(key).or_insert_with(|| {
+                                    let tid = type_cache[&IDX_T];
+                                    let cid = asm.id();
+                                    let words = const_to_words(&key);
+                                    const_entries.push((tid, cid, words));
+                                    cid
+                                });
+                            }
                         }
                     }
                     Op::Barrier => {
@@ -1136,7 +1136,7 @@ impl Kernel {
                     panic!("generate_spirv did not finish in 10000 steps");
                 }
                 match self.ops[op_id].op {
-                    Op::ReduceTile { .. }
+                    Op::TT { .. }
                     | Op::Expand { .. }
                     | Op::Permute { .. }
                     | Op::Flip { .. }
@@ -1145,9 +1145,6 @@ impl Kernel {
                     | Op::Pad { .. }
                     | Op::Reduce { .. }
                     | Op::Wmma { .. }
-                    | Op::MatmulTile { .. }
-                    | Op::TransposeTile { .. }
-                    | Op::BroadcastTile { .. }
                     | Op::After { .. }
                     | Op::ToDevice { .. }
                     | Op::Contiguous { .. }
@@ -1755,7 +1752,8 @@ impl Kernel {
                             let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
 
                             // Pre-header: allocate counter var and store 0, then branch to header
-                            let counter_ptr_type = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
+                            let counter_ptr_type =
+                                push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
                             let counter_var = asm.id();
                             asm.emit(OpVariable, &[counter_ptr_type, counter_var, SC_FUNCTION]);
                             let zero = const_pool[&Constant::idx(0)];
@@ -1786,29 +1784,29 @@ impl Kernel {
                             asm.emit(OpLabel, &[merge]);
                         } else {
                             let (header, merge, continue_lbl, counter_var, len) = loop_stack.pop().unwrap();
-                        let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
+                            let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
 
-                        // Branch to continue block
-                        asm.emit(OpBranch, &[continue_lbl]);
+                            // Branch to continue block
+                            asm.emit(OpBranch, &[continue_lbl]);
 
-                        // Continue block: load, increment, store, check
-                        asm.emit(OpLabel, &[continue_lbl]);
-                        let old = asm.id();
-                        asm.emit_typed(OpLoad, idx_type, old, &[counter_var]);
-                        let one = const_pool[&Constant::idx(1)];
-                        let inc = asm.id();
-                        asm.emit_typed(OpIAdd, idx_type, inc, &[old, one]);
-                        asm.emit(OpStore, &[counter_var, inc]);
+                            // Continue block: load, increment, store, check
+                            asm.emit(OpLabel, &[continue_lbl]);
+                            let old = asm.id();
+                            asm.emit_typed(OpLoad, idx_type, old, &[counter_var]);
+                            let one = const_pool[&Constant::idx(1)];
+                            let inc = asm.id();
+                            asm.emit_typed(OpIAdd, idx_type, inc, &[old, one]);
+                            asm.emit(OpStore, &[counter_var, inc]);
 
-                        // Check if counter < len
-                        let len_cid = const_pool[&Constant::idx(len)];
-                        let cmp_type = emit_type(&mut asm, &mut type_cache, DType::Bool);
-                        let cmp = asm.id();
-                        asm.emit_typed(OpULessThan, cmp_type, cmp, &[inc, len_cid]);
-                        asm.emit(OpBranchConditional, &[cmp, header, merge]);
+                            // Check if counter < len
+                            let len_cid = const_pool[&Constant::idx(len)];
+                            let cmp_type = emit_type(&mut asm, &mut type_cache, DType::Bool);
+                            let cmp = asm.id();
+                            asm.emit_typed(OpULessThan, cmp_type, cmp, &[inc, len_cid]);
+                            asm.emit(OpBranchConditional, &[cmp, header, merge]);
 
-                        // Merge block
-                        asm.emit(OpLabel, &[merge]);
+                            // Merge block
+                            asm.emit(OpLabel, &[merge]);
                         }
                     }
                     Op::Barrier => {

@@ -15,7 +15,7 @@
 //! These optimizations reduce redundant computations and improve performance.
 
 use super::autotune::Optimization;
-use crate::kernel::{Kernel, Op, OpId};
+use crate::kernel::{Kernel, Op, OpId, TTOp};
 use crate::{DType, Map, Set};
 
 /// Reassociate commutative operations (addition, multiplication)
@@ -58,15 +58,15 @@ impl Kernel {
                 | Op::Flip { .. }
                 | Op::Narrow { .. }
                 | Op::Reduce { .. }
-                | Op::ReduceTile { .. } => {
+                | Op::TT(TTOp::ReduceTile { .. }) => {
                     unreachable!()
                 }
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     unreachable!()
                 }
-                Op::MatmulTile { x, y, acc } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&acc]),
-                Op::TransposeTile { x } => loop_dep[&x],
-                Op::BroadcastTile { x, .. } => loop_dep[&x],
+                Op::TT(TTOp::MatmulTile { x, y, acc }) => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&acc]),
+                Op::TT(TTOp::TransposeTile { x }) => loop_dep[&x],
+                Op::TT(TTOp::BroadcastTile { x, .. }) => loop_dep[&x],
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -132,10 +132,10 @@ impl Kernel {
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     unreachable!()
                 }
-                Op::ReduceTile { x, scaler, acc, .. } => loop_dep[x].max(loop_dep[scaler]).max(loop_dep[acc]),
-                Op::MatmulTile { x, y, acc } => loop_dep[x].max(loop_dep[y]).max(loop_dep[acc]),
-                Op::TransposeTile { x } => loop_dep[x],
-                Op::BroadcastTile { x, .. } => loop_dep[x],
+                Op::TT(TTOp::ReduceTile { x, scaler, acc, .. }) => loop_dep[x].max(loop_dep[scaler]).max(loop_dep[acc]),
+                Op::TT(TTOp::MatmulTile { x, y, acc }) => loop_dep[x].max(loop_dep[y]).max(loop_dep[acc]),
+                Op::TT(TTOp::TransposeTile { x }) => loop_dep[x],
+                Op::TT(TTOp::BroadcastTile { x, .. }) => loop_dep[x],
                 Op::Asm { ops, .. } => {
                     let mut max = 0;
                     for op in ops.iter() {

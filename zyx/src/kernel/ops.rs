@@ -141,40 +141,6 @@ pub enum Op {
         b: OpId,
         c: OpId,
     },
-    /// Hardware reduce_tile: folds tile `x` into accumulator tile `acc`
-    /// with `rop` (TT: `reduce_tile` accumulates into the acc CB directly;
-    /// the result tile carries values in its first row). `scaler` is the
-    /// LLK-mandated scale tile (ones when unused, e.g. MAX): an explicit
-    /// operand so its CB traffic balances like everything else. Explicit
-    /// `acc` keeps the accumulation in SSA dataflow instead of a fold
-    /// marker.
-    ReduceTile {
-        x: OpId,
-        scaler: OpId,
-        acc: OpId,
-        rop: BOp,
-        kind: TileDim,
-    },
-    /// Hardware tile matmul: folds `x @ y` into accumulator tile `acc`
-    /// (TT: `matmul_tiles` accumulates into DST). Explicit `acc` keeps
-    /// the accumulation in SSA dataflow instead of a fold marker.
-    MatmulTile {
-        x: OpId,
-        y: OpId,
-        acc: OpId,
-    },
-    TransposeTile {
-        x: OpId,
-    },
-    /// Marker: tile `x` (a `load_circular` tile) is consumed with
-    /// broadcast `kind` by the consuming tiled binary, which emits the
-    /// fused broadcast form (TT: `add/sub/mul_tiles_bcast_*`, operands
-    /// stay in CBs). Without the marker the binary uses the plain
-    /// register form. Carries no traffic itself.
-    BroadcastTile {
-        x: OpId,
-        kind: TileDim,
-    },
     // For backend specific assembly
     Asm {
         asm: TinyString,
@@ -263,6 +229,48 @@ pub enum Op {
     /// `time` is measured timing, ignored by `Eq`/`Hash` (mirrors the
     /// former `Node::Custom`, which also never compares equal).
     Custom(Box<CustomKernel>),
+
+    // Backend specific extensions
+    /// TT
+    TT(TTOp),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+pub enum TTOp {
+    /// Hardware reduce_tile: folds tile `x` into accumulator tile `acc`
+    /// with `rop` (TT: `reduce_tile` accumulates into the acc CB directly;
+    /// the result tile carries values in its first row). `scaler` is the
+    /// LLK-mandated scale tile (ones when unused, e.g. MAX): an explicit
+    /// operand so its CB traffic balances like everything else. Explicit
+    /// `acc` keeps the accumulation in SSA dataflow instead of a fold
+    /// marker.
+    ReduceTile {
+        x: OpId,
+        scaler: OpId,
+        acc: OpId,
+        rop: BOp,
+        kind: TileDim,
+    },
+    /// Hardware tile matmul: folds `x @ y` into accumulator tile `acc`
+    /// (TT: `matmul_tiles` accumulates into DST). Explicit `acc` keeps
+    /// the accumulation in SSA dataflow instead of a fold marker.
+    MatmulTile {
+        x: OpId,
+        y: OpId,
+        acc: OpId,
+    },
+    TransposeTile {
+        x: OpId,
+    },
+    /// Marker: tile `x` (a `load_circular` tile) is consumed with
+    /// broadcast `kind` by the consuming tiled binary, which emits the
+    /// fused broadcast form (TT: `add/sub/mul_tiles_bcast_*`, operands
+    /// stay in CBs). Without the marker the binary uses the plain
+    /// register form. Carries no traffic itself.
+    BroadcastTile {
+        x: OpId,
+        kind: TileDim,
+    },
 }
 
 /// Boxed payload of [`Op::Custom`]: a custom kernel boundary's inputs,
@@ -299,10 +307,7 @@ impl Op {
             Op::Index { .. } => 16,
             Op::Barrier => 17,
             Op::Wmma { .. } => 18,
-            Op::ReduceTile { .. } => 19,
-            Op::MatmulTile { .. } => 20,
-            Op::TransposeTile { .. } => 21,
-            Op::BroadcastTile { .. } => 22,
+            Op::TT(_) => 19,
             Op::Asm { .. } => 23,
             Op::Reduce { .. } => 25,
             Op::After { .. } => 26,
@@ -352,13 +357,7 @@ impl PartialEq for Op {
                 Op::Wmma { dims: ad, layout: al, dtype: at, a, b: ab, c: ac },
                 Op::Wmma { dims: bd, layout: bl, dtype: bt, a: ba, b: bb, c: bc },
             ) => ad == bd && al == bl && at == bt && a == ba && ab == bb && ac == bc,
-            (
-                Op::ReduceTile { x: a, scaler: as_, acc: aa, rop: ar, kind: ak },
-                Op::ReduceTile { x: b, scaler: bs, acc: ba, rop: br, kind: bk },
-            ) => a == b && as_ == bs && aa == ba && ar == br && ak == bk,
-            (Op::MatmulTile { x: a, y: ay, acc: aa }, Op::MatmulTile { x: b, y: by, acc: ba }) => a == b && ay == by && aa == ba,
-            (Op::TransposeTile { x: a }, Op::TransposeTile { x: b }) => a == b,
-            (Op::BroadcastTile { x: a, kind: ak }, Op::BroadcastTile { x: b, kind: bk }) => a == b && ak == bk,
+            (Op::TT(a), Op::TT(b)) => a == b,
             (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => aa == ba && ao == bo,
             (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
                 a == b && ar == br && aa == ba
@@ -462,23 +461,7 @@ impl Hash for Op {
                 b.hash(state);
                 c.hash(state);
             }
-            Op::ReduceTile { x, scaler, acc, rop, kind } => {
-                x.hash(state);
-                scaler.hash(state);
-                acc.hash(state);
-                rop.hash(state);
-                kind.hash(state);
-            }
-            Op::MatmulTile { x, y, acc } => {
-                x.hash(state);
-                y.hash(state);
-                acc.hash(state);
-            }
-            Op::TransposeTile { x } => x.hash(state),
-            Op::BroadcastTile { x, kind } => {
-                x.hash(state);
-                kind.hash(state);
-            }
+            Op::TT(t) => t.hash(state),
             Op::Asm { asm, ops } => {
                 asm.hash(state);
                 ops.hash(state);
@@ -576,13 +559,7 @@ impl Ord for Op {
                 Op::Wmma { dims: ad, layout: al, dtype: at, a, b: ab, c: ac },
                 Op::Wmma { dims: bd, layout: bl, dtype: bt, a: ba, b: bb, c: bc },
             ) => (ad, al, at, a, ab, ac).cmp(&(bd, bl, bt, ba, bb, bc)),
-            (
-                Op::ReduceTile { x: a, scaler: as_, acc: aa, rop: ar, kind: ak },
-                Op::ReduceTile { x: b, scaler: bs, acc: ba, rop: br, kind: bk },
-            ) => (a, as_, aa, ar, ak).cmp(&(b, bs, ba, br, bk)),
-            (Op::MatmulTile { x: a, y: ay, acc: aa }, Op::MatmulTile { x: b, y: by, acc: ba }) => (a, ay, aa).cmp(&(b, by, ba)),
-            (Op::TransposeTile { x: a }, Op::TransposeTile { x: b }) => a.cmp(b),
-            (Op::BroadcastTile { x: a, kind: ak }, Op::BroadcastTile { x: b, kind: bk }) => (a, ak).cmp(&(b, bk)),
+            (Op::TT(a), Op::TT(b)) => a.cmp(b),
             (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => (aa, ao).cmp(&(ba, bo)),
             (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
                 (a, ar, aa).cmp(&(b, br, ba))
@@ -613,8 +590,8 @@ impl Ord for Op {
     }
 }
 
-/// Which dimension a `Op::ReduceTile` collapses, or a
-/// `Op::BroadcastTile` replicates, within each 32x32 tile.
+/// Which dimension a `TTOp::ReduceTile` collapses, or a
+/// `TTOp::BroadcastTile` replicates, within each 32x32 tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum TileDim {
     /// One value per row (reduce: 32 values carried in the result
@@ -937,10 +914,10 @@ impl Op {
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            &Op::MatmulTile { x, y, acc } => vec![x, y, acc],
-            &Op::TransposeTile { x } => vec![x],
-            &Op::BroadcastTile { x, .. } => vec![x],
-            &Op::ReduceTile { x, acc, scaler, .. } => vec![x, acc, scaler],
+            &Op::TT(TTOp::MatmulTile { x, y, acc }) => vec![x, y, acc],
+            &Op::TT(TTOp::TransposeTile { x }) => vec![x],
+            &Op::TT(TTOp::BroadcastTile { x, .. }) => vec![x],
+            &Op::TT(TTOp::ReduceTile { x, acc, scaler, .. }) => vec![x, acc, scaler],
             Op::After { x, dep } => vec![*x, *dep],
             Op::ToDevice { x, .. } => vec![*x],
             Op::Contiguous { x } => vec![*x],
@@ -983,10 +960,10 @@ impl Op {
             Op::Stack { ops } => ops.iter_mut().collect(),
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::MatmulTile { x, y, acc } => vec![x, y, acc],
-            Op::ReduceTile { x, acc, scaler, .. } => vec![x, acc, scaler],
-            Op::TransposeTile { x } => vec![x],
-            Op::BroadcastTile { x, .. } => vec![x],
+            Op::TT(TTOp::MatmulTile { x, y, acc }) => vec![x, y, acc],
+            Op::TT(TTOp::ReduceTile { x, acc, scaler, .. }) => vec![x, acc, scaler],
+            Op::TT(TTOp::TransposeTile { x }) => vec![x],
+            Op::TT(TTOp::BroadcastTile { x, .. }) => vec![x],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
             Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                 todo!("parameters_mut: graph-only op in ordered kernel")

@@ -97,7 +97,7 @@
 pub use crate::backend::{Dev, DeviceInfo};
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{BOp, MMADType, MMADims, MMALayout, OpId, ParamKind, TileDim};
-pub(crate) use ops::{Op, OpLinked, RangeKind, UOp};
+pub(crate) use ops::{Op, OpLinked, RangeKind, TTOp, UOp};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
@@ -334,7 +334,7 @@ impl Kernel {
                 | Op::Pad { .. }
                 | Op::Narrow { .. }
                 | Op::Reduce { .. }
-                | Op::ReduceTile { .. } => {
+                | Op::TT(TTOp::ReduceTile { .. }) => {
                     unreachable!()
                 }
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
@@ -372,7 +372,7 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
-                Op::BroadcastTile { x, .. } => {
+                Op::TT(TTOp::BroadcastTile { x, .. }) => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
@@ -421,13 +421,13 @@ impl Kernel {
                     *rcs.entry(b).or_insert(0) += 1;
                     *rcs.entry(c).or_insert(0) += 1;
                 }
-                Op::MatmulTile { x, y, acc } => {
+                Op::TT(TTOp::MatmulTile { x, y, acc }) => {
                     dtypes.insert(op_id, dtypes[&acc]);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(acc).or_insert(0) += 1;
                 }
-                Op::TransposeTile { x } => {
+                Op::TT(TTOp::TransposeTile { x }) => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
@@ -487,8 +487,8 @@ impl Kernel {
                     MMADims::m8n8k32 => return MemLayout::Vector(2),
                     MMADims::m8n8k128 => return MemLayout::Vector(2),
                 },
-                Op::MatmulTile { acc, .. } => op_id = acc,
-                Op::TransposeTile { x } => op_id = x,
+                Op::TT(TTOp::MatmulTile { acc, .. }) => op_id = acc,
+                Op::TT(TTOp::TransposeTile { x }) => op_id = x,
                 Op::Stack { ref ops } => {
                     return MemLayout::Vector(ops.len().try_into().unwrap());
                 }
@@ -496,8 +496,8 @@ impl Kernel {
                 // Index extracts a single lane: a scalar, not the vec layout.
                 Op::Index { .. } => return MemLayout::Scalar,
                 Op::Reduce { x, .. } => op_id = x,
-                Op::ReduceTile { acc, .. } => op_id = acc,
-                Op::BroadcastTile { x, .. } => op_id = x,
+                Op::TT(TTOp::ReduceTile { acc, .. }) => op_id = acc,
+                Op::TT(TTOp::BroadcastTile { x, .. }) => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return MemLayout::Scalar,
                 Op::Barrier => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
@@ -542,15 +542,15 @@ impl Kernel {
                     | MMADType::b1_b1_s32_xor_popc
                     | MMADType::b1_b1_s32_and_popc => return DType::I32,
                 },
-                Op::MatmulTile { acc, .. } => op_id = acc,
-                Op::TransposeTile { x } => op_id = x,
+                Op::TT(TTOp::MatmulTile { acc, .. }) => op_id = acc,
+                Op::TT(TTOp::TransposeTile { x }) => op_id = x,
                 Op::Stack { ref ops } => op_id = ops[0],
                 Op::Asm { ref ops, .. } => op_id = ops[0],
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
-                Op::ReduceTile { acc, .. } => op_id = acc,
-                Op::BroadcastTile { x, .. } => op_id = x,
+                Op::TT(TTOp::ReduceTile { acc, .. }) => op_id = acc,
+                Op::TT(TTOp::BroadcastTile { x, .. }) => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return IDX_T,
                 Op::Barrier => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
@@ -864,7 +864,7 @@ impl Kernel {
                     BOp::Mul => "prod",
                     _ => "reduce",
                 }),
-                Op::ReduceTile { rop, .. } => parts.push(match rop {
+                Op::TT(TTOp::ReduceTile { rop, .. }) => parts.push(match rop {
                     BOp::Add => "reduce_tile_sum",
                     BOp::Max => "reduce_tile_max",
                     BOp::Mul => "reduce_tile_prod",
@@ -958,8 +958,8 @@ impl Kernel {
                     let loop_prod: u64 = loop_stack.iter().product::<u64>().max(1);
                     flops = flops.saturating_add(2 * m * n * k * warps * loop_prod);
                 }
-                Op::ReduceTile { .. } => flops = flops.saturating_add(mult),
-                Op::MatmulTile { .. } => {
+                Op::TT(TTOp::ReduceTile { .. }) => flops = flops.saturating_add(mult),
+                Op::TT(TTOp::MatmulTile { .. }) => {
                     // Tenstorrent `matmul_tile` is one 32x32x32 MAC: the
                     // kernel API only builds 32x32 tiles (`load_circular` /
                     // `load_register_tile` assert Tile { 32, 32, 32 }).
@@ -986,7 +986,7 @@ impl Kernel {
 
     /// Check if the kernel is a reduction kernel.
     pub(crate) fn is_reduce(&self) -> bool {
-        self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. } | Op::ReduceTile { .. }))
+        self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. } | Op::TT(TTOp::ReduceTile { .. })))
     }
 
     /// Tensor shape of the value produced by `op_id`, as per-dimension op
@@ -1149,10 +1149,10 @@ impl Kernel {
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
                 | Op::Mad { x, .. }
-                | Op::MatmulTile { x, .. }
-                | Op::ReduceTile { x, .. }
+                | Op::TT(TTOp::MatmulTile { x, .. })
+                | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::Index { vec: x, .. }
-                | Op::TransposeTile { x } => match visited.get(&x) {
+                | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(op_id, dims.clone());
                     }
@@ -1315,10 +1315,10 @@ impl Kernel {
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
                 | Op::Mad { x, .. }
-                | Op::MatmulTile { x, .. }
-                | Op::ReduceTile { x, .. }
+                | Op::TT(TTOp::MatmulTile { x, .. })
+                | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::Index { vec: x, .. }
-                | Op::TransposeTile { x } => match visited.get(&x) {
+                | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(id, dims.clone());
                     }

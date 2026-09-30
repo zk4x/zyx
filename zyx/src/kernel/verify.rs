@@ -6,7 +6,7 @@ use std::ops::RangeInclusive;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind},
+    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
     shape::Dim,
 };
 
@@ -70,10 +70,10 @@ impl Kernel {
                     | Op::Index { .. }
                     | Op::Barrier
                     | Op::Wmma { .. }
-                    | Op::ReduceTile { .. }
-                    | Op::MatmulTile { .. }
-                    | Op::TransposeTile { .. }
-                    | Op::BroadcastTile { .. }
+                    | Op::TT(TTOp::ReduceTile { .. })
+                    | Op::TT(TTOp::MatmulTile { .. })
+                    | Op::TT(TTOp::TransposeTile { .. })
+                    | Op::TT(TTOp::BroadcastTile { .. })
                     | Op::Asm { .. } => has_post_linearize_ops = true,
                     Op::Permute { .. }
                     | Op::Expand { .. }
@@ -224,23 +224,23 @@ impl Kernel {
                         stack.pop();
                     }
                 }
-                Op::ReduceTile { x, scaler, acc, .. } => {
+                Op::TT(TTOp::ReduceTile { x, scaler, acc, .. }) => {
                     check(op_id, x, &stack);
                     check(op_id, scaler, &stack);
                     check(op_id, acc, &stack);
                     dtypes.insert(op_id, dtypes[&acc]);
                 }
-                Op::MatmulTile { x, y, acc } => {
+                Op::TT(TTOp::MatmulTile { x, y, acc }) => {
                     check(op_id, x, &stack);
                     check(op_id, y, &stack);
                     check(op_id, acc, &stack);
                     dtypes.insert(op_id, dtypes[&acc]);
                 }
-                Op::TransposeTile { x } => {
+                Op::TT(TTOp::TransposeTile { x }) => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
-                Op::BroadcastTile { x, .. } => {
+                Op::TT(TTOp::BroadcastTile { x, .. }) => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
