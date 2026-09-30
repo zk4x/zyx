@@ -106,6 +106,10 @@ struct Compiler {
     var_map: Map<OpId, u16>,
     loops: Vec<(u16, u16, u16)>,
     if_labels: Vec<u16>,
+    // Parallels every open Loop: true = boolean (conditional) close,
+    // false = counted-loop close. The closes emit different code
+    // (ENDIF label vs loop back-edge), unlike the C-like backends.
+    scope_is_bool: Vec<bool>,
     scopes: Map<OpId, MemScope>,
     header: String,
     body: String,
@@ -389,6 +393,7 @@ impl Kernel {
             var_map: Map::default(),
             loops: Vec::new(),
             if_labels: Vec::new(),
+            scope_is_bool: Vec::new(),
             header: String::new(),
             body: String::new(),
             indent: "  ".to_string(),
@@ -820,20 +825,40 @@ impl Kernel {
                 }
                 Op::Loop { len } => {
                     comp.loop_level += 1;
-                    let len = comp.get_var(len);
-                    let loop_idx = comp.new_var(op_id, IDX_T, MemLayout::Scalar, rcs.get(&op_id).copied().unwrap_or(0) + 1);
-                    let loop_pred = comp.new_reg(DType::Bool, MemLayout::Scalar, 2);
-                    comp.loops.push((len, loop_pred, loop_idx));
-                    _ = writeln!(comp.body, "{}mov.{} %r{loop_idx}, 0;", comp.indent, IDX_T.ptx());
-                    _ = writeln!(comp.body, "{}LOOP_{label}:", comp.indent);
-                    loop_id_label_map.insert(loop_id, label);
-                    label += 1;
-                    comp.indent += "  ";
-                    loop_id += 1;
+                    // Boolean length = conditional (the old `If`); the
+                    // length dtype comes from the global dtypes map.
+                    if dtypes[&len].0 == DType::Bool {
+                        let cond = comp.get_var(len);
+                        let endif_label = label as u16;
+                        label += 1;
+                        comp.if_labels.push(endif_label);
+                        comp.scope_is_bool.push(true);
+                        _ = writeln!(comp.body, "{}@!%r{cond} bra ENDIF_{endif_label};", comp.indent);
+                        comp.indent += "  ";
+                        loop_id += 1;
+                    } else {
+                        let len = comp.get_var(len);
+                        let loop_idx = comp.new_var(op_id, IDX_T, MemLayout::Scalar, rcs.get(&op_id).copied().unwrap_or(0) + 1);
+                        let loop_pred = comp.new_reg(DType::Bool, MemLayout::Scalar, 2);
+                        comp.loops.push((len, loop_pred, loop_idx));
+                        comp.scope_is_bool.push(false);
+                        _ = writeln!(comp.body, "{}mov.{} %r{loop_idx}, 0;", comp.indent, IDX_T.ptx());
+                        _ = writeln!(comp.body, "{}LOOP_{label}:", comp.indent);
+                        loop_id_label_map.insert(loop_id, label);
+                        label += 1;
+                        comp.indent += "  ";
+                        loop_id += 1;
+                    }
                 }
                 Op::EndLoop => {
                     loop_id -= 1;
-                    if let Some((len, loop_pred, loop_idx)) = comp.loops.pop() {
+                    if comp.scope_is_bool.pop() == Some(true) {
+                        comp.indent.pop();
+                        comp.indent.pop();
+                        if let Some(endif_label) = comp.if_labels.pop() {
+                            _ = writeln!(comp.body, "{}ENDIF_{endif_label}:", comp.indent);
+                        }
+                    } else if let Some((len, loop_pred, loop_idx)) = comp.loops.pop() {
                         _ = writeln!(comp.body, "{}add.{} %r{loop_idx}, %r{loop_idx}, 1;", comp.indent, IDX_T.ptx());
                         writeln!(comp.body, "{}setp.lt.{} %r{loop_pred}, %r{loop_idx}, %r{len};", comp.indent, IDX_T.ptx(),)
                             .unwrap();
@@ -842,21 +867,6 @@ impl Kernel {
                         comp.indent.pop();
                     }
                     comp.loop_level -= 1;
-                }
-                Op::If { condition } => {
-                    let cond = comp.get_var(condition);
-                    let endif_label = label as u16;
-                    label += 1;
-                    comp.if_labels.push(endif_label);
-                    _ = writeln!(comp.body, "{}@!%r{cond} bra ENDIF_{endif_label};", comp.indent);
-                    comp.indent += "  ";
-                }
-                Op::EndIf => {
-                    comp.indent.pop();
-                    comp.indent.pop();
-                    if let Some(endif_label) = comp.if_labels.pop() {
-                        _ = writeln!(comp.body, "{}ENDIF_{endif_label}:", comp.indent);
-                    }
                 }
                 Op::Barrier => {
                     _ = writeln!(comp.body, "{}bar.sync 1;", comp.indent);

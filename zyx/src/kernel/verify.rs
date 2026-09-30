@@ -66,8 +66,6 @@ impl Kernel {
                     | Op::Range { .. }
                     | Op::Loop { .. }
                     | Op::EndLoop
-                    | Op::If { .. }
-                    | Op::EndIf
                     | Op::Mad { .. }
                     | Op::Index { .. }
                     | Op::Barrier
@@ -392,7 +390,11 @@ impl Kernel {
                     dtypes.insert(op_id, IDX_T);
                 }
                 Op::Loop { len } => {
-                    if let Some(d) = self.resolve_const(len).and_then(Constant::as_dim)
+                    // Boolean length = conditional (0-or-1 trip): the old
+                    // `If` boolean assertion lives here now. Counted loops
+                    // keep the negativity check.
+                    if self.dtype(len) != DType::Bool
+                        && let Some(d) = self.resolve_const(len).and_then(Constant::as_dim)
                         && d < 0
                     {
                         println!("Loop length resolves to negative constant {d} at op {op_id:?}");
@@ -409,17 +411,6 @@ impl Kernel {
                         self.debug();
                         panic!();
                     }
-                    stack.pop();
-                }
-                Op::If { condition } => {
-                    if dtypes[&condition] != DType::Bool {
-                        println!("If condition={condition} must be a boolean");
-                        self.debug();
-                        panic!();
-                    }
-                    stack.push(Set::default());
-                }
-                Op::EndIf => {
                     stack.pop();
                 }
                 Op::Barrier => {}
@@ -530,7 +521,6 @@ impl Kernel {
                 Op::Loop { .. } | Op::Unary { .. } | Op::Cast { .. } | Op::Binary { .. } | Op::Mad { .. } => {
                     self.rederive_bounds(&mut bounds, op_id);
                 }
-                Op::If { .. } | Op::EndIf => {}
                 Op::Range { kind: scope, .. } => {
                     let len = match scope {
                         RangeKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim),

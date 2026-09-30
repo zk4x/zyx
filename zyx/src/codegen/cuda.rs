@@ -507,12 +507,19 @@ impl Kernel {
                 }
                 Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
+                    // Boolean length = conditional (the old `If`); the
+                    // length dtype comes from the global dtypes map.
+                    let is_bool = dtypes[&len].0 == DType::Bool;
                     let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    _ = writeln!(
-                        source,
-                        "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{",
-                        idx_type = self.dtype(op_id).cu()
-                    );
+                    if is_bool {
+                        _ = writeln!(source, "{indent}if ({len}) {{");
+                    } else {
+                        _ = writeln!(
+                            source,
+                            "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{",
+                            idx_type = self.dtype(op_id).cu()
+                        );
+                    }
                     indent += "  ";
                     loop_id += 1;
                 }
@@ -521,16 +528,6 @@ impl Kernel {
                     indent.pop();
                     _ = writeln!(source, "{indent}}}");
                     loop_id -= 1;
-                }
-                Op::If { condition } => {
-                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    _ = writeln!(source, "{indent}if ({condition}) {{");
-                    indent += "  ";
-                }
-                Op::EndIf => {
-                    indent.pop();
-                    indent.pop();
-                    _ = writeln!(source, "{indent}}}");
                 }
                 Op::Barrier => _ = writeln!(source, "{indent}__syncthreads();"),
             }

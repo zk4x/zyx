@@ -91,7 +91,8 @@ impl Kernel {
 
         let dev_info = self.dev_info();
 
-        if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
+        // Boolean loops are conditionals, never split (like `EndIf` bailed before).
+        if self.ops.values().any(|node| matches!(node.op, Op::Loop { len } if self.dtype(len) == crate::DType::Bool)) {
             return Box::new(SplitGlobalToLocal { factors: Vec::new() });
         }
         let mut local_axis_sizes: crate::Map<u32, u32> = crate::Map::default();

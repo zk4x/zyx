@@ -863,7 +863,10 @@ impl Kernel {
                         });
                     }
                     Op::Loop { len } => {
-                        let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
+                        // Boolean loops are conditionals (the old `If`):
+                        // no loop consts needed.
+                        if dtypes[&len].0 != DType::Bool {
+                            let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
                         for &val in &[0u32, 1, len as u32] {
                             let key = match IDX_T {
                                 DType::U32 => Constant::U32(val),
@@ -884,6 +887,7 @@ impl Kernel {
                                 const_entries.push((tid, cid, words));
                                 cid
                             });
+                        }
                         }
                     }
                     Op::Barrier => {
@@ -1120,6 +1124,8 @@ impl Kernel {
         // Loop stack: (header_label, merge_label, continue_label, counter_var, len)
         let mut loop_stack: Vec<(u32, u32, u32, u32, Dim)> = Vec::new();
         let mut if_stack: Vec<u32> = Vec::new(); // merge_label
+        // Parallels every open Loop: true = boolean (conditional) close.
+        let mut scope_is_bool: Vec<bool> = Vec::new();
 
         {
             let mut op_id = self.head;
@@ -1726,38 +1732,60 @@ impl Kernel {
                         }
                     }
                     Op::Loop { len } => {
-                        let header = asm.id();
-                        let body = asm.id();
-                        let continue_lbl = asm.id();
-                        let merge = asm.id();
-                        let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
-                        let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
+                        // Boolean length = conditional (the old `If`).
+                        if dtypes[&len].0 == DType::Bool {
+                            let cond_id = spv_values[&len];
+                            let true_block = asm.id();
+                            let merge = asm.id();
 
-                        // Pre-header: allocate counter var and store 0, then branch to header
-                        let counter_ptr_type = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
-                        let counter_var = asm.id();
-                        asm.emit(OpVariable, &[counter_ptr_type, counter_var, SC_FUNCTION]);
-                        let zero = const_pool[&Constant::idx(0)];
-                        asm.emit(OpStore, &[counter_var, zero]);
-                        asm.emit(OpBranch, &[header]);
+                            asm.emit(OpSelectionMerge, &[merge, SELECT_CTRL_NONE]);
+                            asm.emit(OpBranchConditional, &[cond_id, true_block, merge]);
 
-                        // Header (loop continue target)
-                        asm.emit(OpLabel, &[header]);
-                        asm.emit(OpLoopMerge, &[merge, continue_lbl, LOOP_CTRL_NONE]);
-                        asm.emit(OpBranch, &[body]);
+                            // True block
+                            asm.emit(OpLabel, &[true_block]);
+                            if_stack.push(merge);
+                            scope_is_bool.push(true);
+                        } else {
+                            scope_is_bool.push(false);
+                            let header = asm.id();
+                            let body = asm.id();
+                            let continue_lbl = asm.id();
+                            let merge = asm.id();
+                            let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
+                            let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
 
-                        // Body block
-                        asm.emit(OpLabel, &[body]);
+                            // Pre-header: allocate counter var and store 0, then branch to header
+                            let counter_ptr_type = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
+                            let counter_var = asm.id();
+                            asm.emit(OpVariable, &[counter_ptr_type, counter_var, SC_FUNCTION]);
+                            let zero = const_pool[&Constant::idx(0)];
+                            asm.emit(OpStore, &[counter_var, zero]);
+                            asm.emit(OpBranch, &[header]);
 
-                        // Load current counter value (this is the Loop op's SSA value)
-                        let counter_val = asm.id();
-                        asm.emit_typed(OpLoad, idx_type, counter_val, &[counter_var]);
-                        spv_values.insert(op_id, counter_val);
+                            // Header (loop continue target)
+                            asm.emit(OpLabel, &[header]);
+                            asm.emit(OpLoopMerge, &[merge, continue_lbl, LOOP_CTRL_NONE]);
+                            asm.emit(OpBranch, &[body]);
 
-                        loop_stack.push((header, merge, continue_lbl, counter_var, len));
+                            // Body block
+                            asm.emit(OpLabel, &[body]);
+
+                            // Load current counter value (this is the Loop op's SSA value)
+                            let counter_val = asm.id();
+                            asm.emit_typed(OpLoad, idx_type, counter_val, &[counter_var]);
+                            spv_values.insert(op_id, counter_val);
+
+                            loop_stack.push((header, merge, continue_lbl, counter_var, len));
+                        }
                     }
                     Op::EndLoop => {
-                        let (header, merge, continue_lbl, counter_var, len) = loop_stack.pop().unwrap();
+                        // Boolean loops close like the old `EndIf`.
+                        if scope_is_bool.pop() == Some(true) {
+                            let merge = if_stack.pop().unwrap();
+                            asm.emit(OpBranch, &[merge]);
+                            asm.emit(OpLabel, &[merge]);
+                        } else {
+                            let (header, merge, continue_lbl, counter_var, len) = loop_stack.pop().unwrap();
                         let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
 
                         // Branch to continue block
@@ -1781,23 +1809,7 @@ impl Kernel {
 
                         // Merge block
                         asm.emit(OpLabel, &[merge]);
-                    }
-                    Op::If { condition } => {
-                        let cond_id = spv_values[&condition];
-                        let true_block = asm.id();
-                        let merge = asm.id();
-
-                        asm.emit(OpSelectionMerge, &[merge, SELECT_CTRL_NONE]);
-                        asm.emit(OpBranchConditional, &[cond_id, true_block, merge]);
-
-                        // True block
-                        asm.emit(OpLabel, &[true_block]);
-                        if_stack.push(merge);
-                    }
-                    Op::EndIf => {
-                        let merge = if_stack.pop().unwrap();
-                        asm.emit(OpBranch, &[merge]);
-                        asm.emit(OpLabel, &[merge]);
+                        }
                     }
                     Op::Barrier => {
                         let scope_id = const_pool[&Constant::U32(SCOPE_WORKGROUP)];

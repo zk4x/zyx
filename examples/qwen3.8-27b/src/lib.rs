@@ -1114,9 +1114,9 @@ pub fn attention_kernel(seq: i64, h: i64, kv: i64, d: i64) -> Kernel {
         let g = kernel.sigmoid(g_raw);
         let gated = kernel.mul(acc, g);
         let out_idx = kernel.add(gate_base, gate_off);
-        kernel.if_(valid_out);
-        kernel.store(out, gated, out_idx);
-        kernel.end_if();
+        kernel.if_over(valid_out, |kernel| {
+            kernel.store(out, gated, out_idx);
+        });
     }
     kernel.default_epilogue();
     kernel

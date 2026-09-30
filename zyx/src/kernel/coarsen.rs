@@ -222,7 +222,7 @@ impl Kernel {
                     *len *= factor as Dim;
                     accumulator_storages.insert(op_id);
                 }
-                Op::Range { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier => {}
+                Op::Range { .. } | Op::Loop { .. } | Op::EndLoop | Op::Barrier => {}
                 Op::Store { dst, src: x, index, layout } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
@@ -317,6 +317,11 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
+                // Boolean loops are conditionals, not counted loops.
+                if self.dtype(len_id) == crate::DType::Bool {
+                    op_id = next;
+                    continue;
+                }
                 let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
                     op_id = next;
                     continue;

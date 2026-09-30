@@ -49,8 +49,6 @@ impl Kernel {
                 | Op::ReduceTile { .. }
                 | Op::Wmma { .. }
                 | Op::Barrier
-                | Op::If { .. }
-                | Op::EndIf
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
                 | Op::BroadcastTile { .. }
@@ -346,10 +344,10 @@ impl Kernel {
                         accumulators.remove(&dst);
                     }
                 }
-                Op::Loop { .. } | Op::If { .. } => {
+                Op::Loop { .. } => {
                     scope_level += 1;
                 }
-                Op::EndLoop | Op::EndIf => {
+                Op::EndLoop => {
                     scope_level -= 1;
                 }
                 _ => {}
@@ -439,7 +437,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.at(op_id) {
-                Op::Loop { .. } | Op::If { .. } => {
+                Op::Loop { .. } => {
                     ops_stack.push(Set::default());
                     store_targets_stack.push(Set::default());
                     delete_stack.push(true);
@@ -468,7 +466,7 @@ impl Kernel {
                         slice.insert(op_id);
                     }
                 }
-                Op::EndLoop | Op::EndIf => {
+                Op::EndLoop => {
                     for slice in &mut ops_stack {
                         slice.insert(op_id);
                     }
@@ -521,8 +519,6 @@ impl Kernel {
                     | Op::Wmma { .. }
                     | Op::Asm { .. }
                     | Op::Barrier
-                    | Op::If { .. }
-                    | Op::EndIf
                     | Op::Loop { .. }
                     | Op::EndLoop
             ) {
@@ -575,11 +571,11 @@ impl Kernel {
         while !op_id.is_null() {
             match &mut self.ops[op_id].op {
                 Op::Param { .. } | Op::Barrier | Op::Storage { .. } => {} // skip param/barrier/storage ops, these can not be deduplicated
-                Op::If { .. } | Op::Loop { .. } => {
+                Op::Loop { .. } => {
                     stack.push(Map::with_capacity_and_hasher(20, BuildHasherDefault::default()));
                     stored_stack.push(Set::with_capacity_and_hasher(10, BuildHasherDefault::default()));
                 }
-                Op::EndIf | Op::EndLoop => {
+                Op::EndLoop => {
                     stack.pop();
                     stored_stack.pop();
                 }

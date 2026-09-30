@@ -120,7 +120,7 @@ impl Kernel {
                     structural[i] = true;
                     barrier[i] = true;
                 }
-                Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf => structural[i] = true,
+                Op::Loop { .. } | Op::EndLoop => structural[i] = true,
                 // Opaque side effect (inline asm): program-ordered like a
                 // barrier for placement (never crosses one), but not a
                 // barrier itself.
@@ -181,7 +181,7 @@ impl Kernel {
                     add_param!(x);
                     add_param!(y);
                 }
-                Op::Param { .. } | Op::Const(_) | Op::Storage { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {}
+                Op::Param { .. } | Op::Const(_) | Op::Storage { .. } | Op::EndLoop | Op::Barrier => {}
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }
@@ -200,7 +200,6 @@ impl Kernel {
                     add_param!(index);
                 }
                 Op::Loop { len, .. } => add_param!(len),
-                Op::If { condition } => add_param!(condition),
                 Op::Mad { x, y, z } => {
                     add_param!(x);
                     add_param!(y);
@@ -289,8 +288,8 @@ impl Kernel {
         let mut closers = Vec::with_capacity(structural_positions.len());
         for &i in &structural_positions {
             match self.at(rest[i]) {
-                Op::Loop { .. } | Op::If { .. } => openers.push(i),
-                Op::EndLoop | Op::EndIf => closers.push(i),
+                Op::Loop { .. } => openers.push(i),
+                Op::EndLoop => closers.push(i),
                 _ => {}
             }
         }

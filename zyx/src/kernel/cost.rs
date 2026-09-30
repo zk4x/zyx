@@ -144,8 +144,17 @@ impl Kernel {
                         *rcs.entry(y).or_insert(0) += 1;
                         *rcs.entry(z).or_insert(0) += 1;
                     }
-                    Op::Range { .. } | Op::Loop { .. } => {
+                    Op::Range { .. } => {
                         dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
+                    }
+                    Op::Loop { len } => {
+                        dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
+                        // Boolean length = the old `If` condition: live
+                        // across the body, so it keeps its refcount.
+                        // Counted-loop lengths were never refcounted here.
+                        if self.dtype(len) == DType::Bool {
+                            *rcs.entry(len).or_insert(0) += 1;
+                        }
                     }
                     Op::ReduceTile { x, scaler, acc, .. } => {
                         dtypes.insert(op_id, dtypes[&acc]);
@@ -167,10 +176,7 @@ impl Kernel {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(x).or_insert(0) += 1;
                     }
-                    Op::If { condition } => {
-                        *rcs.entry(condition).or_insert(0) += 1;
-                    }
-                    Op::Barrier | Op::EndIf | Op::EndLoop => {}
+                    Op::Barrier | Op::EndLoop => {}
                 }
                 op_id = self.next_op(op_id);
             }
@@ -220,13 +226,15 @@ impl Kernel {
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
                 | Op::BroadcastTile { .. }
-                | Op::Loop { .. }
                 | Op::Index { .. }
                 | Op::Param { .. }
                 | Op::Storage { .. }
                 | Op::Const(_)
                 | Op::Range { .. } => true,
-                Op::Store { .. } | Op::EndLoop | Op::Barrier | Op::If { .. } | Op::EndIf => false,
+                Op::Store { .. } | Op::EndLoop | Op::Barrier => false,
+                // Counted loops produce the induction value; boolean
+                // loops (conditionals) produce nothing, like `If` did.
+                Op::Loop { len } => self.dtype(len) != DType::Bool,
                 Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }
@@ -261,7 +269,9 @@ impl Kernel {
             let op = &self.ops[op_id].op;
 
             // Is this indexing or compute?
-            if (matches!(op, Op::Range { .. } | Op::Loop { .. })
+            // (Boolean loops are conditionals, never indexing — like `If`.)
+            if (matches!(op, Op::Range { .. })
+                || matches!(op, Op::Loop { len } if self.dtype(*len) != DType::Bool)
                 || (op.parameters().count() > 0 && op.parameters().all(|p| indexing_ops.contains(&p))))
             {
                 indexing_ops.insert(op_id);
@@ -289,7 +299,6 @@ impl Kernel {
                 Op::Const(_)
                 | Op::Param { .. }
                 | Op::Storage { .. }
-                | Op::EndIf
                 | Op::Index { .. }
                 | Op::Stack { .. }
                 | Op::Expand { .. }
@@ -485,19 +494,31 @@ impl Kernel {
                     RangeKind::Warp(_) => {}
                 },
                 Op::Loop { len: len_id } => {
-                    wi_ops += loop_mult * 3;
-                    if !indexing_ops.contains(&op_id) {
-                        wi_compute_ops += loop_mult * 3;
-                    }
-                    if let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) {
-                        loop_mult *= len;
-                        latest_loop_lengths.push(len);
-                    } else {
-                        // Dynamic dim length at cost time (e.g. a variable
-                        // loop bound; autotune substitutes the real value at
-                        // launch). Keep the loop stack balanced with a
-                        // neutral entry.
+                    // Boolean length = the old `If`: branch cost, neutral
+                    // stack entry (a const bool would resolve to 0/1 via
+                    // `as_dim` and corrupt `loop_mult`, so check dtype first).
+                    if self.dtype(len_id) == DType::Bool {
+                        wi_branches += loop_mult;
+                        wi_ops += loop_mult * 3;
+                        if !indexing_ops.contains(&op_id) {
+                            wi_compute_ops += loop_mult * 3;
+                        }
                         latest_loop_lengths.push(1);
+                    } else {
+                        wi_ops += loop_mult * 3;
+                        if !indexing_ops.contains(&op_id) {
+                            wi_compute_ops += loop_mult * 3;
+                        }
+                        if let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) {
+                            loop_mult *= len;
+                            latest_loop_lengths.push(len);
+                        } else {
+                            // Dynamic dim length at cost time (e.g. a variable
+                            // loop bound; autotune substitutes the real value at
+                            // launch). Keep the loop stack balanced with a
+                            // neutral entry.
+                            latest_loop_lengths.push(1);
+                        }
                     }
                     let depth = latest_loop_lengths.len() as i64;
                     if depth > max_loop_depth {
@@ -519,13 +540,6 @@ impl Kernel {
                 }
                 Op::Barrier => {
                     wi_barriers += loop_mult;
-                }
-                Op::If { .. } => {
-                    wi_branches += loop_mult;
-                    wi_ops += loop_mult * 3;
-                    if !indexing_ops.contains(&op_id) {
-                        wi_compute_ops += loop_mult * 3;
-                    }
                 }
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()

@@ -1028,7 +1028,7 @@ impl Kernel {
                 | Op::Range { .. }
                 | Op::Reduce { .. }
                 | Op::Loop { .. } => {}
-                Op::Storage { .. } | Op::Wmma { .. } | Op::Barrier | Op::If { .. } | Op::EndIf | Op::EndLoop => {
+                Op::Storage { .. } | Op::Wmma { .. } | Op::Barrier | Op::EndLoop => {
                     debug_assert!(false, "unexpected root operation after Phase 1: {op:?}");
                 }
                 _ => {}

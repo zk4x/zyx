@@ -456,10 +456,7 @@ impl Kernel {
                     *rcs.entry(len).or_insert(0) += 1;
                     dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
                 }
-                Op::If { condition } => {
-                    *rcs.entry(condition).or_insert(0) += 1;
-                }
-                Op::Barrier | Op::EndIf | Op::EndLoop => {}
+                Op::Barrier | Op::EndLoop => {}
             }
             op_id = self.next_op(op_id);
         }
@@ -502,7 +499,7 @@ impl Kernel {
                 Op::ReduceTile { acc, .. } => op_id = acc,
                 Op::BroadcastTile { x, .. } => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return MemLayout::Scalar,
-                Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
+                Op::Barrier => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }
@@ -555,7 +552,7 @@ impl Kernel {
                 Op::ReduceTile { acc, .. } => op_id = acc,
                 Op::BroadcastTile { x, .. } => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return IDX_T,
-                Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
+                Op::Barrier => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }

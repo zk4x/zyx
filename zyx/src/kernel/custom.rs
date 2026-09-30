@@ -917,15 +917,14 @@ impl Kernel {
         self.push_back(Op::Barrier);
     }
 
-    /// Begin conditional block.
-    pub fn if_(&mut self, condition: impl IntoOp) {
-        let condition = condition.into_op(self);
-        self.push_back(Op::If { condition });
-    }
-
-    /// End conditional block.
-    pub fn end_if(&mut self) {
-        self.push_back(Op::EndIf);
+    /// Conditional block as a closure (`condition` must be boolean).
+    /// A conditional is a loop with a boolean length (0-or-1 trip),
+    /// closed by `EndLoop` like any other loop.
+    pub fn if_over(&mut self, condition: impl IntoOp, f: impl FnOnce(&mut Kernel)) {
+        let len = condition.into_op(self);
+        self.push_back(Op::Loop { len });
+        f(self);
+        self.push_back(Op::EndLoop);
     }
 
     /// Cast to a different dtype.
@@ -952,7 +951,7 @@ impl Kernel {
         self.push_back(Op::Binary { x: term_a, y: term_b, bop: BOp::Add })
     }
 
-    /// `cond ? a : b` as real control flow (`Op::If` / `Op::EndIf`).
+    /// `cond ? a : b` as real control flow (boolean-length `Loop`).
     ///
     /// Unlike [`Kernel::branchless_where`] this works with any operand values,
     /// including `±inf` (the arithmetic version computes `a*sel + b*(1-sel)`,
@@ -968,12 +967,12 @@ impl Kernel {
         let false_c = self.push_back(Op::Const(DType::Bool.zero_constant()));
         let not_cond = self.eq(cond, false_c);
 
-        self.if_(cond);
-        self.store(out, a, idx0);
-        self.end_if();
-        self.if_(not_cond);
-        self.store(out, b, idx0);
-        self.end_if();
+        self.if_over(cond, |kernel| {
+            kernel.store(out, a, idx0);
+        });
+        self.if_over(not_cond, |kernel| {
+            kernel.store(out, b, idx0);
+        });
         self.load(out, idx0)
     }
 
@@ -2612,9 +2611,9 @@ impl Kernel {
             });
         }
         let pred = pred.expect("store_view: masked view with no axes");
-        self.if_(pred);
-        self.store(view.x, x, idx);
-        self.end_if();
+        self.if_over(pred, |kernel| {
+            kernel.store(view.x, x, idx);
+        });
     }
 
     /// Slice a view with index specs (`..`, `a..b`, `a..`, `..b`, `a..=b`,

@@ -1118,8 +1118,6 @@ impl Graph {
             | Op::Range { .. }
             | Op::Loop { .. }
             | Op::EndLoop
-            | Op::If { .. }
-            | Op::EndIf
             | Op::Mad { .. }
             | Op::Barrier
             | Op::Wmma { .. }
@@ -1312,8 +1310,6 @@ impl Graph {
             | Op::Range { .. }
             | Op::Loop { .. }
             | Op::EndLoop
-            | Op::If { .. }
-            | Op::EndIf
             | Op::Mad { .. }
             | Op::Barrier
             | Op::Wmma { .. }
@@ -1372,8 +1368,6 @@ impl Graph {
                 | Op::Range { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop
-                | Op::If { .. }
-                | Op::EndIf
                 | Op::Mad { .. }
                 | Op::Barrier
                 | Op::Wmma { .. }
@@ -1692,13 +1686,11 @@ impl Runtime {
                         stack.push(*acc);
                     }
                     Op::EndLoop
-                    | Op::EndIf
                     | Op::Barrier
                     | Op::Range { .. }
                     | Op::Loop { .. }
                     | Op::Load { .. }
                     | Op::Mad { .. }
-                    | Op::If { .. }
                     | Op::Asm { .. }
                     | Op::Index { .. }
                     | Op::Wmma { .. }
@@ -1824,7 +1816,6 @@ impl Runtime {
                                     }
                                     Op::Storage { .. }
                                     | Op::EndLoop
-                                    | Op::EndIf
                                     | Op::Barrier
                                     | Op::Range { .. }
                                     | Op::Loop { .. }
@@ -1839,7 +1830,6 @@ impl Runtime {
                                     | Op::Store { .. }
                                     | Op::Load { .. }
                                     | Op::Mad { .. }
-                                    | Op::If { .. }
                                     | Op::Asm { .. }
                                     | Op::Index { .. }
                                     | Op::Wmma { .. }

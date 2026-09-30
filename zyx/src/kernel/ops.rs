@@ -83,6 +83,10 @@ pub enum Op {
     Stack {
         ops: Box<[OpId]>,
     },
+    Index {
+        vec: OpId,
+        idx: usize,
+    }, // select a single value from a vector
 
     // ops that only exist after unfolding views and reduces
     /// Memory internal to the kernel — NOT a launch argument. Used for
@@ -114,25 +118,19 @@ pub enum Op {
         axis: u32,
         kind: RangeKind,
     },
-    // Control flow
+    // Control flow: a counted loop, or a conditional when `len` is a
+    // boolean (0-or-1 trip). Closed by `EndLoop` in both cases; use
+    // `loop_over` / `if_over` to build them.
     Loop {
         len: OpId,
     },
     EndLoop,
-    If {
-        condition: OpId, // must be boolean variable
-    },
-    EndIf,
     // fused multiply add
     Mad {
         x: OpId,
         y: OpId,
         z: OpId,
     },
-    Index {
-        vec: OpId,
-        idx: usize,
-    }, // select a single value from a vector
     Barrier,
     // fused matmul, a, b, c are fragments, each is a vector, c is accumulator, returns new accumulated vector d
     Wmma {
@@ -297,8 +295,6 @@ impl Op {
             Op::Range { .. } => 10,
             Op::Loop { .. } => 11,
             Op::EndLoop => 12,
-            Op::If { .. } => 13,
-            Op::EndIf => 14,
             Op::Mad { .. } => 15,
             Op::Index { .. } => 16,
             Op::Barrier => 17,
@@ -349,8 +345,6 @@ impl PartialEq for Op {
             (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => aa == ba && ak == bk,
             (Op::Loop { len: a }, Op::Loop { len: b }) => a == b,
             (Op::EndLoop, Op::EndLoop) => true,
-            (Op::If { condition: a }, Op::If { condition: b }) => a == b,
-            (Op::EndIf, Op::EndIf) => true,
             (Op::Mad { x: a, y: ay, z: az }, Op::Mad { x: b, y: by, z: bz }) => a == b && ay == by && az == bz,
             (Op::Index { vec: a, idx: ai }, Op::Index { vec: b, idx: bi }) => a == b && ai == bi,
             (Op::Barrier, Op::Barrier) => true,
@@ -450,8 +444,7 @@ impl Hash for Op {
                 kind.hash(state);
             }
             Op::Loop { len } => len.hash(state),
-            Op::EndLoop | Op::EndIf | Op::Barrier => {}
-            Op::If { condition } => condition.hash(state),
+            Op::EndLoop | Op::Barrier => {}
             Op::Mad { x, y, z } => {
                 x.hash(state);
                 y.hash(state);
@@ -576,8 +569,7 @@ impl Ord for Op {
             }
             (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => (aa, ak).cmp(&(ba, bk)),
             (Op::Loop { len: a }, Op::Loop { len: b }) => a.cmp(b),
-            (Op::EndLoop, Op::EndLoop) | (Op::EndIf, Op::EndIf) | (Op::Barrier, Op::Barrier) => std::cmp::Ordering::Equal,
-            (Op::If { condition: a }, Op::If { condition: b }) => a.cmp(b),
+            (Op::EndLoop, Op::EndLoop) | (Op::Barrier, Op::Barrier) => std::cmp::Ordering::Equal,
             (Op::Mad { x: a, y: ay, z: az }, Op::Mad { x: b, y: by, z: bz }) => (a, ay, az).cmp(&(b, by, bz)),
             (Op::Index { vec: a, idx: ai }, Op::Index { vec: b, idx: bi }) => (a, ai).cmp(&(b, bi)),
             (
@@ -908,7 +900,7 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
         match self {
-            Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {
+            Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::Barrier => {
                 vec![]
             }
             &Op::Param { shape, .. } => {
@@ -945,7 +937,6 @@ impl Op {
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::If { condition } => vec![*condition],
             &Op::MatmulTile { x, y, acc } => vec![x, y, acc],
             &Op::TransposeTile { x } => vec![x],
             &Op::BroadcastTile { x, .. } => vec![x],
@@ -963,7 +954,7 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
         match self {
-            Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
+            Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::Barrier => vec![],
             Op::Param { shape, .. } => {
                 // Shape is null after linearize
                 if shape.is_null() { vec![] } else { vec![shape] }
@@ -992,7 +983,6 @@ impl Op {
             Op::Stack { ops } => ops.iter_mut().collect(),
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::If { condition } => vec![condition],
             Op::MatmulTile { x, y, acc } => vec![x, y, acc],
             Op::ReduceTile { x, acc, scaler, .. } => vec![x, acc, scaler],
             Op::TransposeTile { x } => vec![x],

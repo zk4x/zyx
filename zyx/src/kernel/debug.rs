@@ -330,19 +330,16 @@ impl Display for Kernel {
                     let dtype = dtypes.get(&len).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let len = id_map.get(&len).copied().unwrap_or(OpId::NULL);
-                    if let Some((l, u)) = bounds.get(&op_id) {
+                    if dtype == DType::Bool {
+                        writeln!(f, "{indent}{bold}if{reset} r{len} {{").unwrap();
+                    } else if let Some((l, u)) = bounds.get(&op_id) {
                         writeln!(f, "{indent}{bold}for{reset} r{out_id} in 0..r{len} {{    // {l}..={}", u).unwrap();
                     } else {
                         writeln!(f, "{indent}{bold}for{reset} r{out_id} in 0..r{len} {{").unwrap();
                     }
                     indent += "  ";
                 }
-                Op::If { condition } => {
-                    let condition = id_map.get(&condition).copied().unwrap_or(OpId::NULL);
-                    writeln!(f, "{indent}{bold}if{reset} r{condition} {{").unwrap();
-                    indent += "  ";
-                }
-                Op::EndIf | Op::EndLoop => {
+                Op::EndLoop => {
                     if indent.len() > 1 {
                         indent.pop();
                         indent.pop();

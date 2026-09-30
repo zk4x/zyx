@@ -16,7 +16,7 @@
 
 use super::autotune::Optimization;
 use crate::kernel::{Kernel, Op, OpId};
-use crate::{Map, Set};
+use crate::{DType, Map, Set};
 
 /// Reassociate commutative operations (addition, multiplication)
 /// to group them and reduce instruction count.
@@ -68,11 +68,11 @@ impl Kernel {
                 Op::TransposeTile { x } => loop_dep[&x],
                 Op::BroadcastTile { x, .. } => loop_dep[&x],
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
-                Op::If { .. } | Op::Loop { .. } => {
+                Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
                 }
-                Op::EndIf | Op::EndLoop => {
+                Op::EndLoop => {
                     loop_depth -= 1;
                     loop_depth
                 }
@@ -152,11 +152,11 @@ impl Kernel {
                 }
                 Op::Index { vec, .. } => loop_dep[vec],
                 Op::Mad { x, y, z } => loop_dep[x].max(loop_dep[y]).max(loop_dep[z]),
-                Op::Loop { .. } | Op::If { .. } => {
+                Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
                 }
-                Op::EndLoop | Op::EndIf => {
+                Op::EndLoop => {
                     loop_depth -= 1;
                     loop_depth
                 }
@@ -239,12 +239,20 @@ impl Kernel {
             if *self.at(loop_id) == Op::EndLoop {
                 endloop_is.push(loop_id);
             }
-            if let Op::Loop { .. } = self.at(loop_id) {
+            if let &Op::Loop { len } = self.at(loop_id) {
+                let endloop_id = endloop_is.pop().unwrap();
+                // Boolean loops are conditionals: hoisting their body out
+                // would execute it unconditionally. Only counted loops hoist
+                // (top-level conditionals never hoisted before either).
+                // The pop above still runs so enclosing loops pair correctly.
+                if self.dtype(len) == DType::Bool {
+                    loop_id = self.prev_op(loop_id);
+                    continue;
+                }
                 let mut op_ids_in_loop = Set::default();
                 op_ids_in_loop.insert(loop_id); // Loop op is the primary op that breaks LICM
 
                 let mut op_id = loop_id;
-                let endloop_id = endloop_is.pop().unwrap();
                 while op_id != endloop_id {
                     let op = self.at(op_id);
                     let next_op_id = self.next_op(op_id);
@@ -257,8 +265,6 @@ impl Kernel {
                             | Op::EndLoop
                             | Op::Storage { .. }
                             | Op::Barrier
-                            | Op::If { .. }
-                            | Op::EndIf
                     ) && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))
                     {
                         self.move_op_before(op_id, loop_id);

@@ -412,8 +412,6 @@ impl Runtime {
                 | Op::Range { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop
-                | Op::If { .. }
-                | Op::EndIf
                 | Op::Mad { .. }
                 | Op::Barrier
                 | Op::Wmma { .. }

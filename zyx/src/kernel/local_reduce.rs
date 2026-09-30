@@ -245,7 +245,7 @@ impl Kernel {
             let active_threads = if use_tree_branch { stride / tree_branch } else { stride / 2 };
             let limit_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(active_threads)));
             let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: limit_const, bop: BOp::Cmplt });
-            self.insert_before(acc_load_id, Op::If { condition });
+            self.insert_before(acc_load_id, Op::Loop { len: condition });
 
             let branch = if use_tree_branch { tree_branch } else { 2 };
             let mut sum_x = None;
@@ -266,7 +266,7 @@ impl Kernel {
             let bop_id = sum_x.unwrap();
             self.insert_before(acc_load_id, Op::Store { dst: loc_acc, src: bop_id, index: lidx, layout: MemLayout::Scalar });
 
-            self.insert_before(acc_load_id, Op::EndIf);
+            self.insert_before(acc_load_id, Op::EndLoop);
             self.insert_before(acc_load_id, Op::Barrier);
 
             stride = active_threads;
@@ -274,10 +274,10 @@ impl Kernel {
 
         // Load final result from local[0] to register (only thread 0)
         let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: const_zero, bop: BOp::Eq });
-        self.insert_before(acc_load_id, Op::If { condition });
+        self.insert_before(acc_load_id, Op::Loop { len: condition });
         let final_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: const_zero, layout: MemLayout::Scalar });
         self.insert_before(acc_load_id, Op::Store { dst: reg_acc, src: final_val, index: const_zero, layout: MemLayout::Scalar });
-        self.insert_after(self.tail, Op::EndIf);
+        self.insert_after(self.tail, Op::EndLoop);
 
         self.verify();
     }

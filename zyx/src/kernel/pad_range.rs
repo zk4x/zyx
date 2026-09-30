@@ -62,7 +62,7 @@ impl Kernel {
     ///
     /// This extends `Op::Index { len: current_len, .. }` to `len: current_len + pad_len`
     /// so the grid covers full tiles.  OOB reads are redirected to element 0 (safe).
-    /// OOB stores are wrapped in `Op::If { .. }` / `Op::EndIf` and skipped entirely.
+    /// OOB stores are wrapped in a boolean-length `Op::Loop` (conditional) and skipped entirely.
     ///
     /// Useful for tiling: when a tensor dimension isn't a multiple of the tile size,
     /// pad the index so the grid covers full tiles, and OOB threads compute garbage
