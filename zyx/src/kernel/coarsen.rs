@@ -161,7 +161,18 @@ impl Kernel {
         // We cannot upcast if the kernel is already vectorized
         // Also let's not upcast kernel with barriers for now
         if self.ops.values().any(|node| match node.op {
-            Op::Load { layout, .. } | Op::Store { layout, .. } => layout != MemLayout::Scalar,
+            Op::Load { src } => match self.ops[src].op {
+                Op::GEP { layout, .. } => layout != MemLayout::Scalar,
+                _ => false,
+            },
+            Op::Store { dst, .. } => match self.ops[dst].op {
+                Op::GEP { layout, .. } => layout != MemLayout::Scalar,
+                _ => false,
+            },
+            Op::Copy { src, dst } => {
+                !matches!(self.ops[src].op, Op::GEP { layout: MemLayout::Scalar, .. })
+                    || !matches!(self.ops[dst].op, Op::GEP { layout: MemLayout::Scalar, .. })
+            }
             Op::Barrier => true,
             _ => false,
         }) {
@@ -223,57 +234,84 @@ impl Kernel {
                     accumulator_storages.insert(op_id);
                 }
                 Op::Range { .. } | Op::Loop { .. } | Op::EndLoop | Op::Barrier => {}
-                Op::Store { dst, src: x, index, layout } => {
+                Op::Store { dst, src: x } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
-                    if accumulator_storages.contains(&dst) {
+                    let Op::GEP { x: buf, index, layout } = self.ops[dst].op else {
+                        todo!("coarsen: Store dst is not a GEP");
+                    };
+                    if accumulator_storages.contains(&buf) {
                         for i in 0..(factor - 1) as usize {
                             let mut x = x;
                             if let Some(remap) = remaps.get(&x) {
                                 x = remap[i];
                             }
                             let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
-                            id = self.insert_after(index, Op::Store { dst, src: x, index, layout });
+                            let gep = self.insert_before(id, Op::GEP { x: buf, index, layout });
+                            id = self.insert_after(gep, Op::Store { dst: gep, src: x });
                             ids.push(id);
                         }
                         let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                        self.ops[op_id].op = Op::Store { dst, src: x, index, layout };
+                        let gep = self.insert_before(op_id, Op::GEP { x: buf, index, layout });
+                        self.ops[op_id].op = Op::Store { dst: gep, src: x };
                     } else {
                         for i in 0..(factor - 1) as usize {
                             let mut x = x;
                             if let Some(remap) = remaps.get(&x) {
                                 x = remap[i];
                             }
-                            let mut index = index;
-                            if let Some(remap) = remaps.get(&index) {
-                                index = remap[i];
+                            let mut dst = dst;
+                            if let Some(remap) = remaps.get(&dst) {
+                                dst = remap[i];
                             }
-                            id = self.insert_after(id, Op::Store { dst, src: x, index, layout });
+                            id = self.insert_after(id, Op::Store { dst, src: x });
                             ids.push(id);
                         }
                     }
                     remaps.insert(op_id, ids);
                 }
-                Op::Load { src, index, layout } => {
+                Op::Load { src } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
-                    if accumulator_storages.contains(&src) {
+                    let Op::GEP { x: buf, index, layout } = self.ops[src].op else {
+                        todo!("coarsen: Load src is not a GEP");
+                    };
+                    if accumulator_storages.contains(&buf) {
                         for &offset in &offsets {
                             let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offset });
-                            id = self.insert_after(index, Op::Load { src, index, layout });
+                            let gep = self.insert_before(id, Op::GEP { x: buf, index, layout });
+                            id = self.insert_after(gep, Op::Load { src: gep });
                             ids.push(id);
                         }
                         let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                        self.ops[op_id].op = Op::Load { src, index, layout };
+                        let gep = self.insert_before(op_id, Op::GEP { x: buf, index, layout });
+                        self.ops[op_id].op = Op::Load { src: gep };
                     } else {
                         for i in 0..(factor - 1) as usize {
-                            let mut index = index;
-                            if let Some(remap) = remaps.get(&index) {
-                                index = remap[i];
+                            let mut src = src;
+                            if let Some(remap) = remaps.get(&src) {
+                                src = remap[i];
                             }
-                            id = self.insert_after(id, Op::Load { src, index, layout });
+                            id = self.insert_after(id, Op::Load { src });
                             ids.push(id);
                         }
+                    }
+                    remaps.insert(op_id, ids);
+                }
+                Op::Copy { src, dst } => {
+                    let mut ids = Vec::with_capacity((factor - 1) as usize);
+                    let mut id = op_id;
+                    for i in 0..(factor - 1) as usize {
+                        let mut src = src;
+                        if let Some(remap) = remaps.get(&src) {
+                            src = remap[i];
+                        }
+                        let mut dst = dst;
+                        if let Some(remap) = remaps.get(&dst) {
+                            dst = remap[i];
+                        }
+                        id = self.insert_after(id, Op::Copy { src, dst });
+                        ids.push(id);
                     }
                     remaps.insert(op_id, ids);
                 }

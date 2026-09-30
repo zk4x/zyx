@@ -76,13 +76,19 @@ impl Kernel {
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
                 | Op::Kernel { .. }
-                | Op::Custom(_) => {
+                |                 Op::Custom(_) => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "OpenCL codegen: unexpected kernel op (should be unfolded)".into(),
                     });
                 }
                 Op::Asm { .. } => todo!(),
+                Op::GEP { .. } => {
+                    // Address is composed at the Load/Store/Copy use site from the GEP operands; nothing to emit.
+                }
+                Op::Copy { .. } => {
+                    todo!("Copy lowering for OpenCL (tenstorrent phase)");
+                }
                 Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
@@ -96,20 +102,23 @@ impl Kernel {
                     }
                     _ => unreachable!("opencl only handles local or register storage"),
                 },
-                Op::Load { src, index, layout } => {
+                Op::Load { src } => {
+                    let Op::GEP { x, index, layout } = self.ops[src].op else {
+                        todo!("OpenCL codegen: Load src must be GEP");
+                    };
                     if rcs.contains_key(&op_id) {
                         let dtype = dtypes[&op_id];
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                        if matches!(self.ops[src].op, Op::Param { kind: ParamKind::Variable, .. }) {
-                            _ = writeln!(source, "{indent}r{reg} = p{src};");
+                        if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
+                            _ = writeln!(source, "{indent}r{reg} = p{x};");
                         } else {
                             let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                             match layout {
-                                MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
+                                MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];"),
                                 MemLayout::Vector(len) => {
                                     _ = writeln!(
                                         source,
-                                        "{indent}r{reg} = *((__global {}*)(p{src} + {idx}));",
+                                        "{indent}r{reg} = *((__global {}*)(p{x} + {idx}));",
                                         dtype.0.ocl_vec_type(len)
                                     );
                                 }
@@ -118,14 +127,17 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, src, index, layout } => {
+                Op::Store { dst, src } => {
+                    let Op::GEP { x: dst_buf, index, layout } = self.ops[dst].op else {
+                        todo!("OpenCL codegen: Store dst non-GEP (whole-view)");
+                    };
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     match layout {
-                        MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
+                        MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
                             let ocl_type = dtypes[&op_id].0.ocl_vec_type(len);
-                            _ = writeln!(source, "{indent}*((__global {ocl_type}*)(p{dst} + {idx})) = {x};");
+                            _ = writeln!(source, "{indent}*((__global {ocl_type}*)(p{dst_buf} + {idx})) = {x};");
                         }
                         MemLayout::Tile { .. } => todo!(),
                     }

@@ -90,11 +90,14 @@ use crate::{
 impl Kernel {
     /// Has this kernel already been through [`Self::linearize`]?
     ///
-    /// A pre-linearize kernel stores whole views (store with a `NULL` index);
-    /// after linearization every store carries an actual index op. This is
-    /// the same early-return condition `linearize` uses.
+    /// A pre-linearize kernel stores whole views (store to a bare `Param`
+    /// or to a movement view over one, e.g. an eager assign through a
+    /// `Narrow`); linearization wraps every store destination in a
+    /// [`Op::GEP`]. This is the same early-return condition `linearize` uses.
     pub fn is_linearized(&self) -> bool {
-        !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. }))
+        !self.ops.values().any(|n| {
+            matches!(n.op, Op::Store { dst, .. } if !matches!(self.ops[dst].op, Op::GEP { .. }))
+        })
     }
 
     /// Unfold movement operations into index-based operations
@@ -104,7 +107,9 @@ impl Kernel {
     // TODO Currently it only works if each param has a single move op chain.
     // Make it also work with move op chains when each param is accessed by multiple move ops.
     pub fn linearize(&mut self) {
-        if !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. })) {
+        if !self.ops.values().any(|n| {
+            matches!(n.op, Op::Store { dst, .. } if !matches!(self.ops[dst].op, Op::GEP { .. }))
+        }) {
             return;
         }
 
@@ -533,10 +538,23 @@ impl Kernel {
                             for (d, s) in dims.iter().zip(strides) {
                                 write_index = self.mad(d.idx, s, write_index);
                             }
-                            match &mut self.ops[store_id].op {
-                                Op::Store { index, .. } => *index = write_index,
+                            let dst = match self.ops[store_id].op {
+                                Op::Store { dst, .. } => dst,
                                 _ => unreachable!("graph stores are the only stores at linearize time"),
-                            }
+                            };
+                            debug_assert!(
+                                matches!(self.ops[dst].op, Op::Param { .. }),
+                                "linearize write path: store dst must still be the bare Param"
+                            );
+                            let gep = self.push_back(Op::GEP {
+                                x: dst,
+                                index: write_index,
+                                layout: MemLayout::Scalar,
+                            });
+                            let Op::Store { dst, .. } = &mut self.ops[store_id].op else {
+                                unreachable!()
+                            };
+                            *dst = gep;
                         }
                         ParamKind::Variable => {
                             let view = views.remove(&op_id).unwrap();
@@ -617,9 +635,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, src, index, layout } => {
-                    debug_assert_eq!(index, OpId::NULL);
-                    debug_assert_eq!(layout, MemLayout::Scalar);
+                Op::Store { dst, src } => {
                     // The store writes its dst op's whole view. Loop lengths come
                     // from the dst op's own shape — NOT the terminal Param's shape:
                     // a crop (`pad lp<0`) or narrow between the Param and the store
@@ -664,7 +680,9 @@ impl Kernel {
                         dst_stores.insert(dst_param, op_id).is_none(),
                         "store dst chain terminates at Param {dst_param:?}, which is already a store destination"
                     );
-                    self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
+                    // The store already names its whole-view Param destination;
+                    // the Param handler above wraps it in a GEP once the
+                    // write index is computed. Seed the views from the dst.
                     let dims = self.shape_ids(dst);
                     let mut view = Vec::new();
                     for (axis, &len) in dims.iter().enumerate().rev() {
@@ -1255,13 +1273,17 @@ impl Kernel {
             let operands: Vec<OpId> = match self.ops[op_id].op {
                 Op::Binary { x, y, .. } => vec![x, y],
                 Op::Mad { x, y, z } => vec![x, y, z],
-                Op::Load { index, .. } | Op::Store { index, .. } => {
-                    if index.is_null() || self.dtype(index) == IDX_T {
+                Op::Load { src } | Op::Store { dst: src, .. } => {
+                    let index = match self.ops[src].op {
+                        Op::GEP { index, .. } => index,
+                        _ => continue,
+                    };
+                    if self.dtype(index) == IDX_T {
                         continue;
                     }
                     let cast = self.insert_before(op_id, Op::Cast { x: index, dtype: IDX_T });
-                    match &mut self.ops[op_id].op {
-                        Op::Load { index, .. } | Op::Store { index, .. } => *index = cast,
+                    match &mut self.ops[src].op {
+                        Op::GEP { index, .. } => *index = cast,
                         _ => unreachable!(),
                     }
                     continue;
@@ -1339,14 +1361,24 @@ impl Kernel {
                 }),
             );
             let acc = self.insert_before(loop_id, Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1 });
-            self.insert_before(loop_id, Op::Store { dst: acc, src: acc_init, index: zero, layout: MemLayout::Scalar });
+            let init_gep =
+                self.insert_before(loop_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
+            self.insert_before(loop_id, Op::Store { dst: init_gep, src: acc_init });
 
             // Accumulate inside the loop, then close it, then read the result.
-            let load_acc = self.insert_before(op_id, Op::Load { src: acc, index: zero, layout: MemLayout::Scalar });
+            // Fresh GEPs per insertion point: GEPs are scope-bound, unlike
+            // the shared `zero` const.
+            let load_gep =
+                self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
+            let load_acc = self.insert_before(op_id, Op::Load { src: load_gep });
             let bin_acc = self.insert_before(op_id, Op::Binary { x, y: load_acc, bop: rop });
-            self.insert_before(op_id, Op::Store { dst: acc, src: bin_acc, index: zero, layout: MemLayout::Scalar });
+            let store_gep =
+                self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
+            self.insert_before(op_id, Op::Store { dst: store_gep, src: bin_acc });
             self.insert_before(op_id, Op::EndLoop);
-            self.ops[op_id].op = Op::Load { src: acc, index: zero, layout: MemLayout::Scalar };
+            let out_gep =
+                self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
+            self.ops[op_id].op = Op::Load { src: out_gep };
         }
     }
 }

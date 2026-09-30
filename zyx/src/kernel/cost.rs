@@ -106,13 +106,21 @@ impl Kernel {
                         *rcs.entry(b).or_insert(0) += 1;
                         *rcs.entry(c).or_insert(0) += 1;
                     }
-                    Op::Load { src, index, layout } => {
-                        dtypes.insert(op_id, (dtypes[&src].0, layout));
-                        *rcs.entry(index).or_insert(0) += 1;
+                    Op::Load { src } => {
+                        dtypes.insert(op_id, dtypes[&src]);
                     }
-                    Op::Store { dst, src: x, index, .. } => {
+                    Op::Store { dst, src: x } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(dst).or_insert(0) += 1;
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                    Op::Copy { src, dst } => {
+                        dtypes.insert(op_id, dtypes[&src]);
+                        *rcs.entry(src).or_insert(0) += 1;
+                        *rcs.entry(dst).or_insert(0) += 1;
+                    }
+                    Op::GEP { x, index, layout } => {
+                        dtypes.insert(op_id, (dtypes[&x].0, layout));
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(index).or_insert(0) += 1;
                     }
@@ -217,6 +225,7 @@ impl Kernel {
                 Op::Asm { .. } => true,
                 Op::Storage { scope: MemScope::Register, .. } => true,
                 Op::Load { .. }
+                | Op::GEP { .. }
                 | Op::Cast { .. }
                 | Op::Bitcast { .. }
                 | Op::Unary { .. }
@@ -230,7 +239,7 @@ impl Kernel {
                 | Op::Storage { .. }
                 | Op::Const(_)
                 | Op::Range { .. } => true,
-                Op::Store { .. } | Op::EndLoop | Op::Barrier => false,
+                Op::Store { .. } | Op::Copy { .. } | Op::EndLoop | Op::Barrier => false,
                 // Counted loops produce the induction value; boolean
                 // loops (conditionals) produce nothing, like `If` did.
                 Op::Loop { len } => self.dtype(len) != DType::Bool,
@@ -298,6 +307,7 @@ impl Kernel {
                 Op::Const(_)
                 | Op::Param { .. }
                 | Op::Storage { .. }
+                | Op::GEP { .. }
                 | Op::Index { .. }
                 | Op::Stack { .. }
                 | Op::Expand { .. }
@@ -309,7 +319,14 @@ impl Kernel {
                 | Op::Reduce { .. }
                 | Op::TT { .. }
                 | Op::Asm { .. } => {}
-                Op::Load { src, index, layout } => {
+                Op::Load { src } => {
+                    // The GEP carries the location triple; the rest of this
+                    // arm is unchanged from the inline-triple form.
+                    let (buf, index, layout) = match self.ops[src].op {
+                        Op::GEP { x, index, layout } => (x, index, layout),
+                        _ => todo!("cost: Load src must be a GEP"),
+                    };
+                    let src = buf;
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
@@ -395,7 +412,16 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, index, layout, .. } => {
+                Op::Store { dst, .. } => {
+                    // Pre-linearize whole-view stores name the Param
+                    // directly (Scalar layout, NULL index — the old inline
+                    // form exactly); post-linearize the GEP carries the triple.
+                    let (buf, index, layout) = match self.ops[dst].op {
+                        Op::GEP { x, index, layout } => (x, index, layout),
+                        Op::Param { .. } => (dst, OpId::NULL, MemLayout::Scalar),
+                        _ => todo!("cost: Store dst must be a GEP or Param"),
+                    };
+                    let dst = buf;
                     wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
@@ -477,6 +503,34 @@ impl Kernel {
                         }
                         MemScope::Register => {
                             n_scoped_store_bits[2] += loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as i64
+                        }
+                    }
+                }
+                Op::Copy { src, dst } => {
+                    // A copy reads once through src and writes once through
+                    // dst: account read bits to the src scope, write bits to
+                    // the dst scope, at single-transfer weight. No stride
+                    // heuristics (those tune DRAM coalescing, not
+                    // storage-to-storage moves).
+                    wi_ops += loop_mult * 2;
+                    if !indexing_ops.contains(&op_id) {
+                        wi_compute_ops += loop_mult * 2;
+                    }
+                    for (gep, is_read) in [(src, true), (dst, false)] {
+                        let (buf, layout) = match self.ops[gep].op {
+                            Op::GEP { x, layout, .. } => (x, layout),
+                            _ => todo!("cost: Copy side must be a GEP"),
+                        };
+                        let bits = loop_mult * layout.n_elements() * dtypes[&gep].0.bit_size() as i64;
+                        let slot = match mem_scope(&self.ops[buf].op) {
+                            MemScope::Global => 0,
+                            MemScope::Local | MemScope::Circular => 1,
+                            MemScope::Register => 2,
+                        };
+                        if is_read {
+                            n_scoped_load_bits[slot] += bits;
+                        } else {
+                            n_scoped_store_bits[slot] += bits;
                         }
                     }
                 }

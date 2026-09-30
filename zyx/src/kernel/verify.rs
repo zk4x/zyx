@@ -24,12 +24,12 @@ impl Kernel {
         }
 
         // Detect the kernel's linearization state from its stores — the rule
-        // that always holds: a pre-linearize store writes a whole view and has
-        // a NULL index; post-linearize the store carries the actual index op.
-        // (Param shapes can NOT be used for detection: `Variable` params have
-        // null shapes even pre-linearization.)
-        let mut null_index_stores = 0u32;
-        let mut indexed_stores = 0u32;
+        // that always holds: a pre-linearize store writes a whole view to a
+        // bare `Param`; linearization wraps every store destination in a
+        // [`Op::GEP`]. (Param shapes can NOT be used for detection:
+        // `Variable` params have null shapes even pre-linearization.)
+        let mut param_dst_stores = 0u32;
+        let mut gep_dst_stores = 0u32;
         let mut has_post_linearize_ops = false;
         let mut has_move_or_reduce = false;
         {
@@ -54,14 +54,16 @@ impl Kernel {
                         }
                         debug_assert!(!is_nan, "kernel contains a NaN constant at op {scan:?}");
                     }
-                    Op::Store { index, .. } => {
-                        if index.is_null() {
-                            null_index_stores += 1;
+                    Op::Store { dst, .. } => {
+                        if matches!(self.at(*dst), Op::Param { .. }) {
+                            param_dst_stores += 1;
                         } else {
-                            indexed_stores += 1;
+                            gep_dst_stores += 1;
                         }
                     }
                     Op::Load { .. }
+                    | Op::Copy { .. }
+                    | Op::GEP { .. }
                     | Op::Storage { .. }
                     | Op::Range { .. }
                     | Op::Loop { .. }
@@ -99,16 +101,16 @@ impl Kernel {
                 scan = self.next_op(scan);
             }
         }
-        debug_assert!(null_index_stores + indexed_stores > 0, "kernel must contain at least one store");
-        if null_index_stores > 0 && indexed_stores > 0 {
-            println!("Invalid mixed kernel: stores with both NULL and actual indices.");
+        debug_assert!(param_dst_stores + gep_dst_stores > 0, "kernel must contain at least one store");
+        if param_dst_stores > 0 && gep_dst_stores > 0 {
+            println!("Invalid mixed kernel: stores to bare Params and to GEPs.");
             self.debug();
             panic!();
         }
 
         // Verify param/storage ordering: global params (RO) → GlobalMut params → local storages → everything else.
         // Only meaningful post-linearization; skipped for pre-linearize DAGs.
-        if null_index_stores == 0 {
+        if param_dst_stores == 0 {
             debug_assert!(!has_move_or_reduce, "post-linearize kernel must not contain Move/Reduce ops");
             #[derive(PartialEq, Eq)]
             #[allow(dead_code)]
@@ -160,7 +162,7 @@ impl Kernel {
             }
         } else {
             // Pre-linearize DAG: no lowered memory/control ops may exist.
-            debug_assert!(!has_post_linearize_ops, "pre-linearize kernel must not contain Load/Storage/Index/Loop ops");
+            debug_assert!(!has_post_linearize_ops, "pre-linearize kernel must not contain GEP/Load/Copy/Storage/Loop ops");
         }
 
         let mut stack = Vec::new();
@@ -184,28 +186,37 @@ impl Kernel {
         let mut dtypes: Map<OpId, DType> = Map::default();
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Store { dst, src: x, index, layout, .. } => {
-                    if !params.contains_key(&dst) && !storages.contains_key(&dst) {
-                        println!("store={op_id} is trying to store to undefined variable");
-                        self.debug();
-                        panic!();
-                    }
+                Op::Store { dst, src: x } => {
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
-                    // A store's declared layout must match its src value's
-                    // layout: store_tile carries a Tile layout and its src
-                    // must be a tile value (a scalar const_val stored as a
-                    // tile is a builder misuse, not a valid store).
-                    debug_assert_eq!(
-                        self.layout(x),
-                        layout,
-                        "store={op_id} layout {layout:?} does not match src {x} layout {:?}",
-                        self.layout(x)
-                    );
-                    // Pre-linearize stores have a NULL index (whole-view write).
-                    if !index.is_null() {
-                        debug_assert_eq!(dtypes[&index], IDX_T, "store index must be {IDX_T}");
-                        check(op_id, index, &stack);
+                    match self.at(dst) {
+                        // Pre-linearize whole-view write: no layout or index.
+                        Op::Param { .. } => {}
+                        Op::GEP { x: buf, index, layout } => {
+                            if !params.contains_key(buf) && !storages.contains_key(buf) {
+                                println!("store={op_id} GEP targets undefined variable");
+                                self.debug();
+                                panic!();
+                            }
+                            check(op_id, *buf, &stack);
+                            // A store's declared layout must match its src value's
+                            // layout: store_tile carries a Tile layout and its src
+                            // must be a tile value (a scalar const_val stored as a
+                            // tile is a builder misuse, not a valid store).
+                            debug_assert_eq!(
+                                self.layout(x),
+                                *layout,
+                                "store={op_id} layout {layout:?} does not match src {x} layout {:?}",
+                                self.layout(x)
+                            );
+                            debug_assert_eq!(dtypes[index], IDX_T, "store index must be {IDX_T}");
+                            check(op_id, *index, &stack);
+                        }
+                        _ => {
+                            println!("store={op_id} dst is not a Param or GEP");
+                            self.debug();
+                            panic!();
+                        }
                     }
                     dtypes.insert(op_id, dtypes[&x]);
                 }
@@ -337,15 +348,43 @@ impl Kernel {
                     storages.insert(op_id, (scope, len));
                     dtypes.insert(op_id, dtype);
                 }
-                Op::Load { src, index, .. } => {
-                    if !params.contains_key(&src) && !storages.contains_key(&src) {
+                Op::Load { src } => {
+                    let &Op::GEP { x: buf, index, .. } = self.at(src) else {
+                        println!("load={op_id} src is not a GEP");
+                        self.debug();
+                        panic!();
+                    };
+                    if !params.contains_key(&buf) && !storages.contains_key(&buf) {
                         println!("load={op_id} is trying to load from undefined variable");
                         self.debug();
                         panic!();
                     }
                     debug_assert_eq!(dtypes[&index], IDX_T);
                     check(op_id, src, &stack);
+                    check(op_id, buf, &stack);
                     check(op_id, index, &stack);
+                    dtypes.insert(op_id, dtypes[&buf]);
+                }
+                Op::GEP { x, index, .. } => {
+                    if !matches!(self.at(x), Op::Param { .. } | Op::Storage { .. }) {
+                        println!("gep={op_id} target is not a Param or Storage");
+                        self.debug();
+                        panic!();
+                    }
+                    check(op_id, x, &stack);
+                    debug_assert_eq!(dtypes[&index], IDX_T, "gep index must be {IDX_T}");
+                    check(op_id, index, &stack);
+                    dtypes.insert(op_id, dtypes[&x]);
+                }
+                Op::Copy { src, dst } => {
+                    for &side in &[src, dst] {
+                        if !matches!(self.at(side), Op::GEP { .. }) {
+                            println!("copy={op_id} side is not a GEP");
+                            self.debug();
+                            panic!();
+                        }
+                        check(op_id, side, &stack);
+                    }
                     dtypes.insert(op_id, dtypes[&src]);
                 }
                 Op::Range { axis, kind: scope, .. } => {
@@ -443,22 +482,26 @@ impl Kernel {
                 Op::Storage { len, .. } => {
                     storages.insert(op_id, len);
                 }
-                Op::Load { src, index, .. } => {
+                Op::Load { src } => {
+                    let &Op::GEP { x: buf, index, .. } = self.at(src) else { continue };
                     let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range
-                        && *range.end() >= storages[&src]
+                        && let Some(&len) = storages.get(&buf)
+                        && *range.end() >= len
                     {
                         self.debug();
-                        panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, storages[&src]);
+                        panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, len);
                     }
                 }
-                Op::Store { dst, index, .. } => {
+                Op::Store { dst, .. } => {
+                    let &Op::GEP { x: buf, index, .. } = self.at(dst) else { continue };
                     let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range
-                        && *range.start() > storages[&dst] + 1
+                        && let Some(&len) = storages.get(&buf)
+                        && *range.start() > len + 1
                     {
                         self.debug();
-                        panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, storages[&dst]);
+                        panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, len);
                     }
                 }
                 _ => {}

@@ -193,11 +193,17 @@ impl Kernel {
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
                 | Op::Kernel { .. }
-                | Op::Custom(_) => {
+                |                 Op::Custom(_) => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "CUDA codegen: unexpected kernel op (should be unfolded)".into(),
                     });
+                }
+                Op::GEP { .. } => {
+                    // Address is composed at the Load/Store/Copy use site from the GEP operands; nothing to emit.
+                }
+                Op::Copy { .. } => {
+                    todo!("Copy lowering for CUDA (tenstorrent phase)");
                 }
                 Op::Asm { ref asm, ref ops } => {
                     // Inline expression template: `{i}` is substituted with
@@ -221,20 +227,23 @@ impl Kernel {
                     MemScope::Register => _ = writeln!(source, "{indent}{} p{op_id}[{len}];", dtype.cu()),
                     _ => unreachable!("cuda supports only local and register scopes"),
                 },
-                Op::Load { src, index, layout } => {
+                Op::Load { src } => {
+                    let Op::GEP { x, index, layout } = self.ops[src].op else {
+                        todo!("CUDA codegen: Load src must be GEP");
+                    };
                     if rcs.contains_key(&op_id) {
                         let dtype = dtypes[&op_id];
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                        if matches!(self.ops[src].op, Op::Param { kind: ParamKind::Variable, .. }) {
-                            _ = writeln!(source, "{indent}r{reg} = p{src};");
+                        if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
+                            _ = writeln!(source, "{indent}r{reg} = p{x};");
                         } else {
                             let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                             match layout {
-                                MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
+                                MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];"),
                                 MemLayout::Vector(len) => {
                                     _ = writeln!(
                                         source,
-                                        "{indent}r{reg} = *reinterpret_cast<const {}*>(&p{src}[{idx}]);",
+                                        "{indent}r{reg} = *reinterpret_cast<const {}*>(&p{x}[{idx}]);",
                                         dtype.0.cu_vec_type(len)
                                     )
                                 }
@@ -243,14 +252,17 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, src, index, layout } => {
+                Op::Store { dst, src } => {
+                    let Op::GEP { x: dst_buf, index, layout } = self.ops[dst].op else {
+                        todo!("CUDA codegen: Store dst non-GEP (whole-view)");
+                    };
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     match layout {
-                        MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
+                        MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
                             let vec_type = dtypes[&src].0.cu_vec_type(len);
-                            _ = writeln!(source, "{indent}*reinterpret_cast<{vec_type}*>(&p{dst}[{idx}]) = {x};",);
+                            _ = writeln!(source, "{indent}*reinterpret_cast<{vec_type}*>(&p{dst_buf}[{idx}]) = {x};",);
                         }
                         MemLayout::Tile { .. } => todo!(),
                     }

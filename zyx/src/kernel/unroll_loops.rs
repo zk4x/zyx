@@ -198,18 +198,31 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, .. } => {
-                    let Op::Storage { scope, .. } = self.ops[dst].op else {
-                        unreachable!()
+                    let Op::GEP { x, .. } = self.ops[dst].op else {
+                        todo!("unroll_constant_loops: Store dst is not a GEP");
                     };
-                    if scope != MemScope::Register {
+                    if !matches!(self.ops[x].op, Op::Storage { scope: MemScope::Register, .. }) {
                         *constant_loops.last_mut().unwrap() = false;
                     }
                 }
                 Op::Load { src, .. } => {
-                    let Op::Storage { scope, .. } = self.ops[src].op else {
-                        unreachable!()
+                    let Op::GEP { x, .. } = self.ops[src].op else {
+                        todo!("unroll_constant_loops: Load src is not a GEP");
                     };
-                    if scope != MemScope::Register {
+                    if !matches!(self.ops[x].op, Op::Storage { scope: MemScope::Register, .. }) {
+                        *constant_loops.last_mut().unwrap() = false;
+                    }
+                }
+                Op::Copy { src, dst } => {
+                    let Op::GEP { x: sbuf, .. } = self.ops[src].op else {
+                        todo!("unroll_constant_loops: Copy src is not a GEP");
+                    };
+                    let Op::GEP { x: dbuf, .. } = self.ops[dst].op else {
+                        todo!("unroll_constant_loops: Copy dst is not a GEP");
+                    };
+                    if !matches!(self.ops[sbuf].op, Op::Storage { scope: MemScope::Register, .. })
+                        || !matches!(self.ops[dbuf].op, Op::Storage { scope: MemScope::Register, .. })
+                    {
                         *constant_loops.last_mut().unwrap() = false;
                     }
                 }
@@ -349,8 +362,9 @@ impl Kernel {
         let mut op_id = acc_id;
         let acc_init;
         loop {
-            if let Op::Store { dst, src: x, .. } = self.ops[op_id].op
-                && dst == acc_id
+            if let Op::Store { dst, src: x } = self.ops[op_id].op
+                && let Op::GEP { x: buf, .. } = self.ops[dst].op
+                && buf == acc_id
             {
                 acc_init = x;
                 break;
@@ -367,8 +381,23 @@ impl Kernel {
         loop {
             match self.ops[op_id].op {
                 Op::Loop { .. } => return, // no nested loops
-                Op::Store { layout, .. } => {
+                Op::Store { dst, .. } => {
+                    let Op::GEP { layout, .. } = self.ops[dst].op else {
+                        todo!("unroll_tree_reduce: Store dst is not a GEP");
+                    };
                     if has_store || layout != MemLayout::Scalar {
+                        return;
+                    }
+                    has_store = true;
+                }
+                Op::Copy { src, dst } => {
+                    let Op::GEP { layout: src_layout, .. } = self.ops[src].op else {
+                        todo!("unroll_tree_reduce: Copy src is not a GEP");
+                    };
+                    let Op::GEP { layout: dst_layout, .. } = self.ops[dst].op else {
+                        todo!("unroll_tree_reduce: Copy dst is not a GEP");
+                    };
+                    if has_store || src_layout != MemLayout::Scalar || dst_layout != MemLayout::Scalar {
                         return;
                     }
                     has_store = true;
@@ -400,13 +429,15 @@ impl Kernel {
         while op_id != endloop_id {
             let this_id = op_id;
             op_id = self.next_op(op_id);
-            if let Op::Load { src, index: _, layout: MemLayout::Scalar } = self.ops[this_id].op
-                && src == acc_id
+            if let Op::Load { src } = self.ops[this_id].op
+                && let Op::GEP { x, layout: MemLayout::Scalar, .. } = self.ops[src].op
+                && x == acc_id
             {
                 // TODO debug assert index is const zero
                 map.insert(this_id, vec![acc_init; factor as usize - 1]);
-            } else if let Op::Store { dst, src: x, index, layout: MemLayout::Scalar } = self.ops[this_id].op
-                && dst == acc_id
+            } else if let Op::Store { dst, src: x } = self.ops[this_id].op
+                && let Op::GEP { x: buf, index, layout: MemLayout::Scalar } = self.ops[dst].op
+                && buf == acc_id
             {
                 let Op::Binary { bop, .. } = self.ops[x].op else {
                     unreachable!()
@@ -423,7 +454,8 @@ impl Kernel {
                     };
                     carry = self.insert_before(op_id, Op::Binary { x, y: carry, bop });
                 }
-                self.insert_before(op_id, Op::Store { dst, src: carry, index, layout: MemLayout::Scalar });
+                let gep = self.insert_before(op_id, Op::GEP { x: buf, index, layout: MemLayout::Scalar });
+                self.insert_before(op_id, Op::Store { dst: gep, src: carry });
             } else {
                 let mut new_ones = Vec::with_capacity(factor as usize - 1);
                 for i in 1..factor {

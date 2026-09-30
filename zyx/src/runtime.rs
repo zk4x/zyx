@@ -227,7 +227,7 @@ use crate::{
     backend::{Buffer, DTypeCapability, DeviceProgramId, LaunchArg, Pool, ProgramId},
     dtype::Constant,
     graph::{ExecPlan, Graph, GraphId},
-    kernel::{BOp, Kernel, MemLayout, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, Kernel, Op, OpId, ParamKind, UOp},
     rng::Rng,
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::{Dim, UAxis},
@@ -734,6 +734,9 @@ impl Runtime {
                                             break;
                                         }
                                         if let Op::Store { dst, .. } = kd.kernel.ops[i].op {
+                                            // Runtime kernels never contain
+                                            // GEPs (pre-linearize form):
+                                            // dst names the Param directly.
                                             if dst == *param {
                                                 stores_to_param.push(i);
                                             }
@@ -2906,7 +2909,7 @@ impl Runtime {
                     }
                 };
                 let assign_cid = self
-                    .push_op(graph_id, Op::Store { dst: dst_cid, src: src_cid, index: OpId::NULL, layout: MemLayout::Scalar });
+                    .push_op(graph_id, Op::Store { dst: dst_cid, src: src_cid });
                 let leaf_class = self.push_op(graph_id, Op::After { x: dst_leaf_cid, dep: assign_cid });
                 let dst_class = self.push_op(graph_id, Op::After { x: dst_cid, dep: assign_cid });
                 for (tid, class_id) in [(dst_leaf, leaf_class), (dst, dst_class)] {
@@ -2975,7 +2978,7 @@ impl Runtime {
                 shape: dst_shape_op,
                 cons_id: 0,
             });
-            self.kernels[kernel_id].kernel.store(mut_param, src_op, OpId::NULL);
+            self.kernels[kernel_id].kernel.push_back(Op::Store { dst: mut_param, src: src_op });
             self.kernels[kernel_id].stores.push(dst);
             // dst becomes pending: the store kernel owns the value now, mutating
             // the kept buffer in place — nothing is released. Materialize
@@ -3223,7 +3226,7 @@ impl Runtime {
 
         let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
         // Store src's value into dst's base buffer through the replayed chain.
-        self.kernels[src_kid].kernel.store(dst_op, src_op, OpId::NULL);
+        self.kernels[src_kid].kernel.push_back(Op::Store { dst: dst_op, src: src_op });
         debug_assert!(
             matches!(self.tensors[dst_org], TensorData::Leaf { .. } | TensorData::PendingLeaf { .. }),
             "assign: dst base {dst_org} is not a leaf/pending leaf"
@@ -3579,7 +3582,7 @@ impl Runtime {
                 shape: store_shape_id,
                 cons_id: 0,
             });
-            self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL);
+            self.kernels[kid].kernel.push_back(Op::Store { dst: dst_id, src: op_id });
             self.kernels[kid].stores.push(x);
             kid
         } else {

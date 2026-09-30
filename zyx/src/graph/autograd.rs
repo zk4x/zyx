@@ -392,7 +392,7 @@ impl Runtime {
                 Op::Contiguous { x } => {
                     accum_grad(self, graph_id, &mut grads, x, grad);
                 }
-                Op::Store { dst: _, src, .. } => {
+                Op::Store { dst: _, src } => {
                     accum_grad(self, graph_id, &mut grads, src, grad);
                 }
                 Op::After { x, .. } => {
@@ -408,7 +408,9 @@ impl Runtime {
                 Op::Kernel { .. } => todo!("backward through custom kernel"),
                 Op::Custom { .. } => todo!("backward through custom kernel"),
                 Op::Storage { .. }
+                | Op::GEP { .. }
                 | Op::Load { .. }
+                | Op::Copy { .. }
                 | Op::Range { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop

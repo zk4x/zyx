@@ -69,12 +69,12 @@ impl Kernel {
                 Op::Loop { .. } => {
                     loads.push(Map::default());
                 }
-                Op::Load { src, index, layout } => {
-                    if layout == MemLayout::Scalar {
+                Op::Load { src } => {
+                    if let Op::GEP { x, index, layout: MemLayout::Scalar } = self.ops[src].op {
                         loads
                             .last_mut()
                             .unwrap()
-                            .entry(src)
+                            .entry(x)
                             .and_modify(|e| e.push(LoadInfo { id: op_id, index }))
                             .or_insert_with(|| vec![LoadInfo { id: op_id, index }]);
                     }
@@ -137,10 +137,11 @@ impl Kernel {
 
                 // Now that we know offsets are continues, we can replace the loads with single vectorized load
                 if base_index.is_some() {
-                    let vload = self.insert_before(
+                    let vgep = self.insert_before(
                         loads[0].id,
-                        Op::Load { src, index: loads[0].index, layout: MemLayout::Vector(vec_len as u16) },
+                        Op::GEP { x: src, index: loads[0].index, layout: MemLayout::Vector(vec_len as u16) },
                     );
+                    let vload = self.insert_before(loads[0].id, Op::Load { src: vgep });
                     self.ops[loads[0].id].op = Op::Index { vec: vload, idx: 0 };
                     for (load, &off) in loads[1..].iter().zip(&offset_order) {
                         self.ops[load.id].op = Op::Index { vec: vload, idx: off as usize };
@@ -163,12 +164,12 @@ impl Kernel {
                 Op::Loop { .. } => {
                     stores.push(Map::default());
                 }
-                Op::Store { dst, src: x, index, layout } => {
-                    if layout == MemLayout::Scalar {
+                Op::Store { dst, src: x } => {
+                    if let Op::GEP { x: buf, index, layout: MemLayout::Scalar } = self.ops[dst].op {
                         stores
                             .last_mut()
                             .unwrap()
-                            .entry(dst)
+                            .entry(buf)
                             .and_modify(|e| e.push(StoreInfo { id: op_id, index, x }))
                             .or_insert_with(|| vec![StoreInfo { id: op_id, index, x }]);
                     }
@@ -253,10 +254,11 @@ impl Kernel {
                     // Insert Vectorize after the last store so all values are declared before it.
                     let vstore = self.insert_after(last_id, Op::Stack { ops });
                     // Insert the vectorized store after the Vectorize and remove all scalar stores.
-                    self.insert_after(
+                    let vgep = self.insert_after(
                         vstore,
-                        Op::Store { dst, src: vstore, index: stores[0].index, layout: MemLayout::Vector(vec_len as u16) },
+                        Op::GEP { x: dst, index: stores[0].index, layout: MemLayout::Vector(vec_len as u16) },
                     );
+                    self.insert_after(vgep, Op::Store { dst: vgep, src: vstore });
                     for store in &stores {
                         self.remove_op(store.id);
                     }

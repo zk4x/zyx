@@ -171,16 +171,35 @@ impl Kernel {
         loop {
             match self.ops[op_id].op {
                 // Update store to use the lidx for indexing
-                Op::Store { dst, src: x, layout, .. } => {
+                Op::Store { dst, src: x } => {
+                    let Op::GEP { x: buf, layout, .. } = self.ops[dst].op else {
+                        todo!("local_reduce: Store dst is not a GEP");
+                    };
                     debug_assert_eq!(layout, MemLayout::Scalar);
-                    if dst == reg_acc {
+                    if buf == reg_acc {
                         reduce_bop_id = x;
                     }
                 }
-                Op::Load { src, layout, .. } if depth == 0 && src == reg_acc => {
-                    debug_assert_eq!(layout, MemLayout::Scalar);
-                    acc_load_id = op_id;
-                    break;
+                Op::Copy { src, dst } => {
+                    let Op::GEP { x: sbuf, .. } = self.ops[src].op else {
+                        todo!("local_reduce: Copy src is not a GEP");
+                    };
+                    let Op::GEP { x: dbuf, .. } = self.ops[dst].op else {
+                        todo!("local_reduce: Copy dst is not a GEP");
+                    };
+                    if sbuf == reg_acc || dbuf == reg_acc {
+                        return;
+                    }
+                }
+                Op::Load { src } if depth == 0 => {
+                    let Op::GEP { x: buf, layout, .. } = self.ops[src].op else {
+                        todo!("local_reduce: Load src is not a GEP");
+                    };
+                    if buf == reg_acc {
+                        debug_assert_eq!(layout, MemLayout::Scalar);
+                        acc_load_id = op_id;
+                        break;
+                    }
                 }
                 Op::Loop { .. } => depth += 1,
                 Op::EndLoop => depth -= 1,
@@ -227,8 +246,12 @@ impl Kernel {
 
         // Store to local accumulator
         let const_zero = self.insert_before(acc_load_id, Op::Const(Constant::idx(0)));
-        let x = self.insert_before(acc_load_id, Op::Load { src: reg_acc, index: const_zero, layout: MemLayout::Scalar });
-        self.insert_before(acc_load_id, Op::Store { dst: loc_acc, src: x, index: lidx, layout: MemLayout::Scalar });
+        let reg_gep =
+            self.insert_before(acc_load_id, Op::GEP { x: reg_acc, index: const_zero, layout: MemLayout::Scalar });
+        let x = self.insert_before(acc_load_id, Op::Load { src: reg_gep });
+        let loc_gep =
+            self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: lidx, layout: MemLayout::Scalar });
+        self.insert_before(acc_load_id, Op::Store { dst: loc_gep, src: x });
 
         // Sync memory
         self.insert_before(acc_load_id, Op::Barrier);
@@ -253,18 +276,22 @@ impl Kernel {
                 let offset = i * active_threads;
                 let offset_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(offset)));
                 let offset_idx = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: offset_const, bop: BOp::Add });
-                let local_load =
-                    self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: offset_idx, layout: MemLayout::Scalar });
+                let offset_gep =
+                    self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: offset_idx, layout: MemLayout::Scalar });
+                let local_load = self.insert_before(acc_load_id, Op::Load { src: offset_gep });
                 if let Some(prev_sum) = sum_x {
                     sum_x = Some(self.insert_before(acc_load_id, Op::Binary { x: prev_sum, y: local_load, bop }));
                 } else {
-                    let current_val =
-                        self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: lidx, layout: MemLayout::Scalar });
+                    let current_gep =
+                        self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: lidx, layout: MemLayout::Scalar });
+                    let current_val = self.insert_before(acc_load_id, Op::Load { src: current_gep });
                     sum_x = Some(self.insert_before(acc_load_id, Op::Binary { x: current_val, y: local_load, bop }));
                 }
             }
             let bop_id = sum_x.unwrap();
-            self.insert_before(acc_load_id, Op::Store { dst: loc_acc, src: bop_id, index: lidx, layout: MemLayout::Scalar });
+            let store_gep =
+                self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: lidx, layout: MemLayout::Scalar });
+            self.insert_before(acc_load_id, Op::Store { dst: store_gep, src: bop_id });
 
             self.insert_before(acc_load_id, Op::EndLoop);
             self.insert_before(acc_load_id, Op::Barrier);
@@ -275,8 +302,12 @@ impl Kernel {
         // Load final result from local[0] to register (only thread 0)
         let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: const_zero, bop: BOp::Eq });
         self.insert_before(acc_load_id, Op::Loop { len: condition });
-        let final_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: const_zero, layout: MemLayout::Scalar });
-        self.insert_before(acc_load_id, Op::Store { dst: reg_acc, src: final_val, index: const_zero, layout: MemLayout::Scalar });
+        let final_gep =
+            self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: const_zero, layout: MemLayout::Scalar });
+        let final_val = self.insert_before(acc_load_id, Op::Load { src: final_gep });
+        let reg_gep =
+            self.insert_before(acc_load_id, Op::GEP { x: reg_acc, index: const_zero, layout: MemLayout::Scalar });
+        self.insert_before(acc_load_id, Op::Store { dst: reg_gep, src: final_val });
         self.insert_after(self.tail, Op::EndLoop);
 
         self.verify();

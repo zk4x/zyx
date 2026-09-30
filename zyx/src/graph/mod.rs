@@ -515,7 +515,7 @@ impl Graph {
                     }
                 }
             }
-            if let Op::Store { dst, src, .. } = &self.ops[nid].op {
+            if let Op::Store { dst, src } = &self.ops[nid].op {
                 for p in [dst, src] {
                     if !kdeps.contains(p) {
                         kdeps.push(*p);
@@ -1114,7 +1114,9 @@ impl Graph {
                 self.dims(*shape)
             }
             Op::Storage { .. }
+            | Op::GEP { .. }
             | Op::Load { .. }
+            | Op::Copy { .. }
             | Op::Range { .. }
             | Op::Loop { .. }
             | Op::EndLoop
@@ -1303,7 +1305,9 @@ impl Graph {
             | Op::Contiguous { x }
             | Op::Binary { x, .. } => self.dtype(*x),
             Op::Storage { .. }
+            | Op::GEP { .. }
             | Op::Load { .. }
+            | Op::Copy { .. }
             | Op::Range { .. }
             | Op::Loop { .. }
             | Op::EndLoop
@@ -1357,7 +1361,9 @@ impl Graph {
                 | Op::Stack { .. }
                 | Op::Reduce { .. }
                 | Op::Storage { .. }
+                | Op::GEP { .. }
                 | Op::Load { .. }
+                | Op::Copy { .. }
                 | Op::Store { .. }
                 | Op::Range { .. }
                 | Op::Loop { .. }
@@ -1670,7 +1676,7 @@ impl Runtime {
                         stack.push(*x);
                     }
                     Op::Stack { ops } => stack.extend(ops.iter().copied()),
-                    Op::Store { dst, src, .. } => {
+                    Op::Store { dst, src } => {
                         stack.push(*dst);
                         stack.push(*src);
                     }
@@ -1683,7 +1689,9 @@ impl Runtime {
                     | Op::Barrier
                     | Op::Range { .. }
                     | Op::Loop { .. }
+                    | Op::GEP { .. }
                     | Op::Load { .. }
+                    | Op::Copy { .. }
                     | Op::Mad { .. }
                     | Op::Asm { .. }
                     | Op::Index { .. }
@@ -1819,7 +1827,9 @@ impl Runtime {
                                     | Op::Narrow { .. }
                                     | Op::Reduce { .. }
                                     | Op::Store { .. }
+                                    | Op::GEP { .. }
                                     | Op::Load { .. }
+                                    | Op::Copy { .. }
                                     | Op::Mad { .. }
                                     | Op::Asm { .. }
                                     | Op::Index { .. }

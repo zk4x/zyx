@@ -43,6 +43,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if self.fold_loop(op_id) {
+                eprintln!("FOLDDBG fold_loop fired at {op_id}");
                 break;
             }
             op_id = self.next_op(op_id);
@@ -78,8 +79,9 @@ impl Kernel {
         // Find the initial store to the accumulator (acc[0] = init_value)
         let mut store_id = self.next_op(acc_id);
         while !store_id.is_null() {
-            if let &Op::Store { dst, index, .. } = self.at(store_id)
-                && dst == acc_id
+            if let &Op::Store { dst, .. } = self.at(store_id)
+                && let &Op::GEP { x, index, .. } = self.at(dst)
+                && x == acc_id
             {
                 // Looking for store at index 0 (the init value)
                 if let Op::Const(cst) = self.at(index)
@@ -103,8 +105,14 @@ impl Kernel {
             }
             // If accumulator is touched before the loop by anything other than the init store, abort
             match self.at(loop_id) {
-                Op::Load { src, .. } if *src == acc_id => return false,
-                Op::Store { dst, .. } if *dst == acc_id => return false,
+                Op::Load { src, .. } if matches!(self.at(*src), Op::GEP { x, .. } if *x == acc_id) => return false,
+                Op::Store { dst, .. } if matches!(self.at(*dst), Op::GEP { x, .. } if *x == acc_id) => return false,
+                Op::Copy { src, dst }
+                    if matches!(self.at(*src), Op::GEP { x, .. } if *x == acc_id)
+                        || matches!(self.at(*dst), Op::GEP { x, .. } if *x == acc_id) =>
+                {
+                    return false;
+                }
                 _ => {}
             }
             loop_id = self.next_op(loop_id);
@@ -122,7 +130,8 @@ impl Kernel {
         let mut store_id = OpId::NULL;
         while !search_id.is_null() {
             if let &Op::Store { dst, .. } = self.at(search_id)
-                && dst == acc_id
+                && let &Op::GEP { x, .. } = self.at(dst)
+                && x == acc_id
             {
                 store_id = search_id;
                 break;
@@ -158,15 +167,19 @@ impl Kernel {
     fn identify_accumulate_pattern(&self, acc_id: OpId, loop_id: OpId) -> Option<(OpId, OpId)> {
         let mut load_id = loop_id;
         loop {
-            if let Op::Load { src, .. } = self.ops[load_id].op
-                && src == acc_id
+            if let Op::Load { src } = self.ops[load_id].op
+                && let Op::GEP { x, .. } = self.ops[src].op
+                && x == acc_id
             {
                 break;
             }
             load_id = self.next_op(load_id);
         }
 
-        let &Op::Load { src, index, layout: MemLayout::Scalar } = self.at(load_id) else {
+        let &Op::Load { src: load_gep } = self.at(load_id) else {
+            return None;
+        };
+        let &Op::GEP { x: src, index, layout: MemLayout::Scalar } = self.at(load_gep) else {
             return None;
         };
         let &Op::Const(index) = self.at(index) else { return None };
@@ -183,16 +196,27 @@ impl Kernel {
                 return None;
             }
             match self.at(add_id) {
-                Op::EndLoop => return None,
-                Op::Store { dst, .. } if *dst == acc_id => return None,
+                Op::EndLoop => {
+                    return None;
+                }
+                Op::Store { dst, .. } if matches!(self.at(*dst), Op::GEP { x, .. } if *x == acc_id) => return None,
+                Op::Copy { dst, .. } if matches!(self.at(*dst), Op::GEP { x, .. } if *x == acc_id) => return None,
                 Op::Binary { x, y, bop: BOp::Add } if *y == load_id => break *x,
                 _ => {}
             }
             add_id = self.next_op(add_id);
         };
 
-        let store_id = self.next_op(add_id);
-        let &Op::Store { dst, src: x, index, layout: MemLayout::Scalar } = self.at(store_id) else {
+        let mut store_id = self.next_op(add_id);
+        // Builder-emitted GEPs sit between value ops and their movement
+        // op: step over the store's GEP (validated as such below).
+        if matches!(self.at(store_id), Op::GEP { .. }) {
+            store_id = self.next_op(store_id);
+        }
+        let &Op::Store { dst: store_gep, src: x } = self.at(store_id) else {
+            return None;
+        };
+        let &Op::GEP { x: dst, index, layout: MemLayout::Scalar } = self.at(store_gep) else {
             return None;
         };
         let &Op::Const(index) = self.at(index) else { return None };
@@ -206,8 +230,16 @@ impl Kernel {
         let endloop_id = self.next_op(store_id);
         let Op::EndLoop = self.at(endloop_id) else { return None };
 
-        let load2_id = self.next_op(endloop_id);
-        let &Op::Load { src, index, layout: MemLayout::Scalar } = self.at(load2_id) else {
+        let mut load2_id = self.next_op(endloop_id);
+        // Same builder-GEP step-over as above: the after-loop load's GEP
+        // precedes it (validated as such below).
+        if matches!(self.at(load2_id), Op::GEP { .. }) {
+            load2_id = self.next_op(load2_id);
+        }
+        let &Op::Load { src: load2_gep } = self.at(load2_id) else {
+            return None;
+        };
+        let &Op::GEP { x: src, index, layout: MemLayout::Scalar } = self.at(load2_gep) else {
             return None;
         };
         let &Op::Const(index) = self.at(index) else { return None };
@@ -288,8 +320,13 @@ impl Kernel {
         // Convert indices to IDX_T
         let loop_replace = self.insert_after(indices_id, Op::Cast { x: indices_id, dtype: IDX_T });
 
-        // Replace loop index
-        let endloop_id = self.prev_op(after_loop_load_id);
+        // Replace loop index. The after-loop load is preceded by its
+        // builder-emitted GEP: the EndLoop sits before that, not directly
+        // before the load.
+        let mut endloop_id = self.prev_op(after_loop_load_id);
+        if matches!(self.at(endloop_id), Op::GEP { .. }) {
+            endloop_id = self.prev_op(endloop_id);
+        }
         let mut op_id = self.next_op(loop_replace);
         while op_id != endloop_id {
             for param in self.ops[op_id].op.parameters_mut() {
@@ -399,7 +436,26 @@ impl Kernel {
         let step_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(step)));
         let result_id = self.insert_before(after_loop_load_id, Op::Binary { x: sum_id, y: step_id, bop: BOp::Mul });
 
+        // Capture the after-loop load's GEP before overwriting the load:
+        // the GEP dies with it unless shared (see below).
+        let load_gep = match self.ops[after_loop_load_id].op {
+            Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { .. }) => src,
+            _ => OpId::NULL,
+        };
+
         self.ops[after_loop_load_id].op = Op::Cast { x: result_id, dtype };
+
+        // Drop the orphaned GEP if the load was its only user
+        // (builder-fresh GEPs are single-use; a shared GEP survives for
+        // its other users). A surviving GEP over the removed accumulator
+        // would dangle (verify rejects it).
+        if !load_gep.is_null()
+            && !self
+                .iter_unordered()
+                .any(|(id, n)| id != after_loop_load_id && n.parameters().any(|p| p == load_gep))
+        {
+            self.remove_op(load_gep);
+        }
 
         // Remove the now-obsolete loop operations (Loop, body, EndLoop, init store, accumulator storage)
         let mut current = self.next_op(loop_id);
@@ -413,6 +469,16 @@ impl Kernel {
             current = next;
         }
         self.remove_op(loop_id);
+        // Same single-use drop for the init store's GEP (see above): the
+        // store goes next and the accumulator after it.
+        if let Op::Store { dst, .. } = self.ops[store_id].op
+            && matches!(self.ops[dst].op, Op::GEP { .. })
+            && !self
+                .iter_unordered()
+                .any(|(id, n)| id != store_id && n.parameters().any(|p| p == dst))
+        {
+            self.remove_op(dst);
+        }
         self.remove_op(store_id);
         self.remove_op(acc_id);
 

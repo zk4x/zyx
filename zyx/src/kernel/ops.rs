@@ -102,16 +102,38 @@ pub enum Op {
         scope: MemScope,
         len: Dim,
     },
-    Store {
-        dst: OpId,
-        src: OpId,
+    /// Get-element-pointer: names one addressable location — `index` into
+    /// `x` under `layout`. `x` is always an [`Op::Param`] or [`Op::Storage`];
+    /// `index` is arbitrary index arithmetic (an [`OpId` like any other
+    /// value, shared freely between the GEPs that use it). This is the one
+    /// and only pointer type in the IR (there are no pointer dtypes):
+    /// [`Op::Load`] reads through it, [`Op::Store`] writes through it, and
+    /// [`Op::Copy`] moves between two of them. `dtype` of a GEP is the
+    /// dtype of `x`. Pure address math, so GEPs CSE like values and hoist
+    /// like values; only [`linearize`](Kernel::linearize) introduces them
+    /// (it wraps every store destination and load source). Follows LLVM's
+    /// `getelementptr` split: the location lives here, the access width
+    /// stays here too (unlike LLVM, where it rides on the load/store).
+    GEP {
+        x: OpId,
         index: OpId,
         layout: MemLayout,
     },
+    Store {
+        dst: OpId,
+        src: OpId,
+    },
     Load {
         src: OpId,
-        index: OpId,
-        layout: MemLayout,
+    },
+    /// Copy between addressed locations: moves the value at `src` to `dst`.
+    /// Both operands are [`Op::GEP`]s (post-linearize only). Effect-only
+    /// like [`Op::Store`]: produces no SSA value, is a DCE root, is never
+    /// CSE'd or LICM-hoisted. General: any backend may lower it (TT tile
+    /// moves, CUDA DRAM-to-shared staging, ...).
+    Copy {
+        src: OpId,
+        dst: OpId,
     },
     // Like loop, but for dimensions always executed in parallel
     Range {
@@ -194,9 +216,9 @@ pub enum Op {
     },
     // Graph-only ops (former `Node` variants). They never appear in ordered
     // kernels: every kernel-side match arms them with `todo!()`.
-    // NOTE: there is no `Assign` variant: graph assigns lower to
-    // `Op::Store` with a null index (both the kernelizer and eager assign
-    // already emit `store(dst, src, OpId::NULL)`).
+    // NOTE: there is no `Assign` variant: graph assigns lower to a
+    // whole-view `Op::Store` (bare `Param` dst, no GEP — `linearize` wraps
+    // it later).
     /// Ordering edge: `x` may not run before `dep` completes.
     After {
         x: OpId,
@@ -300,6 +322,8 @@ impl Op {
             Op::Storage { .. } => 7,
             Op::Store { .. } => 8,
             Op::Load { .. } => 9,
+            Op::Copy { .. } => 13,
+            Op::GEP { .. } => 14,
             Op::Range { .. } => 10,
             Op::Loop { .. } => 11,
             Op::EndLoop => 12,
@@ -341,12 +365,10 @@ impl PartialEq for Op {
             (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
                 ad == bd && as_ == bs && al == bl
             }
-            (Op::Store { dst: ad, src: as_, index: ai, layout: al }, Op::Store { dst: bd, src: bs, index: bi, layout: bl }) => {
-                ad == bd && as_ == bs && ai == bi && al == bl
-            }
-            (Op::Load { src: as_, index: ai, layout: al }, Op::Load { src: bs, index: bi, layout: bl }) => {
-                as_ == bs && ai == bi && al == bl
-            }
+            (Op::Store { dst: ad, src: as_ }, Op::Store { dst: bd, src: bs }) => ad == bd && as_ == bs,
+            (Op::Load { src: a }, Op::Load { src: b }) => a == b,
+            (Op::Copy { src: as_, dst: ad }, Op::Copy { src: bs, dst: bd }) => as_ == bs && ad == bd,
+            (Op::GEP { x: a, index: ai, layout: al }, Op::GEP { x: b, index: bi, layout: bl }) => a == b && ai == bi && al == bl,
             (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => aa == ba && ak == bk,
             (Op::Loop { len: a }, Op::Loop { len: b }) => a == b,
             (Op::EndLoop, Op::EndLoop) => true,
@@ -427,14 +449,19 @@ impl Hash for Op {
                 scope.hash(state);
                 len.hash(state);
             }
-            Op::Store { dst, src, index, layout } => {
+            Op::Store { dst, src } => {
                 dst.hash(state);
                 src.hash(state);
-                index.hash(state);
-                layout.hash(state);
             }
-            Op::Load { src, index, layout } => {
+            Op::Load { src } => {
                 src.hash(state);
+            }
+            Op::Copy { src, dst } => {
+                src.hash(state);
+                dst.hash(state);
+            }
+            Op::GEP { x, index, layout } => {
+                x.hash(state);
                 index.hash(state);
                 layout.hash(state);
             }
@@ -544,12 +571,10 @@ impl Ord for Op {
             (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
                 (ad, as_, al).cmp(&(bd, bs, bl))
             }
-            (Op::Store { dst: ad, src: as_, index: ai, layout: al }, Op::Store { dst: bd, src: bs, index: bi, layout: bl }) => {
-                (ad, as_, ai, al).cmp(&(bd, bs, bi, bl))
-            }
-            (Op::Load { src: as_, index: ai, layout: al }, Op::Load { src: bs, index: bi, layout: bl }) => {
-                (as_, ai, al).cmp(&(bs, bi, bl))
-            }
+            (Op::Store { dst: ad, src: as_ }, Op::Store { dst: bd, src: bs }) => (ad, as_).cmp(&(bd, bs)),
+            (Op::Load { src: a }, Op::Load { src: b }) => a.cmp(b),
+            (Op::Copy { src: as_, dst: ad }, Op::Copy { src: bs, dst: bd }) => (as_, ad).cmp(&(bs, bd)),
+            (Op::GEP { x: a, index: ai, layout: al }, Op::GEP { x: b, index: bi, layout: bl }) => (a, ai, al).cmp(&(b, bi, bl)),
             (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => (aa, ak).cmp(&(ba, bk)),
             (Op::Loop { len: a }, Op::Loop { len: b }) => a.cmp(b),
             (Op::EndLoop, Op::EndLoop) | (Op::Barrier, Op::Barrier) => std::cmp::Ordering::Equal,
@@ -895,20 +920,14 @@ impl Op {
             &Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             &Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
-            &Op::Store { dst, src, index, .. } => {
-                // Pre-linearize stores carry a NULL index (whole-view write),
-                // which names no operand.
-                if index.is_null() {
-                    vec![dst, src]
-                } else {
-                    vec![dst, src, index]
-                }
-            }
+            &Op::Store { dst, src } => vec![dst, src],
+            &Op::Copy { src, dst } => vec![src, dst],
+            &Op::GEP { x, index, .. } => vec![x, index],
             Op::Cast { x, .. } => vec![*x],
             Op::Bitcast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             &Op::Binary { x, y, .. } => vec![x, y],
-            &Op::Load { src, index, .. } => vec![src, index],
+            &Op::Load { src } => vec![src],
             &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
             Op::Stack { ops } => ops.iter().copied().collect(),
@@ -947,15 +966,14 @@ impl Op {
             Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![x, reduce_axis],
-            Op::Store { dst, src: x, index, .. } => {
-                // Pre-linearize stores carry a NULL index (whole-view write).
-                if index.is_null() { vec![dst, x] } else { vec![dst, x, index] }
-            }
+            Op::Store { dst, src: x } => vec![dst, x],
+            Op::Copy { src, dst } => vec![src, dst],
+            Op::GEP { x, index, .. } => vec![x, index],
             Op::Cast { x, .. } => vec![x],
             Op::Bitcast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],
             Op::Binary { x, y, .. } => vec![x, y],
-            Op::Load { src, index, .. } => vec![src, index],
+            Op::Load { src } => vec![src],
             Op::Mad { x, y, z } => vec![x, y, z],
             Op::Stack { ops } => ops.iter_mut().collect(),
             Op::Index { vec, .. } => vec![vec],

@@ -415,7 +415,12 @@ impl Kernel {
     }
 
     fn load_op(&mut self, src: OpId, index: OpId, layout: MemLayout) -> OpId {
-        self.push_back(Op::Load { src, index, layout })
+        debug_assert!(
+            matches!(self.ops[src].op, Op::Param { .. } | Op::Storage { .. }),
+            "load_op: src {src} must be a Param or Storage (GEP target)"
+        );
+        let gep = self.push_back(Op::GEP { x: src, index, layout });
+        self.push_back(Op::Load { src: gep })
     }
 
     /// Store `x` to `dst` at `index` (scalar layout: one element).
@@ -466,7 +471,12 @@ impl Kernel {
     }
 
     fn store_op(&mut self, dst: OpId, x: OpId, index: OpId, layout: MemLayout) {
-        self.push_back(Op::Store { dst, src: x, index, layout });
+        debug_assert!(
+            matches!(self.ops[dst].op, Op::Param { .. } | Op::Storage { .. }),
+            "store_op: dst {dst} must be a Param or Storage (GEP target)"
+        );
+        let gep = self.push_back(Op::GEP { x: dst, index, layout });
+        self.push_back(Op::Store { dst: gep, src: x });
     }
 
     /// Emit a loop over `len`, call `f` to build the body (the closure

@@ -100,7 +100,8 @@ impl Kernel {
             self.exp2_to_exp();
         }
         if dev_info.tenstorrent {
-            self.opt_tenstorrent_tile();
+            // TT tiling lives in kernel/tenstorrent.rs (tt_* port); the old
+            // opt_tenstorrent_tile is deleted. Unfinished path still traps.
             self.common_subexpression_elimination();
             self.instruction_schedule();
             self.dead_code_elimination();

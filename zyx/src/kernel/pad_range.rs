@@ -107,7 +107,8 @@ impl Kernel {
             let next = self.next_op(op_id);
 
             // Redirect OOB stores to trash element at index `limit`
-            if let Op::Store { dst, src: x, index: store_idx, layout } = self.ops[op_id].op.clone()
+            if let Op::Store { dst: store_gep, src: x } = self.ops[op_id].op.clone()
+                && let Op::GEP { x: dst, index: store_idx, layout } = self.ops[store_gep].op.clone()
                 && self.depends_on(store_idx, gidx_id, &mut Set::default())
             {
                 let buf_len: Option<Dim> = match &self.ops[dst].op {
@@ -123,12 +124,38 @@ impl Kernel {
                     let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
                     let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
                     let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
-                    self.ops[op_id].op = Op::Store { dst, src: x, index: safe_idx, layout };
+                    let safe_gep = self.insert_before(op_id, Op::GEP { x: dst, index: safe_idx, layout });
+                    self.ops[op_id].op = Op::Store { dst: safe_gep, src: x };
+                }
+            }
+
+            // Redirect OOB copies to trash element at index `limit` (dst side, like stores)
+            if let Op::Copy { src: copy_src, dst: copy_gep } = self.ops[op_id].op.clone()
+                && let Op::GEP { x: dst, index: store_idx, layout } = self.ops[copy_gep].op.clone()
+                && self.depends_on(store_idx, gidx_id, &mut Set::default())
+            {
+                let buf_len: Option<Dim> = match &self.ops[dst].op {
+                    Op::Param { .. } => Some(self.shape(dst).iter().product()),
+                    _ => None,
+                };
+                if let Some(buf_len) = buf_len {
+                    let clen = self.insert_before(op_id, Op::Const(Constant::idx(buf_len)));
+                    let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
+                    let cast_cond = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
+                    let one = self.insert_before(op_id, Op::Const(Constant::idx(1)));
+                    let not_cond = self.insert_before(op_id, Op::Binary { x: one, y: cast_cond, bop: BOp::Sub });
+                    let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
+                    let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
+                    let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
+                    let safe_gep = self.insert_before(op_id, Op::GEP { x: dst, index: safe_idx, layout });
+                    self.ops[op_id].op = Op::Copy { src: copy_src, dst: safe_gep };
                 }
             }
 
             // Guard loads: redirect OOB reads to element 0 (safe)
-            if let Op::Load { src, index: load_idx, layout } = self.ops[op_id].op.clone() {
+            if let Op::Load { src: load_gep } = self.ops[op_id].op.clone()
+                && let Op::GEP { x: src, index: load_idx, layout } = self.ops[load_gep].op.clone()
+            {
                 if layout != MemLayout::Scalar {
                     op_id = next;
                     continue;
@@ -137,7 +164,8 @@ impl Kernel {
                     let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
                     let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
                     let safe_idx = self.insert_before(op_id, Op::Binary { x: load_idx, y: cast_idx, bop: BOp::Mul });
-                    let safe_load = self.insert_before(op_id, Op::Load { src, index: safe_idx, layout });
+                    let safe_gep = self.insert_before(op_id, Op::GEP { x: src, index: safe_idx, layout });
+                    let safe_load = self.insert_before(op_id, Op::Load { src: safe_gep });
                     self.remap(op_id, safe_load);
                     self.remove_op(op_id);
                 }
@@ -170,7 +198,8 @@ impl Kernel {
             let next = self.next_op(op_id);
 
             // Redirect OOB stores to trash element at index `buf_len`
-            if let Op::Store { dst, src: x, index: store_idx, layout } = self.ops[op_id].op.clone()
+            if let Op::Store { dst: store_gep, src: x } = self.ops[op_id].op.clone()
+                && let Op::GEP { x: dst, index: store_idx, layout } = self.ops[store_gep].op.clone()
                 && self.depends_on(store_idx, loop_id, &mut Set::default())
             {
                 let buf_len: Option<Dim> = match self.ops[dst].op {
@@ -187,12 +216,39 @@ impl Kernel {
                     let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
                     let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
                     let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
-                    self.ops[op_id].op = Op::Store { dst, src: x, index: safe_idx, layout };
+                    let safe_gep = self.insert_before(op_id, Op::GEP { x: dst, index: safe_idx, layout });
+                    self.ops[op_id].op = Op::Store { dst: safe_gep, src: x };
+                }
+            }
+
+            // Redirect OOB copies to trash element at index `buf_len` (dst side, like stores)
+            if let Op::Copy { src: copy_src, dst: copy_gep } = self.ops[op_id].op.clone()
+                && let Op::GEP { x: dst, index: store_idx, layout } = self.ops[copy_gep].op.clone()
+                && self.depends_on(store_idx, loop_id, &mut Set::default())
+            {
+                let buf_len: Option<Dim> = match self.ops[dst].op {
+                    Op::Param { .. } => todo!(),
+                    Op::Storage { len, .. } => Some(len),
+                    _ => None,
+                };
+                if let Some(buf_len) = buf_len {
+                    let clen = self.insert_before(op_id, Op::Const(Constant::idx(buf_len)));
+                    let cond = self.insert_before(op_id, Op::Binary { x: loop_id, y: limit, bop: BOp::Cmplt });
+                    let cast_cond = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
+                    let one = self.insert_before(op_id, Op::Const(Constant::idx(1)));
+                    let not_cond = self.insert_before(op_id, Op::Binary { x: one, y: cast_cond, bop: BOp::Sub });
+                    let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
+                    let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
+                    let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
+                    let safe_gep = self.insert_before(op_id, Op::GEP { x: dst, index: safe_idx, layout });
+                    self.ops[op_id].op = Op::Copy { src: copy_src, dst: safe_gep };
                 }
             }
 
             // Guard loads: redirect OOB reads to element 0 (safe)
-            if let Op::Load { src, index: load_idx, layout } = self.ops[op_id].op.clone() {
+            if let Op::Load { src: load_gep } = self.ops[op_id].op.clone()
+                && let Op::GEP { x: src, index: load_idx, layout } = self.ops[load_gep].op.clone()
+            {
                 if layout != MemLayout::Scalar {
                     op_id = next;
                     continue;
@@ -201,7 +257,8 @@ impl Kernel {
                     let cond = self.insert_before(op_id, Op::Binary { x: loop_id, y: limit, bop: BOp::Cmplt });
                     let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
                     let safe_idx = self.insert_before(op_id, Op::Binary { x: load_idx, y: cast_idx, bop: BOp::Mul });
-                    let safe_load = self.insert_before(op_id, Op::Load { src, index: safe_idx, layout });
+                    let safe_gep = self.insert_before(op_id, Op::GEP { x: src, index: safe_idx, layout });
+                    let safe_load = self.insert_before(op_id, Op::Load { src: safe_gep });
                     self.remap(op_id, safe_load);
                     self.remove_op(op_id);
                 }

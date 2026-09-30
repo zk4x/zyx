@@ -120,7 +120,10 @@ impl Kernel {
         #[allow(clippy::enum_glob_use)]
         use Op::*;
 
-        let &Store { dst: acc_id, src: x, index: store_idx, layout: MemLayout::Scalar } = self.at(store_id) else {
+        let &Store { dst: store_gep, src: x } = self.at(store_id) else {
+            return None;
+        };
+        let &GEP { x: acc_id, index: store_idx, layout: MemLayout::Scalar } = self.at(store_gep) else {
             return None;
         };
         let (c_base_index, c_offset) = self.index_base_and_offset(store_idx, k_loop_id);
@@ -131,9 +134,13 @@ impl Kernel {
         let &Binary { x, mut y, bop: Add } = self.at(x) else {
             return None;
         };
-        let (src, index) = if let &Load { src, index, layout: MemLayout::Scalar } = self.at(x) {
+        let (src, index) = if let &Load { src: load_gep } = self.at(x)
+            && let &GEP { x: src, index, layout: MemLayout::Scalar } = self.at(load_gep)
+        {
             (src, index)
-        } else if let &Load { src, index, layout: MemLayout::Scalar } = self.at(y) {
+        } else if let &Load { src: load_gep } = self.at(y)
+            && let &GEP { x: src, index, layout: MemLayout::Scalar } = self.at(load_gep)
+        {
             y = x;
             (src, index)
         } else {
@@ -148,14 +155,20 @@ impl Kernel {
             let &Binary { x, y, bop: Mul } = self.at(x) else {
                 return None;
             };
-            let &Load { src: a, index, layout: MemLayout::Scalar } = self.at(x) else {
+            let &Load { src: a_gep } = self.at(x) else {
+                return None;
+            };
+            let &GEP { x: a, index, layout: MemLayout::Scalar } = self.at(a_gep) else {
                 return None;
             };
             let Storage { dtype: a_dtype, .. } = self.ops[a].op else {
                 unreachable!()
             };
             let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
-            let &Load { src: b, index, layout: MemLayout::Scalar } = self.at(y) else {
+            let &Load { src: b_gep } = self.at(y) else {
+                return None;
+            };
+            let &GEP { x: b, index, layout: MemLayout::Scalar } = self.at(b_gep) else {
                 return None;
             };
             let Storage { dtype: b_dtype, .. } = self.ops[b].op else {
@@ -183,14 +196,20 @@ impl Kernel {
             let &Binary { x, y, bop: Mul } = self.at(x) else {
                 return None;
             };
-            let &Load { src: a, index, layout: MemLayout::Scalar } = self.at(x) else {
+            let &Load { src: a_gep } = self.at(x) else {
+                return None;
+            };
+            let &GEP { x: a, index, layout: MemLayout::Scalar } = self.at(a_gep) else {
                 return None;
             };
             let Storage { dtype: a_dtype, .. } = self.ops[a].op else {
                 unreachable!()
             };
             let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
-            let &Load { src: b, index, layout: MemLayout::Scalar } = self.at(y) else {
+            let &Load { src: b_gep } = self.at(y) else {
+                return None;
+            };
+            let &GEP { x: b, index, layout: MemLayout::Scalar } = self.at(b_gep) else {
                 return None;
             };
             let Storage { dtype: b_dtype, .. } = self.ops[b].op else {
@@ -242,16 +261,20 @@ impl Kernel {
             let y = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
             idx = self.insert_before(k_loop_id, Op::Binary { x: idx, y, bop: BOp::Add });
         }
-        let a_load1 = self.insert_before(k_loop_id, Op::Load { src: stores[0].a, index: idx, layout: MemLayout::Scalar });
+        let a_gep1 = self.insert_before(k_loop_id, Op::GEP { x: stores[0].a, index: idx, layout: MemLayout::Scalar });
+        let a_load1 = self.insert_before(k_loop_id, Op::Load { src: a_gep1 });
         let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].a_offset)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
-        let a_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[1].a, index, layout: MemLayout::Scalar });
+        let a_gep2 = self.insert_before(k_loop_id, Op::GEP { x: stores[1].a, index, layout: MemLayout::Scalar });
+        let a_load2 = self.insert_before(k_loop_id, Op::Load { src: a_gep2 });
         let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[2].a_offset)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
-        let a_load3 = self.insert_before(k_loop_id, Op::Load { src: stores[2].a, index, layout: MemLayout::Scalar });
+        let a_gep3 = self.insert_before(k_loop_id, Op::GEP { x: stores[2].a, index, layout: MemLayout::Scalar });
+        let a_load3 = self.insert_before(k_loop_id, Op::Load { src: a_gep3 });
         let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[3].a_offset)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
-        let a_load4 = self.insert_before(k_loop_id, Op::Load { src: stores[3].a, index, layout: MemLayout::Scalar });
+        let a_gep4 = self.insert_before(k_loop_id, Op::GEP { x: stores[3].a, index, layout: MemLayout::Scalar });
+        let a_load4 = self.insert_before(k_loop_id, Op::Load { src: a_gep4 });
 
         let a_load = self.insert_before(k_loop_id, Op::Stack { ops: Box::new([a_load1, a_load2, a_load3, a_load4]) });
 
@@ -262,15 +285,18 @@ impl Kernel {
             let y = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
             idx = self.insert_before(k_loop_id, Op::Binary { x: idx, y, bop: BOp::Add });
         }
-        let b_load1 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index: idx, layout: MemLayout::Scalar });
+        let b_gep1 = self.insert_before(k_loop_id, Op::GEP { x: stores[0].b, index: idx, layout: MemLayout::Scalar });
+        let b_load1 = self.insert_before(k_loop_id, Op::Load { src: b_gep1 });
         let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].b_offset)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
-        let b_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index, layout: MemLayout::Scalar });
+        let b_gep2 = self.insert_before(k_loop_id, Op::GEP { x: stores[0].b, index, layout: MemLayout::Scalar });
+        let b_load2 = self.insert_before(k_loop_id, Op::Load { src: b_gep2 });
         let b_load = self.insert_before(k_loop_id, Op::Stack { ops: Box::new([b_load1, b_load2]) });
 
         // C load
         let index = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
-        let c_load = self.insert_before(k_loop_id, Op::Load { src: stores[0].c, index, layout: MemLayout::Vector(4) });
+        let c_gep = self.insert_before(k_loop_id, Op::GEP { x: stores[0].c, index, layout: MemLayout::Vector(4) });
+        let c_load = self.insert_before(k_loop_id, Op::Load { src: c_gep });
 
         let wmma_op = self.insert_before(
             k_loop_id,
@@ -283,7 +309,8 @@ impl Kernel {
                 b: b_load,
             },
         );
-        self.insert_after(wmma_op, Op::Store { dst: stores[0].c, src: wmma_op, index, layout: MemLayout::Vector(4) });
+        let c_store_gep = self.insert_after(wmma_op, Op::GEP { x: stores[0].c, index, layout: MemLayout::Vector(4) });
+        self.insert_after(c_store_gep, Op::Store { dst: c_store_gep, src: wmma_op });
 
         for store in stores {
             self.remove_op(store.store_id);

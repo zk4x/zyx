@@ -1188,194 +1188,124 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::Load { src, index, layout } => {
-                        let (load_dt, _) = dtypes[&op_id];
-                        let result_type =
-                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, load_dt, layout);
-                        let index_id = spv_values[&index];
-
-                        // For vector loads, use scalar pointer type for OpAccessChain,
-                        // then decompose into scalar loads + OpCompositeConstruct.
-                        // SPIR-V does not allow loading a vector through a scalar pointer.
-                        let is_vec = matches!(layout, MemLayout::Vector(_));
-                        let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_src, push_member) =
-                            if let Some(&(member_const, storage_type, is_bool)) = variable_members.get(&src) {
-                                // Push-constant member: OpAccessChain(base, member_const), then load
-                                let elem_ptr =
-                                    push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_PUSH_CONSTANT, storage_type);
-                                (push_constant_var, elem_ptr, false, is_bool, Some(member_const))
-                            } else if let Some(&var_id) = spv_variables.get(&src) {
-                                let is_local = matches!(self.at(src), &Op::Storage { scope: MemScope::Local, .. });
+                    Op::GEP { x, index, layout } => {
+                        // GEP produces the element access pointer via OpAccessChain; Load/Store consume it.
+                        if matches!(layout, MemLayout::Vector(_) | MemLayout::Tile { .. }) {
+                            todo!("SPIR-V GEP vector/tile layout (tenstorrent phase)");
+                        }
+                        let elem_dt = dtypes[&x].0;
+                        let (base_ptr, element_ptr_type, is_storage_buffer, push_member) =
+                            if let Some(&(member_const, storage_type, _)) = variable_members.get(&x) {
+                                let elem_ptr = push_ptr_type(
+                                    &mut asm,
+                                    &mut ptr_cache,
+                                    &mut type_entries,
+                                    SC_PUSH_CONSTANT,
+                                    storage_type,
+                                );
+                                (push_constant_var, elem_ptr, false, Some(member_const))
+                            } else if let Some(&var_id) = spv_variables.get(&x) {
+                                let is_local = matches!(self.at(x), &Op::Storage { scope: MemScope::Local, .. });
                                 let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
-                                let is_bool_buf = bool_buffers.contains(&src) && !is_local;
-                                // For bool storage buffers or vector loads, use scalar storage type
+                                let is_bool_buf = bool_buffers.contains(&x) && !is_local;
                                 let storage_type = if is_bool_buf {
                                     u8_id.unwrap()
                                 } else {
-                                    push_dtype(&mut asm, &mut type_cache, &mut type_entries, load_dt)
+                                    push_dtype(&mut asm, &mut type_cache, &mut type_entries, elem_dt)
                                 };
                                 let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, storage_type);
-                                (var_id, elem_ptr, !is_local, is_bool_buf, None)
-                            } else if let Some(&var_id) = reg_vars.get(&src) {
-                                let scalar_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, load_dt);
+                                (var_id, elem_ptr, !is_local, None)
+                            } else if let Some(&var_id) = reg_vars.get(&x) {
+                                let scalar_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, elem_dt);
                                 let elem_ptr =
                                     push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, scalar_type);
-                                (var_id, elem_ptr, false, false, None)
+                                (var_id, elem_ptr, false, None)
                             } else {
                                 return Err(BackendError {
                                     status: ErrorStatus::KernelCompilation,
-                                    context: "SPIR-V: Load from unknown variable".into(),
+                                    context: "SPIR-V: GEP from unknown variable".into(),
                                 });
                             };
-
-                        if is_vec && push_member.is_none() && !is_bool_src {
-                            // Vector load: access into buffer at index, then do N scalar loads
-                            let mut scalars = Vec::new();
-                            let vec_len = match layout {
-                                MemLayout::Vector(n) => n as usize,
-                                _ => {
-                                    return Err(BackendError {
-                                        status: ErrorStatus::KernelCompilation,
-                                        context: "SPIR-V: expected Vector layout for vectorized op".into(),
-                                    });
-                                }
-                            };
-                            for i in 0..vec_len {
-                                let off_const = const_pool[&Constant::U32(i as u32)];
-                                let addr = if i == 0 {
-                                    index_id
-                                } else {
-                                    let a = asm.id();
-                                    asm.emit_typed(OpIAdd, u32_id, a, &[index_id, off_const]);
-                                    a
-                                };
-                                let access = asm.id();
-                                if is_storage_buffer {
-                                    asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, const_u32_0, addr]);
-                                } else {
-                                    asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, addr]);
-                                }
-                                let loaded = asm.id();
-                                let scalar_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, load_dt);
-                                asm.emit_typed(OpLoad, scalar_type, loaded, &[access]);
-                                scalars.push(loaded);
-                            }
-                            let loaded = asm.id();
-                            asm.emit_typed(OpCompositeConstruct, result_type, loaded, &scalars);
-                            spv_values.insert(op_id, loaded);
+                        let access = asm.id();
+                        if is_storage_buffer {
+                            let index_id = spv_values[&index];
+                            asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, const_u32_0, index_id]);
+                        } else if let Some(member_const) = push_member {
+                            // Push-constant scalar variable: member access ignores the GEP index.
+                            asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, member_const]);
                         } else {
-                            let access = asm.id();
-                            if is_storage_buffer {
-                                asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, const_u32_0, index_id]);
-                            } else if let Some(member_const) = push_member {
-                                asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, member_const]);
-                            } else {
-                                asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, index_id]);
-                            }
-                            let loaded = asm.id();
-                            let load_type = if let Some(&(_, storage_type, true)) = variable_members.get(&src) {
-                                storage_type
-                            } else if is_bool_src {
-                                u8_id.unwrap()
-                            } else {
-                                result_type
-                            };
-                            asm.emit_typed(OpLoad, load_type, loaded, &[access]);
-                            if let Some(&(_, _, true)) = variable_members.get(&src) {
-                                // Bool stored as u32; compare != 0 to recover the boolean
-                                let bool_val = asm.id();
-                                asm.emit_typed(OpINotEqual, result_type, bool_val, &[loaded, const_u32_0]);
-                                spv_values.insert(op_id, bool_val);
-                            } else if is_bool_src {
-                                let bool_val = asm.id();
-                                asm.emit_typed(OpINotEqual, result_type, bool_val, &[loaded, const_u8_0.unwrap()]);
-                                spv_values.insert(op_id, bool_val);
-                            } else {
-                                spv_values.insert(op_id, loaded);
-                            }
+                            let index_id = spv_values[&index];
+                            asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, index_id]);
+                        }
+                        spv_values.insert(op_id, access);
+                    }
+                    Op::Copy { .. } => {
+                        todo!("Copy lowering for SPIR-V (tenstorrent phase)");
+                    }
+                    Op::Load { src } => {
+                        let Op::GEP { x, index: _, layout } = self.ops[src].op else {
+                            todo!("SPIR-V: Load src must be GEP");
+                        };
+                        if matches!(layout, MemLayout::Vector(_) | MemLayout::Tile { .. }) {
+                            todo!("SPIR-V Load vector/tile via GEP (tenstorrent phase)");
+                        }
+                        let (load_dt, _) = dtypes[&op_id];
+                        let result_type =
+                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, load_dt, layout);
+                        // Scalar path consumes the GEP access pointer emitted by the Op::GEP arm.
+                        let access = spv_values[&src];
+                        let is_local = matches!(self.at(x), &Op::Storage { scope: MemScope::Local, .. });
+                        let is_bool_buf = bool_buffers.contains(&x) && !is_local;
+                        let loaded = asm.id();
+                        let load_type = if let Some(&(_, storage_type, true)) = variable_members.get(&x) {
+                            storage_type
+                        } else if is_bool_buf {
+                            u8_id.unwrap()
+                        } else {
+                            result_type
+                        };
+                        asm.emit_typed(OpLoad, load_type, loaded, &[access]);
+                        if let Some(&(_, _, true)) = variable_members.get(&x) {
+                            // Bool stored as u32; compare != 0 to recover the boolean
+                            let bool_val = asm.id();
+                            asm.emit_typed(OpINotEqual, result_type, bool_val, &[loaded, const_u32_0]);
+                            spv_values.insert(op_id, bool_val);
+                        } else if is_bool_buf {
+                            let bool_val = asm.id();
+                            asm.emit_typed(OpINotEqual, result_type, bool_val, &[loaded, const_u8_0.unwrap()]);
+                            spv_values.insert(op_id, bool_val);
+                        } else {
+                            spv_values.insert(op_id, loaded);
                         }
                     }
-                    Op::Store { dst, src: x, index, layout } => {
-                        let val_id = spv_values[&x];
-                        let index_id = spv_values[&index];
-
-                        let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_dst) =
-                            if let Some(&var_id) = spv_variables.get(&dst) {
-                                let is_local = matches!(self.at(dst), &Op::Storage { scope: MemScope::Local, .. });
-                                let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
-                                let is_bool_buf = bool_buffers.contains(&dst) && !is_local;
-                                let val_type = emit_type(&mut asm, &mut type_cache, dtypes[&x].0);
-                                let store_type = if is_bool_buf { u8_id.unwrap() } else { val_type };
-                                let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, store_type);
-                                (var_id, elem_ptr, !is_local, is_bool_buf)
-                            } else if let Some(&var_id) = reg_vars.get(&dst) {
-                                let val_type = emit_type(&mut asm, &mut type_cache, dtypes[&x].0);
-                                let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, val_type);
-                                (var_id, elem_ptr, false, false)
-                            } else {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: "SPIR-V: Store to unknown variable".into(),
-                                });
-                            };
-
-                        let val_type = emit_type(&mut asm, &mut type_cache, dtypes[&x].0);
-                        match layout {
-                            MemLayout::Vector(len) => {
-                                for i in 0..len {
-                                    let lane = asm.id();
-                                    asm.emit_typed(OpCompositeExtract, val_type, lane, &[val_id, i as u32]);
-                                    let lane_val = if is_bool_dst {
-                                        let u8_tmp = asm.id();
-                                        asm.emit_typed(
-                                            OpSelect,
-                                            u8_id.unwrap(),
-                                            u8_tmp,
-                                            &[lane, const_u8_1.unwrap(), const_u8_0.unwrap()],
-                                        );
-                                        u8_tmp
-                                    } else {
-                                        lane
-                                    };
-                                    let access = asm.id();
-                                    let addr = if i == 0 {
-                                        index_id
-                                    } else {
-                                        let off = asm.id();
-                                        let off_const = const_pool[&Constant::U32(i as u32)];
-                                        asm.emit_typed(OpIAdd, u32_id, off, &[index_id, off_const]);
-                                        off
-                                    };
-                                    if is_storage_buffer {
-                                        asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, const_u32_0, addr]);
-                                    } else {
-                                        asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, addr]);
-                                    }
-                                    asm.emit(OpStore, &[access, lane_val]);
-                                }
-                            }
-                            _ => {
-                                let store_val = if is_bool_dst {
-                                    let u8_tmp = asm.id();
-                                    asm.emit_typed(
-                                        OpSelect,
-                                        u8_id.unwrap(),
-                                        u8_tmp,
-                                        &[val_id, const_u8_1.unwrap(), const_u8_0.unwrap()],
-                                    );
-                                    u8_tmp
-                                } else {
-                                    val_id
-                                };
-                                let access = asm.id();
-                                if is_storage_buffer {
-                                    asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, const_u32_0, index_id]);
-                                } else {
-                                    asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, index_id]);
-                                }
-                                asm.emit(OpStore, &[access, store_val]);
-                            }
+                    Op::Store { dst, src: x } => {
+                        let Op::GEP { x: dst_buf, index: _, layout } = self.ops[dst].op else {
+                            todo!("SPIR-V: Store dst must be GEP");
+                        };
+                        if matches!(layout, MemLayout::Vector(_) | MemLayout::Tile { .. }) {
+                            todo!("SPIR-V Store vector/tile via GEP (tenstorrent phase)");
                         }
+                        if variable_members.contains_key(&dst_buf) {
+                            todo!("SPIR-V Store to push-constant Variable (tenstorrent phase)");
+                        }
+                        let val_id = spv_values[&x];
+                        // Scalar path consumes the GEP access pointer emitted by the Op::GEP arm.
+                        let access = spv_values[&dst];
+                        let is_local = matches!(self.at(dst_buf), &Op::Storage { scope: MemScope::Local, .. });
+                        let is_bool_dst = bool_buffers.contains(&dst_buf) && !is_local;
+                        let store_val = if is_bool_dst {
+                            let u8_tmp = asm.id();
+                            asm.emit_typed(
+                                OpSelect,
+                                u8_id.unwrap(),
+                                u8_tmp,
+                                &[val_id, const_u8_1.unwrap(), const_u8_0.unwrap()],
+                            );
+                            u8_tmp
+                        } else {
+                            val_id
+                        };
+                        asm.emit(OpStore, &[access, store_val]);
                     }
                     Op::Cast { x, dtype } => {
                         let src_type = dtypes[&x].0;

@@ -143,36 +143,39 @@ impl Kernel {
                 Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
-                Op::Load { src, index, layout } => {
+                Op::Load { src } => {
+                    let Op::GEP { x, index, layout } = self.ops[src].op else {
+                        todo!("C codegen: Load src must be GEP");
+                    };
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
-                        if matches!(self.ops[src].op, Op::Param { kind: ParamKind::Variable, .. }) {
-                            match dtypes[&src].0 {
-                                DType::F16 => _ = writeln!(source, "{indent}r{reg} = f16tof32(p{src});"),
-                                DType::BF16 => _ = writeln!(source, "{indent}r{reg} = bf16tof32(p{src});"),
-                                _ => _ = writeln!(source, "{indent}r{reg} = p{src};"),
+                        if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
+                            match dtypes[&x].0 {
+                                DType::F16 => _ = writeln!(source, "{indent}r{reg} = f16tof32(p{x});"),
+                                DType::BF16 => _ = writeln!(source, "{indent}r{reg} = bf16tof32(p{x});"),
+                                _ => _ = writeln!(source, "{indent}r{reg} = p{x};"),
                             }
                         } else {
                             let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                             match layout {
-                                MemLayout::Scalar => match dtypes[&src].0 {
+                                MemLayout::Scalar => match dtypes[&x].0 {
                                     DType::F16 => {
-                                        _ = writeln!(source, "{indent}r{reg} = f16tof32(p{src}[{idx}]);");
+                                        _ = writeln!(source, "{indent}r{reg} = f16tof32(p{x}[{idx}]);");
                                     }
                                     DType::BF16 => {
-                                        _ = writeln!(source, "{indent}r{reg} = bf16tof32(p{src}[{idx}]);");
+                                        _ = writeln!(source, "{indent}r{reg} = bf16tof32(p{x}[{idx}]);");
                                     }
                                     _ => {
-                                        _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                                        _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];");
                                     }
                                 },
-                                MemLayout::Vector(len) => match dtypes[&src].0 {
+                                MemLayout::Vector(len) => match dtypes[&x].0 {
                                     DType::F16 => {
                                         for i in 0..len {
                                             _ = writeln!(
                                                 source,
-                                                "{indent}{} = f16tof32(p{src}[{idx} + {i}]);",
+                                                "{indent}{} = f16tof32(p{x}[{idx} + {i}]);",
                                                 lane_access(&format!("r{reg}"), i as usize)
                                             );
                                         }
@@ -181,7 +184,7 @@ impl Kernel {
                                         for i in 0..len {
                                             _ = writeln!(
                                                 source,
-                                                "{indent}{} = bf16tof32(p{src}[{idx} + {i}]);",
+                                                "{indent}{} = bf16tof32(p{x}[{idx} + {i}]);",
                                                 lane_access(&format!("r{reg}"), i as usize)
                                             );
                                         }
@@ -189,7 +192,7 @@ impl Kernel {
                                     _ if !self.dev_info().supported_vec_lens.is_empty() => {
                                         _ = writeln!(
                                             source,
-                                            "{indent}r{reg} = *(({}*)(p{src} + {idx}));",
+                                            "{indent}r{reg} = *(({}*)(p{x} + {idx}));",
                                             dtype.0.vec_type_name(len)
                                         );
                                     }
@@ -197,7 +200,7 @@ impl Kernel {
                                         for i in 0..len {
                                             _ = writeln!(
                                                 source,
-                                                "{indent}{} = p{src}[{idx} + {i}];",
+                                                "{indent}{} = p{x}[{idx} + {i}];",
                                                 lane_access(&format!("r{reg}"), i as usize)
                                             );
                                         }
@@ -213,27 +216,30 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, src, index, layout } => {
+                Op::Store { dst, src } => {
+                    let Op::GEP { x: dst_buf, index, layout } = self.ops[dst].op else {
+                        todo!("C codegen: Store dst non-GEP (whole-view)");
+                    };
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     match layout {
-                        MemLayout::Scalar => match dtypes[&dst].0 {
+                        MemLayout::Scalar => match dtypes[&dst_buf].0 {
                             DType::F16 => {
-                                _ = writeln!(source, "{indent}p{dst}[{idx}] = f32tof16({x});");
+                                _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = f32tof16({x});");
                             }
                             DType::BF16 => {
-                                _ = writeln!(source, "{indent}p{dst}[{idx}] = f32tobf16({x});");
+                                _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = f32tobf16({x});");
                             }
                             _ => {
-                                _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
+                                _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};");
                             }
                         },
-                        MemLayout::Vector(len) => match dtypes[&dst].0 {
+                        MemLayout::Vector(len) => match dtypes[&dst_buf].0 {
                             DType::F16 => {
                                 for i in 0..len {
                                     _ = writeln!(
                                         source,
-                                        "{indent}p{dst}[{idx} + {i}] = f32tof16({});",
+                                        "{indent}p{dst_buf}[{idx} + {i}] = f32tof16({});",
                                         lane_access(&x, i as usize)
                                     );
                                 }
@@ -242,18 +248,18 @@ impl Kernel {
                                 for i in 0..len {
                                     _ = writeln!(
                                         source,
-                                        "{indent}p{dst}[{idx} + {i}] = f32tobf16({});",
+                                        "{indent}p{dst_buf}[{idx} + {i}] = f32tobf16({});",
                                         lane_access(&x, i as usize)
                                     );
                                 }
                             }
                             _ if !self.dev_info().supported_vec_lens.is_empty() => {
-                                let ocl_type = dtypes[&dst].0.c_type();
-                                _ = writeln!(source, "{indent}*(({ocl_type}{len}*)(p{dst} + {idx})) = {x};");
+                                let ocl_type = dtypes[&dst_buf].0.c_type();
+                                _ = writeln!(source, "{indent}*(({ocl_type}{len}*)(p{dst_buf} + {idx})) = {x};");
                             }
                             _ => {
                                 for i in 0..len {
-                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {};", lane_access(&x, i as usize));
+                                    _ = writeln!(source, "{indent}p{dst_buf}[{idx} + {i}] = {};", lane_access(&x, i as usize));
                                 }
                             }
                         },
@@ -458,6 +464,12 @@ impl Kernel {
                 }
                 Op::Barrier => {}
                 Op::Asm { .. } => todo!(),
+                Op::GEP { .. } => {
+                    // Address is composed at the Load/Store/Copy use site from the GEP operands; nothing to emit.
+                }
+                Op::Copy { .. } => {
+                    todo!("Copy lowering for C (tenstorrent phase)");
+                }
                 Op::TT { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }

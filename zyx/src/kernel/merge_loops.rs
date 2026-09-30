@@ -99,7 +99,7 @@ impl Kernel {
         let end = self.get_last_dim_op(anchor);
         let mut op_id = self.next_op(anchor);
         while op_id != end {
-            if let Op::Store { .. } = self.ops[op_id].op {
+            if matches!(self.ops[op_id].op, Op::Store { .. } | Op::Copy { .. }) {
                 return;
             }
             op_id = self.next_op(op_id);

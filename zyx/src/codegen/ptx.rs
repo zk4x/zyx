@@ -532,9 +532,12 @@ impl Kernel {
                     };
                     _ = writeln!(comp.body, "{}mov.{ptx_dtype} %r{reg}, {};", comp.indent, constant.ptx());
                 }
-                Op::Load { src, index, layout, .. } => {
-                    let dtype = dtypes[&src].0;
-                    match comp.get_scope(self, src) {
+                Op::Load { src } => {
+                    let Op::GEP { x: buf, index, layout } = self.ops[src].op else {
+                        todo!("PTX codegen: Load src must be GEP");
+                    };
+                    let dtype = dtypes[&buf].0;
+                    match comp.get_scope(self, buf) {
                         MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
@@ -549,7 +552,7 @@ impl Kernel {
                                 _ = writeln!(comp.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", comp.indent);
                             }
                             _ = writeln!(comp.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", comp.indent);
-                            _ = writeln!(comp.body, "{}add.u64 %address, %p{src}, %r{offset};", comp.indent);
+                            _ = writeln!(comp.body, "{}add.u64 %address, %p{buf}, %r{offset};", comp.indent);
                             comp.release_reg(offset);
                             comp.emit_load(layout, dtype, reg, "global")?;
                         }
@@ -557,7 +560,7 @@ impl Kernel {
                             let idx = comp.get_var(index);
                             let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{src};", comp.indent);
+                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{buf};", comp.indent);
                             let t = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
                             if IDX_T == DType::U64 {
                                 _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
@@ -573,7 +576,7 @@ impl Kernel {
                             let idx = comp.get_var(index);
                             let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{src};", comp.indent);
+                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{buf};", comp.indent);
                             let t = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
                             if IDX_T == DType::U64 {
                                 _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
@@ -587,11 +590,14 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, src: x, index, layout, .. } => {
+                Op::Store { dst, src: x } => {
+                    let Op::GEP { x: dst_buf, index, layout } = self.ops[dst].op else {
+                        todo!("PTX codegen: Store dst non-GEP (whole-view)");
+                    };
                     let dtype = dtypes[&x].0;
                     let byte_shift = (dtype.bit_size() / 8).ilog2();
                     let offset = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
-                    match comp.get_scope(self, dst) {
+                    match comp.get_scope(self, dst_buf) {
                         MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             if dtype == DType::Bool {
@@ -606,7 +612,7 @@ impl Kernel {
                                 } else {
                                     _ = writeln!(comp.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", comp.indent);
                                 }
-                                _ = writeln!(comp.body, "{}add.u64 %address, %p{dst}, %r{offset};", comp.indent);
+                                _ = writeln!(comp.body, "{}add.u64 %address, %p{dst_buf}, %r{offset};", comp.indent);
                                 _ = writeln!(comp.body, "{}st.global.u8 [%address], %r{gstu};", comp.indent);
                                 comp.release_reg(gstu);
                             } else {
@@ -620,7 +626,7 @@ impl Kernel {
                                     _ = writeln!(comp.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", comp.indent);
                                 }
                                 _ = writeln!(comp.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", comp.indent);
-                                _ = writeln!(comp.body, "{}add.u64 %address, %p{dst}, %r{offset};", comp.indent);
+                                _ = writeln!(comp.body, "{}add.u64 %address, %p{dst_buf}, %r{offset};", comp.indent);
                                 comp.emit_store(layout, dtype, x)?;
                             }
                         }
@@ -628,7 +634,7 @@ impl Kernel {
                             let idx = comp.get_var(index);
                             let x = comp.get_var(x);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst};", comp.indent);
+                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst_buf};", comp.indent);
                             let t = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
                             if IDX_T == DType::U64 {
                                 _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
@@ -644,7 +650,7 @@ impl Kernel {
                             let idx = comp.get_var(index);
                             let x = comp.get_var(x);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst};", comp.indent);
+                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst_buf};", comp.indent);
                             let t = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
                             if IDX_T == DType::U64 {
                                 _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
@@ -926,6 +932,12 @@ impl Kernel {
                     comp.release_reg(b01);
                 }
                 Op::Asm { .. } => todo!("PTX: inline asm not implemented"),
+                Op::GEP { .. } => {
+                    // Address is composed at the Load/Store/Copy use site from the GEP operands; nothing to emit.
+                }
+                Op::Copy { .. } => {
+                    todo!("Copy lowering for PTX (tenstorrent phase)");
+                }
                 ref op => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,

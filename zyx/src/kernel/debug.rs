@@ -172,27 +172,61 @@ impl Display for Kernel {
                     dtypes.insert(op_id, dtype);
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {magenta}{value}{reset}").unwrap();
                 }
-                Op::Load { src, index, layout } => {
-                    let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
-                    dtypes.insert(op_id, dtype);
-                    let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                    let src = id_map.get(&src).copied().unwrap_or(src);
-                    let index = id_map.get(&index).copied().unwrap_or(index);
-                    writeln!(
-                        f,
-                        "{indent}r{out_id}{grey}: {dtype}{reset} = {red}r{src}{reset}[r{index} @ {layout}]    // {lb}..={ub} {green}load{reset}"
-                    )
-                    .unwrap();
-                }
-                Op::Store { dst, src: x, index, layout } => {
+                Op::GEP { x, index, layout } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                    let dst = id_map.get(&dst).copied().unwrap_or(dst);
-                    let index = id_map.get(&index).copied().unwrap_or(index);
                     let x = id_map.get(&x).copied().unwrap_or(x);
-                    writeln!(f, "{indent}{red}r{dst}{reset}[r{index} @ {layout}] = r{x}    // {lb}..={ub} {red}store{reset}")
+                    let index = id_map.get(&index).copied().unwrap_or(index);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {red}r{x}{reset}[r{index} @ {layout}]    // {lb}..={ub} {green}gep{reset}"
+                    )
+                    .unwrap();
+                }
+                Op::Load { src } => {
+                    if let Op::GEP { x, index, layout } = self.ops[src].op {
+                        let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                        dtypes.insert(op_id, dtype);
+                        let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
+                        let x = id_map.get(&x).copied().unwrap_or(x);
+                        let index = id_map.get(&index).copied().unwrap_or(index);
+                        writeln!(
+                            f,
+                            "{indent}r{out_id}{grey}: {dtype}{reset} = {red}r{x}{reset}[r{index} @ {layout}]    // {lb}..={ub} {green}load{reset}"
+                        )
                         .unwrap();
+                    } else {
+                        let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
+                        dtypes.insert(op_id, dtype);
+                        let src = id_map.get(&src).copied().unwrap_or(src);
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} r{src}").unwrap();
+                    }
+                }
+                Op::Store { dst, src: x } => {
+                    if let Op::GEP { x: buf, index, layout } = self.ops[dst].op {
+                        let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                        dtypes.insert(op_id, dtype);
+                        let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
+                        let buf = id_map.get(&buf).copied().unwrap_or(buf);
+                        let index = id_map.get(&index).copied().unwrap_or(index);
+                        let x = id_map.get(&x).copied().unwrap_or(x);
+                        writeln!(f, "{indent}{red}r{buf}{reset}[r{index} @ {layout}] = r{x}    // {lb}..={ub} {red}store{reset}")
+                            .unwrap();
+                    } else {
+                        let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                        dtypes.insert(op_id, dtype);
+                        let dst = id_map.get(&dst).copied().unwrap_or(dst);
+                        let x = id_map.get(&x).copied().unwrap_or(x);
+                        writeln!(f, "{indent}{red}r{dst}{reset} = r{x}    {red}store{reset}").unwrap();
+                    }
+                }
+                Op::Copy { src, dst } => {
+                    let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let src = id_map.get(&src).copied().unwrap_or(src);
+                    let dst = id_map.get(&dst).copied().unwrap_or(dst);
+                    writeln!(f, "{indent}{red}r{dst}{reset} = r{src}    {red}copy{reset}").unwrap();
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);

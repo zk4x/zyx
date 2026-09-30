@@ -127,6 +127,12 @@ impl Kernel {
                 Op::Asm { .. } => structural[i] = true,
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
+                // A copy reads its src and writes its dst: it pins like a
+                // load (barriers, asm, loops) and orders like a store.
+                Op::Copy { .. } => {
+                    store[i] = true;
+                    load[i] = true;
+                }
                 _ => {}
             }
         }
@@ -190,13 +196,19 @@ impl Kernel {
                     RangeKind::Warp(local_id) => add_param!(local_id),
                     RangeKind::Local(_) => {}
                 },
-                Op::Store { dst, src: x, index, .. } => {
+                Op::Store { dst, src: x } => {
                     add_param!(dst);
                     add_param!(x);
-                    add_param!(index);
                 }
-                Op::Load { src, index, .. } => {
+                Op::Copy { src, dst } => {
                     add_param!(src);
+                    add_param!(dst);
+                }
+                Op::Load { src } => {
+                    add_param!(src);
+                }
+                Op::GEP { x, index, .. } => {
+                    add_param!(x);
                     add_param!(index);
                 }
                 Op::Loop { len, .. } => add_param!(len),
@@ -225,12 +237,36 @@ impl Kernel {
             n_params[i] = count;
         }
 
-        // Loads and stores to the same param or storage keep their relative order.
+        // Loads, stores, and copies to the same buffer keep their relative
+        // order. Locations are GEPs (or bare Params pre-linearize): group
+        // by the addressed buffer, not the GEP id, or same-buffer traffic
+        // through different GEPs could reorder across FIFO accounting.
         let mut by_memory_target: Map<OpId, Vec<usize>> = Map::default();
         for (i, &id) in rest.iter().enumerate() {
             match self.at(id) {
-                Op::Load { src, .. } => by_memory_target.entry(*src).or_default().push(i),
-                Op::Store { dst, .. } => by_memory_target.entry(*dst).or_default().push(i),
+                Op::Load { src, .. } => {
+                    let buf = match self.at(*src) {
+                        Op::GEP { x, .. } => *x,
+                        _ => *src,
+                    };
+                    by_memory_target.entry(buf).or_default().push(i);
+                }
+                Op::Store { dst, .. } => {
+                    let buf = match self.at(*dst) {
+                        Op::GEP { x, .. } => *x,
+                        _ => *dst,
+                    };
+                    by_memory_target.entry(buf).or_default().push(i);
+                }
+                Op::Copy { src, dst } => {
+                    for &side in &[src, dst] {
+                        let buf = match self.at(*side) {
+                            Op::GEP { x, .. } => *x,
+                            _ => *side,
+                        };
+                        by_memory_target.entry(buf).or_default().push(i);
+                    }
+                }
                 _ => {}
             }
         }
@@ -383,10 +419,16 @@ impl Kernel {
                     Op::EndLoop => {
                         open_stack.pop();
                     }
-                    Op::Store { dst, .. } => {
+                    Op::Store { dst, .. } | Op::Copy { dst, .. } => {
+                        // Writes address a GEP (or a bare Param
+                        // pre-linearize): track the buffer, not the GEP.
+                        let buf = match self.at(*dst) {
+                            Op::GEP { x, .. } => *x,
+                            _ => *dst,
+                        };
                         for &opener in &open_stack {
                             let bound = (opener, closer_of[&opener]);
-                            let loops = storage_loops.entry(*dst).or_default();
+                            let loops = storage_loops.entry(buf).or_default();
                             if !loops.contains(&bound) {
                                 loops.push(bound);
                             }
@@ -404,7 +446,11 @@ impl Kernel {
                 continue;
             }
             let Op::Load { src, .. } = self.at(rest[i]) else { continue };
-            let Some(loops) = storage_loops.get(src) else { continue };
+            let buf = match self.at(*src) {
+                Op::GEP { x, .. } => *x,
+                _ => *src,
+            };
+            let Some(loops) = storage_loops.get(&buf) else { continue };
             for &(opener, closer) in loops {
                 if opener < i && i < closer {
                     edges.push((opener, i));
@@ -426,8 +472,18 @@ impl Kernel {
             if !load[i] {
                 continue;
             }
-            let Op::Load { src, .. } = self.at(rest[i]) else { continue };
-            if !matches!(self.at(*src), Op::Storage { scope: MemScope::Circular, .. }) {
+            // A load from Circular storage is a FIFO pop (see above): chase
+            // the load's GEP to the buffer. A copy reading from Circular
+            // pops the same way and pins identically.
+            let src = match self.at(rest[i]) {
+                Op::Load { src, .. } | Op::Copy { src, .. } => *src,
+                _ => continue,
+            };
+            let buf = match self.at(src) {
+                Op::GEP { x, .. } => *x,
+                _ => src,
+            };
+            if !matches!(self.at(buf), Op::Storage { scope: MemScope::Circular, .. }) {
                 continue;
             }
             for &(opener, closer) in &loop_bounds {

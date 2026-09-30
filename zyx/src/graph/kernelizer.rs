@@ -151,7 +151,7 @@ impl Graph {
                         vec![x]
                     }
                     Op::Binary { x, y, .. } => vec![x, y],
-                    Op::Store { dst, src, .. } => vec![dst, src],
+                    Op::Store { dst, src } => vec![dst, src],
                     Op::After { x, dep } => vec![x, dep],
                     Op::ToDevice { x, .. } | Op::Contiguous { x, .. } => vec![x],
                     // For Index over a Stack the vec edge is shape metadata
@@ -516,7 +516,7 @@ impl Graph {
                         let (new_kid, new_op) = self.new_load_kernel(cid, rcs[&cid]);
                         visited.insert(cid, (new_kid, new_op));
                     }
-                    Op::Store { dst, src, .. } => {
+                    Op::Store { dst, src } => {
                         let (kid, src_op) = match visited.get(&src) {
                             Some(&kv) => kv,
                             None => todo!("assign with symbolic src {src:?}"),
@@ -695,7 +695,7 @@ impl Graph {
                         }
 
                         let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
-                        self.jit_kernels[kid].kernel.store(dst_op, src_op, OpId::NULL);
+                        self.jit_kernels[kid].kernel.push_back(Op::Store { dst: dst_op, src: src_op });
                         self.jit_kernels[kid].stores.push(dst_leaf);
                         // Register every replayed define's load class in define
                         // order (variables and the GlobalMut base buffer alike)
@@ -1205,7 +1205,7 @@ impl Graph {
             let kernel = &mut self.jit_kernels[kid].kernel;
             let shape = kernel.stack_shape_dims(op_id);
             let dst = kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape, cons_id: 0 });
-            kernel.store(dst, op_id, OpId::NULL);
+            kernel.push_back(Op::Store { dst, src: op_id });
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);
         }

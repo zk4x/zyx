@@ -137,11 +137,36 @@ impl Kernel {
                     }
                     (format!("r{op_id}: {dtype} = def {scope}"), dtype, Vec::new())
                 }
-                Op::Store { dst, x, index, vlen } => {
-                    let dtype = dtypes[&x];
-                    (format!("r{op_id}: {dtype} = r{x}[{index}]"), dtype, Vec::new())
+                Op::Store { dst, src } => {
+                    let dtype = dtypes[&src];
+                    let (buf, index, layout) = match self.ops[dst].op {
+                        Op::GEP { x, index, layout } => (x, index, layout),
+                        _ => todo!("emulate Store with non-GEP dst"),
+                    };
+                    (format!("r{op_id}: {dtype} = r{buf}[r{index} @ {layout}] <- r{src}"), dtype, Vec::new())
                 }
-                Op::Load { src, index, vlen } => todo!(),
+                Op::Load { src } => todo!(),
+                Op::Copy { src, dst } => {
+                    let (sbuf, sindex, slayout) = match self.ops[src].op {
+                        Op::GEP { x, index, layout } => (x, index, layout),
+                        _ => todo!("emulate Copy with non-GEP src"),
+                    };
+                    let (dbuf, dindex, dlayout) = match self.ops[dst].op {
+                        Op::GEP { x, index, layout } => (x, index, layout),
+                        _ => todo!("emulate Copy with non-GEP dst"),
+                    };
+                    let dtype = match self.ops[sbuf].op {
+                        Op::Param { dtype, .. } | Op::Storage { dtype, .. } => dtype,
+                        _ => todo!("emulate Copy with non-buffer src"),
+                    };
+                    (
+                        format!(
+                            "r{op_id}: {dtype} = r{dbuf}[r{dindex} @ {dlayout}] <- r{sbuf}[r{sindex} @ {slayout}]"
+                        ),
+                        dtype,
+                        Vec::new(),
+                    )
+                }
                 Op::Index { len, scope, axis } => (
                     format!("r{op_id}: {IDX_T} = gidx{axis}"),
                     IDX_T,

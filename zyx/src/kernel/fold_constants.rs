@@ -54,6 +54,8 @@ impl Kernel {
                 | Op::Param { .. }
                 | Op::Storage { .. }
                 | Op::Load { .. }
+                | Op::Copy { .. }
+                | Op::GEP { .. }
                 | Op::Range { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
@@ -74,9 +76,9 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, src: x, .. } => {
+                Op::Store { dst, src: x } => {
                     // If we store something that we just loaded, the store is pointless
-                    if let Op::Load { src, .. } = *self.at(x)
+                    if let Op::Load { src } = *self.at(x)
                         && src == dst
                     {
                         self.remove_op(op_id);
@@ -137,6 +139,10 @@ impl Kernel {
                 }
                 Op::Binary { x, y, bop } => match (self.at(x).clone(), self.at(y).clone()) {
                     (Op::Const(cx), Op::Const(cy)) => {
+                        if bop == BOp::Div {
+                            eprintln!("FOLDDBG folding Div at {op_id} x={x} y={y} cx={cx:?} cy={cy:?}");
+                            self.debug();
+                        }
                         let folded = Constant::binary(cx, cy, bop);
                         if let Constant::F32(v) = &folded
                             && f32::from_le_bytes(*v).is_nan()
@@ -335,10 +341,17 @@ impl Kernel {
                     accumulators.insert(op_id, scope_level);
                 }
                 Op::Store { dst, .. } => {
-                    if let Some(lvl) = accumulators.get(&dst)
+                    // Stores address a GEP (post-linearize) or a bare Param
+                    // (pre-linearize whole-view write): resolve through the
+                    // GEP to the buffer before the accumulator check.
+                    let buf = match self.at(dst) {
+                        Op::GEP { x, .. } => *x,
+                        _ => dst,
+                    };
+                    if let Some(lvl) = accumulators.get(&buf)
                         && scope_level > *lvl
                     {
-                        accumulators.remove(&dst);
+                        accumulators.remove(&buf);
                     }
                 }
                 Op::Loop { .. } => {
@@ -355,6 +368,10 @@ impl Kernel {
         for (acc, _) in accumulators {
             self.fold_acc(acc);
         }
+        // Cleanup belongs to DCE: the folds above orphan GEPs (and leave
+        // other dead ops), which is verify-dangling interim state. Sweep
+        // once here; DCE's trailing verify is the guard.
+        self.dead_code_elimination();
     }
 
     /// Fold a single accumulator operation.
@@ -374,11 +391,19 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match *self.at(op_id) {
-                Op::Store { dst, src: x, index, layout } => {
+                Op::Store { dst, src: x } => {
+                    let (buf, index, layout) = match self.at(dst) {
+                        &Op::GEP { x, index, layout } => (x, index, layout),
+                        _ => {
+                            self.ops[op_id].op.remap_params(&remaps);
+                            op_id = next;
+                            continue;
+                        }
+                    };
                     if layout != MemLayout::Scalar {
                         continue;
                     }
-                    if dst == storage_id {
+                    if buf == storage_id {
                         let Op::Const(index_c) = self.ops[index].op else {
                             // variable index, cannot fold this store
                             self.ops[op_id].op.remap_params(&remaps);
@@ -394,25 +419,23 @@ impl Kernel {
                         continue;
                     }
                 }
-                Op::Load { src, index, .. } if src == storage_id => {
-                    let Op::Const(index_c) = self.ops[index].op else {
-                        self.ops[op_id].op.remap_params(&remaps);
+                Op::Load { src } => {
+                    if let &Op::GEP { x, index, .. } = self.at(src)
+                        && x == storage_id
+                        && let Op::Const(index_c) = self.ops[index].op
+                    {
+                        self.remove_op(op_id);
+                        let index = index_c.as_dim().expect("load index must be a non-negative integer constant") as usize;
+                        remaps.insert(op_id, latest_stores[index]);
                         op_id = next;
                         continue;
-                    };
-                    self.remove_op(op_id);
-                    let index = index_c.as_dim().expect("load index must be a non-negative integer constant") as usize;
-                    remaps.insert(op_id, latest_stores[index]);
-                    op_id = next;
-                    continue;
+                    }
                 }
                 _ => {}
             }
             self.ops[op_id].op.remap_params(&remaps);
             op_id = next;
         }
-
-        self.verify();
     }
 
     /// Delete empty loops from the kernel.
@@ -451,8 +474,33 @@ impl Kernel {
                     store_targets_stack.last_mut().unwrap().insert(op_id);
                 }
                 Op::Store { dst, .. } => {
+                    // Post-linearize dst is a GEP, never the buffer itself:
+                    // resolve to the buffer before the escape check.
+                    let buf = match self.at(*dst) {
+                        Op::GEP { x, .. } => *x,
+                        _ => *dst,
+                    };
                     for (i, targets) in store_targets_stack.iter().enumerate().take(store_targets_stack.len() - 1) {
-                        if targets.contains(dst) {
+                        if targets.contains(&buf) {
+                            for delete_flag in delete_stack.iter_mut().skip(i + 1) {
+                                *delete_flag = false;
+                            }
+                            break;
+                        }
+                    }
+                    for slice in &mut ops_stack {
+                        slice.insert(op_id);
+                    }
+                }
+                Op::Copy { dst, .. } => {
+                    // A copy to an outside buffer is an escaping effect like
+                    // a store: resolve the dst GEP to the buffer first.
+                    let buf = match self.at(*dst) {
+                        Op::GEP { x, .. } => *x,
+                        _ => *dst,
+                    };
+                    for (i, targets) in store_targets_stack.iter().enumerate().take(store_targets_stack.len() - 1) {
+                        if targets.contains(&buf) {
                             for delete_flag in delete_stack.iter_mut().skip(i + 1) {
                                 *delete_flag = false;
                             }
@@ -511,6 +559,7 @@ impl Kernel {
             if matches!(
                 op,
                 Op::Store { .. }
+                    | Op::Copy { .. }
                     | Op::Param { .. }
                     | Op::Storage { .. }
                     | Op::Wmma { .. }
@@ -526,9 +575,11 @@ impl Kernel {
             // be dead (e.g. a drain pop that only frees the producer
             // slot) but the pop itself is a side effect, so the load is
             // a root like a store. Removing it would silently unbalance
-            // CB push/pop traffic.
-            if let Op::Load { src, .. } = op {
-                if matches!(self.at(*src), Op::Storage { scope: MemScope::Circular, .. }) {
+            // CB push/pop traffic. The scope chases the load's GEP.
+            if let Op::Load { src } = op {
+                if let Op::GEP { x, .. } = self.at(*src)
+                    && matches!(self.at(*x), Op::Storage { scope: MemScope::Circular, .. })
+                {
                     params.push(op_id);
                 }
             }
@@ -576,11 +627,35 @@ impl Kernel {
                     stack.pop();
                     stored_stack.pop();
                 }
-                &mut Op::Store { dst, .. } => {
+                &mut Op::Store { .. } | &mut Op::Copy { .. } => {
+                    // Effect-only movement: track the written location like a
+                    // store, never dedup (two identical movements are two
+                    // traffic events). Operands remap first: unlike Storage
+                    // destinations, GEP destinations dedup, and a stale
+                    // tracking id would let later Loads CSE across this write.
+                    let op = &mut self.ops[op_id].op;
+                    for param in op.parameters_mut() {
+                        if let Some(&new_id) = remaps.get(param) {
+                            *param = new_id;
+                        }
+                    }
+                    let dst = match op {
+                        Op::Store { dst, .. } | Op::Copy { dst, .. } => *dst,
+                        _ => unreachable!(),
+                    };
                     stored_stack.last_mut().unwrap().insert(dst);
                 }
                 op => {
                     let mut remove_op = false;
+
+                    // Remap a Load's GEP before the stored-location check:
+                    // GEPs dedup and a stale GEP id would miss its
+                    // invalidating store and CSE across it.
+                    if let Op::Load { src, .. } = op {
+                        if let Some(&new_id) = remaps.get(src) {
+                            *src = new_id;
+                        }
+                    }
 
                     // For Load ops, check if there's a store to the same src
                     let can_cse = if let Op::Load { src, .. } = op {

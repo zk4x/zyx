@@ -349,14 +349,29 @@ impl Kernel {
                 Op::Storage { dtype, .. } => {
                     dtypes.insert(op_id, (dtype, MemLayout::Scalar));
                 }
-                Op::Load { src, index, layout } => {
-                    dtypes.insert(op_id, (dtypes[&src].0, layout));
-                    *rcs.entry(index).or_insert(0) += 1;
+                Op::Load { src } => {
+                    dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Store { dst, src: x, index, layout } => {
+                Op::Store { dst, src: x } => {
+                    // Post-linearize the layout lives on the dst GEP;
+                    // pre-linearize whole-view stores are Scalar by form.
+                    let layout = match self.ops[dst].op {
+                        Op::GEP { layout, .. } => layout,
+                        Op::Param { .. } => MemLayout::Scalar,
+                        _ => todo!("compute_dtypes_and_rcs: Store dst must be a GEP or Param"),
+                    };
                     debug_assert_eq!(dtypes[&x].1, layout);
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(dst).or_insert(0) += 1;
+                    *rcs.entry(x).or_insert(0) += 1;
+                }
+                Op::Copy { src, dst } => {
+                    dtypes.insert(op_id, dtypes[&src]);
+                    *rcs.entry(src).or_insert(0) += 1;
+                    *rcs.entry(dst).or_insert(0) += 1;
+                }
+                Op::GEP { x, index, layout } => {
+                    dtypes.insert(op_id, (dtypes[&x].0, layout));
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(index).or_insert(0) += 1;
                 }
@@ -473,7 +488,9 @@ impl Kernel {
                 Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => return MemLayout::Scalar,
                 Op::Range { .. } => return MemLayout::Scalar,
                 Op::Cast { x, .. } | Op::Bitcast { x, .. } => op_id = x,
-                Op::Load { layout, .. } => return layout,
+                Op::Load { src, .. } => op_id = src,
+                Op::Copy { src, .. } => op_id = src,
+                Op::GEP { layout, .. } => return layout,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Unary { x, .. } => op_id = x,
                 Op::Binary { x, .. } => op_id = x,
@@ -526,6 +543,8 @@ impl Kernel {
                 Op::Bitcast { dtype, .. } => return dtype,
                 Op::Range { .. } => return IDX_T,
                 Op::Load { src, .. } => op_id = src,
+                Op::Copy { src, .. } => op_id = src,
+                Op::GEP { x, .. } => op_id = x,
                 Op::Unary { x, .. } => op_id = x,
                 Op::Binary { x, bop, .. } => {
                     if bop.returns_bool() {
@@ -965,14 +984,23 @@ impl Kernel {
                     // `load_register_tile` assert Tile { 32, 32, 32 }).
                     flops = flops.saturating_add(2 * 32 * 32 * 32 * mult);
                 }
-                Op::Load { src, layout, .. } => {
-                    if let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*src].op {
+                Op::Load { src, .. } => {
+                    if let Op::GEP { x, layout, .. } = &self.ops[*src].op
+                        && let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*x].op
+                    {
                         let bytes = (dtype.bit_size() as u64 / 8) * layout.n_elements() as u64;
                         read = read.saturating_add(bytes.saturating_mul(mult));
                     }
                 }
-                Op::Store { dst, layout, .. } => {
-                    if let Op::Param { kind: ParamKind::GlobalMut, dtype, .. } = &self.ops[*dst].op {
+                Op::Store { dst, .. } => {
+                    let (buf, layout) = match &self.ops[*dst].op {
+                        Op::GEP { x, layout, .. } => (*x, *layout),
+                        // Pre-linearize whole-view stores name the Param
+                        // directly (Scalar layout, the old inline form).
+                        Op::Param { .. } => (*dst, MemLayout::Scalar),
+                        _ => (*dst, MemLayout::Scalar),
+                    };
+                    if let Op::Param { kind: ParamKind::GlobalMut, dtype, .. } = &self.ops[buf].op {
                         let bytes = (dtype.bit_size() as u64 / 8) * layout.n_elements() as u64;
                         write = write.saturating_add(bytes.saturating_mul(mult));
                     }
@@ -1174,6 +1202,13 @@ impl Kernel {
                 Op::Range { .. } | Op::Loop { .. } => {
                     visited.insert(op_id, vec![]);
                 }
+                // A GEP names one element under its layout: scalar
+                // locations are scalar values; vector/tile locations have
+                // no shape (same as the old multi-element buffers, which
+                // had none either).
+                Op::GEP { layout, .. } if layout == MemLayout::Scalar => {
+                    visited.insert(op_id, vec![]);
+                }
                 Op::Storage { len, .. } if len == 1 => {
                     visited.insert(op_id, vec![]);
                 }
@@ -1338,6 +1373,11 @@ impl Kernel {
                 },
                 // Group/loop indices and scalar storages are scalar values.
                 Op::Range { .. } | Op::Loop { .. } => {
+                    visited.insert(id, vec![]);
+                }
+                // A GEP names one element under its layout: scalar
+                // locations are scalar values (see shape_ids above).
+                Op::GEP { layout, .. } if layout == MemLayout::Scalar => {
                     visited.insert(id, vec![]);
                 }
                 Op::Storage { len, .. } if len == 1 => {
