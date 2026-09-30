@@ -191,7 +191,18 @@ impl Kernel {
                     add_param!(x);
                     add_param!(y);
                 }
-                Op::Param { .. } | Op::Const(_) | Op::Storage { .. } | Op::EndLoop | Op::Barrier => {}
+                Op::Param { .. }
+                | Op::Const(_)
+                | Op::Storage { .. }
+                | Op::EndLoop
+                | Op::Barrier
+                | Op::TT(TTOp::MathLock)
+                | Op::TT(TTOp::MathUnlock)
+                | Op::TT(TTOp::PackLock)
+                | Op::TT(TTOp::PackUnlock)
+                | Op::TT(TTOp::NocReadBarrier)
+                | Op::TT(TTOp::NocWriteBarrier)
+                | Op::TT(TTOp::ReduceUninit) => {}
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }

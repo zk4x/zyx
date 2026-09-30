@@ -167,6 +167,27 @@ impl Display for Kernel {
                     let cb = id_map.get(&cb).copied().unwrap_or(cb);
                     writeln!(f, "{indent}{red}pop_front{reset} r{cb}, {n}").unwrap();
                 }
+                Op::TT(TTOp::MathLock) => {
+                    writeln!(f, "{indent}{red}math_lock{reset}").unwrap();
+                }
+                Op::TT(TTOp::MathUnlock) => {
+                    writeln!(f, "{indent}{red}math_unlock{reset}").unwrap();
+                }
+                Op::TT(TTOp::PackLock) => {
+                    writeln!(f, "{indent}{red}pack_lock{reset}").unwrap();
+                }
+                Op::TT(TTOp::PackUnlock) => {
+                    writeln!(f, "{indent}{red}pack_unlock{reset}").unwrap();
+                }
+                Op::TT(TTOp::NocReadBarrier) => {
+                    writeln!(f, "{indent}{red}noc_read_barrier{reset}").unwrap();
+                }
+                Op::TT(TTOp::NocWriteBarrier) => {
+                    writeln!(f, "{indent}{red}noc_write_barrier{reset}").unwrap();
+                }
+                Op::TT(TTOp::ReduceUninit) => {
+                    writeln!(f, "{indent}{red}reduce_uninit{reset}").unwrap();
+                }
                 Op::Param { dtype, kind, shape, .. } => {
                     dtypes.insert(op_id, dtype);
                     if shape.is_null() {
@@ -405,7 +426,9 @@ impl Display for Kernel {
                     writeln!(f, "{indent}}}").unwrap();
                 }
                 Op::Asm { ref asm, ref ops } => {
-                    let dtype = dtypes.get(&ops[0]).copied().unwrap_or(DType::U8);
+                    // Operand-free Asm is an effect-only call: U8 is a
+                    // display placeholder, never a value dtype.
+                    let dtype = ops.iter().next().and_then(|x| dtypes.get(x)).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}asm{reset} {asm:?} {ops:?}").unwrap();

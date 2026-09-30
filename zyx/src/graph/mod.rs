@@ -1379,6 +1379,13 @@ impl Graph {
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
                 | Op::TT(TTOp::PopFront { .. })
+                | Op::TT(TTOp::MathLock)
+                | Op::TT(TTOp::MathUnlock)
+                | Op::TT(TTOp::PackLock)
+                | Op::TT(TTOp::PackUnlock)
+                | Op::TT(TTOp::NocReadBarrier)
+                | Op::TT(TTOp::NocWriteBarrier)
+                | Op::TT(TTOp::ReduceUninit)
                 | Op::Asm { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }

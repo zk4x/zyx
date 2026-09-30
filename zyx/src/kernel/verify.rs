@@ -80,6 +80,13 @@ impl Kernel {
                     | Op::TT(TTOp::PushBack { .. })
                     | Op::TT(TTOp::WaitFront { .. })
                     | Op::TT(TTOp::PopFront { .. })
+                    | Op::TT(TTOp::MathLock)
+                    | Op::TT(TTOp::MathUnlock)
+                    | Op::TT(TTOp::PackLock)
+                    | Op::TT(TTOp::PackUnlock)
+                    | Op::TT(TTOp::NocReadBarrier)
+                    | Op::TT(TTOp::NocWriteBarrier)
+                    | Op::TT(TTOp::ReduceUninit)
                     | Op::Asm { .. } => has_post_linearize_ops = true,
                     Op::Permute { .. }
                     | Op::Expand { .. }
@@ -275,6 +282,13 @@ impl Kernel {
                     debug_assert!(n != 0, "cb sync op={op_id} has zero count");
                     dtypes.insert(op_id, dtypes[&cb]);
                 }
+                Op::TT(TTOp::MathLock)
+                | Op::TT(TTOp::MathUnlock)
+                | Op::TT(TTOp::PackLock)
+                | Op::TT(TTOp::PackUnlock)
+                | Op::TT(TTOp::NocReadBarrier)
+                | Op::TT(TTOp::NocWriteBarrier)
+                | Op::TT(TTOp::ReduceUninit) => {}
                 Op::Unary { x, .. }
                 | Op::Permute { x, .. }
                 | Op::Pad { x, .. }
@@ -307,13 +321,18 @@ impl Kernel {
                     }
                 }
                 Op::Asm { ref ops, .. } => {
-                    let dtype = dtypes[&ops[0]];
-                    for &x in ops.iter() {
-                        check(op_id, x, &stack);
+                    if ops.is_empty() {
+                        // Operand-free Asm is an effect-only call (e.g. a
+                        // TT LLK init): nothing to check, no value.
+                    } else {
+                        let dtype = dtypes[&ops[0]];
+                        for &x in ops.iter() {
+                            check(op_id, x, &stack);
+                        }
+                        // Asm may mix dtypes (e.g. U32 qs, I64 intra, F16 scale/min) — like CUDA C mixed arithmetic.
+                        // Result dtype is ops[0]'s dtype (e.g. F16 scale), no cross-check.
+                        dtypes.insert(op_id, dtype);
                     }
-                    // Asm may mix dtypes (e.g. U32 qs, I64 intra, F16 scale/min) — like CUDA C mixed arithmetic.
-                    // Result dtype is ops[0]'s dtype (e.g. F16 scale), no cross-check.
-                    dtypes.insert(op_id, dtype);
                 }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes[&ops[0]];

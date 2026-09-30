@@ -96,7 +96,7 @@
 
 pub use crate::backend::{Dev, DeviceInfo};
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
-pub use ops::{BOp, MMADType, MMADims, MMALayout, OpId, ParamKind, TileDim};
+pub use ops::{BOp, FusedKind, MMADType, MMADims, MMALayout, OpId, ParamKind, TileDim};
 pub(crate) use ops::{Op, OpLinked, RangeKind, TTOp, UOp};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
@@ -414,10 +414,14 @@ impl Kernel {
                 Op::Asm { ref ops, .. } => {
                     // Result takes ops[0]'s dtype/layout; the template's
                     // `{i}` placeholders substitute the operand expressions.
-                    let dtype = dtypes[&ops[0]];
-                    dtypes.insert(op_id, dtype);
-                    for &x in ops.iter() {
-                        *rcs.entry(x).or_insert(0) += 1;
+                    // Operand-free Asm is an effect-only call (e.g. a TT
+                    // LLK init): produces no value, takes no entry.
+                    if !ops.is_empty() {
+                        let dtype = dtypes[&ops[0]];
+                        dtypes.insert(op_id, dtype);
+                        for &x in ops.iter() {
+                            *rcs.entry(x).or_insert(0) += 1;
+                        }
                     }
                 }
                 Op::Stack { ref ops } => {
@@ -481,7 +485,15 @@ impl Kernel {
                     *rcs.entry(len).or_insert(0) += 1;
                     dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
                 }
-                Op::Barrier | Op::EndLoop => {}
+                Op::Barrier
+                | Op::EndLoop
+                | Op::TT(TTOp::MathLock)
+                | Op::TT(TTOp::MathUnlock)
+                | Op::TT(TTOp::PackLock)
+                | Op::TT(TTOp::PackUnlock)
+                | Op::TT(TTOp::NocReadBarrier)
+                | Op::TT(TTOp::NocWriteBarrier)
+                | Op::TT(TTOp::ReduceUninit) => {}
             }
             op_id = self.next_op(op_id);
         }
@@ -519,14 +531,26 @@ impl Kernel {
                 Op::Stack { ref ops } => {
                     return MemLayout::Vector(ops.len().try_into().unwrap());
                 }
-                Op::Asm { ref ops, .. } => op_id = ops[0],
+                Op::Asm { ref ops, .. } => {
+                    if ops.is_empty() {
+                        todo!("layout: operand-free Asm produces no value")
+                    }
+                    op_id = ops[0]
+                }
                 // Index extracts a single lane: a scalar, not the vec layout.
                 Op::Index { .. } => return MemLayout::Scalar,
                 Op::Reduce { x, .. } => op_id = x,
                 Op::TT(TTOp::ReduceTile { acc, .. }) => op_id = acc,
                 Op::TT(TTOp::BroadcastTile { x, .. }) => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return MemLayout::Scalar,
-                Op::Barrier => todo!(),
+                Op::Barrier
+                | Op::TT(TTOp::MathLock)
+                | Op::TT(TTOp::MathUnlock)
+                | Op::TT(TTOp::PackLock)
+                | Op::TT(TTOp::PackUnlock)
+                | Op::TT(TTOp::NocReadBarrier)
+                | Op::TT(TTOp::NocWriteBarrier)
+                | Op::TT(TTOp::ReduceUninit) => todo!(),
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
@@ -578,14 +602,26 @@ impl Kernel {
                 Op::TT(TTOp::MatmulTile { acc, .. }) => op_id = acc,
                 Op::TT(TTOp::TransposeTile { x }) => op_id = x,
                 Op::Stack { ref ops } => op_id = ops[0],
-                Op::Asm { ref ops, .. } => op_id = ops[0],
+                Op::Asm { ref ops, .. } => {
+                    if ops.is_empty() {
+                        todo!("dtype: operand-free Asm produces no value")
+                    }
+                    op_id = ops[0]
+                }
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
                 Op::TT(TTOp::ReduceTile { acc, .. }) => op_id = acc,
                 Op::TT(TTOp::BroadcastTile { x, .. }) => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return IDX_T,
-                Op::Barrier => todo!(),
+                Op::Barrier
+                | Op::TT(TTOp::MathLock)
+                | Op::TT(TTOp::MathUnlock)
+                | Op::TT(TTOp::PackLock)
+                | Op::TT(TTOp::PackUnlock)
+                | Op::TT(TTOp::NocReadBarrier)
+                | Op::TT(TTOp::NocWriteBarrier)
+                | Op::TT(TTOp::ReduceUninit) => todo!(),
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
@@ -1207,15 +1243,20 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::Asm { ref ops, .. } => match visited.get(&ops[0]) {
-                    Some(dims) => {
-                        visited.insert(op_id, dims.clone());
+                Op::Asm { ref ops, .. } => {
+                    if ops.is_empty() {
+                        todo!("shape: operand-free Asm produces no value")
                     }
-                    None => {
-                        stack.push(op_id);
-                        stack.push(ops[0]);
+                    match visited.get(&ops[0]) {
+                        Some(dims) => {
+                            visited.insert(op_id, dims.clone());
+                        }
+                        None => {
+                            stack.push(op_id);
+                            stack.push(ops[0]);
+                        }
                     }
-                },
+                }
                 // Group/loop indices and scalar storages are scalar values.
                 Op::Range { .. } | Op::Loop { .. } => {
                     visited.insert(op_id, vec![]);
@@ -1380,15 +1421,20 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::Asm { ref ops, .. } => match visited.get(&ops[0]) {
-                    Some(dims) => {
-                        visited.insert(id, dims.clone());
+                Op::Asm { ref ops, .. } => {
+                    if ops.is_empty() {
+                        todo!("shape: operand-free Asm produces no value")
                     }
-                    None => {
-                        stack.push(id);
-                        stack.push(ops[0]);
+                    match visited.get(&ops[0]) {
+                        Some(dims) => {
+                            visited.insert(id, dims.clone());
+                        }
+                        None => {
+                            stack.push(id);
+                            stack.push(ops[0]);
+                        }
                     }
-                },
+                }
                 // Group/loop indices and scalar storages are scalar values.
                 Op::Range { .. } | Op::Loop { .. } => {
                     visited.insert(id, vec![]);

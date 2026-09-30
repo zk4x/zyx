@@ -61,10 +61,14 @@ impl Kernel {
                     Op::Asm { ref ops, .. } => {
                         // Same rule as compute_dtypes_and_rcs: result takes
                         // ops[0]'s dtype/layout, ops are consumed operands.
-                        let (dtype, layout) = dtypes[&ops[0]];
-                        dtypes.insert(op_id, (dtype, layout));
-                        for &x in ops.iter() {
-                            *rcs.entry(x).or_insert(0) += 1;
+                        // Operand-free Asm is an effect-only call: no value,
+                        // no entry.
+                        if !ops.is_empty() {
+                            let (dtype, layout) = dtypes[&ops[0]];
+                            dtypes.insert(op_id, (dtype, layout));
+                            for &x in ops.iter() {
+                                *rcs.entry(x).or_insert(0) += 1;
+                            }
                         }
                     }
                     Op::Expand { .. }
@@ -192,6 +196,13 @@ impl Kernel {
                             dtypes.insert(op_id, dtypes[&cb]);
                             *rcs.entry(cb).or_insert(0) += 1;
                         }
+                        TTOp::MathLock
+                        | TTOp::MathUnlock
+                        | TTOp::PackLock
+                        | TTOp::PackUnlock
+                        | TTOp::NocReadBarrier
+                        | TTOp::NocWriteBarrier
+                        | TTOp::ReduceUninit => {}
                     },
                     Op::Barrier | Op::EndLoop => {}
                 }
@@ -255,6 +266,13 @@ impl Kernel {
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
                 | Op::TT(TTOp::PopFront { .. })
+                | Op::TT(TTOp::MathLock)
+                | Op::TT(TTOp::MathUnlock)
+                | Op::TT(TTOp::PackLock)
+                | Op::TT(TTOp::PackUnlock)
+                | Op::TT(TTOp::NocReadBarrier)
+                | Op::TT(TTOp::NocWriteBarrier)
+                | Op::TT(TTOp::ReduceUninit)
                 | Op::EndLoop
                 | Op::Barrier => false,
                 // Counted loops produce the induction value; boolean

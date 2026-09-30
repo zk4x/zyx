@@ -564,6 +564,13 @@ impl Kernel {
                     | Op::TT(TTOp::PushBack { .. })
                     | Op::TT(TTOp::WaitFront { .. })
                     | Op::TT(TTOp::PopFront { .. })
+                    | Op::TT(TTOp::MathLock)
+                    | Op::TT(TTOp::MathUnlock)
+                    | Op::TT(TTOp::PackLock)
+                    | Op::TT(TTOp::PackUnlock)
+                    | Op::TT(TTOp::NocReadBarrier)
+                    | Op::TT(TTOp::NocWriteBarrier)
+                    | Op::TT(TTOp::ReduceUninit)
                     | Op::Param { .. }
                     | Op::Storage { .. }
                     | Op::Wmma { .. }
@@ -672,6 +679,15 @@ impl Kernel {
                         _ => unreachable!(),
                     };
                     stored_stack.last_mut().unwrap().insert(cb);
+                }
+                &mut Op::TT(TTOp::MathLock)
+                | &mut Op::TT(TTOp::MathUnlock)
+                | &mut Op::TT(TTOp::PackLock)
+                | &mut Op::TT(TTOp::PackUnlock)
+                | &mut Op::TT(TTOp::NocReadBarrier)
+                | &mut Op::TT(TTOp::NocWriteBarrier)
+                | &mut Op::TT(TTOp::ReduceUninit) => {
+                    // Operand-free effects: nothing to remap, never dedup.
                 }
                 op => {
                     let mut remove_op = false;

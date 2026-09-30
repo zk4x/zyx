@@ -257,6 +257,16 @@ pub enum Op {
     TT(TTOp),
 }
 
+/// Fused unary composite claimed by the TT fused prepass
+/// (`sigmoid`/`silu` → fused tile calls).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+pub enum FusedKind {
+    /// `sigmoid(x)`: standalone, or `recip`/`exp-div` under a `mul`.
+    Sigmoid,
+    /// `silu(x)`: `x * sigmoid(x)`.
+    Silu,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub enum TTOp {
     /// Hardware reduce_tile: folds tile `x` into accumulator tile `acc`
@@ -323,6 +333,29 @@ pub enum TTOp {
         cb: OpId,
         n: u8,
     },
+    // -- TT DST locks: operand-free effects --
+    /// TT DST lock: `tile_regs_acquire()`. Operand-free effect like
+    /// [`Op::Barrier`]: a DCE root, never CSE'd or LICM-hoisted.
+    MathLock,
+    /// TT DST unlock: `tile_regs_commit()`. Same effect rules as
+    /// [`TTOp::MathLock`].
+    MathUnlock,
+    /// TT pack lock: `tile_regs_wait()`. Same effect rules as
+    /// [`TTOp::MathLock`].
+    PackLock,
+    /// TT pack unlock: `tile_regs_release()`. Same effect rules as
+    /// [`TTOp::MathLock`].
+    PackUnlock,
+    // -- TT NOC barriers: operand-free effects --
+    /// TT NOC read barrier: `noc_async_read_barrier()`. Same effect
+    /// rules as [`TTOp::MathLock`].
+    NocReadBarrier,
+    /// TT NOC write barrier: `noc_async_write_barrier()`. Same effect
+    /// rules as [`TTOp::MathLock`].
+    NocWriteBarrier,
+    /// TT reduce uninit: `reduce_uninit();` — closes the reduce cone.
+    /// Operand-free; same effect rules as [`TTOp::MathLock`].
+    ReduceUninit,
 }
 
 /// Boxed payload of [`Op::Custom`]: a custom kernel boundary's inputs,
@@ -971,6 +1004,13 @@ impl Op {
             | &Op::TT(TTOp::PushBack { cb, .. })
             | &Op::TT(TTOp::WaitFront { cb, .. })
             | &Op::TT(TTOp::PopFront { cb, .. }) => vec![cb],
+            Op::TT(TTOp::MathLock)
+            | Op::TT(TTOp::MathUnlock)
+            | Op::TT(TTOp::PackLock)
+            | Op::TT(TTOp::PackUnlock)
+            | Op::TT(TTOp::NocReadBarrier)
+            | Op::TT(TTOp::NocWriteBarrier)
+            | Op::TT(TTOp::ReduceUninit) => vec![],
             Op::After { x, dep } => vec![*x, *dep],
             Op::ToDevice { x, .. } => vec![*x],
             Op::Contiguous { x } => vec![*x],
@@ -1020,6 +1060,13 @@ impl Op {
             | Op::TT(TTOp::PushBack { cb, .. })
             | Op::TT(TTOp::WaitFront { cb, .. })
             | Op::TT(TTOp::PopFront { cb, .. }) => vec![cb],
+            Op::TT(TTOp::MathLock)
+            | Op::TT(TTOp::MathUnlock)
+            | Op::TT(TTOp::PackLock)
+            | Op::TT(TTOp::PackUnlock)
+            | Op::TT(TTOp::NocReadBarrier)
+            | Op::TT(TTOp::NocWriteBarrier)
+            | Op::TT(TTOp::ReduceUninit) => vec![],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
             Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                 todo!("parameters_mut: graph-only op in ordered kernel")
