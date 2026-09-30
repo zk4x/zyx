@@ -1375,6 +1375,10 @@ impl Graph {
                 | Op::TT(TTOp::MatmulTile { .. })
                 | Op::TT(TTOp::TransposeTile { .. })
                 | Op::TT(TTOp::BroadcastTile { .. })
+                | Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. })
                 | Op::Asm { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }

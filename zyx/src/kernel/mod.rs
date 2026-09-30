@@ -391,6 +391,16 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
+                Op::TT(TTOp::ReserveBack { cb, .. })
+                | Op::TT(TTOp::PushBack { cb, .. })
+                | Op::TT(TTOp::WaitFront { cb, .. })
+                | Op::TT(TTOp::PopFront { cb, .. }) => {
+                    // Effect-only CB sync: associated with the buffer's
+                    // dtype/layout, keeps the CB's refcount (mirrors Copy
+                    // minus the dst side — one buffer, not two).
+                    dtypes.insert(op_id, dtypes[&cb]);
+                    *rcs.entry(cb).or_insert(0) += 1;
+                }
                 Op::Binary { x, y, bop } => {
                     let dtype = if bop.returns_bool() {
                         (DType::Bool, dtypes[&x].1)
@@ -517,6 +527,10 @@ impl Kernel {
                 Op::TT(TTOp::BroadcastTile { x, .. }) => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return MemLayout::Scalar,
                 Op::Barrier => todo!(),
+                Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. }) => todo!("layout: CB sync op produces no value"),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }
@@ -572,6 +586,10 @@ impl Kernel {
                 Op::TT(TTOp::BroadcastTile { x, .. }) => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return IDX_T,
                 Op::Barrier => todo!(),
+                Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. }) => todo!("dtype: CB sync op produces no value"),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }

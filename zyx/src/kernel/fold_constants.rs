@@ -18,7 +18,7 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TTOp, UOp},
 };
 use std::hash::BuildHasherDefault;
 
@@ -560,6 +560,10 @@ impl Kernel {
                 op,
                 Op::Store { .. }
                     | Op::Copy { .. }
+                    | Op::TT(TTOp::ReserveBack { .. })
+                    | Op::TT(TTOp::PushBack { .. })
+                    | Op::TT(TTOp::WaitFront { .. })
+                    | Op::TT(TTOp::PopFront { .. })
                     | Op::Param { .. }
                     | Op::Storage { .. }
                     | Op::Wmma { .. }
@@ -644,6 +648,30 @@ impl Kernel {
                         _ => unreachable!(),
                     };
                     stored_stack.last_mut().unwrap().insert(dst);
+                }
+                &mut Op::TT(TTOp::ReserveBack { .. })
+                | &mut Op::TT(TTOp::PushBack { .. })
+                | &mut Op::TT(TTOp::WaitFront { .. })
+                | &mut Op::TT(TTOp::PopFront { .. }) => {
+                    // Effect-only CB sync: remap the buffer first, never
+                    // dedup (two identical syncs are two traffic events).
+                    // The CB tracks like a written location; GEP-keyed
+                    // loads never match a bare Storage id, so the insert
+                    // is bookkeeping only.
+                    let op = &mut self.ops[op_id].op;
+                    for param in op.parameters_mut() {
+                        if let Some(&new_id) = remaps.get(param) {
+                            *param = new_id;
+                        }
+                    }
+                    let cb = match op {
+                        Op::TT(TTOp::ReserveBack { cb, .. })
+                        | Op::TT(TTOp::PushBack { cb, .. })
+                        | Op::TT(TTOp::WaitFront { cb, .. })
+                        | Op::TT(TTOp::PopFront { cb, .. }) => *cb,
+                        _ => unreachable!(),
+                    };
+                    stored_stack.last_mut().unwrap().insert(cb);
                 }
                 op => {
                     let mut remove_op = false;

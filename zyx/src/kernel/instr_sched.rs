@@ -183,6 +183,10 @@ impl Kernel {
                 }
                 Op::TT(TTOp::TransposeTile { x }) => add_param!(x),
                 Op::TT(TTOp::BroadcastTile { x, .. }) => add_param!(x),
+                Op::TT(TTOp::ReserveBack { cb, .. })
+                | Op::TT(TTOp::PushBack { cb, .. })
+                | Op::TT(TTOp::WaitFront { cb, .. })
+                | Op::TT(TTOp::PopFront { cb, .. }) => add_param!(cb),
                 Op::Binary { x, y, .. } => {
                     add_param!(x);
                     add_param!(y);
@@ -266,6 +270,15 @@ impl Kernel {
                         };
                         by_memory_target.entry(buf).or_default().push(i);
                     }
+                }
+                // CB sync ops name their buffer directly (no GEP): same
+                // FIFO group as the CB's loads/stores/copies, or sync
+                // could reorder across the traffic it guards.
+                Op::TT(TTOp::ReserveBack { cb, .. })
+                | Op::TT(TTOp::PushBack { cb, .. })
+                | Op::TT(TTOp::WaitFront { cb, .. })
+                | Op::TT(TTOp::PopFront { cb, .. }) => {
+                    by_memory_target.entry(*cb).or_default().push(i);
                 }
                 _ => {}
             }

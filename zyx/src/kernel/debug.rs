@@ -143,6 +143,30 @@ impl Display for Kernel {
                     let x = id_map[&x];
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}broadcast_tile_{kind:?}{reset} r{x}").unwrap();
                 }
+                Op::TT(TTOp::ReserveBack { cb, n }) => {
+                    let dtype = dtypes.get(&cb).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}reserve_back{reset} r{cb}, {n}").unwrap();
+                }
+                Op::TT(TTOp::PushBack { cb, n }) => {
+                    let dtype = dtypes.get(&cb).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}push_back{reset} r{cb}, {n}").unwrap();
+                }
+                Op::TT(TTOp::WaitFront { cb, n }) => {
+                    let dtype = dtypes.get(&cb).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}wait_front{reset} r{cb}, {n}").unwrap();
+                }
+                Op::TT(TTOp::PopFront { cb, n }) => {
+                    let dtype = dtypes.get(&cb).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}pop_front{reset} r{cb}, {n}").unwrap();
+                }
                 Op::Param { dtype, kind, shape, .. } => {
                     dtypes.insert(op_id, dtype);
                     if shape.is_null() {

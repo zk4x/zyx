@@ -67,6 +67,11 @@ impl Kernel {
                 Op::TT(TTOp::MatmulTile { x, y, acc }) => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&acc]),
                 Op::TT(TTOp::TransposeTile { x }) => loop_dep[&x],
                 Op::TT(TTOp::BroadcastTile { x, .. }) => loop_dep[&x],
+                // Effect-only CB sync: pinned like Store/Copy, never hoisted.
+                Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. }) => loop_depth,
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -138,6 +143,11 @@ impl Kernel {
                 Op::TT(TTOp::MatmulTile { x, y, acc }) => loop_dep[x].max(loop_dep[y]).max(loop_dep[acc]),
                 Op::TT(TTOp::TransposeTile { x }) => loop_dep[x],
                 Op::TT(TTOp::BroadcastTile { x, .. }) => loop_dep[x],
+                // Effect-only CB sync: pinned like Store/Copy, never hoisted.
+                Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. }) => loop_depth,
                 Op::Asm { ops, .. } => {
                     let mut max = 0;
                     for op in ops.iter() {
@@ -265,6 +275,10 @@ impl Kernel {
                         op,
                         Op::Store { .. }
                             | Op::Copy { .. }
+                            | Op::TT(TTOp::ReserveBack { .. })
+                            | Op::TT(TTOp::PushBack { .. })
+                            | Op::TT(TTOp::WaitFront { .. })
+                            | Op::TT(TTOp::PopFront { .. })
                             | Op::Load { .. }
                             | Op::Loop { .. }
                             | Op::EndLoop

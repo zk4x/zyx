@@ -76,6 +76,10 @@ impl Kernel {
                     | Op::TT(TTOp::MatmulTile { .. })
                     | Op::TT(TTOp::TransposeTile { .. })
                     | Op::TT(TTOp::BroadcastTile { .. })
+                    | Op::TT(TTOp::ReserveBack { .. })
+                    | Op::TT(TTOp::PushBack { .. })
+                    | Op::TT(TTOp::WaitFront { .. })
+                    | Op::TT(TTOp::PopFront { .. })
                     | Op::Asm { .. } => has_post_linearize_ops = true,
                     Op::Permute { .. }
                     | Op::Expand { .. }
@@ -254,6 +258,22 @@ impl Kernel {
                 Op::TT(TTOp::BroadcastTile { x, .. }) => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
+                }
+                Op::TT(TTOp::ReserveBack { cb, n })
+                | Op::TT(TTOp::PushBack { cb, n })
+                | Op::TT(TTOp::WaitFront { cb, n })
+                | Op::TT(TTOp::PopFront { cb, n }) => {
+                    // Whole-buffer CB sync: `cb` names the Circular
+                    // storage directly (no GEP — a reserve/wait/push/pop
+                    // addresses no single location).
+                    check(op_id, cb, &stack);
+                    if !matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }) {
+                        println!("cb sync op={op_id} targets non-circular {cb}");
+                        self.debug();
+                        panic!();
+                    }
+                    debug_assert!(n != 0, "cb sync op={op_id} has zero count");
+                    dtypes.insert(op_id, dtypes[&cb]);
                 }
                 Op::Unary { x, .. }
                 | Op::Permute { x, .. }

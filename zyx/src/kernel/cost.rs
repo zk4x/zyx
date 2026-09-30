@@ -185,6 +185,13 @@ impl Kernel {
                             dtypes.insert(op_id, dtypes[&x]);
                             *rcs.entry(x).or_insert(0) += 1;
                         }
+                        TTOp::ReserveBack { cb, .. }
+                        | TTOp::PushBack { cb, .. }
+                        | TTOp::WaitFront { cb, .. }
+                        | TTOp::PopFront { cb, .. } => {
+                            dtypes.insert(op_id, dtypes[&cb]);
+                            *rcs.entry(cb).or_insert(0) += 1;
+                        }
                     },
                     Op::Barrier | Op::EndLoop => {}
                 }
@@ -233,13 +240,23 @@ impl Kernel {
                 | Op::Mad { .. }
                 | Op::Stack { .. }
                 | Op::Wmma { .. }
-                | Op::TT { .. }
+                | Op::TT(TTOp::ReduceTile { .. })
+                | Op::TT(TTOp::MatmulTile { .. })
+                | Op::TT(TTOp::TransposeTile { .. })
+                | Op::TT(TTOp::BroadcastTile { .. })
                 | Op::Index { .. }
                 | Op::Param { .. }
                 | Op::Storage { .. }
                 | Op::Const(_)
                 | Op::Range { .. } => true,
-                Op::Store { .. } | Op::Copy { .. } | Op::EndLoop | Op::Barrier => false,
+                Op::Store { .. }
+                | Op::Copy { .. }
+                | Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. })
+                | Op::EndLoop
+                | Op::Barrier => false,
                 // Counted loops produce the induction value; boolean
                 // loops (conditionals) produce nothing, like `If` did.
                 Op::Loop { len } => self.dtype(len) != DType::Bool,

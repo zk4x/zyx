@@ -293,6 +293,36 @@ pub enum TTOp {
         x: OpId,
         kind: TileDim,
     },
+    /// CB sync: `cb.reserve_back(n)` — open `n` back slots of circular
+    /// buffer `cb` for writing. Effect-only like [`Op::Store`]: produces
+    /// no SSA value, is a DCE root, is never CSE'd or LICM-hoisted.
+    /// `cb` is the bare [`Op::Storage`] (whole-buffer op, like a
+    /// pre-linearize whole-view store — a reserve addresses no single
+    /// location, so no [`Op::GEP`]). Inserted by `tt_sync_cbs`, never
+    /// by user builders directly (use `Kernel::tt_reserve_back`).
+    ReserveBack {
+        cb: OpId,
+        n: u8,
+    },
+    /// CB sync: `cb.push_back(n)` — publish `n` written slots. Same
+    /// effect-only rules as [`TTOp::ReserveBack`].
+    PushBack {
+        cb: OpId,
+        n: u8,
+    },
+    /// CB sync: `cb.wait_front(n)` — block until `n` front slots hold
+    /// data. Same effect-only rules as [`TTOp::ReserveBack`].
+    WaitFront {
+        cb: OpId,
+        n: u8,
+    },
+    /// CB sync: `cb.pop_front(n)` — release `n` consumed slots. Same
+    /// effect-only rules as [`TTOp::ReserveBack`]. No producer in
+    /// slice 1 (waits only); lands with pop placement.
+    PopFront {
+        cb: OpId,
+        n: u8,
+    },
 }
 
 /// Boxed payload of [`Op::Custom`]: a custom kernel boundary's inputs,
@@ -937,6 +967,10 @@ impl Op {
             &Op::TT(TTOp::TransposeTile { x }) => vec![x],
             &Op::TT(TTOp::BroadcastTile { x, .. }) => vec![x],
             &Op::TT(TTOp::ReduceTile { x, acc, scaler, .. }) => vec![x, acc, scaler],
+            &Op::TT(TTOp::ReserveBack { cb, .. })
+            | &Op::TT(TTOp::PushBack { cb, .. })
+            | &Op::TT(TTOp::WaitFront { cb, .. })
+            | &Op::TT(TTOp::PopFront { cb, .. }) => vec![cb],
             Op::After { x, dep } => vec![*x, *dep],
             Op::ToDevice { x, .. } => vec![*x],
             Op::Contiguous { x } => vec![*x],
@@ -982,6 +1016,10 @@ impl Op {
             Op::TT(TTOp::ReduceTile { x, acc, scaler, .. }) => vec![x, acc, scaler],
             Op::TT(TTOp::TransposeTile { x }) => vec![x],
             Op::TT(TTOp::BroadcastTile { x, .. }) => vec![x],
+            Op::TT(TTOp::ReserveBack { cb, .. })
+            | Op::TT(TTOp::PushBack { cb, .. })
+            | Op::TT(TTOp::WaitFront { cb, .. })
+            | Op::TT(TTOp::PopFront { cb, .. }) => vec![cb],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
             Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                 todo!("parameters_mut: graph-only op in ordered kernel")
