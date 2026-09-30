@@ -284,16 +284,23 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&cb]);
                 }
                 Op::TT(TTOp::LLK { ref ops, .. }) => {
-                    // Opaque LLK call: every buffer operand must be a
-                    // bare Circular storage (the unpacker streams CBs;
-                    // DST slots are template immediates, never
-                    // operands). Index value ops pass through.
+                    // Opaque LLK call: operands are bare storages
+                    // (Circular CBs plus the Register acc slot) and
+                    // value ops (index arithmetic). Per-position scope
+                    // enforcement is the caller's job (tt_storage's
+                    // debug_assert!); verify only rejects operands that
+                    // are neither a storage nor a value.
                     for &x in ops.iter() {
                         check(op_id, x, &stack);
-                        if let Op::Storage { scope, .. } = self.at(x)
-                            && *scope != MemScope::Circular
-                        {
-                            println!("tt llk op={op_id} targets non-circular storage {x}");
+                        if !matches!(
+                            self.at(x),
+                            Op::Storage { .. } | Op::Const(_) | Op::Param { .. }
+                                | Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. }
+                                | Op::Binary { .. } | Op::Mad { .. } | Op::Stack { .. }
+                                | Op::Load { .. } | Op::Copy { .. } | Op::GEP { .. }
+                                | Op::Range { .. } | Op::Loop { .. } | Op::Index { .. }
+                        ) {
+                            println!("tt llk op={op_id} has non-storage/non-value operand {x}");
                             self.debug();
                             panic!();
                         }

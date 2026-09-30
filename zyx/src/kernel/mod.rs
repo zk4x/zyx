@@ -531,9 +531,9 @@ impl Kernel {
                 Op::Stack { ref ops } => {
                     return MemLayout::Vector(ops.len().try_into().unwrap());
                 }
-                Op::Asm { ref ops, .. } => {
+                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     if ops.is_empty() {
-                        todo!("layout: operand-free Asm produces no value")
+                        todo!("layout: operand-free Asm/LLK produces no value")
                     }
                     op_id = ops[0]
                 }
@@ -550,8 +550,7 @@ impl Kernel {
                 | Op::TT(TTOp::PackUnlock)
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
-                | Op::TT(TTOp::LLK { .. }) => todo!(),
+                | Op::TT(TTOp::ReduceUninit) => todo!(),
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
@@ -603,9 +602,9 @@ impl Kernel {
                 Op::TT(TTOp::MatmulTile { acc, .. }) => op_id = acc,
                 Op::TT(TTOp::TransposeTile { x }) => op_id = x,
                 Op::Stack { ref ops } => op_id = ops[0],
-                Op::Asm { ref ops, .. } => {
+                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     if ops.is_empty() {
-                        todo!("dtype: operand-free Asm produces no value")
+                        todo!("dtype: operand-free Asm/LLK produces no value")
                     }
                     op_id = ops[0]
                 }
@@ -622,8 +621,7 @@ impl Kernel {
                 | Op::TT(TTOp::PackUnlock)
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
-                | Op::TT(TTOp::LLK { .. }) => todo!(),
+                | Op::TT(TTOp::ReduceUninit) => todo!(),
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
@@ -1245,9 +1243,9 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::Asm { ref ops, .. } => {
+                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     if ops.is_empty() {
-                        todo!("shape: operand-free Asm produces no value")
+                        todo!("shape: operand-free Asm/LLK produces no value")
                     }
                     match visited.get(&ops[0]) {
                         Some(dims) => {
@@ -1423,9 +1421,9 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::Asm { ref ops, .. } => {
+                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     if ops.is_empty() {
-                        todo!("shape: operand-free Asm produces no value")
+                        todo!("shape: operand-free Asm/LLK produces no value")
                     }
                     match visited.get(&ops[0]) {
                         Some(dims) => {

@@ -16,6 +16,7 @@
 
 use crate::DType;
 use crate::kernel::{BOp, FusedKind, Kernel, MemScope, Op, OpId, TTOp, TileDim, UOp};
+use crate::types::{TinyString, TinyVec};
 
 impl Kernel {
     /// CB sync constructor: `cb.reserve_back(n)` — open `n` back slots
@@ -306,6 +307,7 @@ impl Kernel {
                     | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::TransposeTile { .. })
                     | Op::TT(TTOp::BroadcastTile { .. })
+                    | Op::TT(TTOp::LLK { .. })
             )
         };
         let mut op_id = self.head;
@@ -365,6 +367,100 @@ impl Kernel {
 
         self.verify();
     }
+
+    /// Storage lowering: the four SSA tile-compute ops
+    /// (`MatmulTile`/`ReduceTile`/`TransposeTile`/`BroadcastTile`) are
+    /// the stream's compute representation; the physical CB and DST
+    /// slots are the `Op::Storage`s already in the IR. This pass rewrites
+    /// each compute op to a [`TTOp::LLK`] call template over those bare
+    /// storages, and drops the per-call `Load`s that threaded SSA
+    /// values through them. After this pass the compute ops are opaque
+    /// effect calls; `tt_lock_dst`/`tt_sync_cbs`/render see only LLK.
+    ///
+    /// Operands are CB storages plus the register slot; the op/kind/bop
+    /// go into the template text (the render substitutes `{i}` for the
+    /// operands and emits the rest verbatim, mirroring the init
+    /// constructors). A `Load` that feeds a compute op must chase
+    /// through its `GEP` to a `Storage`; a `Load` over a `Param` (DRAM)
+    /// feeding a compute op is a lowering bug — loud `panic!`.
+    pub(crate) fn tt_storage(&mut self) {
+        /// Chase a `Load`/`Store`/`Copy` operand through its `GEP`
+        /// to the underlying `Storage`/`Param`. Returns the storage
+        /// op id; the GEP index is not needed (render uses slot 0).
+        fn storage_of(kernel: &Kernel, op_id: OpId) -> OpId {
+            match kernel.at(op_id) {
+                Op::Load { src, .. } | Op::Copy { src, .. } => storage_of(kernel, *src),
+                Op::Store { dst, .. } => storage_of(kernel, *dst),
+                Op::GEP { x, .. } => storage_of(kernel, *x),
+                Op::Storage { .. } | Op::Param { .. } => op_id,
+                other => panic!("tt_storage: {op_id:?} is not a Load/Store/Copy/GEP, got {other:?}"),
+            }
+        }
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            let (asm, ops) = match self.at(op_id) {
+                Op::TT(TTOp::MatmulTile { x, y, acc }) => {
+                    let cb_a = storage_of(self, *x);
+                    let cb_b = storage_of(self, *y);
+                    let slot = storage_of(self, *acc);
+                    debug_assert!(
+                        matches!(self.at(cb_a), Op::Storage { scope: MemScope::Circular, .. }),
+                        "tt_storage: matmul left {cb_a:?} is not a Circular storage"
+                    );
+                    debug_assert!(
+                        matches!(self.at(cb_b), Op::Storage { scope: MemScope::Circular, .. }),
+                        "tt_storage: matmul right {cb_b:?} is not a Circular storage"
+                    );
+                    debug_assert!(
+                        matches!(self.at(slot), Op::Storage { scope: MemScope::Register, .. }),
+                        "tt_storage: matmul acc {slot:?} is not a Register slot"
+                    );
+                    (
+                        TinyString::new("matmul_tiles({0}, {1}, 0, 0, {2});"),
+                        TinyVec::new(&[cb_a, cb_b, slot]),
+                    )
+                }
+                Op::TT(TTOp::ReduceTile { x, scaler, acc, rop, kind }) => {
+                    let cb_in = storage_of(self, *x);
+                    let cb_sc = storage_of(self, *scaler);
+                    let slot = storage_of(self, *acc);
+                    debug_assert!(
+                        matches!(self.at(cb_in), Op::Storage { scope: MemScope::Circular, .. }),
+                        "tt_storage: reduce input {cb_in:?} is not a Circular storage"
+                    );
+                    debug_assert!(
+                        matches!(self.at(cb_sc), Op::Storage { scope: MemScope::Circular, .. }),
+                        "tt_storage: reduce scaler {cb_sc:?} is not a Circular storage"
+                    );
+                    debug_assert!(
+                        matches!(self.at(slot), Op::Storage { scope: MemScope::Register, .. }),
+                        "tt_storage: reduce acc {slot:?} is not a Register slot"
+                    );
+                    let op_name = match rop {
+                        BOp::Max => "PoolType::MAX",
+                        BOp::Add => "PoolType::SUM",
+                        _ => panic!("tt_storage: reduce op {rop:?} has no LLK call"),
+                    };
+                    let dim_name = match kind {
+                        TileDim::Row => "ReduceDim::REDUCE_ROW",
+                        TileDim::Col => "ReduceDim::REDUCE_COL",
+                        TileDim::Scalar => "ReduceDim::REDUCE_SCALAR",
+                    };
+                    let template = format!("reduce_tile<{op_name}, {dim_name}>({{0}}, {{1}}, 0, 0, {{2}});");
+                    (TinyString::new(&template), TinyVec::new(&[cb_in, cb_sc, slot]))
+                }
+                _ => {
+                    op_id = next;
+                    continue;
+                }
+            };
+            self.ops[op_id].op = Op::TT(TTOp::LLK { asm, ops });
+            op_id = next;
+        }
+
+        self.verify();
+    }
 }
 
 /// TT `DataFormat` code for a dtype on the tile path (the
@@ -388,7 +484,7 @@ fn tt_tile_fmt(dtype: DType) -> u32 {
 #[cfg(test)]
 mod tests {
     use crate::DType;
-    use crate::kernel::{Dev, Kernel, MemScope, Op, TTOp};
+    use crate::kernel::{BOp, Dev, Kernel, MemScope, Op, TTOp, TileDim};
 
     /// MATH tile-compute runs under `tile_regs_acquire..commit`;
     /// the pack drain (Register slot stored into a Circular buffer)
@@ -404,14 +500,14 @@ mod tests {
         let cout = k.storage(DType::F32, MemScope::Circular, 1024);
         let zero = k.const_val(0i64);
         k.barrier();
-let va = k.load_circular(cb_a, zero);
-            let vb = k.load_circular(cb_b, zero);
-            let av = k.load_register_tile(acc, zero);
-            let f = k.matmul_tile(va, vb, av);
-            k.store_register_tile(acc, f, zero);
-            let out = k.load_register_tile(acc, zero);
-            k.store_circular(cout, out, zero);
-            k.tt_lock_dst();
+        let va = k.load_circular(cb_a, zero);
+        let vb = k.load_circular(cb_b, zero);
+        let av = k.load_register_tile(acc, zero);
+        let f = k.matmul_tile(va, vb, av);
+        k.store_register_tile(acc, f, zero);
+        let out = k.load_register_tile(acc, zero);
+        k.store_circular(cout, out, zero);
+        k.tt_lock_dst();
 
         let mut ops: Vec<Op> = Vec::new();
         let mut op_id = k.head;
@@ -431,5 +527,67 @@ let va = k.load_circular(cb_a, zero);
         let pos = |op: &Op| ops.iter().position(|o| o == op).unwrap();
         assert!(pos(&Op::TT(TTOp::MathLock)) < pos(&k.at(f).clone()));
         assert!(pos(&Op::TT(TTOp::PackUnlock)) > pos(&k.at(f).clone()));
+    }
+    
+    /// `tt_storage` rewrites the SSA tile-compute ops to opaque
+    /// `LLK` call templates over the bare `Storage`s already in
+    /// the IR. The matmul op becomes `matmul_tiles({0}, {1}, 0, 0, {2})`
+    /// over its two CB storages and the register slot; the reduce op
+    /// becomes `reduce_tile<{op},{dim}>({0}, {1}, 0, 0, {2})` over
+    /// input CB, scaler CB, register slot.
+    #[test]
+    fn storage_lowering_rewrites_matmul_and_reduce() {
+        let mut k = Kernel::from_device_id(Dev::Auto, None);
+        let cb_a = k.storage(DType::F32, MemScope::Circular, 1024);
+        let cb_b = k.storage(DType::F32, MemScope::Circular, 1024);
+let acc = k.storage(DType::F32, MemScope::Register, 1);
+            let csc = k.storage(DType::F32, MemScope::Circular, 1024);
+            let cout = k.storage(DType::F32, MemScope::Circular, 1024);
+        let zero = k.const_val(0i64);
+        let va = k.load_circular(cb_a, zero);
+        let vb = k.load_circular(cb_b, zero);
+        let av = k.load_register_tile(acc, zero);
+let f = k.matmul_tile(va, vb, av);
+            let vs = k.load_circular(csc, zero);
+            let r = k.reduce_tile(va, vs, av, BOp::Max, TileDim::Col);
+            // Pack drain: the Register slot is read out and stored to a
+            // CB. The matmul/reduce results are effect ops after
+            // lowering (no SSA value to thread).
+            let out = k.load_register_tile(acc, zero);
+            k.store_circular(cout, out, zero);
+            k.tt_storage();
+
+        let matmul = k.at(f);
+        let reduce = k.at(r);
+        match matmul {
+            Op::TT(TTOp::LLK { asm, ops }) => {
+                assert_eq!(asm.as_str(), "matmul_tiles({0}, {1}, 0, 0, {2});");
+                assert_eq!(ops.as_slice(), &[cb_a, cb_b, acc]);
+            }
+            other => panic!("matmul not lowered to LLK, got {other:?}"),
+        }
+        match reduce {
+            Op::TT(TTOp::LLK { asm, ops }) => {
+                assert_eq!(
+                    asm.as_str(),
+                    "reduce_tile<PoolType::MAX, ReduceDim::REDUCE_COL>({0}, {1}, 0, 0, {2});"
+                );
+                assert_eq!(ops.as_slice(), &[cb_a, csc, acc]);
+            }
+            other => panic!("reduce not lowered to LLK, got {other:?}"),
+        }
+        // No SSA tile-compute ops survive.
+        let mut leftover = 0;
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            if matches!(
+                k.at(op_id),
+                Op::TT(TTOp::MatmulTile { .. } | TTOp::ReduceTile { .. })
+            ) {
+                leftover += 1;
+            }
+            op_id = k.next_op(op_id);
+        }
+        assert_eq!(leftover, 0, "no SSA tile-compute ops survive storage lowering");
     }
 }
