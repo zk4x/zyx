@@ -121,10 +121,10 @@ impl Kernel {
                     barrier[i] = true;
                 }
                 Op::Loop { .. } | Op::EndLoop => structural[i] = true,
-                // Opaque side effect (inline asm): program-ordered like a
-                // barrier for placement (never crosses one), but not a
-                // barrier itself.
-                Op::Asm { .. } => structural[i] = true,
+                // Opaque side effect (inline asm, TT LLK call):
+                // program-ordered like a barrier for placement (never
+                // crosses one), but not a barrier itself.
+                Op::Asm { .. } | Op::TT(TTOp::LLK { .. }) => structural[i] = true,
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
                 // A copy reads its src and writes its dst: it pins like a
@@ -237,7 +237,7 @@ impl Kernel {
                     add_param!(b);
                     add_param!(c);
                 }
-                Op::Asm { ops, .. } => {
+                Op::Asm { ops, .. } | Op::TT(TTOp::LLK { ops, .. }) => {
                     for &p in ops.iter() {
                         add_param!(p);
                     }
@@ -290,6 +290,15 @@ impl Kernel {
                 | Op::TT(TTOp::WaitFront { cb, .. })
                 | Op::TT(TTOp::PopFront { cb, .. }) => {
                     by_memory_target.entry(*cb).or_default().push(i);
+                }
+                // LLK calls stream CBs (compute) or publish into them
+                // (pack): same FIFO group as the CB's traffic, or the
+                // call could reorder across the sync it runs under.
+                // Index operands form singleton groups (harmless).
+                Op::TT(TTOp::LLK { ops, .. }) => {
+                    for &x in ops.iter() {
+                        by_memory_target.entry(x).or_default().push(i);
+                    }
                 }
                 _ => {}
             }

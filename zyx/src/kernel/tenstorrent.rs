@@ -7,9 +7,12 @@
 //! engine-config init constructors. Inits are [`Op::Asm`] statement
 //! templates (LLK calls are software wrappers, not hardware ops), so
 //! they need no `TTOp` variants; locks/barriers stay structured
-//! effects. Insertion passes (`tt_lock_dst`, `tt_init_math`, ...) land
-//! in batch D; the CB-sync family (`ReserveBack`/`PushBack`/`WaitFront`/
-//! `PopFront` + `tt_sync_cbs`) is already here from slice 1.
+//! effects. Pass-generated LLK compute calls live one step sideways
+//! in [`TTOp::LLK`]: same template shape as [`Op::Asm`] but excluded
+//! from CSE (two identical calls are two traffic events). Insertion
+//! passes (`tt_lock_dst`, `tt_init_math`, ...) land in batch D; the
+//! CB-sync family (`ReserveBack`/`PushBack`/`WaitFront`/`PopFront` +
+//! `tt_sync_cbs`) is already here from slice 1.
 
 use crate::DType;
 use crate::Map;

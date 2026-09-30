@@ -78,7 +78,8 @@ impl Kernel {
                 | Op::TT(TTOp::PackUnlock)
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit) => loop_depth,
+                | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::LLK { .. }) => loop_depth,
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -161,7 +162,8 @@ impl Kernel {
                 | Op::TT(TTOp::PackUnlock)
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit) => loop_depth,
+                | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::LLK { .. }) => loop_depth,
                 Op::Asm { ops, .. } => {
                     let mut max = 0;
                     for op in ops.iter() {
@@ -300,6 +302,7 @@ impl Kernel {
                             | Op::TT(TTOp::NocReadBarrier)
                             | Op::TT(TTOp::NocWriteBarrier)
                             | Op::TT(TTOp::ReduceUninit)
+                            | Op::TT(TTOp::LLK { .. })
                             | Op::Load { .. }
                             | Op::Loop { .. }
                             | Op::EndLoop

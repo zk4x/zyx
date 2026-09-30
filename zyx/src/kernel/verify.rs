@@ -87,6 +87,7 @@ impl Kernel {
                     | Op::TT(TTOp::NocReadBarrier)
                     | Op::TT(TTOp::NocWriteBarrier)
                     | Op::TT(TTOp::ReduceUninit)
+                    | Op::TT(TTOp::LLK { .. })
                     | Op::Asm { .. } => has_post_linearize_ops = true,
                     Op::Permute { .. }
                     | Op::Expand { .. }
@@ -281,6 +282,25 @@ impl Kernel {
                     }
                     debug_assert!(n != 0, "cb sync op={op_id} has zero count");
                     dtypes.insert(op_id, dtypes[&cb]);
+                }
+                Op::TT(TTOp::LLK { ref ops, .. }) => {
+                    // Opaque LLK call: every buffer operand must be a
+                    // bare Circular storage (the unpacker streams CBs;
+                    // DST slots are template immediates, never
+                    // operands). Index value ops pass through.
+                    for &x in ops.iter() {
+                        check(op_id, x, &stack);
+                        if let Op::Storage { scope, .. } = self.at(x)
+                            && *scope != MemScope::Circular
+                        {
+                            println!("tt llk op={op_id} targets non-circular storage {x}");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    if !ops.is_empty() {
+                        dtypes.insert(op_id, dtypes[&ops[0]]);
+                    }
                 }
                 Op::TT(TTOp::MathLock)
                 | Op::TT(TTOp::MathUnlock)
@@ -618,7 +638,7 @@ impl Kernel {
                         bounds.insert(op_id, (0, len.saturating_sub(1)));
                     }
                 }
-                Op::Asm { ref ops, .. } => {
+                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     let mut r = None;
                     for x in ops.iter() {
                         if let Some(&(xl, xu)) = bounds.get(x) {

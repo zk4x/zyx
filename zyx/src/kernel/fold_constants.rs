@@ -571,6 +571,7 @@ impl Kernel {
                     | Op::TT(TTOp::NocReadBarrier)
                     | Op::TT(TTOp::NocWriteBarrier)
                     | Op::TT(TTOp::ReduceUninit)
+                    | Op::TT(TTOp::LLK { .. })
                     | Op::Param { .. }
                     | Op::Storage { .. }
                     | Op::Wmma { .. }
@@ -688,6 +689,27 @@ impl Kernel {
                 | &mut Op::TT(TTOp::NocWriteBarrier)
                 | &mut Op::TT(TTOp::ReduceUninit) => {
                     // Operand-free effects: nothing to remap, never dedup.
+                }
+                &mut Op::TT(TTOp::LLK { .. }) => {
+                    // Opaque LLK call: remap the operands first, never
+                    // dedup (two identical calls are two traffic
+                    // events). Operand CBs track like written locations
+                    // — pack writes its CB, so loads must not CSE
+                    // across the call. Index operands track harmlessly
+                    // (no load source is ever an index id).
+                    let op = &mut self.ops[op_id].op;
+                    for param in op.parameters_mut() {
+                        if let Some(&new_id) = remaps.get(param) {
+                            *param = new_id;
+                        }
+                    }
+                    let ops = match op {
+                        Op::TT(TTOp::LLK { ops, .. }) => ops,
+                        _ => unreachable!(),
+                    };
+                    for &x in ops.iter() {
+                        stored_stack.last_mut().unwrap().insert(x);
+                    }
                 }
                 op => {
                     let mut remove_op = false;

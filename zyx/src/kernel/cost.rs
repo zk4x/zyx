@@ -58,11 +58,11 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 match self.ops[op_id].op {
-                    Op::Asm { ref ops, .. } => {
+                    Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                         // Same rule as compute_dtypes_and_rcs: result takes
                         // ops[0]'s dtype/layout, ops are consumed operands.
-                        // Operand-free Asm is an effect-only call: no value,
-                        // no entry.
+                        // Operand-free Asm/LLK is an effect-only call: no
+                        // value, no entry.
                         if !ops.is_empty() {
                             let (dtype, layout) = dtypes[&ops[0]];
                             dtypes.insert(op_id, (dtype, layout));
@@ -168,33 +168,44 @@ impl Kernel {
                             *rcs.entry(len).or_insert(0) += 1;
                         }
                     }
-                    Op::TT(ttop) => match ttop {
+                    Op::TT(ref ttop) => match ttop {
                         TTOp::ReduceTile { x, scaler, acc, .. } => {
-                            dtypes.insert(op_id, dtypes[&acc]);
-                            *rcs.entry(x).or_insert(0) += 1;
-                            *rcs.entry(scaler).or_insert(0) += 1;
-                            *rcs.entry(acc).or_insert(0) += 1;
+                            dtypes.insert(op_id, dtypes[acc]);
+                            *rcs.entry(*x).or_insert(0) += 1;
+                            *rcs.entry(*scaler).or_insert(0) += 1;
+                            *rcs.entry(*acc).or_insert(0) += 1;
                         }
                         TTOp::MatmulTile { x, y, acc } => {
-                            dtypes.insert(op_id, dtypes[&acc]);
-                            *rcs.entry(x).or_insert(0) += 1;
-                            *rcs.entry(y).or_insert(0) += 1;
-                            *rcs.entry(acc).or_insert(0) += 1;
+                            dtypes.insert(op_id, dtypes[acc]);
+                            *rcs.entry(*x).or_insert(0) += 1;
+                            *rcs.entry(*y).or_insert(0) += 1;
+                            *rcs.entry(*acc).or_insert(0) += 1;
                         }
                         TTOp::TransposeTile { x } => {
-                            dtypes.insert(op_id, dtypes[&x]);
-                            *rcs.entry(x).or_insert(0) += 1;
+                            dtypes.insert(op_id, dtypes[x]);
+                            *rcs.entry(*x).or_insert(0) += 1;
                         }
                         TTOp::BroadcastTile { x, .. } => {
-                            dtypes.insert(op_id, dtypes[&x]);
-                            *rcs.entry(x).or_insert(0) += 1;
+                            dtypes.insert(op_id, dtypes[x]);
+                            *rcs.entry(*x).or_insert(0) += 1;
                         }
                         TTOp::ReserveBack { cb, .. }
                         | TTOp::PushBack { cb, .. }
                         | TTOp::WaitFront { cb, .. }
                         | TTOp::PopFront { cb, .. } => {
-                            dtypes.insert(op_id, dtypes[&cb]);
-                            *rcs.entry(cb).or_insert(0) += 1;
+                            dtypes.insert(op_id, dtypes[cb]);
+                            *rcs.entry(*cb).or_insert(0) += 1;
+                        }
+                        TTOp::LLK { ops, .. } => {
+                            // Opaque effect call: no value, but the CB
+                            // operands stay live (same rule as the Asm
+                            // arm above).
+                            if !ops.is_empty() {
+                                dtypes.insert(op_id, dtypes[&ops[0]]);
+                                for &x in ops.iter() {
+                                    *rcs.entry(x).or_insert(0) += 1;
+                                }
+                            }
                         }
                         TTOp::MathLock
                         | TTOp::MathUnlock
@@ -240,7 +251,10 @@ impl Kernel {
         while !op_id.is_null() {
             // Register allocation: allocate if this op produces a value
             let produces = match self.ops[op_id].op {
-                Op::Asm { .. } => true,
+                // Value-producing Asm takes ops[0]'s dtype (see the
+                // first pass above); operand-free Asm is an
+                // effect-only call and produces no register.
+                Op::Asm { ref ops, .. } => !ops.is_empty(),
                 Op::Storage { scope: MemScope::Register, .. } => true,
                 Op::Load { .. }
                 | Op::GEP { .. }
@@ -273,6 +287,7 @@ impl Kernel {
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
                 | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::LLK { .. })
                 | Op::EndLoop
                 | Op::Barrier => false,
                 // Counted loops produce the induction value; boolean

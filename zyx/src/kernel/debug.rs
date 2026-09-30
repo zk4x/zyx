@@ -188,6 +188,14 @@ impl Display for Kernel {
                 Op::TT(TTOp::ReduceUninit) => {
                     writeln!(f, "{indent}{red}reduce_uninit{reset}").unwrap();
                 }
+                Op::TT(TTOp::LLK { ref asm, ref ops }) => {
+                    // Opaque LLK call template: U8 is a display
+                    // placeholder like Asm (effect-only, never a value).
+                    let dtype = ops.iter().next().and_then(|x| dtypes.get(x)).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}llk{reset} {asm:?} {ops:?}").unwrap();
+                }
                 Op::Param { dtype, kind, shape, .. } => {
                     dtypes.insert(op_id, dtype);
                     if shape.is_null() {

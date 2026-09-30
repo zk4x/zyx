@@ -267,7 +267,7 @@ pub enum FusedKind {
     Silu,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub enum TTOp {
     /// Hardware reduce_tile: folds tile `x` into accumulator tile `acc`
     /// with `rop` (TT: `reduce_tile` accumulates into the acc CB directly;
@@ -356,6 +356,23 @@ pub enum TTOp {
     /// TT reduce uninit: `reduce_uninit();` — closes the reduce cone.
     /// Operand-free; same effect rules as [`TTOp::MathLock`].
     ReduceUninit,
+    // -- TT LLK calls: opaque effect templates, excluded from CSE --
+    /// TT LLK call template (`copy_tile({0}, 0, 0);`, ...). The LLK
+    /// software wrappers are not hardware ops, so they live here as
+    /// emitted statement templates, never as structured variants.
+    /// Effect-only like [`Op::Barrier` but with buffer operands]: a
+    /// DCE root, pinned by LICM, and NEVER deduplicated by CSE (two
+    /// identical calls are two traffic events). Operands are bare
+    /// [`Op::Storage`] circular buffers plus index value ops — DST
+    /// slots are template immediates, never operands (the unpacker
+    /// streams CBs). TT `verify` re-checks the CB-only rule at
+    /// compile time.
+    LLK {
+        /// Call template (`{i}` substitutes the i-th operand).
+        asm: TinyString,
+        /// CB + index operands.
+        ops: TinyVec<OpId>,
+    },
 }
 
 /// Boxed payload of [`Op::Custom`]: a custom kernel boundary's inputs,
@@ -993,6 +1010,7 @@ impl Op {
             &Op::Load { src } => vec![src],
             &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
+            Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().collect(),
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
@@ -1068,6 +1086,7 @@ impl Op {
             | Op::TT(TTOp::NocWriteBarrier)
             | Op::TT(TTOp::ReduceUninit) => vec![],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
+            Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().collect(),
             Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                 todo!("parameters_mut: graph-only op in ordered kernel")
             }

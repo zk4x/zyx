@@ -411,11 +411,11 @@ impl Kernel {
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                 }
-                Op::Asm { ref ops, .. } => {
+                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     // Result takes ops[0]'s dtype/layout; the template's
                     // `{i}` placeholders substitute the operand expressions.
-                    // Operand-free Asm is an effect-only call (e.g. a TT
-                    // LLK init): produces no value, takes no entry.
+                    // Operand-free Asm/LLK is an effect-only call (e.g. a
+                    // TT LLK init): produces no value, takes no entry.
                     if !ops.is_empty() {
                         let dtype = dtypes[&ops[0]];
                         dtypes.insert(op_id, dtype);
@@ -550,7 +550,8 @@ impl Kernel {
                 | Op::TT(TTOp::PackUnlock)
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit) => todo!(),
+                | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::LLK { .. }) => todo!(),
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
@@ -621,7 +622,8 @@ impl Kernel {
                 | Op::TT(TTOp::PackUnlock)
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit) => todo!(),
+                | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::LLK { .. }) => todo!(),
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
