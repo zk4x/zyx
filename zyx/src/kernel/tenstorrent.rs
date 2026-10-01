@@ -17,6 +17,8 @@
 use crate::DType;
 use crate::Map;
 use crate::Set;
+use crate::dtype::Constant;
+use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{BOp, FusedKind, Kernel, MemLayout, MemScope, Op, OpId, TTOp, TileDim, UOp};
 use crate::types::{TinyString, TinyVec};
 
@@ -389,18 +391,15 @@ impl Kernel {
         };
         let mut op_id = self.head;
         while !op_id.is_null() {
-            let mut math_first: Option<OpId> = None;
-            let mut math_last: Option<OpId> = None;
-            let mut pack_first: Option<OpId> = None;
-            let mut pack_last: Option<OpId> = None;
-            // Loop nesting for the back-edge hoist below: per-op loop
-            // stack snapshots at the MATH endpoints, Loop→EndLoop
-            // matching, section-relative positions, and pack-store
-            // positions (a pack boundary stops the hoist bubbling).
+            // Section scan: ordered math/pack positions, per-math
+            // loop-stack snapshots, Loop→EndLoop matching,
+            // section-relative positions, and pack-store positions
+            // (a pack boundary stops the hoist bubbling).
+            let mut maths: Vec<OpId> = Vec::new();
+            let mut packs: Vec<OpId> = Vec::new();
+            let mut math_loops: Map<OpId, Vec<OpId>> = Map::default();
             let mut loop_stack: Vec<OpId> = Vec::new();
             let mut loop_end: Map<OpId, OpId> = Map::default();
-            let mut first_loops: Vec<OpId> = Vec::new();
-            let mut last_loops: Vec<OpId> = Vec::new();
             let mut pos_of: Map<OpId, usize> = Map::default();
             let mut pack_pos: Set<OpId> = Set::default();
             let mut scan = op_id;
@@ -423,21 +422,58 @@ impl Kernel {
                     _ => {}
                 }
                 if is_math(self, &users, scan) {
-                    if math_first.is_none() {
-                        math_first = Some(scan);
-                        first_loops = loop_stack.clone();
-                    }
-                    math_last = Some(scan);
-                    last_loops = loop_stack.clone();
+                    maths.push(scan);
+                    math_loops.insert(scan, loop_stack.clone());
                 }
                 if is_pack(self, scan) {
-                    if pack_first.is_none() {
-                        pack_first = Some(scan);
-                    }
-                    pack_last = Some(scan);
+                    packs.push(scan);
                     pack_pos.insert(scan);
                 }
                 scan = self.next_op(scan);
+            }
+            let pos_of_op = |what: &str, id: OpId| -> usize {
+                pos_of
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_else(|| panic!("tt_lock_dst: {what} without position"))
+            };
+            // Regions: math runs split at pack boundaries (a pack
+            // drains DST, so it closes its region — the old one
+            // acquire/commit/wait/pack/release region per math→pack
+            // group). Packs attach to the preceding run (leading
+            // packs, before any math, to the first run).
+            let mut runs: Vec<(Vec<OpId>, Vec<OpId>)> = Vec::new();
+            let mut cur_run: Vec<OpId> = Vec::new();
+            let mut prev_math: Option<OpId> = None;
+            for m in maths.iter().copied() {
+                let mp = pos_of_op("math", m);
+                if let Some(pm) = prev_math {
+                    let pp = pos_of_op("math", pm);
+                    if packs.iter().any(|p| {
+                        let qp = pos_of_op("pack", *p);
+                        qp > pp && qp < mp
+                    }) {
+                        runs.push((core::mem::take(&mut cur_run), Vec::new()));
+                    }
+                }
+                cur_run.push(m);
+                prev_math = Some(m);
+            }
+            if !cur_run.is_empty() {
+                runs.push((cur_run, Vec::new()));
+            }
+            if !runs.is_empty() {
+                for p in packs.iter().copied() {
+                    let qp = pos_of_op("pack", p);
+                    let mut owner = 0usize;
+                    for (i, (ms, _)) in runs.iter().enumerate() {
+                        let fp = pos_of_op("math", ms[0]);
+                        if fp <= qp {
+                            owner = i;
+                        }
+                    }
+                    runs[owner].1.push(p);
+                }
             }
             // Back-edge hoist: bubble the acquire outward across
             // enclosing loops whose bodies hold no pack store (a pack
@@ -450,9 +486,24 @@ impl Kernel {
                 };
                 pack_pos.iter().any(|p| pos_of.get(p).is_some_and(|q| *q > s && *q < e))
             };
-            let mut acquire_at = math_first;
-            let mut crossed = 0usize;
-            if let Some(first) = math_first {
+            // Pack-only section (pure movement, no math): one pack
+            // region, no MATH locks.
+            if runs.is_empty() && !packs.is_empty() {
+                self.insert_before(packs[0], Op::TT(TTOp::PackLock));
+                self.insert_after(packs[packs.len() - 1], Op::TT(TTOp::PackUnlock));
+            }
+            for (ms, ps) in runs.iter() {
+                let first = ms[0];
+                let last = ms[ms.len() - 1];
+                let first_loops = math_loops
+                    .get(&first)
+                    .cloned()
+                    .expect("tt_lock_dst: math without loop snapshot");
+                let last_loops = math_loops
+                    .get(&last)
+                    .cloned()
+                    .expect("tt_lock_dst: math without loop snapshot");
+                let mut crossed = 0usize;
                 let mut target = first;
                 for l in first_loops.iter().rev() {
                     let end = match loop_end.get(l) {
@@ -465,10 +516,7 @@ impl Kernel {
                     target = *l;
                     crossed += 1;
                 }
-                acquire_at = Some(target);
-            }
-            let mut commit_at = math_last;
-            if let Some(last) = math_last {
+                let acquire_at = Some(target);
                 let mut target = last;
                 let mut n = 0usize;
                 for l in last_loops.iter().rev() {
@@ -485,22 +533,22 @@ impl Kernel {
                     target = end;
                     n += 1;
                 }
-                commit_at = Some(target);
-            }
-            // Commit before wait: MATH drains to registers, then packs
-            // read them. Inserts are by OpId, so order among the four
-            // is independent of position.
-            if let Some(at) = acquire_at {
-                self.insert_before(at, Op::TT(TTOp::MathLock));
-            }
-            if let Some(at) = commit_at {
-                self.insert_after(at, Op::TT(TTOp::MathUnlock));
-            }
-            if let Some(first) = pack_first {
-                self.insert_before(first, Op::TT(TTOp::PackLock));
-            }
-            if let Some(last) = pack_last {
-                self.insert_after(last, Op::TT(TTOp::PackUnlock));
+                let commit_at = Some(target);
+                // Commit before wait: MATH drains to registers, then
+                // packs read them. Inserts are by OpId, so order among
+                // the four is independent of position.
+                if let Some(at) = acquire_at {
+                    self.insert_before(at, Op::TT(TTOp::MathLock));
+                }
+                if let Some(at) = commit_at {
+                    self.insert_after(at, Op::TT(TTOp::MathUnlock));
+                }
+                if let Some(pf) = ps.first() {
+                    self.insert_before(*pf, Op::TT(TTOp::PackLock));
+                }
+                if let Some(pl) = ps.last() {
+                    self.insert_after(*pl, Op::TT(TTOp::PackUnlock));
+                }
             }
             op_id = match section_end {
                 Some(b) => self.next_op(b),
@@ -728,6 +776,252 @@ impl Kernel {
             scan = self.next_op(scan);
         }
 
+        // Indexed-window batching (old place_waits/place_pops parity):
+        // a circular read with a loop-varying slot index observes CB
+        // slots window-relative, so a per-trip pop slides the window
+        // under later trips and the index reads the wrong tile. When
+        // every data access to `cb` inside the innermost const-trip
+        // loop is such an indexed read, `batched[(loop, cb)]` holds
+        // trips × reads and one WaitFront/PopFront of that count
+        // brackets the loop instead of per-trip n:1 syncs. Head
+        // reads, stores, LLK traffic, symbolic trips, and over-depth
+        // windows keep the per-trip syncs.
+        let mut batched: Map<(OpId, OpId), u32> = Map::default();
+        let mut batched_read: Set<OpId> = Set::default();
+        scan = self.head;
+        while !scan.is_null() {
+            let (read_op, gep_index, cb) = match self.ops[scan].op {
+                Op::Load { src } => match self.ops[src].op {
+                    Op::GEP { x: cb, index, .. }
+                        if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
+                    {
+                        (scan, index, cb)
+                    }
+                    _ => {
+                        scan = self.next_op(scan);
+                        continue;
+                    }
+                },
+                Op::Copy { src, .. } => match self.ops[src].op {
+                    Op::GEP { x: cb, index, .. }
+                        if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
+                    {
+                        (scan, index, cb)
+                    }
+                    _ => {
+                        scan = self.next_op(scan);
+                        continue;
+                    }
+                },
+                _ => {
+                    scan = self.next_op(scan);
+                    continue;
+                }
+            };
+            // Head slot (const 0) reads the CB front: per-trip syncs
+            // stay correct. Anything else is window-relative.
+            if self.resolve_const(gep_index).and_then(|c| c.as_dim()) == Some(0) {
+                scan = self.next_op(scan);
+                continue;
+            }
+            // Innermost enclosing loop of the read.
+            let mut inner: Option<OpId> = None;
+            let mut cur = self.prev_op(scan);
+            let mut depth = 0u32;
+            while !cur.is_null() {
+                match self.ops[cur].op {
+                    Op::EndLoop => depth += 1,
+                    Op::Loop { .. } => {
+                        if depth == 0 {
+                            inner = Some(cur);
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+                cur = self.prev_op(cur);
+            }
+            let Some(loop_op) = inner else {
+                scan = self.next_op(scan);
+                continue;
+            };
+            let Op::Loop { len } = self.ops[loop_op].op else {
+                unreachable!("tt_sync_cbs: batch loop is a Loop");
+            };
+            let Some(trips) = self
+                .resolve_const(len)
+                .and_then(|c| c.as_dim())
+                .and_then(|t| u32::try_from(t).ok())
+                .filter(|t| *t > 0)
+            else {
+                scan = self.next_op(scan);
+                continue;
+            };
+            // Matching EndLoop of `loop_op`.
+            let mut end = self.next_op(loop_op);
+            let mut depth = 0u32;
+            while !end.is_null() {
+                match self.ops[end].op {
+                    Op::Loop { .. } => depth += 1,
+                    Op::EndLoop => {
+                        if depth == 0 {
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+                end = self.next_op(end);
+            }
+            if end.is_null() {
+                scan = self.next_op(scan);
+                continue;
+            }
+            // Span scan: every data access to `cb` must be a direct
+            // qualifying indexed read, else the window cannot be held.
+            let mut direct = 0u32;
+            let mut held = true;
+            let mut cur = self.next_op(loop_op);
+            let mut depth = 0u32;
+            while cur != end {
+                match self.ops[cur].op {
+                    Op::Loop { .. } => depth += 1,
+                    Op::EndLoop => depth -= 1,
+                    Op::Load { src } => {
+                        if let Op::GEP { x: c, index, .. } = self.ops[src].op
+                            && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. })
+                            && c == cb
+                        {
+                            let indexed =
+                                self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
+                            let ok_users = users.get(&cur).is_some_and(|us| {
+                                us.iter().all(|u| match &self.ops[*u].op {
+                                    Op::Store { .. } | Op::Asm { .. } => true,
+                                    op => {
+                                        tt_is_tile_value(self, *u)
+                                            && matches!(
+                                                op,
+                                                Op::Unary { .. }
+                                                    | Op::Binary { .. }
+                                                    | Op::Cast { .. }
+                                                    | Op::Bitcast { .. }
+                                                    | Op::Mad { .. }
+                                            )
+                                    }
+                                })
+                            });
+                            if depth == 0 && indexed && ok_users {
+                                direct += 1;
+                            } else {
+                                held = false;
+                                break;
+                            }
+                        }
+                    }
+                    Op::Store { dst, .. } => {
+                        if let Op::GEP { x: c, .. } = self.ops[dst].op
+                            && c == cb
+                            && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. })
+                        {
+                            held = false;
+                            break;
+                        }
+                    }
+                    Op::Copy { src, dst } => {
+                        let src_hit = match self.ops[src].op {
+                            Op::GEP { x: c, index, .. }
+                                if c == cb
+                                    && matches!(
+                                        self.ops[c].op,
+                                        Op::Storage { scope: MemScope::Circular, .. }
+                                    ) =>
+                            {
+                                Some(index)
+                            }
+                            _ => None,
+                        };
+                        let dst_hit = match self.ops[dst].op {
+                            Op::GEP { x: c, .. }
+                                if c == cb
+                                    && matches!(
+                                        self.ops[c].op,
+                                        Op::Storage { scope: MemScope::Circular, .. }
+                                    ) =>
+                            {
+                                Some(c)
+                            }
+                            _ => None,
+                        };
+                        match (src_hit, dst_hit) {
+                            (None, None) => {}
+                            (Some(index), None) => {
+                                let indexed =
+                                    self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
+                                if depth == 0 && indexed {
+                                    direct += 1;
+                                } else {
+                                    held = false;
+                                    break;
+                                }
+                            }
+                            _ => {
+                                held = false;
+                                break;
+                            }
+                        }
+                    }
+                    Op::TT(TTOp::LLK { .. }) => {
+                        let Op::TT(TTOp::LLK { ops, .. }) = &self.ops[cur].op else {
+                            unreachable!("tt_sync_cbs: batch span is an LLK");
+                        };
+                        let mut feeds = false;
+                        for o in ops.iter().copied() {
+                            if o.is_null() {
+                                continue;
+                            }
+                            if let Op::Load { src } = self.ops[o].op
+                                && let Op::GEP { x: c, .. } = self.ops[src].op
+                                && c == cb
+                            {
+                                feeds = true;
+                                break;
+                            }
+                        }
+                        if feeds {
+                            held = false;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                cur = self.next_op(cur);
+            }
+            if !held || direct == 0 {
+                scan = self.next_op(scan);
+                continue;
+            }
+            let Some(total) = trips.checked_mul(direct) else {
+                scan = self.next_op(scan);
+                continue;
+            };
+            let Op::Storage { len, .. } = self.ops[cb].op else {
+                unreachable!("tt_sync_cbs: batch cb is a Storage");
+            };
+            if len <= 0 {
+                scan = self.next_op(scan);
+                continue;
+            }
+            let depth_tiles = (len / 1024) as u32;
+            if total == 0 || total > depth_tiles || total > 255 {
+                scan = self.next_op(scan);
+                continue;
+            }
+            batched.entry((loop_op, cb)).or_insert(total);
+            batched_read.insert(read_op);
+            scan = self.next_op(scan);
+        }
+
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
@@ -764,7 +1058,11 @@ impl Kernel {
                             self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
                         }
                         (Some(cb), None) => {
-                            self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
+                            // Indexed-window reads carry no per-trip
+                            // wait: the bracket wait covers the window.
+                            if !batched_read.contains(&op_id) {
+                                self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
+                            }
                         }
                         (Some(scb), Some(dcb)) => {
                             self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb: scb, n: 1 }));
@@ -841,7 +1139,7 @@ impl Kernel {
                                         Op::TT(TTOp::BroadcastTile { .. }) | Op::TT(TTOp::LLK { .. })
                                     )
                                 });
-                                if !fused_only {
+                                if !fused_only && !batched_read.contains(&op_id) {
                                     self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
                                 }
                             }
@@ -879,6 +1177,14 @@ impl Kernel {
                 _ => {}
             }
             op_id = next;
+        }
+
+        // Bracket waits for indexed windows: one WaitFront of the
+        // whole window ahead of the loop (the per-trip waits above
+        // were skipped for these reads).
+        let done: Vec<((OpId, OpId), u32)> = batched.iter().map(|(k, v)| (*k, *v)).collect();
+        for ((loop_op, cb), total) in done {
+            self.insert_before(loop_op, Op::TT(TTOp::WaitFront { cb, n: total as u8 }));
         }
 
         self.verify();
@@ -924,7 +1230,7 @@ impl Kernel {
     /// Tile compute outside the compute section is malformed (locks
     /// and inits only exist there) — loud panic, never silently
     /// skipped.
-    pub(crate) fn tt_init_math(&mut self) {
+    pub(crate) fn tt_init_math(&mut self) -> Result<(), BackendError> {
         // Users (consumer-position decisions below read it).
         let mut users: Map<OpId, Vec<OpId>> = Map::default();
         let mut scan = self.head;
@@ -1062,7 +1368,7 @@ impl Kernel {
                     match tt_scalar_lane(self, x, y) {
                         None => InitAction::BinaryInit(bop),
                         Some((left, s)) => {
-                            tt_check_scalar_lane(self, op_id, bop, left, s);
+                            tt_check_scalar_lane(self, op_id, bop, left, s)?;
                             InitAction::BinScalarInit(bop)
                         }
                     }
@@ -1352,6 +1658,7 @@ impl Kernel {
         }
 
         self.verify();
+        Ok(())
     }
 
     /// Pop placement + FIFO accounting: ports the old `place_pops`
@@ -1399,6 +1706,248 @@ impl Kernel {
                     users.entry(p).or_default().push(scan);
                 }
             }
+            scan = self.next_op(scan);
+        }
+
+        // Indexed-window batching (old place_waits/place_pops parity):
+        // same decision as `tt_sync_cbs` (which skipped the per-trip
+        // waits for these reads): one PopFront of trips × reads after
+        // the loop instead of per-trip n:1 pops. Re-derived here on
+        // the wait-carrying IR — sync ops are not data traffic, so the
+        // decision is identical. See `tt_sync_cbs` for the full rule.
+        let mut batched: Map<(OpId, OpId), u32> = Map::default();
+        let mut batched_read: Set<OpId> = Set::default();
+        scan = self.head;
+        while !scan.is_null() {
+            let (read_op, gep_index, cb) = match self.ops[scan].op {
+                Op::Load { src } => match self.ops[src].op {
+                    Op::GEP { x: cb, index, .. }
+                        if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
+                    {
+                        (scan, index, cb)
+                    }
+                    _ => {
+                        scan = self.next_op(scan);
+                        continue;
+                    }
+                },
+                Op::Copy { src, .. } => match self.ops[src].op {
+                    Op::GEP { x: cb, index, .. }
+                        if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
+                    {
+                        (scan, index, cb)
+                    }
+                    _ => {
+                        scan = self.next_op(scan);
+                        continue;
+                    }
+                },
+                _ => {
+                    scan = self.next_op(scan);
+                    continue;
+                }
+            };
+            // Head slot (const 0) reads the CB front: per-trip syncs
+            // stay correct. Anything else is window-relative.
+            if self.resolve_const(gep_index).and_then(|c| c.as_dim()) == Some(0) {
+                scan = self.next_op(scan);
+                continue;
+            }
+            // Innermost enclosing loop of the read.
+            let mut inner: Option<OpId> = None;
+            let mut cur = self.prev_op(scan);
+            let mut depth = 0u32;
+            while !cur.is_null() {
+                match self.ops[cur].op {
+                    Op::EndLoop => depth += 1,
+                    Op::Loop { .. } => {
+                        if depth == 0 {
+                            inner = Some(cur);
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+                cur = self.prev_op(cur);
+            }
+            let Some(loop_op) = inner else {
+                scan = self.next_op(scan);
+                continue;
+            };
+            let Op::Loop { len } = self.ops[loop_op].op else {
+                unreachable!("tt_place_pops: batch loop is a Loop");
+            };
+            let Some(trips) = self
+                .resolve_const(len)
+                .and_then(|c| c.as_dim())
+                .and_then(|t| u32::try_from(t).ok())
+                .filter(|t| *t > 0)
+            else {
+                scan = self.next_op(scan);
+                continue;
+            };
+            // Matching EndLoop of `loop_op`.
+            let mut end = self.next_op(loop_op);
+            let mut depth = 0u32;
+            while !end.is_null() {
+                match self.ops[end].op {
+                    Op::Loop { .. } => depth += 1,
+                    Op::EndLoop => {
+                        if depth == 0 {
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+                end = self.next_op(end);
+            }
+            if end.is_null() {
+                scan = self.next_op(scan);
+                continue;
+            }
+            // Span scan: every data access to `cb` must be a direct
+            // qualifying indexed read, else the window cannot be held.
+            let mut direct = 0u32;
+            let mut held = true;
+            let mut cur = self.next_op(loop_op);
+            let mut depth = 0u32;
+            while cur != end {
+                match self.ops[cur].op {
+                    Op::Loop { .. } => depth += 1,
+                    Op::EndLoop => depth -= 1,
+                    Op::Load { src } => {
+                        if let Op::GEP { x: c, index, .. } = self.ops[src].op
+                            && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. })
+                            && c == cb
+                        {
+                            let indexed =
+                                self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
+                            let ok_users = users.get(&cur).is_some_and(|us| {
+                                us.iter().all(|u| match &self.ops[*u].op {
+                                    Op::Store { .. } | Op::Asm { .. } => true,
+                                    op => {
+                                        tt_is_tile_value(self, *u)
+                                            && matches!(
+                                                op,
+                                                Op::Unary { .. }
+                                                    | Op::Binary { .. }
+                                                    | Op::Cast { .. }
+                                                    | Op::Bitcast { .. }
+                                                    | Op::Mad { .. }
+                                            )
+                                    }
+                                })
+                            });
+                            if depth == 0 && indexed && ok_users {
+                                direct += 1;
+                            } else {
+                                held = false;
+                                break;
+                            }
+                        }
+                    }
+                    Op::Store { dst, .. } => {
+                        if let Op::GEP { x: c, .. } = self.ops[dst].op
+                            && c == cb
+                            && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. })
+                        {
+                            held = false;
+                            break;
+                        }
+                    }
+                    Op::Copy { src, dst } => {
+                        let src_hit = match self.ops[src].op {
+                            Op::GEP { x: c, index, .. }
+                                if c == cb
+                                    && matches!(
+                                        self.ops[c].op,
+                                        Op::Storage { scope: MemScope::Circular, .. }
+                                    ) =>
+                            {
+                                Some(index)
+                            }
+                            _ => None,
+                        };
+                        let dst_hit = match self.ops[dst].op {
+                            Op::GEP { x: c, .. }
+                                if c == cb
+                                    && matches!(
+                                        self.ops[c].op,
+                                        Op::Storage { scope: MemScope::Circular, .. }
+                                    ) =>
+                            {
+                                Some(c)
+                            }
+                            _ => None,
+                        };
+                        match (src_hit, dst_hit) {
+                            (None, None) => {}
+                            (Some(index), None) => {
+                                let indexed =
+                                    self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
+                                if depth == 0 && indexed {
+                                    direct += 1;
+                                } else {
+                                    held = false;
+                                    break;
+                                }
+                            }
+                            _ => {
+                                held = false;
+                                break;
+                            }
+                        }
+                    }
+                    Op::TT(TTOp::LLK { .. }) => {
+                        let Op::TT(TTOp::LLK { ops, .. }) = &self.ops[cur].op else {
+                            unreachable!("tt_place_pops: batch span is an LLK");
+                        };
+                        let mut feeds = false;
+                        for o in ops.iter().copied() {
+                            if o.is_null() {
+                                continue;
+                            }
+                            if let Op::Load { src } = self.ops[o].op
+                                && let Op::GEP { x: c, .. } = self.ops[src].op
+                                && c == cb
+                            {
+                                feeds = true;
+                                break;
+                            }
+                        }
+                        if feeds {
+                            held = false;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                cur = self.next_op(cur);
+            }
+            if !held || direct == 0 {
+                scan = self.next_op(scan);
+                continue;
+            }
+            let Some(total) = trips.checked_mul(direct) else {
+                scan = self.next_op(scan);
+                continue;
+            };
+            let Op::Storage { len, .. } = self.ops[cb].op else {
+                unreachable!("tt_place_pops: batch cb is a Storage");
+            };
+            if len <= 0 {
+                scan = self.next_op(scan);
+                continue;
+            }
+            let depth_tiles = (len / 1024) as u32;
+            if total == 0 || total > depth_tiles || total > 255 {
+                scan = self.next_op(scan);
+                continue;
+            }
+            batched.entry((loop_op, cb)).or_insert(total);
+            batched_read.insert(read_op);
             scan = self.next_op(scan);
         }
 
@@ -1478,7 +2027,11 @@ impl Kernel {
                                 panic!("tt_place_pops: CB→CB copy {op_id:?} outside the compute section");
                             }
                         }
-                        pops.push(cb);
+                        // Indexed-window reads carry no per-trip pop:
+                        // the bracket pop covers the window.
+                        if !batched_read.contains(&op_id) {
+                            pops.push(cb);
+                        }
                     }
                 }
                 Op::TT(TTOp::LLK { .. }) => {
@@ -1519,7 +2072,7 @@ impl Kernel {
             }
             // SSA last-use pops landing here.
             for (load, user) in last_use.iter() {
-                if *user == op_id {
+                if *user == op_id && !batched_read.contains(load) {
                     let Op::Load { src } = self.ops[*load].op else {
                         unreachable!("tt_place_pops: last-use of a Load");
                     };
@@ -1531,7 +2084,10 @@ impl Kernel {
                 }
             }
             // Dead-load drain pops land at the load itself.
-            if matches!(self.ops[op_id].op, Op::Load { .. }) && !users.contains_key(&op_id) {
+            if matches!(self.ops[op_id].op, Op::Load { .. })
+                && !users.contains_key(&op_id)
+                && !batched_read.contains(&op_id)
+            {
                 let Op::Load { src } = self.ops[op_id].op else {
                     unreachable!("tt_place_pops: dead op is a Load");
                 };
@@ -1548,6 +2104,33 @@ impl Kernel {
         }
         if remaining.values().any(|r| *r != 0) {
             panic!("tt_place_pops: partially consumed pages at end of stream");
+        }
+
+        // Bracket pops for indexed windows: one PopFront of the whole
+        // window after the loop (the per-trip pops above were skipped
+        // for these reads; the bracket wait came from `tt_sync_cbs`).
+        let done: Vec<((OpId, OpId), u32)> = batched.iter().map(|(k, v)| (*k, *v)).collect();
+        for ((loop_op, cb), total) in done {
+            // Matching EndLoop of `loop_op`.
+            let mut end = self.next_op(loop_op);
+            let mut depth = 0u32;
+            while !end.is_null() {
+                match self.ops[end].op {
+                    Op::Loop { .. } => depth += 1,
+                    Op::EndLoop => {
+                        if depth == 0 {
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+                end = self.next_op(end);
+            }
+            if end.is_null() {
+                panic!("tt_place_pops: batch loop {loop_op:?} has no EndLoop");
+            }
+            self.insert_after(end, Op::TT(TTOp::PopFront { cb, n: total as u8 }));
         }
 
         self.tt_fifo_check();
@@ -1772,30 +2355,96 @@ fn tt_pack_store_cb(kernel: &Kernel, id: OpId) -> Option<OpId> {
 /// Validate a scalar binary lane at init time (old scalar rule): int
 /// consts only fold for shifts (right side, 0..=31); float
 /// const-exprs fold for Add/Mul either side and Div on the right;
-/// scalar `Sub` is unrenderable (the old render rejected it too);
-/// anything else is a loud error.
-fn tt_check_scalar_lane(kernel: &Kernel, id: OpId, bop: BOp, left: bool, s: OpId) {
+/// scalar `Sub` is unrenderable (the old render rejected it too).
+/// Shift rejections return the old `tenstorrent2` errors (tests assert
+/// them via `expect_err`); anything else is a loud error.
+fn tt_check_scalar_lane(
+    kernel: &Kernel,
+    id: OpId,
+    bop: BOp,
+    left: bool,
+    s: OpId,
+) -> Result<(), BackendError> {
     match bop {
         BOp::BitShiftLeft | BOp::BitShiftRight => {
-            if left {
-                panic!("tt_init_math: const-first shift {id:?} has no scalar call");
+            // Shifts lower to the shift LLKs, which are int-only
+            // (Int32/UInt32/UInt16): anything else fails here, never
+            // on the device.
+            let dt = kernel.dtype(id);
+            match dt {
+                DType::I32 | DType::U32 | DType::U16 => {}
+                _ => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!(
+                            "tenstorrent2: tiled shift on {dt:?}, LLK supports Int32/UInt32/UInt16 only, op {id}"
+                        )
+                        .into(),
+                    });
+                }
             }
-            match kernel.at(s) {
-                Op::Const(c) => match c.as_dim() {
-                    Some(v) if v <= 31 => {}
-                    _ => panic!("tt_init_math: shift amount {id:?} is not a u32 0..=31"),
-                },
-                _ => panic!("tt_init_math: shift amount {id:?} is not an int const"),
+            let Op::Binary { x, y, .. } = kernel.at(id) else {
+                unreachable!("tt_init_math: shift check on non-Binary {id:?}");
+            };
+            let (x, y) = (*x, *y);
+            // A const side resolving to a compile-time constant has no
+            // scalar call. A const amount folds into the
+            // unary-immediate LLK (`tile << amount`); amounts outside
+            // 0..=31 are UB in every other backend — fail loudly,
+            // never emit.
+            if kernel.resolve_const(x).is_some() {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: const-first {bop:?} has no scalar call, op {id}").into(),
+                });
             }
+            let v: i128 = match kernel.resolve_const(y) {
+                Some(Constant::U8(v)) => v as i128,
+                Some(Constant::U16(v)) => v as i128,
+                Some(Constant::U32(v)) => v as i128,
+                Some(Constant::U64(v)) => u64::from_le_bytes(v) as i128,
+                Some(Constant::I8(v)) => v as i128,
+                Some(Constant::I16(v)) => v as i128,
+                Some(Constant::I32(v)) => v as i128,
+                Some(Constant::I64(v)) => i64::from_le_bytes(v) as i128,
+                _ => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: shift amount is no integer const, op {id}").into(),
+                    });
+                }
+            };
+            let Some(amount) = u32::try_from(v).ok() else {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: shift amount is no integer const, op {id}").into(),
+                });
+            };
+            if amount > 31 {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: shift amount {amount} outside 0..=31, op {id}").into(),
+                });
+            }
+            if bop == BOp::BitShiftRight && dt == DType::U32 {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tenstorrent2: U32 right-shift by immediate is arithmetic-only, op {id}")
+                        .into(),
+                });
+            }
+            Ok(())
         }
         BOp::Add | BOp::Mul => {
             tt_scalar_f32(kernel, s);
+            Ok(())
         }
         BOp::Div => {
             if left {
                 panic!("tt_init_math: const-first div {id:?} has no scalar call");
             }
             tt_scalar_f32(kernel, s);
+            Ok(())
         }
         BOp::Sub => {
             panic!("tt_init_math: scalar sub {id:?} has no LLK call (the old render rejected it too)")

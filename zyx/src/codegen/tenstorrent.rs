@@ -96,7 +96,7 @@ impl Kernel {
         // FIFO check. Render consumes the result 1:1.
         k.tt_storage();
         k.tt_lock_dst();
-        k.tt_init_math();
+        k.tt_init_math()?;
         k.tt_sync_cbs();
         k.tt_place_pops();
         k.verify();
@@ -748,13 +748,10 @@ fn render(
     let mut srcs = [String::new(), String::new(), String::new()];
     let mut lists: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut fp32 = false;    // 32-bit DST mode: any F32 tile, or any F8 circular (Blackhole
-    // mandate). F32 circulars are rejected outright.
+    // mandate). F32 circulars are accepted (format 0), like the old backend.
     let mut scan = k.head;
     while !scan.is_null() {
         if let Op::Storage { dtype, scope, .. } = k.at(scan) {
-            if *dtype == DType::F32 && *scope == MemScope::Circular {
-                return Err(tt_err(format!("tenstorrent: F32 circular buffer {scan:?} (32-bit CB path is broken)")));
-            }
             if *dtype == DType::F32 || (*dtype == DType::F8E4M3 && *scope == MemScope::Circular) {
                 fp32 = true;
             }
