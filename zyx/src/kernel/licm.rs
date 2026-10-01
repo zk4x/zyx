@@ -79,6 +79,8 @@ impl Kernel {
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
                 | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::EndReader)
+                | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::LLK { .. }) => loop_depth,
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::Loop { .. } => {
@@ -163,6 +165,8 @@ impl Kernel {
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
                 | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::EndReader)
+                | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::LLK { .. }) => loop_depth,
                 Op::Asm { ops, .. } => {
                     let mut max = 0;

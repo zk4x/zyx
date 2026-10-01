@@ -30,19 +30,16 @@ fn tenstorrent_probe_add_add() -> Result<(), ZyxError> {
 
     let _g = k.group_range(0, 1);
 
-    let ta = k.load_global_tile(a, 0);
-    k.store_circular(ca, ta, 0);
-    let tb = k.load_global_tile(b, 0);
-    k.store_circular(cb, tb, 0);
-    k.barrier();
+    k.copy_global_to_circular(a, 0, ca, 0);
+    k.copy_global_to_circular(b, 0, cb, 0);
+    k.tt_end_reader();
     let va = k.load_circular(ca, 0);
     let vb = k.load_circular(cb, 0);
     let t = k.add(va, vb);
     let s = k.add(t, va);
     k.store_circular(cout, s, 0);
-    k.barrier();
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -86,16 +83,14 @@ fn tenstorrent_probe_neg_exp() -> Result<(), ZyxError> {
 
     let _g = k.group_range(0, 1);
 
-    let ta = k.load_global_tile(a, 0);
-    k.store_circular(ca, ta, 0);
-    k.barrier();
+    k.copy_global_to_circular(a, 0, ca, 0);
+    k.tt_end_reader();
     let va = k.load_circular(ca, 0);
     let en = k.neg(va);
     let e = k.exp(en);
     k.store_circular(cout, e, 0);
-    k.barrier();
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -140,19 +135,16 @@ fn tenstorrent_mixed_exp_add() -> Result<(), ZyxError> {
 
     let _g = k.group_range(0, 1);
 
-    let ta = k.load_global_tile(a, 0);
-    k.store_circular(ca, ta, 0);
-    let tb = k.load_global_tile(b, 0);
-    k.store_circular(cb, tb, 0);
-    k.barrier();
+    k.copy_global_to_circular(a, 0, ca, 0);
+    k.copy_global_to_circular(b, 0, cb, 0);
+    k.tt_end_reader();
     let va = k.load_circular(ca, 0);
     let ea = k.exp(va);
     let vb = k.load_circular(cb, 0);
     let s = k.add(ea, vb);
     k.store_circular(cout, s, 0);
-    k.barrier();
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -200,16 +192,14 @@ fn tenstorrent_probe_sin_sin() -> Result<(), ZyxError> {
 
     let _g = k.group_range(0, 1);
 
-    let ta = k.load_global_tile(a, 0);
-    k.store_circular(ca, ta, 0);
-    k.barrier();
+    k.copy_global_to_circular(a, 0, ca, 0);
+    k.tt_end_reader();
     let va = k.load_circular(ca, 0);
     let sa = k.sin(va);
     let sb = k.sin(sa);
     k.store_circular(cout, sb, 0);
-    k.barrier();
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -247,16 +237,14 @@ fn tenstorrent_mixed_transpose_exp() -> Result<(), ZyxError> {
 
     let _g = k.group_range(0, 1);
 
-    let tx = k.load_global_tile(x, 0);
-    k.store_circular(cin, tx, 0);
-    k.barrier();
+    k.copy_global_to_circular(x, 0, cin, 0);
+    k.tt_end_reader();
     let va = k.load_circular(cin, 0);
     let t = k.transpose_tile(va);
     let e = k.exp(t);
     k.store_circular(cout, e, 0);
-    k.barrier();
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -303,11 +291,9 @@ fn tenstorrent_mixed_exp_reduce() -> Result<(), ZyxError> {
 
     let _g = k.group_range(0, 1);
 
-    let tx = k.load_global_tile(x, 0);
-    k.store_circular(cin, tx, 0);
-    let ts = k.load_global_tile(s, 0);
-    k.store_circular(csc, ts, 0);
-    k.barrier();
+    k.copy_global_to_circular(x, 0, cin, 0);
+    k.copy_global_to_circular(s, 0, csc, 0);
+    k.tt_end_reader();
     let acc = k.storage(DType::F16, MemScope::Register, 1024);
     let va = k.load_circular(cin, 0);
     let e = k.exp(va);
@@ -319,9 +305,8 @@ fn tenstorrent_mixed_exp_reduce() -> Result<(), ZyxError> {
     k.store_register_tile(acc, f, 0);
     let g = k.load_register_tile(acc, 0);
     k.store_circular(cout, g, 0);
-    k.barrier();
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -372,10 +357,9 @@ fn tenstorrent_probe_multitile_double() -> Result<(), ZyxError> {
     // Reader: tile i of [32,128] at i*1024, push all 4 into ca.
     k.loop_over(4, |k, i| {
         let base = k.mad(i, 1024, 0);
-        let ta = k.load_global_tile(a, base);
-        k.store_circular(ca, ta, 0);
+        k.copy_global_to_circular(a, base, ca, 0);
     });
-    k.barrier();
+    k.tt_end_reader();
     // Compute: pop each tile, double it, push to cout at index j.
     k.loop_over(2, |k, _o| {
         k.loop_over(2, |k, j| {
@@ -384,14 +368,13 @@ fn tenstorrent_probe_multitile_double() -> Result<(), ZyxError> {
             k.store_circular(cout, s, j);
         });
     });
-    k.barrier();
+    k.tt_end_compute();
     // Writer: output tile o*2+j at (o*2+j)*1024, pop cout at index j.
     k.loop_over(2, |k, o| {
         k.loop_over(2, |k, j| {
             let ot = k.mad(o, 2, j);
             let base = k.mad(ot, 1024, 0);
-            let v = k.load_circular(cout, j);
-            k.store_global_tile(out, v, base);
+            k.copy_circular_to_global(cout, j, out, base);
         });
     });
 
@@ -445,20 +428,17 @@ fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
             k.loop_over(2, |k, kti| {
                 let at = k.mad(mti, 2, kti);
                 let abase = k.mad(at, 1024, 0);
-                let ta = k.load_global_tile(a, abase);
-                k.store_circular(ca, ta, 0);
+                k.copy_global_to_circular(a, abase, ca, 0);
                 let bt = k.mad(kti, 2, nti);
                 let bbase = k.mad(bt, 1024, 0);
-                let tb = k.load_global_tile(b, bbase);
-                k.store_circular(cb, tb, 0);
+                k.copy_global_to_circular(b, bbase, cb, 0);
             });
             let ct = k.mad(mti, 2, nti);
             let cbase = k.mad(ct, 1024, 0);
-            let tc = k.load_global_tile(c, cbase);
-            k.store_circular(cc, tc, nti);
+            k.copy_global_to_circular(c, cbase, cc, nti);
         });
     });
-    k.barrier();
+    k.tt_end_reader();
     // Compute: one acc cone per output tile, bias added after the Kt
     // accumulation steps.
     k.loop_over(1, |k, _mti| {
@@ -477,14 +457,13 @@ fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
             k.store_circular(cout, s, 0);
         });
     });
-    k.barrier();
+    k.tt_end_compute();
     // Writer: output tile (mt,nt) at mt*Nt+nt, row-major.
     k.loop_over(1, |k, mti| {
         k.loop_over(2, |k, nti| {
             let ot = k.mad(mti, 2, nti);
             let obase = k.mad(ot, 1024, 0);
-            let v = k.load_circular(cout, 0);
-            k.store_global_tile(out, v, obase);
+            k.copy_circular_to_global(cout, 0, out, obase);
         });
     });
 
@@ -553,20 +532,17 @@ fn tenstorrent_mixed_matmul_bias_single() -> Result<(), ZyxError> {
             k.loop_over(2, |k, kti| {
                 let at = k.mad(mti, 2, kti);
                 let abase = k.mad(at, 1024, 0);
-                let ta = k.load_global_tile(a, abase);
-                k.store_circular(ca, ta, 0);
+                k.copy_global_to_circular(a, abase, ca, 0);
                 let bt = k.mad(kti, 1, nti);
                 let bbase = k.mad(bt, 1024, 0);
-                let tb = k.load_global_tile(b, bbase);
-                k.store_circular(cb, tb, 0);
+                k.copy_global_to_circular(b, bbase, cb, 0);
             });
             let ct = k.mad(mti, 1, nti);
             let cbase = k.mad(ct, 1024, 0);
-            let tc = k.load_global_tile(c, cbase);
-            k.store_circular(cc, tc, nti);
+            k.copy_global_to_circular(c, cbase, cc, nti);
         });
     });
-    k.barrier();
+    k.tt_end_reader();
     // Compute: one acc cone per output tile, bias added after the Kt
     // accumulation steps.
     k.loop_over(1, |k, _mti| {
@@ -585,14 +561,13 @@ fn tenstorrent_mixed_matmul_bias_single() -> Result<(), ZyxError> {
             k.store_circular(cout, s, 0);
         });
     });
-    k.barrier();
+    k.tt_end_compute();
     // Writer: output tile (mt,nt) at mt*Nt+nt, row-major.
     k.loop_over(1, |k, mti| {
         k.loop_over(1, |k, nti| {
             let ot = k.mad(mti, 1, nti);
             let obase = k.mad(ot, 1024, 0);
-            let v = k.load_circular(cout, 0);
-            k.store_global_tile(out, v, obase);
+            k.copy_circular_to_global(cout, 0, out, obase);
         });
     });
 
@@ -655,11 +630,10 @@ fn tenstorrent_bias_add_probe() -> Result<(), ZyxError> {
         k.loop_over(1, |k, nti| {
             let ct = k.mad(mti, 1, nti);
             let cbase = k.mad(ct, 1024, 0);
-            let tc = k.load_global_tile(c, cbase);
-            k.store_circular(cc, tc, nti);
+            k.copy_global_to_circular(c, cbase, cc, nti);
         });
     });
-    k.barrier();
+    k.tt_end_reader();
     // Compute: double the bias tile via add, packed out.
     k.loop_over(1, |k, _mti| {
         k.loop_over(1, |k, nti| {
@@ -668,14 +642,13 @@ fn tenstorrent_bias_add_probe() -> Result<(), ZyxError> {
             k.store_circular(cout, s, 0);
         });
     });
-    k.barrier();
+    k.tt_end_compute();
     // Writer: the single output tile, row-major.
     k.loop_over(1, |k, mti| {
         k.loop_over(1, |k, nti| {
             let ot = k.mad(mti, 1, nti);
             let obase = k.mad(ot, 1024, 0);
-            let v = k.load_circular(cout, 0);
-            k.store_global_tile(out, v, obase);
+            k.copy_circular_to_global(cout, 0, out, obase);
         });
     });
 
@@ -731,20 +704,17 @@ fn tenstorrent_matmul_short_probe() -> Result<(), ZyxError> {
             k.loop_over(2, |k, kti| {
                 let at = k.mad(mti, 2, kti);
                 let abase = k.mad(at, 1024, 0);
-                let ta = k.load_global_tile(a, abase);
-                k.store_circular(ca, ta, 0);
+                k.copy_global_to_circular(a, abase, ca, 0);
                 let bt = k.mad(kti, 1, nti);
                 let bbase = k.mad(bt, 1024, 0);
-                let tb = k.load_global_tile(b, bbase);
-                k.store_circular(cb, tb, 0);
+                k.copy_global_to_circular(b, bbase, cb, 0);
             });
             let ct = k.mad(mti, 1, nti);
             let cbase = k.mad(ct, 1024, 0);
-            let tc = k.load_global_tile(c, cbase);
-            k.store_circular(cc, tc, nti);
+            k.copy_global_to_circular(c, cbase, cc, nti);
         });
     });
-    k.barrier();
+    k.tt_end_reader();
     // Compute: k-loop matmuls, then bias add; pack acc AND sum.
     k.loop_over(1, |k, _mti| {
         k.loop_over(1, |k, nti| {
@@ -762,12 +732,11 @@ fn tenstorrent_matmul_short_probe() -> Result<(), ZyxError> {
             let _ = f;
         });
     });
-    k.barrier();
+    k.tt_end_compute();
     // Writer: the single bias tile, row-major.
     k.loop_over(1, |k, nti| {
         let obase = k.mad(nti, 1024, 0);
-        let v = k.load_circular(cout, 0);
-        k.store_global_tile(out, v, obase);
+        k.copy_circular_to_global(cout, 0, out, obase);
     });
 
     k.verify();
@@ -822,16 +791,14 @@ fn tenstorrent_mixed_matmul_exp() -> Result<(), ZyxError> {
             k.loop_over(2, |k, kti| {
                 let at = k.mad(mti, 2, kti);
                 let abase = k.mad(at, 1024, 0);
-                let ta = k.load_global_tile(a, abase);
-                k.store_circular(ca, ta, 0);
+                k.copy_global_to_circular(a, abase, ca, 0);
                 let bt = k.mad(kti, 1, nti);
                 let bbase = k.mad(bt, 1024, 0);
-                let tb = k.load_global_tile(b, bbase);
-                k.store_circular(cb, tb, 0);
+                k.copy_global_to_circular(b, bbase, cb, 0);
             });
         });
     });
-    k.barrier();
+    k.tt_end_reader();
     // Compute: k-loop matmuls, exp on the acc, packed out.
     k.loop_over(1, |k, _mti| {
         k.loop_over(1, |k, _nti| {
@@ -848,14 +815,13 @@ fn tenstorrent_mixed_matmul_exp() -> Result<(), ZyxError> {
             k.store_circular(cout, e, 0);
         });
     });
-    k.barrier();
+    k.tt_end_compute();
     // Writer: output tile (mt,nt) at mt*Nt+nt, row-major.
     k.loop_over(1, |k, mti| {
         k.loop_over(1, |k, nti| {
             let ot = k.mad(mti, 1, nti);
             let obase = k.mad(ot, 1024, 0);
-            let v = k.load_circular(cout, 0);
-            k.store_global_tile(out, v, obase);
+            k.copy_circular_to_global(cout, 0, out, obase);
         });
     });
 
@@ -919,16 +885,14 @@ fn tenstorrent_mixed_matmul_transpose() -> Result<(), ZyxError> {
             k.loop_over(2, |k, kti| {
                 let at = k.mad(mti, 2, kti);
                 let abase = k.mad(at, 1024, 0);
-                let ta = k.load_global_tile(a, abase);
-                k.store_circular(ca, ta, 0);
+                k.copy_global_to_circular(a, abase, ca, 0);
                 let bt = k.mad(kti, 1, nti);
                 let bbase = k.mad(bt, 1024, 0);
-                let tb = k.load_global_tile(b, bbase);
-                k.store_circular(cb, tb, 0);
+                k.copy_global_to_circular(b, bbase, cb, 0);
             });
         });
     });
-    k.barrier();
+    k.tt_end_reader();
     // Compute: k-loop matmuls, pack acc to cmid, transpose to cout.
     k.loop_over(1, |k, _mti| {
         k.loop_over(1, |k, _nti| {
@@ -947,14 +911,13 @@ fn tenstorrent_mixed_matmul_transpose() -> Result<(), ZyxError> {
             k.store_circular(cout, t, 0);
         });
     });
-    k.barrier();
+    k.tt_end_compute();
     // Writer: output tile, row-major.
     k.loop_over(1, |k, mti| {
         k.loop_over(1, |k, nti| {
             let ot = k.mad(mti, 1, nti);
             let obase = k.mad(ot, 1024, 0);
-            let v = k.load_circular(cout, 0);
-            k.store_global_tile(out, v, obase);
+            k.copy_circular_to_global(cout, 0, out, obase);
         });
     });
 
@@ -1026,18 +989,15 @@ fn tenstorrent_mixed_matmul_reduce() -> Result<(), ZyxError> {
             k.loop_over(2, |k, kti| {
                 let at = k.mad(mti, 2, kti);
                 let abase = k.mad(at, 1024, 0);
-                let ta = k.load_global_tile(a, abase);
-                k.store_circular(ca, ta, 0);
+                k.copy_global_to_circular(a, abase, ca, 0);
                 let bt = k.mad(kti, 1, nti);
                 let bbase = k.mad(bt, 1024, 0);
-                let tb = k.load_global_tile(b, bbase);
-                k.store_circular(cb, tb, 0);
+                k.copy_global_to_circular(b, bbase, cb, 0);
             });
-            let st = k.load_global_tile(s, 0);
-            k.store_circular(csc, st, 0);
+            k.copy_global_to_circular(s, 0, csc, 0);
         });
     });
-    k.barrier();
+    k.tt_end_reader();
     // Compute: k-loop matmuls, pack acc to cmid, column-sum to cout.
     k.loop_over(1, |k, _mti| {
         k.loop_over(1, |k, _nti| {
@@ -1059,14 +1019,13 @@ fn tenstorrent_mixed_matmul_reduce() -> Result<(), ZyxError> {
             k.store_circular(cout, g, 0);
         });
     });
-    k.barrier();
+    k.tt_end_compute();
     // Writer: output tile, row-major.
     k.loop_over(1, |k, mti| {
         k.loop_over(1, |k, nti| {
             let ot = k.mad(mti, 1, nti);
             let obase = k.mad(ot, 1024, 0);
-            let v = k.load_circular(cout, 0);
-            k.store_global_tile(out, v, obase);
+            k.copy_circular_to_global(cout, 0, out, obase);
         });
     });
 
@@ -1136,16 +1095,14 @@ fn tenstorrent_matmul_cast_probe() -> Result<(), ZyxError> {
             k.loop_over(2, |k, kti| {
                 let at = k.mad(mti, 2, kti);
                 let abase = k.mad(at, 1024, 0);
-                let ta = k.load_global_tile(a, abase);
-                k.store_circular(ca, ta, 0);
+                k.copy_global_to_circular(a, abase, ca, 0);
                 let bt = k.mad(kti, 1, nti);
                 let bbase = k.mad(bt, 1024, 0);
-                let tb = k.load_global_tile(b, bbase);
-                k.store_circular(cb, tb, 0);
+                k.copy_global_to_circular(b, bbase, cb, 0);
             });
         });
     });
-    k.barrier();
+    k.tt_end_reader();
     // Compute: k-loop matmuls, cast acc to F16, packed out.
     k.loop_over(1, |k, _mti| {
         k.loop_over(1, |k, _nti| {
@@ -1162,14 +1119,13 @@ fn tenstorrent_matmul_cast_probe() -> Result<(), ZyxError> {
             k.store_circular(cout, cf, 0);
         });
     });
-    k.barrier();
+    k.tt_end_compute();
     // Writer: output tile, row-major.
     k.loop_over(1, |k, mti| {
         k.loop_over(1, |k, nti| {
             let ot = k.mad(mti, 1, nti);
             let obase = k.mad(ot, 1024, 0);
-            let v = k.load_circular(cout, 0);
-            k.store_global_tile(out, v, obase);
+            k.copy_circular_to_global(cout, 0, out, obase);
         });
     });
 
@@ -1235,12 +1191,10 @@ fn tenstorrent_softmax_rows() -> Result<(), ZyxError> {
     // Reader: two copies of A (max-fold, center-sub) + two ones
     // (max-fold scaler, sum-fold scaler).
     for _ in 0..2 {
-        let ta = k.load_global_tile(a, 0);
-        k.store_circular(ca, ta, 0);
-        let ts = k.load_global_tile(ones, 0);
-        k.store_circular(cone, ts, 0);
+        k.copy_global_to_circular(a, 0, ca, 0);
+        k.copy_global_to_circular(ones, 0, cone, 0);
     }
-    k.barrier();
+    k.tt_end_reader();
 
     // Row max -> cm.
     let va = k.load_circular(ca, 0);
@@ -1278,11 +1232,10 @@ fn tenstorrent_softmax_rows() -> Result<(), ZyxError> {
     let rb = k.broadcast_tile(vr, TileDim::Col);
     let o = k.mul(ve2, rb);
     k.store_circular(cout, o, 0);
-    k.barrier();
+    k.tt_end_compute();
 
     // Writer: drain the single output tile.
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
+    k.copy_circular_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1342,16 +1295,12 @@ fn tenstorrent_rmsnorm_rows() -> Result<(), ZyxError> {
 
     // Reader: two copies of A (square, final mul) + one each of the rest.
     for _ in 0..2 {
-        let ta = k.load_global_tile(a, 0);
-        k.store_circular(ca, ta, 0);
+        k.copy_global_to_circular(a, 0, ca, 0);
     }
-    let tw = k.load_global_tile(w, 0);
-    k.store_circular(cw, tw, 0);
-    let te = k.load_global_tile(eps_t, 0);
-    k.store_circular(ceps, te, 0);
-    let ts = k.load_global_tile(inv_n, 0);
-    k.store_circular(cs, ts, 0);
-    k.barrier();
+    k.copy_global_to_circular(w, 0, cw, 0);
+    k.copy_global_to_circular(eps_t, 0, ceps, 0);
+    k.copy_global_to_circular(inv_n, 0, cs, 0);
+    k.tt_end_reader();
 
     // x^2 -> csq.
     let va = k.load_circular(ca, 0);
@@ -1384,11 +1333,10 @@ fn tenstorrent_rmsnorm_rows() -> Result<(), ZyxError> {
     let vw = k.load_circular(cw, 0);
     let o = k.mul(t, vw);
     k.store_circular(cout, o, 0);
-    k.barrier();
+    k.tt_end_compute();
 
     // Writer: drain the single output tile.
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
+    k.copy_circular_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1444,9 +1392,8 @@ fn tenstorrent_scalar_add_mul() -> Result<(), ZyxError> {
 
     let _g = k.group_range(0, 1);
 
-    let ta = k.load_global_tile(a, 0);
-    k.store_circular(ca, ta, 0);
-    k.barrier();
+    k.copy_global_to_circular(a, 0, ca, 0);
+    k.tt_end_reader();
 
     let va = k.load_circular(ca, 0);
     let c15v = k.const_val(1.5f32);
@@ -1456,10 +1403,9 @@ fn tenstorrent_scalar_add_mul() -> Result<(), ZyxError> {
     let c20 = k.cast(c20v, DType::BF16);
     let o = k.mul(s, c20);
     k.store_circular(cout, o, 0);
-    k.barrier();
+    k.tt_end_compute();
 
-    let v = k.load_circular(cout, 0);
-    k.store_global_tile(out, v, 0);
+    k.copy_circular_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1505,11 +1451,9 @@ fn tenstorrent_fused_sigmoid_silu() -> Result<(), ZyxError> {
 
     let _g = k.group_range(0, 1);
 
-    let t1 = k.load_global_tile(a1, 0);
-    k.store_circular(ca1, t1, 0);
-    let t2 = k.load_global_tile(a2, 0);
-    k.store_circular(ca2, t2, 0);
-    k.barrier();
+    k.copy_global_to_circular(a1, 0, ca1, 0);
+    k.copy_global_to_circular(a2, 0, ca2, 0);
+    k.tt_end_reader();
 
     let v1 = k.load_circular(ca1, 0);
     let sig = k.sigmoid(v1);
@@ -1517,12 +1461,10 @@ fn tenstorrent_fused_sigmoid_silu() -> Result<(), ZyxError> {
     let v2 = k.load_circular(ca2, 0);
     let sil = k.silu(v2);
     k.store_circular(csilu, sil, 0);
-    k.barrier();
+    k.tt_end_compute();
 
-    let v1 = k.load_circular(csig, 0);
-    k.store_global_tile(out_sig, v1, 0);
-    let v2 = k.load_circular(csilu, 0);
-    k.store_global_tile(out_silu, v2, 0);
+    k.copy_circular_to_global(csig, 0, out_sig, 0);
+    k.copy_circular_to_global(csilu, 0, out_silu, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1588,9 +1530,8 @@ fn tenstorrent_probe_q4k_nibbles() -> Result<(), ZyxError> {
     let c00625 = k.const_val(0.0625f32);
     let c16 = k.const_val(16.0f32);
 
-    let u = k.load_global_tile(packed, c0);
-    k.store_circular(cu16, u, c0);
-    k.barrier();
+    k.copy_global_to_circular(packed, c0, cu16, c0);
+    k.tt_end_reader();
     let u1 = k.load_circular(cu16, c0);
     let f1 = k.cast(u1, DType::F32);
     k.store_circular(ccur, f1, c0);
@@ -1609,9 +1550,8 @@ fn tenstorrent_probe_q4k_nibbles() -> Result<(), ZyxError> {
     k.store_circular(ccur, bc, c0);
     // Drain pop: the stored carry would otherwise sit unconsumed in ccur.
     let _drain = k.load_circular(ccur, c0);
-    k.barrier();
-    let v = k.load_circular(cout, c0);
-    k.store_global_tile(out, v, c0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, c0, out, c0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1648,15 +1588,13 @@ fn tenstorrent_probe_q4k_convert() -> Result<(), ZyxError> {
     let _g = k.group_range(0, 1);
     let c0 = k.const_idx(0);
 
-    let t = k.load_global_tile(a, c0);
-    k.store_circular(ca, t, c0);
-    k.barrier();
+    k.copy_global_to_circular(a, c0, ca, c0);
+    k.tt_end_reader();
     let s = k.load_circular(ca, c0);
     let sf = k.cast(s, DType::F32);
     k.store_circular(cout, sf, c0);
-    k.barrier();
-    let v = k.load_circular(cout, c0);
-    k.store_global_tile(out, v, c0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, c0, out, c0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1703,9 +1641,8 @@ fn tenstorrent_probe_q4k_carry() -> Result<(), ZyxError> {
     let c00625 = k.const_val(0.0625f32);
     let c16 = k.const_val(16.0f32);
 
-    let u = k.load_global_tile(packed, c0);
-    k.store_circular(cu16, u, c0);
-    k.barrier();
+    k.copy_global_to_circular(packed, c0, cu16, c0);
+    k.tt_end_reader();
     let u1 = k.load_circular(cu16, c0);
     let f1 = k.cast(u1, DType::F32);
     k.store_circular(ccur, f1, c0);
@@ -1729,10 +1666,9 @@ fn tenstorrent_probe_q4k_carry() -> Result<(), ZyxError> {
     // verifier flags any producer/consumer imbalance).
     let _drain = k.load_circular(ccur, c0);
     let _drain2 = k.load_circular(ccur2, c0);
-    k.barrier();
+    k.tt_end_compute();
     k.loop_over(c4, |k, i| {
-        let v = k.load_circular(cout, i);
-        k.store_global_tile(out, v, i);
+        k.copy_circular_to_global(cout, i, out, i);
     });
 
     k.verify();
@@ -1783,13 +1719,10 @@ fn tenstorrent_probe_q4k_onetrip() -> Result<(), ZyxError> {
     let c00625 = k.const_val(0.0625f32);
     let c16 = k.const_val(16.0f32);
 
-    let u = k.load_global_tile(packed, c0);
-    k.store_circular(cu16, u, c0);
-    let s0 = k.load_global_tile(sc, c0);
-    k.store_circular(csc, s0, c0);
-    let m0 = k.load_global_tile(mn, c0);
-    k.store_circular(cmn, m0, c0);
-    k.barrier();
+    k.copy_global_to_circular(packed, c0, cu16, c0);
+    k.copy_global_to_circular(sc, c0, csc, c0);
+    k.copy_global_to_circular(mn, c0, cmn, c0);
+    k.tt_end_reader();
     let u1 = k.load_circular(cu16, c0);
     let f1 = k.cast(u1, DType::F32);
     k.store_circular(ccur, f1, c0);
@@ -1814,9 +1747,8 @@ fn tenstorrent_probe_q4k_onetrip() -> Result<(), ZyxError> {
     k.store_circular(cout, v, c0);
     // Drain pop: the stored carry would otherwise sit unconsumed in ccur.
     let _drain = k.load_circular(ccur, c0);
-    k.barrier();
-    let vo = k.load_circular(cout, c0);
-    k.store_global_tile(out, vo, c0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, c0, out, c0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1874,14 +1806,11 @@ fn tenstorrent_probe_fp32_passthru() -> Result<(), ZyxError> {
     let _g = k.group_range(0, 1);
     let c0 = k.const_idx(0);
 
-    let t = k.load_global_tile(a, c0);
-    k.store_circular(ca, t, c0);
-    k.barrier();
-    let v = k.load_circular(ca, c0);
-    k.store_circular(cout, v, c0);
-    k.barrier();
-    let v2 = k.load_circular(cout, c0);
-    k.store_global_tile(out, v2, c0);
+    k.copy_global_to_circular(a, c0, ca, c0);
+    k.tt_end_reader();
+    k.copy_circular_to_circular(ca, c0, cout, c0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, c0, out, c0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1920,17 +1849,15 @@ fn tenstorrent_probe_fp32_seed() -> Result<(), ZyxError> {
     let _g = k.group_range(0, 1);
     let c0 = k.const_idx(0);
 
-    let u = k.load_global_tile(packed, c0);
-    k.store_circular(cu16, u, c0);
-    k.barrier();
+    k.copy_global_to_circular(packed, c0, cu16, c0);
+    k.tt_end_reader();
     let u1 = k.load_circular(cu16, c0);
     let f = k.cast(u1, DType::F32);
     k.store_circular(ccur, f, c0);
     let f2 = k.load_circular(ccur, c0);
     k.store_circular(cout, f2, c0);
-    k.barrier();
-    let v = k.load_circular(cout, c0);
-    k.store_global_tile(out, v, c0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, c0, out, c0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1971,18 +1898,16 @@ fn tenstorrent_probe_fp32_scalar() -> Result<(), ZyxError> {
     let c0 = k.const_idx(0);
     let c00625 = k.const_val(0.0625f32);
 
-    let u = k.load_global_tile(packed, c0);
-    k.store_circular(cu16, u, c0);
-    k.barrier();
+    k.copy_global_to_circular(packed, c0, cu16, c0);
+    k.tt_end_reader();
     let u1 = k.load_circular(cu16, c0);
     let f = k.cast(u1, DType::F32);
     k.store_circular(ccur, f, c0);
     let f2 = k.load_circular(ccur, c0);
     let t = k.mul(f2, c00625);
     k.store_circular(cout, t, c0);
-    k.barrier();
-    let v = k.load_circular(cout, c0);
-    k.store_global_tile(out, v, c0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, c0, out, c0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -2023,9 +1948,8 @@ fn tenstorrent_probe_fp32_trunc() -> Result<(), ZyxError> {
     let c0 = k.const_idx(0);
     let c00625 = k.const_val(0.0625f32);
 
-    let u = k.load_global_tile(packed, c0);
-    k.store_circular(cu16, u, c0);
-    k.barrier();
+    k.copy_global_to_circular(packed, c0, cu16, c0);
+    k.tt_end_reader();
     let u1 = k.load_circular(cu16, c0);
     let f = k.cast(u1, DType::F32);
     k.store_circular(ccur, f, c0);
@@ -2033,9 +1957,8 @@ fn tenstorrent_probe_fp32_trunc() -> Result<(), ZyxError> {
     let t = k.mul(f2, c00625);
     let t = k.trunc(t);
     k.store_circular(cout, t, c0);
-    k.barrier();
-    let v = k.load_circular(cout, c0);
-    k.store_global_tile(out, v, c0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, c0, out, c0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -2080,9 +2003,8 @@ fn tenstorrent_probe_fp32_sub() -> Result<(), ZyxError> {
     let c00625 = k.const_val(0.0625f32);
     let c16 = k.const_val(16.0f32);
 
-    let u = k.load_global_tile(packed, c0);
-    k.store_circular(cu16, u, c0);
-    k.barrier();
+    k.copy_global_to_circular(packed, c0, cu16, c0);
+    k.tt_end_reader();
     let u1 = k.load_circular(cu16, c0);
     let f = k.cast(u1, DType::F32);
     k.store_circular(ccur, f, c0);
@@ -2094,9 +2016,8 @@ fn tenstorrent_probe_fp32_sub() -> Result<(), ZyxError> {
     let cv2 = k.load_circular(ccur2, c0);
     let n = k.sub(cv2, t16);
     k.store_circular(cout, n, c0);
-    k.barrier();
-    let v = k.load_circular(cout, c0);
-    k.store_global_tile(out, v, c0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, c0, out, c0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -2135,15 +2056,13 @@ fn tenstorrent_probe_u8chain_cast() -> Result<(), ZyxError> {
     let _g = k.group_range(0, 1);
     let c0 = k.const_idx(0);
 
-    let u = k.load_global_tile(packed, c0);
-    k.store_circular(cu16, u, c0);
-    k.barrier();
+    k.copy_global_to_circular(packed, c0, cu16, c0);
+    k.tt_end_reader();
     let u1 = k.load_circular(cu16, c0);
     let f = k.cast(u1, DType::BF16);
     k.store_circular(cout, f, c0);
-    k.barrier();
-    let v = k.load_circular(cout, c0);
-    k.store_global_tile(out, v, c0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, c0, out, c0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -2191,9 +2110,8 @@ fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
     let c16v = k.const_val(16.0f32);
     let c16 = k.cast(c16v, DType::BF16);
 
-    let u = k.load_global_tile(packed, c0);
-    k.store_circular(cu8, u, c0);
-    k.barrier();
+    k.copy_global_to_circular(packed, c0, cu8, c0);
+    k.tt_end_reader();
     let u1 = k.load_circular(cu8, c0);
     let f = k.cast(u1, DType::BF16);
     k.store_circular(ccur, f, c0);
@@ -2217,11 +2135,10 @@ fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
     // verifier flags any producer/consumer imbalance).
     let _drain = k.load_circular(ccur, c0);
     let _drain2 = k.load_circular(ccur2, c0);
-    k.barrier();
+    k.tt_end_compute();
     k.loop_over(2, |k, p| {
         let base = k.mad(p, 1024, 0);
-        let v = k.load_circular(cout, p);
-        k.store_global_tile(out, v, base);
+        k.copy_circular_to_global(cout, p, out, base);
     });
 
     k.verify();
@@ -2277,15 +2194,13 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
         let cin = k.circular_storage(DType::U16, 1);
         let cout = k.circular_storage(DType::F32, 1);
         let c0 = k.const_idx(0);
-        let u = k.load_global_tile(inp, c0);
-        k.store_circular(cin, u, c0);
-        k.barrier();
+        k.copy_global_to_circular(inp, c0, cin, c0);
+        k.tt_end_reader();
         let u = k.load_circular(cin, c0);
         let f = k.cast(u, DType::F32);
         k.store_circular(cout, f, c0);
-        k.barrier();
-        let v = k.load_circular(cout, c0);
-        k.store_global_tile(out, v, c0);
+        k.tt_end_compute();
+        k.copy_circular_to_global(cout, c0, out, c0);
     })?;
     let in1 = Tensor::from(words.clone()).to(Dev::TT(0))?;
     let out1 = k1.forward(&[&in1], vec![[TILE_ELEMS]])?;
@@ -2301,14 +2216,11 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
         let cin = k.circular_storage(DType::BF16, 1);
         let cout = k.circular_storage(DType::BF16, 1);
         let c0 = k.const_idx(0);
-        let u = k.load_global_tile(inp, c0);
-        k.store_circular(cin, u, c0);
-        k.barrier();
-        let v = k.load_circular(cin, c0);
-        k.store_circular(cout, v, c0);
-        k.barrier();
-        let v = k.load_circular(cout, c0);
-        k.store_global_tile(out, v, c0);
+        k.copy_global_to_circular(inp, c0, cin, c0);
+        k.tt_end_reader();
+        k.copy_circular_to_circular(cin, c0, cout, c0);
+        k.tt_end_compute();
+        k.copy_circular_to_global(cout, c0, out, c0);
     })?;
     let in2 = Tensor::from_vec(scales.clone(), [TILE_ELEMS])?.to(Dev::TT(0))?;
     let out2 = k2.forward(&[&in2], vec![[TILE_ELEMS]])?;
@@ -2327,9 +2239,8 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
         let cmid = k.circular_storage(DType::F32, 2);
         let cout = k.circular_storage(DType::F32, 1);
         let c0 = k.const_idx(0);
-        let u = k.load_global_tile(inp, c0);
-        k.store_circular(cin, u, c0);
-        k.barrier();
+        k.copy_global_to_circular(inp, c0, cin, c0);
+        k.tt_end_reader();
         let u = k.load_circular(cin, c0);
         let f = k.cast(u, DType::F32);
         k.store_circular(cmid, f, c0);
@@ -2341,9 +2252,8 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
         let f2 = k.load_circular(cmid, c0);
         let n = k.sub(f2, t16);
         k.store_circular(cout, n, c0);
-        k.barrier();
-        let v = k.load_circular(cout, c0);
-        k.store_global_tile(out, v, c0);
+        k.tt_end_compute();
+        k.copy_circular_to_global(cout, c0, out, c0);
     })?;
     let in3 = Tensor::from(words.clone()).to(Dev::TT(0))?;
     let out3 = k3.forward(&[&in3], vec![[TILE_ELEMS]])?;
@@ -2385,19 +2295,16 @@ fn tenstorrent_probe_q4k_asm_dequant() -> Result<(), ZyxError> {
     let c1024 = k.const_idx(1024i64);
 
     // Reader: page pushed once per plane, scales/mins per tile.
-    let u = k.load_global_tile(packed, c0);
     for _ in 0..4 {
-        k.store_circular(cu16, u, c0);
+        k.copy_global_to_circular(packed, c0, cu16, c0);
     }
     for t in 0..4i64 {
         let ct = k.const_idx(t);
         let sbase = k.mad(ct, c1024, c0);
-        let s = k.load_global_tile(sc, sbase);
-        k.store_circular(csc, s, c0);
-        let m = k.load_global_tile(mn, sbase);
-        k.store_circular(cmn, m, c0);
+        k.copy_global_to_circular(sc, sbase, csc, c0);
+        k.copy_global_to_circular(mn, sbase, cmn, c0);
     }
-    k.barrier();
+    k.tt_end_reader();
 
     // Compute: one asm block per plane, in place on the packed tile's
     // DST slot; {0} packed word tile, {1} scale tile, {2} min tile.
@@ -2431,14 +2338,13 @@ for (int face = 0; face < 4; face++) {{
         let v = k.asm(&tpl, &[w, sf, mf]);
         k.store_circular(cout, v, c0);
     }
-    k.barrier();
+    k.tt_end_compute();
 
     // Writer: 4 dequantized tiles to DRAM.
     for t in 0..4i64 {
         let ct = k.const_idx(t);
         let obase = k.mad(ct, c1024, c0);
-        let v = k.load_circular(cout, c0);
-        k.store_global_tile(out, v, obase);
+        k.copy_circular_to_global(cout, c0, out, obase);
     }
 
     k.verify();

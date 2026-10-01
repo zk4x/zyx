@@ -1386,6 +1386,8 @@ impl Graph {
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
                 | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::EndReader)
+                | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::LLK { .. })
                 | Op::Asm { .. }
                 | Op::After { .. }

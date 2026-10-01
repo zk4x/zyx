@@ -23,7 +23,6 @@ use super::{DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Pool, PoolBu
 use crate::{
     DType,
     backend::DTypeCapability,
-    codegen::tenstorrent::CBId,
     error::{BackendError, ErrorStatus},
     shape::Dim,
     slab::Slab,
@@ -673,7 +672,7 @@ impl RuntimeProcess {
         reader_source: &str,
         compute_source: &str,
         writer_source: &str,
-        cb_config: &Slab<CBId, (u32, u32, u32)>,
+        cb_config: &[(u32, u32, u32)],
         n_params: u32,
         reader_params: &[u32],
         compute_params: &[u32],
@@ -683,7 +682,7 @@ impl RuntimeProcess {
         let reader_source_len = reader_source.len();
         let compute_source_len = compute_source.len();
         let writer_source_len = writer_source.len();
-        let n_cbs = usize::from(cb_config.len());
+        let n_cbs = cb_config.len();
         let dest_acc = fp32_dest_acc_en as u32;
         let mut cmd = format!(
             r#"{{"cmd":"compile_program","id":{id},"reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"writer_source_len":{writer_source_len},"n_cbs":{n_cbs},"n_params":{n_params},"n_reader_params":{},"n_compute_params":{},"n_writer_params":{},"fp32_dest_acc":{dest_acc}"#,
@@ -700,8 +699,8 @@ impl RuntimeProcess {
         for (i, p) in writer_params.iter().enumerate() {
             cmd.push_str(&format!(r#","wp{i}":{p}"#));
         }
-        for (i, (cb, (fmt, tb, nt))) in cb_config.iter().enumerate() {
-            cmd.push_str(&format!(r#","cb_idx{i}":{cb},"cb_fmt{i}":{fmt},"cb_tb{i}":{tb},"cb_nt{i}":{nt}"#));
+        for (i, (fmt, tb, nt)) in cb_config.iter().enumerate() {
+            cmd.push_str(&format!(r#","cb_idx{i}":{i},"cb_fmt{i}":{fmt},"cb_tb{i}":{tb},"cb_nt{i}":{nt}"#));
         }
         cmd.push('}');
         self.send(&cmd)?;

@@ -470,6 +470,74 @@ impl Kernel {
         self.store_tile(dst, x, index, 32, 32, 32)
     }
 
+    /// Copy a standard 32 x 32 tile from a DRAM param into a
+    /// `MemScope::Circular` storage (reader publish). Both ends are
+    /// `GEP`s with their own index: `src_idx` addresses DRAM,
+    /// `dst_idx` the CB slot. DRAM↔CB traffic is a `Copy`, never
+    /// load+store: `tt_sync_cbs` wraps it with reserve/push, and a
+    /// circular load feeding a store is a lowering bug under its
+    /// strict load rule.
+    pub fn copy_global_to_circular(&mut self, src: OpId, src_idx: impl IntoOp, dst: OpId, dst_idx: impl IntoOp) -> OpId {
+        debug_assert!(
+            matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global, .. } | Op::Param { kind: ParamKind::GlobalMut, .. }),
+            "copy_global_to_circular: src {src} is not a DRAM param"
+        );
+        debug_assert!(
+            matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
+            "copy_global_to_circular: dst {dst} is not a Circular storage"
+        );
+        let layout = MemLayout::Tile { x: 32, y: 32, stride: 32 };
+        let src_idx = src_idx.into_op(self);
+        let dst_idx = dst_idx.into_op(self);
+        let s = self.push_back(Op::GEP { x: src, index: src_idx, layout });
+        let d = self.push_back(Op::GEP { x: dst, index: dst_idx, layout });
+        self.push_back(Op::Copy { src: s, dst: d })
+    }
+
+    /// Copy a standard 32 x 32 tile from a `MemScope::Circular`
+    /// storage into a DRAM (`GlobalMut`) param (writer drain).
+    /// `src_idx` addresses the CB slot, `dst_idx` DRAM. Same
+    /// `Copy`-only traffic rule as
+    /// [`Kernel::copy_global_to_circular`].
+    pub fn copy_circular_to_global(&mut self, src: OpId, src_idx: impl IntoOp, dst: OpId, dst_idx: impl IntoOp) -> OpId {
+        debug_assert!(
+            matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }),
+            "copy_circular_to_global: src {src} is not a Circular storage"
+        );
+        debug_assert!(
+            matches!(self.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. }),
+            "copy_circular_to_global: dst {dst} is not a GlobalMut param"
+        );
+        let layout = MemLayout::Tile { x: 32, y: 32, stride: 32 };
+        let src_idx = src_idx.into_op(self);
+        let dst_idx = dst_idx.into_op(self);
+        let s = self.push_back(Op::GEP { x: src, index: src_idx, layout });
+        let d = self.push_back(Op::GEP { x: dst, index: dst_idx, layout });
+        self.push_back(Op::Copy { src: s, dst: d })
+    }
+
+    /// Copy a standard 32 x 32 tile between two `MemScope::Circular`
+    /// storages (CB-to-CB movement). `src_idx`/`dst_idx` address the
+    /// two CB slots. Same `Copy`-only traffic rule as
+    /// [`Kernel::copy_global_to_circular`]; `tt_sync_cbs` waits on
+    /// the read side.
+    pub fn copy_circular_to_circular(&mut self, src: OpId, src_idx: impl IntoOp, dst: OpId, dst_idx: impl IntoOp) -> OpId {
+        debug_assert!(
+            matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }),
+            "copy_circular_to_circular: src {src} is not a Circular storage"
+        );
+        debug_assert!(
+            matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
+            "copy_circular_to_circular: dst {dst} is not a Circular storage"
+        );
+        let layout = MemLayout::Tile { x: 32, y: 32, stride: 32 };
+        let src_idx = src_idx.into_op(self);
+        let dst_idx = dst_idx.into_op(self);
+        let s = self.push_back(Op::GEP { x: src, index: src_idx, layout });
+        let d = self.push_back(Op::GEP { x: dst, index: dst_idx, layout });
+        self.push_back(Op::Copy { src: s, dst: d })
+    }
+
     fn store_op(&mut self, dst: OpId, x: OpId, index: OpId, layout: MemLayout) {
         debug_assert!(
             matches!(self.ops[dst].op, Op::Param { .. } | Op::Storage { .. }),

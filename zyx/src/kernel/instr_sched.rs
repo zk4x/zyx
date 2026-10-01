@@ -116,7 +116,7 @@ impl Kernel {
         let mut load = vec![false; n];
         for (i, &id) in rest.iter().enumerate() {
             match self.at(id) {
-                Op::Barrier => {
+                Op::Barrier | Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) => {
                     structural[i] = true;
                     barrier[i] = true;
                 }
@@ -202,7 +202,9 @@ impl Kernel {
                 | Op::TT(TTOp::PackUnlock)
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit) => {}
+                | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::EndReader)
+                | Op::TT(TTOp::EndCompute) => {}
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                     todo!()
                 }

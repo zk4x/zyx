@@ -188,6 +188,12 @@ impl Display for Kernel {
                 Op::TT(TTOp::ReduceUninit) => {
                     writeln!(f, "{indent}{red}reduce_uninit{reset}").unwrap();
                 }
+                Op::TT(TTOp::EndReader) => {
+                    writeln!(f, "{indent}{red}end_reader{reset}").unwrap();
+                }
+                Op::TT(TTOp::EndCompute) => {
+                    writeln!(f, "{indent}{red}end_compute{reset}").unwrap();
+                }
                 Op::TT(TTOp::LLK { ref asm, ref ops }) => {
                     // Opaque LLK call template: U8 is a display
                     // placeholder like Asm (effect-only, never a value).

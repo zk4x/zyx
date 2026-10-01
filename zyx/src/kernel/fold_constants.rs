@@ -571,6 +571,8 @@ impl Kernel {
                     | Op::TT(TTOp::NocReadBarrier)
                     | Op::TT(TTOp::NocWriteBarrier)
                     | Op::TT(TTOp::ReduceUninit)
+                    | Op::TT(TTOp::EndReader)
+                    | Op::TT(TTOp::EndCompute)
                     | Op::TT(TTOp::LLK { .. })
                     | Op::Param { .. }
                     | Op::Storage { .. }
@@ -685,9 +687,11 @@ impl Kernel {
                 | &mut Op::TT(TTOp::MathUnlock)
                 | &mut Op::TT(TTOp::PackLock)
                 | &mut Op::TT(TTOp::PackUnlock)
-                | &mut Op::TT(TTOp::NocReadBarrier)
+                |                 &mut Op::TT(TTOp::NocReadBarrier)
                 | &mut Op::TT(TTOp::NocWriteBarrier)
-                | &mut Op::TT(TTOp::ReduceUninit) => {
+                | &mut Op::TT(TTOp::ReduceUninit)
+                | &mut Op::TT(TTOp::EndReader)
+                | &mut Op::TT(TTOp::EndCompute) => {
                     // Operand-free effects: nothing to remap, never dedup.
                 }
                 &mut Op::TT(TTOp::LLK { .. }) => {
@@ -888,6 +892,7 @@ mod tests {
         let out = k.param_mut(DType::F32);
         let cb = k.storage(DType::F32, MemScope::Circular, 1);
         let idx = k.const_val(0i64);
+        k.tt_end_reader();
         let a = k.push_back(Op::TT(TTOp::LLK {
             asm: TinyString::new("copy_tile({0}, {1});"),
             ops: TinyVec::new(&[cb, idx]),
@@ -900,6 +905,7 @@ mod tests {
         let load_b = k.load(cb, idx);
         k.store(out, load_a, idx);
         k.store(out, load_b, idx);
+        k.tt_end_compute();
         k.common_subexpression_elimination();
         // Both calls survive; neither is remapped to the other.
         let mut llk_count = 0;

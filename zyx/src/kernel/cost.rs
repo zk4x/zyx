@@ -213,7 +213,9 @@ impl Kernel {
                         | TTOp::PackUnlock
                         | TTOp::NocReadBarrier
                         | TTOp::NocWriteBarrier
-                        | TTOp::ReduceUninit => {}
+                        | TTOp::ReduceUninit
+                        | TTOp::EndReader
+                        | TTOp::EndCompute => {}
                     },
                     Op::Barrier | Op::EndLoop => {}
                 }
@@ -287,6 +289,8 @@ impl Kernel {
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
                 | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::EndReader)
+                | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::LLK { .. })
                 | Op::EndLoop
                 | Op::Barrier => false,

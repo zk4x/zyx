@@ -98,6 +98,7 @@ pub use crate::backend::{Dev, DeviceInfo};
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{BOp, FusedKind, MMADType, MMADims, MMALayout, OpId, ParamKind, TileDim};
 pub(crate) use ops::{Op, OpLinked, RangeKind, TTOp, UOp};
+pub(crate) use tenstorrent::{tt_is_tile_value, tt_scalar_f32, tt_scalar_lane, tt_storage_of};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
@@ -493,7 +494,9 @@ impl Kernel {
                 | Op::TT(TTOp::PackUnlock)
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit) => {}
+                | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::EndReader)
+                | Op::TT(TTOp::EndCompute) => {}
             }
             op_id = self.next_op(op_id);
         }
@@ -550,7 +553,9 @@ impl Kernel {
                 | Op::TT(TTOp::PackUnlock)
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit) => todo!(),
+                | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::EndReader)
+                | Op::TT(TTOp::EndCompute) => todo!(),
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
@@ -621,7 +626,9 @@ impl Kernel {
                 | Op::TT(TTOp::PackUnlock)
                 | Op::TT(TTOp::NocReadBarrier)
                 | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit) => todo!(),
+                | Op::TT(TTOp::ReduceUninit)
+                | Op::TT(TTOp::EndReader)
+                | Op::TT(TTOp::EndCompute) => todo!(),
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })

@@ -119,15 +119,25 @@ pub enum Op {
         index: OpId,
         layout: MemLayout,
     },
+    /// Store an SSA value through an addressed location: `dst` is an
+    /// [`Op::GEP`], `src` is the SSA value. Hard rule: Store is
+    /// SSA→GEP (never GEP→GEP — that is [`Op::Copy`]). Effect-only:
+    /// produces no SSA value, is a DCE root, is never CSE'd or
+    /// LICM-hoisted.
     Store {
         dst: OpId,
         src: OpId,
     },
+    /// Load an addressed location into an SSA value: `src` is an
+    /// [`Op::GEP`]. Hard rule: Load is GEP→SSA (the location stays in
+    /// the GEP; only the value enters SSA).
     Load {
         src: OpId,
     },
     /// Copy between addressed locations: moves the value at `src` to `dst`.
-    /// Both operands are [`Op::GEP`]s (post-linearize only). Effect-only
+    /// Hard rule: Copy is GEP→GEP — both operands are [`Op::GEP`]s
+    /// (post-linearize only), never SSA values and never bare
+    /// [`Op::Param`]/[`Op::Storage`]. Effect-only
     /// like [`Op::Store`]: produces no SSA value, is a DCE root, is never
     /// CSE'd or LICM-hoisted. General: any backend may lower it (TT tile
     /// moves, CUDA DRAM-to-shared staging, ...).
@@ -356,6 +366,17 @@ pub enum TTOp {
     /// TT reduce uninit: `reduce_uninit();` — closes the reduce cone.
     /// Operand-free; same effect rules as [`TTOp::MathLock`].
     ReduceUninit,
+    /// TT section split: end of the reader section. Operand-free
+    /// effect like [`TTOp::MathLock`]: a DCE root, never CSE'd or
+    /// LICM-hoisted, program-ordered by scheduling. Inserted by
+    /// builders (`Kernel::tt_end_reader`), never derived by render —
+    /// section assignment is a placement decision. `verify` enforces
+    /// exactly one `EndReader` followed by one `EndCompute`, and
+    /// rejects `Op::Barrier` in any kernel containing TT ops.
+    EndReader,
+    /// TT section split: end of the compute section. Same effect
+    /// rules as [`TTOp::EndReader`].
+    EndCompute,
     // -- TT LLK calls: opaque effect templates, excluded from CSE --
     /// TT LLK call template (`copy_tile({0}, 0, 0);`, ...). The LLK
     /// software wrappers are not hardware ops, so they live here as
@@ -1028,7 +1049,9 @@ impl Op {
             | Op::TT(TTOp::PackUnlock)
             | Op::TT(TTOp::NocReadBarrier)
             | Op::TT(TTOp::NocWriteBarrier)
-            | Op::TT(TTOp::ReduceUninit) => vec![],
+            | Op::TT(TTOp::ReduceUninit)
+            | Op::TT(TTOp::EndReader)
+            | Op::TT(TTOp::EndCompute) => vec![],
             Op::After { x, dep } => vec![*x, *dep],
             Op::ToDevice { x, .. } => vec![*x],
             Op::Contiguous { x } => vec![*x],
@@ -1084,7 +1107,9 @@ impl Op {
             | Op::TT(TTOp::PackUnlock)
             | Op::TT(TTOp::NocReadBarrier)
             | Op::TT(TTOp::NocWriteBarrier)
-            | Op::TT(TTOp::ReduceUninit) => vec![],
+            | Op::TT(TTOp::ReduceUninit)
+            | Op::TT(TTOp::EndReader)
+            | Op::TT(TTOp::EndCompute) => vec![],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().collect(),
             Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
