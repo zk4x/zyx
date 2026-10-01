@@ -402,6 +402,26 @@ impl<'a> TtSection<'a> {
         Err(self.err(format!("{v:?} is not a CB or live tile")))
     }
 
+    /// Slot already holding a tile value: an SSA tile lowered
+    /// earlier, a Register slot, or a circular load unpacked at its
+    /// own position (all-pack consumers, see `render_load`). No
+    /// silent copies here — a miss is malformed pack traffic, loud,
+    /// never a zero. SSA compute uses (`render_tile_op`) take
+    /// `operand_slot`, which copies circular loads in at the use.
+    fn slot_of(&mut self, v: OpId) -> Result<u32, BackendError> {
+        if let Some(s) = self.slots.get(&v) {
+            return Ok(*s);
+        }
+        if let Op::Load { src } = self.k.at(v) {
+            if let Op::GEP { x: base, .. } = self.k.at(*src) {
+                if matches!(self.k.at(*base), Op::Storage { scope: MemScope::Register, .. }) {
+                    return self.reg_slot(*base);
+                }
+            }
+        }
+        Err(self.err(format!("{v:?} has no tile slot")))
+    }
+
     /// CB number of a Circular storage (sync ops carry storages).
     fn cb_num(&self, cb: OpId) -> Result<u32, BackendError> {
         self.cbs.get(&cb).copied().ok_or_else(|| self.err(format!("CB {cb:?} has no number")))
@@ -497,7 +517,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.out.push_str(&format!("{ind}}}\n"));
             }
             Op::Copy { src, dst } => render_copy(sec, id, *src, *dst)?,
-            Op::Load { .. } => {}
+            Op::Load { src } => render_load(sec, id, *src)?,
             Op::Store { src: x, dst } => render_store(sec, id, *x, *dst)?,
             Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Mad { .. } => {
                 if tt_is_tile_value(sec.k, id) {
@@ -515,11 +535,15 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 // Leading operands substitute; trailing provenance
                 // loads are sync accounting (render ignores them).
                 // Template arity: matmul/reduce carry a Register slot
-                // at {2}; transpose/fused-broadcast carry a NULL dst
-                // filled with a fresh slot.
-                let lead = if text.starts_with("matmul_tiles(") || text.starts_with("reduce_tile<") {
+                // at {2}; fused broadcast carries its CBs plus a NULL
+                // dst filled with a fresh slot; transpose carries a
+                // NULL dst filled with a fresh slot.
+                let lead = if text.starts_with("matmul_tiles(")
+                    || text.starts_with("reduce_tile<")
+                    || text.contains("_bcast_")
+                {
                     3
-                } else if text.starts_with("transpose_wh_tile(") || text.contains("_bcast_") {
+                } else if text.starts_with("transpose_wh_tile(") {
                     2
                 } else {
                     return Err(sec.err(format!("LLK {id:?} is not a storage template")));
@@ -551,10 +575,14 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             }
             Op::TT(TTOp::MatmulTile { .. })
             | Op::TT(TTOp::ReduceTile { .. })
-            | Op::TT(TTOp::TransposeTile { .. })
-            | Op::TT(TTOp::BroadcastTile { .. }) => {
+            | Op::TT(TTOp::TransposeTile { .. }) => {
                 return Err(sec.err(format!("{id:?} is not fully lowered (SSA remains)")));
             }
+            // Fused broadcast marker: dead after `tt_storage` fused its
+            // binary into an `LLK` (the call consumes the CBs straight
+            // from the buffers). Sync accounting only — emits nothing
+            // (old: markers ignored downstream).
+            Op::TT(TTOp::BroadcastTile { .. }) => {}
             Op::TT(TTOp::ReserveBack { cb, n }) => {
                 let c = sec.cb_num(*cb)?;
                 sec.out.push_str(&format!("{ind}cb{c}.reserve_back({n});\n"));
@@ -686,13 +714,15 @@ fn render(
         }
         params[s].sort_by_key(|id| order[id]);
         // DRAM discipline (old accessor rule): reader takes Global +
-        // GlobalMut, writer takes GlobalMut only, compute takes none
-        // (Variable lens excepted).
+        // GlobalMut, writer takes GlobalMut only, compute takes none;
+        // every section takes the Variables its index math reads
+        // (group lengths arrive through Range transitive deps — the
+        // preamble emits their arg reads like compute's).
         for p in params[s].iter() {
             if let Op::Param { kind, .. } = k.at(*p) {
                 match (s, kind) {
                     (0, ParamKind::Global) | (0, ParamKind::GlobalMut) | (2, ParamKind::GlobalMut) => {}
-                    (1, ParamKind::Variable) => {}
+                    (_, ParamKind::Variable) => {}
                     _ => {
                         return Err(tt_err(format!(
                             "tenstorrent section {s}: param {p:?} ({kind:?}) has no accessor there"
@@ -703,10 +733,21 @@ fn render(
         }
     }
 
+    // Users: the circular-Load arm (below) reads it.
+    let mut users: Map<OpId, Vec<OpId>> = Map::default();
+    let mut scan = k.head;
+    while !scan.is_null() {
+        for p in k.at(scan).parameters() {
+            if !p.is_null() {
+                users.entry(p).or_default().push(scan);
+            }
+        }
+        scan = k.next_op(scan);
+    }
+
     let mut srcs = [String::new(), String::new(), String::new()];
     let mut lists: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    let mut fp32 = false;
-    // 32-bit DST mode: any F32 tile, or any F8 circular (Blackhole
+    let mut fp32 = false;    // 32-bit DST mode: any F32 tile, or any F8 circular (Blackhole
     // mandate). F32 circulars are rejected outright.
     let mut scan = k.head;
     while !scan.is_null() {
@@ -781,6 +822,7 @@ fn render(
             k,
             cbs,
             ordinals: param_ordinal_of,
+            users: &users,
             section: s as u8,
             params: params[s].clone(),
             loop_names,
@@ -923,12 +965,12 @@ fn render(
     ))
 }
 
-/// Render a traffic `Copy`: publish (DRAM→CB, NOC read), drain
-/// (CB→DRAM, NOC write), or CB→CB move (compute only, unpack+pack
-/// through a fresh DST slot — the old "no DST→DST copy" rule). A NOC
-/// barrier follows every transfer (old per-transfer barrier).
-/// Accessors use global param ordinals (`p<ord>`); arg reads use
-/// section positions.
+/// Render a traffic `Copy`: publish (DRAM→CB, NOC read) or drain
+/// (CB→DRAM, NOC write). A NOC barrier follows every transfer (old
+/// per-transfer barrier). Accessors use global param ordinals
+/// (`p<ord>`); arg reads use section positions. CB→CB moves never
+/// reach here (`tt_storage` canonicalizes them to load+store); the
+/// arm below is defensive only.
 fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<(), BackendError> {
     let ind = sec.indent();
     let src_cb = circular_base(sec.k, src)?;
@@ -944,7 +986,7 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
             let ord = sec.ord_of(param)?;
             let idx = sec.expr(sidx)?;
             let eb = elem_bytes(sec.k, param)?;
-            let bytes = tt_tile_bytes(cb_dtype(sec.k, dcb)?)?;
+            let bytes = tt_tile_bytes(cb_dtype(sec.k, dst_storage)?)?;
             let slot = cb_slot_expr(sec, dst, bytes)?;
             let noc = sec.transfer;
             sec.transfer += 1;
@@ -965,7 +1007,7 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
             let ord = sec.ord_of(param)?;
             let idx = sec.expr(didx)?;
             let eb = elem_bytes(sec.k, param)?;
-            let bytes = tt_tile_bytes(cb_dtype(sec.k, scb)?)?;
+            let bytes = tt_tile_bytes(cb_dtype(sec.k, src_storage)?)?;
             let slot = cb_slot_expr(sec, src, bytes)?;
             let noc = sec.transfer;
             sec.transfer += 1;
@@ -1147,10 +1189,45 @@ fn shift_tmpl(dtype: DType) -> Result<&'static str, BackendError> {
     }
 }
 
+/// Render a `Load`: a circular load consumed straight by pack
+/// stores unpacks here (`copy_tile` into a fresh slot, aliased for
+/// the stores — the lock pass holds MATH open over exactly these
+/// loads, the init pass configured the unpack ahead of them). Every
+/// other load emits nothing: SSA consumers copy at their own use
+/// (`operand_slot`), LLK provenance loads are sync accounting, dead
+/// loads are pops only.
+fn render_load(sec: &mut TtSection, id: OpId, src: OpId) -> Result<(), BackendError> {
+    let Op::GEP { x: base, .. } = sec.k.at(src) else {
+        return Err(sec.err(format!("load {id:?} src is not a GEP")));
+    };
+    if !matches!(sec.k.at(*base), Op::Storage { scope: MemScope::Circular, .. }) {
+        return Ok(());
+    }
+    let all_pack = match sec.users.get(&id) {
+        Some(us) => {
+            us.iter().all(|u| {
+                matches!(sec.k.at(*u), Op::TT(TTOp::BroadcastTile { .. }))
+                    || matches!(sec.k.at(*u), Op::Store { src: x, .. } if *x == id)
+            }) && us.iter().any(|u| matches!(sec.k.at(*u), Op::Store { .. }))
+        }
+        None => false,
+    };
+    if !all_pack {
+        return Ok(());
+    }
+    let cb = sec.cb_num(*base)?;
+    let s = sec.fresh_slot()?;
+    let ind = sec.indent();
+    sec.out.push_str(&format!("{ind}copy_tile({cb}, 0, {s});\n"));
+    sec.slots.insert(id, s);
+    Ok(())
+}
+
 /// Render a `Store`: pack a tile into a CB (`pack_tile`), or alias
 /// a Register acc (no traffic — the slot mapping is the state).
-/// A circular load packed straight through unpacks first (the pass
-/// placed the copy-init); anything else is malformed pack traffic.
+/// The packed value must already hold a slot (SSA lowered earlier,
+/// circular load unpacked at its own position); anything else is
+/// malformed pack traffic.
 /// CB pointer offsets (`cb_slot_expr`): empty for slot 0 (the old
 /// unbatched form), ` + (<expr>)*<bytes>` otherwise.
 fn cb_slot_expr(sec: &TtSection, gep: OpId, bytes: u32) -> Result<String, BackendError> {
@@ -1173,12 +1250,12 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
     match sec.k.at(*base) {
         Op::Storage { scope: MemScope::Circular, .. } => {
             let dcb = sec.cb_num(*base)?;
-            let slot = sec.operand_slot(x)?;
+            let slot = sec.slot_of(x)?;
             sec.out.push_str(&format!("{ind}pack_tile({slot}, {dcb});\n"));
             Ok(())
         }
         Op::Storage { scope: MemScope::Register, .. } => {
-            let slot = sec.operand_slot(x)?;
+            let slot = sec.slot_of(x)?;
             sec.slots.insert(*base, slot);
             Ok(())
         }

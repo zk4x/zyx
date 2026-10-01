@@ -16,6 +16,7 @@
 
 use crate::DType;
 use crate::Map;
+use crate::Set;
 use crate::kernel::{BOp, FusedKind, Kernel, MemLayout, MemScope, Op, OpId, TTOp, TileDim, UOp};
 use crate::types::{TinyString, TinyVec};
 
@@ -313,6 +314,14 @@ impl Kernel {
     /// follows the last. A section with no MATH ops emits no MATH
     /// locks; a section with no pack stores emits no pack locks.
     ///
+    /// Back-edge rule (old DST discipline): re-executing
+    /// `tile_regs_acquire()` on a loop back edge wedges the DST, so the
+    /// acquire hoists to the preheader of the outermost enclosing loop
+    /// whose body holds no pack store, and the commit mirrors to that
+    /// loop's end (PACK transitions stop the bubbling, like the old
+    /// MATH-held check at each `EndLoop`). PACK locks stay per-trip:
+    /// the old pass closed PACK at every back edge instead.
+    ///
     /// MATH covers the four SSA tile ops and `LLK`, the tiled
     /// elementwise SSA ops (`Unary`/`Binary`/`Cast`/`Bitcast` over
     /// tiles — scalar index math over consts/loop vars is not tile
@@ -384,35 +393,108 @@ impl Kernel {
             let mut math_last: Option<OpId> = None;
             let mut pack_first: Option<OpId> = None;
             let mut pack_last: Option<OpId> = None;
+            // Loop nesting for the back-edge hoist below: per-op loop
+            // stack snapshots at the MATH endpoints, Loop→EndLoop
+            // matching, section-relative positions, and pack-store
+            // positions (a pack boundary stops the hoist bubbling).
+            let mut loop_stack: Vec<OpId> = Vec::new();
+            let mut loop_end: Map<OpId, OpId> = Map::default();
+            let mut first_loops: Vec<OpId> = Vec::new();
+            let mut last_loops: Vec<OpId> = Vec::new();
+            let mut pos_of: Map<OpId, usize> = Map::default();
+            let mut pack_pos: Set<OpId> = Set::default();
             let mut scan = op_id;
             let mut section_end: Option<OpId> = None;
+            let mut pos = 0usize;
             while !scan.is_null() {
                 if matches!(self.at(scan), Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute)) {
                     section_end = Some(scan);
                     break;
                 }
+                pos_of.insert(scan, pos);
+                pos += 1;
+                match self.at(scan) {
+                    Op::Loop { .. } => loop_stack.push(scan),
+                    Op::EndLoop => {
+                        if let Some(start) = loop_stack.pop() {
+                            loop_end.insert(start, scan);
+                        }
+                    }
+                    _ => {}
+                }
                 if is_math(self, &users, scan) {
                     if math_first.is_none() {
                         math_first = Some(scan);
+                        first_loops = loop_stack.clone();
                     }
                     math_last = Some(scan);
+                    last_loops = loop_stack.clone();
                 }
                 if is_pack(self, scan) {
                     if pack_first.is_none() {
                         pack_first = Some(scan);
                     }
                     pack_last = Some(scan);
+                    pack_pos.insert(scan);
                 }
                 scan = self.next_op(scan);
+            }
+            // Back-edge hoist: bubble the acquire outward across
+            // enclosing loops whose bodies hold no pack store (a pack
+            // boundary stops the bubbling — the old MATH-held check).
+            // The commit mirrors up to the acquire's level. PACK locks
+            // stay per-trip.
+            let body_has_pack = |pos_of: &Map<OpId, usize>, pack_pos: &Set<OpId>, l: OpId, end: OpId| {
+                let (Some(&s), Some(&e)) = (pos_of.get(&l), pos_of.get(&end)) else {
+                    return true;
+                };
+                pack_pos.iter().any(|p| pos_of.get(p).is_some_and(|q| *q > s && *q < e))
+            };
+            let mut acquire_at = math_first;
+            let mut crossed = 0usize;
+            if let Some(first) = math_first {
+                let mut target = first;
+                for l in first_loops.iter().rev() {
+                    let end = match loop_end.get(l) {
+                        Some(e) => *e,
+                        None => break,
+                    };
+                    if body_has_pack(&pos_of, &pack_pos, *l, end) {
+                        break;
+                    }
+                    target = *l;
+                    crossed += 1;
+                }
+                acquire_at = Some(target);
+            }
+            let mut commit_at = math_last;
+            if let Some(last) = math_last {
+                let mut target = last;
+                let mut n = 0usize;
+                for l in last_loops.iter().rev() {
+                    if n >= crossed {
+                        break;
+                    }
+                    let end = match loop_end.get(l) {
+                        Some(e) => *e,
+                        None => break,
+                    };
+                    if body_has_pack(&pos_of, &pack_pos, *l, end) {
+                        break;
+                    }
+                    target = end;
+                    n += 1;
+                }
+                commit_at = Some(target);
             }
             // Commit before wait: MATH drains to registers, then packs
             // read them. Inserts are by OpId, so order among the four
             // is independent of position.
-            if let Some(first) = math_first {
-                self.insert_before(first, Op::TT(TTOp::MathLock));
+            if let Some(at) = acquire_at {
+                self.insert_before(at, Op::TT(TTOp::MathLock));
             }
-            if let Some(last) = math_last {
-                self.insert_after(last, Op::TT(TTOp::MathUnlock));
+            if let Some(at) = commit_at {
+                self.insert_after(at, Op::TT(TTOp::MathUnlock));
             }
             if let Some(first) = pack_first {
                 self.insert_before(first, Op::TT(TTOp::PackLock));
@@ -620,12 +702,13 @@ impl Kernel {
     /// A circular `Load` is the compute-consume read (the kernel Load IS
     /// the CB read; codegen bundles read+consume, so its wait sits at the
     /// consumer — here it sits before the Load): `WaitFront` immediately
-    /// before iff every user is a tile consumer — the four SSA tile ops
-    /// pre-storage, `LLK` post-storage (provenance operand, see
-    /// `tt_storage`), tiled elementwise SSA (`Unary`/`Binary`/`Cast`/
-    /// `Bitcast`), a pack `Store` (CB→CB spelled load+store), tiled
-    /// user `Asm`, or a fused `BroadcastTile` marker (ignored by pops;
-    /// the fused call consumes through provenance). Any other consumer
+    /// before iff some user is a non-fusion tile consumer — the four SSA
+    /// tile ops pre-storage, tiled elementwise SSA (`Unary`/`Binary`/
+    /// `Cast`/`Bitcast`), a pack `Store` (CB→CB spelled load+store), or
+    /// tiled user `Asm`. A load drained only through fusion (every user
+    /// a `BroadcastTile` marker or an `LLK` provenance position) carries
+    /// no wait of its own: the fused call's provenance waits cover those
+    /// pages (old "fused-draining loads carry no syncs"). Any other consumer
     /// is malformed CB traffic — DRAM↔CB moves are `Copy` (see
     /// `copy_global_to_circular`), never load+store — loud, never
     /// silently skipped. A circular buffer reached outside a GEP is
@@ -744,7 +827,23 @@ impl Kernel {
                                         );
                                     }
                                 }
-                                self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
+                                // Fusion-drained loads (every user a
+                                // marker or an LLK provenance position)
+                                // carry no wait of their own: the fused
+                                // call's provenance waits cover those
+                                // pages (old "fused-draining loads carry
+                                // no syncs"). Any SSA/Store/Asm consumer
+                                // copies at its own position and needs
+                                // the wait here.
+                                let fused_only = use_list.iter().all(|u| {
+                                    matches!(
+                                        self.ops[*u].op,
+                                        Op::TT(TTOp::BroadcastTile { .. }) | Op::TT(TTOp::LLK { .. })
+                                    )
+                                });
+                                if !fused_only {
+                                    self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
+                                }
                             }
                         }
                     }
@@ -1160,6 +1259,96 @@ impl Kernel {
                 }
             }
             op_id = next;
+        }
+
+        // Sticky-init hoist (old `hoist_dedup_inits`): an `mm_init`
+        // programs the MATH unit once per config (sticky) — re-issuing
+        // it per loop trip is at best redundant. Bubble each one
+        // outward across enclosing loops whose bodies hold no lock ops
+        // (a lock in the body means per-trip cones; crossing it would
+        // move config out of its cone). Per-call unpacker/packer inits
+        // (copy, transpose, reduce, bcast, reconfig) stay per-trip, like
+        // the old pass. Never crosses a section marker. Lands after a
+        // hoisted acquire (old acquire-then-init order).
+        let mut inits = Vec::new();
+        let mut scan = self.head;
+        while !scan.is_null() {
+            if let Op::Asm { asm, .. } = self.at(scan) {
+                if asm.as_str().starts_with("mm_init(") {
+                    inits.push(scan);
+                }
+            }
+            scan = self.next_op(scan);
+        }
+        for mut init in inits {
+            loop {
+                // Innermost enclosing Loop (backward nesting scan).
+                let mut l = self.ops[init].prev;
+                let mut depth = 0u32;
+                let mut enclosing = None;
+                while !l.is_null() {
+                    match self.at(l) {
+                        Op::EndLoop => depth += 1,
+                        Op::Loop { .. } => {
+                            if depth == 0 {
+                                enclosing = Some(l);
+                                break;
+                            }
+                            depth -= 1;
+                        }
+                        Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) => break,
+                        _ => {}
+                    }
+                    l = self.ops[l].prev;
+                }
+                let l = match enclosing {
+                    Some(l) => l,
+                    None => break,
+                };
+                // L's matching EndLoop (forward nesting scan).
+                let mut e = self.next_op(l);
+                let mut d = 1u32;
+                while !e.is_null() && d > 0 {
+                    match self.at(e) {
+                        Op::Loop { .. } => d += 1,
+                        Op::EndLoop => d -= 1,
+                        _ => {}
+                    }
+                    if d > 0 {
+                        e = self.next_op(e);
+                    }
+                }
+                if e.is_null() {
+                    break;
+                }
+                // A lock in the body pins the init per-trip.
+                let mut s = self.next_op(l);
+                let mut has_lock = false;
+                while s != e {
+                    if matches!(
+                        self.at(s),
+                        Op::TT(TTOp::MathLock)
+                            | Op::TT(TTOp::MathUnlock)
+                            | Op::TT(TTOp::PackLock)
+                            | Op::TT(TTOp::PackUnlock)
+                    ) {
+                        has_lock = true;
+                        break;
+                    }
+                    s = self.next_op(s);
+                }
+                if has_lock {
+                    break;
+                }
+                let op = self.at(init).clone();
+                self.remove_op(init);
+                let before = self.ops[l].prev;
+                init = if !before.is_null() && matches!(self.at(before), Op::TT(TTOp::MathLock)) {
+                    self.insert_after(before, op)
+                } else {
+                    self.insert_before(l, op)
+                };
+            }
         }
 
         self.verify();

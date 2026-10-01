@@ -534,9 +534,17 @@ impl Kernel {
                 Op::Stack { ref ops } => {
                     return MemLayout::Vector(ops.len().try_into().unwrap());
                 }
-                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
+                Op::TT(TTOp::LLK { .. }) => {
+                    // Fused storage templates (matmul/reduce/transpose/
+                    // broadcast) all produce a standard 32x32 DST tile:
+                    // the layout the replaced SSA value carried. (The
+                    // old backend verified the unfused IR, where the
+                    // tile value threaded to its tile load — same Tile.)
+                    return MemLayout::Tile { x: 32, y: 32, stride: 32 };
+                }
+                Op::Asm { ref ops, .. } => {
                     if ops.is_empty() {
-                        todo!("layout: operand-free Asm/LLK produces no value")
+                        todo!("layout: operand-free Asm produces no value")
                     }
                     op_id = ops[0]
                 }

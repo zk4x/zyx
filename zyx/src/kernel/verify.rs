@@ -295,8 +295,13 @@ impl Kernel {
                     // value ops (index arithmetic). Per-position scope
                     // enforcement is the caller's job (tt_storage's
                     // debug_assert!); verify only rejects operands that
-                    // are neither a storage nor a value.
+                    // are neither a storage nor a value. NULL operands
+                    // are render-filled placeholders (the result slot)
+                    // — not scope-checked, never indexed.
                     for &x in ops.iter() {
+                        if x.is_null() {
+                            continue;
+                        }
                         check(op_id, x, &stack);
                         if !matches!(
                             self.at(x),
