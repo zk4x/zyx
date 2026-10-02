@@ -140,9 +140,13 @@ impl From<std::fmt::Error> for BackendError {
     }
 }
 
+/// A backend (codegen/compile) failure: machine-readable status plus
+/// human-readable context.
 #[derive(Debug)]
 pub struct BackendError {
+    /// Machine-readable failure class.
     pub status: ErrorStatus,
+    /// Human-readable context, usually `backend: pass: detail`.
     pub context: Box<str>,
 }
 

@@ -95,9 +95,10 @@
 //! ```
 
 pub use crate::backend::{Dev, DeviceInfo};
+pub use crate::error::BackendError;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
-pub use ops::{BOp, FusedKind, MMADType, MMADims, MMALayout, OpId, ParamKind, TileDim};
-pub(crate) use ops::{Op, OpLinked, RangeKind, TTOp, UOp};
+pub use ops::{BOp, FusedKind, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, TTOp, TileDim};
+pub(crate) use ops::{OpLinked, RangeKind, UOp};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
@@ -199,7 +200,7 @@ pub struct Kernel {
     /// Operation slab containing the kernel IR.
     pub(crate) ops: Slab<OpId, OpLinked>,
     /// Head of the operation linked list.
-    pub(crate) head: OpId,
+    pub head: OpId,
     /// Tail of the operation linked list.
     pub(crate) tail: OpId,
     /// Target device for compilation.
@@ -658,8 +659,14 @@ impl Kernel {
         panic!("dtype not found for too long time");
     }
 
+    /// The op behind an id. The core read end of the op linked list:
+    /// external passes walk `head` → `at` → `next_op`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the id is null or out of bounds.
     #[track_caller]
-    pub(crate) fn at(&self, op_id: OpId) -> &Op {
+    pub fn at(&self, op_id: OpId) -> &Op {
         &self.ops[op_id].op
     }
 
@@ -667,7 +674,9 @@ impl Kernel {
         self.ops[op_id].prev
     }
 
-    pub(crate) fn next_op(&self, op_id: OpId) -> OpId {
+    /// The op after `op_id` in head order (`OpId::NULL` at the tail).
+    /// External passes walk `head` → `at` → `next_op`.
+    pub fn next_op(&self, op_id: OpId) -> OpId {
         self.ops[op_id].next
     }
 

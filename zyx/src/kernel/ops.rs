@@ -24,8 +24,13 @@ pub enum ParamKind {
 }
 
 #[derive(Debug, Clone, SerBin)]
+/// Kernel IR op: one node of the op list, walked `head` → `next_op`.
+/// Pre-linearization ops are pure DAG views/reduces; post-linearization
+/// they are linear SSA over `Param`/`Storage` escape hatches (see
+/// [`Op::Param`], [`Op::Storage`]).
 pub enum Op {
     // ops that exist in both
+    /// A compile-time constant scalar.
     Const(Constant),
     /// A kernel parameter — one of the arguments passed to the compiled GPU
     /// kernel at launch.
@@ -48,8 +53,11 @@ pub enum Op {
     /// operands may be, where null means scalar shape (rank 0). A null data
     /// operand is always a bug.
     Param {
+        /// Buffer element dtype.
         dtype: DType,
+        /// How the kernel receives it (buffer pointer or scalar value).
         kind: ParamKind,
+        /// Buffer shape (null means scalar shape, rank 0).
         shape: OpId,
         /// Buffer identity for egraph hashconsing (mirrors the former
         /// `Op::Param.cons_id`): two params name the same buffer iff their
@@ -58,33 +66,51 @@ pub enum Op {
         /// so program caches (`get_hash`) keep sharing across buffers.
         cons_id: u32,
     },
+    /// Cast `x` to `dtype` (value conversion; bit-preserving form is
+    /// [`Op::Bitcast`]).
     Cast {
+        /// Value to convert.
         x: OpId,
+        /// Target dtype.
         dtype: DType,
     },
     /// Bitcast: reinterprets the raw bits of `x` as `dtype` without a value
     /// conversion. Requires equal bit widths of `x`'s dtype and `dtype`
-    /// (`debug_assert` in [`Kernel::bitcast`]).
+    /// (`debug_assert` in `Kernel::bitcast`).
     Bitcast {
+        /// Value whose bits to reinterpret.
         x: OpId,
+        /// Target dtype (same bit width as `x`'s dtype).
         dtype: DType,
     },
+    /// Elementwise unary op over `x`.
     Unary {
+        /// Operand.
         x: OpId,
+        /// The unary op.
         uop: UOp,
     },
     // For binary ops, next of x is y, then next of y is the binary op
+    /// Elementwise binary op over `x` and `y`.
     Binary {
+        /// Left operand.
         x: OpId,
+        /// Right operand.
         y: OpId,
+        /// The binary op.
         bop: BOp,
     },
     // Vectorization, YAY!
+    /// Vectorization: pack `ops` into one vector value.
     Stack {
+        /// Members, in order.
         ops: Box<[OpId]>,
     },
+    /// Select a single value from a vector.
     Index {
+        /// The vector.
         vec: OpId,
+        /// Position to select.
         idx: usize,
     }, // select a single value from a vector
 
@@ -98,8 +124,11 @@ pub enum Op {
     /// mutable stuff that values are written to and read back from across the
     /// linear order. A `MemScope::Variable` storage holds a single scalar.
     Storage {
+        /// Element dtype.
         dtype: DType,
+        /// Memory scope (register file, circular buffer, global, ...).
         scope: MemScope,
+        /// Element count.
         len: Dim,
     },
     /// Get-element-pointer: names one addressable location — `index` into
@@ -110,13 +139,16 @@ pub enum Op {
     /// [`Op::Load`] reads through it, [`Op::Store`] writes through it, and
     /// [`Op::Copy`] moves between two of them. `dtype` of a GEP is the
     /// dtype of `x`. Pure address math, so GEPs CSE like values and hoist
-    /// like values; only [`linearize`](Kernel::linearize) introduces them
+    /// like values; only `Kernel::linearize` introduces them
     /// (it wraps every store destination and load source). Follows LLVM's
     /// `getelementptr` split: the location lives here, the access width
     /// stays here too (unlike LLVM, where it rides on the load/store).
     GEP {
+        /// Base: always an [`Op::Param`] or [`Op::Storage`].
         x: OpId,
+        /// Index arithmetic into `x`.
         index: OpId,
+        /// Layout the index addresses.
         layout: MemLayout,
     },
     /// Store an SSA value through an addressed location: `dst` is an
@@ -125,13 +157,16 @@ pub enum Op {
     /// produces no SSA value, is a DCE root, is never CSE'd or
     /// LICM-hoisted.
     Store {
+        /// Destination location ([`Op::GEP`]).
         dst: OpId,
+        /// SSA value to store.
         src: OpId,
     },
     /// Load an addressed location into an SSA value: `src` is an
     /// [`Op::GEP`]. Hard rule: Load is GEP→SSA (the location stays in
     /// the GEP; only the value enters SSA).
     Load {
+        /// Source location ([`Op::GEP`]).
         src: OpId,
     },
     /// Copy between addressed locations: moves the value at `src` to `dst`.
@@ -142,77 +177,120 @@ pub enum Op {
     /// CSE'd or LICM-hoisted. General: any backend may lower it (TT tile
     /// moves, CUDA DRAM-to-shared staging, ...).
     Copy {
+        /// Source location ([`Op::GEP`]).
         src: OpId,
+        /// Destination location ([`Op::GEP`]).
         dst: OpId,
     },
     // Like loop, but for dimensions always executed in parallel
+    /// A dimension always executed in parallel (never a trip-counted loop).
     Range {
+        /// Axis index.
         axis: u32,
+        /// What the range iterates (group grid, fixed span, ...).
         kind: RangeKind,
     },
     // Control flow: a counted loop, or a conditional when `len` is a
     // boolean (0-or-1 trip). Closed by `EndLoop` in both cases; use
     // `loop_over` / `if_over` to build them.
+    /// Counted loop over `len` trips (a 0-or-1-trip conditional when
+    /// `len` is boolean). Closed by [`Op::EndLoop`].
     Loop {
+        /// Trip count, or the branch condition.
         len: OpId,
     },
+    /// Closes the innermost open [`Op::Loop`].
     EndLoop,
     // fused multiply add
+    /// Fused multiply-add: `x * y + z`.
     Mad {
+        /// Multiplicand.
         x: OpId,
+        /// Multiplier.
         y: OpId,
+        /// Addend.
         z: OpId,
     },
+    /// Ordering barrier: an operand-free effect and DCE root that pins
+    /// program order across it.
     Barrier,
     // fused matmul, a, b, c are fragments, each is a vector, c is accumulator, returns new accumulated vector d
+    /// Fused matmul on fragments: `d = a @ b + c`, returning the new
+    /// accumulated vector `d`.
     Wmma {
+        /// Fragment geometry.
         dims: MMADims,
+        /// Fragment layout.
         layout: MMALayout,
+        /// Fragment element dtype.
         dtype: MMADType,
+        /// Left fragment.
         a: OpId,
+        /// Right fragment.
         b: OpId,
+        /// Accumulator fragment.
         c: OpId,
     },
     // For backend specific assembly
+    /// Backend-specific assembly template: emitted verbatim with
+    /// operands substituted.
     Asm {
+        /// Template text (`{i}` substitutes the i-th operand).
         asm: TinyString,
+        /// Operands.
         ops: TinyVec<OpId>,
     },
 
     // ops that exist before linearize and linearize converts them into these ops: index, loop and load
     /// Reshape to a new shape.
     Reshape {
+        /// Input.
         x: OpId,
+        /// New shape.
         shape: OpId,
     },
     /// Expand dimensions.
     Expand {
+        /// Input.
         x: OpId,
+        /// New shape.
         shape: OpId,
     },
     /// Permute axes.
     Permute {
+        /// Input.
         x: OpId,
+        /// Axis order.
         axes: TinyVec<UAxis>,
     },
     /// Flip axes
     Flip {
+        /// Input.
         x: OpId,
+        /// Axes to flip.
         axes: TinyVec<UAxis>,
     },
     /// Pad axis
     /// Pad with `lp` zeros on the left, to total axis length `len`. Right padding is `len - lp - orig_len`.
     Pad {
+        /// Input.
         x: OpId,
+        /// Axis to pad.
         axis: UAxis,
+        /// Left pad width (zeros).
         lp: OpId,
+        /// Total axis length after padding.
         len: OpId,
     },
     /// Slice axis
     Narrow {
+        /// Input.
         x: OpId,
+        /// Axis to slice.
         axis: UAxis,
+        /// Slice start.
         start: OpId,
+        /// Slice length.
         len: OpId,
     },
     /// Reduce `x` with `rop` over the trailing dim. `reduce_axis` always
@@ -220,8 +298,11 @@ pub enum Op {
     /// Reductions over any other axis are permuted to trailing before
     /// reaching this op.
     Reduce {
+        /// Input.
         x: OpId,
+        /// Reduce op.
         rop: BOp,
+        /// Axis (always the trailing dim's class).
         reduce_axis: OpId,
     },
     // Graph-only ops (former `Node` variants). They never appear in ordered
@@ -231,19 +312,25 @@ pub enum Op {
     // it later).
     /// Ordering edge: `x` may not run before `dep` completes.
     After {
+        /// Gated op.
         x: OpId,
+        /// Prerequisite.
         dep: OpId,
     },
     /// Move `x` to `device`. `time` is measured launch timing, ignored by
     /// `Eq`/`Hash` (mirrors the former `Node::ToDevice`).
     ToDevice {
+        /// Value to move.
         x: OpId,
+        /// Target device.
         device: Dev,
+        /// Measured launch timing (ignored by `Eq`/`Hash`).
         time: u64,
     },
     /// Fusion-break hint: forces `x` to materialize as a separate kernel
     /// output. The kernelizer never fuses through it.
     Contiguous {
+        /// Value to materialize.
         x: OpId,
     },
     /// A compiled kernel boundary: `info` is the owning program and measured
@@ -252,8 +339,11 @@ pub enum Op {
     /// `Box` allocations. `info` is boxed so `Op` keeps its 24-byte budget.
     /// Timing is ignored by `Eq`/`Hash` (mirrors the former `Node::Kernel`).
     Kernel {
+        /// Input classes (`Stack` op).
         inputs: OpId,
+        /// Output classes (`Stack` op).
         outputs: OpId,
+        /// Owning program and measured timing.
         info: Box<(ProgramId, u64)>,
     },
     /// A custom (user-built) kernel boundary, boxed to keep `Op` within
@@ -278,6 +368,8 @@ pub enum FusedKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// Tenstorrent backend op: section markers, DST locks, CB sync effects,
+/// and lowered LLK compute calls. Lives inside [`Op::TT`].
 pub enum TTOp {
     /// Hardware reduce_tile: folds tile `x` into accumulator tile `acc`
     /// with `rop` (TT: `reduce_tile` accumulates into the acc CB directly;
@@ -287,21 +379,31 @@ pub enum TTOp {
     /// `acc` keeps the accumulation in SSA dataflow instead of a fold
     /// marker.
     ReduceTile {
+        /// Input tile.
         x: OpId,
+        /// LLK-mandated scale tile (ones when unused).
         scaler: OpId,
+        /// Accumulator tile.
         acc: OpId,
+        /// Reduce op.
         rop: BOp,
+        /// Reduce dimension.
         kind: TileDim,
     },
     /// Hardware tile matmul: folds `x @ y` into accumulator tile `acc`
     /// (TT: `matmul_tiles` accumulates into DST). Explicit `acc` keeps
     /// the accumulation in SSA dataflow instead of a fold marker.
     MatmulTile {
+        /// Left tile.
         x: OpId,
+        /// Right tile.
         y: OpId,
+        /// Accumulator tile.
         acc: OpId,
     },
+    /// Hardware tile transpose (width-height swap).
     TransposeTile {
+        /// Input tile.
         x: OpId,
     },
     /// Marker: tile `x` (a `load_circular` tile) is consumed with
@@ -310,7 +412,9 @@ pub enum TTOp {
     /// stay in CBs). Without the marker the binary uses the plain
     /// register form. Carries no traffic itself.
     BroadcastTile {
+        /// Consumed tile.
         x: OpId,
+        /// Broadcast dimension.
         kind: TileDim,
     },
     /// CB sync: `cb.reserve_back(n)` — open `n` back slots of circular
@@ -321,26 +425,34 @@ pub enum TTOp {
     /// location, so no [`Op::GEP`]). Inserted by `tt_sync_cbs`, never
     /// by user builders directly (use `Kernel::tt_reserve_back`).
     ReserveBack {
+        /// Circular buffer.
         cb: OpId,
+        /// Slots to open.
         n: u8,
     },
     /// CB sync: `cb.push_back(n)` — publish `n` written slots. Same
     /// effect-only rules as [`TTOp::ReserveBack`].
     PushBack {
+        /// Circular buffer.
         cb: OpId,
+        /// Slots to publish.
         n: u8,
     },
     /// CB sync: `cb.wait_front(n)` — block until `n` front slots hold
     /// data. Same effect-only rules as [`TTOp::ReserveBack`].
     WaitFront {
+        /// Circular buffer.
         cb: OpId,
+        /// Slots to wait for.
         n: u8,
     },
     /// CB sync: `cb.pop_front(n)` — release `n` consumed slots. Same
     /// effect-only rules as [`TTOp::ReserveBack`]. No producer in
     /// slice 1 (waits only); lands with pop placement.
     PopFront {
+        /// Circular buffer.
         cb: OpId,
+        /// Slots to release.
         n: u8,
     },
     // -- TT DST locks: operand-free effects --
@@ -401,12 +513,19 @@ pub enum TTOp {
     /// and parsed back. Same effect/CSE rules as [`TTOp::LLK`]: a DCE
     /// root, pinned by LICM, never deduplicated.
     LLKReduce {
+        /// Reduce op (Max folds a MAX pool, Add a SUM).
         rop: BOp,
+        /// Reduce dimension.
         kind: TileDim,
+        /// Input circular buffer.
         cb_in: OpId,
+        /// Scaler circular buffer.
         cb_sc: OpId,
+        /// Accumulator (Register) storage.
         slot: OpId,
+        /// Input tile value (provenance for sync accounting).
         x: OpId,
+        /// Scaler tile value (provenance for sync accounting).
         scaler: OpId,
     },
     /// Lowered fused-broadcast call: a tiled binary over a
@@ -415,11 +534,17 @@ pub enum TTOp {
     /// [`TTOp::LLKReduce`]. The result slot is DST (filled by render
     /// with a fresh slot), so there is no `slot` field.
     LLKBcast {
+        /// Binary op.
         bop: BOp,
+        /// Broadcast dimension.
         kind: TileDim,
+        /// Plain-side circular buffer.
         cb_a: OpId,
+        /// Marked (broadcast) side circular buffer.
         cb_b: OpId,
+        /// Marked side tile value (provenance for sync accounting).
         mx: OpId,
+        /// Plain side tile value (provenance for sync accounting).
         plain: OpId,
     },
 }
