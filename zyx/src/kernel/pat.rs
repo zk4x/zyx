@@ -274,13 +274,26 @@ impl Bindings {
         panic!("unbound value name");
     }
 
-    /// Insert with replacement
-    fn insert_replace(&mut self, name: char, id: OpId, value: Binding) -> bool {
+    /// Insert with replacement. Returns `false` if the name is already
+    /// bound to a *different* op or value (the pattern is then
+    /// inconsistent — two distinct ops sharing one binder name) — the
+    /// caller (`match_node`) rolls back the snapshot and rejects the
+    /// whole match. A rebind to the identical op/value is a no-op
+    /// success (the same binder reused across a pattern).
+    fn try_insert(&mut self, name: char, id: OpId, value: Binding) -> bool {
         for (n, op, binding) in &mut self.ops {
             if *n == name {
-                *binding = value;
-                *op = id;
-                return true;
+                // A repeated plain binder (`Binding::Op`) asserts OpId
+                // equality: two distinct ops sharing one name is an
+                // inconsistent pattern. A repeated const binder asserts
+                // value equality across distinct const ops (the same
+                // integer may live in two different Const ops).
+                return match (&value, binding) {
+                    (Binding::Op, Binding::Op) => *op == id,
+                    (Binding::Int(a), Binding::Int(b)) => a == b,
+                    (Binding::Float(a), Binding::Float(b)) => a.to_bits() == b.to_bits(),
+                    _ => false,
+                };
             }
             match binding {
                 Binding::None => {
@@ -653,7 +666,7 @@ impl Kernel {
                 if !class.matches(self.dtype(id)) {
                     return false;
                 }
-                bindings.insert_replace(*name, id, Binding::Op)
+                bindings.try_insert(*name, id, Binding::Op)
             }
             Pat::BindConst { name, class } => {
                 if !class.matches(self.dtype(id)) {
@@ -662,9 +675,9 @@ impl Kernel {
                 match self.at(id) {
                     Op::Const(c) => {
                         if let Some(v) = c.as_integer() {
-                            bindings.insert_replace(*name, id, Binding::Int(v))
+                            bindings.try_insert(*name, id, Binding::Int(v))
                         } else if let Some(v) = c.as_float() {
-                            bindings.insert_replace(*name, id, Binding::Float(v))
+                            bindings.try_insert(*name, id, Binding::Float(v))
                         } else {
                             false
                         }
