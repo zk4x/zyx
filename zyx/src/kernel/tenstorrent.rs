@@ -24,6 +24,7 @@ use crate::Map;
 use crate::Set;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
+use crate::kernel::Pat;
 use crate::kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, TTOp, TileDim, UOp};
 use crate::types::{TinyString, TinyVec};
 
@@ -405,89 +406,23 @@ impl Kernel {
             }
             scan = self.next_op(scan);
         }
-        // Pattern-contained: every user of `id` is inside `pat`.
-        let contained = |users: &Map<OpId, Vec<OpId>>, id: OpId, pat: &[OpId]| {
-            users.get(&id).is_some_and(|us| !us.is_empty() && us.iter().all(|u| pat.contains(u)))
-        };
-        // The `+ 1` addend: a const-one through casts (`resolve_const`
-        // folds `cast(1.0f32)` and already-folded consts uniformly).
-        let is_one = |kernel: &Kernel, id: OpId| kernel.resolve_const(id).is_some_and(|c| c.is_one());
-        // Match `recip(add(exp2(neg(x), 1))` (e^x lowered to `exp2(x * log2_e)`)
-        // with contained inners. Uses the `Pat` matcher. Returns the input `x`.
-        // `extra` is the silu mul when matching through it: `x` may feed `neg` and
-        // (for silu) the mul, nothing else.
-        let match_sigmoid = |kernel: &Kernel,
-                             users: &Map<OpId, Vec<OpId>>,
-                             is_one: &dyn Fn(&Kernel, OpId) -> bool,
-                             recip: OpId,
-                             extra: Option<OpId>|
-         -> Option<OpId> {
-            let x = Pat::bind("x");
-            let neg = Pat::bind("neg");
-            let e = Pat::bind("e");
-            let den = Pat::bind("den");
-            let one = Pat::bind("one");
-            let pat = Pat::Unary {
-                x: Box::new(Pat::all([
-                    den,
-                    Pat::Binary { x: Box::new(Pat::all([e, Pat::exp(neg)])), y: Box::new(one), bop: BOp::Add },
-                ])),
-                uop: UOp::Reciprocal,
-            };
-            let m = kernel.match_pat(recip, &pat)?;
-            if !is_one(kernel, m["one"]) {
-                return None;
-            }
-            let neg = m["neg"];
-            let e = m["e"];
-            let den = m["den"];
-            let x = m["x"];
-            let pat_nodes = [neg, e, den, recip];
-            if !contained(users, neg, &pat_nodes) || !contained(users, e, &pat_nodes) || !contained(users, den, &pat_nodes) {
-                return None;
-            }
-            // Pattern-exclusive input: `x` feeds only this pattern.
-            // A shared input falls back to the plain composite.
-            if !users.get(&x).is_some_and(|us| !us.is_empty() && us.iter().all(|u| *u == neg || Some(*u) == extra)) {
-                return None;
-            }
-            Some(x)
-        };
+
+        let x = Pat::bind('x');
+        let sigmoid_pat = (x.neg().exp() + 1.).recip();
+        let silu_pat = x * &sigmoid_pat;
+
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             // Silu first (it contains a sigmoid root): `mul(x, sig)`.
-            if let Op::Binary { x: a, y: b, bop } = self.at(op_id)
-                && *bop == BOp::Mul
-            {
-                for (s, x) in [(*a, *b), (*b, *a)] {
-                    if let Some(sig_in) = match_sigmoid(self, &users, &is_one, s, Some(op_id))
-                        && sig_in == x
-                        && contained(&users, s, &[op_id])
-                    {
-                        debug_assert!(
-                            matches!(self.layout(x), MemLayout::Tile { .. }),
-                            "tt_fuse_llks: silu input {x:?} is not a tile"
-                        );
-                        self.insert_before(op_id, Op::Asm { asm: TinyString::new("silu_tile_init();"), ops: TinyVec::new(&[]) });
-                        self.ops[op_id].op =
-                            Op::TT(TTOp::LLK { asm: TinyString::new("silu_tile({0});"), ops: TinyVec::new(&[x]) });
-                        break;
-                    }
-                }
-            }
-            // Standalone sigmoid (also fires when the silu match above
-            // declined: shared input, multi-use root — plain fallback).
-            if matches!(self.at(op_id), Op::Unary { uop: UOp::Reciprocal, .. })
-                && let Some(x) = match_sigmoid(self, &users, &is_one, op_id, None)
-            {
-                eprintln!("FUSEDBG fused sigmoid at {op_id:?}");
-                debug_assert!(
-                    matches!(self.layout(x), MemLayout::Tile { .. }),
-                    "tt_fuse_llks: sigmoid input {x:?} is not a tile"
-                );
+            if let Some(m) = self.match_pat(op_id, &sigmoid_pat) {
+                self.insert_before(op_id, Op::Asm { asm: TinyString::new("silu_tile_init();"), ops: TinyVec::new(&[]) });
+                self.ops[op_id].op =
+                    Op::TT(TTOp::LLK { asm: TinyString::new("silu_tile({0});"), ops: TinyVec::new(&[m.op('x')]) });
+            } else if let Some(m) = self.match_pat(op_id, &silu_pat) {
                 self.insert_before(op_id, Op::Asm { asm: TinyString::new("sigmoid_tile_init();"), ops: TinyVec::new(&[]) });
-                self.ops[op_id].op = Op::TT(TTOp::LLK { asm: TinyString::new("sigmoid_tile({0});"), ops: TinyVec::new(&[x]) });
+                self.ops[op_id].op =
+                    Op::TT(TTOp::LLK { asm: TinyString::new("sigmoid_tile({0});"), ops: TinyVec::new(&[m.op('x')]) });
             }
             op_id = next;
         }
@@ -1357,7 +1292,6 @@ impl Kernel {
                     let init = match uop {
                         UOp::Neg => "negative_tile_init();",
                         UOp::BitNot => "bitwise_not_tile_init();",
-                        UOp::Exp2 => "exp2_tile_init();",
                         UOp::Exp2 => "exp2_tile_init();",
                         UOp::Log2 => "log_with_base_tile_init();",
                         UOp::Reciprocal => "recip_tile_init();",

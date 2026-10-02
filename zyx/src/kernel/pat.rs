@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use crate::{
-    DType, Map,
+    DType,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, UOp},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
@@ -40,12 +40,12 @@ impl DtypeClass {
 ///
 /// Evaluation returns `None` on overflow (never panics, so guard order
 /// cannot crash a match) and on genuinely unrepresentable shifts; an
-/// unbound name panics via [`Bindings::val`] (a comparison placed before
+/// unbound name panics via [`Bindings::dim`] (a comparison placed before
 /// its binders is a bug, fail loud).
 #[derive(Clone, Debug)]
 pub enum VExpr {
     /// Value bound by [`Pat::bind_int`] under this name.
-    Dim(&'static str),
+    Dim(char),
     /// Constant integer.
     Const(Dim),
     /// `a << b` (e.g. `Shl(1, k)` for `2^k`).
@@ -54,7 +54,7 @@ pub enum VExpr {
 
 impl VExpr {
     /// Bound dim value.
-    pub fn dim(name: &'static str) -> VExpr {
+    pub fn dim(name: char) -> VExpr {
         VExpr::Dim(name)
     }
 
@@ -72,7 +72,7 @@ impl VExpr {
     /// shift; unbound names panic.
     fn eval(&self, bindings: &Bindings) -> Option<i64> {
         match self {
-            VExpr::Dim(name) => Some(bindings.val(name)),
+            &VExpr::Dim(name) => Some(bindings.dim(name)),
             VExpr::Const(v) => Some(*v),
             VExpr::Shl(a, b) => {
                 let (av, bv) = (a.eval(bindings)?, b.eval(bindings)?);
@@ -85,8 +85,8 @@ impl VExpr {
     }
 }
 
-impl From<&'static str> for VExpr {
-    fn from(name: &'static str) -> VExpr {
+impl From<char> for VExpr {
+    fn from(name: char) -> VExpr {
         VExpr::Dim(name)
     }
 }
@@ -107,7 +107,18 @@ pub enum Pat {
     /// `OpId` equality with the first binding.
     Bind {
         /// Binder name.
-        name: &'static str,
+        name: char,
+        /// Required dtype class of the matched op.
+        class: DtypeClass,
+    },
+    /// Binds a constant's general integer value (the value-binder: value, not
+    /// node). First occurrence matches any integer `Op::Const` (every int
+    /// dtype, both signs, via [`Constant::as_integer`]) and records both
+    /// the op and its value; a repeated name asserts *value* equality, so
+    /// distinct const ops with equal values match. Floats never match.
+    BindConst {
+        /// Binder name.
+        name: char,
         /// Required dtype class of the matched op.
         class: DtypeClass,
     },
@@ -135,7 +146,7 @@ pub enum Pat {
     DimEq(Dim),
     /// Value equality between two [`VExpr`]s (bound dims, constants, shifts).
     /// Evaluated after the structural match; overflow evaluates to no-match.
-    /// Compose trailing in `all()`, after the binders: `all([pat, Pat::eq("d", VExpr::shl(1, "k"))])`.
+    /// Compose trailing in `all()`, after the binders: `all([pat, Pat::eq('d', VExpr::shl(1, 'k'))])`.
     Eq {
         /// Left-hand value.
         a: VExpr,
@@ -177,17 +188,6 @@ pub enum Pat {
         /// Right-hand value.
         b: VExpr,
     },
-    /// Binds a constant's general integer value (the value-binder: value, not
-    /// node). First occurrence matches any integer `Op::Const` (every int
-    /// dtype, both signs, via [`Constant::as_integer`]) and records both
-    /// the op and its value; a repeated name asserts *value* equality, so
-    /// distinct const ops with equal values match. Floats never match.
-    BindInt {
-        /// Binder name.
-        name: &'static str,
-        /// Required dtype class of the matched op.
-        class: DtypeClass,
-    },
     /// Matches a unary op with this exact `UOp` and an operand matching `x`.
     Unary {
         /// Pattern for the operand.
@@ -216,27 +216,83 @@ pub enum Pat {
 /// plus bound integer values.
 ///
 /// Every [`Pat::Bind`] and [`Pat::BindInt`] records its op (read with
-/// `m["x"]`); value binders additionally record the general integer value
+/// `m.op('x')`); value binders additionally record the general integer value
 /// (read with [`Bindings::val`]). A repeated plain name asserts `OpId`
 /// equality; a repeated value name asserts *value* equality across
 /// distinct const ops.
 #[derive(Clone, Debug, Default)]
 pub struct Bindings {
-    ops: Map<&'static str, OpId>,
-    vals: Map<&'static str, Dim>,
+    ops: [(char, OpId, Binding); 5],
+}
+
+#[derive(Clone, Debug, Default)]
+enum Binding {
+    Op,
+    Int(i64),
+    Float(f64),
+    #[default]
+    None,
 }
 
 impl Bindings {
     /// Read a value bound by [`Pat::bind_int`]. Panics on unbound names.
-    pub fn val(&self, name: &'static str) -> Dim {
-        self.vals.get(name).copied().expect("unbound value name")
+    pub fn dim(&self, name: char) -> Dim {
+        for (n, _, binding) in &self.ops {
+            if *n == name {
+                match binding {
+                    Binding::None | Binding::Float(_) | Binding::Op => panic!("unbound value name"),
+                    &Binding::Int(dim) => return dim,
+                }
+            }
+        }
+        panic!("unbound value name");
     }
-}
 
-impl std::ops::Index<&'static str> for Bindings {
-    type Output = OpId;
-    fn index(&self, name: &'static str) -> &OpId {
-        &self.ops[name]
+    /// Read a value bound by [`Pat::bind_float`]. Panics on unbound names.
+    pub fn float(&self, name: char) -> f64 {
+        for (n, _, binding) in &self.ops {
+            if *n == name {
+                match binding {
+                    Binding::None | Binding::Int(_) | Binding::Op => panic!("unbound value name"),
+                    &Binding::Float(v) => return v,
+                }
+            }
+        }
+        panic!("unbound value name");
+    }
+
+    /// Read an OpId bound by pattern
+    pub fn op(&self, name: char) -> OpId {
+        for (n, op, binding) in &self.ops {
+            if *n == name {
+                match binding {
+                    Binding::None | Binding::Float(_) | Binding::Int(_) => panic!("unbound value name"),
+                    Binding::Op => return *op,
+                }
+            }
+        }
+        panic!("unbound value name");
+    }
+
+    /// Insert with replacement
+    fn insert_replace(&mut self, name: char, id: OpId, value: Binding) -> bool {
+        for (n, op, binding) in &mut self.ops {
+            if *n == name {
+                *binding = value;
+                *op = id;
+                return true;
+            }
+            match binding {
+                Binding::None => {
+                    *n = name;
+                    *op = id;
+                    *binding = value;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        panic!("too many bindings, keep bindings under 5 values");
     }
 }
 
@@ -411,14 +467,14 @@ impl std::ops::Not for Pat {
 impl Pat {
     /// Matches anything and binds it to `name`. A repeated name asserts
     /// `OpId` equality with the first binding.
-    pub fn bind(name: &'static str) -> Pat {
+    pub fn bind(name: char) -> Pat {
         Pat::Bind { name, class: DtypeClass::Any }
     }
 
     /// Binds a constant's `as_dim` value. A repeated name asserts *value*
     /// equality, so distinct const ops with equal values match.
-    pub fn bind_int(name: &'static str) -> Pat {
-        Pat::BindInt { name, class: DtypeClass::Any }
+    pub fn bind_const(name: char) -> Pat {
+        Pat::BindConst { name, class: DtypeClass::Any }
     }
 
     /// Matches if any alternative matches. Failed alternatives leave no bindings.
@@ -454,7 +510,7 @@ impl Pat {
     fn with_class(self, class: DtypeClass) -> Pat {
         match self {
             Pat::Bind { name, .. } => Pat::Bind { name, class },
-            Pat::BindInt { name, .. } => Pat::BindInt { name, class },
+            Pat::BindConst { name, .. } => Pat::BindConst { name, class },
             _ => panic!("dtype class applies to binders only"),
         }
     }
@@ -462,7 +518,7 @@ impl Pat {
     /// Constrain this binder to compile-time constants. Panics on non-binders.
     pub fn const_(self) -> Pat {
         match self {
-            Pat::Bind { .. } | Pat::BindInt { .. } => Pat::all([self, Pat::Const]),
+            Pat::Bind { .. } | Pat::BindConst { .. } => Pat::all([self, Pat::Const]),
             _ => panic!("const constraint applies to binders only"),
         }
     }
@@ -471,7 +527,7 @@ impl Pat {
     /// Panics on non-binders.
     pub fn dim_lt(self, bound: Dim) -> Pat {
         match self {
-            Pat::Bind { .. } | Pat::BindInt { .. } => Pat::all([self, Pat::DimLt(bound)]),
+            Pat::Bind { .. } | Pat::BindConst { .. } => Pat::all([self, Pat::DimLt(bound)]),
             _ => panic!("dim constraint applies to binders only"),
         }
     }
@@ -480,7 +536,7 @@ impl Pat {
     /// Panics on non-binders.
     pub fn dim_eq(self, v: Dim) -> Pat {
         match self {
-            Pat::Bind { .. } | Pat::BindInt { .. } => Pat::all([self, Pat::DimEq(v)]),
+            Pat::Bind { .. } | Pat::BindConst { .. } => Pat::all([self, Pat::DimEq(v)]),
             _ => panic!("dim constraint applies to binders only"),
         }
     }
@@ -523,13 +579,18 @@ impl Pat {
     }
 
     /// Negation of this pattern.
-    pub fn neg(self) -> Pat {
-        Pat::Unary { x: Box::new(self), uop: UOp::Neg }
+    pub fn neg(&self) -> Pat {
+        Pat::Unary { x: Box::new(self.clone()), uop: UOp::Neg }
     }
 
     /// Exponential of this pattern (`2^x`).
     pub fn exp2(self) -> Pat {
         Pat::Unary { x: Box::new(self), uop: UOp::Exp2 }
+    }
+
+    /// Reciprocal of this pattern (`1/x`).
+    pub fn recip(self) -> Pat {
+        Pat::Unary { x: Box::new(self), uop: UOp::Reciprocal }
     }
 
     /// Exponential of this pattern (`2^x`).
@@ -592,30 +653,22 @@ impl Kernel {
                 if !class.matches(self.dtype(id)) {
                     return false;
                 }
-                match bindings.ops.get(name) {
-                    Some(&bound) => bound == id,
-                    None => {
-                        bindings.ops.insert(*name, id);
-                        true
-                    }
-                }
+                bindings.insert_replace(*name, id, Binding::Op)
             }
-            Pat::BindInt { name, class } => {
+            Pat::BindConst { name, class } => {
                 if !class.matches(self.dtype(id)) {
                     return false;
                 }
                 match self.at(id) {
-                    Op::Const(c) => match c.as_integer() {
-                        Some(v) => match bindings.vals.get(name) {
-                            Some(&bound) => bound == v,
-                            None => {
-                                bindings.vals.insert(*name, v);
-                                bindings.ops.insert(*name, id);
-                                true
-                            }
-                        },
-                        None => false,
-                    },
+                    Op::Const(c) => {
+                        if let Some(v) = c.as_integer() {
+                            bindings.insert_replace(*name, id, Binding::Int(v))
+                        } else if let Some(v) = c.as_float() {
+                            bindings.insert_replace(*name, id, Binding::Float(v))
+                        } else {
+                            false
+                        }
+                    }
                     _ => false,
                 }
             }
@@ -699,23 +752,44 @@ fn const_eq_int(c: Constant, n: i64) -> bool {
     }
 }
 
+/// Dtype-respective float equality for [`Pat::Float`]: true when `c` has
+/// the same value as `n` within a tolerance of a few ulps of `c`'s own
+/// dtype at the magnitude of `n`. Integers and bool compare exactly.
 fn const_eq_float(c: Constant, n: f64) -> bool {
     match c {
+        // Integer and boolean constants: exact numeric equality.
         Constant::U8(v) => (v as f64) == n,
         Constant::U16(v) => (v as f64) == n,
         Constant::U32(v) => (v as f64) == n,
-        Constant::U64(v) => u64::from_le_bytes(v) as f64 == n,
+        Constant::U64(v) => (u64::from_le_bytes(v) as f64) == n,
         Constant::I8(v) => (v as f64) == n,
         Constant::I16(v) => (v as f64) == n,
         Constant::I32(v) => (v as f64) == n,
-        Constant::I64(v) => i64::from_le_bytes(v) as f64 == n,
+        Constant::I64(v) => (i64::from_le_bytes(v) as f64) == n,
         Constant::Bool(v) => v == (n != 0.),
-        Constant::F32(v) => f32::from_le_bytes(v) as f64 == n,
+        // Float constants: compare at a tolerance of a few ulps of the
+        // constant's own dtype at the magnitude of `n`.
         Constant::F64(v) => f64::from_le_bytes(v) == n,
-        Constant::BF16(v) => bf16::from_le_bytes(v).to_f64() == n,
-        Constant::F16(v) => f16::from_le_bytes(v).to_f64() == n,
-        Constant::F8E4M3(v) => f8e4m3::from_le_bytes([v]).to_f64() == n,
-        Constant::F8E5M2(v) => f8e5m2::from_le_bytes([v]).to_f64() == n,
+        Constant::F32(v) => {
+            let val = f32::from_le_bytes(v) as f64;
+            (val - n).abs() <= n.abs().max(1.0) * f32::EPSILON as f64 * 8.0
+        }
+        Constant::F16(v) => {
+            let val = f16::from_le_bytes(v).to_f64();
+            (val - n).abs() <= n.abs().max(1.0) * 2.0_f64.powi(-10) * 8.0
+        }
+        Constant::BF16(v) => {
+            let val = bf16::from_le_bytes(v).to_f64();
+            (val - n).abs() <= n.abs().max(1.0) * 2.0_f64.powi(-8) * 8.0
+        }
+        Constant::F8E4M3(v) => {
+            let val = f8e4m3::from_le_bytes([v]).to_f64();
+            (val - n).abs() <= n.abs().max(1.0) * 2.0_f64.powi(-4) * 4.0
+        }
+        Constant::F8E5M2(v) => {
+            let val = f8e5m2::from_le_bytes([v]).to_f64();
+            (val - n).abs() <= n.abs().max(1.0) * 2.0_f64.powi(-3) * 4.0
+        }
     }
 }
 

@@ -1060,7 +1060,7 @@ const _: () = assert!(core::mem::size_of::<OpLinked>() == 32);
 /// Operation ID for kernel operations.
 ///
 /// This is a unique identifier for each operation in the kernel IR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct OpId(pub(crate) u32);
 
 impl OpId {

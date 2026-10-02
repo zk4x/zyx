@@ -417,6 +417,31 @@ impl Constant {
         }
     }
 
+    /// As float
+    #[must_use]
+    pub(crate) fn as_float(self) -> Option<f64> {
+        match self {
+            Constant::U8(v) => Some(f64::from(v)),
+            Constant::U16(v) => Some(f64::from(v)),
+            Constant::U32(v) => Some(f64::from(v)),
+            Constant::U64(v) => {
+                let v = u64::from_le_bytes(v);
+                if v <= i64::MAX as u64 { Some(v as f64) } else { None }
+            }
+            Constant::I8(v) => Some(f64::from(v)),
+            Constant::I16(v) => Some(f64::from(v)),
+            Constant::I32(v) => Some(f64::from(v)),
+            Constant::I64(v) => Some(f64::from_le_bytes(v)),
+            Constant::Bool(v) => Some(f64::from(v)),
+            Constant::BF16(_) => todo!(),
+            Constant::F16(_) => todo!(),
+            Constant::F32(_) => todo!(),
+            Constant::F64(_) => todo!(),
+            Constant::F8E4M3(_) => todo!(),
+            Constant::F8E5M2(_) => todo!(),
+        }
+    }
+
     #[must_use]
     pub(crate) fn is_max(self) -> bool {
         match self {
