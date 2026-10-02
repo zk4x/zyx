@@ -16,7 +16,7 @@
 use crate::{
     DType, Map,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, Pat},
+    kernel::{BOp, Kernel, Op, OpId, Pat, VExpr},
     shape::Dim,
 };
 
@@ -37,8 +37,6 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("algebraic_simplification");
 
-        self.unfuse_mad();
-
         // Single fused walk applying all per-op simplifications (shl_shr
         // roundtrip, bitwise identities, div/mod, zero shifts, constant
         // comparisons) at once instead of one full-IR walk per check. Bounds are
@@ -46,13 +44,9 @@ impl Kernel {
         // them across these value-preserving checks is sound.
         let bounds = self.compute_bounds();
         self.simplify_fused(&bounds);
-
-        // Structural passes that match across multiple ops and may insert new
-        // ops; kept separate because they cannot be merged into the per-op walk.
         self.simplify_mod_shift_sequences(&bounds);
-        self.simplify_demux_roundtrip(&bounds);
-        let bounds = self.compute_bounds();
         self.simplify_mod_div_identity(&bounds);
+        self.simplify_demux_roundtrip(&bounds);
 
         self.dead_code_elimination();
         self.verify();
@@ -62,7 +56,7 @@ impl Kernel {
     /// what used to be several separate full-IR walks (`simplify_shl_shr_roundtrips`,
     /// `simplify_bitwise_identities`, the div/mod simplification,
     /// `simplify_zero_shifts`, `simplify_constant_comparisons`) into one O(N)
-    /// pass. `unfuse_mad`, `dead_code_elimination`, `verify`, and the structural
+    /// pass. `dead_code_elimination`, `verify`, and the structural
     /// passes `simplify_mod_shift_sequences` / `simplify_demux_roundtrip` remain
     /// separate.
     fn simplify_fused(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
@@ -71,55 +65,247 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            // shl_shr roundtrip: (x << n) >> n -> x (and the shr-of-add form).
-            if let Some(y) = self.match_shl_shr_roundtrip(op_id) {
-                self.remap(op_id, y);
+            // shl_shr roundtrip: ((y << d) + rest) >> d -> y when
+            // 0 <= rest < 2^d: the residue shifts out exactly. Both shift
+            // amounts share one value name; dim_lt keeps the < 64 range
+            // in-pattern; retry covers the Add order.
+            if let Some(m) = {
+                self.match_pat(
+                    op_id,
+                    ((Pat::bind("y") << Pat::bind_int("d").dim_lt(64)) + Pat::bind("rest")) >> Pat::bind_int("d"),
+                )
+            } {
+                let (y, rest, dv) = (m["y"], m["rest"], m.val("d"));
+                if bounds.get(&rest).is_some_and(|&(lo, hi)| lo >= 0 && hi < (1 << dv)) {
+                    self.remap(op_id, y);
+                }
             } else if let Some(replacement) = {
+                // x & MAX -> x and x | 0 -> x as one alternation: a single
+                // match binds x either way; failed alternatives leave nothing.
                 let x = Pat::bind("x");
-                self.match_pat(op_id, &(&x & Pat::const_if(Constant::is_max)))
-                    .or_else(|| self.match_pat(op_id, &(&x | 0)))
-                    .map(|m| m["x"])
+                self.match_pat(op_id, &Pat::any([&x & Pat::const_if(Constant::is_max), &x | 0])).map(|m| m["x"])
             } {
                 self.remap(op_id, replacement);
-            } else if let &Op::Binary { x, y, bop } = self.at(op_id)
-                && matches!(bop, BOp::Div | BOp::Mod)
-                && let Op::Const(divisor) = self.at(y)
-            {
-                let dtype = divisor.dtype();
-                if let Some(divisor) = divisor.as_dim() {
-                    match bop {
-                        BOp::Mod => self.simplify_mod(op_id, x, y, dtype, bounds),
-                        BOp::Div => self.simplify_div(op_id, x, divisor, dtype, bounds),
-                        _ => {}
+            } else if let Some(m) = {
+                // ((a*d)+b)/d → a when |b| < |dv|: truncated division's
+                // correction term vanishes. Integer operands only (float
+                // division is never exact here); dv == 0 cannot fire.
+                self.match_pat(op_id, (Pat::bind("a").int() * Pat::bind_int("d") + Pat::bind("b").int()) / Pat::bind_int("d"))
+            } {
+                let (a, b, dv) = (m["a"], m["b"], m.val("d"));
+                if bounds.get(&b).is_some_and(|&(lo, hi)| {
+                    let ad = dv.unsigned_abs();
+                    lo.unsigned_abs() < ad && hi.unsigned_abs() < ad
+                }) {
+                    self.remap(op_id, a);
+                }
+            } else if let Some(m) = {
+                // ((a<<k)+b)/d → a when d == 2^k and |b| < d. The pow2
+                // relation is a first-class comparison; the bounds guard
+                // is the same truncated-division correction as above.
+                self.match_pat(
+                    op_id,
+                    Pat::all([
+                        (Pat::bind("a").int() << Pat::bind_int("k") + Pat::bind("b").int()) / Pat::bind_int("d"),
+                        Pat::ge("k", 0),
+                        Pat::lt("k", 64),
+                        Pat::eq("d", VExpr::shl(1, "k")),
+                    ]),
+                )
+            } {
+                let (a, b, dv) = (m["a"], m["b"], m.val("d"));
+                if bounds.get(&b).is_some_and(|&(lo, hi)| {
+                    let ad = dv.unsigned_abs();
+                    lo.unsigned_abs() < ad && hi.unsigned_abs() < ad
+                }) {
+                    self.remap(op_id, a);
+                }
+            } else if let Some(m) = { self.match_pat(op_id, Pat::bind("x").int() / Pat::bind_int("d")) } {
+                // x/d → 0 when 0 <= x < d (dv > 0 follows). Integer only:
+                // float division has no truncating correction (1.0/2 = 0.5).
+                let (x, dv) = (m["x"], m.val("d"));
+                if let Some(&(lo, xu)) = bounds.get(&x)
+                    && lo >= 0
+                    && xu < dv
+                {
+                    self.ops[op_id].op = Op::Const(self.dtype(m["d"]).zero_constant());
+                }
+            } else if let Some(m) = { self.match_pat(op_id, Pat::bind("x") % Pat::bind_int("d")) } {
+                // `dv` is the divisor value, `m["d"]` its op. Each acted
+                // rule ends with `op_id = next; continue`: skip patterns 3-5,
+                // advance the walk. Fall-through leaves the op untouched.
+                let (x, d, dv) = (m["x"], m["d"], m.val("d"));
+
+                // Pattern 1: x % d when 0 <= x < d -> x.
+                if let Some(&(lo_x, max_x)) = bounds.get(&x)
+                    && lo_x >= 0
+                    && max_x < dv
+                {
+                    self.remap(op_id, x);
+                    op_id = next;
+                    continue;
+                }
+                // Resolve (a*c)+b or (a<<k)+b (any add/mul order) to
+                // (a, cval, b): a shape disjunction over two Pat matches
+                // sharing one body below. Integer operands only (float
+                // remainder is never exact here). Commutativity retry covers
+                // the orderings; the shl form computes its 2^k multiple.
+                let mul_like = self
+                    .match_pat(x, (Pat::bind("a").int() * Pat::bind_int("c")) + Pat::bind("b").int())
+                    .map(|ma| (ma["a"], ma.val("c"), ma["b"]))
+                    .or_else(|| {
+                        self.match_pat(x, (Pat::bind("a").int() << Pat::bind_int("k")) + Pat::bind("b").int()).and_then(|ma| {
+                            let kv = ma.val("k");
+                            (kv >= 0 && kv < 64).then(|| (ma["a"], 1i64 << kv, ma["b"]))
+                        })
+                    });
+                if let Some((a, c, b)) = mul_like {
+                    // Pattern 2: (a*c + b) % c -> b % c (because (a*c) % c = 0)
+                    // Math: (a*c + b) % c = ((a*c) % c + b % c) % c = (0 + b % c) % c = b % c
+                    // Since c == dv: result = b % dv
+                    if c == dv {
+                        self.ops[op_id].op = Op::Binary { x: b, y: d, bop: BOp::Mod };
+                        // Pattern 1 on result: if 0 <= b < dv, b % dv = b
+                        if let Some(&(lo_b, max_b)) = bounds.get(&b)
+                            && lo_b >= 0
+                            && max_b < dv
+                        {
+                            self.remap(op_id, b);
+                        }
+                        op_id = next;
+                        continue;
+                    }
+                    // Pattern 2b: (a*c + b) % d when c % d == 1 -> (a + b) % d
+                    // Math: (a*c + b) % d = ((a*(c%d) + b) % d) = ((a*1 + b) % d) = (a + b) % d
+                    // checked_rem never fires (instead of panicking) when dv == 0.
+                    if c.checked_rem(dv) == Some(1) {
+                        let a_plus_b = self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add });
+                        self.ops[op_id].op = Op::Binary { x: a_plus_b, y: d, bop: BOp::Mod };
+                        // Pattern 1 on result: if 0 <= a+b < dv, (a+b) % dv = a+b
+                        if let Some(&(min_a, max_a)) = bounds.get(&a)
+                            && let Some(&(min_b, max_b)) = bounds.get(&b)
+                            && min_a.saturating_add(min_b) >= 0
+                            && max_a.saturating_add(max_b) < dv
+                        {
+                            self.remap(op_id, a_plus_b);
+                        }
+                        op_id = next;
+                        continue;
+                    }
+                    // Patterns 2c/2d (unsound `(a*c+b) % d -> b` family) are
+                    // gone: their sound cases are subsumed by Pattern 1,
+                    // which matches x = (a*c+b) directly with x's own bounds.
+                }
+            } else if let Some(m) = {
+                // Pattern 3: (a + b) % d when min_a > 0, min_b > 0, max(a+b) < d.
+                // Both positive and sum < d: no wraparound, result = a + b.
+                self.match_pat(op_id, (Pat::bind("a") + Pat::bind("b")) % Pat::bind_int("d"))
+            } {
+                let (x, (a, b), dv) = (m["x"], (m["a"], m["b"]), m.val("d"));
+                if let Some(&(min_a, max_a)) = bounds.get(&a)
+                    && let Some(&(min_b, max_b)) = bounds.get(&b)
+                    && min_a > 0
+                    && min_b > 0
+                {
+                    let sum = max_a.saturating_add(max_b);
+                    if sum < dv && sum > 0 {
+                        self.remap(op_id, x);
                     }
                 }
-            } else if let &Op::Binary { x, y, bop: BOp::BitShiftRight } = self.at(op_id)
-                && let Op::Const(shift) = self.at(y)
-                && let Some(k) = shift.as_dim()
-                && k < 64
-                && let Some(&(_, xu)) = bounds.get(&x)
-                && xu < (1i64 << k)
-            {
-                let dtype = self.dtype(x);
-                self.ops[op_id].op = Op::Const(dtype.zero_constant());
-            } else if let &Op::Binary { x: cmp_x, y: cmp_y, bop } = self.at(op_id)
-                && matches!(bop, BOp::Eq | BOp::NotEq | BOp::Cmpge | BOp::Cmpgt | BOp::Cmplt)
-                && let Op::Const(cy) = self.at(cmp_y)
-                && cy.as_dim() == Some(0)
-                && let Op::Binary { x: sub_x, y: sub_y, bop: BOp::Sub } = self.at(cmp_x)
-            {
-                // `(a - b) OP 0` equals `a OP b` for integer comparisons, but only
-                // if `a - b` cannot overflow (otherwise wrapping breaks the
-                // equivalence). Guard with the conservative bounds.
-                let no_overflow = bounds
-                    .get(sub_x)
-                    .zip(bounds.get(sub_y))
-                    .map(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
-                        a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
-                    })
-                    .unwrap_or(false);
-                if no_overflow {
-                    self.ops[op_id].op = Op::Binary { x: *sub_x, y: *sub_y, bop };
+            } else if let Some(m) = {
+                // Pattern 4: (a * c) % d -> reduce c modulo d.
+                // Math: (a * c) % d = (a * (c % d)) % d.
+                self.match_pat(op_id, (Pat::bind("a") * Pat::bind_int("c")) % Pat::bind_int("d"))
+            } {
+                let (x, (a, c), dv) = (m["x"], (m["a"], m.val("c")), m.val("d"));
+                // checked_rem never fires (instead of panicking) when dv == 0.
+                if let Some(c_reduced) = c.checked_rem(dv)
+                    && c_reduced != c
+                    && c_reduced > 0
+                    && let Some(&(min_a, max_a)) = bounds.get(&a)
+                    && min_a > 0
+                {
+                    let prod = max_a.saturating_mul(c_reduced);
+                    if prod < dv && prod > 0 {
+                        self.remap(op_id, x);
+                    }
+                }
+            } else if let Some(m) = {
+                // Pattern 5: (a + C) % d where C is const and 0 <= a+C < d.
+                // No wraparound, result = a + C. Saturating adds never fire
+                // (instead of overflowing) on huge bounds.
+                self.match_pat(op_id, (Pat::bind("a") + Pat::bind_int("y")) % Pat::bind_int("d"))
+            } {
+                let (x, (a, y), dv) = (m["x"], (m["a"], m.val("y")), m.val("d"));
+                if let Some(&(min_a, max_a)) = bounds.get(&a)
+                    && min_a.saturating_add(y) >= 0
+                    && max_a.saturating_add(y) < dv
+                {
+                    self.remap(op_id, x);
+                }
+            } else if let Some(m) = {
+                // x >> k -> 0 when 0 <= x < 2^k. dim_lt keeps the range in-pattern.
+                self.match_pat(op_id, Pat::bind("x") >> Pat::bind_int("k").dim_lt(64))
+            } {
+                let (x, kv) = (m["x"], m.val("k"));
+                if let Some(&(lo, xu)) = bounds.get(&x)
+                    && lo >= 0
+                    && xu < (1i64 << kv)
+                {
+                    let dtype = self.dtype(x);
+                    self.ops[op_id].op = Op::Const(dtype.zero_constant());
+                }
+            } else if let Some(m) = {
+                // `(a - b) == 0` equals `a == b` for integers, but only if
+                // `a - b` cannot overflow (otherwise wrapping breaks the
+                // equivalence). Sub is not commutative: no operand swap.
+                self.match_pat(op_id, Pat::binary(BOp::Eq, Pat::bind("a").int() - Pat::bind("b").int(), 0))
+            } {
+                let (a, b) = (m["a"], m["b"]);
+                if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                    a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                }) {
+                    self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Eq };
+                }
+            } else if let Some(m) = {
+                // `(a - b) != 0` equals `a != b`. Same overflow guard.
+                self.match_pat(op_id, Pat::binary(BOp::NotEq, Pat::bind("a").int() - Pat::bind("b").int(), 0))
+            } {
+                let (a, b) = (m["a"], m["b"]);
+                if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                    a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                }) {
+                    self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::NotEq };
+                }
+            } else if let Some(m) = {
+                // `(a - b) >= 0` equals `a >= b`. Same overflow guard.
+                self.match_pat(op_id, Pat::binary(BOp::Cmpge, Pat::bind("a").int() - Pat::bind("b").int(), 0))
+            } {
+                let (a, b) = (m["a"], m["b"]);
+                if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                    a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                }) {
+                    self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmpge };
+                }
+            } else if let Some(m) = {
+                // `(a - b) > 0` equals `a > b`. Same overflow guard.
+                self.match_pat(op_id, Pat::binary(BOp::Cmpgt, Pat::bind("a").int() - Pat::bind("b").int(), 0))
+            } {
+                let (a, b) = (m["a"], m["b"]);
+                if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                    a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                }) {
+                    self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmpgt };
+                }
+            } else if let Some(m) = {
+                // `(a - b) < 0` equals `a < b`. Same overflow guard.
+                self.match_pat(op_id, Pat::binary(BOp::Cmplt, Pat::bind("a").int() - Pat::bind("b").int(), 0))
+            } {
+                let (a, b) = (m["a"], m["b"]);
+                if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                    a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                }) {
+                    self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmplt };
                 }
             } else if let &Op::Binary { x, y, bop } = self.at(op_id)
                 && !self.dtype(x).is_float()
@@ -447,176 +633,6 @@ impl Kernel {
         }
     }
 
-    fn match_shl_shr_roundtrip(&self, op_id: OpId) -> Option<OpId> {
-        let y = Pat::bind("y");
-        // Shift amounts bind separately (distinct const ops) and must be
-        // consts structurally — `All` with `Const` — so the commutativity
-        // retry engages on constness; the guard compares values.
-        let n1 = Pat::all(vec![Pat::bind("n1"), Pat::Const]);
-        let n2 = Pat::all(vec![Pat::bind("n2"), Pat::Const]);
-        let rest = Pat::bind("rest");
-        // `(shl(y, n1) + rest) >> n2`: the Add order is handled by the
-        // matcher's commutativity retry. The two shift amounts are distinct
-        // const ops, so they bind separately and the guard compares values.
-        let pat = ((&y << &n1) + &rest) >> &n2;
-        let m = self.match_pat(op_id, &pat)?;
-        let (y, n1, n2) = (m["y"], m["n1"], m["n2"]);
-        let (Some(k1), Some(k2)) = (self.const_dim(n1), self.const_dim(n2)) else {
-            return None;
-        };
-        if k1 == k2 && k1 < 64 { Some(y) } else { None }
-    }
-
-    fn const_dim(&self, op_id: OpId) -> Option<Dim> {
-        let Op::Const(c) = self.ops[op_id].op else { return None };
-        c.as_dim()
-    }
-
-    fn simplify_div(&mut self, op_id: OpId, x: OpId, divisor: Dim, dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
-        if let Some((a, c, _)) = mul_add(self, x)
-            && c == divisor
-        {
-            self.remap(op_id, a);
-            return;
-        }
-
-        if let Some((a, c, _)) = mad(self, x)
-            && c == divisor
-        {
-            self.remap(op_id, a);
-            return;
-        }
-
-        let Some(&(_, xu)) = bounds.get(&x) else { return };
-        if xu < divisor {
-            self.ops[op_id].op = Op::Const(dtype.zero_constant());
-        }
-    }
-
-    fn simplify_mod(&mut self, op_id: OpId, x: OpId, divisor_const: OpId, _dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
-        let Op::Const(divisor) = self.ops[divisor_const].op else {
-            return;
-        };
-        let Some(divisor) = divisor.as_dim() else { return };
-
-        //self.debug();
-
-        // Pattern 1: x % divisor when 0 <= x < divisor -> x
-        if let Some(&(_, max_x)) = bounds.get(&x)
-            && max_x < divisor
-        {
-            self.remap(op_id, x);
-            return;
-        }
-
-        if let Some((a, c, b)) = mul_add(self, x) {
-            // Pattern 2: (a*c + b) % c -> b % c (because (a*c) % c = 0)
-            // Math: (a*c + b) % c = ((a*c) % c + b % c) % c = (0 + b % c) % c = b % c
-            // Since c == divisor: result = b % divisor
-            if c == divisor {
-                self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
-                // Pattern 1 on result: if b < divisor, b % divisor = b
-                if let Some(&(_, max_b)) = bounds.get(&b)
-                    && max_b < divisor
-                {
-                    self.remap(op_id, b);
-                }
-                return;
-            }
-            // Pattern 2b: (a*c + b) % d when c % d == 1 -> (a + b) % d
-            // Math: (a*c + b) % d = ((a*(c%d) + b) % d) = ((a*1 + b) % d) = (a + b) % d
-            if c % divisor == 1 {
-                let a_plus_b = self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add });
-                self.ops[op_id].op = Op::Binary { x: a_plus_b, y: divisor_const, bop: BOp::Mod };
-                // Pattern 1 on result: if max(a) + max(b) < divisor, (a+b) % divisor = a+b
-                if let Some(&(_, max_a)) = bounds.get(&a)
-                    && let Some(&(_, max_b)) = bounds.get(&b)
-                    && max_a.saturating_add(max_b) < divisor
-                {
-                    self.remap(op_id, a_plus_b);
-                }
-                return;
-            }
-            // Pattern 2c: (a*c + b) % d when max(a*c + b) < d -> b % d
-            // Need: min_b == 0 AND max(a*c) + max_b < divisor
-            if let Some(&(_min_a, max_a)) = bounds.get(&a) {
-                let max_a_c = max_a.saturating_mul(c);
-                if let Some(&(min_b, max_b)) = bounds.get(&b)
-                    && min_b == 0
-                    && max_a_c.saturating_add(max_b) < divisor
-                {
-                    self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
-                    // Pattern 1 on result: if b < divisor, b % divisor = b
-                    if max_b < divisor {
-                        self.remap(op_id, b);
-                    }
-                    return;
-                }
-            }
-            // Pattern 2d: (a*c + b) % d when d = c*k and max(a*c+b) < d -> b
-            // Need: min_b == 0 AND max(a*c) + max_b < divisor
-            // When max(a*c + b) < divisor, (a*c + b) % divisor = a*c + b, so if max < divisor -> result = b
-            if divisor > c
-                && c != 0
-                && divisor % c == 0
-                && let Some(&(_min_a, max_a)) = bounds.get(&a)
-                && let Some(&(min_b, max_b)) = bounds.get(&b)
-            {
-                let max_ac = max_a.saturating_mul(c);
-                if min_b == 0 && max_ac.saturating_add(max_b) < divisor {
-                    self.remap(op_id, b);
-                    return;
-                }
-            }
-        }
-
-        // Pattern 3: (a + b) % divisor when min_a > 0, min_b > 0, max(a+b) < divisor
-        // If both are positive and sum < divisor, no wraparound, so result = a + b
-        if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op
-            && let Some(&(min_a, max_a)) = bounds.get(&a)
-            && let Some(&(min_b, max_b)) = bounds.get(&b)
-            && min_a > 0
-            && min_b > 0
-        {
-            let sum = max_a.saturating_add(max_b);
-            if sum < divisor && sum > 0 {
-                self.remap(op_id, x);
-                return;
-            }
-        }
-
-        // Pattern 4: (a * c) % divisor -> reduce c modulo divisor
-        // Math: (a * c) % d = (a * (c % d)) % d
-        if let Op::Binary { x: a, y: c, bop: BOp::Mul } = self.ops[x].op
-            && let Op::Const(y) = self.ops[c].op
-            && let Some(c) = y.as_dim()
-        {
-            let c_reduced = c % divisor;
-            if c_reduced != c
-                && c_reduced > 0
-                && let Some(&(min_a, max_a)) = bounds.get(&a)
-                && min_a > 0
-            {
-                let prod = max_a.saturating_mul(c_reduced);
-                if prod < divisor && prod > 0 {
-                    self.remap(op_id, x);
-                    return;
-                }
-            }
-        }
-
-        // Pattern 5: (a + C) % divisor where C is constant and max(a) + C < divisor
-        // If max(a) + C < divisor, no wraparound, so result = a + C
-        if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op
-            && let Op::Const(y) = self.ops[b].op
-            && let Some(y) = y.as_dim()
-            && let Some(&(_, max_a)) = bounds.get(&a)
-            && max_a + y < divisor
-        {
-            self.remap(op_id, x);
-        }
-    }
-
     /// Simplify modulo and shift sequences using valid algebraic identities.
     ///
     /// Two sweeps run in order:
@@ -629,22 +645,146 @@ impl Kernel {
     /// Every rewrite is guarded by conservative bounds so it only fires when
     /// provably valid (no overflow, non-negative operands).
     fn simplify_mod_shift_sequences(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
+        // `(x >> 1) + (x & 1)` -> `(x + 1) >> 1` (also `(x % 2)` residue).
+        // Requires non-negative `x` (unsigned dtype) and `x + 1` not
+        // overflowing. Restricted to `k == 1`: for `k >= 2` the sum
+        // `floor(x/2^k) + (x mod 2^k)` is not `ceil(x/2^k)`. The repeated
+        // `r` asserts the shared root structurally; the Add commutativity
+        // retry covers both operand orders. `dtype` comes from the root
+        // (shifts/residues preserve it; the old code read whichever Add
+        // operand came first).
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let &Op::Binary { x, y, bop: BOp::Add } = self.at(op_id) {
-                self.simplify_ceil_add(op_id, x, y, bounds);
+            if let Some(m) = self.match_pat(
+                op_id,
+                Pat::any([
+                    Pat::all([
+                        (Pat::bind("r") >> Pat::bind_int("k")) + (Pat::bind("r") % Pat::bind_int("s")),
+                        Pat::eq("k", 1),
+                        Pat::any([Pat::eq("s", 1), Pat::eq("s", 2)]),
+                    ]),
+                    Pat::all([
+                        (Pat::bind("r") >> Pat::bind_int("k")) + (Pat::bind("r") & Pat::bind_int("s")),
+                        Pat::eq("k", 1),
+                        Pat::any([Pat::eq("s", 1), Pat::eq("s", 2)]),
+                    ]),
+                ]),
+            ) {
+                let r = m["r"];
+                let dtype = self.dtype(r);
+                if is_unsigned(dtype)
+                    && let Some(&(_, max_root)) = bounds.get(&r)
+                    && max_root.saturating_add(1) <= dtype_max(dtype) as Dim
+                {
+                    let add_const = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&1i64.to_le_bytes(), dtype)));
+                    let plus = self.insert_before(op_id, Op::Binary { x: r, y: add_const, bop: BOp::Add });
+                    let k_const = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&1i64.to_le_bytes(), dtype)));
+                    let result = self.insert_before(op_id, Op::Binary { x: plus, y: k_const, bop: BOp::BitShiftRight });
+                    self.remap(op_id, result);
+                }
             }
             op_id = next;
         }
 
+        // Distribution: `(a + c*b) % m` -> `a % m` when `m | c`, and
+        // `(a + c*b) >> k` / `(a + c*b) / c` -> `(a >> k) + b` / `(a / c) + b`.
+        // Inlined single walk, no helper indirection; the multiple `c*b`
+        // comes from `match_const_multiple`. All sides are unsigned, so
+        // minima are 0 and upper bounds suffice.
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let &Op::Binary { x, y, bop } = self.at(op_id) {
                 match bop {
-                    BOp::Mod => self.simplify_mod_distribute(op_id, x, y, bounds),
-                    BOp::BitShiftRight | BOp::Div => self.simplify_shift_distribute(op_id, x, y, bop, bounds),
+                    BOp::Mod => {
+                        // `(a + c*b) % m` -> `a % m` when `m` divides `c`.
+                        // Guarded against overflow since a wrapping sum
+                        // would break the identity.
+                        if let Some(m) = self.match_pat(y, Pat::bind_int("m")).map(|m| m.val("m"))
+                            && m != 0
+                            && let Op::Binary { x: a, y: mult, bop: BOp::Add } = self.ops[x].op
+                        {
+                            for (a_side, mult_side) in [(a, mult), (mult, a)] {
+                                if !is_unsigned(self.dtype(a_side)) {
+                                    continue;
+                                }
+                                let Some((b, c)) = self.match_const_multiple(mult_side) else {
+                                    continue;
+                                };
+                                // c <= 0 never occurred under as_dim; the max
+                                // reasoning below needs c >= 0 (c == 0 skips
+                                // exactly as before).
+                                if c <= 0 || c % m != 0 {
+                                    continue;
+                                }
+                                let (Some(&(_, max_a)), Some(&(_, max_b))) =
+                                    (bounds.get(&a_side), bounds.get(&b))
+                                else {
+                                    continue;
+                                };
+                                if max_a.saturating_add((c as Dim).saturating_mul(max_b))
+                                    > dtype_max(self.dtype(a_side)) as Dim
+                                {
+                                    continue;
+                                }
+                                self.ops[op_id].op = Op::Binary { x: a_side, y, bop: BOp::Mod };
+                                if max_a < m {
+                                    self.remap(op_id, a_side);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    BOp::BitShiftRight | BOp::Div => {
+                        // `(a + c*b) >> k` -> `(a >> k) + b` and
+                        // `(a + c*b) / c` -> `(a / c) + b`. Requires the
+                        // multiple to match the shift/divisor, unsigned
+                        // operands, and no overflow of the original sum.
+                        if let Some(amount) =
+                            self.match_pat(y, Pat::bind_int("amount")).map(|m| m.val("amount"))
+                        {
+                            // amount < 0 never occurred under as_dim; the
+                            // shift below would panic on it.
+                            let c = match bop {
+                                BOp::BitShiftRight if amount >= 0 && amount < 64 => 1i64 << amount,
+                                BOp::Div if amount > 0 => amount,
+                                _ => continue,
+                            };
+                            if let Op::Binary { x: a, y: mult, bop: BOp::Add } = self.ops[x].op {
+                                for (a_side, mult_side) in [(a, mult), (mult, a)] {
+                                    let dtype = self.dtype(a_side);
+                                    if !is_unsigned(dtype) {
+                                        continue;
+                                    }
+                                    let Some((b, mult_c)) = self.match_const_multiple(mult_side) else {
+                                        continue;
+                                    };
+                                    if mult_c != c {
+                                        continue;
+                                    }
+                                    let (Some(&(_, max_a)), Some(&(_, max_b))) =
+                                        (bounds.get(&a_side), bounds.get(&b))
+                                    else {
+                                        continue;
+                                    };
+                                    if max_a.saturating_add(c.saturating_mul(max_b)) > dtype_max(dtype) as Dim {
+                                        continue;
+                                    }
+                                    let amount_const = self.insert_before(
+                                        op_id,
+                                        Op::Const(Constant::from_le_bytes(&amount.to_le_bytes(), dtype)),
+                                    );
+                                    let a_op =
+                                        self.insert_before(op_id, Op::Binary { x: a_side, y: amount_const, bop });
+                                    let result =
+                                        self.insert_before(op_id, Op::Binary { x: a_op, y: b, bop: BOp::Add });
+                                    self.remap(op_id, result);
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -652,153 +792,21 @@ impl Kernel {
         }
     }
 
-    /// `(x >> 1) + (x & 1)` -> `(x + 1) >> 1`.
-    ///
-    /// Also matches `(x % 2)` as the residue term. Requires non-negative `x`
-    /// (unsigned dtype) and `x + 1` not overflowing. Restricted to `k == 1`:
-    /// for `k >= 2` the sum `floor(x/2^k) + (x mod 2^k)` is not `ceil(x/2^k)`.
-    fn simplify_ceil_add(&mut self, op_id: OpId, x: OpId, y: OpId, bounds: &Map<OpId, (Dim, Dim)>) {
-        let dtype = self.dtype(x);
-        if !is_unsigned(dtype) {
-            return;
-        }
-        let (shr_op, rem_op) = match (self.at(x), self.at(y)) {
-            (
-                &Op::Binary { x: sx, y: sy, bop: BOp::BitShiftRight },
-                &Op::Binary { x: rx, y: ry, bop: BOp::Mod | BOp::BitAnd },
-            ) => ((sx, sy), (rx, ry)),
-            (
-                &Op::Binary { x: rx, y: ry, bop: BOp::Mod | BOp::BitAnd },
-                &Op::Binary { x: sx, y: sy, bop: BOp::BitShiftRight },
-            ) => ((sx, sy), (rx, ry)),
-            _ => return,
-        };
-        let ((shr_x, shr_y), (rem_root, rem_y)) = (shr_op, rem_op);
-        if shr_x != rem_root {
-            return;
-        }
-        let Op::Const(k) = self.ops[shr_y].op else { return };
-        let Some(k) = k.as_dim() else { return };
-        if k != 1 || k >= 64 {
-            return;
-        }
-        let modulus = 1i64 << k;
-        let Op::Const(residue) = self.ops[rem_y].op else { return };
-        let Some(residue) = residue.as_dim() else { return };
-        if residue != modulus - 1 && residue != modulus {
-            return;
-        }
-        let Some(&(_, max_root)) = bounds.get(&shr_x) else { return };
-        if max_root.saturating_add(modulus - 1) > dtype_max(dtype) as Dim {
-            return;
-        }
-        let add_const = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&(modulus - 1).to_le_bytes(), dtype)));
-        let plus = self.insert_before(op_id, Op::Binary { x: shr_x, y: add_const, bop: BOp::Add });
-        let k_const = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&k.to_le_bytes(), dtype)));
-        let result = self.insert_before(op_id, Op::Binary { x: plus, y: k_const, bop: BOp::BitShiftRight });
-        self.remap(op_id, result);
-    }
-
-    /// `(a + c*b) % m` -> `a % m` when `m` is a constant that divides `c`.
-    ///
-    /// The multiple `c*b` is recognized from `b << k`, `b * const`, or `b + b`.
-    /// Guarded against overflow since a wrapping `(a + c*b)` would break the identity.
-    fn simplify_mod_distribute(&mut self, op_id: OpId, x: OpId, y: OpId, bounds: &Map<OpId, (Dim, Dim)>) {
-        let Op::Const(m) = self.ops[y].op else { return };
-        let Some(m) = m.as_dim() else { return };
-        if m == 0 {
-            return;
-        }
-        let Op::Binary { x: a, y: mult, bop: BOp::Add } = self.ops[x].op else {
-            return;
-        };
-        for (a_side, mult_side) in [(a, mult), (mult, a)] {
-            if !is_unsigned(self.dtype(a_side)) {
-                continue;
-            }
-            let Some((b, c)) = self.match_const_multiple(mult_side) else {
-                continue;
-            };
-            if c == 0 || c % m != 0 {
-                continue;
-            }
-            let (Some(&(_, max_a)), Some(&(_, max_b))) = (bounds.get(&a_side), bounds.get(&b)) else {
-                continue;
-            };
-            if max_a.saturating_add((c as Dim).saturating_mul(max_b)) > dtype_max(self.dtype(a_side)) as Dim {
-                continue;
-            }
-            self.ops[op_id].op = Op::Binary { x: a_side, y, bop: BOp::Mod };
-            if max_a < m {
-                self.remap(op_id, a_side);
-            }
-            return;
-        }
-    }
-
-    /// `(a + c*b) >> k` -> `(a >> k) + b` and `(a + c*b) / c` -> `(a / c) + b`.
-    ///
-    /// Requires the multiple constant to match the shift/divisor, non-negative
-    /// operands (unsigned dtype), and no overflow of the original sum.
-    fn simplify_shift_distribute(&mut self, op_id: OpId, x: OpId, y: OpId, bop: BOp, bounds: &Map<OpId, (Dim, Dim)>) {
-        let Op::Const(amount) = self.ops[y].op else { return };
-        let Some(amount) = amount.as_dim() else { return };
-        let c = match bop {
-            BOp::BitShiftRight if amount < 64 => 1i64 << amount,
-            BOp::Div if amount > 0 => amount,
-            _ => return,
-        };
-        let Op::Binary { x: a, y: mult, bop: BOp::Add } = self.ops[x].op else {
-            return;
-        };
-        for (a_side, mult_side) in [(a, mult), (mult, a)] {
-            let dtype = self.dtype(a_side);
-            if !is_unsigned(dtype) {
-                continue;
-            }
-            let Some((b, mult_c)) = self.match_const_multiple(mult_side) else {
-                continue;
-            };
-            if mult_c != c {
-                continue;
-            }
-            let (Some(&(_, max_a)), Some(&(_, max_b))) = (bounds.get(&a_side), bounds.get(&b)) else {
-                continue;
-            };
-            if max_a.saturating_add(c.saturating_mul(max_b)) > dtype_max(dtype) as Dim {
-                continue;
-            }
-            let amount_const = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&amount.to_le_bytes(), dtype)));
-            let a_op = self.insert_before(op_id, Op::Binary { x: a_side, y: amount_const, bop });
-            let result = self.insert_before(op_id, Op::Binary { x: a_op, y: b, bop: BOp::Add });
-            self.remap(op_id, result);
-            return;
-        }
-    }
-
     /// Matches a term that is `c * b` for a compile-time constant `c`, from
-    /// `b << k` (c = 2^k), `b * const` (c = const), or `b + b` (c = 2).
+    /// `b + b` (c = 2, same op twice via the repeated binder), `b << k`
+    /// (c = 2^k), or `b * const` (c = const, either order via retry).
     fn match_const_multiple(&self, op_id: OpId) -> Option<(OpId, Dim)> {
-        if let Op::Binary { x, y, bop: BOp::Add } = self.ops[op_id].op
-            && x == y
-        {
-            return Some((x, Dim::from(2)));
+        if let Some(m) = self.match_pat(op_id, Pat::bind("b") + Pat::bind("b")) {
+            return Some((m["b"], 2));
         }
-        if let Op::Binary { x, y, bop: BOp::BitShiftLeft } = self.ops[op_id].op
-            && let Op::Const(c) = self.ops[y].op
-            && let Some(k) = c.as_dim()
-            && k < 64
-        {
-            return Some((x, 1i64 << k));
-        }
-        if let Op::Binary { x, y, bop: BOp::Mul } = self.ops[op_id].op {
-            for (a, b) in [(x, y), (y, x)] {
-                if let Op::Const(c) = self.ops[a].op
-                    && let Some(v) = c.as_dim()
-                {
-                    return Some((b, v));
-                }
+        if let Some(m) = self.match_pat(op_id, Pat::bind("b") << Pat::bind_int("k")) {
+            let kv = m.val("k");
+            if kv >= 0 && kv < 64 {
+                return Some((m["b"], 1i64 << kv));
             }
+        }
+        if let Some(m) = self.match_pat(op_id, Pat::bind("b") * Pat::bind_int("c")) {
+            return Some((m["b"], m.val("c")));
         }
         None
     }
@@ -820,59 +828,6 @@ fn dtype_max(dtype: DType) -> u64 {
         DType::I64 => i64::MAX as u64,
         _ => u64::MAX,
     }
-}
-
-fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, Dim, OpId)> {
-    if let Some(x) = mad(k, x) {
-        return Some(x);
-    }
-    // Case 1: (a * c) + b  (also (a << c) + b for constant c)
-    let Op::Binary { x: mul, y: add, bop: BOp::Add } = k.at(x) else {
-        return None;
-    };
-    if let Some((a, cval)) = match_mul_or_shl(k, *mul) {
-        return Some((a, cval, *add));
-    }
-    // Case 2: b + (a * c)  (also b + (a << c) for constant c)
-    let Op::Binary { x: b, y: mul, bop: BOp::Add } = k.at(x) else {
-        return None;
-    };
-    if let Some((a, cval)) = match_mul_or_shl(k, *mul) {
-        return Some((a, cval, *b));
-    }
-    None
-}
-
-fn match_mul_or_shl(k: &Kernel, op: OpId) -> Option<(OpId, Dim)> {
-    // Multiplication is commutative, so recognize the constant factor on either
-    // side: `a * c` and `c * a` both bind `a` to the non-constant operand.
-    if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(op)
-        && let Op::Const(cst) = k.at(*c)
-        && let Some(cval) = cst.as_dim()
-    {
-        return Some((*a, cval));
-    }
-    if let Op::Binary { x: c, y: a, bop: BOp::Mul } = k.at(op)
-        && let Op::Const(cst) = k.at(*c)
-        && let Some(cval) = cst.as_dim()
-    {
-        return Some((*a, cval));
-    }
-    if let Op::Binary { x: a, y: c, bop: BOp::BitShiftLeft } = k.at(op)
-        && let Op::Const(cst) = k.at(*c)
-        && let Some(cval) = cst.as_dim()
-        && cval < 64
-    {
-        return Some((*a, 1i64 << cval));
-    }
-    if let Op::Binary { x: c, y: a, bop: BOp::BitShiftLeft } = k.at(op)
-        && let Op::Const(cst) = k.at(*c)
-        && let Some(cval) = cst.as_dim()
-        && cval < 64
-    {
-        return Some((*a, 1i64 << cval));
-    }
-    None
 }
 
 /// Statically evaluate a comparison / equality op `x <op> c` (or `c <op> x`)

@@ -341,7 +341,6 @@ impl Display for Kernel {
                         UOp::Neg => ("-", ""),
                         UOp::Not => ("!", ""),
                         UOp::BitNot => ("~", ""),
-                        UOp::Exp => ("exp(", ")"),
                         UOp::Exp2 => ("exp2(", ")"),
                         UOp::Log2 => ("log2(", ")"),
                         UOp::Reciprocal => ("1/", ""),

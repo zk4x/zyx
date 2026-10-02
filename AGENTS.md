@@ -205,6 +205,8 @@ EVIL — launder failure into a fake value (`kernel/mod.rs` `Kernel::shape`): `O
 
 EVIL — enforce a should-be invariant with real code (`acc_values.clear()` at `EndReader` "just in case"): silently hides a leaked-reduce-cone bug, same class as a fabricated fallback. If something SHOULD hold, a `debug_assert!(set.is_empty())` fires at the exact spot it breaks; a `clear()` guarantees it never fires.
 
+EVIL — a wrong-shape nested `Pat` match: `match_pat` rejects a mismatched root with a single enum compare, so a nested pattern built for the wrong level (e.g. a `Div` shape matched against the numerator cone) compiles clean, passes the analyzer, and silently never fires. It is a dead rule, same class as a fabricated fallback. After writing any nested match, re-read the branch and verify the pattern's root against the scrutinee's actual op.
+
 Rules:
 - Never `unwrap_or(<number>)` on resolution; use `expect("context")`/`todo!()`.
 - No sentinels/fallbacks for unknown behaviour; fail loudly at the spot or ask. No `-1`-means-symbolic, no default arms.

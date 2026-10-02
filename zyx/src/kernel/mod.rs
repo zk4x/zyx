@@ -100,7 +100,7 @@ pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{BOp, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, TTOp, TileDim};
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
-pub use pat::{DtypeClass, Pat};
+pub use pat::{Bindings, DtypeClass, Pat, VExpr};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
@@ -924,7 +924,6 @@ impl Kernel {
                     UOp::Neg => "neg",
                     UOp::Not => "not",
                     UOp::BitNot => "bitnot",
-                    UOp::Exp => "exp",
                     UOp::Exp2 => "exp2",
                     UOp::Log2 => "log2",
                     UOp::Reciprocal => "reciprocal",

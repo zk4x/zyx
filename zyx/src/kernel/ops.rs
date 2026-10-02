@@ -891,8 +891,6 @@ pub enum UOp {
     Not,
     /// Bitwise NOT: ~x
     BitNot,
-    /// Exponential: e^x
-    Exp,
     /// Exponential with base 2: 2^x
     Exp2,
     /// Logarithm with base 2: log2(x)

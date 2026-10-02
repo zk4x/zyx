@@ -5,8 +5,10 @@ use crate::{
     DType, Map,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, UOp},
-    scalar::{bf16, f16, f8e4m3, f8e5m2},
+    scalar::{bf16, f8e4m3, f8e5m2, f16},
+    shape::Dim,
 };
+use std::borrow::Borrow;
 
 /// Dtype class constraining a [`Pat::Bind`] binder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,12 +34,76 @@ impl DtypeClass {
     }
 }
 
+/// Value expression over bound dims, evaluated after the structural match.
+/// The only computation is [`VExpr::Shl`] (the `d == 1<<k` relation);
+/// anything richer stays in the calling pass until a rule needs it.
+///
+/// Evaluation returns `None` on overflow (never panics, so guard order
+/// cannot crash a match) and on genuinely unrepresentable shifts; an
+/// unbound name panics via [`Bindings::val`] (a comparison placed before
+/// its binders is a bug, fail loud).
+#[derive(Clone, Debug)]
+pub enum VExpr {
+    /// Value bound by [`Pat::bind_int`] under this name.
+    Dim(&'static str),
+    /// Constant integer.
+    Const(Dim),
+    /// `a << b` (e.g. `Shl(1, k)` for `2^k`).
+    Shl(Box<VExpr>, Box<VExpr>),
+}
+
+impl VExpr {
+    /// Bound dim value.
+    pub fn dim(name: &'static str) -> VExpr {
+        VExpr::Dim(name)
+    }
+
+    /// Constant integer.
+    pub fn num(v: i64) -> VExpr {
+        VExpr::Const(v)
+    }
+
+    /// `a << b`.
+    pub fn shl(a: impl Into<VExpr>, b: impl Into<VExpr>) -> VExpr {
+        VExpr::Shl(Box::new(a.into()), Box::new(b.into()))
+    }
+
+    /// Evaluate against bound values. `None` on overflow or out-of-range
+    /// shift; unbound names panic.
+    fn eval(&self, bindings: &Bindings) -> Option<i64> {
+        match self {
+            VExpr::Dim(name) => Some(bindings.val(name)),
+            VExpr::Const(v) => Some(*v),
+            VExpr::Shl(a, b) => {
+                let (av, bv) = (a.eval(bindings)?, b.eval(bindings)?);
+                if !(0..64).contains(&bv) {
+                    return None;
+                }
+                i64::try_from((av as i128) << (bv as u32)).ok()
+            }
+        }
+    }
+}
+
+impl From<&'static str> for VExpr {
+    fn from(name: &'static str) -> VExpr {
+        VExpr::Dim(name)
+    }
+}
+
+impl From<i64> for VExpr {
+    fn from(v: i64) -> VExpr {
+        VExpr::Const(v)
+    }
+}
+
 /// Pattern for matching kernel (and graph) IR shapes.
 ///
 /// `Pat` is immutable: patterns are built once from constructors and
 /// operators, then matched by shared reference. No method takes `&mut Pat`.
 #[derive(Clone, Debug)]
-pub enum Pat {    /// Matches anything and binds it to `name`. A repeated name asserts
+pub enum Pat {
+    /// Matches anything and binds it to `name`. A repeated name asserts
     /// `OpId` equality with the first binding.
     Bind {
         /// Binder name.
@@ -58,6 +124,68 @@ pub enum Pat {    /// Matches anything and binds it to `name`. A repeated name a
     /// own matcher arm: `as_dim` alone cannot express it (it returns `None`
     /// for negatives and floats).
     Num(i64),
+    /// Matches a constant whose `as_dim` value is less than this bound.
+    /// Unlike [`Pat::Num`], floats and negatives never match (`as_dim`
+    /// semantics): the in-pattern form of a `< bound` value guard.
+    DimLt(Dim),
+    /// Matches a constant whose `as_dim` value equals this bound. The
+    /// in-pattern form of a `const_dim(id) == Some(v)` value guard.
+    DimEq(Dim),
+    /// Value equality between two [`VExpr`]s (bound dims, constants, shifts).
+    /// Evaluated after the structural match; overflow evaluates to no-match.
+    /// Compose trailing in `all()`, after the binders: `all([pat, Pat::eq("d", VExpr::shl(1, "k"))])`.
+    Eq {
+        /// Left-hand value.
+        a: VExpr,
+        /// Right-hand value.
+        b: VExpr,
+    },
+    /// Value inequality between two [`VExpr`]s.
+    Ne {
+        /// Left-hand value.
+        a: VExpr,
+        /// Right-hand value.
+        b: VExpr,
+    },
+    /// Strict `a < b` between two [`VExpr`]s.
+    Lt {
+        /// Left-hand value.
+        a: VExpr,
+        /// Right-hand value.
+        b: VExpr,
+    },
+    /// `a <= b` between two [`VExpr`]s.
+    Le {
+        /// Left-hand value.
+        a: VExpr,
+        /// Right-hand value.
+        b: VExpr,
+    },
+    /// `a > b` between two [`VExpr`]s.
+    Gt {
+        /// Left-hand value.
+        a: VExpr,
+        /// Right-hand value.
+        b: VExpr,
+    },
+    /// `a >= b` between two [`VExpr`]s.
+    Ge {
+        /// Left-hand value.
+        a: VExpr,
+        /// Right-hand value.
+        b: VExpr,
+    },
+    /// Binds a constant's general integer value (the value-binder: value, not
+    /// node). First occurrence matches any integer `Op::Const` (every int
+    /// dtype, both signs, via [`Constant::as_integer`]) and records both
+    /// the op and its value; a repeated name asserts *value* equality, so
+    /// distinct const ops with equal values match. Floats never match.
+    BindInt {
+        /// Binder name.
+        name: &'static str,
+        /// Required dtype class of the matched op.
+        class: DtypeClass,
+    },
     /// Matches a unary op with this exact `UOp` and an operand matching `x`.
     Unary {
         /// Pattern for the operand.
@@ -80,6 +208,34 @@ pub enum Pat {    /// Matches anything and binds it to `name`. A repeated name a
     /// Matches if all alternatives match the same op. Bindings merge;
     /// a name bound twice must agree.
     All(Box<[Pat]>),
+}
+
+/// Bindings produced by [`Kernel::match_pat`]: matched subexpression ids
+/// plus bound integer values.
+///
+/// Every [`Pat::Bind`] and [`Pat::BindInt`] records its op (read with
+/// `m["x"]`); value binders additionally record the general integer value
+/// (read with [`Bindings::val`]). A repeated plain name asserts `OpId`
+/// equality; a repeated value name asserts *value* equality across
+/// distinct const ops.
+#[derive(Clone, Debug, Default)]
+pub struct Bindings {
+    ops: Map<&'static str, OpId>,
+    vals: Map<&'static str, Dim>,
+}
+
+impl Bindings {
+    /// Read a value bound by [`Pat::bind_int`]. Panics on unbound names.
+    pub fn val(&self, name: &'static str) -> Dim {
+        self.vals.get(name).copied().expect("unbound value name")
+    }
+}
+
+impl std::ops::Index<&'static str> for Bindings {
+    type Output = OpId;
+    fn index(&self, name: &'static str) -> &OpId {
+        &self.ops[name]
+    }
 }
 
 impl<P: Into<Pat>> std::ops::Add<P> for &Pat {
@@ -257,14 +413,20 @@ impl Pat {
         Pat::Bind { name, class: DtypeClass::Any }
     }
 
+    /// Binds a constant's `as_dim` value. A repeated name asserts *value*
+    /// equality, so distinct const ops with equal values match.
+    pub fn bind_int(name: &'static str) -> Pat {
+        Pat::BindInt { name, class: DtypeClass::Any }
+    }
+
     /// Matches if any alternative matches. Failed alternatives leave no bindings.
-    pub fn any(pats: Vec<Pat>) -> Pat {
-        Pat::Any(pats.into_boxed_slice())
+    pub fn any<const N: usize>(pats: [Pat; N]) -> Pat {
+        Pat::Any(Box::new(pats))
     }
 
     /// Matches if all alternatives match the same op. Bindings merge.
-    pub fn all(pats: Vec<Pat>) -> Pat {
-        Pat::All(pats.into_boxed_slice())
+    pub fn all<const N: usize>(pats: [Pat; N]) -> Pat {
+        Pat::All(Box::new(pats))
     }
 
     /// Matches a constant satisfying this predicate (e.g. `Constant::is_max`).
@@ -290,8 +452,72 @@ impl Pat {
     fn with_class(self, class: DtypeClass) -> Pat {
         match self {
             Pat::Bind { name, .. } => Pat::Bind { name, class },
+            Pat::BindInt { name, .. } => Pat::BindInt { name, class },
             _ => panic!("dtype class applies to binders only"),
         }
+    }
+
+    /// Constrain this binder to compile-time constants. Panics on non-binders.
+    pub fn const_(self) -> Pat {
+        match self {
+            Pat::Bind { .. } | Pat::BindInt { .. } => Pat::all([self, Pat::Const]),
+            _ => panic!("const constraint applies to binders only"),
+        }
+    }
+
+    /// Constrain this binder to constants with `as_dim` below `bound`.
+    /// Panics on non-binders.
+    pub fn dim_lt(self, bound: Dim) -> Pat {
+        match self {
+            Pat::Bind { .. } | Pat::BindInt { .. } => Pat::all([self, Pat::DimLt(bound)]),
+            _ => panic!("dim constraint applies to binders only"),
+        }
+    }
+
+    /// Constrain this binder to constants with `as_dim` equal to `v`.
+    /// Panics on non-binders.
+    pub fn dim_eq(self, v: Dim) -> Pat {
+        match self {
+            Pat::Bind { .. } | Pat::BindInt { .. } => Pat::all([self, Pat::DimEq(v)]),
+            _ => panic!("dim constraint applies to binders only"),
+        }
+    }
+
+    /// Value equality between two value expressions (bound names coerce from
+    /// `&str`, constants from `i64`). Evaluated after the structural match.
+    pub fn eq(a: impl Into<VExpr>, b: impl Into<VExpr>) -> Pat {
+        Pat::Eq { a: a.into(), b: b.into() }
+    }
+
+    /// Value inequality between two value expressions.
+    pub fn ne(a: impl Into<VExpr>, b: impl Into<VExpr>) -> Pat {
+        Pat::Ne { a: a.into(), b: b.into() }
+    }
+
+    /// Strict `a < b` between two value expressions.
+    pub fn lt(a: impl Into<VExpr>, b: impl Into<VExpr>) -> Pat {
+        Pat::Lt { a: a.into(), b: b.into() }
+    }
+
+    /// `a <= b` between two value expressions.
+    pub fn le(a: impl Into<VExpr>, b: impl Into<VExpr>) -> Pat {
+        Pat::Le { a: a.into(), b: b.into() }
+    }
+
+    /// `a > b` between two value expressions.
+    pub fn gt(a: impl Into<VExpr>, b: impl Into<VExpr>) -> Pat {
+        Pat::Gt { a: a.into(), b: b.into() }
+    }
+
+    /// `a >= b` between two value expressions.
+    pub fn ge(a: impl Into<VExpr>, b: impl Into<VExpr>) -> Pat {
+        Pat::Ge { a: a.into(), b: b.into() }
+    }
+
+    /// Binary op with explicit [`BOp`] (for operators without an
+    /// operator-overload spelling, e.g. comparisons). Operands coerce.
+    pub fn binary(bop: BOp, x: impl Into<Pat>, y: impl Into<Pat>) -> Pat {
+        Pat::Binary { x: Box::new(x.into()), y: Box::new(y.into()), bop }
     }
 
     /// Negation of this pattern.
@@ -324,7 +550,9 @@ impl From<Constant> for Pat {
 }
 
 impl Kernel {
-    /// Match the IR cone above `root` against `pat`.
+    /// Match the IR cone above `root` against `pat`. Takes anything borrowing
+    /// a pattern: a fresh owned temporary (`match_pat(id, Pat::bind("x") / n)`)
+    /// or a shared reference to a reused pattern (`match_pat(id, &pat)`).
     ///
     /// Returns the bound subexpression ids on success. A repeated [`Pat::Bind`]
     /// name asserts `OpId` equality; commutative [`BOp`]s try both operand
@@ -335,30 +563,61 @@ impl Kernel {
     /// The pattern's own root is the prefilter: a `Binary`/`Unary` pattern
     /// rejects a mismatched root op with a single enum compare before any
     /// recursion or allocation, so call sites need no manual root check.
-    pub fn match_pat(&self, root: OpId, pat: &Pat) -> Option<Map<&'static str, OpId>> {
-        let mut bindings = Map::default();
-        if self.match_node(pat, root, &mut bindings) { Some(bindings) } else { None }
+    pub fn match_pat(&self, root: OpId, pat: impl Borrow<Pat>) -> Option<Bindings> {
+        let mut bindings = Bindings::default();
+        if self.match_node(pat.borrow(), root, &mut bindings) {
+            Some(bindings)
+        } else {
+            None
+        }
     }
 
     /// Match one pattern node. Returns `false` with `bindings` untouched.
-    fn match_node(&self, pat: &Pat, id: OpId, bindings: &mut Map<&'static str, OpId>) -> bool {
+    fn match_node(&self, pat: &Pat, id: OpId, bindings: &mut Bindings) -> bool {
         match pat {
             Pat::Bind { name, class } => {
                 if !class.matches(self.dtype(id)) {
                     return false;
                 }
-                match bindings.get(name) {
+                match bindings.ops.get(name) {
                     Some(&bound) => bound == id,
                     None => {
-                        bindings.insert(*name, id);
+                        bindings.ops.insert(*name, id);
                         true
                     }
+                }
+            }
+            Pat::BindInt { name, class } => {
+                if !class.matches(self.dtype(id)) {
+                    return false;
+                }
+                match self.at(id) {
+                    Op::Const(c) => match c.as_integer() {
+                        Some(v) => match bindings.vals.get(name) {
+                            Some(&bound) => bound == v,
+                            None => {
+                                bindings.vals.insert(*name, v);
+                                bindings.ops.insert(*name, id);
+                                true
+                            }
+                        },
+                        None => false,
+                    },
+                    _ => false,
                 }
             }
             Pat::Const => matches!(self.at(id), Op::Const(_)),
             Pat::Value(v) => matches!(self.at(id), Op::Const(c) if c == v),
             Pat::ConstIf(f) => matches!(self.at(id), Op::Const(c) if f(*c)),
             Pat::Num(n) => matches!(self.at(id), Op::Const(c) if const_eq_num(*c, *n)),
+            Pat::DimLt(n) => matches!(self.at(id), Op::Const(c) if c.as_dim().is_some_and(|k| k < *n)),
+            Pat::DimEq(n) => matches!(self.at(id), Op::Const(c) if c.as_dim() == Some(*n)),
+            Pat::Eq { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x == y),
+            Pat::Ne { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x != y),
+            Pat::Lt { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x < y),
+            Pat::Le { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x <= y),
+            Pat::Gt { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x > y),
+            Pat::Ge { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x >= y),
             Pat::Unary { x, uop } => match self.at(id) {
                 Op::Unary { x: xid, uop: u } => *u == *uop && self.match_node(x, *xid, bindings),
                 _ => false,

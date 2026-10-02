@@ -394,6 +394,29 @@ impl Constant {
         }
     }
 
+    /// General integer value of this constant: every integer dtype (signed
+    /// and unsigned, both signs; bool as 0/1) as `i64`. Floats, and `U64`
+    /// values above `i64::MAX` (unrepresentable as `i64`), return `None`.
+    /// Unlike [`Constant::as_dim`], negatives are valid values, not rejections.
+    #[must_use]
+    pub(crate) fn as_integer(self) -> Option<i64> {
+        match self {
+            Constant::U8(v) => Some(i64::from(v)),
+            Constant::U16(v) => Some(i64::from(v)),
+            Constant::U32(v) => Some(i64::from(v)),
+            Constant::U64(v) => {
+                let v = u64::from_le_bytes(v);
+                if v <= i64::MAX as u64 { Some(v as i64) } else { None }
+            }
+            Constant::I8(v) => Some(i64::from(v)),
+            Constant::I16(v) => Some(i64::from(v)),
+            Constant::I32(v) => Some(i64::from(v)),
+            Constant::I64(v) => Some(i64::from_le_bytes(v)),
+            Constant::Bool(v) => Some(i64::from(v)),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub(crate) fn is_max(self) -> bool {
         match self {
