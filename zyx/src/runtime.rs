@@ -1117,7 +1117,7 @@ impl Runtime {
             outputs: Set::default(),
             loads: Vec::new(),
             stores: Vec::new(),
-            kernel: Kernel::from_device_id(Dev::Auto, None),
+            kernel: Kernel::new(Dev::Auto),
         });
         let shape = self.replay_expr(kernel_id, shape_id);
         let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, cons_id: 0 });
@@ -2233,7 +2233,7 @@ impl Runtime {
                     outputs: Set::default(),
                     loads: Vec::new(),
                     stores: Vec::new(),
-                    kernel: Kernel::from_device_id(Dev::Auto, None),
+                    kernel: Kernel::new(Dev::Auto),
                 });
                 let val_op = self.replay_symbolic_into_kernel(kid, x);
                 let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);

@@ -906,7 +906,7 @@ mod tests {
     /// merge them (the unpacker streams each CB read separately).
     #[test]
     fn cse_does_not_dedup_llk_calls() {
-        let mut k = Kernel::from_device_id(Dev::Auto, None);
+        let mut k = Kernel::new(Dev::Auto);
         let out = k.param_mut(DType::F32);
         let cb = k.storage(DType::F32, MemScope::Circular, 1);
         let idx = k.const_val(0i64);

@@ -180,7 +180,7 @@ impl Kernel {
             self.dev
         };
         // Bind the resolved device so codegen can read dev_info
-        // (mirrors Kernel::new; from_device_id placeholders carry None).
+        // (placeholders carry None until bound here).
         self.dev = device_id;
         self.dev_info = Some(device_id.info()?);
         if crate::debug_mask().ir() {

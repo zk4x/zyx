@@ -2430,7 +2430,7 @@ mod tests {
     /// already in the IR, this pass assigns no numbers.
     #[test]
     fn lock_dst_wraps_math_and_pack() {
-        let mut k = Kernel::from_device_id(Dev::Auto, None);
+        let mut k = Kernel::new(Dev::Auto);
         let cb_a = k.storage(DType::F32, MemScope::Circular, 1024);
         let cb_b = k.storage(DType::F32, MemScope::Circular, 1024);
         let acc = k.storage(DType::F32, MemScope::Register, 1);
@@ -2474,7 +2474,7 @@ mod tests {
     /// panics.
     #[test]
     fn sync_cbs_wraps_cb_traffic() {
-        let mut k = Kernel::from_device_id(Dev::Auto, None);
+        let mut k = Kernel::new(Dev::Auto);
         let a = k.param(DType::F32);
         let out = k.param_mut(DType::F32);
         let ca = k.storage(DType::F32, MemScope::Circular, 1024);
@@ -2519,7 +2519,7 @@ mod tests {
     /// input CB, scaler CB, register slot.
     #[test]
     fn storage_lowering_rewrites_matmul_and_reduce() {
-        let mut k = Kernel::from_device_id(Dev::Auto, None);
+        let mut k = Kernel::new(Dev::Auto);
         let cb_a = k.storage(DType::F32, MemScope::Circular, 1024);
         let cb_b = k.storage(DType::F32, MemScope::Circular, 1024);
         let acc = k.storage(DType::F32, MemScope::Register, 1);

@@ -293,19 +293,6 @@ impl Hash for Kernel {
 
 // Custom kernel machinery
 impl Kernel {
-    /// Creates an empty kernel bound to the given device.
-    ///
-    /// `Dev::Auto` (placeholder kernels) gets no [`DeviceInfo`] — it is
-    /// bound together with the real device before compilation
-    /// (`kernel.device_id = dev` sites must set both).
-    ///
-    /// Takes the device info as an argument and never locks the RT: this
-    /// constructor runs while callers already hold the RT lock (it is not
-    /// reentrant). Pass `None` for late-bound placeholders (`Dev::Auto`).
-    pub(crate) fn from_device_id(dev: Dev, dev_info: Option<Arc<DeviceInfo>>) -> Self {
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev, dev_info, shape_cache: Map::default() }
-    }
-
     /// The device info snapshot bound to this kernel.
     ///
     /// # Panics
@@ -1906,8 +1893,14 @@ impl Kernel {
             panic!("duplicate_subkernel did not finish in 10000 steps");
         }
 
-        // Build new kernel by cloning root's ops (in topo order) with remapped OpIds
-        let mut new_kernel = Kernel::from_device_id(self.dev, self.dev_info.clone());
+        let mut new_kernel = Self {
+            ops: Slab::new(),
+            head: OpId::NULL,
+            tail: OpId::NULL,
+            dev: self.dev,
+            dev_info: self.dev_info.clone(),
+            shape_cache: Map::default(),
+        };
         let mut remap: Map<OpId, OpId> =
             Map::with_capacity_and_hasher(root_required.len(), core::hash::BuildHasherDefault::default());
         let mut new_root_op = OpId::NULL;
