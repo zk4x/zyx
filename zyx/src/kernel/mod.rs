@@ -424,6 +424,21 @@ impl Kernel {
                         }
                     }
                 }
+                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                    // Lowered reduce: result takes the input CB's
+                    // dtype/layout, like the LLK form's ops[0].
+                    dtypes.insert(op_id, dtypes[&cb_in]);
+                    for &f in &[cb_in, cb_sc, slot, x, scaler] {
+                        *rcs.entry(f).or_insert(0) += 1;
+                    }
+                }
+                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
+                    // Lowered fused broadcast: same rule over cb_a.
+                    dtypes.insert(op_id, dtypes[&cb_a]);
+                    for &f in &[cb_a, cb_b, mx, plain] {
+                        *rcs.entry(f).or_insert(0) += 1;
+                    }
+                }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes[&ops[0]];
                     dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
@@ -533,7 +548,7 @@ impl Kernel {
                 Op::Stack { ref ops } => {
                     return MemLayout::Vector(ops.len().try_into().unwrap());
                 }
-                Op::TT(TTOp::LLK { .. }) => {
+                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
                     // Fused storage templates (matmul/reduce/transpose/
                     // broadcast) all produce a standard 32x32 DST tile:
                     // the layout the replaced SSA value carried. (The
@@ -620,6 +635,8 @@ impl Kernel {
                     }
                     op_id = ops[0]
                 }
+                Op::TT(TTOp::LLKReduce { cb_in, .. }) => op_id = cb_in,
+                Op::TT(TTOp::LLKBcast { cb_a, .. }) => op_id = cb_a,
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
@@ -1247,7 +1264,8 @@ impl Kernel {
                 | Op::Mad { x, .. }
                 | Op::TT(TTOp::MatmulTile { x, .. })
                 | Op::TT(TTOp::ReduceTile { x, .. })
-                | Op::Index { vec: x, .. }
+                | Op::TT(TTOp::LLKReduce { cb_in: x, .. })
+                | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(op_id, dims.clone());
@@ -1425,6 +1443,8 @@ impl Kernel {
                 | Op::Mad { x, .. }
                 | Op::TT(TTOp::MatmulTile { x, .. })
                 | Op::TT(TTOp::ReduceTile { x, .. })
+                | Op::TT(TTOp::LLKReduce { cb_in: x, .. })
+                | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
                 | Op::Index { vec: x, .. }
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
@@ -1747,6 +1767,36 @@ impl Kernel {
             values.insert(id, v);
         }
         values[&op_id]
+    }
+
+    /// True iff `id` is a compile-time constant: a `Const` or a
+    /// const-expr over consts (`Cast`/`Unary`/`Binary`/`Mad`
+    /// chains — constant folding may not have run yet). Iterative,
+    /// never panics: params, loads, loops, and anything else are
+    /// not const (a missing broadcast or a dynamic lane, never a
+    /// silent fold).
+    pub(crate) fn is_const(&self, id: OpId) -> bool {
+        let mut stack = vec![id];
+        for _ in 0..10_000 {
+            let Some(cur) = stack.pop() else {
+                return true;
+            };
+            match self.at(cur) {
+                Op::Const(_) => {}
+                Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => stack.push(*x),
+                Op::Binary { x, y, .. } => {
+                    stack.push(*x);
+                    stack.push(*y);
+                }
+                Op::Mad { x, y, z } => {
+                    stack.push(*x);
+                    stack.push(*y);
+                    stack.push(*z);
+                }
+                _ => return false,
+            }
+        }
+        panic!("is_const did not finish in 10000 steps");
     }
 
     /// Remap slab indices from x to y

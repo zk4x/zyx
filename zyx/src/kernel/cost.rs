@@ -71,6 +71,22 @@ impl Kernel {
                             }
                         }
                     }
+                    Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                        // Lowered reduce: same rule over cb_in.
+                        let (dtype, layout) = dtypes[&cb_in];
+                        dtypes.insert(op_id, (dtype, layout));
+                        for &f in &[cb_in, cb_sc, slot, x, scaler] {
+                            *rcs.entry(f).or_insert(0) += 1;
+                        }
+                    }
+                    Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
+                        // Lowered fused broadcast: same rule over cb_a.
+                        let (dtype, layout) = dtypes[&cb_a];
+                        dtypes.insert(op_id, (dtype, layout));
+                        for &f in &[cb_a, cb_b, mx, plain] {
+                            *rcs.entry(f).or_insert(0) += 1;
+                        }
+                    }
                     Op::Expand { .. }
                     | Op::Permute { .. }
                     | Op::Flip { .. }
@@ -207,6 +223,18 @@ impl Kernel {
                                 }
                             }
                         }
+                        TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. } => {
+                            dtypes.insert(op_id, dtypes[cb_in]);
+                            for f in [cb_in, cb_sc, slot, x, scaler] {
+                                *rcs.entry(*f).or_insert(0) += 1;
+                            }
+                        }
+                        TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. } => {
+                            dtypes.insert(op_id, dtypes[cb_a]);
+                            for f in [cb_a, cb_b, mx, plain] {
+                                *rcs.entry(*f).or_insert(0) += 1;
+                            }
+                        }
                         TTOp::MathLock
                         | TTOp::MathUnlock
                         | TTOp::PackLock
@@ -292,6 +320,8 @@ impl Kernel {
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::LLK { .. })
+                | Op::TT(TTOp::LLKReduce { .. })
+                | Op::TT(TTOp::LLKBcast { .. })
                 | Op::EndLoop
                 | Op::Barrier => false,
                 // Counted loops produce the induction value; boolean

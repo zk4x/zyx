@@ -95,9 +95,7 @@ impl Kernel {
     /// `Narrow`); linearization wraps every store destination in a
     /// [`Op::GEP`]. This is the same early-return condition `linearize` uses.
     pub fn is_linearized(&self) -> bool {
-        !self.ops.values().any(|n| {
-            matches!(n.op, Op::Store { dst, .. } if !matches!(self.ops[dst].op, Op::GEP { .. }))
-        })
+        !self.ops.values().any(|n| matches!(n.op, Op::Store { dst, .. } if !matches!(self.ops[dst].op, Op::GEP { .. })))
     }
 
     /// Unfold movement operations into index-based operations
@@ -107,9 +105,7 @@ impl Kernel {
     // TODO Currently it only works if each param has a single move op chain.
     // Make it also work with move op chains when each param is accessed by multiple move ops.
     pub fn linearize(&mut self) {
-        if !self.ops.values().any(|n| {
-            matches!(n.op, Op::Store { dst, .. } if !matches!(self.ops[dst].op, Op::GEP { .. }))
-        }) {
+        if !self.ops.values().any(|n| matches!(n.op, Op::Store { dst, .. } if !matches!(self.ops[dst].op, Op::GEP { .. }))) {
             return;
         }
 
@@ -546,11 +542,7 @@ impl Kernel {
                                 matches!(self.ops[dst].op, Op::Param { .. }),
                                 "linearize write path: store dst must still be the bare Param"
                             );
-                            let gep = self.push_back(Op::GEP {
-                                x: dst,
-                                index: write_index,
-                                layout: MemLayout::Scalar,
-                            });
+                            let gep = self.push_back(Op::GEP { x: dst, index: write_index, layout: MemLayout::Scalar });
                             let Op::Store { dst, .. } = &mut self.ops[store_id].op else {
                                 unreachable!()
                             };
@@ -1361,23 +1353,19 @@ impl Kernel {
                 }),
             );
             let acc = self.insert_before(loop_id, Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1 });
-            let init_gep =
-                self.insert_before(loop_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
+            let init_gep = self.insert_before(loop_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
             self.insert_before(loop_id, Op::Store { dst: init_gep, src: acc_init });
 
             // Accumulate inside the loop, then close it, then read the result.
             // Fresh GEPs per insertion point: GEPs are scope-bound, unlike
             // the shared `zero` const.
-            let load_gep =
-                self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
+            let load_gep = self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
             let load_acc = self.insert_before(op_id, Op::Load { src: load_gep });
             let bin_acc = self.insert_before(op_id, Op::Binary { x, y: load_acc, bop: rop });
-            let store_gep =
-                self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
+            let store_gep = self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
             self.insert_before(op_id, Op::Store { dst: store_gep, src: bin_acc });
             self.insert_before(op_id, Op::EndLoop);
-            let out_gep =
-                self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
+            let out_gep = self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
             self.ops[op_id].op = Op::Load { src: out_gep };
         }
     }

@@ -194,13 +194,6 @@ impl Kernel {
         self.asm(init, &[])
     }
 
-    /// Cast init constructor: `typecast_tile_init<in, out>();` with TT
-    /// `DataFormat` codes (not CB descriptor codes).
-    pub fn tt_cast_init(&mut self, in_dtype: DType, out_dtype: DType) -> OpId {
-        let template = format!("typecast_tile_init<{}, {}>();", tt_tile_fmt(in_dtype), tt_tile_fmt(out_dtype));
-        self.asm(&template, &[])
-    }
-
     /// Transpose init constructor: `transpose_wh_init(cb, out);`.
     pub fn tt_transpose_init(&mut self, cb: OpId, out: OpId) -> OpId {
         debug_assert!(
@@ -353,6 +346,8 @@ impl Kernel {
                     | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::TransposeTile { .. })
                     | Op::TT(TTOp::BroadcastTile { .. })
+                    | Op::TT(TTOp::LLKReduce { .. })
+                    | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLK { .. })
             ) {
                 return true;
@@ -374,7 +369,16 @@ impl Kernel {
                 }
                 return false;
             }
-            matches!(op, Op::Asm { .. }) || tt_is_tile_value(kernel, id)
+            match op {
+                Op::Asm { .. } => true,
+                Op::Load { .. }
+                | Op::Unary { .. }
+                | Op::Binary { .. }
+                | Op::Cast { .. }
+                | Op::Bitcast { .. }
+                | Op::Mad { .. } => matches!(kernel.layout(id), MemLayout::Tile { .. }),
+                _ => false,
+            }
         };
         // Pack drain: a Store into a Circular buffer of a tile value
         // (Register slot, circular load, or SSA/LLK/Asm tile result).
@@ -383,7 +387,7 @@ impl Kernel {
             if let Op::Store { src: x, dst } = kernel.at(id) {
                 if let Op::GEP { x: g, .. } = kernel.at(*dst) {
                     if matches!(kernel.at(*g), Op::Storage { scope: MemScope::Circular, .. }) {
-                        return tt_is_tile_value(kernel, *x);
+                        return matches!(kernel.layout(*x), MemLayout::Tile { .. });
                     }
                 }
             }
@@ -432,10 +436,7 @@ impl Kernel {
                 scan = self.next_op(scan);
             }
             let pos_of_op = |what: &str, id: OpId| -> usize {
-                pos_of
-                    .get(&id)
-                    .copied()
-                    .unwrap_or_else(|| panic!("tt_lock_dst: {what} without position"))
+                pos_of.get(&id).copied().unwrap_or_else(|| panic!("tt_lock_dst: {what} without position"))
             };
             // Regions: math runs split at pack boundaries (a pack
             // drains DST, so it closes its region — the old one
@@ -495,14 +496,8 @@ impl Kernel {
             for (ms, ps) in runs.iter() {
                 let first = ms[0];
                 let last = ms[ms.len() - 1];
-                let first_loops = math_loops
-                    .get(&first)
-                    .cloned()
-                    .expect("tt_lock_dst: math without loop snapshot");
-                let last_loops = math_loops
-                    .get(&last)
-                    .cloned()
-                    .expect("tt_lock_dst: math without loop snapshot");
+                let first_loops = math_loops.get(&first).cloned().expect("tt_lock_dst: math without loop snapshot");
+                let last_loops = math_loops.get(&last).cloned().expect("tt_lock_dst: math without loop snapshot");
                 let mut crossed = 0usize;
                 let mut target = first;
                 for l in first_loops.iter().rev() {
@@ -589,7 +584,7 @@ impl Kernel {
             // split form lowers each half under its own cone like
             // every other pack. Same CBs, same indices, same traffic.
             if let Op::Copy { src, dst } = self.ops[op_id].op {
-                if is_circular_gep(self, src) && is_circular_gep(self, dst) {
+                if self.is_circular_gep(src) && self.is_circular_gep(dst) {
                     let load = self.insert_before(op_id, Op::Load { src });
                     self.ops[op_id].op = Op::Store { dst, src: load };
                     op_id = next;
@@ -598,9 +593,9 @@ impl Kernel {
             }
             let (asm, ops) = match self.at(op_id) {
                 Op::TT(TTOp::MatmulTile { x, y, acc }) => {
-                    let cb_a = tt_storage_of(self, *x);
-                    let cb_b = tt_storage_of(self, *y);
-                    let slot = tt_storage_of(self, *acc);
+                    let cb_a = self.tt_storage_of(*x);
+                    let cb_b = self.tt_storage_of(*y);
+                    let slot = self.tt_storage_of(*acc);
                     debug_assert!(
                         matches!(self.at(cb_a), Op::Storage { scope: MemScope::Circular, .. }),
                         "tt_storage: matmul left {cb_a:?} is not a Circular storage"
@@ -613,15 +608,12 @@ impl Kernel {
                         matches!(self.at(slot), Op::Storage { scope: MemScope::Register, .. }),
                         "tt_storage: matmul acc {slot:?} is not a Register slot"
                     );
-                    (
-                        TinyString::new("matmul_tiles({0}, {1}, 0, 0, {2});"),
-                        TinyVec::new(&[cb_a, cb_b, slot, *x, *y]),
-                    )
+                    (TinyString::new("matmul_tiles({0}, {1}, 0, 0, {2});"), TinyVec::new(&[cb_a, cb_b, slot, *x, *y]))
                 }
                 Op::TT(TTOp::ReduceTile { x, scaler, acc, rop, kind }) => {
-                    let cb_in = tt_storage_of(self, *x);
-                    let cb_sc = tt_storage_of(self, *scaler);
-                    let slot = tt_storage_of(self, *acc);
+                    let cb_in = self.tt_storage_of(*x);
+                    let cb_sc = self.tt_storage_of(*scaler);
+                    let slot = self.tt_storage_of(*acc);
                     debug_assert!(
                         matches!(self.at(cb_in), Op::Storage { scope: MemScope::Circular, .. }),
                         "tt_storage: reduce input {cb_in:?} is not a Circular storage"
@@ -634,21 +626,13 @@ impl Kernel {
                         matches!(self.at(slot), Op::Storage { scope: MemScope::Register, .. }),
                         "tt_storage: reduce acc {slot:?} is not a Register slot"
                     );
-                    let op_name = match rop {
-                        BOp::Max => "PoolType::MAX",
-                        BOp::Add => "PoolType::SUM",
-                        _ => panic!("tt_storage: reduce op {rop:?} has no LLK call"),
-                    };
-                    let dim_name = match kind {
-                        TileDim::Row => "ReduceDim::REDUCE_ROW",
-                        TileDim::Col => "ReduceDim::REDUCE_COL",
-                        TileDim::Scalar => "ReduceDim::REDUCE_SCALAR",
-                    };
-                    let template = format!("reduce_tile<{op_name}, {dim_name}>({{0}}, {{1}}, 0, 0, {{2}});");
-                    (TinyString::new(&template), TinyVec::new(&[cb_in, cb_sc, slot, *x, *scaler]))
+                    self.ops[op_id].op =
+                        Op::TT(TTOp::LLKReduce { rop: *rop, kind: *kind, cb_in, cb_sc, slot, x: *x, scaler: *scaler });
+                    op_id = next;
+                    continue;
                 }
                 Op::TT(TTOp::TransposeTile { x }) => {
-                    let cb = tt_storage_of(self, *x);
+                    let cb = self.tt_storage_of(*x);
                     debug_assert!(
                         matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }),
                         "tt_storage: transpose input {cb:?} is not a Circular storage"
@@ -656,10 +640,7 @@ impl Kernel {
                     // The transpose result lands in a DST slot filled by
                     // render (`{1}`); the trailing entry is the feeder
                     // load, for sync accounting only.
-                    (
-                        TinyString::new("transpose_wh_tile({0}, 0, {1});"),
-                        TinyVec::new(&[cb, OpId::NULL, *x]),
-                    )
+                    (TinyString::new("transpose_wh_tile({0}, 0, {1});"), TinyVec::new(&[cb, OpId::NULL, *x]))
                 }
                 Op::TT(TTOp::BroadcastTile { .. }) => {
                     // Marker only: the consuming tiled binary fuses it
@@ -687,41 +668,20 @@ impl Kernel {
                     let Op::TT(TTOp::BroadcastTile { x: mx, kind }) = self.at(marked) else {
                         unreachable!("tt_storage: marked side is not a BroadcastTile");
                     };
-                    let cb_b = tt_storage_of(self, *mx);
+                    let cb_b = self.tt_storage_of(*mx);
                     if !matches!(self.at(cb_b), Op::Storage { scope: MemScope::Circular, .. }) {
                         panic!("tt_storage: broadcast {op_id:?} marked side is no CB tile load");
                     }
-                    if !matches!(
-                        self.at(plain),
-                        Op::Load { .. } | Op::TT(TTOp::BroadcastTile { .. })
-                    ) {
+                    if !matches!(self.at(plain), Op::Load { .. } | Op::TT(TTOp::BroadcastTile { .. })) {
                         panic!("tt_storage: broadcast {op_id:?} plain side is no CB tile load");
                     }
-                    let cb_a = tt_storage_of(self, plain);
+                    let cb_a = self.tt_storage_of(plain);
                     if !matches!(self.at(cb_a), Op::Storage { scope: MemScope::Circular, .. }) {
                         panic!("tt_storage: broadcast {op_id:?} plain side is no CB tile load");
                     }
-                    let name = match (*bop, *kind) {
-                        (BOp::Add, TileDim::Row) => "add_tiles_bcast_rows",
-                        (BOp::Add, TileDim::Col) => "add_tiles_bcast_cols",
-                        (BOp::Add, TileDim::Scalar) => "add_tiles_bcast_scalar",
-                        (BOp::Sub, TileDim::Row) => "sub_tiles_bcast_rows",
-                        (BOp::Sub, TileDim::Col) => "sub_tiles_bcast_cols",
-                        (BOp::Sub, TileDim::Scalar) => "sub_tiles_bcast_scalar",
-                        (BOp::Mul, TileDim::Row) => "mul_tiles_bcast_rows",
-                        (BOp::Mul, TileDim::Col) => "mul_tiles_bcast_cols",
-                        (BOp::Mul, TileDim::Scalar) => "mul_tiles_bcast_scalar",
-                        _ => panic!("tt_storage: broadcast ({bop:?}, {kind:?}) has no fused call"),
-                    };
-                    let template = if matches!(kind, TileDim::Row) {
-                        format!("{name}({{0}}, {{1}}, 0, 0, {{2}}, 0);")
-                    } else {
-                        format!("{name}({{0}}, {{1}}, 0, 0, {{2}});")
-                    };
-                    (
-                        TinyString::new(&template),
-                        TinyVec::new(&[cb_a, cb_b, OpId::NULL, *mx, plain]),
-                    )
+                    self.ops[op_id].op = Op::TT(TTOp::LLKBcast { bop: *bop, kind: *kind, cb_a, cb_b, mx: *mx, plain });
+                    op_id = next;
+                    continue;
                 }
                 _ => {
                     op_id = next;
@@ -792,9 +752,7 @@ impl Kernel {
         while !scan.is_null() {
             let (read_op, gep_index, cb) = match self.ops[scan].op {
                 Op::Load { src } => match self.ops[src].op {
-                    Op::GEP { x: cb, index, .. }
-                        if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                    {
+                    Op::GEP { x: cb, index, .. } if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) => {
                         (scan, index, cb)
                     }
                     _ => {
@@ -803,9 +761,7 @@ impl Kernel {
                     }
                 },
                 Op::Copy { src, .. } => match self.ops[src].op {
-                    Op::GEP { x: cb, index, .. }
-                        if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                    {
+                    Op::GEP { x: cb, index, .. } if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) => {
                         (scan, index, cb)
                     }
                     _ => {
@@ -849,11 +805,8 @@ impl Kernel {
             let Op::Loop { len } = self.ops[loop_op].op else {
                 unreachable!("tt_sync_cbs: batch loop is a Loop");
             };
-            let Some(trips) = self
-                .resolve_const(len)
-                .and_then(|c| c.as_dim())
-                .and_then(|t| u32::try_from(t).ok())
-                .filter(|t| *t > 0)
+            let Some(trips) =
+                self.resolve_const(len).and_then(|c| c.as_dim()).and_then(|t| u32::try_from(t).ok()).filter(|t| *t > 0)
             else {
                 scan = self.next_op(scan);
                 continue;
@@ -893,13 +846,12 @@ impl Kernel {
                             && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. })
                             && c == cb
                         {
-                            let indexed =
-                                self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
+                            let indexed = self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
                             let ok_users = users.get(&cur).is_some_and(|us| {
                                 us.iter().all(|u| match &self.ops[*u].op {
                                     Op::Store { .. } | Op::Asm { .. } => true,
                                     op => {
-                                        tt_is_tile_value(self, *u)
+                                        matches!(self.layout(*u), MemLayout::Tile { .. })
                                             && matches!(
                                                 op,
                                                 Op::Unary { .. }
@@ -931,11 +883,7 @@ impl Kernel {
                     Op::Copy { src, dst } => {
                         let src_hit = match self.ops[src].op {
                             Op::GEP { x: c, index, .. }
-                                if c == cb
-                                    && matches!(
-                                        self.ops[c].op,
-                                        Op::Storage { scope: MemScope::Circular, .. }
-                                    ) =>
+                                if c == cb && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. }) =>
                             {
                                 Some(index)
                             }
@@ -943,11 +891,7 @@ impl Kernel {
                         };
                         let dst_hit = match self.ops[dst].op {
                             Op::GEP { x: c, .. }
-                                if c == cb
-                                    && matches!(
-                                        self.ops[c].op,
-                                        Op::Storage { scope: MemScope::Circular, .. }
-                                    ) =>
+                                if c == cb && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. }) =>
                             {
                                 Some(c)
                             }
@@ -956,8 +900,7 @@ impl Kernel {
                         match (src_hit, dst_hit) {
                             (None, None) => {}
                             (Some(index), None) => {
-                                let indexed =
-                                    self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
+                                let indexed = self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
                                 if depth == 0 && indexed {
                                     direct += 1;
                                 } else {
@@ -971,12 +914,9 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::TT(TTOp::LLK { .. }) => {
-                        let Op::TT(TTOp::LLK { ops, .. }) = &self.ops[cur].op else {
-                            unreachable!("tt_sync_cbs: batch span is an LLK");
-                        };
+                    Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
                         let mut feeds = false;
-                        for o in ops.iter().copied() {
+                        for o in self.at(cur).parameters() {
                             if o.is_null() {
                                 continue;
                             }
@@ -1028,11 +968,7 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::Copy { src, dst } => {
                     let src_cb = match self.ops[src].op {
-                        Op::GEP { x, .. }
-                            if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                        {
-                            Some(x)
-                        }
+                        Op::GEP { x, .. } if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }) => Some(x),
                         Op::GEP { .. } => None,
                         Op::Storage { scope: MemScope::Circular, .. } => {
                             panic!("tt_sync_cbs: copy src {src:?} names a Circular storage directly, must go through a GEP")
@@ -1040,11 +976,7 @@ impl Kernel {
                         _ => None,
                     };
                     let dst_cb = match self.ops[dst].op {
-                        Op::GEP { x, .. }
-                            if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                        {
-                            Some(x)
-                        }
+                        Op::GEP { x, .. } if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }) => Some(x),
                         Op::GEP { .. } => None,
                         Op::Storage { scope: MemScope::Circular, .. } => {
                             panic!("tt_sync_cbs: copy dst {dst:?} names a Circular storage directly, must go through a GEP")
@@ -1076,9 +1008,9 @@ impl Kernel {
                     // reserves a back slot and pushes it, like a publish.
                     // A `Const` src is a fill, not a pack — left alone
                     // (render rejects it loudly).
-                    if is_circular_gep(self, dst) && tt_is_tile_value(self, x) {
-                        self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb: tt_storage_of(self, dst), n: 1 }));
-                        let cb = tt_storage_of(self, dst);
+                    if self.is_circular_gep(dst) && matches!(self.layout(x), MemLayout::Tile { .. }) {
+                        self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb: self.tt_storage_of(dst), n: 1 }));
+                        let cb = self.tt_storage_of(dst);
                         self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
                     }
                 }
@@ -1104,11 +1036,13 @@ impl Kernel {
                                             | TTOp::TransposeTile { .. }
                                             | TTOp::ReduceTile { .. }
                                             | TTOp::BroadcastTile { .. }
+                                            | TTOp::LLKReduce { .. }
+                                            | TTOp::LLKBcast { .. }
                                             | TTOp::LLK { .. },
                                         ) => true,
                                         Op::Store { .. } | Op::Asm { .. } => true,
                                         op => {
-                                            tt_is_tile_value(self, u)
+                                            matches!(self.layout(u), MemLayout::Tile { .. })
                                                 && matches!(
                                                     op,
                                                     Op::Unary { .. }
@@ -1120,9 +1054,7 @@ impl Kernel {
                                         }
                                     };
                                     if !ok {
-                                        panic!(
-                                            "tt_sync_cbs: circular load {op_id:?} feeds non-compute {u:?}"
-                                        );
+                                        panic!("tt_sync_cbs: circular load {op_id:?} feeds non-compute {u:?}");
                                     }
                                 }
                                 // Fusion-drained loads (every user a
@@ -1136,7 +1068,10 @@ impl Kernel {
                                 let fused_only = use_list.iter().all(|u| {
                                     matches!(
                                         self.ops[*u].op,
-                                        Op::TT(TTOp::BroadcastTile { .. }) | Op::TT(TTOp::LLK { .. })
+                                        Op::TT(TTOp::BroadcastTile { .. })
+                                            | Op::TT(TTOp::LLK { .. })
+                                            | Op::TT(TTOp::LLKReduce { .. })
+                                            | Op::TT(TTOp::LLKBcast { .. })
                                     )
                                 });
                                 if !fused_only && !batched_read.contains(&op_id) {
@@ -1146,15 +1081,12 @@ impl Kernel {
                         }
                     }
                 }
-                Op::TT(TTOp::LLK { .. }) => {
+                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
                     // Provenance waits: the call consumes its input CBs
                     // straight from the buffers, so each trailing feeder
                     // load gets a wait immediately before the call.
-                    let Op::TT(TTOp::LLK { ops, .. }) = &self.ops[op_id].op else {
-                        unreachable!("tt_sync_cbs: not an LLK");
-                    };
                     let mut wait_cbs: Vec<OpId> = Vec::new();
-                    for o in ops.iter().copied() {
+                    for o in self.at(op_id).parameters() {
                         if o.is_null() {
                             continue;
                         }
@@ -1265,7 +1197,7 @@ impl Kernel {
                     }
                 }
                 op if in_compute && first_pack.is_none() => {
-                    if let Some(cb) = tt_pack_store_cb(self, scan) {
+                    if let Some(cb) = self.tt_pack_store_cb(scan) {
                         let _ = op;
                         first_pack = Some(cb);
                     }
@@ -1320,23 +1252,21 @@ impl Kernel {
                 // compute, fused call, pack store, or CB load outside
                 // the compute section is malformed.
                 let bad = match &self.ops[op_id].op {
-                    Op::TT(TTOp::LLK { .. }) => true,
-                    Op::Store { .. } => tt_pack_store_cb(self, op_id).is_some(),
+                    Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => true,
+                    Op::Store { .. } => self.tt_pack_store_cb(op_id).is_some(),
                     Op::Load { src } => {
                         matches!(self.ops[*src].op, Op::GEP { x, .. } if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }))
                     }
                     op => {
-                        let id = op_id;
-                        tt_is_tile_value(self, id)
-                            && matches!(
-                                op,
-                                Op::Unary { .. }
-                                    | Op::Binary { .. }
-                                    | Op::Cast { .. }
-                                    | Op::Bitcast { .. }
-                                    | Op::Mad { .. }
-                                    | Op::Asm { .. }
-                            )
+                        matches!(
+                            op,
+                            Op::Unary { .. }
+                                | Op::Binary { .. }
+                                | Op::Cast { .. }
+                                | Op::Bitcast { .. }
+                                | Op::Mad { .. }
+                                | Op::Asm { .. }
+                        ) && matches!(self.layout(op_id), MemLayout::Tile { .. })
                     }
                 };
                 if bad {
@@ -1365,12 +1295,17 @@ impl Kernel {
                     let Op::Binary { x, y, bop } = self.ops[op_id].op else {
                         unreachable!("tt_init_math: not a Binary");
                     };
-                    match tt_scalar_lane(self, x, y) {
-                        None => InitAction::BinaryInit(bop),
-                        Some((left, s)) => {
-                            tt_check_scalar_lane(self, op_id, bop, left, s)?;
+                    match (matches!(self.layout(x), MemLayout::Tile { .. }), matches!(self.layout(y), MemLayout::Tile { .. })) {
+                        (true, true) => InitAction::BinaryInit(bop),
+                        (true, false) => {
+                            self.tt_check_scalar_lane(op_id, bop, false, y)?;
                             InitAction::BinScalarInit(bop)
                         }
+                        (false, true) => {
+                            self.tt_check_scalar_lane(op_id, bop, true, x)?;
+                            InitAction::BinScalarInit(bop)
+                        }
+                        (false, false) => panic!("tt_init_math: tiled binary {op_id:?} with no tile lane"),
                     }
                 }
                 Op::Cast { .. } => {
@@ -1382,7 +1317,7 @@ impl Kernel {
                 Op::Bitcast { .. } => InitAction::None,
                 Op::Mad { .. } => panic!("tt_init_math: tiled mad {op_id:?} has no LLK call"),
                 Op::Copy { src, dst } => {
-                    if is_circular_gep(self, *src) && is_circular_gep(self, *dst) {
+                    if self.is_circular_gep(*src) && self.is_circular_gep(*dst) {
                         let Op::GEP { x: dcb, .. } = self.ops[*dst].op else {
                             unreachable!("tt_init_math: CB copy dst is a GEP");
                         };
@@ -1391,44 +1326,26 @@ impl Kernel {
                         InitAction::None
                     }
                 }
-                Op::Store { .. } => match tt_pack_store_cb(self, op_id) {
+                Op::Store { .. } => match self.tt_pack_store_cb(op_id) {
                     Some(cb) => InitAction::PackReconfig(cb),
                     None => InitAction::None,
                 },
+                Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, .. }) => {
+                    pending_acc = Some(*slot);
+                    InitAction::ReduceInit(*cb_in, *cb_sc, *slot, *rop, *kind)
+                }
+                Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, .. }) => InitAction::BcastInit(*bop, *kind, *cb_a, *cb_b),
                 Op::TT(TTOp::LLK { .. }) => {
                     let Op::TT(TTOp::LLK { asm, ops }) = &self.ops[op_id].op else {
                         unreachable!("tt_init_math: not an LLK");
                     };
                     let text = asm.as_str();
                     if text.starts_with("matmul_tiles(") {
-                        let out = first_pack.unwrap_or_else(|| {
-                            panic!("tt_init_math: matmul {op_id:?} with no packed CB")
-                        });
+                        let out = first_pack.unwrap_or_else(|| panic!("tt_init_math: matmul {op_id:?} with no packed CB"));
                         InitAction::MatmulInit(ops[0], ops[1], out)
                     } else if text.starts_with("transpose_wh_tile(") {
-                        let out = first_pack.unwrap_or_else(|| {
-                            panic!("tt_init_math: transpose {op_id:?} with no packed CB")
-                        });
+                        let out = first_pack.unwrap_or_else(|| panic!("tt_init_math: transpose {op_id:?} with no packed CB"));
                         InitAction::TransposeInit(ops[0], out)
-                    } else if text.starts_with("reduce_tile<") {
-                        let (rop, kind) = tt_parse_reduce(text, op_id);
-                        let mut acc = None;
-                        for o in ops.iter().copied() {
-                            if o.is_null() {
-                                continue;
-                            }
-                            if matches!(self.ops[o].op, Op::Storage { scope: MemScope::Register, .. }) {
-                                acc = Some(o);
-                                break;
-                            }
-                        }
-                        let acc = acc.unwrap_or_else(|| {
-                            panic!("tt_init_math: reduce {op_id:?} names no acc slot")
-                        });
-                        pending_acc = Some(acc);
-                        InitAction::ReduceInit(ops[0], ops[1], acc, rop, kind)
-                    } else if let Some((bop, kind)) = tt_parse_bcast(text) {
-                        InitAction::BcastInit(bop, kind, ops[0], ops[1])
                     } else {
                         // User asm / startup template: no init.
                         InitAction::None
@@ -1453,16 +1370,39 @@ impl Kernel {
                         })
                     })
                 {
-                    tt_emit_copy_init(self, op_id, cb, &mut unpack_src);
+                    // Copy unpack init: same shapes as the `tt_copy_init`
+                    // ctors (which push back — wrong end for a pass).
+                    match unpack_src {
+                        Some(prev) if prev == cb => {
+                            self.insert_before(
+                                op_id,
+                                Op::Asm { asm: TinyString::new("copy_tile_init({0});"), ops: TinyVec::new(&[cb]) },
+                            );
+                        }
+                        Some(prev) => {
+                            self.insert_before(
+                                op_id,
+                                Op::Asm {
+                                    asm: TinyString::new("copy_tile_to_dst_init_short_with_dt({0}, {1});"),
+                                    ops: TinyVec::new(&[prev, cb]),
+                                },
+                            );
+                            unpack_src = Some(cb);
+                        }
+                        None => {
+                            self.insert_before(
+                                op_id,
+                                Op::Asm { asm: TinyString::new("copy_tile_init({0});"), ops: TinyVec::new(&[cb]) },
+                            );
+                            unpack_src = Some(cb);
+                        }
+                    }
                 }
             }
             // The op init itself. Same templates as the `tt_*_init`
             // constructors (which push back — wrong end for a pass).
             let asm_before = |kernel: &mut Kernel, at: OpId, template: &str, ops: &[OpId]| {
-                kernel.insert_before(at, Op::Asm {
-                    asm: TinyString::new(template),
-                    ops: TinyVec::new(ops),
-                });
+                kernel.insert_before(at, Op::Asm { asm: TinyString::new(template), ops: TinyVec::new(ops) });
             };
             match action {
                 InitAction::None => {}
@@ -1506,8 +1446,24 @@ impl Kernel {
                     asm_before(self, op_id, init, &[]);
                 }
                 InitAction::CastInit(in_dtype, out_dtype) => {
-                    let template =
-                        format!("typecast_tile_init<{}, {}>();", tt_tile_fmt(in_dtype), tt_tile_fmt(out_dtype));
+                    /// TT `DataFormat` code for a dtype on the tile path (the
+                    /// `typecast_tile_init<in, out>` template args). This is NOT the CB
+                    /// descriptor code. An unmappable dtype panics — mirrors the old
+                    /// render error at the constructor, the exact spot.
+                    fn tt_tile_fmt(dtype: DType) -> u32 {
+                        match dtype {
+                            DType::F32 => 0,
+                            DType::F16 | DType::BF16 => 5,
+                            DType::I32 => 8,
+                            DType::U16 => 9,
+                            DType::I8 => 14,
+                            DType::U32 => 24,
+                            DType::F8E4M3 => 26,
+                            DType::U8 => 30,
+                            dt => panic!("tt_tile_fmt: dtype {dt:?} has no tt tile format"),
+                        }
+                    }
+                    let template = format!("typecast_tile_init<{}, {}>();", tt_tile_fmt(in_dtype), tt_tile_fmt(out_dtype));
                     asm_before(self, op_id, &template, &[]);
                 }
                 InitAction::PackReconfig(cb) => {
@@ -1518,9 +1474,8 @@ impl Kernel {
                             unreachable!("tt_init_math: pack is a Store");
                         };
                         if tt_reaches_acc(self, x, acc) {
-                            let unlock = last_math_unlock.unwrap_or_else(|| {
-                                panic!("tt_init_math: pack {op_id:?} without an open MathUnlock")
-                            });
+                            let unlock = last_math_unlock
+                                .unwrap_or_else(|| panic!("tt_init_math: pack {op_id:?} without an open MathUnlock"));
                             self.insert_before(unlock, Op::TT(TTOp::ReduceUninit));
                             pending_acc = None;
                         }
@@ -1633,10 +1588,7 @@ impl Kernel {
                 while s != e {
                     if matches!(
                         self.at(s),
-                        Op::TT(TTOp::MathLock)
-                            | Op::TT(TTOp::MathUnlock)
-                            | Op::TT(TTOp::PackLock)
-                            | Op::TT(TTOp::PackUnlock)
+                        Op::TT(TTOp::MathLock) | Op::TT(TTOp::MathUnlock) | Op::TT(TTOp::PackLock) | Op::TT(TTOp::PackUnlock)
                     ) {
                         has_lock = true;
                         break;
@@ -1721,9 +1673,7 @@ impl Kernel {
         while !scan.is_null() {
             let (read_op, gep_index, cb) = match self.ops[scan].op {
                 Op::Load { src } => match self.ops[src].op {
-                    Op::GEP { x: cb, index, .. }
-                        if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                    {
+                    Op::GEP { x: cb, index, .. } if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) => {
                         (scan, index, cb)
                     }
                     _ => {
@@ -1732,9 +1682,7 @@ impl Kernel {
                     }
                 },
                 Op::Copy { src, .. } => match self.ops[src].op {
-                    Op::GEP { x: cb, index, .. }
-                        if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                    {
+                    Op::GEP { x: cb, index, .. } if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) => {
                         (scan, index, cb)
                     }
                     _ => {
@@ -1778,11 +1726,8 @@ impl Kernel {
             let Op::Loop { len } = self.ops[loop_op].op else {
                 unreachable!("tt_place_pops: batch loop is a Loop");
             };
-            let Some(trips) = self
-                .resolve_const(len)
-                .and_then(|c| c.as_dim())
-                .and_then(|t| u32::try_from(t).ok())
-                .filter(|t| *t > 0)
+            let Some(trips) =
+                self.resolve_const(len).and_then(|c| c.as_dim()).and_then(|t| u32::try_from(t).ok()).filter(|t| *t > 0)
             else {
                 scan = self.next_op(scan);
                 continue;
@@ -1822,13 +1767,12 @@ impl Kernel {
                             && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. })
                             && c == cb
                         {
-                            let indexed =
-                                self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
+                            let indexed = self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
                             let ok_users = users.get(&cur).is_some_and(|us| {
                                 us.iter().all(|u| match &self.ops[*u].op {
                                     Op::Store { .. } | Op::Asm { .. } => true,
                                     op => {
-                                        tt_is_tile_value(self, *u)
+                                        matches!(self.layout(*u), MemLayout::Tile { .. })
                                             && matches!(
                                                 op,
                                                 Op::Unary { .. }
@@ -1860,11 +1804,7 @@ impl Kernel {
                     Op::Copy { src, dst } => {
                         let src_hit = match self.ops[src].op {
                             Op::GEP { x: c, index, .. }
-                                if c == cb
-                                    && matches!(
-                                        self.ops[c].op,
-                                        Op::Storage { scope: MemScope::Circular, .. }
-                                    ) =>
+                                if c == cb && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. }) =>
                             {
                                 Some(index)
                             }
@@ -1872,11 +1812,7 @@ impl Kernel {
                         };
                         let dst_hit = match self.ops[dst].op {
                             Op::GEP { x: c, .. }
-                                if c == cb
-                                    && matches!(
-                                        self.ops[c].op,
-                                        Op::Storage { scope: MemScope::Circular, .. }
-                                    ) =>
+                                if c == cb && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. }) =>
                             {
                                 Some(c)
                             }
@@ -1885,8 +1821,7 @@ impl Kernel {
                         match (src_hit, dst_hit) {
                             (None, None) => {}
                             (Some(index), None) => {
-                                let indexed =
-                                    self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
+                                let indexed = self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
                                 if depth == 0 && indexed {
                                     direct += 1;
                                 } else {
@@ -1900,12 +1835,9 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::TT(TTOp::LLK { .. }) => {
-                        let Op::TT(TTOp::LLK { ops, .. }) = &self.ops[cur].op else {
-                            unreachable!("tt_place_pops: batch span is an LLK");
-                        };
+                    Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
                         let mut feeds = false;
-                        for o in ops.iter().copied() {
+                        for o in self.at(cur).parameters() {
                             if o.is_null() {
                                 continue;
                             }
@@ -1955,8 +1887,11 @@ impl Kernel {
         let mut remaining: Map<(OpId, OpId), u32> = Map::default();
         let mut walk = self.head;
         while !walk.is_null() {
-            if let Op::TT(TTOp::LLK { ops, .. }) = &self.ops[walk].op {
-                for o in ops.iter().copied() {
+            if matches!(
+                self.ops[walk].op,
+                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. })
+            ) {
+                for o in self.at(walk).parameters() {
                     if o.is_null() || !matches!(self.ops[o].op, Op::Load { .. }) {
                         continue;
                     }
@@ -1987,7 +1922,10 @@ impl Kernel {
                 }
                 if matches!(
                     self.ops[*u].op,
-                    Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::BroadcastTile { .. })
+                    Op::TT(TTOp::LLK { .. })
+                        | Op::TT(TTOp::LLKReduce { .. })
+                        | Op::TT(TTOp::LLKBcast { .. })
+                        | Op::TT(TTOp::BroadcastTile { .. })
                 ) {
                     continue;
                 }
@@ -2022,7 +1960,7 @@ impl Kernel {
                             // circular src — its copies publish).
                             // A CB→CB move outside compute cannot
                             // unpack — malformed.
-                            let is_drain = matches!(self.ops[op_id].op, Op::Copy { dst, .. } if !is_circular_gep(self, dst));
+                            let is_drain = matches!(self.ops[op_id].op, Op::Copy { dst, .. } if !self.is_circular_gep(dst));
                             if !is_drain {
                                 panic!("tt_place_pops: CB→CB copy {op_id:?} outside the compute section");
                             }
@@ -2034,13 +1972,10 @@ impl Kernel {
                         }
                     }
                 }
-                Op::TT(TTOp::LLK { .. }) => {
-                    let Op::TT(TTOp::LLK { ops, .. }) = &self.ops[op_id].op else {
-                        unreachable!("tt_place_pops: not an LLK");
-                    };
+                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
                     let mut seen: Vec<OpId> = Vec::new();
                     let mut cbs: Vec<(OpId, OpId)> = Vec::new();
-                    for o in ops.iter().copied() {
+                    for o in self.at(op_id).parameters() {
                         if o.is_null() || !matches!(self.ops[o].op, Op::Load { .. }) {
                             continue;
                         }
@@ -2056,9 +1991,9 @@ impl Kernel {
                         }
                     }
                     for (cb, load) in cbs {
-                        let left = remaining.get_mut(&(cb, load)).unwrap_or_else(|| {
-                            panic!("tt_place_pops: LLK {op_id:?} consumes uncounted page ({cb:?}, {load:?})")
-                        });
+                        let left = remaining
+                            .get_mut(&(cb, load))
+                            .unwrap_or_else(|| panic!("tt_place_pops: LLK {op_id:?} consumes uncounted page ({cb:?}, {load:?})"));
                         if *left == 0 {
                             panic!("tt_place_pops: use beyond counted total on CB{cb:?}");
                         }
@@ -2084,10 +2019,7 @@ impl Kernel {
                 }
             }
             // Dead-load drain pops land at the load itself.
-            if matches!(self.ops[op_id].op, Op::Load { .. })
-                && !users.contains_key(&op_id)
-                && !batched_read.contains(&op_id)
-            {
+            if matches!(self.ops[op_id].op, Op::Load { .. }) && !users.contains_key(&op_id) && !batched_read.contains(&op_id) {
                 let Op::Load { src } = self.ops[op_id].op else {
                     unreachable!("tt_place_pops: dead op is a Load");
                 };
@@ -2298,210 +2230,165 @@ impl Kernel {
             }
         }
     }
-}
 
-/// Chase a `Load`/`Store`/`Copy` operand through its `GEP` to the
-/// underlying `Storage`/`Param`. Tile-compute results name DST slots,
-/// not buffers: `MatmulTile`/`ReduceTile` see through to their `acc`
-/// (a `load_register_tile`), so matmul→reduce acc chains resolve to
-/// the Register slot instead of panicking. `BroadcastTile` is a pure
-/// marker and forwards to its input. A post-lowering `LLK` resolves to
-/// the Register storage in its operands (its DST slot); an `LLK` with
-/// no Register operand names no slot — loud panic. The GEP index is
-/// not needed (render uses slot 0).
-pub(crate) fn tt_storage_of(kernel: &Kernel, op_id: OpId) -> OpId {
-    match kernel.at(op_id) {
-        Op::Load { src, .. } | Op::Copy { src, .. } => tt_storage_of(kernel, *src),
-        Op::Store { dst, .. } => tt_storage_of(kernel, *dst),
-        Op::GEP { x, .. } => tt_storage_of(kernel, *x),
-        Op::Storage { .. } | Op::Param { .. } => op_id,
-        Op::TT(TTOp::MatmulTile { acc, .. }) | Op::TT(TTOp::ReduceTile { acc, .. }) => {
-            tt_storage_of(kernel, *acc)
-        }
-        Op::TT(TTOp::BroadcastTile { x, .. }) => tt_storage_of(kernel, *x),
-        Op::TT(TTOp::LLK { ops, .. }) => {
-            let mut slot = None;
-            for o in ops.iter().copied() {
-                if o.is_null() {
-                    continue;
+    /// Chase a `Load`/`Store`/`Copy` operand through its `GEP` to the
+    /// underlying `Storage`/`Param`. Tile-compute results name DST slots,
+    /// not buffers: `MatmulTile`/`ReduceTile` see through to their `acc`
+    /// (a `load_register_tile`), so matmul→reduce acc chains resolve to
+    /// the Register slot instead of panicking. `BroadcastTile` is a pure
+    /// marker and forwards to its input. A post-lowering `LLK` resolves to
+    /// the Register storage in its operands (its DST slot); an `LLK` with
+    /// no Register operand names no slot — loud panic. The GEP index is
+    /// not needed (render uses slot 0).
+    pub(crate) fn tt_storage_of(&self, op_id: OpId) -> OpId {
+        match self.at(op_id) {
+            Op::Load { src, .. } | Op::Copy { src, .. } => self.tt_storage_of(*src),
+            Op::Store { dst, .. } => self.tt_storage_of(*dst),
+            Op::GEP { x, .. } => self.tt_storage_of(*x),
+            Op::Storage { .. } | Op::Param { .. } => op_id,
+            Op::TT(TTOp::MatmulTile { acc, .. }) | Op::TT(TTOp::ReduceTile { acc, .. }) => self.tt_storage_of(*acc),
+            Op::TT(TTOp::BroadcastTile { x, .. }) => self.tt_storage_of(*x),
+            Op::TT(TTOp::LLK { ops, .. }) => {
+                let mut slot = None;
+                for o in ops.iter().copied() {
+                    if o.is_null() {
+                        continue;
+                    }
+                    if matches!(self.at(o), Op::Storage { scope: MemScope::Register, .. }) {
+                        slot = Some(o);
+                        break;
+                    }
                 }
-                if matches!(kernel.at(o), Op::Storage { scope: MemScope::Register, .. }) {
-                    slot = Some(o);
-                    break;
-                }
+                slot.unwrap_or_else(|| panic!("tt_storage_of: LLK {op_id:?} names no Register slot"))
             }
-            slot.unwrap_or_else(|| panic!("tt_storage_of: LLK {op_id:?} names no Register slot"))
-        }
-        other => panic!("tt_storage_of: {op_id:?} is not a Load/Store/Copy/GEP, got {other:?}"),
-    }
-}
-
-/// Pack-store CB: `Some(cb)` iff `id` is a `Store` of a tile value
-/// into a Circular buffer (shared by `tt_lock_dst`, `tt_sync_cbs`
-/// accounting, and `tt_init_math` — single source of truth).
-fn tt_pack_store_cb(kernel: &Kernel, id: OpId) -> Option<OpId> {
-    if let Op::Store { src: x, dst } = kernel.at(id) {
-        if let Op::GEP { x: g, .. } = kernel.at(*dst) {
-            if matches!(kernel.at(*g), Op::Storage { scope: MemScope::Circular, .. })
-                && tt_is_tile_value(kernel, *x)
-            {
-                return Some(*g);
-            }
+            Op::TT(TTOp::LLKReduce { slot, .. }) => *slot,
+            Op::TT(TTOp::LLKBcast { .. }) => panic!("tt_storage_of: LLKBcast {op_id:?} names no Register slot"),
+            other => panic!("tt_storage_of: {op_id:?} is not a Load/Store/Copy/GEP, got {other:?}"),
         }
     }
-    None
-}
 
-/// Validate a scalar binary lane at init time (old scalar rule): int
-/// consts only fold for shifts (right side, 0..=31); float
-/// const-exprs fold for Add/Mul either side and Div on the right;
-/// scalar `Sub` is unrenderable (the old render rejected it too).
-/// Shift rejections return the old `tenstorrent2` errors (tests assert
-/// them via `expect_err`); anything else is a loud error.
-fn tt_check_scalar_lane(
-    kernel: &Kernel,
-    id: OpId,
-    bop: BOp,
-    left: bool,
-    s: OpId,
-) -> Result<(), BackendError> {
-    match bop {
-        BOp::BitShiftLeft | BOp::BitShiftRight => {
-            // Shifts lower to the shift LLKs, which are int-only
-            // (Int32/UInt32/UInt16): anything else fails here, never
-            // on the device.
-            let dt = kernel.dtype(id);
-            match dt {
-                DType::I32 | DType::U32 | DType::U16 => {}
-                _ => {
+    /// Pack-store CB: `Some(cb)` iff `id` is a `Store` of a tile value
+    /// into a Circular buffer (shared by `tt_lock_dst`, `tt_sync_cbs`
+    /// accounting, and `tt_init_math` — single source of truth).
+    fn tt_pack_store_cb(&self, id: OpId) -> Option<OpId> {
+        if let Op::Store { src: x, dst } = self.at(id) {
+            if let Op::GEP { x: g, .. } = self.at(*dst) {
+                if matches!(self.at(*g), Op::Storage { scope: MemScope::Circular, .. })
+                    && matches!(self.layout(*x), MemLayout::Tile { .. })
+                {
+                    return Some(*g);
+                }
+            }
+        }
+        None
+    }
+
+    /// True iff `id` is a `GEP` over a Circular storage (a CB slot
+    /// address, either side of a traffic `Copy`).
+    fn is_circular_gep(&self, id: OpId) -> bool {
+        if let Op::GEP { x, .. } = self.at(id) {
+            matches!(self.at(*x), Op::Storage { scope: MemScope::Circular, .. })
+        } else {
+            false
+        }
+    }
+
+    /// Validate a scalar binary lane at init time (old scalar rule): int
+    /// consts only fold for shifts (right side, 0..=31); float
+    /// const-exprs fold for Add/Mul either side and Div on the right;
+    /// scalar `Sub` is unrenderable (the old render rejected it too).
+    /// Shift rejections return the old `tenstorrent2` errors (tests assert
+    /// them via `expect_err`); anything else is a loud error.
+    fn tt_check_scalar_lane(&self, id: OpId, bop: BOp, left: bool, s: OpId) -> Result<(), BackendError> {
+        match bop {
+            BOp::BitShiftLeft | BOp::BitShiftRight => {
+                // Shifts lower to the shift LLKs, which are int-only
+                // (Int32/UInt32/UInt16): anything else fails here, never
+                // on the device.
+                let dt = self.dtype(id);
+                match dt {
+                    DType::I32 | DType::U32 | DType::U16 => {}
+                    _ => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!(
+                                "tenstorrent2: tiled shift on {dt:?}, LLK supports Int32/UInt32/UInt16 only, op {id}"
+                            )
+                            .into(),
+                        });
+                    }
+                }
+                let Op::Binary { x, y, .. } = self.at(id) else {
+                    unreachable!("tt_init_math: shift check on non-Binary {id:?}");
+                };
+                let (x, y) = (*x, *y);
+                // A const side resolving to a compile-time constant has no
+                // scalar call. A const amount folds into the
+                // unary-immediate LLK (`tile << amount`); amounts outside
+                // 0..=31 are UB in every other backend — fail loudly,
+                // never emit.
+                if self.resolve_const(x).is_some() {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
-                        context: format!(
-                            "tenstorrent2: tiled shift on {dt:?}, LLK supports Int32/UInt32/UInt16 only, op {id}"
-                        )
-                        .into(),
+                        context: format!("tenstorrent2: const-first {bop:?} has no scalar call, op {id}").into(),
                     });
                 }
-            }
-            let Op::Binary { x, y, .. } = kernel.at(id) else {
-                unreachable!("tt_init_math: shift check on non-Binary {id:?}");
-            };
-            let (x, y) = (*x, *y);
-            // A const side resolving to a compile-time constant has no
-            // scalar call. A const amount folds into the
-            // unary-immediate LLK (`tile << amount`); amounts outside
-            // 0..=31 are UB in every other backend — fail loudly,
-            // never emit.
-            if kernel.resolve_const(x).is_some() {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("tenstorrent2: const-first {bop:?} has no scalar call, op {id}").into(),
-                });
-            }
-            let v: i128 = match kernel.resolve_const(y) {
-                Some(Constant::U8(v)) => v as i128,
-                Some(Constant::U16(v)) => v as i128,
-                Some(Constant::U32(v)) => v as i128,
-                Some(Constant::U64(v)) => u64::from_le_bytes(v) as i128,
-                Some(Constant::I8(v)) => v as i128,
-                Some(Constant::I16(v)) => v as i128,
-                Some(Constant::I32(v)) => v as i128,
-                Some(Constant::I64(v)) => i64::from_le_bytes(v) as i128,
-                _ => {
+                let v: i128 = match self.resolve_const(y) {
+                    Some(Constant::U8(v)) => v as i128,
+                    Some(Constant::U16(v)) => v as i128,
+                    Some(Constant::U32(v)) => v as i128,
+                    Some(Constant::U64(v)) => u64::from_le_bytes(v) as i128,
+                    Some(Constant::I8(v)) => v as i128,
+                    Some(Constant::I16(v)) => v as i128,
+                    Some(Constant::I32(v)) => v as i128,
+                    Some(Constant::I64(v)) => i64::from_le_bytes(v) as i128,
+                    _ => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: shift amount is no integer const, op {id}").into(),
+                        });
+                    }
+                };
+                let Some(amount) = u32::try_from(v).ok() else {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: format!("tenstorrent2: shift amount is no integer const, op {id}").into(),
                     });
+                };
+                if amount > 31 {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: shift amount {amount} outside 0..=31, op {id}").into(),
+                    });
                 }
-            };
-            let Some(amount) = u32::try_from(v).ok() else {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("tenstorrent2: shift amount is no integer const, op {id}").into(),
-                });
-            };
-            if amount > 31 {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("tenstorrent2: shift amount {amount} outside 0..=31, op {id}").into(),
-                });
+                if bop == BOp::BitShiftRight && dt == DType::U32 {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tenstorrent2: U32 right-shift by immediate is arithmetic-only, op {id}").into(),
+                    });
+                }
+                Ok(())
             }
-            if bop == BOp::BitShiftRight && dt == DType::U32 {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("tenstorrent2: U32 right-shift by immediate is arithmetic-only, op {id}")
-                        .into(),
-                });
+            BOp::Add | BOp::Mul => {
+                if !matches!(self.resolve_const(s), Some(Constant::F32(_) | Constant::F16(_) | Constant::BF16(_))) {
+                    panic!("tt_init_math: scalar lane {s:?} is not a foldable float const");
+                }
+                Ok(())
             }
-            Ok(())
-        }
-        BOp::Add | BOp::Mul => {
-            tt_scalar_f32(kernel, s);
-            Ok(())
-        }
-        BOp::Div => {
-            if left {
-                panic!("tt_init_math: const-first div {id:?} has no scalar call");
+            BOp::Div => {
+                if left {
+                    panic!("tt_init_math: const-first div {id:?} has no scalar call");
+                }
+                if !matches!(self.resolve_const(s), Some(Constant::F32(_) | Constant::F16(_) | Constant::BF16(_))) {
+                    panic!("tt_init_math: scalar lane {s:?} is not a foldable float const");
+                }
+                Ok(())
             }
-            tt_scalar_f32(kernel, s);
-            Ok(())
+            BOp::Sub => {
+                panic!("tt_init_math: scalar sub {id:?} has no LLK call (the old render rejected it too)")
+            }
+            _ => panic!("tt_init_math: scalar {bop:?} {id:?} has no scalar call"),
         }
-        BOp::Sub => {
-            panic!("tt_init_math: scalar sub {id:?} has no LLK call (the old render rejected it too)")
-        }
-        _ => panic!("tt_init_math: scalar {bop:?} {id:?} has no scalar call"),
-    }
-}
-
-/// Parse a baked reduce template (`reduce_tile<PoolType::MAX,
-/// ReduceDim::REDUCE_COL>(...)`, as produced by `tt_storage`) back to
-/// `(rop, kind)`. Six combos — anything else is not a storage
-/// template, loud panic.
-fn tt_parse_reduce(text: &str, id: OpId) -> (BOp, TileDim) {
-    if let Some(rest) = text.strip_prefix("reduce_tile<PoolType::") {
-        let (rop, rest) = if let Some(r) = rest.strip_prefix("MAX, ") {
-            (BOp::Max, r)
-        } else if let Some(r) = rest.strip_prefix("SUM, ") {
-            (BOp::Add, r)
-        } else {
-            panic!("tt_init_math: reduce {id:?} has unknown pool type");
-        };
-        let kind = if rest.starts_with("ReduceDim::REDUCE_ROW>(") {
-            TileDim::Row
-        } else if rest.starts_with("ReduceDim::REDUCE_COL>(") {
-            TileDim::Col
-        } else if rest.starts_with("ReduceDim::REDUCE_SCALAR>(") {
-            TileDim::Scalar
-        } else {
-            panic!("tt_init_math: reduce {id:?} has unknown dim");
-        };
-        return (rop, kind);
-    }
-    panic!("tt_init_math: {id:?} is not a storage reduce template");
-}
-
-/// Parse a fused broadcast template (`add_tiles_bcast_rows(...)`, as
-/// produced by `tt_storage` fusion) back to `(bop, kind)`. Nine
-/// combos; anything else is not a fused template (`None` = leave the
-/// `LLK` alone — user asm / startup templates).
-fn tt_parse_bcast(text: &str) -> Option<(BOp, TileDim)> {
-    let (bop, rest) = if let Some(r) = text.strip_prefix("add_tiles_bcast_") {
-        (BOp::Add, r)
-    } else if let Some(r) = text.strip_prefix("sub_tiles_bcast_") {
-        (BOp::Sub, r)
-    } else if let Some(r) = text.strip_prefix("mul_tiles_bcast_") {
-        (BOp::Mul, r)
-    } else {
-        return None;
-    };
-    if rest.starts_with("rows(") {
-        Some((bop, TileDim::Row))
-    } else if rest.starts_with("cols(") {
-        Some((bop, TileDim::Col))
-    } else if rest.starts_with("scalar(") {
-        Some((bop, TileDim::Scalar))
-    } else {
-        None
     }
 }
 
@@ -2519,14 +2406,16 @@ fn tt_reaches_acc(kernel: &Kernel, id: OpId, acc: OpId) -> bool {
             tt_reaches_acc(kernel, *x, acc) || tt_reaches_acc(kernel, *y, acc) || tt_reaches_acc(kernel, *z, acc)
         }
         Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().any(|o| !o.is_null() && o == acc),
+        Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+            [*cb_in, *cb_sc, *slot, *x, *scaler].iter().any(|o| *o == acc)
+        }
+        Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => [*cb_a, *cb_b, *mx, *plain].iter().any(|o| *o == acc),
         Op::TT(TTOp::MatmulTile { acc: a, .. }) | Op::TT(TTOp::ReduceTile { acc: a, .. }) => {
             *a == acc || tt_reaches_acc(kernel, *a, acc)
         }
         Op::TT(TTOp::BroadcastTile { x, .. }) => tt_reaches_acc(kernel, *x, acc),
         Op::TT(TTOp::TransposeTile { .. }) => false,
-        Op::Asm { ops, .. } => {
-            ops.iter().copied().any(|o| !o.is_null() && tt_reaches_acc(kernel, o, acc))
-        }
+        Op::Asm { ops, .. } => ops.iter().copied().any(|o| !o.is_null() && tt_reaches_acc(kernel, o, acc)),
         Op::Const { .. }
         | Op::Param { .. }
         | Op::Storage { .. }
@@ -2553,152 +2442,6 @@ fn tt_reaches_acc(kernel: &Kernel, id: OpId, acc: OpId) -> bool {
         | Op::Contiguous { .. }
         | Op::Kernel { .. }
         | Op::Custom(_) => panic!("tt_reaches_acc: graph-only {id:?} in ordered TT kernel"),
-    }
-}
-
-/// Emit `copy_tile_init(cb)` / `copy_tile_to_dst_init_short_with_dt
-/// (prev, cb)` before `at`, tracking the unpack source. Same shapes
-/// as `tt_copy_init` / `tt_copy_init_with_dt` (the ctors push back —
-/// wrong end for a pass; templates are stable LLK names).
-fn tt_emit_copy_init(kernel: &mut Kernel, at: OpId, cb: OpId, unpack_src: &mut Option<OpId>) {
-    match *unpack_src {
-        Some(prev) if prev == cb => {
-            kernel.insert_before(at, Op::Asm {
-                asm: TinyString::new("copy_tile_init({0});"),
-                ops: TinyVec::new(&[cb]),
-            });
-        }
-        Some(prev) => {
-            kernel.insert_before(at, Op::Asm {
-                asm: TinyString::new("copy_tile_to_dst_init_short_with_dt({0}, {1});"),
-                ops: TinyVec::new(&[prev, cb]),
-            });
-            *unpack_src = Some(cb);
-        }
-        None => {
-            kernel.insert_before(at, Op::Asm {
-                asm: TinyString::new("copy_tile_init({0});"),
-                ops: TinyVec::new(&[cb]),
-            });
-            *unpack_src = Some(cb);
-        }
-    }
-}
-
-/// True iff `id` is a `GEP` over a Circular storage (a CB slot
-/// address, either side of a traffic `Copy`).
-pub(crate) fn is_circular_gep(kernel: &Kernel, id: OpId) -> bool {
-    if let Op::GEP { x, .. } = kernel.at(id) {
-        matches!(kernel.at(*x), Op::Storage { scope: MemScope::Circular, .. })
-    } else {
-        false
-    }
-}
-
-/// True iff the value of `id` is a Tenstorrent tile (unpacks from /
-/// packs into a CB, lives in DST). `Load` of a tile layout, the four
-/// SSA tile ops, `LLK`, tiled user `Asm`, and elementwise SSA over
-/// tile operands are tiles; `Const`/`Param`/`Storage`/`Range`/`Loop`
-/// values and scalar index math (`Const`/`Mad`/`Binary` over
-/// non-tiles) are not. Graph-only ops can never appear in an
-/// ordered TT kernel — loud `panic`, never a default arm.
-pub(crate) fn tt_is_tile_value(kernel: &Kernel, id: OpId) -> bool {
-    match kernel.at(id) {
-        Op::Load { src } => matches!(
-            kernel.at(*src),
-            Op::GEP { layout: MemLayout::Tile { .. }, .. }
-        ),
-        Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => tt_is_tile_value(kernel, *x),
-        Op::Binary { x, y, .. } => tt_is_tile_value(kernel, *x) || tt_is_tile_value(kernel, *y),
-        Op::Mad { x, y, z, .. } => {
-            tt_is_tile_value(kernel, *x) || tt_is_tile_value(kernel, *y) || tt_is_tile_value(kernel, *z)
-        }
-        Op::Asm { .. } => true,
-        Op::TT(_) => true,
-        Op::Const { .. }
-        | Op::Param { .. }
-        | Op::Storage { .. }
-        | Op::GEP { .. }
-        | Op::Store { .. }
-        | Op::Copy { .. }
-        | Op::Range { .. }
-        | Op::Loop { .. }
-        | Op::EndLoop
-        | Op::Barrier => false,
-        Op::Stack { .. }
-        | Op::Index { .. }
-        | Op::Wmma { .. }
-        | Op::Reshape { .. }
-        | Op::Expand { .. }
-        | Op::Permute { .. }
-        | Op::Flip { .. }
-        | Op::Pad { .. }
-        | Op::Narrow { .. }
-        | Op::Reduce { .. }
-        | Op::After { .. }
-        | Op::ToDevice { .. }
-        | Op::Contiguous { .. }
-        | Op::Kernel { .. }
-        | Op::Custom(_) => panic!("tt_is_tile_value: graph-only {id:?} in ordered TT kernel"),
-    }
-}
-
-/// Scalar lane of a tiled `Binary`: which side (if any) is the
-/// scalar, and the scalar op. A tiled binary has at least one tile
-/// lane; the other lane is scalar iff it is not tile-valued. Both
-/// lanes tile → `None` (plain tile-tile call).
-pub(crate) fn tt_scalar_lane(kernel: &Kernel, x: OpId, y: OpId) -> Option<(bool, OpId)> {
-    let tx = tt_is_tile_value(kernel, x);
-    let ty = tt_is_tile_value(kernel, y);
-    match (tx, ty) {
-        (true, true) => None,
-        (true, false) => Some((false, y)),
-        (false, true) => Some((true, x)),
-        (false, false) => panic!("tt_scalar_lane: tiled binary with no tile lane"),
-    }
-}
-
-/// Resolve a float scalar const-expr to `f32`: a float `Const`, or a
-/// `Cast` of one (rounded through the cast target, mirroring the
-/// device-side value). Anything else is not a foldable scalar — loud
-/// panic. Int consts never fold (except shift amounts, resolved with
-/// `as_dim` at the use site).
-pub(crate) fn tt_scalar_f32(kernel: &Kernel, id: OpId) -> f32 {
-    use crate::dtype::Constant;
-    use crate::scalar::{bf16, f16};
-    match kernel.at(id) {
-        Op::Const(Constant::F32(b)) => f32::from_le_bytes(*b),
-        Op::Const(Constant::F16(b)) => f16(u16::from_le_bytes(*b)).to_f32(),
-        Op::Const(Constant::BF16(b)) => bf16(u16::from_le_bytes(*b)).to_f32(),
-        Op::Const(_) => panic!("tt_scalar_f32: {id:?} is not a float const"),
-        Op::Cast { x, dtype } => {
-            let v = tt_scalar_f32(kernel, *x);
-            match dtype {
-                crate::DType::F32 => v,
-                crate::DType::BF16 => bf16::from_f32(v).to_f32(),
-                crate::DType::F16 => f16::from_f32(v).to_f32(),
-                dt => panic!("tt_scalar_f32: cannot fold scalar through cast to {dt:?}"),
-            }
-        }
-        _ => panic!("tt_scalar_f32: {id:?} is not a float const-expr"),
-    }
-}
-
-/// TT `DataFormat` code for a dtype on the tile path (the
-/// `typecast_tile_init<in, out>` template args). This is NOT the CB
-/// descriptor code. An unmappable dtype panics — mirrors the old
-/// render error at the constructor, the exact spot.
-fn tt_tile_fmt(dtype: DType) -> u32 {
-    match dtype {
-        DType::F32 => 0,
-        DType::F16 | DType::BF16 => 5,
-        DType::I32 => 8,
-        DType::U16 => 9,
-        DType::I8 => 14,
-        DType::U32 => 24,
-        DType::F8E4M3 => 26,
-        DType::U8 => 30,
-        dt => panic!("tt_tile_fmt: dtype {dt:?} has no tt tile format"),
     }
 }
 
@@ -2794,7 +2537,7 @@ mod tests {
         let wd = find(&Op::TT(TTOp::WaitFront { cb: cout, n: 1 }));
         assert_eq!(pos(wd) + 1, pos(drain), "wait sits immediately before the drain copy");
     }
-    
+
     /// `tt_storage` rewrites the SSA tile-compute ops to opaque
     /// `LLK` call templates over the bare `Storage`s already in
     /// the IR. The matmul op becomes `matmul_tiles({0}, {1}, 0, 0, {2})`
@@ -2806,24 +2549,24 @@ mod tests {
         let mut k = Kernel::from_device_id(Dev::Auto, None);
         let cb_a = k.storage(DType::F32, MemScope::Circular, 1024);
         let cb_b = k.storage(DType::F32, MemScope::Circular, 1024);
-let acc = k.storage(DType::F32, MemScope::Register, 1);
-            let csc = k.storage(DType::F32, MemScope::Circular, 1024);
-            let cout = k.storage(DType::F32, MemScope::Circular, 1024);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let csc = k.storage(DType::F32, MemScope::Circular, 1024);
+        let cout = k.storage(DType::F32, MemScope::Circular, 1024);
         let zero = k.const_val(0i64);
         k.tt_end_reader();
         let va = k.load_circular(cb_a, zero);
         let vb = k.load_circular(cb_b, zero);
         let av = k.load_register_tile(acc, zero);
-let f = k.matmul_tile(va, vb, av);
-            let vs = k.load_circular(csc, zero);
-            let r = k.reduce_tile(va, vs, av, BOp::Max, TileDim::Col);
-            // Pack drain: the Register slot is read out and stored to a
-            // CB. The matmul/reduce results are effect ops after
-            // lowering (no SSA value to thread).
-            let out = k.load_register_tile(acc, zero);
-            k.store_circular(cout, out, zero);
-            k.tt_end_compute();
-            k.tt_storage();
+        let f = k.matmul_tile(va, vb, av);
+        let vs = k.load_circular(csc, zero);
+        let r = k.reduce_tile(va, vs, av, BOp::Max, TileDim::Col);
+        // Pack drain: the Register slot is read out and stored to a
+        // CB. The matmul/reduce results are effect ops after
+        // lowering (no SSA value to thread).
+        let out = k.load_register_tile(acc, zero);
+        k.store_circular(cout, out, zero);
+        k.tt_end_compute();
+        k.tt_storage();
 
         let matmul = k.at(f);
         let reduce = k.at(r);
@@ -2835,23 +2578,18 @@ let f = k.matmul_tile(va, vb, av);
             other => panic!("matmul not lowered to LLK, got {other:?}"),
         }
         match reduce {
-            Op::TT(TTOp::LLK { asm, ops }) => {
-                assert_eq!(
-                    asm.as_str(),
-                    "reduce_tile<PoolType::MAX, ReduceDim::REDUCE_COL>({0}, {1}, 0, 0, {2});"
-                );
-                assert_eq!(ops.as_slice(), &[cb_a, csc, acc, va, vs]);
+            Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, x, scaler }) => {
+                assert!(matches!(rop, BOp::Max));
+                assert!(matches!(kind, TileDim::Col));
+                assert_eq!((*cb_in, *cb_sc, *slot, *x, *scaler), (cb_a, csc, acc, va, vs));
             }
-            other => panic!("reduce not lowered to LLK, got {other:?}"),
+            other => panic!("reduce not lowered to LLKReduce, got {other:?}"),
         }
         // No SSA tile-compute ops survive.
         let mut leftover = 0;
         let mut op_id = k.head;
         while !op_id.is_null() {
-            if matches!(
-                k.at(op_id),
-                Op::TT(TTOp::MatmulTile { .. } | TTOp::ReduceTile { .. })
-            ) {
+            if matches!(k.at(op_id), Op::TT(TTOp::MatmulTile { .. } | TTOp::ReduceTile { .. })) {
                 leftover += 1;
             }
             op_id = k.next_op(op_id);

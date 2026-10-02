@@ -1196,13 +1196,8 @@ impl Kernel {
                         let elem_dt = dtypes[&x].0;
                         let (base_ptr, element_ptr_type, is_storage_buffer, push_member) =
                             if let Some(&(member_const, storage_type, _)) = variable_members.get(&x) {
-                                let elem_ptr = push_ptr_type(
-                                    &mut asm,
-                                    &mut ptr_cache,
-                                    &mut type_entries,
-                                    SC_PUSH_CONSTANT,
-                                    storage_type,
-                                );
+                                let elem_ptr =
+                                    push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_PUSH_CONSTANT, storage_type);
                                 (push_constant_var, elem_ptr, false, Some(member_const))
                             } else if let Some(&var_id) = spv_variables.get(&x) {
                                 let is_local = matches!(self.at(x), &Op::Storage { scope: MemScope::Local, .. });
@@ -1295,12 +1290,7 @@ impl Kernel {
                         let is_bool_dst = bool_buffers.contains(&dst_buf) && !is_local;
                         let store_val = if is_bool_dst {
                             let u8_tmp = asm.id();
-                            asm.emit_typed(
-                                OpSelect,
-                                u8_id.unwrap(),
-                                u8_tmp,
-                                &[val_id, const_u8_1.unwrap(), const_u8_0.unwrap()],
-                            );
+                            asm.emit_typed(OpSelect, u8_id.unwrap(), u8_tmp, &[val_id, const_u8_1.unwrap(), const_u8_0.unwrap()]);
                             u8_tmp
                         } else {
                             val_id

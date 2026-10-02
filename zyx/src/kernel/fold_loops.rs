@@ -450,9 +450,7 @@ impl Kernel {
         // its other users). A surviving GEP over the removed accumulator
         // would dangle (verify rejects it).
         if !load_gep.is_null()
-            && !self
-                .iter_unordered()
-                .any(|(id, n)| id != after_loop_load_id && n.parameters().any(|p| p == load_gep))
+            && !self.iter_unordered().any(|(id, n)| id != after_loop_load_id && n.parameters().any(|p| p == load_gep))
         {
             self.remove_op(load_gep);
         }
@@ -473,9 +471,7 @@ impl Kernel {
         // store goes next and the accumulator after it.
         if let Op::Store { dst, .. } = self.ops[store_id].op
             && matches!(self.ops[dst].op, Op::GEP { .. })
-            && !self
-                .iter_unordered()
-                .any(|(id, n)| id != store_id && n.parameters().any(|p| p == dst))
+            && !self.iter_unordered().any(|(id, n)| id != store_id && n.parameters().any(|p| p == dst))
         {
             self.remove_op(dst);
         }

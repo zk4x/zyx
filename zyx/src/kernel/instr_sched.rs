@@ -125,6 +125,7 @@ impl Kernel {
                 // program-ordered like a barrier for placement (never
                 // crosses one), but not a barrier itself.
                 Op::Asm { .. } | Op::TT(TTOp::LLK { .. }) => structural[i] = true,
+                Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => structural[i] = true,
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
                 // A copy reads its src and writes its dst: it pins like a
@@ -244,6 +245,19 @@ impl Kernel {
                         add_param!(p);
                     }
                 }
+                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                    add_param!(cb_in);
+                    add_param!(cb_sc);
+                    add_param!(slot);
+                    add_param!(x);
+                    add_param!(scaler);
+                }
+                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
+                    add_param!(cb_a);
+                    add_param!(cb_b);
+                    add_param!(mx);
+                    add_param!(plain);
+                }
                 Op::Stack { ops } => {
                     for &p in ops.iter() {
                         add_param!(p);
@@ -300,6 +314,16 @@ impl Kernel {
                 Op::TT(TTOp::LLK { ops, .. }) => {
                     for &x in ops.iter() {
                         by_memory_target.entry(x).or_default().push(i);
+                    }
+                }
+                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                    for &f in [cb_in, cb_sc, slot, x, scaler] {
+                        by_memory_target.entry(f).or_default().push(i);
+                    }
+                }
+                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
+                    for &f in [cb_a, cb_b, mx, plain] {
+                        by_memory_target.entry(f).or_default().push(i);
                     }
                 }
                 _ => {}

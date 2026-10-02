@@ -6,7 +6,7 @@ use std::ops::RangeInclusive;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
     shape::Dim,
 };
 
@@ -94,6 +94,8 @@ impl Kernel {
                     | Op::TT(TTOp::EndReader)
                     | Op::TT(TTOp::EndCompute)
                     | Op::TT(TTOp::LLK { .. })
+                    | Op::TT(TTOp::LLKReduce { .. })
+                    | Op::TT(TTOp::LLKBcast { .. })
                     | Op::Asm { .. } => has_post_linearize_ops = true,
                     Op::Permute { .. }
                     | Op::Expand { .. }
@@ -305,11 +307,21 @@ impl Kernel {
                         check(op_id, x, &stack);
                         if !matches!(
                             self.at(x),
-                            Op::Storage { .. } | Op::Const(_) | Op::Param { .. }
-                                | Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. }
-                                | Op::Binary { .. } | Op::Mad { .. } | Op::Stack { .. }
-                                | Op::Load { .. } | Op::Copy { .. } | Op::GEP { .. }
-                                | Op::Range { .. } | Op::Loop { .. } | Op::Index { .. }
+                            Op::Storage { .. }
+                                | Op::Const(_)
+                                | Op::Param { .. }
+                                | Op::Cast { .. }
+                                | Op::Bitcast { .. }
+                                | Op::Unary { .. }
+                                | Op::Binary { .. }
+                                | Op::Mad { .. }
+                                | Op::Stack { .. }
+                                | Op::Load { .. }
+                                | Op::Copy { .. }
+                                | Op::GEP { .. }
+                                | Op::Range { .. }
+                                | Op::Loop { .. }
+                                | Op::Index { .. }
                         ) {
                             println!("tt llk op={op_id} has non-storage/non-value operand {x}");
                             self.debug();
@@ -319,6 +331,67 @@ impl Kernel {
                     if !ops.is_empty() {
                         dtypes.insert(op_id, dtypes[&ops[0]]);
                     }
+                }
+                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                    // Lowered reduce: same operand rule as LLK — bare
+                    // storages (input/scaler CBs, acc slot) and value
+                    // ops (feeder loads). Result takes the input CB's
+                    // dtype, like the LLK form's ops[0].
+                    for &f in &[cb_in, cb_sc, slot, x, scaler] {
+                        check(op_id, f, &stack);
+                        if !matches!(
+                            self.at(f),
+                            Op::Storage { .. }
+                                | Op::Const(_)
+                                | Op::Param { .. }
+                                | Op::Cast { .. }
+                                | Op::Bitcast { .. }
+                                | Op::Unary { .. }
+                                | Op::Binary { .. }
+                                | Op::Mad { .. }
+                                | Op::Stack { .. }
+                                | Op::Load { .. }
+                                | Op::Copy { .. }
+                                | Op::GEP { .. }
+                                | Op::Range { .. }
+                                | Op::Loop { .. }
+                                | Op::Index { .. }
+                        ) {
+                            println!("tt llk reduce op={op_id} has non-storage/non-value operand {f}");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    dtypes.insert(op_id, dtypes[&cb_in]);
+                }
+                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
+                    // Lowered fused broadcast: same rule over cb_a.
+                    for &f in &[cb_a, cb_b, mx, plain] {
+                        check(op_id, f, &stack);
+                        if !matches!(
+                            self.at(f),
+                            Op::Storage { .. }
+                                | Op::Const(_)
+                                | Op::Param { .. }
+                                | Op::Cast { .. }
+                                | Op::Bitcast { .. }
+                                | Op::Unary { .. }
+                                | Op::Binary { .. }
+                                | Op::Mad { .. }
+                                | Op::Stack { .. }
+                                | Op::Load { .. }
+                                | Op::Copy { .. }
+                                | Op::GEP { .. }
+                                | Op::Range { .. }
+                                | Op::Loop { .. }
+                                | Op::Index { .. }
+                        ) {
+                            println!("tt llk bcast op={op_id} has non-storage/non-value operand {f}");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    dtypes.insert(op_id, dtypes[&cb_a]);
                 }
                 Op::TT(TTOp::MathLock)
                 | Op::TT(TTOp::MathUnlock)
@@ -358,6 +431,20 @@ impl Kernel {
                         dtypes.insert(op_id, DType::Bool);
                     } else {
                         dtypes.insert(op_id, dtype);
+                    }
+                    // Lane layouts: both lanes share one layout, except
+                    // a tile lane beside a compile-time constant (a TT
+                    // immediate lane — the unary-imm calls take fp32
+                    // bits, so only consts lower). A tile beside a
+                    // non-const lane is a missing broadcast — loud
+                    // panic, never a silent wrong lane.
+                    let (lx, ly) = (self.layout(x), self.layout(y));
+                    let tile_const = matches!(lx, MemLayout::Tile { .. }) && self.is_const(y)
+                        || matches!(ly, MemLayout::Tile { .. }) && self.is_const(x);
+                    if lx != ly && !tile_const {
+                        println!("Binary layout mismatch on op={op_id}.");
+                        self.debug();
+                        panic!();
                     }
                 }
                 Op::Asm { ref ops, .. } => {
@@ -601,7 +688,9 @@ impl Kernel {
                     storages.insert(op_id, len);
                 }
                 Op::Load { src } => {
-                    let &Op::GEP { x: buf, index, .. } = self.at(src) else { continue };
+                    let &Op::GEP { x: buf, index, .. } = self.at(src) else {
+                        continue;
+                    };
                     let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range
                         && let Some(&len) = storages.get(&buf)
@@ -612,7 +701,9 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, .. } => {
-                    let &Op::GEP { x: buf, index, .. } = self.at(dst) else { continue };
+                    let &Op::GEP { x: buf, index, .. } = self.at(dst) else {
+                        continue;
+                    };
                     let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range
                         && let Some(&len) = storages.get(&buf)
@@ -701,6 +792,34 @@ impl Kernel {
                     let mut r = None;
                     for x in ops.iter() {
                         if let Some(&(xl, xu)) = bounds.get(x) {
+                            r = Some(match r {
+                                Some((l, u)) => (xl.min(l), xu.max(u)),
+                                None => (xl, xu),
+                            });
+                        }
+                    }
+                    if let Some((xl, xu)) = r {
+                        bounds.insert(op_id, (xl, xu));
+                    }
+                }
+                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                    let mut r = None;
+                    for f in [cb_in, cb_sc, slot, x, scaler] {
+                        if let Some(&(xl, xu)) = bounds.get(&f) {
+                            r = Some(match r {
+                                Some((l, u)) => (xl.min(l), xu.max(u)),
+                                None => (xl, xu),
+                            });
+                        }
+                    }
+                    if let Some((xl, xu)) = r {
+                        bounds.insert(op_id, (xl, xu));
+                    }
+                }
+                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
+                    let mut r = None;
+                    for f in [cb_a, cb_b, mx, plain] {
+                        if let Some(&(xl, xu)) = bounds.get(&f) {
                             r = Some(match r {
                                 Some((l, u)) => (xl.min(l), xu.max(u)),
                                 None => (xl, xu),

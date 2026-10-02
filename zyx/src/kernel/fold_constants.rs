@@ -574,6 +574,8 @@ impl Kernel {
                     | Op::TT(TTOp::EndReader)
                     | Op::TT(TTOp::EndCompute)
                     | Op::TT(TTOp::LLK { .. })
+                    | Op::TT(TTOp::LLKReduce { .. })
+                    | Op::TT(TTOp::LLKBcast { .. })
                     | Op::Param { .. }
                     | Op::Storage { .. }
                     | Op::Wmma { .. }
@@ -687,7 +689,7 @@ impl Kernel {
                 | &mut Op::TT(TTOp::MathUnlock)
                 | &mut Op::TT(TTOp::PackLock)
                 | &mut Op::TT(TTOp::PackUnlock)
-                |                 &mut Op::TT(TTOp::NocReadBarrier)
+                | &mut Op::TT(TTOp::NocReadBarrier)
                 | &mut Op::TT(TTOp::NocWriteBarrier)
                 | &mut Op::TT(TTOp::ReduceUninit)
                 | &mut Op::TT(TTOp::EndReader)
@@ -712,6 +714,22 @@ impl Kernel {
                         _ => unreachable!(),
                     };
                     for &x in ops.iter() {
+                        stored_stack.last_mut().unwrap().insert(x);
+                    }
+                }
+                &mut Op::TT(TTOp::LLKReduce { .. }) | &mut Op::TT(TTOp::LLKBcast { .. }) => {
+                    // Lowered structured call: same opaque rules as LLK
+                    // (remap operands, never dedup, operands track like
+                    // written locations). Fields stand in for the LLK
+                    // ops vector (same operand set, no NULL slot).
+                    let op = &mut self.ops[op_id].op;
+                    for param in op.parameters_mut() {
+                        if let Some(&new_id) = remaps.get(param) {
+                            *param = new_id;
+                        }
+                    }
+                    let params: Vec<OpId> = op.parameters().collect();
+                    for &x in params.iter() {
                         stored_stack.last_mut().unwrap().insert(x);
                     }
                 }
@@ -880,9 +898,9 @@ impl Kernel {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{TinyString, TinyVec};
-    use crate::kernel::{Dev, Kernel, MemScope, Op, TTOp};
     use crate::DType;
+    use crate::kernel::{Dev, Kernel, MemScope, Op, TTOp};
+    use crate::types::{TinyString, TinyVec};
 
     /// Two identical LLK calls are two traffic events: CSE must not
     /// merge them (the unpacker streams each CB read separately).
@@ -893,14 +911,8 @@ mod tests {
         let cb = k.storage(DType::F32, MemScope::Circular, 1);
         let idx = k.const_val(0i64);
         k.tt_end_reader();
-        let a = k.push_back(Op::TT(TTOp::LLK {
-            asm: TinyString::new("copy_tile({0}, {1});"),
-            ops: TinyVec::new(&[cb, idx]),
-        }));
-        let b = k.push_back(Op::TT(TTOp::LLK {
-            asm: TinyString::new("copy_tile({0}, {1});"),
-            ops: TinyVec::new(&[cb, idx]),
-        }));
+        let a = k.push_back(Op::TT(TTOp::LLK { asm: TinyString::new("copy_tile({0}, {1});"), ops: TinyVec::new(&[cb, idx]) }));
+        let b = k.push_back(Op::TT(TTOp::LLK { asm: TinyString::new("copy_tile({0}, {1});"), ops: TinyVec::new(&[cb, idx]) }));
         let load_a = k.load(cb, idx);
         let load_b = k.load(cb, idx);
         k.store(out, load_a, idx);

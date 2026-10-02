@@ -394,6 +394,34 @@ pub enum TTOp {
         /// CB + index operands.
         ops: TinyVec<OpId>,
     },
+    /// Lowered reduce call: a [`TTOp::ReduceTile`] after `tt_storage`
+    /// resolved its CBs and DST slot. Carries the structured
+    /// `(rop, kind)` so `tt_init_math` matches them inline and render
+    /// rebuilds the `reduce_tile<...>` template — never baked to text
+    /// and parsed back. Same effect/CSE rules as [`TTOp::LLK`]: a DCE
+    /// root, pinned by LICM, never deduplicated.
+    LLKReduce {
+        rop: BOp,
+        kind: TileDim,
+        cb_in: OpId,
+        cb_sc: OpId,
+        slot: OpId,
+        x: OpId,
+        scaler: OpId,
+    },
+    /// Lowered fused-broadcast call: a tiled binary over a
+    /// [`TTOp::BroadcastTile`] marker after `tt_storage` resolved its
+    /// CBs. Carries the structured `(bop, kind)`; same rules as
+    /// [`TTOp::LLKReduce`]. The result slot is DST (filled by render
+    /// with a fresh slot), so there is no `slot` field.
+    LLKBcast {
+        bop: BOp,
+        kind: TileDim,
+        cb_a: OpId,
+        cb_b: OpId,
+        mx: OpId,
+        plain: OpId,
+    },
 }
 
 /// Boxed payload of [`Op::Custom`]: a custom kernel boundary's inputs,
@@ -1032,6 +1060,8 @@ impl Op {
             &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().collect(),
+            &Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
+            &Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
@@ -1112,6 +1142,8 @@ impl Op {
             | Op::TT(TTOp::EndCompute) => vec![],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().collect(),
+            Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
+            Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
             Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
                 todo!("parameters_mut: graph-only op in ordered kernel")
             }

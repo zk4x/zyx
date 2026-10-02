@@ -5,5 +5,4 @@ mod cuda;
 mod opencl;
 mod ptx;
 mod spirv;
-#[cfg(feature = "tenstorrent")]
 pub mod tenstorrent;

@@ -2908,8 +2908,7 @@ impl Runtime {
                         unreachable!("{:?}", self.tensors[src])
                     }
                 };
-                let assign_cid = self
-                    .push_op(graph_id, Op::Store { dst: dst_cid, src: src_cid });
+                let assign_cid = self.push_op(graph_id, Op::Store { dst: dst_cid, src: src_cid });
                 let leaf_class = self.push_op(graph_id, Op::After { x: dst_leaf_cid, dep: assign_cid });
                 let dst_class = self.push_op(graph_id, Op::After { x: dst_cid, dep: assign_cid });
                 for (tid, class_id) in [(dst_leaf, leaf_class), (dst, dst_class)] {

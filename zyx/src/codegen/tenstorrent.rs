@@ -24,10 +24,7 @@ use crate::Map;
 use crate::Set;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
-use crate::kernel::{
-    BOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp, UOp, tt_is_tile_value,
-    tt_scalar_f32, tt_scalar_lane, tt_storage_of,
-};
+use crate::kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TTOp, TileDim, UOp};
 use crate::scalar::{bf16, f16};
 
 /// DRAM page size in bytes.
@@ -140,8 +137,8 @@ impl Kernel {
                 break;
             }
             let touched = match k.at(scan) {
-                Op::Load { src, .. } | Op::Copy { src, .. } => Some(tt_storage_of(&k, *src)),
-                Op::Store { dst, .. } => Some(tt_storage_of(&k, *dst)),
+                Op::Load { src, .. } | Op::Copy { src, .. } => Some(k.tt_storage_of(*src)),
+                Op::Store { dst, .. } => Some(k.tt_storage_of(*dst)),
                 _ => None,
             };
             if let Some(st) = touched
@@ -196,11 +193,7 @@ impl Kernel {
                 }
             };
             cb_config.push((fmt, tb, (len / 1024) as u32));
-            debug_assert_eq!(
-                cb_config.len() - 1,
-                cbs[st] as usize,
-                "tenstorrent: CB config out of sync with allocation"
-            );
+            debug_assert_eq!(cb_config.len() - 1, cbs[st] as usize, "tenstorrent: CB config out of sync with allocation");
         }
 
         Ok(TTProgram {
@@ -313,9 +306,11 @@ impl<'a> TtSection<'a> {
             Op::Const(c) => tt_const_lit(c),
             Op::Loop { .. } => self.loop_names.get(&id).cloned().ok_or_else(|| self.err(format!("{id:?} is no loop counter"))),
             Op::Range { axis, kind, .. } => match kind {
-                RangeKind::Group(_) => {
-                    self.range_names.get(&id).cloned().ok_or_else(|| self.err(format!("range {id:?} (axis {axis}) has no grid read")))
-                }
+                RangeKind::Group(_) => self
+                    .range_names
+                    .get(&id)
+                    .cloned()
+                    .ok_or_else(|| self.err(format!("range {id:?} (axis {axis}) has no grid read"))),
                 _ => Err(self.err(format!("range {id:?} is not a group range"))),
             },
             Op::Param { kind, .. } => match kind {
@@ -324,9 +319,7 @@ impl<'a> TtSection<'a> {
                 }
                 _ => Err(self.err(format!("DRAM param {id:?} in an index expression"))),
             },
-            Op::Mad { x, y, z, .. } => {
-                Ok(format!("({}*{}+{})", self.expr(*x)?, self.expr(*y)?, self.expr(*z)?))
-            }
+            Op::Mad { x, y, z, .. } => Ok(format!("({}*{}+{})", self.expr(*x)?, self.expr(*y)?, self.expr(*z)?)),
             Op::Binary { x, y, bop, .. } => {
                 let op = match bop {
                     BOp::Add => "+",
@@ -472,7 +465,9 @@ impl<'a> TtSection<'a> {
                         return Err(self.err(format!("asm operand {o:?} is not a CB or live tile")));
                     }
                 }
-                _ => self.slots.get(&o).copied().ok_or_else(|| self.err(format!("asm operand {o:?} is not a CB or live tile")))?,
+                _ => {
+                    self.slots.get(&o).copied().ok_or_else(|| self.err(format!("asm operand {o:?} is not a CB or live tile")))?
+                }
             };
             text = text.replace(&format!("{{{i}}}"), &num.to_string());
         }
@@ -520,7 +515,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             Op::Load { src } => render_load(sec, id, *src)?,
             Op::Store { src: x, dst } => render_store(sec, id, *x, *dst)?,
             Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Mad { .. } => {
-                if tt_is_tile_value(sec.k, id) {
+                if matches!(sec.k.layout(id), MemLayout::Tile { .. }) {
                     render_tile_op(sec, id)?;
                 }
             }
@@ -538,10 +533,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 // at {2}; fused broadcast carries its CBs plus a NULL
                 // dst filled with a fresh slot; transpose carries a
                 // NULL dst filled with a fresh slot.
-                let lead = if text.starts_with("matmul_tiles(")
-                    || text.starts_with("reduce_tile<")
-                    || text.contains("_bcast_")
-                {
+                let lead = if text.starts_with("matmul_tiles(") || text.starts_with("reduce_tile<") || text.contains("_bcast_") {
                     3
                 } else if text.starts_with("transpose_wh_tile(") {
                     2
@@ -554,11 +546,9 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                         sec.fresh_slot()?
                     } else {
                         match sec.k.at(o) {
-                            Op::Storage { scope: MemScope::Circular, .. } => sec
-                                .cbs
-                                .get(&o)
-                                .copied()
-                                .ok_or_else(|| sec.err(format!("CB {o:?} has no number")))?,
+                            Op::Storage { scope: MemScope::Circular, .. } => {
+                                sec.cbs.get(&o).copied().ok_or_else(|| sec.err(format!("CB {o:?} has no number")))?
+                            }
                             Op::Storage { scope: MemScope::Register, .. } => sec.reg_slot(o)?,
                             _ => return Err(sec.err(format!("LLK {id:?} operand {o:?} is not a storage"))),
                         }
@@ -573,9 +563,78 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 }
                 sec.out.push_str(&format!("{ind}{rendered}\n"));
             }
-            Op::TT(TTOp::MatmulTile { .. })
-            | Op::TT(TTOp::ReduceTile { .. })
-            | Op::TT(TTOp::TransposeTile { .. }) => {
+            Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, .. }) => {
+                // Structured lowered reduce: rebuild the compute
+                // template from the fields (never parsed back).
+                let op_name = match rop {
+                    BOp::Max => "PoolType::MAX",
+                    BOp::Add => "PoolType::SUM",
+                    _ => return Err(sec.err(format!("LLKReduce {id:?} op {rop:?} has no LLK call"))),
+                };
+                let dim_name = match kind {
+                    TileDim::Row => "ReduceDim::REDUCE_ROW",
+                    TileDim::Col => "ReduceDim::REDUCE_COL",
+                    TileDim::Scalar => "ReduceDim::REDUCE_SCALAR",
+                };
+                let template = format!("reduce_tile<{op_name}, {dim_name}>({{0}}, {{1}}, 0, 0, {{2}});");
+                let mut rendered = template;
+                for (i, o) in [*cb_in, *cb_sc, *slot].iter().copied().enumerate() {
+                    let num = match sec.k.at(o) {
+                        Op::Storage { scope: MemScope::Circular, .. } => {
+                            sec.cbs.get(&o).copied().ok_or_else(|| sec.err(format!("CB {o:?} has no number")))?
+                        }
+                        Op::Storage { scope: MemScope::Register, .. } => sec.reg_slot(o)?,
+                        _ => return Err(sec.err(format!("LLKReduce {id:?} operand {o:?} is not a storage"))),
+                    };
+                    rendered = rendered.replace(&format!("{{{i}}}"), &num.to_string());
+                    if i == 2 {
+                        sec.slots.insert(id, num);
+                    }
+                }
+                if rendered.contains('{') {
+                    return Err(sec.err(format!("LLKReduce left placeholders unsubstituted: {rendered}")));
+                }
+                sec.out.push_str(&format!("{ind}{rendered}\n"));
+            }
+            Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, .. }) => {
+                // Structured lowered fused broadcast: same rebuild; the
+                // result slot is DST (fresh slot, like the LLK NULL).
+                let name = match (*bop, *kind) {
+                    (BOp::Add, TileDim::Row) => "add_tiles_bcast_rows",
+                    (BOp::Add, TileDim::Col) => "add_tiles_bcast_cols",
+                    (BOp::Add, TileDim::Scalar) => "add_tiles_bcast_scalar",
+                    (BOp::Sub, TileDim::Row) => "sub_tiles_bcast_rows",
+                    (BOp::Sub, TileDim::Col) => "sub_tiles_bcast_cols",
+                    (BOp::Sub, TileDim::Scalar) => "sub_tiles_bcast_scalar",
+                    (BOp::Mul, TileDim::Row) => "mul_tiles_bcast_rows",
+                    (BOp::Mul, TileDim::Col) => "mul_tiles_bcast_cols",
+                    (BOp::Mul, TileDim::Scalar) => "mul_tiles_bcast_scalar",
+                    _ => return Err(sec.err(format!("LLKBcast {id:?} ({bop:?}, {kind:?}) has no fused call"))),
+                };
+                let template = if matches!(kind, TileDim::Row) {
+                    format!("{name}({{0}}, {{1}}, 0, 0, {{2}}, 0);")
+                } else {
+                    format!("{name}({{0}}, {{1}}, 0, 0, {{2}});")
+                };
+                let mut rendered = template;
+                for (i, o) in [*cb_a, *cb_b].iter().copied().enumerate() {
+                    let num = match sec.k.at(o) {
+                        Op::Storage { scope: MemScope::Circular, .. } => {
+                            sec.cbs.get(&o).copied().ok_or_else(|| sec.err(format!("CB {o:?} has no number")))?
+                        }
+                        _ => return Err(sec.err(format!("LLKBcast {id:?} operand {o:?} is not a circular storage"))),
+                    };
+                    rendered = rendered.replace(&format!("{{{i}}}"), &num.to_string());
+                }
+                let dst = sec.fresh_slot()?;
+                rendered = rendered.replace("{2}", &dst.to_string());
+                sec.slots.insert(id, dst);
+                if rendered.contains('{') {
+                    return Err(sec.err(format!("LLKBcast left placeholders unsubstituted: {rendered}")));
+                }
+                sec.out.push_str(&format!("{ind}{rendered}\n"));
+            }
+            Op::TT(TTOp::MatmulTile { .. }) | Op::TT(TTOp::ReduceTile { .. }) | Op::TT(TTOp::TransposeTile { .. }) => {
                 return Err(sec.err(format!("{id:?} is not fully lowered (SSA remains)")));
             }
             // Fused broadcast marker: dead after `tt_storage` fused its
@@ -685,12 +744,7 @@ fn render(
         let mut stack: Vec<OpId> = sections[s]
             .iter()
             .copied()
-            .filter(|id| {
-                !matches!(
-                    k.at(*id),
-                    Op::Param { .. } | Op::Storage { .. } | Op::Const { .. } | Op::GEP { .. }
-                )
-            })
+            .filter(|id| !matches!(k.at(*id), Op::Param { .. } | Op::Storage { .. } | Op::Const { .. } | Op::GEP { .. }))
             .collect();
         while let Some(id) = stack.pop() {
             if id.is_null() || !seen.insert(id) {
@@ -724,9 +778,7 @@ fn render(
                     (0, ParamKind::Global) | (0, ParamKind::GlobalMut) | (2, ParamKind::GlobalMut) => {}
                     (_, ParamKind::Variable) => {}
                     _ => {
-                        return Err(tt_err(format!(
-                            "tenstorrent section {s}: param {p:?} ({kind:?}) has no accessor there"
-                        )));
+                        return Err(tt_err(format!("tenstorrent section {s}: param {p:?} ({kind:?}) has no accessor there")));
                     }
                 }
             }
@@ -747,7 +799,7 @@ fn render(
 
     let mut srcs = [String::new(), String::new(), String::new()];
     let mut lists: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    let mut fp32 = false;    // 32-bit DST mode: any F32 tile, or any F8 circular (Blackhole
+    let mut fp32 = false; // 32-bit DST mode: any F32 tile, or any F8 circular (Blackhole
     // mandate). F32 circulars are accepted (format 0), like the old backend.
     let mut scan = k.head;
     while !scan.is_null() {
@@ -768,12 +820,7 @@ fn render(
         let mut stack: Vec<OpId> = sections[s]
             .iter()
             .copied()
-            .filter(|id| {
-                !matches!(
-                    k.at(*id),
-                    Op::Param { .. } | Op::Storage { .. } | Op::Const { .. } | Op::GEP { .. }
-                )
-            })
+            .filter(|id| !matches!(k.at(*id), Op::Param { .. } | Op::Storage { .. } | Op::Const { .. } | Op::GEP { .. }))
             .collect();
         while let Some(id) = stack.pop() {
             if id.is_null() || !reachable.insert(id) {
@@ -805,9 +852,10 @@ fn render(
                 }
                 Op::Param { kind, .. } => {
                     if matches!(kind, ParamKind::Variable) {
-                        let ord = param_ordinal_of.get(&id).copied().ok_or_else(|| {
-                            tt_err(format!("tenstorrent: param {id:?} has no ordinal"))
-                        })?;
+                        let ord = param_ordinal_of
+                            .get(&id)
+                            .copied()
+                            .ok_or_else(|| tt_err(format!("tenstorrent: param {id:?} has no ordinal")))?;
                         var_names.entry(id).or_insert_with(|| format!("v{ord}"));
                     }
                 }
@@ -922,19 +970,28 @@ fn render(
                 (0, ParamKind::Global) => {
                     sec.out.push_str(&format!("  uint32_t src{ord} = get_arg_val<uint32_t>({ai});\n"));
                     sec.out.push_str(&format!("  auto args{ord} = TensorAccessorArgs<{chain}>({ai});\n"));
-                    sec.out.push_str(&format!("  auto p{ord} = TensorAccessor(args{ord}, src{ord}, {page});\n", page = TT_DRAM_PAGE_BYTES));
+                    sec.out.push_str(&format!(
+                        "  auto p{ord} = TensorAccessor(args{ord}, src{ord}, {page});\n",
+                        page = TT_DRAM_PAGE_BYTES
+                    ));
                     cta = Some(format!("args{ord}.next_compile_time_args_offset()"));
                 }
                 (0, ParamKind::GlobalMut) => {
                     sec.out.push_str(&format!("  uint32_t dst{ord} = get_arg_val<uint32_t>({ai});\n"));
                     sec.out.push_str(&format!("  auto args{ord} = TensorAccessorArgs<{chain}>({ai});\n"));
-                    sec.out.push_str(&format!("  auto p{ord} = TensorAccessor(args{ord}, dst{ord}, {page});\n", page = TT_DRAM_PAGE_BYTES));
+                    sec.out.push_str(&format!(
+                        "  auto p{ord} = TensorAccessor(args{ord}, dst{ord}, {page});\n",
+                        page = TT_DRAM_PAGE_BYTES
+                    ));
                     cta = Some(format!("args{ord}.next_compile_time_args_offset()"));
                 }
                 (2, ParamKind::GlobalMut) => {
                     sec.out.push_str(&format!("  uint32_t out{ord} = get_arg_val<uint32_t>({ai});\n"));
                     sec.out.push_str(&format!("  auto args_out{ord} = TensorAccessorArgs<{chain}>({ai});\n"));
-                    sec.out.push_str(&format!("  auto p_out{ord} = TensorAccessor(args_out{ord}, out{ord}, {page});\n", page = TT_DRAM_PAGE_BYTES));
+                    sec.out.push_str(&format!(
+                        "  auto p_out{ord} = TensorAccessor(args_out{ord}, out{ord}, {page});\n",
+                        page = TT_DRAM_PAGE_BYTES
+                    ));
                     cta = Some(format!("args_out{ord}.next_compile_time_args_offset()"));
                 }
                 _ => {}
@@ -951,15 +1008,7 @@ fn render(
         lists[s] = params[s].iter().map(|id| param_ordinal_of[id]).collect();
     }
 
-    Ok((
-        srcs[0].clone(),
-        srcs[1].clone(),
-        srcs[2].clone(),
-        lists[0].clone(),
-        lists[1].clone(),
-        lists[2].clone(),
-        fp32,
-    ))
+    Ok((srcs[0].clone(), srcs[1].clone(), srcs[2].clone(), lists[0].clone(), lists[1].clone(), lists[2].clone(), fp32))
 }
 
 /// Render a traffic `Copy`: publish (DRAM→CB, NOC read) or drain
@@ -1119,7 +1168,13 @@ fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
             Ok(())
         }
         Op::Binary { x, y, bop } => {
-            let lane = tt_scalar_lane(sec.k, *x, *y);
+            let lane =
+                match (matches!(sec.k.layout(*x), MemLayout::Tile { .. }), matches!(sec.k.layout(*y), MemLayout::Tile { .. })) {
+                    (true, true) => None,
+                    (true, false) => Some((false, *y)),
+                    (false, true) => Some((true, *x)),
+                    (false, false) => return Err(sec.err(format!("tiled binary {id:?} with no tile lane"))),
+                };
             match lane {
                 None => {
                     let sx = sec.operand_slot(*x)?;
@@ -1152,13 +1207,24 @@ fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
                                 BOp::Mul => "mul_unary_tile",
                                 _ => "div_unary_tile",
                             };
-                            let bits = tt_scalar_f32(sec.k, s).to_bits();
+                            let bits = match sec.k.resolve_const(s) {
+                                Some(Constant::F32(b)) => f32::from_le_bytes(b).to_bits(),
+                                Some(Constant::F16(b)) => f16(u16::from_le_bytes(b)).to_f32().to_bits(),
+                                Some(Constant::BF16(b)) => bf16(u16::from_le_bytes(b)).to_f32().to_bits(),
+                                _ => {
+                                    return Err(sec.err(format!("scalar lane {s:?} is not a foldable float const")));
+                                }
+                            };
                             sec.out.push_str(&format!("{ind}{name}({tile}, 0x{bits:x});\n"));
                             sec.slots.insert(id, tile);
                             Ok(())
                         }
                         BOp::BitShiftLeft | BOp::BitShiftRight => {
-                            let name = if *bop == BOp::BitShiftLeft { "left_shift_tile" } else { "right_shift_tile" };
+                            let name = if *bop == BOp::BitShiftLeft {
+                                "left_shift_tile"
+                            } else {
+                                "right_shift_tile"
+                            };
                             let amt = match sec.k.at(s) {
                                 Op::Const(c) => c.as_dim().ok_or_else(|| sec.err(format!("shift amount {s:?} is not a u32")))?,
                                 _ => return Err(sec.err(format!("shift amount {s:?} is not an int const"))),

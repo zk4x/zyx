@@ -202,6 +202,35 @@ impl Display for Kernel {
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}llk{reset} {asm:?} {ops:?}").unwrap();
                 }
+                Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, x, scaler }) => {
+                    let dtype = dtypes.get(&cb_in).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}llk_reduce_{rop:?}_{kind:?}{reset} r{}, r{}, r{}, r{}, r{}",
+                        map(cb_in),
+                        map(cb_sc),
+                        map(slot),
+                        map(x),
+                        map(scaler),
+                    )
+                    .unwrap();
+                }
+                Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, mx, plain }) => {
+                    let dtype = dtypes.get(&cb_a).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}llk_bcast_{bop:?}_{kind:?}{reset} r{}, r{}, r{}, r{}",
+                        map(cb_a),
+                        map(cb_b),
+                        map(mx),
+                        map(plain),
+                    )
+                    .unwrap();
+                }
                 Op::Param { dtype, kind, shape, .. } => {
                     dtypes.insert(op_id, dtype);
                     if shape.is_null() {

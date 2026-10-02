@@ -1389,6 +1389,8 @@ impl Graph {
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::LLK { .. })
+                | Op::TT(TTOp::LLKReduce { .. })
+                | Op::TT(TTOp::LLKBcast { .. })
                 | Op::Asm { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }

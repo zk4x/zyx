@@ -193,7 +193,7 @@ impl Kernel {
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
                 | Op::Kernel { .. }
-                |                 Op::Custom(_) => {
+                | Op::Custom(_) => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "CUDA codegen: unexpected kernel op (should be unfolded)".into(),

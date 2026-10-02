@@ -81,7 +81,9 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::LLK { .. }) => loop_depth,
+                | Op::TT(TTOp::LLK { .. })
+                | Op::TT(TTOp::LLKReduce { .. })
+                | Op::TT(TTOp::LLKBcast { .. }) => loop_depth,
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -167,7 +169,9 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::LLK { .. }) => loop_depth,
+                | Op::TT(TTOp::LLK { .. })
+                | Op::TT(TTOp::LLKReduce { .. })
+                | Op::TT(TTOp::LLKBcast { .. }) => loop_depth,
                 Op::Asm { ops, .. } => {
                     let mut max = 0;
                     for op in ops.iter() {
@@ -307,6 +311,8 @@ impl Kernel {
                             | Op::TT(TTOp::NocWriteBarrier)
                             | Op::TT(TTOp::ReduceUninit)
                             | Op::TT(TTOp::LLK { .. })
+                            | Op::TT(TTOp::LLKReduce { .. })
+                            | Op::TT(TTOp::LLKBcast { .. })
                             | Op::Load { .. }
                             | Op::Loop { .. }
                             | Op::EndLoop

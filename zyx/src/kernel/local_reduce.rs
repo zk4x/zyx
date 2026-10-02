@@ -246,11 +246,9 @@ impl Kernel {
 
         // Store to local accumulator
         let const_zero = self.insert_before(acc_load_id, Op::Const(Constant::idx(0)));
-        let reg_gep =
-            self.insert_before(acc_load_id, Op::GEP { x: reg_acc, index: const_zero, layout: MemLayout::Scalar });
+        let reg_gep = self.insert_before(acc_load_id, Op::GEP { x: reg_acc, index: const_zero, layout: MemLayout::Scalar });
         let x = self.insert_before(acc_load_id, Op::Load { src: reg_gep });
-        let loc_gep =
-            self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: lidx, layout: MemLayout::Scalar });
+        let loc_gep = self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: lidx, layout: MemLayout::Scalar });
         self.insert_before(acc_load_id, Op::Store { dst: loc_gep, src: x });
 
         // Sync memory
@@ -289,8 +287,7 @@ impl Kernel {
                 }
             }
             let bop_id = sum_x.unwrap();
-            let store_gep =
-                self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: lidx, layout: MemLayout::Scalar });
+            let store_gep = self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: lidx, layout: MemLayout::Scalar });
             self.insert_before(acc_load_id, Op::Store { dst: store_gep, src: bop_id });
 
             self.insert_before(acc_load_id, Op::EndLoop);
@@ -302,11 +299,9 @@ impl Kernel {
         // Load final result from local[0] to register (only thread 0)
         let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: const_zero, bop: BOp::Eq });
         self.insert_before(acc_load_id, Op::Loop { len: condition });
-        let final_gep =
-            self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: const_zero, layout: MemLayout::Scalar });
+        let final_gep = self.insert_before(acc_load_id, Op::GEP { x: loc_acc, index: const_zero, layout: MemLayout::Scalar });
         let final_val = self.insert_before(acc_load_id, Op::Load { src: final_gep });
-        let reg_gep =
-            self.insert_before(acc_load_id, Op::GEP { x: reg_acc, index: const_zero, layout: MemLayout::Scalar });
+        let reg_gep = self.insert_before(acc_load_id, Op::GEP { x: reg_acc, index: const_zero, layout: MemLayout::Scalar });
         self.insert_before(acc_load_id, Op::Store { dst: reg_gep, src: final_val });
         self.insert_after(self.tail, Op::EndLoop);
 
