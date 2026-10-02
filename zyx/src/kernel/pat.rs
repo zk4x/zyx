@@ -72,7 +72,7 @@ impl VExpr {
     /// shift; unbound names panic.
     fn eval(&self, bindings: &Bindings) -> Option<i64> {
         match self {
-            &VExpr::Dim(name) => Some(bindings.dim(name)),
+            &VExpr::Dim(name) => Some(bindings.int(name)),
             VExpr::Const(v) => Some(*v),
             VExpr::Shl(a, b) => {
                 let (av, bv) = (a.eval(bindings)?, b.eval(bindings)?);
@@ -236,7 +236,7 @@ enum Binding {
 
 impl Bindings {
     /// Read a value bound by [`Pat::bind_int`]. Panics on unbound names.
-    pub fn dim(&self, name: char) -> Dim {
+    pub fn int(&self, name: char) -> i64 {
         for (n, _, binding) in &self.ops {
             if *n == name {
                 match binding {
@@ -266,8 +266,8 @@ impl Bindings {
         for (n, op, binding) in &self.ops {
             if *n == name {
                 match binding {
-                    Binding::None | Binding::Float(_) | Binding::Int(_) => panic!("unbound value name"),
-                    Binding::Op => return *op,
+                    Binding::None => panic!("unbound value name"),
+                    Binding::Float(_) | Binding::Int(_) | Binding::Op => return *op,
                 }
             }
         }

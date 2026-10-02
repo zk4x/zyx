@@ -433,12 +433,12 @@ impl Constant {
             Constant::I32(v) => Some(f64::from(v)),
             Constant::I64(v) => Some(f64::from_le_bytes(v)),
             Constant::Bool(v) => Some(f64::from(v)),
-            Constant::BF16(_) => todo!(),
-            Constant::F16(_) => todo!(),
-            Constant::F32(_) => todo!(),
-            Constant::F64(_) => todo!(),
-            Constant::F8E4M3(_) => todo!(),
-            Constant::F8E5M2(_) => todo!(),
+            Constant::BF16(x) => Some(bf16::from_le_bytes(x).to_f64()),
+            Constant::F16(x) => Some(f16::from_le_bytes(x).to_f64()),
+            Constant::F32(x) => Some(f32::from_le_bytes(x).into()),
+            Constant::F64(x) => Some(f64::from_le_bytes(x)),
+            Constant::F8E4M3(x) => Some(f8e4m3::from_bits(x).to_f64()),
+            Constant::F8E5M2(x) => Some(f8e5m2::from_bits(x).to_f64()),
         }
     }
 
