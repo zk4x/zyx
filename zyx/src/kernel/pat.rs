@@ -701,21 +701,21 @@ fn const_eq_int(c: Constant, n: i64) -> bool {
 
 fn const_eq_float(c: Constant, n: f64) -> bool {
     match c {
-        Constant::U8(v) => i128::from(v) == n as i128,
-        Constant::U16(v) => i128::from(v) == n as i128,
-        Constant::U32(v) => i128::from(v) == n as i128,
-        Constant::U64(v) => u64::from_le_bytes(v) as i128 == n as i128,
-        Constant::I8(v) => i128::from(v) == n as i128,
-        Constant::I16(v) => i128::from(v) == n as i128,
-        Constant::I32(v) => i128::from(v) == n as i128,
-        Constant::I64(v) => i64::from_le_bytes(v) as i128 == n as i128,
-        Constant::Bool(v) => i64::from(v) == n,
-        Constant::F32(v) => float_eq_int(f32::from_le_bytes(v) as f64, n),
-        Constant::F64(v) => float_eq_int(f64::from_le_bytes(v), n),
-        Constant::BF16(v) => float_eq_int(bf16::from_le_bytes(v).to_f64(), n),
-        Constant::F16(v) => float_eq_int(f16::from_le_bytes(v).to_f64(), n),
-        Constant::F8E4M3(v) => float_eq_int(f8e4m3::from_le_bytes([v]).to_f64(), n),
-        Constant::F8E5M2(v) => float_eq_int(f8e5m2::from_le_bytes([v]).to_f64(), n),
+        Constant::U8(v) => (v as f64) == n,
+        Constant::U16(v) => (v as f64) == n,
+        Constant::U32(v) => (v as f64) == n,
+        Constant::U64(v) => u64::from_le_bytes(v) as f64 == n,
+        Constant::I8(v) => (v as f64) == n,
+        Constant::I16(v) => (v as f64) == n,
+        Constant::I32(v) => (v as f64) == n,
+        Constant::I64(v) => i64::from_le_bytes(v) as f64 == n,
+        Constant::Bool(v) => v == (n != 0.),
+        Constant::F32(v) => f32::from_le_bytes(v) as f64 == n,
+        Constant::F64(v) => f64::from_le_bytes(v) == n,
+        Constant::BF16(v) => bf16::from_le_bytes(v).to_f64() == n,
+        Constant::F16(v) => f16::from_le_bytes(v).to_f64() == n,
+        Constant::F8E4M3(v) => f8e4m3::from_le_bytes([v]).to_f64() == n,
+        Constant::F8E5M2(v) => f8e5m2::from_le_bytes([v]).to_f64() == n,
     }
 }
 
@@ -723,10 +723,4 @@ fn const_eq_float(c: Constant, n: f64) -> bool {
 /// so the `as i64` conversion below is exact (no saturation edge at `MAX`).
 fn float_eq_int(v: f64, n: i64) -> bool {
     v.fract() == 0.0 && v >= -9223372036854775808.0 && v < 9223372036854775808.0 && v as i64 == n
-}
-
-/// Exact -float comparison: `fract == 0` plus a strict range check
-/// so the `as i64` conversion below is exact (no saturation edge at `MAX`).
-fn float_eq_float(v: f64, n: f64) -> bool {
-    todo!()
 }

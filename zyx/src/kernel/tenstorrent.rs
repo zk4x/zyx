@@ -412,57 +412,40 @@ impl Kernel {
         // The `+ 1` addend: a const-one through casts (`resolve_const`
         // folds `cast(1.0f32)` and already-folded consts uniformly).
         let is_one = |kernel: &Kernel, id: OpId| kernel.resolve_const(id).is_some_and(|c| c.is_one());
-        // Match `recip(add(exp(neg(x)), 1))` with contained inners.
-        // Returns the input `x` on match. `extra` is the silu mul when
-        // matching through it: `x` may feed `neg` and (for silu) the
-        // mul, nothing else.
+        // Match `recip(add(exp2(neg(x), 1))` (e^x lowered to `exp2(x * log2_e)`)
+        // with contained inners. Uses the `Pat` matcher. Returns the input `x`.
+        // `extra` is the silu mul when matching through it: `x` may feed `neg` and
+        // (for silu) the mul, nothing else.
         let match_sigmoid = |kernel: &Kernel,
                              users: &Map<OpId, Vec<OpId>>,
                              is_one: &dyn Fn(&Kernel, OpId) -> bool,
                              recip: OpId,
                              extra: Option<OpId>|
          -> Option<OpId> {
-            let Op::Unary { x: den, uop } = kernel.at(recip) else {
-                return None;
+            let x = Pat::bind("x");
+            let neg = Pat::bind("neg");
+            let e = Pat::bind("e");
+            let den = Pat::bind("den");
+            let one = Pat::bind("one");
+            let pat = Pat::Unary {
+                x: Box::new(Pat::all([
+                    den,
+                    Pat::Binary { x: Box::new(Pat::all([e, Pat::exp(neg)])), y: Box::new(one), bop: BOp::Add },
+                ])),
+                uop: UOp::Reciprocal,
             };
-            if *uop != UOp::Reciprocal {
+            let m = kernel.match_pat(recip, &pat)?;
+            if !is_one(kernel, m["one"]) {
                 return None;
             }
-            let Op::Binary { x: a, y: b, bop } = kernel.at(*den) else {
-                return None;
-            };
-            if *bop != BOp::Add {
-                return None;
-            }
-            // The exp side is either operand (commutative adds commute).
-            let (e, one) = if matches!(kernel.at(*a), Op::Unary { uop: UOp::Exp, .. }) {
-                (*a, *b)
-            } else if matches!(kernel.at(*b), Op::Unary { uop: UOp::Exp, .. }) {
-                (*b, *a)
-            } else {
-                return None;
-            };
-            if !is_one(kernel, one) {
+            let neg = m["neg"];
+            let e = m["e"];
+            let den = m["den"];
+            let x = m["x"];
+            let pat_nodes = [neg, e, den, recip];
+            if !contained(users, neg, &pat_nodes) || !contained(users, e, &pat_nodes) || !contained(users, den, &pat_nodes) {
                 return None;
             }
-            let Op::Unary { x: neg, uop } = kernel.at(e) else {
-                return None;
-            };
-            if *uop != UOp::Exp {
-                return None;
-            };
-            let Op::Unary { x: x_in, uop } = kernel.at(*neg) else {
-                return None;
-            };
-            if *uop != UOp::Neg {
-                return None;
-            }
-            let neg = *neg;
-            let pat = [neg, e, *den, recip];
-            if !contained(users, neg, &pat) || !contained(users, e, &pat) || !contained(users, *den, &pat) {
-                return None;
-            }
-            let x = *x_in;
             // Pattern-exclusive input: `x` feeds only this pattern.
             // A shared input falls back to the plain composite.
             if !users.get(&x).is_some_and(|us| !us.is_empty() && us.iter().all(|u| *u == neg || Some(*u) == extra)) {
@@ -1374,7 +1357,7 @@ impl Kernel {
                     let init = match uop {
                         UOp::Neg => "negative_tile_init();",
                         UOp::BitNot => "bitwise_not_tile_init();",
-                        UOp::Exp => "exp_tile_init();",
+                        UOp::Exp2 => "exp2_tile_init();",
                         UOp::Exp2 => "exp2_tile_init();",
                         UOp::Log2 => "log_with_base_tile_init();",
                         UOp::Reciprocal => "recip_tile_init();",
