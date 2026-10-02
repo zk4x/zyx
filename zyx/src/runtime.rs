@@ -3685,7 +3685,7 @@ impl Runtime {
         }
 
         let beam_search = crate::backend::autotune_config();
-        let (winner, timing) = beam_search.run_(
+        let (winner, timing) = beam_search.run_with_rt(
             self,
             [base],
             buffers,

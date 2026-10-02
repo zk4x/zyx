@@ -1003,7 +1003,7 @@ impl Kernel {
                         let mut ret = stacked[n - 1];
                         for k in (0..n - 1).rev() {
                             let k_const = self.push_back(Op::Const(Constant::idx(k as i64)));
-                            let eq = self.eq(leading, k_const);
+                            let eq = self.equal(leading, k_const);
                             ret = self.branchless_where(eq, stacked[k], ret);
                         }
                         self.remap(op_id, ret);

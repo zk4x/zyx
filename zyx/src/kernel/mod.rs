@@ -96,6 +96,7 @@
 
 pub use crate::backend::{Dev, DeviceInfo};
 pub use crate::error::BackendError;
+pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{BOp, FusedKind, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, TTOp, TileDim};
 pub(crate) use ops::{OpLinked, RangeKind, UOp};

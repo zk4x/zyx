@@ -882,7 +882,7 @@ impl Kernel {
     }
 
     /// `x == y`
-    pub fn eq(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+    pub fn equal(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
         let x = x.into_op(self);
         let y = y.into_op(self);
         self.binary(x, y, BOp::Eq)
@@ -1044,7 +1044,7 @@ impl Kernel {
         let out = self.storage(dtype, MemScope::Register, 1);
         let idx0 = self.const_idx(0);
         let false_c = self.push_back(Op::Const(DType::Bool.zero_constant()));
-        let not_cond = self.eq(cond, false_c);
+        let not_cond = self.equal(cond, false_c);
 
         self.if_over(cond, |kernel| {
             kernel.store(out, a, idx0);

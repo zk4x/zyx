@@ -258,8 +258,6 @@ impl BeamSearch {
     /// read-only (Global + Variable) params first, then GlobalMut params,
     /// matching the kernel argument order. Returns an error if a tensor is
     /// not realized.
-    ///
-    /// See [`BeamSearch::run_`] for the search semantics.
     pub fn run(
         &self,
         seeds: impl IntoIterator<Item = Kernel>,
@@ -279,7 +277,7 @@ impl BeamSearch {
                 return Err(ZyxError::kernel_error(format!("autotune: tensor {} is not realized", tensor.id()).into()));
             }
         }
-        self.run_(&mut rt, seeds, &args, optimizations, epilogue, cost)
+        self.run_with_rt(&mut rt, seeds, &args, optimizations, epilogue, cost)
     }
 
     /// Autotune using beam search.
@@ -298,7 +296,7 @@ impl BeamSearch {
     /// sequence is exactly what gets launched. Every program compiled during
     /// measurement is released; the winner is returned as a kernel together
     /// with its measured time in nanoseconds.
-    pub(crate) fn run_(
+    pub(crate) fn run_with_rt(
         &self,
         _rt: &mut Runtime,
         seeds: impl IntoIterator<Item = Kernel>,

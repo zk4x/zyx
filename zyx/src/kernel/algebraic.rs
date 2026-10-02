@@ -1046,37 +1046,37 @@ mod tests {
             let r77 = k.const_val(0i64);
             k.store(r78, r77, c0);
             k.loop_over(c4, |k, r81| {
-                let r92 = k.binary(r81, c2, BOp::BitShiftLeft);
-                let r93 = k.binary(r47, r92, BOp::Add);
-                let r95 = k.binary(r93, c2, BOp::BitShiftRight);
-                let r96 = k.binary(r93, c4, BOp::Mod);
-                let _r98 = k.binary(r96, c1, BOp::Div);
-                let r99 = k.binary(r93, c1, BOp::Mod);
-                let r104 = k.binary(r95, c2, BOp::BitShiftLeft);
-                let r105 = k.binary(r96, r104, BOp::Add);
-                let r106 = k.binary(r99, r105, BOp::Add);
-                let r108 = k.binary(r106, c2, BOp::BitShiftRight);
-                let r109 = k.binary(r106, c4, BOp::Mod);
-                let r113 = k.binary(r108, c3, BOp::BitShiftLeft);
-                let r114 = k.binary(r109, r113, BOp::Add);
-                let r120 = k.binary(r114, c7, BOp::Mod);
-                let r129 = k.binary(r120, c2, BOp::Cmpgt);
+                let r92 = k.bit_shift_left(r81, c2);
+                let r93 = k.add(r47, r92);
+                let r95 = k.bit_shift_right(r93, c2);
+                let r96 = k.mod_(r93, c4);
+                let _r98 = k.div(r96, c1);
+                let r99 = k.mod_(r93, c1);
+                let r104 = k.bit_shift_left(r95, c2);
+                let r105 = k.add(r96, r104);
+                let r106 = k.add(r99, r105);
+                let r108 = k.bit_shift_right(r106, c2);
+                let r109 = k.mod_(r106, c4);
+                let r113 = k.bit_shift_left(r108, c3);
+                let r114 = k.add(r109, r113);
+                let r120 = k.mod_(r114, c7);
+                let r129 = k.cmpgt(r120, c2);
                 mask = r129;
 
                 // Keep the mask alive via an accumulate that feeds a store.
                 let r131 = k.cast(r129, DType::I64);
                 let r85 = k.load(r78, c0);
-                let r86 = k.binary(r131, r85, BOp::Add);
+                let r86 = k.add(r131, r85);
                 k.store(r78, r86, c0);
             });
 
             let r14 = k.load(r78, c0);
             let r21 = k.cast(r14, DType::I32);
             let r23 = k.load(r72, r37);
-            let r25 = k.binary(r23, r21, BOp::Eq);
+            let r25 = k.equal(r23, r21);
             let r26 = k.cast(r25, DType::F32);
             let r27 = k.load(r65, r47);
-            let r32 = k.binary(r26, r27, BOp::Mul);
+            let r32 = k.mul(r26, r27);
             k.store(r41, r32, r37);
         });
 
