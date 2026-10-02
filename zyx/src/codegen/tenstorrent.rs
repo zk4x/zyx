@@ -1144,7 +1144,6 @@ fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
             let name = match uop {
                 UOp::Neg => "negative_tile",
                 UOp::BitNot => "bitwise_not_tile",
-                UOp::Exp => "exp_tile",
                 UOp::Exp2 => "exp2_tile",
                 UOp::Log2 => "log_with_base_tile",
                 UOp::Reciprocal => "recip_tile",

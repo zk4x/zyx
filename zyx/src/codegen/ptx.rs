@@ -169,10 +169,6 @@ impl Compiler {
                 status: ErrorStatus::KernelCompilation,
                 context: "PTX: Not/BitNot must use the dedicated Unary emission arms".into(),
             }),
-            UOp::Exp => Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "PTX: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching PTX backend".into(),
-            }),
             UOp::Exp2 => match dtype {
                 DType::F32 => Ok("ex2.approx"),
                 DType::F16 => Ok("ex2.approx"),

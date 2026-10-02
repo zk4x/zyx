@@ -363,7 +363,6 @@ impl Kernel {
                                     UOp::BitNot => _ = writeln!(source, "{indent}{dst} = ~{lane};"),
                                     UOp::Not => _ = writeln!(source, "{indent}{dst} = !{lane};"),
                                     UOp::Neg => _ = writeln!(source, "{indent}{dst} = -{lane};"),
-                                    UOp::Exp => _ = writeln!(source, "{indent}{dst} = exp({lane});"),
                                     UOp::Exp2 => _ = writeln!(source, "{indent}{dst} = exp2({lane});"),
                                     UOp::Log2 => _ = writeln!(source, "{indent}{dst} = log2({lane});"),
                                     UOp::Reciprocal => {
@@ -385,7 +384,6 @@ impl Kernel {
                             UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                             UOp::Not => _ = writeln!(source, "{indent}r{reg} = !{x};"),
                             UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                            UOp::Exp => _ = writeln!(source, "{indent}r{reg} = exp({x});"),
                             UOp::Exp2 => _ = writeln!(source, "{indent}r{reg} = exp2({x});"),
                             UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
                             UOp::Reciprocal => _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().c_code()),

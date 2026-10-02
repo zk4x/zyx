@@ -193,13 +193,6 @@ impl Kernel {
                                     UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
                                     UOp::Not => writeln!(source, "{indent}r{reg}.{c} = !{x}.{c};"),
                                     UOp::Neg => writeln!(source, "{indent}r{reg}.{c} = -{x}.{c};"),
-                                    UOp::Exp => {
-                                        if dtype.0 == DType::F16 {
-                                            writeln!(source, "{indent}r{reg}.{c} = (half)exp((float){x}.{c});")
-                                        } else {
-                                            writeln!(source, "{indent}r{reg}.{c} = exp({x}.{c});")
-                                        }
-                                    }
                                     UOp::Exp2 => {
                                         if dtype.0 == DType::F16 {
                                             writeln!(source, "{indent}r{reg}.{c} = (half)exp2((float){x}.{c});")
@@ -225,13 +218,6 @@ impl Kernel {
                             UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                             UOp::Not => _ = writeln!(source, "{indent}r{reg} = !{x};"),
                             UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                            UOp::Exp => {
-                                if dtype.0 == DType::F16 {
-                                    _ = writeln!(source, "{indent}r{reg} = (half)exp((float){x});");
-                                } else {
-                                    _ = writeln!(source, "{indent}r{reg} = exp({x});");
-                                }
-                            }
                             UOp::Exp2 => {
                                 if dtype.0 == DType::F16 {
                                     _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");

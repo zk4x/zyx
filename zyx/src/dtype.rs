@@ -675,15 +675,7 @@ impl Constant {
         }
         fn unary_func<T: Scalar>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::Reciprocal
-                | UOp::Sqrt
-                | UOp::Rsqrt
-                | UOp::Sin
-                | UOp::Cos
-                | UOp::Floor
-                | UOp::Trunc
-                | UOp::Abs
-                | UOp::Exp => {
+                UOp::Reciprocal | UOp::Sqrt | UOp::Rsqrt | UOp::Sin | UOp::Cos | UOp::Floor | UOp::Trunc | UOp::Abs => {
                     unreachable!()
                 }
                 UOp::BitNot => unreachable!(),
@@ -706,7 +698,6 @@ impl Constant {
                 UOp::Floor => x.floor(),
                 UOp::Trunc => x.trunc(),
                 UOp::Abs => x.abs(),
-                UOp::Exp => x.exp(),
                 UOp::Exp2 => x.exp2(),
                 UOp::Log2 => x.log2(),
             }

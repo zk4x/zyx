@@ -129,7 +129,6 @@ mod pat;
 mod predict_cost;
 mod split_loops;
 mod tenstorrent;
-mod transforms;
 mod unroll_loops;
 mod vectorize;
 mod verify;

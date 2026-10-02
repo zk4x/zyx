@@ -591,12 +591,15 @@ impl Kernel {
         self.unary(x, UOp::Not)
     }
 
-    /// `e^x`. Emits the raw `Exp` op; `default_epilogue` converts it to
-    /// `exp2` on devices that prefer it, and the CUDA codegen emits `exp`
-    /// directly.
+    /// `e^x = exp2(x * log2(e))`. Emits `exp2` directly; every backend
+    /// supports it, so no per-backend conversion pass is needed.
     pub fn exp(&mut self, x: impl IntoOp) -> OpId {
         let x = x.into_op(self);
-        self.unary(x, UOp::Exp)
+        let dtype = self.dtype(x);
+        let log2_e = self.const_val(std::f64::consts::LOG2_E);
+        let log2_e = self.cast(log2_e, dtype);
+        let mul = self.binary(x, log2_e, BOp::Mul);
+        self.unary(mul, UOp::Exp2)
     }
 
     /// `2^x`

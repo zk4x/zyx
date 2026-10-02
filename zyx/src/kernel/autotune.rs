@@ -93,11 +93,6 @@ impl Kernel {
         self.instruction_schedule();
         self.dead_code_elimination();
         let dev_info = self.device_info();
-        if dev_info.has_native_exp2 {
-            self.exp_to_exp2();
-        } else {
-            self.exp2_to_exp();
-        }
         if dev_info.tenstorrent {
             // TT tiling lives in kernel/tenstorrent.rs (tt_* port); the old
             // opt_tenstorrent_tile is deleted. Unfinished path still traps.

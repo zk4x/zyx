@@ -123,7 +123,9 @@ pub enum Pat {
     /// with a numerically equal value, regardless of dtype. This gets its
     /// own matcher arm: `as_dim` alone cannot express it (it returns `None`
     /// for negatives and floats).
-    Num(i64),
+    Int(i64),
+    /// Float, dtypeless
+    Float(f64),
     /// Matches a constant whose `as_dim` value is less than this bound.
     /// Unlike [`Pat::Num`], floats and negatives never match (`as_dim`
     /// semantics): the in-pattern form of a `< bound` value guard.
@@ -525,9 +527,14 @@ impl Pat {
         Pat::Unary { x: Box::new(self), uop: UOp::Neg }
     }
 
-    /// Exponential of this pattern.
+    /// Exponential of this pattern (`2^x`).
+    pub fn exp2(self) -> Pat {
+        Pat::Unary { x: Box::new(self), uop: UOp::Exp2 }
+    }
+
+    /// Exponential of this pattern (`2^x`).
     pub fn exp(self) -> Pat {
-        Pat::Unary { x: Box::new(self), uop: UOp::Exp }
+        (self * std::f64::consts::LOG2_E).exp2()
     }
 }
 
@@ -539,7 +546,13 @@ impl From<&Pat> for Pat {
 
 impl From<i64> for Pat {
     fn from(v: i64) -> Pat {
-        Pat::Num(v)
+        Pat::Int(v)
+    }
+}
+
+impl From<f64> for Pat {
+    fn from(v: f64) -> Pat {
+        Pat::Float(v)
     }
 }
 
@@ -609,7 +622,8 @@ impl Kernel {
             Pat::Const => matches!(self.at(id), Op::Const(_)),
             Pat::Value(v) => matches!(self.at(id), Op::Const(c) if c == v),
             Pat::ConstIf(f) => matches!(self.at(id), Op::Const(c) if f(*c)),
-            Pat::Num(n) => matches!(self.at(id), Op::Const(c) if const_eq_num(*c, *n)),
+            Pat::Int(n) => matches!(self.at(id), Op::Const(c) if const_eq_int(*c, *n)),
+            Pat::Float(n) => matches!(self.at(id), Op::Const(c) if const_eq_float(*c, *n)),
             Pat::DimLt(n) => matches!(self.at(id), Op::Const(c) if c.as_dim().is_some_and(|k| k < *n)),
             Pat::DimEq(n) => matches!(self.at(id), Op::Const(c) if c.as_dim() == Some(*n)),
             Pat::Eq { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x == y),
@@ -665,7 +679,7 @@ impl Kernel {
 /// Dtypeless numeric equality for [`Pat::Num`]: true when `c` has the same
 /// numeric value as `n`, whatever its dtype. Integers and bool compare
 /// exactly; floats must be integral (`1.0 == 1`, `1.5` never matches).
-fn const_eq_num(c: Constant, n: i64) -> bool {
+fn const_eq_int(c: Constant, n: i64) -> bool {
     match c {
         Constant::U8(v) => i128::from(v) == n as i128,
         Constant::U16(v) => i128::from(v) == n as i128,
@@ -676,17 +690,43 @@ fn const_eq_num(c: Constant, n: i64) -> bool {
         Constant::I32(v) => i128::from(v) == n as i128,
         Constant::I64(v) => i64::from_le_bytes(v) as i128 == n as i128,
         Constant::Bool(v) => i64::from(v) == n,
-        Constant::F32(v) => float_eq_num(f32::from_le_bytes(v) as f64, n),
-        Constant::F64(v) => float_eq_num(f64::from_le_bytes(v), n),
-        Constant::BF16(v) => float_eq_num(bf16::from_le_bytes(v).to_f64(), n),
-        Constant::F16(v) => float_eq_num(f16::from_le_bytes(v).to_f64(), n),
-        Constant::F8E4M3(v) => float_eq_num(f8e4m3::from_le_bytes([v]).to_f64(), n),
-        Constant::F8E5M2(v) => float_eq_num(f8e5m2::from_le_bytes([v]).to_f64(), n),
+        Constant::F32(v) => float_eq_int(f32::from_le_bytes(v) as f64, n),
+        Constant::F64(v) => float_eq_int(f64::from_le_bytes(v), n),
+        Constant::BF16(v) => float_eq_int(bf16::from_le_bytes(v).to_f64(), n),
+        Constant::F16(v) => float_eq_int(f16::from_le_bytes(v).to_f64(), n),
+        Constant::F8E4M3(v) => float_eq_int(f8e4m3::from_le_bytes([v]).to_f64(), n),
+        Constant::F8E5M2(v) => float_eq_int(f8e5m2::from_le_bytes([v]).to_f64(), n),
+    }
+}
+
+fn const_eq_float(c: Constant, n: f64) -> bool {
+    match c {
+        Constant::U8(v) => i128::from(v) == n as i128,
+        Constant::U16(v) => i128::from(v) == n as i128,
+        Constant::U32(v) => i128::from(v) == n as i128,
+        Constant::U64(v) => u64::from_le_bytes(v) as i128 == n as i128,
+        Constant::I8(v) => i128::from(v) == n as i128,
+        Constant::I16(v) => i128::from(v) == n as i128,
+        Constant::I32(v) => i128::from(v) == n as i128,
+        Constant::I64(v) => i64::from_le_bytes(v) as i128 == n as i128,
+        Constant::Bool(v) => i64::from(v) == n,
+        Constant::F32(v) => float_eq_int(f32::from_le_bytes(v) as f64, n),
+        Constant::F64(v) => float_eq_int(f64::from_le_bytes(v), n),
+        Constant::BF16(v) => float_eq_int(bf16::from_le_bytes(v).to_f64(), n),
+        Constant::F16(v) => float_eq_int(f16::from_le_bytes(v).to_f64(), n),
+        Constant::F8E4M3(v) => float_eq_int(f8e4m3::from_le_bytes([v]).to_f64(), n),
+        Constant::F8E5M2(v) => float_eq_int(f8e5m2::from_le_bytes([v]).to_f64(), n),
     }
 }
 
 /// Exact integral-float comparison: `fract == 0` plus a strict range check
 /// so the `as i64` conversion below is exact (no saturation edge at `MAX`).
-fn float_eq_num(v: f64, n: i64) -> bool {
+fn float_eq_int(v: f64, n: i64) -> bool {
     v.fract() == 0.0 && v >= -9223372036854775808.0 && v < 9223372036854775808.0 && v as i64 == n
+}
+
+/// Exact -float comparison: `fract == 0` plus a strict range check
+/// so the `as i64` conversion below is exact (no saturation edge at `MAX`).
+fn float_eq_float(v: f64, n: f64) -> bool {
+    todo!()
 }

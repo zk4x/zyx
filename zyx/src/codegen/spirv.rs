@@ -1432,9 +1432,6 @@ impl Kernel {
                             UOp::Not => {
                                 asm.emit_typed(OpLogicalNot, result_type, rid, &[src_id]);
                             }
-                            UOp::Exp => {
-                                asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::Exp, src_id]);
-                            }
                             UOp::Exp2 => {
                                 asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::Exp2, src_id]);
                             }

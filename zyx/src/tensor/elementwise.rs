@@ -216,7 +216,7 @@ impl Tensor {
         Tensor { id: RT.lock().unary(x.id, UOp::Trunc) }
     }
 
-    /// Element-wise exponential: `e^x`.
+    /// Element-wise exponential: `e^x = exp2(x * log2(e))`.
     ///
     /// # Example
     ///
@@ -227,8 +227,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn exp(&self) -> Tensor {
-        let x = self.float_cast().unwrap();
-        Tensor { id: RT.lock().unary(x.id, UOp::Exp) }
+        (self * std::f64::consts::LOG2_E).exp2()
     }
 
     /// Gaussian Error Linear Unit (Gelu) activation:
