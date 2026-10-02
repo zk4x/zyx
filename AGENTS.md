@@ -69,7 +69,7 @@ Root docs: `ENV_VARS.md` (ZYX_DEBUG), `CONFIG.md`, `STYLE.md`, `ADDING_BACKENDS.
 
 ## The Graph & Egraph
 
-Lazy, dynamic, **one graph serves both laziness and autograd**; TensorId is `u32`. `Node` (`src/graph/mod.rs`) has 14 variants: Const, Leaf, Expand, Permute, Reshape, PadZeros, Flip, Reduce, Cast, Unary, Binary, Assign, ToDevice, Kernel.
+Lazy, dynamic, **one graph serves both laziness and autograd**; TensorId is `u32`. There is no separate `Node` enum — graph nodes are the same `Op` (`src/kernel/ops.rs`), each stored as `OpNode { op, class_of, next_in_class }` (`src/graph/mod.rs:60`) with e-class chaining; the graph just uses a different subset (movement/shape/reduction ops) than kernels do.
 
 The egraph lives in `src/graph/` and is **entirely OUTSIDE `src/kernel/`** — no imports or calls in either direction. Interface: the egraph picks among fusion variants of tensor ops; each chosen fusion compiles to a `Kernel` (linear-SSA seed) and goes to the autotuner; measured timings flow back for extraction. Everything in `kernel/` sees only plain kernels.
 
@@ -169,7 +169,7 @@ Training-loop API around the graph.
 
 ### Eager vs graph paths
 
-Every op has two paths, chosen per op by operands. **Eager:** `Runtime::{pad_zeros, unary, binary, ...}` pushes the `Op` into the tensor's current kernel (`eager_ids`, e.g. `runtime.rs:1221`) using the custom-kernel API; the kernel launches automatically once no further fusion is possible — the launch IS the realization. **Graph:** the op pushes a `Node` into the egraph (`push_node`, e.g. `graph/mod.rs:1238`); kernels appear only at `compile_graph` via the kernelizer. Changing an `Op` means changing it in **both** places unless they share a construction point. Inside a `Tape` there is **no launch at all**: the ONLY execution is `Tape::realize(states)`, which **consumes the tape** — no partial realization (`loss.item::<f32>()` works only after `realize`).
+Every op has two paths, chosen per op by operands. **Eager:** `Runtime::{pad_zeros, unary, binary, ...}` pushes the `Op` into the tensor's current kernel (`eager_ids`, e.g. `runtime.rs:1221`) using the custom-kernel API; the kernel launches automatically once no further fusion is possible — the launch IS the realization. **Graph:** the op pushes an `Op` into the egraph (`push_op`, e.g. `graph/mod.rs:171`); kernels appear only at `compile_graph` via the kernelizer. Changing an `Op` means changing it in **both** places unless they share a construction point. Inside a `Tape` there is **no launch at all**: the ONLY execution is `Tape::realize(states)`, which **consumes the tape** — no partial realization (`loss.item::<f32>()` works only after `realize`).
 
 ### Forcing execution / shape conventions
 

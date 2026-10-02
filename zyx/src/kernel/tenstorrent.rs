@@ -14,8 +14,8 @@
 //! CB-sync family (`ReserveBack`/`PushBack`/`WaitFront`/`PopFront` +
 //! `tt_sync_cbs`) is already here from slice 1.
 //!
-//! Pass pipeline order: `tt_storage` → `tt_lock_dst` → `tt_init_math`
-//! → `tt_sync_cbs` → `tt_place_pops`, then `verify`. The passes are
+//! Pass pipeline order: `tt_fuse_llks` → `tt_storage` → `tt_lock_dst`
+//! → `tt_init_math` → `tt_sync_cbs` → `tt_place_pops`, then `verify`. The passes are
 //! public so external pass authors can reuse or replace stages.
 //! Calling them out of order is a loud panic, never silent corruption.
 
@@ -24,7 +24,7 @@ use crate::Map;
 use crate::Set;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
-use crate::kernel::{BOp, FusedKind, Kernel, MemLayout, MemScope, Op, OpId, TTOp, TileDim, UOp};
+use crate::kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, TTOp, TileDim, UOp};
 use crate::types::{TinyString, TinyVec};
 
 impl Kernel {
@@ -112,194 +112,6 @@ impl Kernel {
     /// NOC write barrier constructor: `noc_async_write_barrier()`.
     pub fn tt_noc_write_barrier(&mut self) -> OpId {
         self.push_back(Op::TT(TTOp::NocWriteBarrier))
-    }
-
-    /// Unpack init constructor: `copy_tile_init(cb);`.
-    ///
-    /// Engine-config inits are LLK software wrappers, not hardware ops,
-    /// so they live as [`Op::Asm`] statement templates over bare buffer
-    /// ids — never as structured variants. The TT renderer substitutes
-    /// the `{i}` placeholders and emits the template as a statement.
-    /// Scope safety (bare Circular storages) is a constructor
-    /// `debug_assert!`; TT render re-checks at compile time.
-    pub fn tt_copy_init(&mut self, cb: OpId) -> OpId {
-        debug_assert!(
-            matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }),
-            "tt_copy_init: cb {cb} is not a Circular storage"
-        );
-        self.asm("copy_tile_init({0});", &[cb])
-    }
-
-    /// Unpack re-init constructor:
-    /// `copy_tile_to_dst_init_short_with_dt(prev, cb);`.
-    pub fn tt_copy_init_with_dt(&mut self, prev: OpId, cb: OpId) -> OpId {
-        debug_assert!(
-            matches!(self.at(prev), Op::Storage { scope: MemScope::Circular, .. }),
-            "tt_copy_init_with_dt: prev {prev} is not a Circular storage"
-        );
-        debug_assert!(
-            matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }),
-            "tt_copy_init_with_dt: cb {cb} is not a Circular storage"
-        );
-        self.asm("copy_tile_to_dst_init_short_with_dt({0}, {1});", &[prev, cb])
-    }
-
-    /// Pack reconfig constructor: `pack_reconfig_data_format(cb);`.
-    pub fn tt_pack_reconfig(&mut self, cb: OpId) -> OpId {
-        debug_assert!(
-            matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }),
-            "tt_pack_reconfig: cb {cb} is not a Circular storage"
-        );
-        self.asm("pack_reconfig_data_format({0});", &[cb])
-    }
-
-    /// Unary init constructor (`exp_tile_init();`, ...). The op selects
-    /// the call — the table mirrors the LLK init names exactly.
-    pub fn tt_unary_init(&mut self, uop: UOp) -> OpId {
-        let init = match uop {
-            UOp::Neg => "negative_tile_init();",
-            UOp::BitNot => "bitwise_not_tile_init();",
-            UOp::Exp => "exp_tile_init();",
-            UOp::Exp2 => "exp2_tile_init();",
-            UOp::Log2 => "log_with_base_tile_init();",
-            UOp::Reciprocal => "recip_tile_init();",
-            UOp::Sqrt => "sqrt_tile_init();",
-            UOp::Rsqrt => "rsqrt_tile_init();",
-            UOp::Sin => "sin_tile_init();",
-            UOp::Cos => "cos_tile_init();",
-            UOp::Floor | UOp::Trunc => "rounding_op_tile_init();",
-            UOp::Abs => "abs_tile_init();",
-            UOp::Not => "logical_not_tile_init();",
-        };
-        self.asm(init, &[])
-    }
-
-    /// Binary init constructor (`add_binary_tile_init();`, ...).
-    pub fn tt_binary_init(&mut self, bop: BOp) -> OpId {
-        let init = match bop {
-            BOp::Add => "add_binary_tile_init();",
-            BOp::Sub => "sub_binary_tile_init();",
-            BOp::Mul => "mul_binary_tile_init();",
-            BOp::Div => "div_binary_tile_init();",
-            BOp::Max => "binary_max_tile_init();",
-            BOp::BitShiftLeft | BOp::BitShiftRight => "binary_shift_tile_init();",
-            _ => panic!("tt_binary_init: {bop:?} has no init call"),
-        };
-        self.asm(init, &[])
-    }
-
-    /// Scalar-binary init constructor.
-    pub fn tt_bin_scalar_init(&mut self, bop: BOp) -> OpId {
-        let init = match bop {
-            BOp::Add | BOp::Sub | BOp::Mul | BOp::Div => "binop_with_scalar_tile_init();",
-            BOp::BitShiftLeft => "left_shift_tile_init();",
-            BOp::BitShiftRight => "right_shift_tile_init();",
-            _ => panic!("tt_bin_scalar_init: scalar init for {bop:?} has no init call"),
-        };
-        self.asm(init, &[])
-    }
-
-    /// Transpose init constructor: `transpose_wh_init(cb, out);`.
-    pub fn tt_transpose_init(&mut self, cb: OpId, out: OpId) -> OpId {
-        debug_assert!(
-            matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }),
-            "tt_transpose_init: cb {cb} is not a Circular storage"
-        );
-        debug_assert!(
-            matches!(self.at(out), Op::Storage { scope: MemScope::Circular, .. }),
-            "tt_transpose_init: out {out} is not a Circular storage"
-        );
-        self.asm("transpose_wh_init({0}, {1});", &[cb, out])
-    }
-
-    /// Matmul init constructor: `mm_init(a, b, out);`.
-    pub fn tt_matmul_init(&mut self, a: OpId, b: OpId, out: OpId) -> OpId {
-        for (name, buf) in [("a", a), ("b", b), ("out", out)] {
-            debug_assert!(
-                matches!(self.at(buf), Op::Storage { scope: MemScope::Circular, .. }),
-                "tt_matmul_init: {name} {buf} is not a Circular storage"
-            );
-        }
-        self.asm("mm_init({0}, {1}, {2});", &[a, b, out])
-    }
-
-    /// Compute startup constructor:
-    /// `compute_kernel_hw_startup(in0, in1, out);`.
-    pub fn tt_compute_startup(&mut self, in0: OpId, in1: OpId, out: OpId) -> OpId {
-        for (name, buf) in [("in0", in0), ("in1", in1), ("out", out)] {
-            debug_assert!(
-                matches!(self.at(buf), Op::Storage { scope: MemScope::Circular, .. }),
-                "tt_compute_startup: {name} {buf} is not a Circular storage"
-            );
-        }
-        self.asm("compute_kernel_hw_startup({0}, {1}, {2});", &[in0, in1, out])
-    }
-
-    /// Reduce init constructor: `reduce_init<op, dim>(ci, cs, acc);`.
-    pub fn tt_reduce_init(&mut self, ci: OpId, cs: OpId, acc: OpId, rop: BOp, kind: TileDim) -> OpId {
-        for (name, buf) in [("ci", ci), ("cs", cs)] {
-            debug_assert!(
-                matches!(self.at(buf), Op::Storage { scope: MemScope::Circular, .. }),
-                "tt_reduce_init: {name} {buf} is not a Circular storage"
-            );
-        }
-        debug_assert!(
-            matches!(self.at(acc), Op::Storage { scope: MemScope::Register, .. }),
-            "tt_reduce_init: acc {acc} is not a Register slot"
-        );
-        let op_name = match rop {
-            BOp::Max => "PoolType::MAX",
-            BOp::Add => "PoolType::SUM",
-            _ => panic!("tt_reduce_init: reduce op {rop:?} has no init call"),
-        };
-        let dim_name = match kind {
-            TileDim::Row => "ReduceDim::REDUCE_ROW",
-            TileDim::Col => "ReduceDim::REDUCE_COL",
-            TileDim::Scalar => "ReduceDim::REDUCE_SCALAR",
-        };
-        let template = format!("reduce_init<{op_name}, {dim_name}>({{0}}, {{1}}, {{2}});");
-        self.asm(&template, &[ci, cs, acc])
-    }
-
-    /// Reduce uninit constructor: `reduce_uninit();`. A structural
-    /// effect (closes the reduce cone), so it stays a `TTOp`.
-    pub fn tt_reduce_uninit(&mut self) -> OpId {
-        self.push_back(Op::TT(TTOp::ReduceUninit))
-    }
-
-    /// Fused broadcast-binary init constructor.
-    pub fn tt_bcast_init(&mut self, bop: BOp, kind: TileDim, cb_a: OpId, cb_b: OpId) -> OpId {
-        debug_assert!(
-            matches!(self.at(cb_a), Op::Storage { scope: MemScope::Circular, .. }),
-            "tt_bcast_init: cb_a {cb_a} is not a Circular storage"
-        );
-        debug_assert!(
-            matches!(self.at(cb_b), Op::Storage { scope: MemScope::Circular, .. }),
-            "tt_bcast_init: cb_b {cb_b} is not a Circular storage"
-        );
-        let init = match (bop, kind) {
-            (BOp::Add, TileDim::Row) => "add_bcast_rows_init_short",
-            (BOp::Add, TileDim::Col) => "add_bcast_cols_init_short",
-            (BOp::Add, TileDim::Scalar) => "add_bcast_scalar_init_short",
-            (BOp::Sub, TileDim::Row) => "sub_bcast_rows_init_short",
-            (BOp::Sub, TileDim::Col) => "sub_bcast_cols_init_short",
-            (BOp::Sub, TileDim::Scalar) => "sub_tiles_bcast_scalar_init_short",
-            (BOp::Mul, TileDim::Row) => "mul_bcast_rows_init_short",
-            (BOp::Mul, TileDim::Col) => "mul_bcast_cols_init_short",
-            (BOp::Mul, TileDim::Scalar) => "mul_tiles_bcast_scalar_init_short",
-            _ => panic!("tt_bcast_init: broadcast ({bop:?}, {kind:?}) has no init call"),
-        };
-        let template = format!("{init}({{0}}, {{1}});");
-        self.asm(&template, &[cb_a, cb_b])
-    }
-
-    /// Fused-unary init constructor.
-    pub fn tt_fused_init(&mut self, kind: FusedKind) -> OpId {
-        let init = match kind {
-            FusedKind::Sigmoid => "sigmoid_tile_init();",
-            FusedKind::Silu => "silu_tile_init();",
-        };
-        self.asm(init, &[])
     }
 
     /// DST lock insertion. MATH tile-compute ops run under
@@ -554,6 +366,164 @@ impl Kernel {
                 Some(b) => self.next_op(b),
                 None => break,
             }
+        }
+
+        self.verify();
+    }
+
+    /// Fused unary LLK claiming: `sigmoid`/`silu` composites built by
+    /// the plain builders (`neg` → `exp` → `add` → `recip`, plus `mul`
+    /// for silu) become one `sigmoid_tile` / one `silu_tile` call.
+    /// Same approach as [`Kernel::fuse_mad`](super::fuse): one linear
+    /// walk, total user counts, single-pattern-contained inners,
+    /// rewrite in place, `verify`.
+    ///
+    /// Containment (the test's pattern-exclusive-input rule): every
+    /// non-const op of the pattern must have all its users inside the
+    /// pattern. A shared input (or a shared inner) correctly falls
+    /// back to the plain composite — fusing it would re-time CB page
+    /// traffic the second consumer still counts on. The pattern root
+    /// itself may have outside users; they read the fused tile value
+    /// exactly as they read the unfused one.
+    ///
+    /// The rewrite is an opaque [`TTOp::LLK`] over the feeder value
+    /// (the sigmoid input `x`): `sync_cbs` waits its CB page through
+    /// the trailing provenance operand, render copies it into a fresh
+    /// DST slot at the call (`operand_slot`, same as the unfused
+    /// `exp_tile(s)` path). The engine-config init
+    /// (`sigmoid_tile_init();` / `silu_tile_init();`) and the feeder
+    /// copy init go right before the call, mirroring `init_math`'s
+    /// `asm_before` shapes. Orphaned inner ops stay dead in place
+    /// (same as `fuse_mad`'s dead multiply).
+    pub fn tt_fuse_llks(&mut self) {
+        eprintln!("FUSEDBG tt_fuse_llks entry");
+        // Total user counts: users[v] = ops taking v as a data operand.
+        let mut users: Map<OpId, Vec<OpId>> = Map::default();
+        let mut scan = self.head;
+        while !scan.is_null() {
+            for p in self.at(scan).parameters() {
+                if !p.is_null() {
+                    users.entry(p).or_default().push(scan);
+                }
+            }
+            scan = self.next_op(scan);
+        }
+        // Pattern-contained: every user of `id` is inside `pat`.
+        let contained = |users: &Map<OpId, Vec<OpId>>, id: OpId, pat: &[OpId]| {
+            users.get(&id).is_some_and(|us| !us.is_empty() && us.iter().all(|u| pat.contains(u)))
+        };
+        // The `+ 1` addend: a const-one through casts (`resolve_const`
+        // folds `cast(1.0f32)` and already-folded consts uniformly).
+        let is_one = |kernel: &Kernel, id: OpId| kernel.resolve_const(id).is_some_and(|c| c.is_one());
+        // Match `recip(add(exp(neg(x)), 1))` with contained inners.
+        // Returns the input `x` on match. `extra` is the silu mul when
+        // matching through it: `x` may feed `neg` and (for silu) the
+        // mul, nothing else.
+        let match_sigmoid = |kernel: &Kernel,
+                             users: &Map<OpId, Vec<OpId>>,
+                             is_one: &dyn Fn(&Kernel, OpId) -> bool,
+                             recip: OpId,
+                             extra: Option<OpId>|
+         -> Option<OpId> {
+            let Op::Unary { x: den, uop } = kernel.at(recip) else {
+                return None;
+            };
+            if *uop != UOp::Reciprocal {
+                return None;
+            }
+            let Op::Binary { x: a, y: b, bop } = kernel.at(*den) else {
+                return None;
+            };
+            if *bop != BOp::Add {
+                return None;
+            }
+            // The exp side is either operand (commutative adds commute).
+            let (e, one) = if matches!(kernel.at(*a), Op::Unary { uop: UOp::Exp, .. }) {
+                (*a, *b)
+            } else if matches!(kernel.at(*b), Op::Unary { uop: UOp::Exp, .. }) {
+                (*b, *a)
+            } else {
+                return None;
+            };
+            if !is_one(kernel, one) {
+                return None;
+            }
+            let Op::Unary { x: neg, uop } = kernel.at(e) else {
+                return None;
+            };
+            if *uop != UOp::Exp {
+                return None;
+            };
+            let Op::Unary { x: x_in, uop } = kernel.at(*neg) else {
+                return None;
+            };
+            if *uop != UOp::Neg {
+                return None;
+            }
+            let neg = *neg;
+            let pat = [neg, e, *den, recip];
+            if !contained(users, neg, &pat) || !contained(users, e, &pat) || !contained(users, *den, &pat) {
+                return None;
+            }
+            let x = *x_in;
+            // Pattern-exclusive input: `x` feeds only this pattern.
+            // A shared input falls back to the plain composite.
+            if !users
+                .get(&x)
+                .is_some_and(|us| !us.is_empty() && us.iter().all(|u| *u == neg || Some(*u) == extra))
+            {
+                return None;
+            }
+            Some(x)
+        };
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            // Silu first (it contains a sigmoid root): `mul(x, sig)`.
+            if let Op::Binary { x: a, y: b, bop } = self.at(op_id)
+                && *bop == BOp::Mul
+            {
+                for (s, x) in [(*a, *b), (*b, *a)] {
+                    if let Some(sig_in) = match_sigmoid(self, &users, &is_one, s, Some(op_id))
+                        && sig_in == x
+                        && contained(&users, s, &[op_id])
+                    {
+                        debug_assert!(
+                            matches!(self.layout(x), MemLayout::Tile { .. }),
+                            "tt_fuse_llks: silu input {x:?} is not a tile"
+                        );
+                        self.insert_before(
+                            op_id,
+                            Op::Asm { asm: TinyString::new("silu_tile_init();"), ops: TinyVec::new(&[]) },
+                        );
+                        self.ops[op_id].op = Op::TT(TTOp::LLK {
+                            asm: TinyString::new("silu_tile({0});"),
+                            ops: TinyVec::new(&[x]),
+                        });
+                        break;
+                    }
+                }
+            }
+            // Standalone sigmoid (also fires when the silu match above
+            // declined: shared input, multi-use root — plain fallback).
+            if matches!(self.at(op_id), Op::Unary { uop: UOp::Reciprocal, .. })
+                && let Some(x) = match_sigmoid(self, &users, &is_one, op_id, None)
+            {
+                eprintln!("FUSEDBG fused sigmoid at {op_id:?}");
+                debug_assert!(
+                    matches!(self.layout(x), MemLayout::Tile { .. }),
+                    "tt_fuse_llks: sigmoid input {x:?} is not a tile"
+                );
+                self.insert_before(
+                    op_id,
+                    Op::Asm { asm: TinyString::new("sigmoid_tile_init();"), ops: TinyVec::new(&[]) },
+                );
+                self.ops[op_id].op = Op::TT(TTOp::LLK {
+                    asm: TinyString::new("sigmoid_tile({0});"),
+                    ops: TinyVec::new(&[x]),
+                });
+            }
+            op_id = next;
         }
 
         self.verify();
@@ -2422,5 +2392,3 @@ impl Kernel {
         }
     }
 }
-
-

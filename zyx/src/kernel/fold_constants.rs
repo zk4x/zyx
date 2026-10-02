@@ -139,17 +139,7 @@ impl Kernel {
                 }
                 Op::Binary { x, y, bop } => match (self.at(x).clone(), self.at(y).clone()) {
                     (Op::Const(cx), Op::Const(cy)) => {
-                        if bop == BOp::Div {
-                            eprintln!("FOLDDBG folding Div at {op_id} x={x} y={y} cx={cx:?} cy={cy:?}");
-                            self.debug();
-                        }
                         let folded = Constant::binary(cx, cy, bop);
-                        if let Constant::F32(v) = &folded
-                            && f32::from_le_bytes(*v).is_nan()
-                        {
-                            eprintln!("DEBUG fold Binary {bop:?}({cx:?}, {cy:?}) -> NaN at op {op_id:?}");
-                            self.debug();
-                        }
                         self.ops[op_id].op = Op::Const(folded);
                     }
                     (Op::Const(cx), _) => match bop {

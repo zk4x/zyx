@@ -43,7 +43,6 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if self.fold_loop(op_id) {
-                eprintln!("FOLDDBG fold_loop fired at {op_id}");
                 break;
             }
             op_id = self.next_op(op_id);

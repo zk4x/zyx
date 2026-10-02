@@ -477,7 +477,7 @@ auto p_out1 = TensorAccessor(args_out1, out1, 2048);
 
 ## 2026-09-15 — fused LLKs by pattern-match, sigmoid/silu green
 
-- No new `UOp`s. `sigmoid`/`silu` composites are pattern-matched in the TT backend only (`FusedKind::{Sigmoid,Silu}` in `zyx/src/codegen/tenstorrent.rs`); every other backend keeps the plain composite. Kernel IR stays immutable: `generate()` builds a side-table `Map<OpId, FusedPat>` and filters subsumed inners out of `compute_data.ops` only.
+- in `zyx/src/codegen/tenstorrent.rs`); every other backend keeps the plain composite. Kernel IR stays immutable: `generate()` builds a side-table `Map<OpId, FusedPat>` and filters subsumed inners out of `compute_data.ops` only.
 - Soundness is containment, not `rc==1`: every inner's consumers must all lie inside the pattern, the external input must be consumed only by the pattern, slot rewrite is in-place. Misses (shared inputs, overlap via a `claimed` set) fall back to the plain composite — perf only, never wrong. Section-local `consumers`/`rcs` are sound because tile DST slots never cross sections; matchers take only pure tile `Unary`/`Binary` + consts.
 - Spellings: builder `reciprocal(e + 1)` and eager `z/(z+1)` with shared `exp` (rc==2, both users inside — the case that killed the first `rc==1` draft). `is_one_const` resolves through `resolve_const` (sees through folded `Cast`).
 - Builder trap (`zyx/src/kernel/custom.rs`): `sigmoid` denominator was `add(one, e)` — `Kernel::layout` follows the `x` side, so const-first poisoned the chain to `Scalar` and `verify` rejected the tile store. Now `add(e, one)`, tile-first. Bit-exact same numerics on every other backend.

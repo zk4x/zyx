@@ -357,16 +357,6 @@ pub enum Op {
     TT(TTOp),
 }
 
-/// Fused unary composite claimed by the TT fused prepass
-/// (`sigmoid`/`silu` → fused tile calls).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-pub enum FusedKind {
-    /// `sigmoid(x)`: standalone, or `recip`/`exp-div` under a `mul`.
-    Sigmoid,
-    /// `silu(x)`: `x * sigmoid(x)`.
-    Silu,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// Tenstorrent backend op: section markers, DST locks, CB sync effects,
 /// and lowered LLK compute calls. Lives inside [`Op::TT`].

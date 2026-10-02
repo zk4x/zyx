@@ -98,7 +98,8 @@ pub use crate::backend::{Dev, DeviceInfo};
 pub use crate::error::BackendError;
 pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
-pub use ops::{BOp, FusedKind, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, TTOp, TileDim};
+pub use ops::{BOp, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, TTOp, TileDim};
+pub use pat::Pat;
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
@@ -124,6 +125,7 @@ mod merge_loops;
 mod mma;
 mod ops;
 mod pad_range;
+mod pat;
 mod predict_cost;
 mod split_loops;
 mod tenstorrent;
@@ -547,7 +549,11 @@ impl Kernel {
                 }
                 Op::Asm { ref ops, .. } => {
                     if ops.is_empty() {
-                        todo!("layout: operand-free Asm produces no value")
+                        // Operand-free Asm is a pure effect (engine-config
+                        // inits like `exp_tile_init();`): it produces no
+                        // value, so it has no tile-ness. Scalar keeps
+                        // every tile-seeking consumer off it.
+                        return MemLayout::Scalar;
                     }
                     op_id = ops[0]
                 }

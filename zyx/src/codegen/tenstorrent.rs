@@ -87,10 +87,12 @@ impl Kernel {
     /// resulting ops.
     pub fn generate_tenstorrent(&self) -> Result<TTProgram, BackendError> {
         let mut k = self.clone();
-        // Lowering order: storage (compute ops become LLK calls over
+        // Lowering order: fused LLK claiming (sigmoid/silu composites
+        // become opaque calls), storage (compute ops become LLK calls over
         // bare storages, broadcast fusion), locks, engine-config
         // inits + startup + reduce cones, CB sync, pop placement +
         // FIFO check. Render consumes the result 1:1.
+        k.tt_fuse_llks();
         k.tt_storage();
         k.tt_lock_dst();
         k.tt_init_math()?;
@@ -532,6 +534,20 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     3
                 } else if text.starts_with("transpose_wh_tile(") {
                     2
+                } else if text.starts_with("sigmoid_tile(") || text.starts_with("silu_tile(") {
+                    // Fused unary: single in-place tile. The operand is
+                    // the feeder value (a circular load copied in fresh
+                    // at the call, exactly like the unfused `exp_tile(s)`
+                    // path), never a bare storage.
+                    debug_assert_eq!(ops_vec.len(), 1);
+                    let s = sec.operand_slot(ops_vec[0])?;
+                    let rendered = text.replace("{0}", &s.to_string());
+                    if rendered.contains('{') {
+                        return Err(sec.err(format!("LLK left placeholders unsubstituted: {rendered}")));
+                    }
+                    sec.slots.insert(id, s);
+                    sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
+                    continue;
                 } else {
                     return Err(sec.err(format!("LLK {id:?} is not a storage template")));
                 };
