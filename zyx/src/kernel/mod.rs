@@ -98,7 +98,6 @@ pub use crate::backend::{Dev, DeviceInfo};
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{BOp, FusedKind, MMADType, MMADims, MMALayout, OpId, ParamKind, TileDim};
 pub(crate) use ops::{Op, OpLinked, RangeKind, TTOp, UOp};
-pub(crate) use tenstorrent::{tt_is_tile_value, tt_scalar_f32, tt_scalar_lane, tt_storage_of};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};

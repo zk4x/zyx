@@ -18,7 +18,7 @@ use zyx::{DType, Tensor, ZyxError};
 /// Green (0/1024): the second-exp poison is exp-specific, not
 /// "second op" in general.
 #[test]
-fn tenstorrent_probe_add_add() -> Result<(), ZyxError> {
+fn tenstorrent_add_add() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let b = k.param(DType::F16);
@@ -73,7 +73,7 @@ fn tenstorrent_probe_add_add() -> Result<(), ZyxError> {
 /// Green (0/1024): an exp after another op is fine; only the 2nd exp
 /// per episode breaks.
 #[test]
-fn tenstorrent_probe_neg_exp() -> Result<(), ZyxError> {
+fn tenstorrent_neg_exp() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let out = k.param_mut(DType::F16);
@@ -121,7 +121,6 @@ fn tenstorrent_probe_neg_exp() -> Result<(), ZyxError> {
 /// inline once at the unary→binary switch. Single exp only: two exps
 /// per episode are broken on silicon (see debugging doc), so the fair
 /// switch test is `exp(a)+b`.
-#[ignore]
 #[test]
 fn tenstorrent_mixed_exp_add() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
@@ -182,7 +181,7 @@ fn tenstorrent_mixed_exp_add() -> Result<(), ZyxError> {
 /// failure, it does not test our codegen.
 #[test]
 #[ignore]
-fn tenstorrent_probe_sin_sin() -> Result<(), ZyxError> {
+fn tenstorrent_sin_sin() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let out = k.param_mut(DType::F16);
@@ -227,7 +226,7 @@ fn tenstorrent_probe_sin_sin() -> Result<(), ZyxError> {
 
 /// Mixed-kind cone (transpose then exp): Transpose→Unary switch.
 #[test]
-fn tenstorrent_mixed_transpose_exp() -> Result<(), ZyxError> {
+fn tenstorrent_transpose_exp() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let x = k.param(DType::F16);
     let out = k.param_mut(DType::F16);
@@ -276,9 +275,8 @@ fn tenstorrent_mixed_transpose_exp() -> Result<(), ZyxError> {
 /// Mixed-kind cone (exp then column-sum): Unary→Reduce switch,
 /// the softmax-sum pattern. The exp drains through a CB: reduce
 /// takes CB tile loads only.
-#[ignore]
 #[test]
-fn tenstorrent_mixed_exp_reduce() -> Result<(), ZyxError> {
+fn tenstorrent_exp_reduce() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let x = k.param(DType::F16);
     let s = k.param(DType::F16);
@@ -344,7 +342,7 @@ fn tenstorrent_mixed_exp_reduce() -> Result<(), ZyxError> {
 /// j. Compute doubles each tile (add(va, va)) — a real op, no
 /// matmul. Input [32,128] = 4 tiles, expected 2*x.
 #[test]
-fn tenstorrent_probe_multitile_double() -> Result<(), ZyxError> {
+fn tenstorrent_multitile_double() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let out = k.param_mut(DType::F16);
@@ -405,9 +403,8 @@ fn tenstorrent_probe_multitile_double() -> Result<(), ZyxError> {
 /// Mixed-kind cone (matmul then bias-add): Matmul→Binary switch.
 /// Same geometry as `tenstorrent_matmul_single_core` plus a per-nt
 /// bias tile added to each acc cone.
-#[ignore]
 #[test]
-fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
+fn tenstorrent_matmul_bias() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let b = k.param(DType::F16);
@@ -509,9 +506,8 @@ fn tenstorrent_mixed_matmul_bias() -> Result<(), ZyxError> {
 /// short executes once on the virgin matmul-mode state, copy/add once
 /// with no second pass. Correct output here clears the once-through
 /// combination and points at the loop-carried (pass-2) state.
-#[ignore]
 #[test]
-fn tenstorrent_mixed_matmul_bias_single() -> Result<(), ZyxError> {
+fn tenstorrent_matmul_bias_single() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let b = k.param(DType::F16);
@@ -613,9 +609,8 @@ fn tenstorrent_mixed_matmul_bias_single() -> Result<(), ZyxError> {
 /// itself, pack the sum). Correct output here clears reader, copy,
 /// add and DST slots 0-2, convicting the short'd matmul in the full
 /// combo; wrong output convicts the copy/add path itself.
-#[ignore]
 #[test]
-fn tenstorrent_bias_add_probe() -> Result<(), ZyxError> {
+fn tenstorrent_bias_add() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let c = k.param(DType::F32);
     let out = k.param_mut(DType::F32);
@@ -671,7 +666,7 @@ fn tenstorrent_bias_add_probe() -> Result<(), ZyxError> {
             bad += 1;
         }
     }
-    println!("bias add probe bad: {bad} / 1024");
+    println!("bias add bad: {bad} / 1024");
     assert_eq!(bad, 0);
 
     Ok(())
@@ -681,9 +676,8 @@ fn tenstorrent_bias_add_probe() -> Result<(), ZyxError> {
 /// tile straight out. Correct output here clears the reader bias
 /// path and the copy path (check the dump for whether the unused
 /// matmul — and its short — survived DCE).
-#[ignore]
 #[test]
-fn tenstorrent_matmul_short_probe() -> Result<(), ZyxError> {
+fn tenstorrent_matmul_short() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let b = k.param(DType::F16);
@@ -761,7 +755,7 @@ fn tenstorrent_matmul_short_probe() -> Result<(), ZyxError> {
             bad += 1;
         }
     }
-    println!("matmul short probe bad: {bad} / 1024");
+    println!("matmul short bad: {bad} / 1024");
     assert_eq!(bad, 0);
 
     Ok(())
@@ -771,9 +765,8 @@ fn tenstorrent_matmul_short_probe() -> Result<(), ZyxError> {
 /// acc, packed out. No copy, no second operand — if this fails like
 /// the bias tests, the matmul→SFPU handoff itself is broken; if it
 /// passes, the handoff is fine and the bug is copy/add-specific.
-#[ignore]
 #[test]
-fn tenstorrent_mixed_matmul_exp() -> Result<(), ZyxError> {
+fn tenstorrent_matmul_exp() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let b = k.param(DType::F16);
@@ -866,7 +859,7 @@ fn tenstorrent_mixed_matmul_exp() -> Result<(), ZyxError> {
 /// (`transpose_wh_tile` reads CBs, never DST). Tests the
 /// matmul→pack→transpose handoff under `mm_init`-owned engines.
 #[test]
-fn tenstorrent_mixed_matmul_transpose() -> Result<(), ZyxError> {
+fn tenstorrent_matmul_transpose() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let b = k.param(DType::F16);
@@ -968,7 +961,7 @@ fn tenstorrent_mixed_matmul_transpose() -> Result<(), ZyxError> {
 /// Tests the matmul→pack→reduce handoff including `reduce_uninit`
 /// before the consuming pack.
 #[test]
-fn tenstorrent_mixed_matmul_reduce() -> Result<(), ZyxError> {
+fn tenstorrent_matmul_reduce() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::BF16);
     let b = k.param(DType::BF16);
@@ -1077,7 +1070,7 @@ fn tenstorrent_mixed_matmul_reduce() -> Result<(), ZyxError> {
 /// needs a silicon debug session of its own.
 #[ignore]
 #[test]
-fn tenstorrent_matmul_cast_probe() -> Result<(), ZyxError> {
+fn tenstorrent_matmul_cast() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let b = k.param(DType::F16);
@@ -1159,7 +1152,7 @@ fn tenstorrent_matmul_cast_probe() -> Result<(), ZyxError> {
             bad += 1;
         }
     }
-    println!("matmul cast probe bad: {bad} / 1024");
+    println!("matmul cast bad: {bad} / 1024");
     assert_eq!(bad, 0);
 
     Ok(())
@@ -1516,7 +1509,7 @@ fn probe_words() -> Vec<u16> {
 /// through the scratch CB), no scales/mins, no loop. Expected: `w & 15`.
 #[ignore]
 #[test]
-fn tenstorrent_probe_q4k_nibbles() -> Result<(), ZyxError> {
+fn tenstorrent_q4k_nibbles() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let out = k.param_mut(DType::F32);
@@ -1579,7 +1572,7 @@ fn tenstorrent_probe_q4k_nibbles() -> Result<(), ZyxError> {
 /// the bf16-rounded input value, exactly.
 #[ignore]
 #[test]
-fn tenstorrent_probe_q4k_convert() -> Result<(), ZyxError> {
+fn tenstorrent_q4k_convert() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::BF16);
     let out = k.param_mut(DType::F32);
@@ -1626,7 +1619,7 @@ fn tenstorrent_probe_q4k_convert() -> Result<(), ZyxError> {
 /// AND popped every trip).
 #[ignore]
 #[test]
-fn tenstorrent_probe_q4k_carry() -> Result<(), ZyxError> {
+fn tenstorrent_q4k_carry() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let out = k.param_mut(DType::F32);
@@ -1701,7 +1694,7 @@ fn tenstorrent_probe_q4k_carry() -> Result<(), ZyxError> {
 /// no page loop, no wraparound reconfig.
 #[ignore]
 #[test]
-fn tenstorrent_probe_q4k_onetrip() -> Result<(), ZyxError> {
+fn tenstorrent_q4k_onetrip() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let sc = k.param(DType::BF16);
@@ -1797,7 +1790,7 @@ fn tenstorrent_probe_q4k_onetrip() -> Result<(), ZyxError> {
 /// 32-bit CB move/copy path is broken in tt-metal 0.72.
 #[ignore]
 #[test]
-fn tenstorrent_probe_fp32_passthru() -> Result<(), ZyxError> {
+fn tenstorrent_fp32_passthru() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F32);
     let out = k.param_mut(DType::F32);
@@ -1839,7 +1832,7 @@ fn tenstorrent_probe_fp32_passthru() -> Result<(), ZyxError> {
 /// 32-bit CB move/copy path is broken in tt-metal 0.72.
 #[ignore]
 #[test]
-fn tenstorrent_probe_fp32_seed() -> Result<(), ZyxError> {
+fn tenstorrent_fp32_seed() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let out = k.param_mut(DType::F32);
@@ -1887,7 +1880,7 @@ fn tenstorrent_probe_fp32_seed() -> Result<(), ZyxError> {
 /// 32-bit CB move/copy path is broken in tt-metal 0.72.
 #[ignore]
 #[test]
-fn tenstorrent_probe_fp32_scalar() -> Result<(), ZyxError> {
+fn tenstorrent_fp32_scalar() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let out = k.param_mut(DType::F32);
@@ -1937,7 +1930,7 @@ fn tenstorrent_probe_fp32_scalar() -> Result<(), ZyxError> {
 /// 32-bit CB move/copy path is broken in tt-metal 0.72.
 #[ignore]
 #[test]
-fn tenstorrent_probe_fp32_trunc() -> Result<(), ZyxError> {
+fn tenstorrent_fp32_trunc() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let out = k.param_mut(DType::F32);
@@ -1990,7 +1983,7 @@ fn tenstorrent_probe_fp32_trunc() -> Result<(), ZyxError> {
 /// 32-bit CB move/copy path is broken in tt-metal 0.72.
 #[ignore]
 #[test]
-fn tenstorrent_probe_fp32_sub() -> Result<(), ZyxError> {
+fn tenstorrent_fp32_sub() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let out = k.param_mut(DType::F32);
@@ -2047,7 +2040,7 @@ fn tenstorrent_probe_fp32_sub() -> Result<(), ZyxError> {
 /// every integer 0..255 is exactly representable in BF16 entries. The
 /// trunc/mul/sub nibble chain on top comes only after this is green.
 #[test]
-fn tenstorrent_probe_u8chain_cast() -> Result<(), ZyxError> {
+fn tenstorrent_u8chain_cast() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
     let out = k.param_mut(DType::BF16);
@@ -2094,7 +2087,7 @@ fn tenstorrent_probe_u8chain_cast() -> Result<(), ZyxError> {
 /// entries, so both nibbles must come out exact.
 #[ignore]
 #[test]
-fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
+fn tenstorrent_u8chain_nibbles() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U8);
     let out = k.param_mut(DType::BF16);
@@ -2173,7 +2166,7 @@ fn tenstorrent_probe_u8chain_nibbles() -> Result<(), ZyxError> {
 /// host truth.
 #[ignore]
 #[test]
-fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
+fn tenstorrent_io_cast_nibble() -> Result<(), ZyxError> {
     const TILE_ELEMS: i64 = 1024;
 
     fn tt_kernel(build: impl FnOnce(&mut Kernel)) -> Result<zyx::kernel::CompiledKernel, ZyxError> {
@@ -2207,7 +2200,7 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
     let v1: Vec<f32> = out1[0].to_vec()?;
     let exp1: Vec<f32> = words.iter().map(|&w| w as f32).collect();
     let bad1 = v1.iter().zip(&exp1).filter(|(a, b)| a != b).count();
-    println!("probe1 U16->F32 mismatches: {bad1}, first 4: {:?}", &v1[..4]);
+    println!("U16->F32 mismatches: {bad1}, first 4: {:?}", &v1[..4]);
 
     // --- Probe 2: BF16 passthrough ---
     let k2 = tt_kernel(|k| {
@@ -2226,7 +2219,7 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
     let out2 = k2.forward(&[&in2], vec![[TILE_ELEMS]])?;
     let v2: Vec<zyx::bf16> = out2[0].to_vec()?;
     let bad2 = v2.iter().zip(&scales).filter(|(a, b)| a != b).count();
-    println!("probe2 BF16 passthrough mismatches: {bad2}, first 4: {:?}", &v2[..4]);
+    println!("BF16 passthrough mismatches: {bad2}, first 4: {:?}", &v2[..4]);
 
     // --- Probe 3: plane-0 nibble: n = cv - 16*trunc(cv/16), F32 out ---
     // DST->DST copy doesn't exist on Tenstorrent, so the twice-used
@@ -2260,7 +2253,7 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
     let v3: Vec<f32> = out3[0].to_vec()?;
     let exp3: Vec<f32> = words.iter().map(|&w| (w % 16) as f32).collect();
     let bad3 = v3.iter().zip(&exp3).filter(|(a, b)| a != b).count();
-    println!("probe3 nibble0 mismatches: {bad3}, first 4: {:?} exp {:?}", &v3[..4], &exp3[..4]);
+    println!("nibble0 mismatches: {bad3}, first 4: {:?} exp {:?}", &v3[..4], &exp3[..4]);
 
     assert_eq!(bad1, 0);
     assert_eq!(bad2, 0);
@@ -2278,7 +2271,7 @@ fn tenstorrent_probe_io_cast_nibble() -> Result<(), ZyxError> {
 /// Golden is host-computed from the same words/values (all exact in F32).
 #[ignore]
 #[test]
-fn tenstorrent_probe_q4k_asm_dequant() -> Result<(), ZyxError> {
+fn tenstorrent_q4k_asm_dequant() -> Result<(), ZyxError> {
     const NTILES: i64 = 4;
     let mut k = Kernel::new(Dev::TT(0));
     let packed = k.param(DType::U16);
