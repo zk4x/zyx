@@ -72,7 +72,7 @@ impl Kernel {
             if let Some(m) = {
                 self.match_pat(
                     op_id,
-                    ((Pat::bind('y') << Pat::bind_const('d').dim_lt(64)) + Pat::bind('r')) >> Pat::bind_const('d'),
+                    ((Pat::bind('y') << Pat::bind_const('d').dim_lt(64)) + Pat::bind('r')) >> Pat::bind_const('d').int(),
                 )
             } {
                 let (y, rest, dv) = (m.op('y'), m.op('r'), m.int('d'));
@@ -90,7 +90,10 @@ impl Kernel {
                 // ((a*d)+b)/d → a when |b| < |dv|: truncated division's
                 // correction term vanishes. Integer operands only (float
                 // division is never exact here); dv == 0 cannot fire.
-                self.match_pat(op_id, (Pat::bind('a').int() * Pat::bind_const('d') + Pat::bind('b').int()) / Pat::bind_const('d'))
+                self.match_pat(
+                    op_id,
+                    (Pat::bind('a').int() * Pat::bind_const('d').int() + Pat::bind('b').int()) / Pat::bind_const('d').int(),
+                )
             } {
                 let (a, b, dv) = (m.op('a'), m.op('b'), m.int('d'));
                 if bounds.get(&b).is_some_and(|&(lo, hi)| {
@@ -106,7 +109,7 @@ impl Kernel {
                 self.match_pat(
                     op_id,
                     Pat::all([
-                        (Pat::bind('a').int() << Pat::bind_const('k') + Pat::bind('b').int()) / Pat::bind_const('d'),
+                        (Pat::bind('a').int() << Pat::bind_const('k').int() + Pat::bind('b').int()) / Pat::bind_const('d').int(),
                         Pat::ge('k', 0),
                         Pat::lt('k', 64),
                         Pat::eq('d', VExpr::shl(1, 'k')),
@@ -120,7 +123,7 @@ impl Kernel {
                 }) {
                     self.remap(op_id, a);
                 }
-            } else if let Some(m) = { self.match_pat(op_id, Pat::bind('x').int() / Pat::bind_const('d')) } {
+            } else if let Some(m) = { self.match_pat(op_id, Pat::bind('x').int() / Pat::bind_const('d').int()) } {
                 // x/d → 0 when 0 <= x < d (dv > 0 follows). Integer only:
                 // float division has no truncating correction (1.0/2 = 0.5).
                 let (x, dv) = (m.op('x'), m.int('d'));
@@ -130,7 +133,7 @@ impl Kernel {
                 {
                     self.ops[op_id].op = Op::Const(self.dtype(m.op('d')).zero_constant());
                 }
-            } else if let Some(m) = { self.match_pat(op_id, Pat::bind('x') % Pat::bind_const('d')) } {
+            } else if let Some(m) = { self.match_pat(op_id, Pat::bind('x') % Pat::bind_const('d').int()) } {
                 // `dv` is the divisor value, `m["d"]` its op. Each acted
                 // rule ends with `op_id = next; continue`: skip patterns 3-5,
                 // advance the walk. Fall-through leaves the op untouched.
@@ -150,15 +153,16 @@ impl Kernel {
                 // sharing one body below. Integer operands only (float
                 // remainder is never exact here). Commutativity retry covers
                 // the orderings; the shl form computes its 2^k multiple.
-                let mul_like = self
-                    .match_pat(x, (Pat::bind('a').int() * Pat::bind_const('c')) + Pat::bind('b').int())
-                    .map(|ma| (ma.op('a'), ma.int('c'), ma.op('b')))
-                    .or_else(|| {
-                        self.match_pat(x, (Pat::bind('a').int() << Pat::bind_const('k')) + Pat::bind('b').int()).and_then(|ma| {
-                            let kv = ma.int('k');
-                            (kv >= 0 && kv < 64).then(|| (ma.op('a'), 1i64 << kv, ma.op('b')))
-                        })
-                    });
+                let mul_like =
+                    self.match_pat(x, (Pat::bind('a').int() * Pat::bind_const('c').int()) + Pat::bind('b').int())
+                        .map(|ma| (ma.op('a'), ma.int('c'), ma.op('b')))
+                        .or_else(|| {
+                            self.match_pat(x, (Pat::bind('a').int() << Pat::bind_const('k').int()) + Pat::bind('b').int())
+                                .and_then(|ma| {
+                                    let kv = ma.int('k');
+                                    (kv >= 0 && kv < 64).then(|| (ma.op('a'), 1i64 << kv, ma.op('b')))
+                                })
+                        });
                 if let Some((a, c, b)) = mul_like {
                     // Pattern 2: (a*c + b) % c -> b % c (because (a*c) % c = 0)
                     // Math: (a*c + b) % c = ((a*c) % c + b % c) % c = (0 + b % c) % c = b % c
@@ -199,7 +203,7 @@ impl Kernel {
             } else if let Some(m) = {
                 // Pattern 3: (a + b) % d when min_a > 0, min_b > 0, max(a+b) < d.
                 // Both positive and sum < d: no wraparound, result = a + b.
-                self.match_pat(op_id, (Pat::bind('a') + Pat::bind('b')) % Pat::bind_const('d'))
+                self.match_pat(op_id, (Pat::bind('a') + Pat::bind('b')) % Pat::bind_const('d').int())
             } {
                 let (x, (a, b), dv) = (m.op('x'), (m.op('a'), m.op('b')), m.int('d'));
                 if let Some(&(min_a, max_a)) = bounds.get(&a)
@@ -215,7 +219,7 @@ impl Kernel {
             } else if let Some(m) = {
                 // Pattern 4: (a * c) % d -> reduce c modulo d.
                 // Math: (a * c) % d = (a * (c % d)) % d.
-                self.match_pat(op_id, (Pat::bind('a') * Pat::bind_const('c')) % Pat::bind_const('d'))
+                self.match_pat(op_id, (Pat::bind('a') * Pat::bind_const('c').int()) % Pat::bind_const('d').int())
             } {
                 let (x, (a, c), dv) = (m.op('x'), (m.op('a'), m.int('c')), m.int('d'));
                 // checked_rem never fires (instead of panicking) when dv == 0.
@@ -234,7 +238,7 @@ impl Kernel {
                 // Pattern 5: (a + C) % d where C is const and 0 <= a+C < d.
                 // No wraparound, result = a + C. Saturating adds never fire
                 // (instead of overflowing) on huge bounds.
-                self.match_pat(op_id, (Pat::bind('a') + Pat::bind_const('y')) % Pat::bind_const('d'))
+                self.match_pat(op_id, (Pat::bind('a') + Pat::bind_const('y').int()) % Pat::bind_const('d').int())
             } {
                 let (x, (a, y), dv) = (m.op('x'), (m.op('a'), m.int('y')), m.int('d'));
                 if let Some(&(min_a, max_a)) = bounds.get(&a)
@@ -245,7 +249,7 @@ impl Kernel {
                 }
             } else if let Some(m) = {
                 // x >> k -> 0 when 0 <= x < 2^k. dim_lt keeps the range in-pattern.
-                self.match_pat(op_id, Pat::bind('x') >> Pat::bind_const('k').dim_lt(64))
+                self.match_pat(op_id, Pat::bind('x') >> Pat::bind_const('k').int().dim_lt(64))
             } {
                 let (x, kv) = (m.op('x'), m.int('k'));
                 if let Some(&(lo, xu)) = bounds.get(&x)
@@ -660,12 +664,12 @@ impl Kernel {
                 op_id,
                 Pat::any([
                     Pat::all([
-                        (Pat::bind('r') >> Pat::bind_const('k')) + (Pat::bind('r') % Pat::bind_const('s')),
+                        (Pat::bind('r') >> Pat::bind_const('k').int()) + (Pat::bind('r') % Pat::bind_const('s').int()),
                         Pat::eq('k', 1),
                         Pat::any([Pat::eq('s', 1), Pat::eq('s', 2)]),
                     ]),
                     Pat::all([
-                        (Pat::bind('r') >> Pat::bind_const('k')) + (Pat::bind('r') & Pat::bind_const('s')),
+                        (Pat::bind('r') >> Pat::bind_const('k').int()) + (Pat::bind('r') & Pat::bind_const('s').int()),
                         Pat::eq('k', 1),
                         Pat::any([Pat::eq('s', 1), Pat::eq('s', 2)]),
                     ]),
@@ -701,7 +705,7 @@ impl Kernel {
                         // `(a + c*b) % m` -> `a % m` when `m` divides `c`.
                         // Guarded against overflow since a wrapping sum
                         // would break the identity.
-                        if let Some(m) = self.match_pat(y, Pat::bind_const('m')).map(|m| m.int('m'))
+                        if let Some(m) = self.match_pat(y, Pat::bind_const('m').int()).map(|m| m.int('m'))
                             && m != 0
                             && let Op::Binary { x: a, y: mult, bop: BOp::Add } = self.ops[x].op
                         {
@@ -737,7 +741,7 @@ impl Kernel {
                         // `(a + c*b) / c` -> `(a / c) + b`. Requires the
                         // multiple to match the shift/divisor, unsigned
                         // operands, and no overflow of the original sum.
-                        if let Some(amount) = self.match_pat(y, Pat::bind_const('a')).map(|m| m.int('a')) {
+                        if let Some(amount) = self.match_pat(y, Pat::bind_const('a').int()).map(|m| m.int('a')) {
                             // amount < 0 never occurred under as_dim; the
                             // shift below would panic on it.
                             let c = match bop {
@@ -787,13 +791,13 @@ impl Kernel {
         if let Some(m) = self.match_pat(op_id, Pat::bind('b') + Pat::bind('b')) {
             return Some((m.op('b'), 2));
         }
-        if let Some(m) = self.match_pat(op_id, Pat::bind('b') << Pat::bind_const('k')) {
+        if let Some(m) = self.match_pat(op_id, Pat::bind('b') << Pat::bind_const('k').int()) {
             let kv = m.int('k');
             if kv >= 0 && kv < 64 {
                 return Some((m.op('b'), 1i64 << kv));
             }
         }
-        if let Some(m) = self.match_pat(op_id, Pat::bind('b') * Pat::bind_const('c')) {
+        if let Some(m) = self.match_pat(op_id, Pat::bind('b') * Pat::bind_const('c').int()) {
             return Some((m.op('b'), m.int('c')));
         }
         None
