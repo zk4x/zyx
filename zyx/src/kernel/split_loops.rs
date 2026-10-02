@@ -260,7 +260,8 @@ impl Kernel {
         for (&st, op) in strides.iter().zip(splits) {
             let x = self.insert_before(dim_id, Op::Const(Constant::idx(st)));
             let y = self.insert_before(dim_id, op);
-            acc = self.insert_before(dim_id, Op::Mad { x, y, z: acc });
+            let xy = self.insert_before(dim_id, Op::Binary { x, y, bop: BOp::Mul });
+            acc = self.insert_before(dim_id, Op::Binary { x: xy, y: acc, bop: BOp::Add });
             split_ids.push(y);
         }
 

@@ -57,7 +57,7 @@ pub type MakeOpt = fn(&Kernel) -> Box<dyn Optimization>;
 impl Kernel {
     /// The default optimization set: the search space [`BeamSearch`] explores
     /// unless the caller provides its own list of make functions.
-    pub const fn default_optimizations() -> [MakeOpt; 8] {
+    pub const fn default_optimizations() -> [MakeOpt; 7] {
         [
             Kernel::opt_split_global_to_local,
             Kernel::opt_reassociate_commutative,
@@ -67,7 +67,6 @@ impl Kernel {
             Kernel::opt_split_loop,
             // Kernel::opt_vectorize, // TEMP disabled: debugging matmul_1 verify failure
             Kernel::opt_merge_nested_loops,
-            Kernel::opt_fuse_mad,
         ]
     }
 

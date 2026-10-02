@@ -230,11 +230,6 @@ impl Kernel {
                     add_param!(index);
                 }
                 Op::Loop { len, .. } => add_param!(len),
-                Op::Mad { x, y, z } => {
-                    add_param!(x);
-                    add_param!(y);
-                    add_param!(z);
-                }
                 Op::Wmma { a, b, c, .. } => {
                     add_param!(a);
                     add_param!(b);

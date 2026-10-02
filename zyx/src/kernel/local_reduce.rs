@@ -242,7 +242,8 @@ impl Kernel {
         let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor)));
         let new_len = self.insert_const_idx_before(loop_start, loop_len / factor as Dim);
         let ridx = self.insert_before(loop_start, Op::Loop { len: new_len });
-        self.ops[loop_start].op = Op::Mad { x: ridx, y: factor_const, z: lidx };
+        let xy = self.insert_before(loop_start, Op::Binary { x: ridx, y: factor_const, bop: BOp::Mul });
+        self.ops[loop_start].op = Op::Binary { x: xy, y: lidx, bop: BOp::Add };
 
         // Store to local accumulator
         let const_zero = self.insert_before(acc_load_id, Op::Const(Constant::idx(0)));

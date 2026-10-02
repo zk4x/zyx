@@ -106,7 +106,6 @@ impl Kernel {
                     }
                     loop_dep[&x].max(loop_dep[&y])
                 }
-                Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
                 Op::Param { .. }
                 | Op::Barrier
                 | Op::Range { .. }
@@ -187,7 +186,6 @@ impl Kernel {
                     max
                 }
                 Op::Index { vec, .. } => loop_dep[vec],
-                Op::Mad { x, y, z } => loop_dep[x].max(loop_dep[y]).max(loop_dep[z]),
                 Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth

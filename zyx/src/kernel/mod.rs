@@ -99,8 +99,8 @@ pub use crate::error::BackendError;
 pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{BOp, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, TTOp, TileDim};
-pub use pat::Pat;
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
+pub use pat::{DtypeClass, Pat};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
@@ -466,12 +466,6 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
-                Op::Mad { x, y, z } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                    *rcs.entry(x).or_insert(0) += 1;
-                    *rcs.entry(y).or_insert(0) += 1;
-                    *rcs.entry(z).or_insert(0) += 1;
-                }
                 Op::Range { kind, .. } => {
                     // Group length is a consumed operand (e.g. a Binary
                     // expression) and needs a refcount for codegen register
@@ -524,7 +518,6 @@ impl Kernel {
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Unary { x, .. } => op_id = x,
                 Op::Binary { x, .. } => op_id = x,
-                Op::Mad { x, .. } => op_id = x,
                 Op::Wmma { dims, .. } => match dims {
                     MMADims::m8n8k16 => return MemLayout::Vector(2),
                     MMADims::m16n8k8 => return MemLayout::Vector(4),
@@ -612,7 +605,6 @@ impl Kernel {
                     }
                     op_id = x;
                 }
-                Op::Mad { x, .. } => op_id = x,
                 Op::Wmma { dtype, .. } => match dtype {
                     MMADType::f16_f16_f16_f32 => return DType::F32,
                     MMADType::f16_f16_f16_f16 => return DType::F16,
@@ -977,7 +969,6 @@ impl Kernel {
                     BOp::Mul => "reduce_tile_prod",
                     _ => "reduce_tile",
                 }),
-                Op::Mad { .. } => parts.push("mad"),
                 Op::Wmma { .. } => parts.push("wmma"),
                 Op::Cast { .. } => parts.push("cast"),
                 Op::Bitcast { .. } => parts.push("bitcast"),
@@ -1050,11 +1041,6 @@ impl Kernel {
                 Op::Binary { .. } => {
                     if self.dtype(op_id).is_float() {
                         flops = flops.saturating_add(mult)
-                    }
-                }
-                Op::Mad { .. } => {
-                    if self.dtype(op_id).is_float() {
-                        flops = flops.saturating_add(2 * mult)
                     }
                 }
                 Op::Wmma { dims, .. } => {
@@ -1264,7 +1250,6 @@ impl Kernel {
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
-                | Op::Mad { x, .. }
                 | Op::TT(TTOp::MatmulTile { x, .. })
                 | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::TT(TTOp::LLKReduce { cb_in: x, .. })
@@ -1443,7 +1428,6 @@ impl Kernel {
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
-                | Op::Mad { x, .. }
                 | Op::TT(TTOp::MatmulTile { x, .. })
                 | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::TT(TTOp::LLKReduce { cb_in: x, .. })
@@ -1608,46 +1592,6 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Mad { x, y, z } => {
-                    match &self.ops[z].op {
-                        Op::Loop { len, .. } => {
-                            indices.insert(z, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), 1));
-                        }
-                        Op::Range { .. } => {
-                            indices.insert(z, (index_len_of(&self.ops[z].op), 1));
-                        }
-                        _ => {
-                            params.push((z, scale));
-                        }
-                    }
-                    match (&self.ops[x].op, &self.ops[y].op) {
-                        (Op::Loop { len, .. }, Op::Const(c)) => {
-                            indices.insert(
-                                x,
-                                (
-                                    self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                                    c.as_dim().unwrap() * scale,
-                                ),
-                            );
-                        }
-                        (Op::Range { .. }, Op::Const(c)) => {
-                            indices.insert(x, (index_len_of(&self.ops[x].op), c.as_dim().unwrap() * scale));
-                        }
-                        (Op::Const(c), Op::Loop { len, .. }) => {
-                            indices.insert(
-                                y,
-                                (
-                                    self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                                    c.as_dim().unwrap() * scale,
-                                ),
-                            );
-                        }
-                        (Op::Const(c), Op::Range { .. }) => {
-                            indices.insert(y, (index_len_of(&self.ops[y].op), c.as_dim().unwrap() * scale));
-                        }
-                        _ => {}
-                    }
-                }
                 Op::Const(c) => {
                     indices
                         .entry(OpId::NULL)
@@ -1709,11 +1653,6 @@ impl Kernel {
                     RangeKind::Group(len) => stack.push((len, false)),
                     RangeKind::Local(_) | RangeKind::Warp(_) => {}
                 },
-                Op::Mad { x, y, z } => {
-                    stack.push((*x, false));
-                    stack.push((*y, false));
-                    stack.push((*z, false));
-                }
                 _ => {}
             }
         }
@@ -1739,19 +1678,6 @@ impl Kernel {
                         Constant::binary(a.cast(dt), b.cast(dt), *bop)
                     })
                 }
-                // Fused multiply add: x * y + z, evaluated in the operands'
-                // least upper dtype (same rule as Binary).
-                Op::Mad { x, y, z } => values
-                    .get(x)
-                    .copied()
-                    .flatten()
-                    .zip(values.get(y).copied().flatten())
-                    .zip(values.get(z).copied().flatten())
-                    .map(|((a, b), c)| {
-                        let dt = a.dtype().least_upper_dtype(b.dtype()).least_upper_dtype(c.dtype());
-                        let prod = Constant::binary(a.cast(dt), b.cast(dt), BOp::Mul);
-                        Constant::binary(prod, c.cast(dt), BOp::Add)
-                    }),
                 Op::Loop { len } => values.get(len).copied().flatten(),
                 &Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => values.get(&len).copied().flatten(),
@@ -1790,11 +1716,6 @@ impl Kernel {
                 Op::Binary { x, y, .. } => {
                     stack.push(*x);
                     stack.push(*y);
-                }
-                Op::Mad { x, y, z } => {
-                    stack.push(*x);
-                    stack.push(*y);
-                    stack.push(*z);
                 }
                 _ => return false,
             }

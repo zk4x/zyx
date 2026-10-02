@@ -188,12 +188,9 @@ impl Kernel {
             }
             match op {
                 Op::Asm { .. } => true,
-                Op::Load { .. }
-                | Op::Unary { .. }
-                | Op::Binary { .. }
-                | Op::Cast { .. }
-                | Op::Bitcast { .. }
-                | Op::Mad { .. } => matches!(kernel.layout(id), MemLayout::Tile { .. }),
+                Op::Load { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } => {
+                    matches!(kernel.layout(id), MemLayout::Tile { .. })
+                }
                 _ => false,
             }
         };
@@ -468,10 +465,7 @@ impl Kernel {
             let x = *x_in;
             // Pattern-exclusive input: `x` feeds only this pattern.
             // A shared input falls back to the plain composite.
-            if !users
-                .get(&x)
-                .is_some_and(|us| !us.is_empty() && us.iter().all(|u| *u == neg || Some(*u) == extra))
-            {
+            if !users.get(&x).is_some_and(|us| !us.is_empty() && us.iter().all(|u| *u == neg || Some(*u) == extra)) {
                 return None;
             }
             Some(x)
@@ -492,14 +486,9 @@ impl Kernel {
                             matches!(self.layout(x), MemLayout::Tile { .. }),
                             "tt_fuse_llks: silu input {x:?} is not a tile"
                         );
-                        self.insert_before(
-                            op_id,
-                            Op::Asm { asm: TinyString::new("silu_tile_init();"), ops: TinyVec::new(&[]) },
-                        );
-                        self.ops[op_id].op = Op::TT(TTOp::LLK {
-                            asm: TinyString::new("silu_tile({0});"),
-                            ops: TinyVec::new(&[x]),
-                        });
+                        self.insert_before(op_id, Op::Asm { asm: TinyString::new("silu_tile_init();"), ops: TinyVec::new(&[]) });
+                        self.ops[op_id].op =
+                            Op::TT(TTOp::LLK { asm: TinyString::new("silu_tile({0});"), ops: TinyVec::new(&[x]) });
                         break;
                     }
                 }
@@ -514,14 +503,8 @@ impl Kernel {
                     matches!(self.layout(x), MemLayout::Tile { .. }),
                     "tt_fuse_llks: sigmoid input {x:?} is not a tile"
                 );
-                self.insert_before(
-                    op_id,
-                    Op::Asm { asm: TinyString::new("sigmoid_tile_init();"), ops: TinyVec::new(&[]) },
-                );
-                self.ops[op_id].op = Op::TT(TTOp::LLK {
-                    asm: TinyString::new("sigmoid_tile({0});"),
-                    ops: TinyVec::new(&[x]),
-                });
+                self.insert_before(op_id, Op::Asm { asm: TinyString::new("sigmoid_tile_init();"), ops: TinyVec::new(&[]) });
+                self.ops[op_id].op = Op::TT(TTOp::LLK { asm: TinyString::new("sigmoid_tile({0});"), ops: TinyVec::new(&[x]) });
             }
             op_id = next;
         }
@@ -829,11 +812,7 @@ impl Kernel {
                                         matches!(self.layout(*u), MemLayout::Tile { .. })
                                             && matches!(
                                                 op,
-                                                Op::Unary { .. }
-                                                    | Op::Binary { .. }
-                                                    | Op::Cast { .. }
-                                                    | Op::Bitcast { .. }
-                                                    | Op::Mad { .. }
+                                                Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. }
                                             )
                                     }
                                 })
@@ -1020,11 +999,7 @@ impl Kernel {
                                             matches!(self.layout(u), MemLayout::Tile { .. })
                                                 && matches!(
                                                     op,
-                                                    Op::Unary { .. }
-                                                        | Op::Binary { .. }
-                                                        | Op::Cast { .. }
-                                                        | Op::Bitcast { .. }
-                                                        | Op::Mad { .. }
+                                                    Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. }
                                                 )
                                         }
                                     };
@@ -1239,15 +1214,8 @@ impl Kernel {
                         matches!(self.ops[*src].op, Op::GEP { x, .. } if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }))
                     }
                     op => {
-                        matches!(
-                            op,
-                            Op::Unary { .. }
-                                | Op::Binary { .. }
-                                | Op::Cast { .. }
-                                | Op::Bitcast { .. }
-                                | Op::Mad { .. }
-                                | Op::Asm { .. }
-                        ) && matches!(self.layout(op_id), MemLayout::Tile { .. })
+                        matches!(op, Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Asm { .. })
+                            && matches!(self.layout(op_id), MemLayout::Tile { .. })
                     }
                 };
                 if bad {
@@ -1296,7 +1264,6 @@ impl Kernel {
                     InitAction::CastInit(self.dtype(x), dtype)
                 }
                 Op::Bitcast { .. } => InitAction::None,
-                Op::Mad { .. } => panic!("tt_init_math: tiled mad {op_id:?} has no LLK call"),
                 Op::Copy { src, dst } => {
                     if self.is_circular_gep(*src) && self.is_circular_gep(*dst) {
                         let Op::GEP { x: dcb, .. } = self.ops[*dst].op else {
@@ -1344,7 +1311,6 @@ impl Kernel {
                     Op::Load { src } => matches!(self.ops[*src].op, Op::GEP { x, .. } if x == acc),
                     Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => acc_values.contains(x),
                     Op::Binary { x, y, .. } => acc_values.contains(x) || acc_values.contains(y),
-                    Op::Mad { x, y, z, .. } => acc_values.contains(x) || acc_values.contains(y) || acc_values.contains(z),
                     Op::TT(TTOp::BroadcastTile { x, .. }) => acc_values.contains(x),
                     Op::Asm { ops, .. } => ops.iter().copied().any(|o| !o.is_null() && acc_values.contains(&o)),
                     _ => false,
@@ -1363,10 +1329,8 @@ impl Kernel {
                     && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
                     && users.get(&op_id).is_some_and(|us| {
                         us.iter().any(|u| {
-                            matches!(
-                                self.ops[*u].op,
-                                Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Mad { .. }
-                            ) || matches!(self.ops[*u].op, Op::Store { src: x, .. } if x == op_id)
+                            matches!(self.ops[*u].op, Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. })
+                                || matches!(self.ops[*u].op, Op::Store { src: x, .. } if x == op_id)
                         })
                     })
                 {
@@ -1776,11 +1740,7 @@ impl Kernel {
                                         matches!(self.layout(*u), MemLayout::Tile { .. })
                                             && matches!(
                                                 op,
-                                                Op::Unary { .. }
-                                                    | Op::Binary { .. }
-                                                    | Op::Cast { .. }
-                                                    | Op::Bitcast { .. }
-                                                    | Op::Mad { .. }
+                                                Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. }
                                             )
                                     }
                                 })

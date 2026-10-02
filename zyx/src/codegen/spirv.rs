@@ -1596,28 +1596,6 @@ impl Kernel {
                         spv_values.insert(op_id, rid);
                     }
 
-                    Op::Mad { x, y, z } => {
-                        let x_id = spv_values[&x];
-                        let y_id = spv_values[&y];
-                        let z_id = spv_values[&z];
-                        let dt = dtypes[&x].0;
-                        let (_, layout) = dtypes[&op_id];
-                        let result_type =
-                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);
-                        let rid = asm.id();
-
-                        // FMad not available in spirv crate, decompose to FMul + FAdd
-                        if dt.is_float() {
-                            let mul = asm.id();
-                            asm.emit_typed(OpFMul, result_type, mul, &[x_id, y_id]);
-                            asm.emit_typed(OpFAdd, result_type, rid, &[mul, z_id]);
-                        } else {
-                            let mul = asm.id();
-                            asm.emit_typed(OpIMul, result_type, mul, &[x_id, y_id]);
-                            asm.emit_typed(OpIAdd, result_type, rid, &[mul, z_id]);
-                        }
-                        spv_values.insert(op_id, rid);
-                    }
                     Op::Range { axis, kind: scope, .. } => {
                         let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
                         let loaded = asm.id();

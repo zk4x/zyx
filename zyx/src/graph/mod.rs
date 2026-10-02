@@ -1120,7 +1120,6 @@ impl Graph {
             | Op::Range { .. }
             | Op::Loop { .. }
             | Op::EndLoop
-            | Op::Mad { .. }
             | Op::Barrier
             | Op::Wmma { .. }
             | Op::TT { .. }
@@ -1311,7 +1310,6 @@ impl Graph {
             | Op::Range { .. }
             | Op::Loop { .. }
             | Op::EndLoop
-            | Op::Mad { .. }
             | Op::Barrier
             | Op::Wmma { .. }
             | Op::TT { .. }
@@ -1368,7 +1366,6 @@ impl Graph {
                 | Op::Range { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop
-                | Op::Mad { .. }
                 | Op::Barrier
                 | Op::Wmma { .. }
                 | Op::TT(TTOp::ReduceTile { .. })
@@ -1708,7 +1705,6 @@ impl Runtime {
                     | Op::GEP { .. }
                     | Op::Load { .. }
                     | Op::Copy { .. }
-                    | Op::Mad { .. }
                     | Op::Asm { .. }
                     | Op::Index { .. }
                     | Op::Wmma { .. }
@@ -1846,7 +1842,6 @@ impl Runtime {
                                     | Op::GEP { .. }
                                     | Op::Load { .. }
                                     | Op::Copy { .. }
-                                    | Op::Mad { .. }
                                     | Op::Asm { .. }
                                     | Op::Index { .. }
                                     | Op::Wmma { .. }

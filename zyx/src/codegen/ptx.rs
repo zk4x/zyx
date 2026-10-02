@@ -806,29 +806,6 @@ impl Kernel {
                         type_ext,
                     );
                 }
-                Op::Mad { x, y, z, .. } => {
-                    let dtype = dtypes[&op_id].0;
-                    let xr = comp.get_var(x);
-                    let yr = comp.get_var(y);
-                    let zr = comp.get_var(z);
-                    let reg = comp.new_var(op_id, dtype, MemLayout::Scalar, rcs[&op_id]);
-                    let mul = comp.new_reg(dtype, MemLayout::Scalar, 1);
-                    _ = writeln!(
-                        comp.body,
-                        "{}{}.{} %r{mul}, %r{xr}, %r{yr};",
-                        comp.indent,
-                        comp.bop_to_ptx(BOp::Mul, dtype),
-                        dtype.ptx(),
-                    );
-                    _ = writeln!(
-                        comp.body,
-                        "{}{}.{} %r{reg}, %r{mul}, %r{zr};",
-                        comp.indent,
-                        comp.bop_to_ptx(BOp::Add, dtype),
-                        dtype.ptx(),
-                    );
-                    comp.release_reg(mul);
-                }
                 Op::Loop { len } => {
                     comp.loop_level += 1;
                     // Boolean length = conditional (the old `If`); the

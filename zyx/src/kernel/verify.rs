@@ -72,7 +72,6 @@ impl Kernel {
                     | Op::Range { .. }
                     | Op::Loop { .. }
                     | Op::EndLoop
-                    | Op::Mad { .. }
                     | Op::Index { .. }
                     | Op::Barrier
                     | Op::Wmma { .. }
@@ -314,7 +313,6 @@ impl Kernel {
                                 | Op::Bitcast { .. }
                                 | Op::Unary { .. }
                                 | Op::Binary { .. }
-                                | Op::Mad { .. }
                                 | Op::Stack { .. }
                                 | Op::Load { .. }
                                 | Op::Copy { .. }
@@ -348,7 +346,6 @@ impl Kernel {
                                 | Op::Bitcast { .. }
                                 | Op::Unary { .. }
                                 | Op::Binary { .. }
-                                | Op::Mad { .. }
                                 | Op::Stack { .. }
                                 | Op::Load { .. }
                                 | Op::Copy { .. }
@@ -377,7 +374,6 @@ impl Kernel {
                                 | Op::Bitcast { .. }
                                 | Op::Unary { .. }
                                 | Op::Binary { .. }
-                                | Op::Mad { .. }
                                 | Op::Stack { .. }
                                 | Op::Load { .. }
                                 | Op::Copy { .. }
@@ -488,17 +484,6 @@ impl Kernel {
                         panic!();
                     }
                     dtypes.insert(op_id, dtype);
-                }
-                Op::Mad { x, y, z } => {
-                    check(op_id, x, &stack);
-                    check(op_id, y, &stack);
-                    check(op_id, z, &stack);
-                    if dtypes[&x] != dtypes[&y] || dtypes[&x] != dtypes[&z] {
-                        println!("Mad dtype mismatch on op={op_id}.");
-                        self.debug();
-                        panic!();
-                    }
-                    dtypes.insert(op_id, dtypes[&x]);
                 }
                 Op::Const(v) => {
                     dtypes.insert(op_id, v.dtype());
@@ -770,7 +755,7 @@ impl Kernel {
                     }
                 }
                 Op::Storage { .. } => {}
-                Op::Loop { .. } | Op::Unary { .. } | Op::Cast { .. } | Op::Binary { .. } | Op::Mad { .. } => {
+                Op::Loop { .. } | Op::Unary { .. } | Op::Cast { .. } | Op::Binary { .. } => {
                     self.rederive_bounds(&mut bounds, op_id);
                 }
                 Op::Range { kind: scope, .. } => {
@@ -988,12 +973,6 @@ impl Kernel {
                 if let Some(&(_, upper)) = prev.get(&len) {
                     prev.insert(op_id, (0, upper.saturating_sub(1)));
                 }
-            }
-            Op::Mad { x, y, z } => {
-                let Some(&(xl, xu)) = prev.get(&x) else { return };
-                let Some(&(yl, yu)) = prev.get(&y) else { return };
-                let Some(&(zl, zu)) = prev.get(&z) else { return };
-                prev.insert(op_id, (xl.saturating_mul(yl).saturating_add(zl), xu.saturating_mul(yu).saturating_add(zu)));
             }
             _ => {}
         }

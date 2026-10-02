@@ -449,14 +449,6 @@ impl Kernel {
                         _ => emit_binary_op(&mut source, &indent, reg, usize::MAX, &x, &y, bop),
                     }
                 }
-                Op::Mad { x, y, z } => {
-                    let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};");
-                }
                 Op::Param { .. } => {}
                 Op::Storage { dtype, scope, len } => {
                     debug_assert_eq!(scope, MemScope::Register, "C backend only supports register scoped storage");

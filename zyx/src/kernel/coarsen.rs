@@ -246,7 +246,8 @@ impl Kernel {
                             if let Some(remap) = remaps.get(&x) {
                                 x = remap[i];
                             }
-                            let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
+                            let xy = self.insert_before(id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                            let index = self.insert_before(id, Op::Binary { x: xy, y: offsets[i], bop: BOp::Add });
                             let gep = self.insert_before(id, Op::GEP { x: buf, index, layout });
                             id = self.insert_after(gep, Op::Store { dst: gep, src: x });
                             ids.push(id);
@@ -278,7 +279,8 @@ impl Kernel {
                     };
                     if accumulator_storages.contains(&buf) {
                         for &offset in &offsets {
-                            let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offset });
+                            let xy = self.insert_before(id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                            let index = self.insert_before(id, Op::Binary { x: xy, y: offset, bop: BOp::Add });
                             let gep = self.insert_before(id, Op::GEP { x: buf, index, layout });
                             id = self.insert_after(gep, Op::Load { src: gep });
                             ids.push(id);

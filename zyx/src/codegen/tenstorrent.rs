@@ -317,7 +317,6 @@ impl<'a> TtSection<'a> {
                 }
                 _ => Err(self.err(format!("DRAM param {id:?} in an index expression"))),
             },
-            Op::Mad { x, y, z, .. } => Ok(format!("({}*{}+{})", self.expr(*x)?, self.expr(*y)?, self.expr(*z)?)),
             Op::Binary { x, y, bop, .. } => {
                 let op = match bop {
                     BOp::Add => "+",
@@ -511,7 +510,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             Op::Copy { src, dst } => render_copy(sec, id, *src, *dst)?,
             Op::Load { src } => render_load(sec, id, *src)?,
             Op::Store { src: x, dst } => render_store(sec, id, *x, *dst)?,
-            Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Mad { .. } => {
+            Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } => {
                 if matches!(sec.k.layout(id), MemLayout::Tile { .. }) {
                     render_tile_op(sec, id)?;
                 }

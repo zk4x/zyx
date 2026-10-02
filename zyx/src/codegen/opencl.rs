@@ -355,21 +355,6 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Mad { x, y, z } => {
-                    let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    match dtype.1 {
-                        MemLayout::Vector(len) => {
-                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
-                                _ = writeln!(source, "{indent}r{reg}.{c} = {x}.{c} * {y}.{c} + {z}.{c};");
-                            }
-                        }
-                        _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
-                    }
-                }
                 Op::Range { axis, kind: scope } => {
                     indices.insert(op_id, loop_id);
                     let (idx_expr, max_idx) = match scope {

@@ -166,12 +166,6 @@ impl Kernel {
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(y).or_insert(0) += 1;
                     }
-                    Op::Mad { x, y, z } => {
-                        dtypes.insert(op_id, dtypes[&x]);
-                        *rcs.entry(x).or_insert(0) += 1;
-                        *rcs.entry(y).or_insert(0) += 1;
-                        *rcs.entry(z).or_insert(0) += 1;
-                    }
                     Op::Range { .. } => {
                         dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
                     }
@@ -292,7 +286,6 @@ impl Kernel {
                 | Op::Bitcast { .. }
                 | Op::Unary { .. }
                 | Op::Binary { .. }
-                | Op::Mad { .. }
                 | Op::Stack { .. }
                 | Op::Wmma { .. }
                 | Op::TT(TTOp::ReduceTile { .. })
@@ -380,12 +373,6 @@ impl Kernel {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
-                    }
-                }
-                Op::Mad { .. } => {
-                    wi_ops += 2 * loop_mult;
-                    if !indexing_ops.contains(&op_id) {
-                        wi_compute_ops += 2 * loop_mult;
                     }
                 }
                 Op::Const(_)

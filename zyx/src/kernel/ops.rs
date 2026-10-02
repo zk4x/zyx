@@ -201,16 +201,6 @@ pub enum Op {
     },
     /// Closes the innermost open [`Op::Loop`].
     EndLoop,
-    // fused multiply add
-    /// Fused multiply-add: `x * y + z`.
-    Mad {
-        /// Multiplicand.
-        x: OpId,
-        /// Multiplier.
-        y: OpId,
-        /// Addend.
-        z: OpId,
-    },
     /// Ordering barrier: an operand-free effect and DCE root that pins
     /// program order across it.
     Barrier,
@@ -571,7 +561,6 @@ impl Op {
             Op::Range { .. } => 10,
             Op::Loop { .. } => 11,
             Op::EndLoop => 12,
-            Op::Mad { .. } => 15,
             Op::Index { .. } => 16,
             Op::Barrier => 17,
             Op::Wmma { .. } => 18,
@@ -616,7 +605,6 @@ impl PartialEq for Op {
             (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => aa == ba && ak == bk,
             (Op::Loop { len: a }, Op::Loop { len: b }) => a == b,
             (Op::EndLoop, Op::EndLoop) => true,
-            (Op::Mad { x: a, y: ay, z: az }, Op::Mad { x: b, y: by, z: bz }) => a == b && ay == by && az == bz,
             (Op::Index { vec: a, idx: ai }, Op::Index { vec: b, idx: bi }) => a == b && ai == bi,
             (Op::Barrier, Op::Barrier) => true,
             (
@@ -715,11 +703,6 @@ impl Hash for Op {
             }
             Op::Loop { len } => len.hash(state),
             Op::EndLoop | Op::Barrier => {}
-            Op::Mad { x, y, z } => {
-                x.hash(state);
-                y.hash(state);
-                z.hash(state);
-            }
             Op::Index { vec, idx } => {
                 vec.hash(state);
                 idx.hash(state);
@@ -822,7 +805,6 @@ impl Ord for Op {
             (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => (aa, ak).cmp(&(ba, bk)),
             (Op::Loop { len: a }, Op::Loop { len: b }) => a.cmp(b),
             (Op::EndLoop, Op::EndLoop) | (Op::Barrier, Op::Barrier) => std::cmp::Ordering::Equal,
-            (Op::Mad { x: a, y: ay, z: az }, Op::Mad { x: b, y: by, z: bz }) => (a, ay, az).cmp(&(b, by, bz)),
             (Op::Index { vec: a, idx: ai }, Op::Index { vec: b, idx: bi }) => (a, ai).cmp(&(b, bi)),
             (
                 Op::Wmma { dims: ad, layout: al, dtype: at, a, b: ab, c: ac },
@@ -1172,7 +1154,6 @@ impl Op {
             Op::Unary { x, .. } => vec![*x],
             &Op::Binary { x, y, .. } => vec![x, y],
             &Op::Load { src } => vec![src],
-            &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().collect(),
             &Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
@@ -1234,7 +1215,6 @@ impl Op {
             Op::Unary { x, .. } => vec![x],
             Op::Binary { x, y, .. } => vec![x, y],
             Op::Load { src } => vec![src],
-            Op::Mad { x, y, z } => vec![x, y, z],
             Op::Stack { ops } => ops.iter_mut().collect(),
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],

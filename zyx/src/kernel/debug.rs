@@ -397,18 +397,6 @@ impl Display for Kernel {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}r{y}{op3}").unwrap();
                     }
                 }
-                Op::Mad { x, y, z } => {
-                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
-                    dtypes.insert(op_id, dtype);
-                    let x = id_map.get(&x).copied().unwrap_or(x);
-                    let y = id_map.get(&y).copied().unwrap_or(y);
-                    let z = id_map.get(&z).copied().unwrap_or(z);
-                    if let Some((l, u)) = bounds.get(&op_id) {
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = r{x} * r{y} + r{z}    // {l}..={u}").unwrap();
-                    } else {
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = r{x} * r{y} + r{z}").unwrap();
-                    }
-                }
                 Op::Wmma { dims, layout, dtype, c, a, b } => {
                     let cdtype = dtypes.get(&c).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, cdtype);

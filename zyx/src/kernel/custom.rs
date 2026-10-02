@@ -1070,7 +1070,8 @@ impl Kernel {
         let x = x.into_op(self);
         let y = y.into_op(self);
         let z = z.into_op(self);
-        self.push_back(Op::Mad { x, y, z })
+        let x = self.mul(x, y);
+        self.add(x, z)
     }
 }
 

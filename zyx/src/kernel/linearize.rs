@@ -1033,7 +1033,6 @@ impl Kernel {
                 | Op::Unary { .. }
                 | Op::Cast { .. }
                 | Op::Bitcast { .. }
-                | Op::Mad { .. }
                 | Op::Load { .. }
                 | Op::Range { .. }
                 | Op::Reduce { .. }
@@ -1264,7 +1263,6 @@ impl Kernel {
         for op_id in ops {
             let operands: Vec<OpId> = match self.ops[op_id].op {
                 Op::Binary { x, y, .. } => vec![x, y],
-                Op::Mad { x, y, z } => vec![x, y, z],
                 Op::Load { src } | Op::Store { dst: src, .. } => {
                     let index = match self.ops[src].op {
                         Op::GEP { index, .. } => index,

@@ -16,7 +16,7 @@
 use crate::{
     DType, Map,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId},
+    kernel::{BOp, Kernel, Op, OpId, Pat},
     shape::Dim,
 };
 
@@ -74,7 +74,12 @@ impl Kernel {
             // shl_shr roundtrip: (x << n) >> n -> x (and the shr-of-add form).
             if let Some(y) = self.match_shl_shr_roundtrip(op_id) {
                 self.remap(op_id, y);
-            } else if let Some(replacement) = self.match_bitwise_identity(op_id) {
+            } else if let Some(replacement) = {
+                let x = Pat::bind("x");
+                self.match_pat(op_id, &(&x & Pat::const_if(Constant::is_max)))
+                    .or_else(|| self.match_pat(op_id, &(&x | 0)))
+                    .map(|m| m["x"])
+            } {
                 self.remap(op_id, replacement);
             } else if let &Op::Binary { x, y, bop } = self.at(op_id)
                 && matches!(bop, BOp::Div | BOp::Mod)
@@ -146,60 +151,31 @@ impl Kernel {
     fn simplify_mod_div_identity(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("simplify_mod_div_identity");
+        // `(a % n) + (n * (a / n))` (in either order at both levels): the
+        // truncated-division round-trip, valid for non-negative `a` and
+        // positive `n`. Operand orders are handled by the matcher's
+        // commutativity retry; the repeated `a`/`n` binders assert the
+        // shared operands (replacing `match_div_a_n`'s `==` checks); the
+        // integer binders replace the float-dtype guard.
+        let a = Pat::bind("a").int();
+        let n = Pat::bind("n").int();
+        let pat = (&a % &n) + (&n * (&a / &n));
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let &Op::Binary { x, y, bop: BOp::Add } = self.at(op_id) {
-                if let Some(a) = self.match_mod_div_identity(x, y, bounds).or_else(|| self.match_mod_div_identity(y, x, bounds)) {
+            if let Some(m) = self.match_pat(op_id, &pat) {
+                let (a, n) = (m["a"], m["n"]);
+                // Default to the widest possible (negative) bound so a missing entry in
+                // the conservative bounds map does NOT silently satisfy `a >= 0`. `n`
+                // defaults to 0, which fails the `n > 0` check, so an unbounded `n` is
+                // also refused.
+                let a_lb = bounds.get(&a).map_or(Dim::MIN, |&(lb, _)| lb);
+                let n_lb = bounds.get(&n).map_or(0, |&(lb, _)| lb);
+                if a_lb >= 0 && n_lb > 0 {
                     self.remap(op_id, a);
                 }
             }
             op_id = next;
-        }
-    }
-
-    /// If `mod_op` is `a % n` and `mul_op` is `n * (a / n)` (in either mul order)
-    /// with the same `a`/`n`, return `a`. `a` must be non-negative and `n`
-    /// strictly positive (per `bounds`) for the truncated-division identity to hold.
-    fn match_mod_div_identity(&self, mod_op: OpId, mul_op: OpId, bounds: &Map<OpId, (Dim, Dim)>) -> Option<OpId> {
-        let (a, n) = match self.at(mod_op) {
-            Op::Binary { x, y, bop: BOp::Mod } => (*x, *y),
-            _ => return None,
-        };
-        if self.dtype(a).is_float() || self.dtype(n).is_float() {
-            return None;
-        }
-        // Default to the widest possible (negative) bound so a missing entry in
-        // the conservative bounds map does NOT silently satisfy `a >= 0`. `n`
-        // defaults to 0, which fails the `n > 0` check, so an unbounded `n` is
-        // also refused.
-        let a_lb = bounds.get(&a).map_or(Dim::MIN, |&(lb, _)| lb);
-        let n_lb = bounds.get(&n).map_or(0, |&(lb, _)| lb);
-        if a_lb < 0 || n_lb <= 0 {
-            return None;
-        }
-        match self.at(mul_op) {
-            Op::Binary { x, y, bop: BOp::Mul } => {
-                if self.match_div_a_n(*x, *y, a, n).is_some() {
-                    return Some(a);
-                }
-                if self.match_div_a_n(*y, *x, a, n).is_some() {
-                    return Some(a);
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-
-    /// Returns `Some(())` when `mul_side == n` and `div_side == Div(a, n)`.
-    fn match_div_a_n(&self, mul_side: OpId, div_side: OpId, a: OpId, n: OpId) -> Option<()> {
-        if mul_side != n {
-            return None;
-        }
-        match self.at(div_side) {
-            Op::Binary { x, y, bop: BOp::Div } if *x == a && *y == n => Some(()),
-            _ => None,
         }
     }
 
@@ -472,51 +448,25 @@ impl Kernel {
     }
 
     fn match_shl_shr_roundtrip(&self, op_id: OpId) -> Option<OpId> {
-        let Op::Binary { x: add_op, y: shift_amount, bop: BOp::BitShiftRight } = self.at(op_id) else {
+        let y = Pat::bind("y");
+        // Shift amounts bind separately (distinct const ops) and must be
+        // consts structurally — `All` with `Const` — so the commutativity
+        // retry engages on constness; the guard compares values.
+        let n1 = Pat::all(vec![Pat::bind("n1"), Pat::Const]);
+        let n2 = Pat::all(vec![Pat::bind("n2"), Pat::Const]);
+        let rest = Pat::bind("rest");
+        // `(shl(y, n1) + rest) >> n2`: the Add order is handled by the
+        // matcher's commutativity retry. The two shift amounts are distinct
+        // const ops, so they bind separately and the guard compares values.
+        let pat = ((&y << &n1) + &rest) >> &n2;
+        let m = self.match_pat(op_id, &pat)?;
+        let (y, n1, n2) = (m["y"], m["n1"], m["n2"]);
+        let (Some(k1), Some(k2)) = (self.const_dim(n1), self.const_dim(n2)) else {
             return None;
         };
-        let Op::Const(cst) = self.at(*shift_amount) else { return None };
-        let n = cst.as_dim()?;
-        if n >= 64 {
-            return None;
-        }
-        let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(*add_op) else {
-            return None;
-        };
-        for candidate in [add_x, add_y] {
-            if let Op::Binary { x: y, y: s, bop: BOp::BitShiftLeft } = self.at(*candidate)
-                && let Op::Const(c) = self.at(*s)
-                && c.as_dim() == Some(n)
-            {
-                return Some(*y);
-            }
-        }
-        None
+        if k1 == k2 && k1 < 64 { Some(y) } else { None }
     }
 
-    fn match_bitwise_identity(&self, op_id: OpId) -> Option<OpId> {
-        if let Op::Binary { x, y, bop: BOp::BitAnd } = self.at(op_id) {
-            for candidate in [(*x, *y), (*y, *x)] {
-                if let Op::Const(c) = self.at(candidate.0)
-                    && c.is_max()
-                {
-                    return Some(candidate.1);
-                }
-            }
-        }
-        if let Op::Binary { x, y, bop: BOp::BitOr } = self.at(op_id) {
-            for candidate in [(*x, *y), (*y, *x)] {
-                if let Op::Const(c) = self.at(candidate.0)
-                    && c.as_dim() == Some(0)
-                {
-                    return Some(candidate.1);
-                }
-            }
-        }
-        None
-    }
-
-    #[allow(unused)]
     fn const_dim(&self, op_id: OpId) -> Option<Dim> {
         let Op::Const(c) = self.ops[op_id].op else { return None };
         c.as_dim()
@@ -923,13 +873,6 @@ fn match_mul_or_shl(k: &Kernel, op: OpId) -> Option<(OpId, Dim)> {
         return Some((*a, 1i64 << cval));
     }
     None
-}
-
-fn mad(k: &Kernel, x: OpId) -> Option<(OpId, Dim, OpId)> {
-    let Op::Mad { x: a, y: c, z: b } = k.at(x) else { return None };
-    let Op::Const(cst) = k.at(*c) else { return None };
-    let cval = cst.as_dim()?;
-    Some((*a, cval, *b))
 }
 
 /// Statically evaluate a comparison / equality op `x <op> c` (or `c <op> x`)

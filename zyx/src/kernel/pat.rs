@@ -2,25 +2,57 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use crate::{
-    Map,
+    DType, Map,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, UOp},
     scalar::{bf16, f16, f8e4m3, f8e5m2},
 };
+
+/// Dtype class constraining a [`Pat::Bind`] binder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DtypeClass {
+    /// Any dtype.
+    Any,
+    /// Floating-point dtypes (`is_float`).
+    Float,
+    /// Integer dtypes (`is_int`: signed and unsigned, but not bool).
+    Int,
+    /// Unsigned integer dtypes (`is_uint`).
+    Unsigned,
+}
+
+impl DtypeClass {
+    fn matches(self, dtype: DType) -> bool {
+        match self {
+            DtypeClass::Any => true,
+            DtypeClass::Float => dtype.is_float(),
+            DtypeClass::Int => dtype.is_int(),
+            DtypeClass::Unsigned => dtype.is_uint(),
+        }
+    }
+}
 
 /// Pattern for matching kernel (and graph) IR shapes.
 ///
 /// `Pat` is immutable: patterns are built once from constructors and
 /// operators, then matched by shared reference. No method takes `&mut Pat`.
 #[derive(Clone, Debug)]
-pub enum Pat {
-    /// Matches any op and binds it to `name`. A repeated name asserts
+pub enum Pat {    /// Matches anything and binds it to `name`. A repeated name asserts
     /// `OpId` equality with the first binding.
-    Bind(&'static str),
+    Bind {
+        /// Binder name.
+        name: &'static str,
+        /// Required dtype class of the matched op.
+        class: DtypeClass,
+    },
     /// Matches any compile-time constant (`Op::Const`).
     Const,
     /// Matches a constant with this exact value.
     Value(Constant),
+    /// Matches a constant satisfying this predicate (e.g. `Constant::is_max`).
+    /// Value checks live in-pattern so commutativity retry engages on them;
+    /// a failing predicate is a structural mismatch like any other.
+    ConstIf(fn(Constant) -> bool),
     /// Dtypeless numeric constant (0, 1, -1, ...). Matches any `Op::Const`
     /// with a numerically equal value, regardless of dtype. This gets its
     /// own matcher arm: `as_dim` alone cannot express it (it returns `None`
@@ -78,11 +110,188 @@ impl<P: Into<Pat>> std::ops::Div<P> for Pat {
     }
 }
 
+impl<P: Into<Pat>> std::ops::Sub<P> for &Pat {
+    type Output = Pat;
+    fn sub(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::Sub }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::Sub<P> for Pat {
+    type Output = Pat;
+    fn sub(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::Sub }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::Mul<P> for &Pat {
+    type Output = Pat;
+    fn mul(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::Mul }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::Mul<P> for Pat {
+    type Output = Pat;
+    fn mul(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::Mul }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::Rem<P> for &Pat {
+    type Output = Pat;
+    fn rem(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::Mod }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::Rem<P> for Pat {
+    type Output = Pat;
+    fn rem(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::Mod }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::BitAnd<P> for &Pat {
+    type Output = Pat;
+    fn bitand(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::BitAnd }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::BitAnd<P> for Pat {
+    type Output = Pat;
+    fn bitand(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::BitAnd }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::BitOr<P> for &Pat {
+    type Output = Pat;
+    fn bitor(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::BitOr }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::BitOr<P> for Pat {
+    type Output = Pat;
+    fn bitor(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::BitOr }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::BitXor<P> for &Pat {
+    type Output = Pat;
+    fn bitxor(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::BitXor }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::BitXor<P> for Pat {
+    type Output = Pat;
+    fn bitxor(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::BitXor }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::Shl<P> for &Pat {
+    type Output = Pat;
+    fn shl(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::BitShiftLeft }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::Shl<P> for Pat {
+    type Output = Pat;
+    fn shl(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::BitShiftLeft }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::Shr<P> for &Pat {
+    type Output = Pat;
+    fn shr(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::BitShiftRight }
+    }
+}
+
+impl<P: Into<Pat>> std::ops::Shr<P> for Pat {
+    type Output = Pat;
+    fn shr(self, rhs: P) -> Pat {
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::BitShiftRight }
+    }
+}
+
+impl std::ops::Neg for &Pat {
+    type Output = Pat;
+    fn neg(self) -> Pat {
+        Pat::Unary { x: Box::new(self.clone()), uop: UOp::Neg }
+    }
+}
+
+impl std::ops::Neg for Pat {
+    type Output = Pat;
+    fn neg(self) -> Pat {
+        Pat::Unary { x: Box::new(self), uop: UOp::Neg }
+    }
+}
+
+impl std::ops::Not for &Pat {
+    type Output = Pat;
+    fn not(self) -> Pat {
+        Pat::Unary { x: Box::new(self.clone()), uop: UOp::Not }
+    }
+}
+
+impl std::ops::Not for Pat {
+    type Output = Pat;
+    fn not(self) -> Pat {
+        Pat::Unary { x: Box::new(self), uop: UOp::Not }
+    }
+}
+
 impl Pat {
     /// Matches anything and binds it to `name`. A repeated name asserts
     /// `OpId` equality with the first binding.
     pub fn bind(name: &'static str) -> Pat {
-        Pat::Bind(name)
+        Pat::Bind { name, class: DtypeClass::Any }
+    }
+
+    /// Matches if any alternative matches. Failed alternatives leave no bindings.
+    pub fn any(pats: Vec<Pat>) -> Pat {
+        Pat::Any(pats.into_boxed_slice())
+    }
+
+    /// Matches if all alternatives match the same op. Bindings merge.
+    pub fn all(pats: Vec<Pat>) -> Pat {
+        Pat::All(pats.into_boxed_slice())
+    }
+
+    /// Matches a constant satisfying this predicate (e.g. `Constant::is_max`).
+    pub fn const_if(f: fn(Constant) -> bool) -> Pat {
+        Pat::ConstIf(f)
+    }
+
+    /// Constrain this binder to floating-point dtypes. Panics on non-binders.
+    pub fn float(self) -> Pat {
+        self.with_class(DtypeClass::Float)
+    }
+
+    /// Constrain this binder to integer dtypes. Panics on non-binders.
+    pub fn int(self) -> Pat {
+        self.with_class(DtypeClass::Int)
+    }
+
+    /// Constrain this binder to unsigned integer dtypes. Panics on non-binders.
+    pub fn uint(self) -> Pat {
+        self.with_class(DtypeClass::Unsigned)
+    }
+
+    fn with_class(self, class: DtypeClass) -> Pat {
+        match self {
+            Pat::Bind { name, .. } => Pat::Bind { name, class },
+            _ => panic!("dtype class applies to binders only"),
+        }
     }
 
     /// Negation of this pattern.
@@ -122,24 +331,33 @@ impl Kernel {
     /// orders with full binding backtracking. Only the cone *above* `root`
     /// (definitions, never uses) is inspected — use-counts, layouts and
     /// bounds stay in the calling pass.
-    pub fn match_pat(&self, root: OpId, pat: impl Into<Pat>) -> Option<Map<&'static str, OpId>> {
-        let pat = pat.into();
+    ///
+    /// The pattern's own root is the prefilter: a `Binary`/`Unary` pattern
+    /// rejects a mismatched root op with a single enum compare before any
+    /// recursion or allocation, so call sites need no manual root check.
+    pub fn match_pat(&self, root: OpId, pat: &Pat) -> Option<Map<&'static str, OpId>> {
         let mut bindings = Map::default();
-        if self.match_node(&pat, root, &mut bindings) { Some(bindings) } else { None }
+        if self.match_node(pat, root, &mut bindings) { Some(bindings) } else { None }
     }
 
     /// Match one pattern node. Returns `false` with `bindings` untouched.
     fn match_node(&self, pat: &Pat, id: OpId, bindings: &mut Map<&'static str, OpId>) -> bool {
         match pat {
-            Pat::Bind(name) => match bindings.get(name) {
-                Some(&bound) => bound == id,
-                None => {
-                    bindings.insert(*name, id);
-                    true
+            Pat::Bind { name, class } => {
+                if !class.matches(self.dtype(id)) {
+                    return false;
                 }
-            },
+                match bindings.get(name) {
+                    Some(&bound) => bound == id,
+                    None => {
+                        bindings.insert(*name, id);
+                        true
+                    }
+                }
+            }
             Pat::Const => matches!(self.at(id), Op::Const(_)),
             Pat::Value(v) => matches!(self.at(id), Op::Const(c) if c == v),
+            Pat::ConstIf(f) => matches!(self.at(id), Op::Const(c) if f(*c)),
             Pat::Num(n) => matches!(self.at(id), Op::Const(c) if const_eq_num(*c, *n)),
             Pat::Unary { x, uop } => match self.at(id) {
                 Op::Unary { x: xid, uop: u } => *u == *uop && self.match_node(x, *xid, bindings),
