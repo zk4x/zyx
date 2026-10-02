@@ -282,7 +282,7 @@ struct TtSection<'a> {
     next_slot: u32,
     budget: u32,
     transfer: u32,
-    depth: usize,
+    indent: String,
     math_open: bool,
     pack_open: bool,
     out: String,
@@ -291,10 +291,6 @@ struct TtSection<'a> {
 impl<'a> TtSection<'a> {
     fn err(&self, context: String) -> BackendError {
         tt_err(format!("tenstorrent section {}: {context}", self.section))
-    }
-
-    fn indent(&self) -> String {
-        "  ".repeat(self.depth + 1)
     }
 
     /// Inline C++ for a scalar/index expression: consts inline, loop
@@ -382,8 +378,7 @@ impl<'a> TtSection<'a> {
                     Op::Storage { scope: MemScope::Circular, .. } => {
                         let cb = self.cbs.get(base).copied().ok_or_else(|| self.err(format!("CB {base:?} has no number")))?;
                         let s = self.fresh_slot()?;
-                        let ind = self.indent();
-                        self.out.push_str(&format!("{ind}copy_tile({cb}, 0, {s});\n"));
+                        self.out.push_str(&format!("{}copy_tile({cb}, 0, {s});\n", self.indent));
                         self.slots.insert(v, s);
                         return Ok(s);
                     }
@@ -486,7 +481,6 @@ impl<'a> TtSection<'a> {
 fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError> {
     let mut loop_stack: Vec<OpId> = Vec::new();
     for id in ops.iter().copied() {
-        let ind = sec.indent();
         match sec.k.at(id) {
             Op::Const { .. } | Op::Param { .. } | Op::Storage { .. } | Op::GEP { .. } => {}
             Op::Range { kind, .. } => match kind {
@@ -495,21 +489,22 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             },
             Op::Loop { len } => {
                 if sec.k.dtype(*len) == DType::Bool {
-                    sec.out.push_str(&format!("{ind}if ({}) {{\n", sec.expr(*len)?));
+                    sec.out.push_str(&format!("{}if ({}) {{\n", sec.indent, sec.expr(*len)?));
                 } else {
                     let bound = sec.expr(*len)?;
                     let name = sec.loop_names.get(&id).cloned().ok_or_else(|| sec.err(format!("{id:?} has no counter")))?;
-                    sec.out.push_str(&format!("{ind}for (uint32_t {name} = 0; {name} < {bound}; {name}++) {{\n"));
+                    sec.out.push_str(&format!("{}for (uint32_t {name} = 0; {name} < {bound}; {name}++) {{\n", sec.indent));
                 }
-                sec.depth += 1;
+                sec.indent += "  ";
                 loop_stack.push(id);
             }
             Op::EndLoop => {
                 if loop_stack.pop().is_none() {
                     return Err(sec.err("EndLoop without Loop".to_string()));
                 }
-                sec.depth -= 1;
-                sec.out.push_str(&format!("{ind}}}\n"));
+                sec.out.push_str(&format!("{}}}\n", sec.indent));
+                sec.indent.pop();
+                sec.indent.pop();
             }
             Op::Copy { src, dst } => render_copy(sec, id, *src, *dst)?,
             Op::Load { src } => render_load(sec, id, *src)?,
@@ -522,7 +517,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             Op::Asm { asm, ops } => {
                 let ops_vec: Vec<OpId> = ops.iter().copied().collect();
                 let text = sec.substitute(asm.as_str(), &ops_vec)?;
-                sec.out.push_str(&format!("{ind}{text}\n"));
+                sec.out.push_str(&format!("{}{text}\n", sec.indent));
             }
             Op::TT(TTOp::LLK { asm, ops }) => {
                 let text = asm.as_str().to_string();
@@ -561,7 +556,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 if rendered.contains('{') {
                     return Err(sec.err(format!("LLK left placeholders unsubstituted: {rendered}")));
                 }
-                sec.out.push_str(&format!("{ind}{rendered}\n"));
+                sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
             }
             Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, .. }) => {
                 // Structured lowered reduce: rebuild the compute
@@ -594,7 +589,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 if rendered.contains('{') {
                     return Err(sec.err(format!("LLKReduce left placeholders unsubstituted: {rendered}")));
                 }
-                sec.out.push_str(&format!("{ind}{rendered}\n"));
+                sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
             }
             Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, .. }) => {
                 // Structured lowered fused broadcast: same rebuild; the
@@ -632,7 +627,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 if rendered.contains('{') {
                     return Err(sec.err(format!("LLKBcast left placeholders unsubstituted: {rendered}")));
                 }
-                sec.out.push_str(&format!("{ind}{rendered}\n"));
+                sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
             }
             Op::TT(TTOp::MatmulTile { .. }) | Op::TT(TTOp::ReduceTile { .. }) | Op::TT(TTOp::TransposeTile { .. }) => {
                 return Err(sec.err(format!("{id:?} is not fully lowered (SSA remains)")));
@@ -644,19 +639,19 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             Op::TT(TTOp::BroadcastTile { .. }) => {}
             Op::TT(TTOp::ReserveBack { cb, n }) => {
                 let c = sec.cb_num(*cb)?;
-                sec.out.push_str(&format!("{ind}cb{c}.reserve_back({n});\n"));
+                sec.out.push_str(&format!("{}cb{c}.reserve_back({n});\n", sec.indent));
             }
             Op::TT(TTOp::PushBack { cb, n }) => {
                 let c = sec.cb_num(*cb)?;
-                sec.out.push_str(&format!("{ind}cb{c}.push_back({n});\n"));
+                sec.out.push_str(&format!("{}cb{c}.push_back({n});\n", sec.indent));
             }
             Op::TT(TTOp::WaitFront { cb, n }) => {
                 let c = sec.cb_num(*cb)?;
-                sec.out.push_str(&format!("{ind}cb{c}.wait_front({n});\n"));
+                sec.out.push_str(&format!("{}cb{c}.wait_front({n});\n", sec.indent));
             }
             Op::TT(TTOp::PopFront { cb, n }) => {
                 let c = sec.cb_num(*cb)?;
-                sec.out.push_str(&format!("{ind}cb{c}.pop_front({n});\n"));
+                sec.out.push_str(&format!("{}cb{c}.pop_front({n});\n", sec.indent));
             }
             Op::TT(TTOp::MathLock) => {
                 if sec.section != 1 {
@@ -666,14 +661,14 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     return Err(sec.err("acquire with DST already held".to_string()));
                 }
                 sec.math_open = true;
-                sec.out.push_str(&format!("{ind}tile_regs_acquire();\n"));
+                sec.out.push_str(&format!("{}tile_regs_acquire();\n", sec.indent));
             }
             Op::TT(TTOp::MathUnlock) => {
                 if !sec.math_open {
                     return Err(sec.err("commit without MATH lock".to_string()));
                 }
                 sec.math_open = false;
-                sec.out.push_str(&format!("{ind}tile_regs_commit();\n"));
+                sec.out.push_str(&format!("{}tile_regs_commit();\n", sec.indent));
             }
             Op::TT(TTOp::PackLock) => {
                 if sec.section != 1 {
@@ -683,18 +678,18 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     return Err(sec.err("pack wait without release".to_string()));
                 }
                 sec.pack_open = true;
-                sec.out.push_str(&format!("{ind}tile_regs_wait();\n"));
+                sec.out.push_str(&format!("{}tile_regs_wait();\n", sec.indent));
             }
             Op::TT(TTOp::PackUnlock) => {
                 if !sec.pack_open {
                     return Err(sec.err("release without PACK lock".to_string()));
                 }
                 sec.pack_open = false;
-                sec.out.push_str(&format!("{ind}tile_regs_release();\n"));
+                sec.out.push_str(&format!("{}tile_regs_release();\n", sec.indent));
             }
-            Op::TT(TTOp::NocReadBarrier) => sec.out.push_str(&format!("{ind}noc_async_read_barrier();\n")),
-            Op::TT(TTOp::NocWriteBarrier) => sec.out.push_str(&format!("{ind}noc_async_write_barrier();\n")),
-            Op::TT(TTOp::ReduceUninit) => sec.out.push_str(&format!("{ind}reduce_uninit();\n")),
+            Op::TT(TTOp::NocReadBarrier) => sec.out.push_str(&format!("{}noc_async_read_barrier();\n", sec.indent)),
+            Op::TT(TTOp::NocWriteBarrier) => sec.out.push_str(&format!("{}noc_async_write_barrier();\n", sec.indent)),
+            Op::TT(TTOp::ReduceUninit) => sec.out.push_str(&format!("{}reduce_uninit();\n", sec.indent)),
             Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) => {}
             Op::Barrier => return Err(sec.err("stray barrier in a TT kernel".to_string())),
             _ => return Err(sec.err(format!("{id:?} is not fully lowered (SSA remains)"))),
@@ -877,7 +872,7 @@ fn render(
             next_slot: 0,
             budget,
             transfer: 0,
-            depth: 0,
+            indent: String::from("  "),
             math_open: false,
             pack_open: false,
             out: String::new(),
@@ -1018,7 +1013,6 @@ fn render(
 /// reach here (`tt_storage` canonicalizes them to load+store); the
 /// arm below is defensive only.
 fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<(), BackendError> {
-    let ind = sec.indent();
     let src_cb = circular_base(sec.k, src)?;
     let dst_cb = circular_base(sec.k, dst)?;
     match (src_cb, dst_cb) {
@@ -1037,11 +1031,12 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
             let noc = sec.transfer;
             sec.transfer += 1;
             sec.out.push_str(&format!(
-                "{ind}uint64_t rnoc{noc} = p{ord}.get_noc_addr((uint32_t)((( {idx} )*{eb})/{page}), (uint32_t)((( {idx} )*{eb})%{page}));\n",
+                "{}uint64_t rnoc{noc} = p{ord}.get_noc_addr((uint32_t)((( {idx} )*{eb})/{page}), (uint32_t)((( {idx} )*{eb})%{page}));\n",
+                sec.indent,
                 page = TT_DRAM_PAGE_BYTES
             ));
-            sec.out.push_str(&format!("{ind}noc_async_read(rnoc{noc}, cb{dcb}.get_write_ptr(){slot}, {bytes});\n"));
-            sec.out.push_str(&format!("{ind}noc_async_read_barrier();\n"));
+            sec.out.push_str(&format!("{}noc_async_read(rnoc{noc}, cb{dcb}.get_write_ptr(){slot}, {bytes});\n", sec.indent));
+            sec.out.push_str(&format!("{}noc_async_read_barrier();\n", sec.indent));
             Ok(())
         }
         (Some(src_storage), None) => {
@@ -1058,11 +1053,12 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
             let noc = sec.transfer;
             sec.transfer += 1;
             sec.out.push_str(&format!(
-                "{ind}uint64_t wnoc{noc} = p_out{ord}.get_noc_addr((uint32_t)((( {idx} )*{eb})/{page}), (uint32_t)((( {idx} )*{eb})%{page}));\n",
+                "{}uint64_t wnoc{noc} = p_out{ord}.get_noc_addr((uint32_t)((( {idx} )*{eb})/{page}), (uint32_t)((( {idx} )*{eb})%{page}));\n",
+                sec.indent,
                 page = TT_DRAM_PAGE_BYTES
             ));
-            sec.out.push_str(&format!("{ind}noc_async_write(cb{scb}.get_read_ptr(){slot}, wnoc{noc}, {bytes});\n"));
-            sec.out.push_str(&format!("{ind}noc_async_write_barrier();\n"));
+            sec.out.push_str(&format!("{}noc_async_write(cb{scb}.get_read_ptr(){slot}, wnoc{noc}, {bytes});\n", sec.indent));
+            sec.out.push_str(&format!("{}noc_async_write_barrier();\n", sec.indent));
             Ok(())
         }
         (Some(src_storage), Some(dst_storage)) => {
@@ -1072,8 +1068,8 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
             let scb = sec.cb_num(src_storage)?;
             let dcb = sec.cb_num(dst_storage)?;
             let s = sec.fresh_slot()?;
-            sec.out.push_str(&format!("{ind}copy_tile({scb}, 0, {s});\n"));
-            sec.out.push_str(&format!("{ind}pack_tile({s}, {dcb});\n"));
+            sec.out.push_str(&format!("{}copy_tile({scb}, 0, {s});\n", sec.indent));
+            sec.out.push_str(&format!("{}pack_tile({s}, {dcb});\n", sec.indent));
             Ok(())
         }
     }
@@ -1127,7 +1123,6 @@ fn elem_bytes(k: &Kernel, param: OpId) -> Result<u32, BackendError> {
 /// pass validated lanes and placed the inits; unknown combos are
 /// loud errors (old "has no LLK/scalar call" errors).
 fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
-    let ind = sec.indent();
     match sec.k.at(id) {
         Op::Unary { x, uop } => {
             let s = sec.operand_slot(*x)?;
@@ -1148,9 +1143,9 @@ fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
                 UOp::Not => "logical_not_tile",
             };
             if *uop == UOp::Log2 {
-                sec.out.push_str(&format!("{ind}{name}({s}, 0x3fb8aa3b);\n"));
+                sec.out.push_str(&format!("{}{name}({s}, 0x3fb8aa3b);\n", sec.indent));
             } else {
-                sec.out.push_str(&format!("{ind}{name}({s});\n"));
+                sec.out.push_str(&format!("{}{name}({s});\n", sec.indent));
             }
             sec.slots.insert(id, s);
             Ok(())
@@ -1158,7 +1153,7 @@ fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
         Op::Cast { x, dtype } => {
             let s = sec.operand_slot(*x)?;
             let in_dtype = sec.k.dtype(*x);
-            sec.out.push_str(&format!("{ind}typecast_tile<{}, {}>({s});\n", tt_fmt(in_dtype)?, tt_fmt(*dtype)?));
+            sec.out.push_str(&format!("{}typecast_tile<{}, {}>({s});\n", sec.indent, tt_fmt(in_dtype)?, tt_fmt(*dtype)?));
             sec.slots.insert(id, s);
             Ok(())
         }
@@ -1194,7 +1189,7 @@ fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
                         BOp::BitShiftRight => ("binary_right_shift_tile", shift_tmpl(in_dtype)?),
                         _ => return Err(sec.err(format!("tiled binary {bop:?} has no LLK call"))),
                     };
-                    sec.out.push_str(&format!("{ind}{name}{tmpl}({sx}, {sy}, {dst});\n"));
+                    sec.out.push_str(&format!("{}{name}{tmpl}({sx}, {sy}, {dst});\n", sec.indent));
                     sec.slots.insert(id, dst);
                     Ok(())
                 }
@@ -1215,7 +1210,7 @@ fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
                                     return Err(sec.err(format!("scalar lane {s:?} is not a foldable float const")));
                                 }
                             };
-                            sec.out.push_str(&format!("{ind}{name}({tile}, 0x{bits:x});\n"));
+                            sec.out.push_str(&format!("{}{name}({tile}, 0x{bits:x});\n", sec.indent));
                             sec.slots.insert(id, tile);
                             Ok(())
                         }
@@ -1229,7 +1224,7 @@ fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
                                 Op::Const(c) => c.as_dim().ok_or_else(|| sec.err(format!("shift amount {s:?} is not a u32")))?,
                                 _ => return Err(sec.err(format!("shift amount {s:?} is not an int const"))),
                             };
-                            sec.out.push_str(&format!("{ind}{name}({tile}, {amt});\n"));
+                            sec.out.push_str(&format!("{}{name}({tile}, {amt});\n", sec.indent));
                             sec.slots.insert(id, tile);
                             Ok(())
                         }
@@ -1280,8 +1275,7 @@ fn render_load(sec: &mut TtSection, id: OpId, src: OpId) -> Result<(), BackendEr
     }
     let cb = sec.cb_num(*base)?;
     let s = sec.fresh_slot()?;
-    let ind = sec.indent();
-    sec.out.push_str(&format!("{ind}copy_tile({cb}, 0, {s});\n"));
+    sec.out.push_str(&format!("{}copy_tile({cb}, 0, {s});\n", sec.indent));
     sec.slots.insert(id, s);
     Ok(())
 }
@@ -1306,7 +1300,6 @@ fn cb_slot_expr(sec: &TtSection, gep: OpId, bytes: u32) -> Result<String, Backen
     }
 }
 fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(), BackendError> {
-    let ind = sec.indent();
     let Op::GEP { x: base, .. } = sec.k.at(dst) else {
         return Err(sec.err(format!("store {id:?} dst is not a GEP")));
     };
@@ -1314,7 +1307,7 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
         Op::Storage { scope: MemScope::Circular, .. } => {
             let dcb = sec.cb_num(*base)?;
             let slot = sec.slot_of(x)?;
-            sec.out.push_str(&format!("{ind}pack_tile({slot}, {dcb});\n"));
+            sec.out.push_str(&format!("{}pack_tile({slot}, {dcb});\n", sec.indent));
             Ok(())
         }
         Op::Storage { scope: MemScope::Register, .. } => {

@@ -203,8 +203,11 @@ GOOD — fail loudly at the exact spot the invariant breaks (`graph/autograd.rs`
 
 EVIL — launder failure into a fake value (`kernel/mod.rs` `Kernel::shape`): `Op::Const(c) => c.as_dim().unwrap_or(0)` + `_ => -1` fabricated dims that flowed into `dot()`'s reshapes and exploded three kernels away; tracing cost a whole session.
 
+EVIL — enforce a should-be invariant with real code (`acc_values.clear()` at `EndReader` "just in case"): silently hides a leaked-reduce-cone bug, same class as a fabricated fallback. If something SHOULD hold, a `debug_assert!(set.is_empty())` fires at the exact spot it breaks; a `clear()` guarantees it never fires.
+
 Rules:
 - Never `unwrap_or(<number>)` on resolution; use `expect("context")`/`todo!()`.
 - No sentinels/fallbacks for unknown behaviour; fail loudly at the spot or ask. No `-1`-means-symbolic, no default arms.
 - Don't pattern-match only the trivial case (`Op::Const`) when full resolution exists (`resolve_const`); "can't resolve" must mean genuinely unresolvable.
 - NEVER use `_ =>` catch-alls on enums — every variant gets an EXPLICIT arm (exception: the final `unreachable!()`/`todo!()` in an eval match after all real variants are named).
+- Never enforce a should-be invariant with real code (`clear()`, re-init, re-sync "just in case") — that hides the leak instead of surfacing it. `debug_assert!` it or leave it alone.

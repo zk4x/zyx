@@ -1230,6 +1230,10 @@ impl Kernel {
         let mut in_compute = false;
         let mut unpack_src: Option<OpId> = None;
         let mut pending_acc: Option<OpId> = None;
+        // Values threading the pending acc (forward marks, O(1) per
+        // op): packs consult this set instead of rechasing def chains
+        // backward over already-visited ops.
+        let mut acc_values: Set<OpId> = Set::default();
         let mut last_math_unlock: Option<OpId> = None;
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -1239,10 +1243,12 @@ impl Kernel {
                     in_compute = true;
                     unpack_src = None;
                     pending_acc = None;
+                    acc_values.clear();
                 }
                 Op::TT(TTOp::EndCompute) => {
                     in_compute = false;
                     pending_acc = None;
+                    acc_values.clear();
                 }
                 Op::TT(TTOp::MathUnlock) if in_compute => last_math_unlock = Some(op_id),
                 _ => {}
@@ -1332,6 +1338,7 @@ impl Kernel {
                 },
                 Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, .. }) => {
                     pending_acc = Some(*slot);
+                    acc_values.clear();
                     InitAction::ReduceInit(*cb_in, *cb_sc, *slot, *rop, *kind)
                 }
                 Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, .. }) => InitAction::BcastInit(*bop, *kind, *cb_a, *cb_b),
@@ -1353,6 +1360,24 @@ impl Kernel {
                 }
                 _ => InitAction::None,
             };
+            // Forward acc-threading mark: a value defined from the
+            // pending acc joins the set, so the pack check below is a
+            // single lookup. Defs precede uses in walk order, so every
+            // contributor is already marked when its consumer arrives.
+            if let Some(acc) = pending_acc {
+                let threads = match &self.ops[op_id].op {
+                    Op::Load { src } => matches!(self.ops[*src].op, Op::GEP { x, .. } if x == acc),
+                    Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => acc_values.contains(x),
+                    Op::Binary { x, y, .. } => acc_values.contains(x) || acc_values.contains(y),
+                    Op::Mad { x, y, z, .. } => acc_values.contains(x) || acc_values.contains(y) || acc_values.contains(z),
+                    Op::TT(TTOp::BroadcastTile { x, .. }) => acc_values.contains(x),
+                    Op::Asm { ops, .. } => ops.iter().copied().any(|o| !o.is_null() && acc_values.contains(&o)),
+                    _ => false,
+                };
+                if threads {
+                    acc_values.insert(op_id);
+                }
+            }
             // Unpack init at the load: a circular load consumed through
             // a copy (tiled elementwise SSA, a direct pack store) is
             // configured here, ahead of every copy site in walk (hence
@@ -1469,15 +1494,16 @@ impl Kernel {
                 InitAction::PackReconfig(cb) => {
                     asm_before(self, op_id, "pack_reconfig_data_format({0});", &[cb]);
                     // Reduce cone: packing the pending acc closes it.
-                    if let Some(acc) = pending_acc {
+                    if pending_acc.is_some() {
                         let Op::Store { src: x, .. } = self.ops[op_id].op else {
                             unreachable!("tt_init_math: pack is a Store");
                         };
-                        if tt_reaches_acc(self, x, acc) {
+                        if acc_values.contains(&x) {
                             let unlock = last_math_unlock
                                 .unwrap_or_else(|| panic!("tt_init_math: pack {op_id:?} without an open MathUnlock"));
                             self.insert_before(unlock, Op::TT(TTOp::ReduceUninit));
                             pending_acc = None;
+                            acc_values.clear();
                         }
                     }
                 }
@@ -2389,59 +2415,6 @@ impl Kernel {
             }
             _ => panic!("tt_init_math: scalar {bop:?} {id:?} has no scalar call"),
         }
-    }
-}
-
-/// True iff the value of `id` is (or threads) the Register acc
-/// `acc`: a load of it, elementwise SSA over it, an `LLK` writing
-/// it, or user `Asm` over it. Drives `close_reduce_cones`: packing
-/// such a value closes the pending reduce. Explicit arms throughout
-/// (no catch-all); graph-only ops panic.
-fn tt_reaches_acc(kernel: &Kernel, id: OpId, acc: OpId) -> bool {
-    match kernel.at(id) {
-        Op::Load { src } => matches!(kernel.at(*src), Op::GEP { x, .. } if *x == acc),
-        Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => tt_reaches_acc(kernel, *x, acc),
-        Op::Binary { x, y, .. } => tt_reaches_acc(kernel, *x, acc) || tt_reaches_acc(kernel, *y, acc),
-        Op::Mad { x, y, z, .. } => {
-            tt_reaches_acc(kernel, *x, acc) || tt_reaches_acc(kernel, *y, acc) || tt_reaches_acc(kernel, *z, acc)
-        }
-        Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().any(|o| !o.is_null() && o == acc),
-        Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
-            [*cb_in, *cb_sc, *slot, *x, *scaler].iter().any(|o| *o == acc)
-        }
-        Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => [*cb_a, *cb_b, *mx, *plain].iter().any(|o| *o == acc),
-        Op::TT(TTOp::MatmulTile { acc: a, .. }) | Op::TT(TTOp::ReduceTile { acc: a, .. }) => {
-            *a == acc || tt_reaches_acc(kernel, *a, acc)
-        }
-        Op::TT(TTOp::BroadcastTile { x, .. }) => tt_reaches_acc(kernel, *x, acc),
-        Op::TT(TTOp::TransposeTile { .. }) => false,
-        Op::Asm { ops, .. } => ops.iter().copied().any(|o| !o.is_null() && tt_reaches_acc(kernel, o, acc)),
-        Op::Const { .. }
-        | Op::Param { .. }
-        | Op::Storage { .. }
-        | Op::GEP { .. }
-        | Op::Store { .. }
-        | Op::Copy { .. }
-        | Op::Range { .. }
-        | Op::Loop { .. }
-        | Op::EndLoop
-        | Op::Barrier => false,
-        Op::TT(_)
-        | Op::Stack { .. }
-        | Op::Index { .. }
-        | Op::Wmma { .. }
-        | Op::Reshape { .. }
-        | Op::Expand { .. }
-        | Op::Permute { .. }
-        | Op::Flip { .. }
-        | Op::Pad { .. }
-        | Op::Narrow { .. }
-        | Op::Reduce { .. }
-        | Op::After { .. }
-        | Op::ToDevice { .. }
-        | Op::Contiguous { .. }
-        | Op::Kernel { .. }
-        | Op::Custom(_) => panic!("tt_reaches_acc: graph-only {id:?} in ordered TT kernel"),
     }
 }
 
