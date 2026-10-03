@@ -26,6 +26,7 @@
 
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
+use crate::{Map, hashers::FHasher};
 use crate::{
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus, ZyxError},
@@ -34,7 +35,6 @@ use crate::{
     shape::Dim,
     slab::SlabId,
 };
-use crate::{Map, hashers::FHasher};
 use nanoserde::{DeBin, DeJson, SerBin};
 use std::sync::Mutex;
 use std::{collections::BTreeSet, hash::BuildHasherDefault, sync::Arc};
@@ -52,6 +52,8 @@ mod tenstorrent;
 mod vulkan;
 #[cfg(feature = "wgpu")]
 mod wgpu;
+
+pub use mod2::{Placement, Shard};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolBufferId(u32);
@@ -314,8 +316,8 @@ impl Dev {
     /// The `args` are the `LaunchArg`s for the kernel in the order the
     /// `Param` ops appear in the kernel IR given to compile (flat, head order, all
     /// kinds: `Variable`/`Global`/`GlobalMut`). `Op::Storage` is NOT a kernel
-    /// parameter. `LaunchArg::Buffer` ids point into this device's pool
-    /// ([`Dev::pool`]); `LaunchArg::Variable` carries the scalar
+    /// parameter. `LaunchArg::Buffer` placements must carry a shard for this
+    /// device; `LaunchArg::Variable` carries the scalar
     /// value directly — backends never store variables. The grid (gws) is NOT
     /// passed here — each backend derives it at launch from the per-axis
     /// `GwsDim` it stored at compile, evaluating `Param(ordinal)` leaves
@@ -467,7 +469,7 @@ impl Pool {
         match self {
             Pool::Cuda(id) => {
                 if let Ok(pool) = cuda::pool(id) {
-                    lock(self, &pool).retain(buffer_id);
+                    lock(self, &pool).dispose(buffer_id);
                 }
             }
             Pool::Host => lock(self, host::pool()).retain(buffer_id),
@@ -709,9 +711,9 @@ pub(crate) fn autotune_config() -> crate::kernel::autotune::BeamSearch {
 
 #[derive(Debug, Clone)]
 pub enum LaunchArg {
-    /// A plain data buffer (`PoolBufferId` indexes the launched `MemoryPool`).
-    /// The caller guarantees every `Buffer` arg belongs to that pool.
-    Buffer(PoolBufferId),
+    /// A placed value: the backend resolves the shard for its own device to
+    /// a raw pointer at submission. The caller guarantees a shard exists.
+    Buffer(Arc<mod2::Placement>),
     /// A scalar value for a `Param { kind: Variable }`. Used both as a kernel
     /// param and (via group-index lengths) to derive the grid size host-side.
     Variable(Constant),
@@ -880,24 +882,6 @@ impl SlabId for DeviceProgramId {
 
     fn inc(&mut self) {
         self.0 += 1;
-    }
-}
-
-/// Globally unique buffer identifier: the owning global pool plus the
-/// buffer id within that pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Buffer {
-    pub pool: Pool,
-    pub buffer_id: PoolBufferId,
-}
-
-impl Buffer {
-    pub const NULL: Self = Self { pool: Pool::Host, buffer_id: PoolBufferId(u32::MAX) };
-}
-
-impl From<Buffer> for usize {
-    fn from(value: Buffer) -> Self {
-        value.buffer_id.0 as usize
     }
 }
 
