@@ -3643,6 +3643,18 @@ impl Runtime {
             kernel.debug();
         }
 
+        // Debug bisect (`ZYX_DEBUG=256`): skip seed preparation, the
+        // epilogue and the search; run linearize + readability passes + DCE
+        // and compile the seed directly.
+        if crate::debug_mask().no_search() {
+            let device_id = kernel.dev;
+            let (_winner, program_id, timing) =
+                crate::kernel::autotune::NoSearch.run_with_launch_args(kernel, buffers)?;
+            self.programs.insert(kernel_id, program_id);
+            self.timings.insert(ProgramId { dev: device_id, program_id }, timing);
+            return Ok((program_id, timing));
+        }
+
         let device_id = kernel.dev;
         #[cfg(feature = "viz")]
         let sched_kernel = kernel.clone();
@@ -3685,8 +3697,7 @@ impl Runtime {
         }
 
         let beam_search = crate::backend::autotune_config();
-        let (winner, timing) = beam_search.run_with_rt(
-            self,
+        let (winner, timing) = beam_search.run_with_launch_args(
             [base],
             buffers,
             &Kernel::default_optimizations(),

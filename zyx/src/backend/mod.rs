@@ -27,7 +27,6 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
 use crate::{
-    DebugMask,
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus, ZyxError},
     graph::Graph,
@@ -270,10 +269,7 @@ impl Dev {
             #[cfg(feature = "wgpu")]
             Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).compile(kernel, debug_asm),
         };
-        if let Ok(x) = std::env::var("ZYX_DEBUG")
-            && let Ok(x) = x.parse::<u32>()
-            && DebugMask(x).compile()
-        {
+        if crate::debug_mask().compile() {
             println!("[{}] compile kernel", self.name());
         }
         result
@@ -436,12 +432,9 @@ impl Pool {
             Pool::WGPU(id) => (lock(self, wgpu::pool(id)?).allocate(bytes), "wgpu"),
             Pool::Dummy => (lock(self, dummy::pool()?).allocate(bytes), "dummy"),
         };
-        if result.is_ok() {
-            if let Ok(x) = std::env::var("ZYX_DEBUG")
-                && let Ok(x) = x.parse::<u32>()
-                && DebugMask::new(x).memory()
-            {
-                println!("[{name}] allocate {bytes} -> free {free} B");
+        if let Ok(buffer_id) = &result {
+            if crate::debug_mask().memory() {
+                println!("[{name}] allocate {bytes} -> {buffer_id:?} (free {free} B)");
             }
         } else {
             eprintln!("[{name}] allocate FAILED {bytes} -> free {free} B");
@@ -513,6 +506,9 @@ impl Pool {
     /// actual reclamation behind all in-flight work (release is a request;
     /// freeing is backend-scheduled).
     pub fn release(self, buffer_id: PoolBufferId) {
+        if crate::debug_mask().memory() {
+            println!("[{self:?}] release {buffer_id:?}");
+        }
         match self {
             Pool::Cuda(id) => {
                 if let Ok(pool) = cuda::pool(id) {
@@ -700,7 +696,7 @@ fn load_config_file() -> Config {
 
 /// Whether backend debug printing is enabled (`ZYX_DEBUG` device bit).
 pub(crate) fn debug_backends() -> bool {
-    std::env::var("ZYX_DEBUG").ok().and_then(|x| x.parse::<u32>().ok()).is_some_and(|x| DebugMask::new(x).dev())
+    crate::debug_mask().dev()
 }
 
 /// Autotune config from the backend config file.

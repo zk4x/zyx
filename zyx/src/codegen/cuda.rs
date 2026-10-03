@@ -681,7 +681,7 @@ impl Constant {
             }
             &Self::F16(x) => {
                 let bits: u16 = f16::from_le_bytes(x).to_bits();
-                format!("(half)0x{:04X}", bits)
+                format!("__ushort_as_half(0x{:04X})", bits)
             }
             &Self::F32(x) => {
                 let val = f32::from_le_bytes(x);

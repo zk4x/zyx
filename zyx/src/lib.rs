@@ -139,9 +139,9 @@ impl DebugMask {
         (self.0 >> 4) % 2 == 1
     }
 
-    /// Is kernel launch and memory movement debugging enabled?
+    /// Is kernel launch debugging enabled?
     #[must_use]
-    pub const fn kmd(&self) -> bool {
+    pub const fn launch(&self) -> bool {
         (self.0 >> 5) % 2 == 1
     }
 
@@ -157,9 +157,10 @@ impl DebugMask {
         (self.0 >> 7) % 2 == 1
     }
 
-    /// Is autotune optimization logging enabled?
+    /// Is the no-search debug path enabled (skip seed prep, epilogue and
+    /// beam search; compile each seed with linearize + DCE)?
     #[must_use]
-    pub const fn autotune(&self) -> bool {
+    pub const fn no_search(&self) -> bool {
         (self.0 >> 8) % 2 == 1
     }
 }

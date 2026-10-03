@@ -1723,6 +1723,9 @@ fn submit_launch(
                 });
             }
             let (gx, gy, gz) = (u32::try_from(gx).unwrap(), u32::try_from(gy).unwrap(), u32::try_from(gz).unwrap());
+            if crate::debug_mask().launch() {
+                println!("[cuda] launch {program_id:?} grid=({gx},{gy},{gz}) args={args:?}");
+            }
             unsafe {
                 (cuLaunchKernel)(
                     *function,

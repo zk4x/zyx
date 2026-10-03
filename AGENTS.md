@@ -141,15 +141,15 @@ All passes live in `zyx/src/kernel/` (`autotune.rs` driver + one file per pass).
 
 | Value | Output |
 |-------|--------|
-| 1 | devices + kernel launches |
+| 1 | devices |
 | 2 | egraph print (after realize) |
 | 4 | scheduler kernels — IR BEFORE linearization (DAG of buffer ops, consts, expands; no loops) |
 | 8 | IR AFTER linearization + optimization (flat loops, loads/stores) — printed during compile, before any GPU run |
 | 16 | generated assembly/code |
-| 32 | launch + memory movement |
+| 32 | kernel launches (program id, grid, args) |
 | 64 | alloc/dealloc |
 | 128 | kernel compilation |
-| 256 | autotune exploration |
+| 256 | NoSearch: skip search, compile seeds with linearize + epilogue only |
 
 Capture without a GPU hang: `timeout 10 bash -c 'ZYX_DEBUG=8 cargo run 2>&1' > /tmp/ir.txt`.
 

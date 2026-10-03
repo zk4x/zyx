@@ -535,12 +535,8 @@ impl Constant {
                 }
             }
             Self::F16(x) => {
-                let val = f16::from_le_bytes(x).to_f32();
-                if val.is_finite() {
-                    format!("(half){:.16}", val)
-                } else {
-                    format!("(half)as_float(0x{:08X}u)", val.to_bits())
-                }
+                let bits: u16 = f16::from_le_bytes(x).to_bits();
+                format!("as_half((ushort)0x{:04X})", bits)
             }
             Self::F32(x) => {
                 let val = f32::from_le_bytes(x);

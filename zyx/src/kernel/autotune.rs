@@ -29,7 +29,6 @@ use crate::error::BackendError;
 use crate::hashers::AHasher;
 use crate::kernel::{IDX_T, Kernel, Op, OpId, ParamKind};
 use crate::rng::Rng;
-use crate::runtime::Runtime;
 use crate::shape::Dim;
 use crate::{DebugMask, Set, Tensor, ZyxError};
 use nanoserde::{DeBin, SerBin};
@@ -260,7 +259,7 @@ impl BeamSearch {
         epilogue: impl Fn(&mut Kernel),
         cost: impl Fn(&Kernel) -> u64,
     ) -> Result<(Kernel, u64), ZyxError> {
-        let mut rt = crate::RT.lock();
+        let rt = crate::RT.lock();
         let mut args: Vec<LaunchArg> = Vec::with_capacity(tensors.len());
         for tensor in tensors {
             if let Some(buf_id) = rt.leaf_buffer(tensor.id()) {
@@ -271,7 +270,7 @@ impl BeamSearch {
                 return Err(ZyxError::kernel_error(format!("autotune: tensor {} is not realized", tensor.id()).into()));
             }
         }
-        self.run_with_rt(&mut rt, seeds, &args, optimizations, epilogue, cost)
+        self.run_with_launch_args(seeds, &args, optimizations, epilogue, cost)
     }
 
     /// Autotune using beam search.
@@ -290,9 +289,8 @@ impl BeamSearch {
     /// sequence is exactly what gets launched. Every program compiled during
     /// measurement is released; the winner is returned as a kernel together
     /// with its measured time in nanoseconds.
-    pub(crate) fn run_with_rt(
+    pub(crate) fn run_with_launch_args(
         &self,
-        _rt: &mut Runtime,
         seeds: impl IntoIterator<Item = Kernel>,
         args: &[LaunchArg],
         optimizations: &[MakeOpt],
@@ -476,6 +474,47 @@ impl BeamSearch {
                 .map(ZyxError::from)
                 .unwrap_or_else(|| ZyxError::kernel_error("autotune: no successful kernel launches".into()))),
         }
+    }
+}
+
+/// Debug-only stand-in for [`BeamSearch`], enabled by `ZYX_DEBUG=256`
+/// (`DebugMask::no_search`).
+///
+/// Skips the search entirely: runs `linearize`, a few readability passes
+/// (`algebraic_simplifications`, `move_constants_to_beginning`,
+/// `common_subexpression_elimination`) and `dead_code_elimination` on the
+/// seed, compiles it once and times a single launch. Used to bisect
+/// wrong-code bugs between the search space
+/// ([`Kernel::default_optimizations`]) and seed preparation / the epilogue:
+/// if `NoSearch` output is correct, the culprit is one of the search
+/// optimizations.
+pub struct NoSearch;
+
+impl NoSearch {
+    /// Compile the seed with the minimal pipeline and time one launch.
+    ///
+    /// Returns the kernel, its program and the measured time in nanoseconds.
+    /// Unlike [`BeamSearch::run_with_launch_args`] the program is NOT released: the
+    /// caller stores it in `programs` exactly like an autotune winner.
+    pub(crate) fn run_with_launch_args(
+        &self,
+        mut seed: Kernel,
+        args: &[LaunchArg],
+    ) -> Result<(Kernel, DeviceProgramId, u64), ZyxError> {
+        seed.linearize();
+        // Readability passes (relative order mirrors `default_epilogue`).
+        // Proven innocent: the defect reproduces without them.
+        for _ in 0..3 {
+            seed.default_epilogue();
+        }
+
+        seed.dead_code_elimination();
+        let debug = crate::debug_mask();
+        let program_id = seed.dev.compile(&seed, debug.asm())?;
+        // Warmup + single timed launch, mirroring `launch_with_timings`.
+        let _ = seed.dev.launch_timed(program_id, args)?;
+        let nanos = seed.dev.launch_timed(program_id, args)?;
+        Ok((seed, program_id, nanos))
     }
 }
 
