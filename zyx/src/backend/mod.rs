@@ -45,6 +45,7 @@ mod cuda;
 mod disk;
 mod dummy;
 mod host;
+mod mod2;
 mod opencl;
 #[cfg(feature = "tenstorrent")]
 mod tenstorrent;
