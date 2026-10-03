@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use std::sync::Arc;
 
-use crate::backend::{Buffer, DeviceInfo, LaunchArg, ProgramId};
+use crate::backend::{DeviceInfo, LaunchArg, Placement, Pool, ProgramId, Shard};
 use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;
@@ -1186,10 +1186,14 @@ impl Runtime {
             // `Graph::add_memory_ops`.
             let prog_pool = program.dev.pool();
             for &input in inputs {
-                if !self.is_graph(input)
-                    && let Some(buffer) = self.leaf_buffer(input)
-                    && buffer.pool != prog_pool
-                {
+                if self.is_graph(input) {
+                    continue;
+                }
+                let Some(buffer) = self.leaf_buffer(input) else { continue };
+                let [Shard::Device { pool, .. }] = &buffer.shards[..] else {
+                    todo!("multi-shard custom kernel input check")
+                };
+                if *pool != prog_pool {
                     return Err(ZyxError::BackendError(BackendError {
                         status: crate::error::ErrorStatus::IncorrectKernelArg,
                         context: format!("custom kernel input tensor {input} is on a different device than the compiled kernel")
@@ -1344,14 +1348,17 @@ impl Runtime {
                 self.add_store(input)?;
             }
             let buffer = self.leaf_buffer(input).unwrap();
-            if buffer.pool != pool_id {
+            let [Shard::Device { pool: found, .. }] = &buffer.shards[..] else {
+                todo!("multi-shard custom kernel input")
+            };
+            if *found != pool_id {
                 return Err(ZyxError::BackendError(BackendError {
                     status: crate::error::ErrorStatus::IncorrectKernelArg,
                     context: format!("custom kernel input tensor {input} is on a different device than the compiled kernel")
                         .into(),
                 }));
             }
-            input_args.push(LaunchArg::Buffer(buffer.buffer_id));
+            input_args.push(LaunchArg::Buffer(Arc::clone(&buffer)));
             all_bufs.insert(buffer);
         }
         debug_assert!(inputs.iter().all(|&input| self.leaf_buffer(input).is_some() || self.resolve_symbolic(input).is_some()));
@@ -1377,14 +1384,14 @@ impl Runtime {
             let shape = &shapes[i];
             let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
             let buf = pool_id.allocate(bytes)?;
-            let buf_id = Buffer { pool: pool_id, buffer_id: buf };
-            output_bufs.push(buf_id);
-            all_bufs.insert(buf_id);
+            let placement = Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: buf }] });
+            output_bufs.push(Arc::clone(&placement));
+            all_bufs.insert(placement);
         }
 
         let mut args = input_args;
         for buf in &output_bufs {
-            args.push(LaunchArg::Buffer(buf.buffer_id));
+            args.push(LaunchArg::Buffer(Arc::clone(buf)));
         }
         let _launch_t = std::time::Instant::now();
         // Perf estimate present (set at compile under the dev debug bit):

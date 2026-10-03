@@ -26,7 +26,7 @@
 
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
-use crate::{Map, hashers::FHasher};
+use crate::{Map, Set, hashers::FHasher};
 use crate::{
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus, ZyxError},
@@ -45,7 +45,6 @@ mod cuda;
 mod disk;
 mod dummy;
 mod host;
-mod mod2;
 mod opencl;
 #[cfg(feature = "tenstorrent")]
 mod tenstorrent;
@@ -53,10 +52,133 @@ mod vulkan;
 #[cfg(feature = "wgpu")]
 mod wgpu;
 
-pub use mod2::{Placement, Shard};
+/// One device-resident (or host-resident) piece of a placed value.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Shard {
+    /// Host-owned bytes (loaded data, weights staging, readback targets).
+    Host { data: Vec<u8> },
+    /// A chunk in a backend pool. The chunk's address is stable for the
+    /// chunk's lifetime; reuse from the free list preserves it.
+    Device { pool: Pool, chunk: ChunkId },
+}
+
+/// A placed value: one [`Shard`] per device holding it (one shard for the
+/// common single-device case, several for sharded tensors).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Placement {
+    pub shards: Vec<Shard>,
+}
+
+impl Drop for Placement {
+    /// Last-owner cleanup: every device shard goes back on its pool's free
+    /// list (`Pool::release` frees nothing — only `dispose` reclaims).
+    /// Inline host data drops with the struct. A placement shared by cloned
+    /// `Arc`s releases each chunk exactly once, when the final clone drops.
+    fn drop(&mut self) {
+        for shard in &self.shards {
+            if let Shard::Device { pool, chunk } = shard {
+                pool.release(*chunk);
+            }
+        }
+    }
+}
+
+/// Scheduler commands. Args and outputs are queue-local [`OpId`] slots;
+/// the per-replay boundary table maps slots to [`Placement`]s.
+#[derive(Debug)]
+pub enum Cmd {
+    /// Run `program`. Arg regions must agree (cross-device staging of one
+    /// value into one node is later work).
+    Launch {
+        program: ProgramId,
+        args: Vec<OpId>,
+        outputs: Vec<OpId>,
+        params: Vec<ParamKind>,
+        out_bytes: Vec<u64>,
+        scalars: Vec<(OpId, i64)>,
+    },
+    /// Copy from `src` value to `dst` value. `dst_pool` names the
+    /// destination pool: same-pool fresh `dst`s are assigned there; a
+    /// cross-pool fresh `dst` is rejected (cross into a caller pre-placed
+    /// boundary value). Cross-pool copies stage through host temps or go
+    /// peer (same vendor). Host-resident sources never become nodes: they
+    /// upload eagerly around capture/launch.
+    Copy { src: OpId, dst: OpId, dst_pool: Pool },
+}
+
+impl Cmd {
+    /// Value reads: launch args plus copy sources. Outputs excluded.
+    fn reads(&self) -> Vec<OpId> {
+        match self {
+            Cmd::Launch { args, .. } => args.clone(),
+            Cmd::Copy { src, .. } => vec![*src],
+        }
+    }
+
+    /// Value defs: launch outputs plus copy destinations.
+    fn defs(&self) -> Vec<OpId> {
+        match self {
+            Cmd::Launch { outputs, .. } => outputs.clone(),
+            Cmd::Copy { dst, .. } => vec![*dst],
+        }
+    }
+}
+
+/// Ordered command batch. Eager builds one per kernel; plan builds one per
+/// graph. Slots are queue-local ([`OpId`]s minted per queue, e.g. 0 and 1
+/// for a single-copy queue); the boundary table passed to [`Plan::replay`]
+/// binds them to [`Placement`]s.
+#[derive(Debug, Default)]
+pub struct CmdQueue {
+    cmds: Vec<Cmd>,
+}
+
+impl CmdQueue {
+    /// Empty queue. Slots are minted per queue by the caller.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append one command, in program order.
+    pub fn push(&mut self, cmd: Cmd) {
+        self.cmds.push(cmd);
+    }
+
+    /// Number of queued commands.
+    pub fn len(&self) -> usize {
+        self.cmds.len()
+    }
+}
+
+impl CmdQueue {
+    pub fn schedule(self) -> Plan {
+        todo!()
+    }
+}
+
+pub struct Plan {
+    partitions: Vec<PlanPartition>,
+}
+
+impl Plan {
+    /// Replay the plan against the boundary table: slots resolve to
+    /// placements, partitions build (or reuse) backend executables and
+    /// launch. Eager replays immediately; ping-pong replays repeatedly.
+    pub fn replay(&self, boundary: Map<OpId, Arc<Placement>>) -> Result<(), ZyxError> {
+        let _ = boundary;
+        todo!()
+    }
+}
+
+enum PlanPartition {
+    CudaGraph,
+    VulkanPipeline,
+    CpuGraph,
+    // and so on
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PoolBufferId(u32);
+pub struct ChunkId(u64);
 
 /// Global memory-pool handle. `Copy`, names both the backend and the ordinal,
 /// and resolves directly to that pool's global `Arc<Mutex<...>>` — no slab ids.
@@ -420,7 +542,7 @@ impl Pool {
     }
 
     /// Allocate a buffer. Lazily initializes the pool (and its device worker, if any).
-    pub fn allocate(self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
+    pub fn allocate(self, bytes: Dim) -> Result<ChunkId, BackendError> {
         let bytes = bytes + 8; // for the extra element, why not
         let free = self.free_bytes();
         let (result, name) = match self {
@@ -447,7 +569,7 @@ impl Pool {
 
     /// Insert an already-filled host buffer into the pool. Only valid for
     /// [`Pool::Host`]; any other pool is a programming error and panics.
-    pub fn insert_host(self, buf: Box<[u8]>) -> PoolBufferId {
+    pub fn insert_host(self, buf: Box<[u8]>) -> ChunkId {
         match self {
             Pool::Host => lock(self, host::pool()).insert(buf),
             _ => unreachable!("Pool::insert is only valid for the host pool, got {self:?}"),
@@ -456,59 +578,16 @@ impl Pool {
 
     /// Map a slice of a file on disk into the disk pool. Only valid for
     /// [`Pool::Disk`]; any other pool is a programming error and panics.
-    pub fn disk_buffer_from_path(self, bytes: Dim, path: &std::path::Path, offset_bytes: u64) -> PoolBufferId {
+    pub fn disk_buffer_from_path(self, bytes: Dim, path: &std::path::Path, offset_bytes: u64) -> ChunkId {
         match self {
             Pool::Disk => lock(self, disk::pool()).buffer_from_path(bytes, path, offset_bytes),
             _ => unreachable!("Pool::disk_buffer_from_path is only valid for the disk pool, got {self:?}"),
         }
     }
 
-    /// Increment the buffer's reference count (allocate starts it at 1).
-    /// Checked math: overflow panics.
-    pub fn retain(self, buffer_id: PoolBufferId) {
-        match self {
-            Pool::Cuda(id) => {
-                if let Ok(pool) = cuda::pool(id) {
-                    lock(self, &pool).dispose(buffer_id);
-                }
-            }
-            Pool::Host => lock(self, host::pool()).retain(buffer_id),
-            // Disk buffers are file mappings — nothing to free behind rc.
-            Pool::Disk => {}
-            Pool::OpenCL(id) => {
-                if let Ok(pool) = opencl::pool(id) {
-                    lock(self, &pool).retain(buffer_id);
-                }
-            }
-            Pool::Vulkan(id) => {
-                if let Ok(pool) = vulkan::pool(id) {
-                    lock(self, &pool).retain(buffer_id);
-                }
-            }
-            Pool::Dummy => {
-                if let Ok(pool) = dummy::pool() {
-                    lock(self, &pool).retain(buffer_id);
-                }
-            }
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => {
-                if let Ok(pool) = tenstorrent::pool(id) {
-                    lock(self, &pool).retain(buffer_id);
-                }
-            }
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(id) => {
-                if let Ok(pool) = wgpu::pool(id) {
-                    lock(self, &pool).retain(buffer_id);
-                }
-            }
-        }
-    }
-
-    /// Decrement the buffer's reference count. At zero the backend defers the
-    /// actual reclamation behind all in-flight work (release is a request;
-    /// freeing is backend-scheduled).
-    pub fn release(self, buffer_id: PoolBufferId) {
+    /// Put a buffer into the free list for stable-address reuse. Frees
+    /// nothing; VRAM is reclaimed only by [`Pool::dispose`].
+    pub fn release(self, buffer_id: ChunkId) {
         if crate::debug_mask().memory() {
             println!("[{self:?}] release {buffer_id:?}");
         }
@@ -555,6 +634,82 @@ impl Pool {
         }
     }
 
+    /// Tries to reuse existing allocations, all or nothing: every id must
+    /// be on the backend's free list (stable addresses) or nothing is
+    /// claimed. `false` invalidates the requesting graph (retrace).
+    pub fn try_reuse_allocations(self, buffer_ids: &Set<ChunkId>) -> bool {
+        match self {
+            Pool::Host => lock(self, host::pool()).try_reuse_allocations(buffer_ids),
+            Pool::Disk => false,
+            Pool::Cuda(id) => cuda::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
+            Pool::OpenCL(id) => opencl::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
+            Pool::Vulkan(id) => vulkan::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
+            #[cfg(feature = "tenstorrent")]
+            Pool::TT(_) => todo!("TT try_reuse_allocations"),
+            #[cfg(feature = "wgpu")]
+            Pool::WGPU(_) => todo!("WGPU try_reuse_allocations"),
+            Pool::Dummy => dummy::pool().map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
+        }
+    }
+
+    /// Scratch allocation for execution-graph intermediaries: reuses the
+    /// smallest free-list buffer that fits, else allocates fresh.
+    pub fn allocate_scratch(self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        match self {
+            Pool::Host => lock(self, host::pool()).allocate_scratch(bytes),
+            Pool::Disk => todo!("disk is not allocatable"),
+            Pool::Cuda(id) => lock(self, cuda::pool(id)?).allocate_scratch(bytes),
+            Pool::OpenCL(id) => lock(self, opencl::pool(id)?).allocate_scratch(bytes),
+            Pool::Vulkan(id) => lock(self, vulkan::pool(id)?).allocate_scratch(bytes),
+            #[cfg(feature = "tenstorrent")]
+            Pool::TT(id) => lock(self, tenstorrent::pool(id)?).allocate_scratch(bytes),
+            #[cfg(feature = "wgpu")]
+            Pool::WGPU(id) => lock(self, wgpu::pool(id)?).allocate_scratch(bytes),
+            Pool::Dummy => lock(self, dummy::pool()?).allocate_scratch(bytes),
+        }
+    }
+
+    /// Free all buffers in the free list at once (hard sync first). The
+    /// only VRAM reclamation; every released id becomes invalid.
+    pub fn dispose(self) {
+        match self {
+            Pool::Host => lock(self, host::pool()).dispose(),
+            Pool::Disk => {}
+            Pool::Cuda(id) => {
+                if let Ok(pool) = cuda::pool(id) {
+                    lock(self, &pool).dispose();
+                }
+            }
+            Pool::OpenCL(id) => {
+                if let Ok(pool) = opencl::pool(id) {
+                    lock(self, &pool).dispose();
+                }
+            }
+            Pool::Vulkan(id) => {
+                if let Ok(pool) = vulkan::pool(id) {
+                    lock(self, &pool).dispose();
+                }
+            }
+            #[cfg(feature = "tenstorrent")]
+            Pool::TT(id) => {
+                if let Ok(pool) = tenstorrent::pool(id) {
+                    lock(self, &pool).dispose();
+                }
+            }
+            #[cfg(feature = "wgpu")]
+            Pool::WGPU(id) => {
+                if let Ok(pool) = wgpu::pool(id) {
+                    lock(self, &pool).dispose();
+                }
+            }
+            Pool::Dummy => {
+                if let Ok(pool) = dummy::pool() {
+                    lock(self, &pool).dispose();
+                }
+            }
+        }
+    }
+
     pub fn free_bytes(self) -> Dim {
         match self {
             Pool::Host => lock(self, host::pool()).free_bytes(),
@@ -570,7 +725,7 @@ impl Pool {
         }
     }
 
-    pub fn pool_to_host(self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
+    pub fn pool_to_host(self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         match self {
             Pool::Host => lock(self, host::pool()).pool_to_host(src, dst),
             Pool::Disk => lock(self, disk::pool()).pool_to_host(src, dst),
@@ -588,53 +743,9 @@ impl Pool {
         }
     }
 
-    /// Copy data from `src` pool into `self` (dst). The source buffer is
-    /// retained for the duration of the async copy and released by the
-    /// destination backend once the copy completes. Lock order is always
-    /// dst-then-src; both are separate mutexes so this cannot deadlock as long
-    /// as no path locks them in the opposite order.
-    pub fn pool_to_pool(self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
-        match self {
-            Pool::Host => {
-                // Device->host: DMA straight into the destination buffer's
-                // memory — NO staging copy (staging would duplicate the whole
-                // tensor, which can be tens of GB). The host pool lock must
-                // also NOT be held while waiting on the device worker's
-                // reply: the worker takes the host lock at its sync point
-                // (sweep_dead releasing retained foreign host buffers), and
-                // holding it here deadlocks. Safe to write the dst buffer
-                // lock-free because plan execution is the single executor:
-                // the dst buffer is freshly allocated with its rc held by
-                // the plan, and no one touches it until the copy replies.
-                let Pool::Cuda(id) = src else {
-                    return lock(self, host::pool()).pool_to_pool(src, src_buf, dst_buf);
-                };
-                let pool = host::pool();
-                let (dst_ptr, bytes) = {
-                    let mut p = lock(self, &pool);
-                    (p.buffer_ptr_mut(dst_buf), p.get_buffer(dst_buf).len())
-                };
-                let src_pool = cuda::pool(id)?;
-                lock(src, &src_pool).pool_to_host_ptr(src_buf, dst_ptr, bytes as i64)
-            }
-            Pool::Disk => todo!("copies into disk pool"),
-            Pool::Cuda(id) => lock(self, cuda::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
-            Pool::OpenCL(id) => lock(self, opencl::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
-            Pool::Vulkan(id) => lock(self, vulkan::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => lock(self, tenstorrent::pool(id)?).pool_to_pool(src, src_buf, dst_buf),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(id) => {
-                wgpu::flush_pending(id)?;
-                lock(self, wgpu::pool(id)?).pool_to_pool(src, src_buf, dst_buf)
-            }
-            Pool::Dummy => lock(self, dummy::pool()?).pool_to_pool(src, src_buf, dst_buf),
-        }
-    }
-
     /// Raw pointer to a pool buffer's memory, for writing staging data
     /// directly into a buffer (host-pool staging buffers only).
-    pub fn buffer_ptr_mut(self, buffer_id: PoolBufferId) -> *mut u8 {
+    pub fn buffer_ptr_mut(self, buffer_id: ChunkId) -> *mut u8 {
         match self {
             Pool::Host => lock(self, host::pool()).buffer_ptr_mut(buffer_id),
             // Device buffers are not CPU-addressable; staging writes go
@@ -713,7 +824,7 @@ pub(crate) fn autotune_config() -> crate::kernel::autotune::BeamSearch {
 pub enum LaunchArg {
     /// A placed value: the backend resolves the shard for its own device to
     /// a raw pointer at submission. The caller guarantees a shard exists.
-    Buffer(Arc<mod2::Placement>),
+    Buffer(Arc<Placement>),
     /// A scalar value for a `Param { kind: Variable }`. Used both as a kernel
     /// param and (via group-index lengths) to derive the grid size host-side.
     Variable(Constant),
@@ -840,21 +951,21 @@ pub(crate) fn gws_from_kernel(kernel: &Kernel, max_grid_dims: &[Dim]) -> Result<
     Ok(gws)
 }
 
-impl From<usize> for PoolBufferId {
+impl From<usize> for ChunkId {
     fn from(value: usize) -> Self {
-        PoolBufferId(u32::try_from(value).unwrap())
+        ChunkId(value as u64)
     }
 }
 
-impl From<PoolBufferId> for usize {
-    fn from(value: PoolBufferId) -> Self {
+impl From<ChunkId> for usize {
+    fn from(value: ChunkId) -> Self {
         value.0 as usize
     }
 }
 
-impl SlabId for PoolBufferId {
+impl SlabId for ChunkId {
     const ZERO: Self = Self(0);
-    const NULL: Self = Self(u32::MAX);
+    const NULL: Self = Self(u64::MAX);
 
     fn inc(&mut self) {
         self.0 += 1;

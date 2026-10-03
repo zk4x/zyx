@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::PoolBufferId;
+use super::ChunkId;
 use crate::{
     error::{BackendError, ErrorStatus},
     shape::Dim,
@@ -27,7 +27,7 @@ static DISK_POOL: Mutex<DiskMemoryPool> = Mutex::new(DiskMemoryPool { free_bytes
 #[derive(Debug)]
 pub struct DiskMemoryPool {
     free_bytes: Dim,
-    buffers: Slab<PoolBufferId, DiskBuffer>,
+    buffers: Slab<ChunkId, DiskBuffer>,
 }
 
 pub(super) fn pool() -> &'static Mutex<DiskMemoryPool> {
@@ -46,19 +46,19 @@ impl DiskMemoryPool {
         self.free_bytes
     }
 
-    pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> PoolBufferId {
+    pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> ChunkId {
         self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes })
     }
 
     /// Return the size in bytes of a disk-backed buffer.
-    pub fn buffer_bytes(&self, src: PoolBufferId) -> Dim {
+    pub fn buffer_bytes(&self, src: ChunkId) -> Dim {
         self.buffers[src].bytes
     }
 
     /// Read a slice of the file backing the buffer into host memory.
     /// Synchronous — the disk pool never defers work.
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         let buffer = &self.buffers[src];
         let f = File::open(&buffer.path).unwrap();
         #[cfg(unix)]

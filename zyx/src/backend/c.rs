@@ -9,7 +9,7 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{DTypeCapability, DeviceInfo, DeviceProgramId, LaunchArg, Pool};
+use super::{DTypeCapability, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Pool, Shard};
 use crate::DType;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{Kernel, Op, RangeKind};
@@ -153,6 +153,20 @@ pub(super) fn device() -> Result<&'static Mutex<CDevice>, BackendError> {
     device_with(&super::config().c, super::debug_backends())
 }
 
+/// Resolves a launch arg placement to a host pointer: the shard addressed to
+/// the host pool, or inline host data.
+fn host_ptr(memory_pool: &mut super::host::HostMemoryPool, placement: &Placement) -> *mut u8 {
+    placement
+        .shards
+        .iter()
+        .find_map(|shard| match shard {
+            Shard::Device { pool, chunk } if *pool == Pool::Host => Some(memory_pool.buffer_ptr_mut(*chunk)),
+            Shard::Host { data } => Some(data.as_ptr() as *mut u8),
+            Shard::Device { .. } => None,
+        })
+        .expect("C launch arg has no host shard")
+}
+
 impl CDevice {
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.device_info.clone()
@@ -288,9 +302,8 @@ impl CDevice {
         let mut ptrs: Vec<*mut u8> = Vec::with_capacity(args.len());
         for arg in args {
             match *arg {
-                LaunchArg::Buffer(buffer_id) => {
-                    let ptr = memory_pool.buffer_ptr_mut(buffer_id);
-                    ptrs.push(ptr);
+                LaunchArg::Buffer(ref placement) => {
+                    ptrs.push(host_ptr(&mut memory_pool, placement));
                 }
                 LaunchArg::Variable(constant) => {
                     vars.push(constant.to_le_bytes().into_boxed_slice());

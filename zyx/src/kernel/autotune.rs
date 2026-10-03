@@ -262,8 +262,8 @@ impl BeamSearch {
         let rt = crate::RT.lock();
         let mut args: Vec<LaunchArg> = Vec::with_capacity(tensors.len());
         for tensor in tensors {
-            if let Some(buf_id) = rt.leaf_buffer(tensor.id()) {
-                args.push(LaunchArg::Buffer(buf_id.buffer_id));
+            if let Some(buf) = rt.leaf_buffer(tensor.id()) {
+                args.push(LaunchArg::Buffer(buf));
             } else if let Some(value) = rt.resolve_symbolic(tensor.id()) {
                 args.push(LaunchArg::Variable(value));
             } else {

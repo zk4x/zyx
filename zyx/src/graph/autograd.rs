@@ -118,7 +118,7 @@ impl Runtime {
                         let g = self.push_binary_node(graph_id, grad, neg_sin, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
-UOp::Abs => {
+                    UOp::Abs => {
                         let zero = self.push_const(graph_id, Constant::new(0u8));
                         let one = self.push_const(graph_id, Constant::new(1u8));
                         let neg_one = self.push_const(graph_id, Constant::new(-1i8));

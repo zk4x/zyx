@@ -16,7 +16,7 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(clippy::needless_pass_by_ref_mut)]
 
-use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Pool, ProgramId};
+use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Pool, ProgramId, Shard};
 use crate::{
     DType, Set,
     error::{BackendError, ErrorStatus},
@@ -183,6 +183,20 @@ pub(super) fn device() -> Result<&'static Mutex<CblasDevice>, BackendError> {
     device_with(&super::config().cblas, super::debug_backends())
 }
 
+/// Resolves a launch arg placement to a host pointer: the shard addressed to
+/// the host pool, or inline host data.
+fn host_ptr(memory_pool: &mut super::host::HostMemoryPool, placement: &Placement) -> *mut u8 {
+    placement
+        .shards
+        .iter()
+        .find_map(|shard| match shard {
+            Shard::Device { pool, chunk } if *pool == Pool::Host => Some(memory_pool.buffer_ptr_mut(*chunk)),
+            Shard::Host { data } => Some(data.as_ptr() as *mut u8),
+            Shard::Device { .. } => None,
+        })
+        .expect("cblas launch arg has no host shard")
+}
+
 impl CblasDevice {
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.device_info.clone()
@@ -247,18 +261,18 @@ impl CblasDevice {
             .map_err(|_| BackendError { status: ErrorStatus::IncorrectKernelArg, context: "k exceeds i32 range".into() })?;
 
         // args are [a, b, out] — loads first, then stores
-        let LaunchArg::Buffer(b0) = args[0] else {
+        let LaunchArg::Buffer(ref b0) = args[0] else {
             unreachable!("cblas sgemm args are plain buffers")
         };
-        let LaunchArg::Buffer(b1) = args[1] else {
+        let LaunchArg::Buffer(ref b1) = args[1] else {
             unreachable!("cblas sgemm args are plain buffers")
         };
-        let LaunchArg::Buffer(b2) = args[2] else {
+        let LaunchArg::Buffer(ref b2) = args[2] else {
             unreachable!("cblas sgemm args are plain buffers")
         };
-        let a = memory_pool.buffer_ptr_mut(b0) as *mut f32;
-        let b = memory_pool.buffer_ptr_mut(b1) as *mut f32;
-        let c = memory_pool.buffer_ptr_mut(b2) as *mut f32;
+        let a = host_ptr(&mut memory_pool, b0) as *mut f32;
+        let b = host_ptr(&mut memory_pool, b1) as *mut f32;
+        let c = host_ptr(&mut memory_pool, b2) as *mut f32;
 
         unsafe {
             // Row-major, NoTrans x NoTrans: C(m, n) = A(m, k) @ B(k, n)

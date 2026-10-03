@@ -135,13 +135,9 @@ macro_rules! send_or_continue {
 }
 
 use super::{
-    DTypeCapability, Dev, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Pool, PoolBufferId, ProgramId, gws_from_kernel,
+    ChunkId, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Placement, Pool, ProgramId, Shard,
+    gws_from_kernel,
 };
-
-/// Number of launches accumulated in the worker's pending window before the
-/// batched-submission algorithm assigns them to hardware queues (streams) and
-/// submits the whole window at once. See [`spawn_worker`].
-const MICRO_BATCH_WINDOW: usize = 100;
 
 /// CUDA configuration
 #[allow(clippy::question_mark)]
@@ -272,50 +268,36 @@ pub(super) struct CUDAStream {
 enum CUDACommand {
     Allocate {
         bytes: Dim,
-        reply: Sender<Result<PoolBufferId, BackendError>>,
+        reply: Sender<Result<ChunkId, BackendError>>,
     },
     Dispose,
     Release {
-        buffer_id: PoolBufferId,
+        buffer_id: ChunkId,
     },
-    /// Async copy into this pool's buffer, fire-and-forget: appended to the
-    /// pending micro-batch window, submitted (with computed waits) when the
-    /// window flushes. `CUDAMemoryPool::pool_to_pool` retained the source
-    /// pool buffer; once the copy completes, this worker releases it back to
-    /// the source pool (foreign-dead sweep). Host sources carry a plain host
-    /// pointer (`src_ctx: None`); device sources carry the source context and
-    /// its per-stream barrier events, which are waited on and then destroyed.
-    Copy {
-        src_pool: Pool,
-        src_buf: PoolBufferId,
-        src_ptr: u64,
-        /// Copy size for host sources; device sources copy the destination
-        /// size.
-        bytes: Option<Dim>,
-        src_ctx: Option<u64>,
-        src_events: Vec<u64>,
-        dst_buf: PoolBufferId,
+    /// Try to re-claim every id in the set from this pool's free list
+    /// (all-or-nothing): `Ok(true)` = stable addresses, `Ok(false)` =
+    /// slots changed, invalidate the graph and retrace.
+    TryReuse {
+        buffer_ids: Set<ChunkId>,
+        reply: Sender<Result<bool, BackendError>>,
+    },
+    /// Scratch for queue intermediaries: reuses the smallest fitting free
+    /// buffer, else allocates fresh. Never fails on fragmentation.
+    AllocateScratch {
+        bytes: Dim,
+        reply: Sender<Result<ChunkId, BackendError>>,
     },
     /// Blocking read-back: the reply is sent after the data arrived in
     /// host memory. This is a sync point — all pending work is submitted
     /// and the device is drained first.
     PoolToHost {
-        src: PoolBufferId,
+        src: ChunkId,
         dst: *mut u8,
         bytes: Dim,
         reply: Sender<Result<(), BackendError>>,
     },
     /// Export the device pointer, context and in-flight barrier events of a
     /// buffer so another device's worker can copy from it (peer-copy source side).
-    ExportForCopy {
-        buffer_id: PoolBufferId,
-        reply: Sender<Result<(u64, u64, Vec<u64>), BackendError>>,
-    },
-    /// Destroy barrier events previously handed out via `ExportForCopy`
-    /// once the copying worker enqueued its waits.
-    DestroyEvents {
-        events: Vec<u64>,
-    },
     Compile {
         lws: Vec<Dim>,
         gws: Vec<GwsDim>,
@@ -658,6 +640,7 @@ fn spawn_worker(
     debug_dev: bool,
     rx: Receiver<CUDACommand>,
     free_bytes_atomic: Arc<AtomicU64>,
+    pool: Pool,
 ) {
     let CudaFns {
         cuCtxCreate,
@@ -695,8 +678,8 @@ fn spawn_worker(
             return;
         }
 
-        // Hardware queues (streams). The batched-submission algorithm in
-        // `flush_window` distributes the pending micro-batch window over them.
+        // Hardware queues (streams). Launches submit directly; graph
+        // capture replays them via a captured CUDA graph.
         let queue_count = super::config().cuda.queues.unwrap_or(12);
         let mut streams: Vec<CUDAStream> = Vec::new();
         for _ in 0..queue_count {
@@ -738,10 +721,13 @@ fn spawn_worker(
             max_grid[axis] = i64::from(value);
         }
 
-        let mut buffers: Slab<PoolBufferId, CUDABuffer> = Slab::new();
+        let mut buffers: Slab<ChunkId, CUDABuffer> = Slab::new();
         // stack of buffers that are unused and can be reused
-        let mut free_stack: Vec<PoolBufferId> = Vec::new();
+        let mut free_set: Set<ChunkId> = Set::default();
         let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
+        // This worker's pool identity: placements resolve through the shard
+        // addressed to this pool.
+        let my_pool = pool;
 
         // Create the cuDNN handle on this worker thread (it owns the
         // current CUDA context). Optional — only used by AOT cudnn kernels.
@@ -770,145 +756,78 @@ fn spawn_worker(
                     let _ = reply.send(Ok(buffer_id));
                 }
                 CUDACommand::Release { buffer_id } => {
-                    let Some(buffer) = buffers.get_mut(buffer_id) else {
+                    // Put the id on the free list for stable-address reuse.
+                    // Frees nothing: VRAM is reclaimed only by Dispose.
+                    // The slab entry stays (tombstone) so ChunkIds are
+                    // monotonic and never alias a different buffer.
+                    if !buffers.contains_id(buffer_id) {
                         debug_assert!(false, "release of unknown buffer {buffer_id:?}");
                         continue;
-                    };
-                    buffer.rc = buffer.rc.checked_sub(1).expect("CUDABuffer rc underflow");
-                    if buffer.rc > 0 {
+                    }
+                    debug_assert!(!free_set.contains(&buffer_id), "double release of buffer {buffer_id:?}");
+                    free_set.insert(buffer_id);
+                }
+                CUDACommand::Dispose => {
+                    todo!("Dispose drains the free list under a full device sync")
+                }
+                CUDACommand::TryReuse { buffer_ids, reply } => {
+                    // All-or-nothing: every id must be on the free list, else
+                    // some address moved and the graph must be retraced.
+                    let ok = buffer_ids.iter().all(|id| free_set.contains(id));
+                    if ok {
+                        for id in &buffer_ids {
+                            free_set.remove(id);
+                        }
+                    }
+                    let _ = reply.send(Ok(ok));
+                }
+                CUDACommand::AllocateScratch { bytes, reply } => {
+                    // Smallest fitting free buffer wins; never fails on
+                    // fragmentation — falls back to a fresh allocation.
+                    let best = free_set
+                        .iter()
+                        .filter_map(|id| {
+                            let b = &buffers[*id];
+                            (b.bytes >= bytes).then_some((b.bytes, *id))
+                        })
+                        .min();
+                    if let Some((_, id)) = best {
+                        free_set.remove(&id);
+                        let _ = reply.send(Ok(id));
                         continue;
                     }
-                    // rc hit zero: the buffer's last use may still be in flight.
-                    // Flush the pending window (uses may still be queued there),
-                    // then record one barrier event per stream; the buffer is
-                    // actually freed once every barrier completes (sweep_dead).
-                    if let Err(err) = flush_window(
-                        &mut pending,
-                        &streams,
-                        &buffers,
-                        &programs,
-                        &mut writer,
-                        &mut last_use,
-                        &mut foreign_dead,
-                        &mut peer_enabled,
-                        context,
-                        &max_grid,
-                        debug_dev,
-                        &cudnn,
-                        cudnn_handle,
-                        cuEventCreate,
-                        cuEventRecord,
-                        cuStreamWaitEvent,
-                        cuEventDestroy,
-                        cuMemcpyHtoDAsync,
-                        cuMemcpyPeerAsync,
-                        cuCtxEnablePeerAccess,
-                        cuLaunchKernel,
-                    ) && last_error.is_none()
-                    {
-                        last_error = Some(err);
+                    let mut ptr: CUdeviceptr = 0;
+                    if let Err(err) = unsafe { (cuMemAlloc)(&raw mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation) {
+                        let _ = reply.send(Err(err));
+                        continue;
                     }
-                    let mut barriers = Vec::with_capacity(streams.len());
-                    for st in &streams {
-                        let mut event = ptr::null_mut();
-                        if unsafe { (cuEventCreate)(&raw mut event, 0) }.check(ErrorStatus::MemoryDeallocation).is_ok()
-                            && unsafe { (cuEventRecord)(event, st.stream) }.check(ErrorStatus::MemoryDeallocation).is_ok()
-                        {
-                            barriers.push(event);
-                        }
-                    }
-                    writer.remove(&buffer_id);
-                    last_use.remove(&buffer_id);
-                    dead.push((buffer_id, barriers));
-                }
-                CUDACommand::Copy { src_pool, src_buf, src_ptr, bytes, src_ctx, src_events, dst_buf } => {
-                    // Fire-and-forget: append to the micro-batch window; the
-                    // batched-submission algorithm submits it (with computed
-                    // waits) when the window flushes.
-                    pending.push(Pending::Copy { src_pool, src_buf, src_ptr, bytes, src_ctx, src_events, dst: dst_buf });
-                    if pending.len() >= MICRO_BATCH_WINDOW {
-                        if let Err(err) = flush_window(
-                            &mut pending,
-                            &streams,
-                            &buffers,
-                            &programs,
-                            &mut writer,
-                            &mut last_use,
-                            &mut foreign_dead,
-                            &mut peer_enabled,
-                            context,
-                            &max_grid,
-                            debug_dev,
-                            &cudnn,
-                            cudnn_handle,
-                            cuEventCreate,
-                            cuEventRecord,
-                            cuStreamWaitEvent,
-                            cuEventDestroy,
-                            cuMemcpyHtoDAsync,
-                            cuMemcpyPeerAsync,
-                            cuCtxEnablePeerAccess,
-                            cuLaunchKernel,
-                        ) && last_error.is_none()
-                        {
-                            last_error = Some(err);
-                        }
-                    }
+                    assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
+                    debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes as u64);
+                    free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
+                    let buffer_id = buffers.push(CUDABuffer { ptr, bytes });
+                    let _ = reply.send(Ok(buffer_id));
                 }
                 CUDACommand::PoolToHost { src, dst, bytes, reply } => {
-                    // Sync point: submit everything pending, drain all queues,
-                    // surface any async submission error, then read back.
-                    if let Err(err) = flush_window(
-                        &mut pending,
-                        &streams,
-                        &buffers,
-                        &programs,
-                        &mut writer,
-                        &mut last_use,
-                        &mut foreign_dead,
-                        &mut peer_enabled,
-                        context,
-                        &max_grid,
-                        debug_dev,
-                        &cudnn,
-                        cudnn_handle,
-                        cuEventCreate,
-                        cuEventRecord,
-                        cuStreamWaitEvent,
-                        cuEventDestroy,
-                        cuMemcpyHtoDAsync,
-                        cuMemcpyPeerAsync,
-                        cuCtxEnablePeerAccess,
-                        cuLaunchKernel,
-                    ) && last_error.is_none()
-                    {
-                        last_error = Some(err);
-                    }
+                    // Sync point: drain the (single) stream, then read back.
+                    // No scheduler state: launches are submitted directly.
                     for st in &streams {
                         if let Err(err) = unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::MemoryCopyP2H) {
                             let _ = reply.send(Err(err));
                             continue 'work_thread_loop;
                         }
                     }
-                    sweep_dead(
-                        &mut dead,
-                        &mut foreign_dead,
-                        &mut buffers,
-                        &free_bytes_atomic,
-                        cuEventQuery,
-                        cuEventDestroy,
-                        cuMemFree,
-                    );
-                    if let Some(err) = last_error.take() {
-                        let _ = reply.send(Err(err));
+                    let Some(src_buf) = buffers.get(src) else {
+                        let _ = reply.send(Err(BackendError {
+                            status: ErrorStatus::MemoryCopyP2H,
+                            context: "readback of unknown buffer".into(),
+                        }));
                         continue;
-                    }
-                    let src = &buffers[src];
+                    };
                     // Never read past the device buffer's allocation (the
                     // requested length comes from the dst side, which may
                     // carry a larger padded allocation).
-                    let bytes = bytes.min(src.bytes);
-                    if let Err(err) = unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes as usize, streams[0].stream) }
+                    let bytes = bytes.min(src_buf.bytes);
+                    if let Err(err) = unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src_buf.ptr, bytes as usize, streams[0].stream) }
                         .check(ErrorStatus::MemoryCopyP2H)
                     {
                         let _ = reply.send(Err(err));
@@ -968,88 +887,17 @@ fn spawn_worker(
                         }
                     }
                 }
-                CUDACommand::Launch { program_id, args } => {
-                    // Fire and forget: append to the micro-batch window; the
-                    // batched-submission algorithm assigns it a stream (with
-                    // computed waits) when the window flushes.
-                    pending.push(Pending::Launch { program_id, args });
-                    if pending.len() >= MICRO_BATCH_WINDOW {
-                        if let Err(err) = flush_window(
-                            &mut pending,
-                            &streams,
-                            &buffers,
-                            &programs,
-                            &mut writer,
-                            &mut last_use,
-                            &mut foreign_dead,
-                            &mut peer_enabled,
-                            context,
-                            &max_grid,
-                            debug_dev,
-                            &cudnn,
-                            cudnn_handle,
-                            cuEventCreate,
-                            cuEventRecord,
-                            cuStreamWaitEvent,
-                            cuEventDestroy,
-                            cuMemcpyHtoDAsync,
-                            cuMemcpyPeerAsync,
-                            cuCtxEnablePeerAccess,
-                            cuLaunchKernel,
-                        ) && last_error.is_none()
-                        {
-                            last_error = Some(err);
-                        }
-                    }
+                CUDACommand::Launch { .. } => {
+                    todo!("kernel execution moves into Plan::schedule/CUDA-graph capture")
                 }
                 CUDACommand::LaunchTimed { program_id, args, reply } => {
-                    // Uncontended timing for autotune: submit the pending
-                    // window, drain every queue, surface async errors, then
+                    // Uncontended timing for autotune: drain the stream, then
                     // run the kernel solo bracketed by timing events.
-                    if let Err(err) = flush_window(
-                        &mut pending,
-                        &streams,
-                        &buffers,
-                        &programs,
-                        &mut writer,
-                        &mut last_use,
-                        &mut foreign_dead,
-                        &mut peer_enabled,
-                        context,
-                        &max_grid,
-                        debug_dev,
-                        &cudnn,
-                        cudnn_handle,
-                        cuEventCreate,
-                        cuEventRecord,
-                        cuStreamWaitEvent,
-                        cuEventDestroy,
-                        cuMemcpyHtoDAsync,
-                        cuMemcpyPeerAsync,
-                        cuCtxEnablePeerAccess,
-                        cuLaunchKernel,
-                    ) && last_error.is_none()
-                    {
-                        last_error = Some(err);
-                    }
                     for st in &streams {
                         if let Err(err) = unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::KernelSync) {
                             let _ = reply.send(Err(err));
                             continue 'work_thread_loop;
                         }
-                    }
-                    sweep_dead(
-                        &mut dead,
-                        &mut foreign_dead,
-                        &mut buffers,
-                        &free_bytes_atomic,
-                        cuEventQuery,
-                        cuEventDestroy,
-                        cuMemFree,
-                    );
-                    if let Some(err) = last_error.take() {
-                        let _ = reply.send(Err(err));
-                        continue;
                     }
                     let mut start = ptr::null_mut();
                     let mut end = ptr::null_mut();
@@ -1069,6 +917,7 @@ fn spawn_worker(
                         submit_launch(
                             &programs,
                             &buffers,
+                            my_pool,
                             program_id,
                             &args,
                             streams[0].stream,
@@ -1086,66 +935,6 @@ fn spawn_worker(
                     let _ = unsafe { (cuEventDestroy)(start) };
                     let _ = unsafe { (cuEventDestroy)(end) };
                     let _ = reply.send(result);
-                }
-                CUDACommand::ExportForCopy { buffer_id, reply } => {
-                    // Peer-copy source side: submit pending work, then hand out
-                    // the device pointer, context and one barrier event per
-                    // stream; the destination worker waits on these before
-                    // reading, so no in-flight producer is raced.
-                    if let Err(err) = flush_window(
-                        &mut pending,
-                        &streams,
-                        &buffers,
-                        &programs,
-                        &mut writer,
-                        &mut last_use,
-                        &mut foreign_dead,
-                        &mut peer_enabled,
-                        context,
-                        &max_grid,
-                        debug_dev,
-                        &cudnn,
-                        cudnn_handle,
-                        cuEventCreate,
-                        cuEventRecord,
-                        cuStreamWaitEvent,
-                        cuEventDestroy,
-                        cuMemcpyHtoDAsync,
-                        cuMemcpyPeerAsync,
-                        cuCtxEnablePeerAccess,
-                        cuLaunchKernel,
-                    ) && last_error.is_none()
-                    {
-                        last_error = Some(err);
-                    }
-                    if !buffers.contains_id(buffer_id) {
-                        let _ = reply.send(Err(BackendError {
-                            status: ErrorStatus::MemoryCopyP2P,
-                            context: "export for copy of unknown buffer".into(),
-                        }));
-                        continue;
-                    }
-                    if let Some(err) = last_error.take() {
-                        let _ = reply.send(Err(err));
-                        continue;
-                    }
-                    let mut barriers = Vec::with_capacity(streams.len());
-                    for st in &streams {
-                        let mut event = ptr::null_mut();
-                        if unsafe { (cuEventCreate)(&raw mut event, 0) }.check(ErrorStatus::MemoryCopyP2P).is_ok()
-                            && unsafe { (cuEventRecord)(event, st.stream) }.check(ErrorStatus::MemoryCopyP2P).is_ok()
-                        {
-                            barriers.push(event as u64);
-                        }
-                    }
-                    let _ = reply.send(Ok((buffers[buffer_id].ptr, context as u64, barriers)));
-                }
-                CUDACommand::DestroyEvents { events } => {
-                    // Events exported to another device's worker after it
-                    // enqueued its waits; safe to destroy now.
-                    for event in events {
-                        let _ = unsafe { (cuEventDestroy)(event as CUevent) };
-                    }
                 }
                 CUDACommand::ReleaseProgram { program_id } => {
                     match &programs[program_id] {
@@ -1212,8 +1001,18 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
         }
         let (tx, rx): (Sender<CUDACommand>, Receiver<CUDACommand>) = channel();
         let free_bytes_atomic = Arc::new(AtomicU64::new(free_bytes as u64));
-        spawn_worker(fns, cudnn.clone(), Arc::clone(&lib), device, dev_ordinal, debug_dev, rx, Arc::clone(&free_bytes_atomic));
         let index = devs.len();
+        spawn_worker(
+            fns,
+            cudnn.clone(),
+            Arc::clone(&lib),
+            device,
+            dev_ordinal,
+            debug_dev,
+            rx,
+            Arc::clone(&free_bytes_atomic),
+            Pool::Cuda(index as u16),
+        );
         pools.push(Mutex::new(CUDAMemoryPool {
             tx: tx.clone(),
             free_bytes: free_bytes_atomic,
@@ -1325,7 +1124,7 @@ impl CUDAMemoryPool {
         self.free_bytes.load(Ordering::SeqCst) as i64
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
         if bytes > self.free_bytes.load(Ordering::SeqCst) as i64 {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure.".into() });
         }
@@ -1335,12 +1134,22 @@ impl CUDAMemoryPool {
     }
 
     /// Tries to reuse existing allocations, all or nothing, returns true if possible, otherwise returns false
-    pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<PoolBufferId>) -> bool {
-        todo!()
+    pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
+        let (reply, reply_rx) = channel();
+        self.tx.send(CUDACommand::TryReuse { buffer_ids: buffer_ids.clone(), reply }).unwrap();
+        reply_rx.recv().unwrap().unwrap_or(false)
+    }
+
+    /// Scratch for queue intermediaries: reuses the smallest fitting free
+    /// buffer, else allocates fresh. Never fails on fragmentation.
+    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        let (reply, reply_rx) = channel();
+        self.tx.send(CUDACommand::AllocateScratch { bytes, reply }).unwrap();
+        reply_rx.recv().unwrap()
     }
 
     /// Put single buffer into the free list
-    pub fn release(&mut self, buffer_id: PoolBufferId) {
+    pub fn release(&mut self, buffer_id: ChunkId) {
         self.tx.send(CUDACommand::Release { buffer_id }).unwrap();
     }
 
@@ -1351,7 +1160,7 @@ impl CUDAMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len() as i64, reply }).unwrap();
         reply_rx.recv().unwrap()
@@ -1361,131 +1170,11 @@ impl CUDAMemoryPool {
     /// The caller must keep the destination allocation alive (and untouched)
     /// until the reply arrives.
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_host_ptr(&mut self, src: PoolBufferId, dst: *mut u8, bytes: i64) -> Result<(), BackendError> {
+    pub fn pool_to_host_ptr(&mut self, src: ChunkId, dst: *mut u8, bytes: i64) -> Result<(), BackendError> {
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::PoolToHost { src, dst: dst.cast(), bytes, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
-
-    /// Fire-and-forget copy into this pool (dst-owned). The source pool
-    /// buffer is retained here and released by this device's worker once the
-    /// copy completes — see `flush_window` / `sweep_dead`.
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
-        // Retain the source buffer for the duration of the async copy; this
-        // device's worker releases it back once the copy completes.
-        src.retain(src_buf);
-        match src {
-            Pool::Host => {
-                let src_pool = super::host::pool();
-                let src_pool = super::lock(src, &src_pool);
-                let bytes = src_pool.get_buffer(src_buf).len() as Dim;
-                let src_ptr = src_pool.get_buffer(src_buf).as_ptr() as u64;
-                drop(src_pool);
-                self.tx
-                    .send(CUDACommand::Copy {
-                        src_pool: Pool::Host,
-                        src_buf,
-                        src_ptr,
-                        bytes: Some(bytes),
-                        src_ctx: None,
-                        src_events: Vec::new(),
-                        dst_buf,
-                    })
-                    .unwrap();
-                Ok(())
-            }
-            Pool::Disk => {
-                // Stage through a HOST-POOL buffer (never a Vec: tensors can
-                // be tens of GB): the disk mapping is read into it, then the
-                // copy proceeds like a host source; the worker releases the
-                // staging buffer on completion. The disk buffer is only read
-                // here, synchronously — its retain is balanced immediately.
-                let bytes = {
-                    let src_pool = super::disk::pool();
-                    let mut src_pool = super::lock(src, &src_pool);
-                    src_pool.buffer_bytes(src_buf)
-                };
-                let tmp = Pool::Host.allocate(bytes)?;
-                {
-                    let host_pool = super::host::pool();
-                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
-                    let src_pool = super::disk::pool();
-                    let mut src_pool = super::lock(src, &src_pool);
-                    let staged =
-                        src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
-                    drop(src_pool);
-                    match staged {
-                        Ok(()) => src.release(src_buf),
-                        Err(err) => {
-                            src.release(src_buf);
-                            Pool::Host.release(tmp);
-                            return Err(err);
-                        }
-                    }
-                }
-                let (bytes, src_ptr) = {
-                    let host_pool = super::host::pool();
-                    let host_pool = super::lock(Pool::Host, &host_pool);
-                    (host_pool.get_buffer(tmp).len() as Dim, host_pool.get_buffer(tmp).as_ptr() as u64)
-                };
-                self.tx
-                    .send(CUDACommand::Copy {
-                        src_pool: Pool::Host,
-                        src_buf: tmp,
-                        src_ptr,
-                        bytes: Some(bytes),
-                        src_ctx: None,
-                        src_events: Vec::new(),
-                        dst_buf,
-                    })
-                    .unwrap();
-                Ok(())
-            }
-            Pool::Cuda(src_id) => {
-                // Dst-owned device-to-device copy (p2p writes beat reads): the
-                // source worker exports its pointer, context and barrier
-                // events; this worker waits on them, memcpys peer, and
-                // releases the retained source once the copy completes.
-                match export_for_copy(src_id, src_buf) {
-                    Ok((src_ptr, src_ctx, src_events)) => {
-                        self.tx
-                            .send(CUDACommand::Copy {
-                                src_pool: Pool::Cuda(src_id),
-                                src_buf,
-                                src_ptr,
-                                bytes: None,
-                                src_ctx: Some(src_ctx),
-                                src_events,
-                                dst_buf,
-                            })
-                            .unwrap();
-                        Ok(())
-                    }
-                    Err(err) => {
-                        src.release(src_buf);
-                        Err(err)
-                    }
-                }
-            }
-            Pool::OpenCL(_) | Pool::Vulkan(_) | Pool::Dummy => todo!("cross-pool copy from {src:?} to CUDA"),
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(_) => todo!("cross-pool copy from TT to CUDA"),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(_) => todo!("cross-pool copy from WGPU to CUDA"),
-        }
-    }
-}
-
-/// Round-trip to the source GPU's worker: flushes its pending window and
-/// returns the buffer's device pointer, context, and one barrier event per
-/// stream (as raw u64s for transport across threads).
-pub(super) fn export_for_copy(id: u16, buffer_id: PoolBufferId) -> Result<(u64, u64, Vec<u64>), BackendError> {
-    let pool = pool(id)?;
-    let pool = super::lock(Pool::Cuda(id), &pool);
-    let (reply, reply_rx) = channel();
-    pool.tx.send(CUDACommand::ExportForCopy { buffer_id, reply }).unwrap();
-    reply_rx.recv().unwrap()
 }
 
 impl CUDADevice {
@@ -1610,61 +1299,27 @@ impl CUDADevice {
     }
 }
 
-/// A batchable pending command in the worker's micro-batch window. Kept in
-/// program order; submitted (with computed waits) by [`flush_window`].
-enum Pending {
-    Launch {
-        program_id: DeviceProgramId,
-        args: Vec<LaunchArg>,
-    },
-    Copy {
-        src_pool: Pool,
-        src_buf: PoolBufferId,
-        src_ptr: u64,
-        /// Copy size for host sources; device sources use the destination
-        /// size.
-        bytes: Option<Dim>,
-        src_ctx: Option<u64>,
-        src_events: Vec<u64>,
-        dst: PoolBufferId,
-    },
-}
-
-/// Reads/writes of a pending command. Launch args are in `Param` head order;
-/// `Module` programs carry their kinds from compile, cuDNN plans are
-/// (input, input, output).
-fn pending_reads_writes(programs: &Slab<DeviceProgramId, CUDAProgram>, cmd: &Pending) -> (Vec<PoolBufferId>, Vec<PoolBufferId>) {
-    match cmd {
-        Pending::Launch { program_id, args } => {
-            let kinds: &[ParamKind] = match &programs[*program_id] {
-                CUDAProgram::Module { params, .. } => params,
-                CUDAProgram::Cudnn { .. } => &[ParamKind::Global, ParamKind::Global, ParamKind::GlobalMut],
-            };
-            debug_assert!(args.len() <= kinds.len(), "more launch args than program params");
-            let mut reads = Vec::new();
-            let mut writes = Vec::new();
-            for (idx, arg) in args.iter().enumerate() {
-                match arg {
-                    LaunchArg::Buffer(id) => match kinds.get(idx).copied().unwrap_or(ParamKind::Global) {
-                        ParamKind::GlobalMut => writes.push(*id),
-                        ParamKind::Global | ParamKind::Variable => reads.push(*id),
-                    },
-                    LaunchArg::Variable(_) => {}
-                }
-            }
-            (reads, writes)
-        }
-        Pending::Copy { dst, .. } => (Vec::new(), vec![*dst]),
-    }
+/// Resolves a launch arg placement to a device pointer through the shard
+/// addressed to this worker's pool.
+fn placement_ptr(buffers: &Slab<ChunkId, CUDABuffer>, my_pool: Pool, placement: &Placement) -> Result<u64, BackendError> {
+    placement
+        .shards
+        .iter()
+        .find_map(|shard| match shard {
+            Shard::Device { pool, chunk } if *pool == my_pool => Some(*chunk),
+            Shard::Device { .. } | Shard::Host { .. } => None,
+        })
+        .and_then(|chunk| buffers.get(chunk).map(|b| b.ptr))
+        .ok_or(BackendError { status: ErrorStatus::KernelLaunch, context: "launch arg has no shard on this pool".into() })
 }
 
 /// Resolves launch args against the buffer table and submits one kernel (or
-/// cuDNN plan) onto `stream`. Shared by the batched-submission path and
-/// `LaunchTimed`.
+/// cuDNN plan) onto `stream`. Used by `LaunchTimed`.
 #[allow(clippy::too_many_arguments)]
 fn submit_launch(
     programs: &Slab<DeviceProgramId, CUDAProgram>,
-    buffers: &Slab<PoolBufferId, CUDABuffer>,
+    buffers: &Slab<ChunkId, CUDABuffer>,
+    my_pool: Pool,
     program_id: DeviceProgramId,
     args: &[LaunchArg],
     stream: CUstream,
@@ -1693,13 +1348,13 @@ fn submit_launch(
             let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
             // Stable storage for the device pointers of buffer args —
             // cuLaunchKernel receives their addresses by reference.
-            let mut buffer_ptrs: Vec<u64> = args
-                .iter()
-                .filter_map(|arg| match arg {
-                    LaunchArg::Buffer(buffer_id) => Some(buffers[*buffer_id].ptr),
-                    LaunchArg::Variable(_) => None,
-                })
-                .collect();
+            let mut buffer_ptrs: Vec<u64> = Vec::with_capacity(args.len());
+            for arg in args.iter() {
+                match arg {
+                    LaunchArg::Buffer(placement) => buffer_ptrs.push(placement_ptr(buffers, my_pool, placement)?),
+                    LaunchArg::Variable(_) => {}
+                }
+            }
             let mut buf_ptr_idx = 0usize;
             for arg in args.iter() {
                 match arg {
@@ -1755,7 +1410,7 @@ fn submit_launch(
             }
             .check(ErrorStatus::KernelLaunch)
         }
-        CUDAProgram::Cudnn { plan } => unsafe { launch_cudnn_plan(cudnn, cudnn_handle, plan, buffers, args, stream) },
+        CUDAProgram::Cudnn { plan } => unsafe { launch_cudnn_plan(cudnn, cudnn_handle, plan, buffers, my_pool, args, stream) },
     }
 }
 
@@ -2129,7 +1784,8 @@ unsafe fn launch_cudnn_plan(
     cudnn: &Option<Arc<CudnnLib>>,
     handle: Option<cudnnHandle_t>,
     plan: &CudnnPlan,
-    buffers: &Slab<PoolBufferId, CUDABuffer>,
+    buffers: &Slab<ChunkId, CUDABuffer>,
+    my_pool: Pool,
     args: &[LaunchArg],
     stream: CUstream,
 ) -> Result<(), BackendError> {
@@ -2148,13 +1804,13 @@ unsafe fn launch_cudnn_plan(
             return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "cuDNN variant pack".into() });
         }
 
-        let data_ptrs: Vec<*mut c_void> = args
-            .iter()
-            .map(|arg| match arg {
-                LaunchArg::Variable(_) => todo!(),
-                LaunchArg::Buffer(buffer_id) => buffers[*buffer_id].ptr as *mut c_void,
-            })
-            .collect();
+        let mut data_ptrs: Vec<*mut c_void> = Vec::with_capacity(args.len());
+        for arg in args.iter() {
+            match arg {
+                LaunchArg::Variable(_) => todo!("scalar variant-pack entries in cuDNN launches"),
+                LaunchArg::Buffer(placement) => data_ptrs.push(placement_ptr(buffers, my_pool, placement)? as *mut c_void),
+            }
+        }
         let unique_ids: Vec<i64> = plan.arg_uids.clone();
 
         let set_ok = (cudnn.backend_set_attribute)(

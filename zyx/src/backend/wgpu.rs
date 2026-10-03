@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use super::{BackendError, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel};
+use super::{BackendError, ChunkId, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Pool, gws_from_kernel};
 use crate::{
     DType,
     backend::{DTypeCapability, DeviceProgramId},
@@ -42,7 +42,7 @@ pub struct WGPUMemoryPool {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     adapter: wgpu::Adapter,
-    buffers: Slab<PoolBufferId, WGPUBuffer>,
+    buffers: Slab<ChunkId, WGPUBuffer>,
     dev_info: DeviceInfo,
 }
 
@@ -264,7 +264,7 @@ impl WGPUMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
         let align = wgpu::COPY_BUFFER_ALIGNMENT as Dim;
         let bytes = (bytes + align - 1) / align * align;
         if bytes > self.free_bytes {
@@ -283,7 +283,7 @@ impl WGPUMemoryPool {
     }
 
     /// Increment the buffer's reference count. Checked math: overflow panics.
-    pub fn retain(&mut self, buffer_id: PoolBufferId) {
+    pub fn retain(&mut self, buffer_id: ChunkId) {
         match self.buffers.get_mut(buffer_id) {
             Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("WGPUBuffer rc overflow"),
             None => debug_assert!(false, "retain of unknown WGPU buffer {buffer_id:?}"),
@@ -294,7 +294,7 @@ impl WGPUMemoryPool {
     /// destroyed immediately: wgpu defers the driver-level destruction behind
     /// all in-flight work itself, and async consumers elsewhere retain the
     /// buffer while they still need it.
-    pub fn release(&mut self, buffer_id: PoolBufferId) {
+    pub fn release(&mut self, buffer_id: ChunkId) {
         let Some(buffer) = self.buffers.get_mut(buffer_id) else {
             debug_assert!(false, "release of unknown WGPU buffer {buffer_id:?}");
             return;
@@ -310,7 +310,7 @@ impl WGPUMemoryPool {
     /// Blocking read-back (sync point: drains the queue via poll(Wait)).
     #[allow(clippy::unnecessary_box_returns)]
     #[allow(clippy::unnecessary_wraps)]
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         // Get the source buffer
         let src = &self.buffers[src].buffer;
 
@@ -373,7 +373,7 @@ impl WGPUMemoryPool {
     /// previously submitted work), so the source is consumed within this call
     /// and no retain is needed. Host sources copy directly; every other pool
     /// stages through host memory.
-    pub fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
+    pub fn pool_to_pool(&mut self, src: Pool, src_buf: ChunkId, dst_buf: ChunkId) -> Result<(), BackendError> {
         match src {
             Pool::Host => {
                 let src_pool = super::host::pool();
@@ -438,7 +438,7 @@ impl WGPUMemoryPool {
 
     /// wgpu requires writes to be multiples of 4 bytes; pad the tail with
     /// zeros when the source length is unaligned.
-    fn write_bytes(&mut self, src: &[u8], dst: PoolBufferId) {
+    fn write_bytes(&mut self, src: &[u8], dst: ChunkId) {
         const ALIGN: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
         let dst = &self.buffers[dst].buffer;
         let full_chunks = src.len() / ALIGN;

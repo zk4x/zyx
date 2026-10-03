@@ -1,8 +1,9 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use super::{Pool, PoolBufferId};
+use super::{ChunkId, Pool};
 use crate::{
+    Set,
     error::{BackendError, ErrorStatus},
     shape::Dim,
     slab::Slab,
@@ -17,13 +18,13 @@ static HOST_POOL: OnceLock<Mutex<HostMemoryPool>> = OnceLock::new();
 #[derive(Debug)]
 pub struct HostBuffer {
     data: Box<[u8]>,
-    rc: u16,
 }
 
 #[derive(Debug)]
 pub struct HostMemoryPool {
     free_bytes: Dim,
-    buffers: Slab<PoolBufferId, HostBuffer>,
+    buffers: Slab<ChunkId, HostBuffer>,
+    free_set: Set<ChunkId>,
 }
 
 /// Constructs the global host pool. Infallible — `Host` is always available.
@@ -33,7 +34,7 @@ pub(super) fn ensure_pool() -> HostMemoryPool {
         println!("[host] initialized");
         println!("[host] device total memory: {} MB", total_bytes / (1024 * 1024));
     }
-    HostMemoryPool { free_bytes: total_bytes as i64, buffers: Slab::new() }
+    HostMemoryPool { free_bytes: total_bytes as i64, buffers: Slab::new(), free_set: Set::default() }
 }
 
 pub(super) fn pool() -> &'static Mutex<HostMemoryPool> {
@@ -58,7 +59,7 @@ impl HostMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
         let bytes: usize = bytes
             .try_into()
             .map_err(|_| BackendError { status: ErrorStatus::MemoryAllocation, context: "allocation size too large".into() })?;
@@ -67,98 +68,80 @@ impl HostMemoryPool {
         }
         self.free_bytes -= bytes as Dim;
         let buffer = vec![0u8; bytes].into_boxed_slice();
-        Ok(self.buffers.push(HostBuffer { data: buffer, rc: 1 }))
+        Ok(self.buffers.push(HostBuffer { data: buffer }))
     }
 
-    /// Insert an already-filled buffer, starting its reference count at 1.
-    pub fn insert(&mut self, buf: Box<[u8]>) -> PoolBufferId {
+    /// Insert an already-filled buffer.
+    pub fn insert(&mut self, buf: Box<[u8]>) -> ChunkId {
         self.free_bytes -= buf.len() as Dim;
-        self.buffers.push(HostBuffer { data: buf, rc: 1 })
+        self.buffers.push(HostBuffer { data: buf })
     }
 
-    /// Increment the reference count. Checked math: overflow panics.
-    pub fn retain(&mut self, buffer_id: PoolBufferId) {
-        match self.buffers.get_mut(buffer_id) {
-            Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("HostBuffer rc overflow"),
-            None => debug_assert!(false, "retain of unknown host buffer {buffer_id:?}"),
+    /// Tries to reuse existing allocations, all or nothing, returns true if possible, otherwise returns false
+    pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
+        let ok = buffer_ids.iter().all(|id| self.free_set.contains(id));
+        if ok {
+            for id in buffer_ids {
+                self.free_set.remove(id);
+            }
         }
+        ok
     }
 
-    /// Decrement the reference count. At zero the buffer is freed immediately:
-    /// the host pool is synchronous and holds no in-flight work — async
-    /// consumers elsewhere retain the buffer while they still need it.
-    pub fn release(&mut self, buffer_id: PoolBufferId) {
-        let Some(buffer) = self.buffers.get_mut(buffer_id) else {
+    /// Scratch for queue intermediaries: reuses the smallest fitting free
+    /// buffer, else allocates fresh. Never fails on fragmentation.
+    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        let best = self
+            .free_set
+            .iter()
+            .filter_map(|id| {
+                let len = self.buffers[*id].data.len() as Dim;
+                (len >= bytes).then_some((len, *id))
+            })
+            .min();
+        if let Some((_, id)) = best {
+            self.free_set.remove(&id);
+            return Ok(id);
+        }
+        self.allocate(bytes)
+    }
+
+    /// Put single buffer into the free list
+    pub fn release(&mut self, buffer_id: ChunkId) {
+        // Frees nothing: memory is reclaimed only by Dispose.
+        if !self.buffers.contains_id(buffer_id) {
             debug_assert!(false, "release of unknown host buffer {buffer_id:?}");
             return;
-        };
-        buffer.rc = buffer.rc.checked_sub(1).expect("HostBuffer rc underflow");
-        if buffer.rc == 0 {
-            let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
-            self.free_bytes += buffer.data.len() as Dim;
+        }
+        debug_assert!(!self.free_set.contains(&buffer_id), "double release of host buffer {buffer_id:?}");
+        self.free_set.insert(buffer_id);
+    }
+
+    /// Free all buffers in the free list at once
+    pub fn dispose(&mut self) {
+        // Synchronous pool, no in-flight work: drop every free buffer and
+        // give the bytes back.
+        for id in core::mem::take(&mut self.free_set) {
+            if let Some(buffer) = self.buffers.get(id) {
+                self.free_bytes += buffer.data.len() as Dim;
+            }
+            self.buffers.remove(id);
         }
     }
 
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         let buffer = &self.buffers[src];
         let len = dst.len().min(buffer.data.len());
         dst[..len].copy_from_slice(&buffer.data[..len]);
         Ok(())
     }
 
-    pub fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
-        match src {
-            Pool::Host => {
-                let len = self.buffers[src_buf].data.len().min(self.buffers[dst_buf].data.len());
-                // Disjoint buffers: copy via raw pointers — no intermediate Vec.
-                let src_ptr = self.buffers[src_buf].data.as_ptr();
-                let dst_ptr = self.buffers[dst_buf].data.as_mut_ptr();
-                unsafe { std::ptr::copy(src_ptr, dst_ptr, len) };
-                Ok(())
-            }
-            Pool::Disk => {
-                // File mapping read straight into the destination buffer —
-                // no staging copy (tensors can be tens of GB). The disk
-                // buffer may be smaller than the dst allocation (host
-                // buffers carry an extra trash element): copy the overlap.
-                let src_pool = super::disk::pool();
-                let mut src_pool = super::lock(src, src_pool);
-                let bytes = (src_pool.buffer_bytes(src_buf) as usize).min(self.buffers[dst_buf].data.len());
-                let dst_ptr = self.buffer_ptr_mut(dst_buf);
-                src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes) })?;
-                drop(src_pool);
-                Ok(())
-            }
-            // CUDA -> host is handled by `Pool::pool_to_pool` directly: the
-            // device worker DMAs into the destination buffer's memory (no
-            // staging copy — tensors can be tens of GB) and the host pool
-            // lock is not held during the wait. It must never reach here.
-            Pool::Cuda(_) => unreachable!("cuda pool_to_pool into host routed to direct DMA in Pool::pool_to_pool"),
-            // TT -> host: read the device DRAM buffer straight into the
-            // destination buffer via the runtime shim (read_buf) — no
-            // staging copy.
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => {
-                let src_pool = super::tenstorrent::pool(id)?;
-                let mut src_pool = super::lock(src, src_pool);
-                let bytes = (src_pool.buffers[src_buf].size as usize).min(self.buffers[dst_buf].data.len());
-                let dst_ptr = self.buffer_ptr_mut(dst_buf);
-                src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes) })?;
-                drop(src_pool);
-                Ok(())
-            }
-            Pool::OpenCL(_) | Pool::Vulkan(_) | Pool::Dummy => todo!("host pool_to_pool from {src:?}"),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(_) => todo!("host pool_to_pool from WGPU"),
-        }
-    }
-
-    pub fn get_buffer(&self, id: PoolBufferId) -> &[u8] {
+    pub fn get_buffer(&self, id: ChunkId) -> &[u8] {
         &self.buffers[id].data
     }
 
     /// Get a mutable raw pointer to the buffer's data
-    pub fn buffer_ptr_mut(&mut self, id: PoolBufferId) -> *mut u8 {
+    pub fn buffer_ptr_mut(&mut self, id: ChunkId) -> *mut u8 {
         self.buffers[id].data.as_mut_ptr()
     }
 }

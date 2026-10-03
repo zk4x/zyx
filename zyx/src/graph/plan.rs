@@ -1,10 +1,11 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crate::{
     Map, Set, ZyxError,
-    backend::{Buffer, LaunchArg, Pool, ProgramId},
+    backend::{ChunkId, Cmd, CmdQueue, LaunchArg, Placement, Pool, ProgramId, Shard},
     dtype::Constant,
     graph::{Graph, Op, OpId},
     kernel::BOp,
@@ -294,7 +295,7 @@ impl Runtime {
     pub fn execute_plan(
         &mut self,
         cache_key: u64,
-        class_buf: &mut Map<OpId, Buffer>,
+        class_buf: &mut Map<OpId, Arc<Placement>>,
         class_vars: &Map<OpId, Constant>,
     ) -> Result<(), ZyxError> {
         let plan = self.plan_cache.get(&cache_key).unwrap();
@@ -302,8 +303,11 @@ impl Runtime {
         #[cfg(debug_assertions)]
         {
             for (&cid, &pool) in &plan.leaf_pools {
+                let [Shard::Device { pool: class_pool, .. }] = &class_buf[&cid].shards[..] else {
+                    todo!("multi-shard leaf in plan pool check")
+                };
                 debug_assert_eq!(
-                    class_buf[&cid].pool, pool,
+                    *class_pool, pool,
                     "leaf class {cid:?} moved pools since the plan was compiled — preplanned \
                      Alias/Allocate/Copy binding would be wrong"
                 );
@@ -326,8 +330,8 @@ impl Runtime {
                     debug_assert!(elements > 0, "allocation for class {class:?} would be empty ({elements} elements)");
                     let bytes = (elements + 1) * dtype_size;
                     let buf = pool.allocate(bytes)?;
-                    let buf_id = Buffer { pool: *pool, buffer_id: buf };
-                    class_buf.insert(*class, buf_id);
+                    let placement = Arc::new(Placement { shards: vec![Shard::Device { pool: *pool, chunk: buf }] });
+                    class_buf.insert(*class, placement);
                 }
                 ExecNode::Launch { program_id, load_classes, store_classes } => {
                     let mut args = Vec::new();
@@ -343,8 +347,8 @@ impl Runtime {
                                 "DEBUG launch: class {c:?} (program {program_id:?}) has no allocated buffer; load_classes={load_classes:?}, store_classes={store_classes:?}"
                             );
                         };
-                        args.push(LaunchArg::Buffer(buf.buffer_id));
-                        kernel_bufs.insert(*buf);
+                        args.push(LaunchArg::Buffer(Arc::clone(buf)));
+                        kernel_bufs.insert(Arc::clone(buf));
                     }
                     if crate::debug_mask().dev() {
                         println!("launching kernel {program_id:?}");
@@ -352,20 +356,33 @@ impl Runtime {
                     program_id.dev.launch(program_id.program_id, &args)?;
                 }
                 ExecNode::Copy { dst_class, src_class } => {
-                    let src = class_buf[src_class];
-                    let dst = class_buf[dst_class];
-                    debug_assert_ne!(src.pool, dst.pool);
-                    // Cross-pool transfer. Event bookkeeping (barrier events
-                    // on the source, deferred foreign release) is handled
-                    // inside the receiving pool's worker.
-                    dst.pool.pool_to_pool(src.pool, src.buffer_id, dst.buffer_id)?;
+                    let src = Arc::clone(&class_buf[src_class]);
+                    let dst = Arc::clone(&class_buf[dst_class]);
+                    let [Shard::Device { pool: src_pool, .. }] = &src.shards[..] else {
+                        todo!("multi-shard copy source in plan")
+                    };
+                    let [Shard::Device { pool: dst_pool, chunk: _ }] = &dst.shards[..] else {
+                        todo!("multi-shard copy destination in plan")
+                    };
+                    debug_assert_ne!(*src_pool, *dst_pool);
+                    // Cross-pool transfer through a one-copy queue: slot 0 is
+                    // the source placement, slot 1 the destination placement.
+                    let mut queue = CmdQueue::new();
+                    queue.push(Cmd::Copy { src: OpId::from(0), dst: OpId::from(1), dst_pool: *dst_pool });
+                    let mut boundary = Map::default();
+                    boundary.insert(OpId::from(0), src);
+                    boundary.insert(OpId::from(1), dst);
+                    queue.schedule().replay(boundary)?;
                 }
                 ExecNode::Deallocate { class } => {
                     let buf = class_buf.remove(class).unwrap();
-                    buf.pool.release(buf.buffer_id);
+                    let [Shard::Device { pool, chunk }] = &buf.shards[..] else {
+                        todo!("multi-shard deallocate in plan")
+                    };
+                    pool.release(*chunk);
                 }
                 ExecNode::Alias { class, to } => {
-                    let buf = class_buf[to];
+                    let buf = Arc::clone(&class_buf[to]);
                     class_buf.insert(*class, buf);
                 }
             }

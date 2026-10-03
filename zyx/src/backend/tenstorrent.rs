@@ -19,7 +19,7 @@
 // single-core launch uses `gidx0 = 0, gidx1 = 0` (also written `{0, 0}`
 // in CoreCoord notation).
 
-use super::{DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Pool, PoolBufferId, gws_from_kernel};
+use super::{ChunkId, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Pool, gws_from_kernel};
 use crate::{
     DType,
     backend::DTypeCapability,
@@ -169,7 +169,7 @@ fn no_pool(id: u16) -> BackendError {
 
 #[derive(Debug)]
 pub struct TTMemoryPool {
-    pub(crate) buffers: Slab<PoolBufferId, TTBuffer>,
+    pub(crate) buffers: Slab<ChunkId, TTBuffer>,
     runtime: Arc<Mutex<RuntimeProcess>>,
     free_bytes: Dim,
     dev_info: DeviceInfo,
@@ -307,7 +307,7 @@ impl TTMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
         let bytes_u64: u64 = u64::try_from(bytes).map_err(|_| BackendError {
             status: ErrorStatus::MemoryAllocation,
             context: "allocation size exceeds 64-bit".into(),
@@ -323,7 +323,7 @@ impl TTMemoryPool {
     }
 
     /// Increment the buffer's reference count. Checked math: overflow panics.
-    pub fn retain(&mut self, buffer_id: PoolBufferId) {
+    pub fn retain(&mut self, buffer_id: ChunkId) {
         match self.buffers.get_mut(buffer_id) {
             Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("TTBuffer rc overflow"),
             None => debug_assert!(false, "retain of unknown TT buffer {buffer_id:?}"),
@@ -333,7 +333,7 @@ impl TTMemoryPool {
     /// Decrement the reference count. At zero the buffer is freed immediately:
     /// the TT shim is synchronous and holds no in-flight work — async
     /// consumers elsewhere retain the buffer while they still need it.
-    pub fn release(&mut self, buffer_id: PoolBufferId) {
+    pub fn release(&mut self, buffer_id: ChunkId) {
         let Some(buffer) = self.buffers.get_mut(buffer_id) else {
             debug_assert!(false, "release of unknown TT buffer {buffer_id:?}");
             return;
@@ -347,7 +347,7 @@ impl TTMemoryPool {
     }
 
     /// Blocking shim upload (sync — the shim call runs to completion).
-    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId) -> Result<(), BackendError> {
+    pub fn host_to_pool(&mut self, src: &[u8], dst: ChunkId) -> Result<(), BackendError> {
         let rt = &self.runtime;
         let buf = self
             .buffers
@@ -366,7 +366,7 @@ impl TTMemoryPool {
     }
 
     /// Blocking shim download (sync — the shim call runs to completion).
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         let rt = &self.runtime;
         let buf = self
             .buffers
@@ -387,7 +387,7 @@ impl TTMemoryPool {
     /// Synchronous copy into this pool (the TT shim has no async queues): the
     /// source is consumed within this call, so no retain is needed. Host
     /// sources upload directly; every other pool stages through host memory.
-    pub fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
+    pub fn pool_to_pool(&mut self, src: Pool, src_buf: ChunkId, dst_buf: ChunkId) -> Result<(), BackendError> {
         match src {
             Pool::Host => {
                 let src_pool = super::host::pool();
@@ -422,7 +422,7 @@ impl TTMemoryPool {
         }
     }
 
-    pub fn dev_index(&self, buffer_id: PoolBufferId) -> Result<u32, BackendError> {
+    pub fn dev_index(&self, buffer_id: ChunkId) -> Result<u32, BackendError> {
         if self.buffers.contains_id(buffer_id) {
             Ok(self.buffers[buffer_id].dev_index)
         } else {

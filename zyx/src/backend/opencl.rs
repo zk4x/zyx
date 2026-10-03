@@ -9,7 +9,7 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Pool, PoolBufferId, gws_from_kernel};
+use super::{ChunkId, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Pool, gws_from_kernel};
 use crate::{
     DType,
     error::{BackendError, ErrorStatus},
@@ -17,7 +17,7 @@ use crate::{
     shape::Dim,
     slab::Slab,
 };
-use crate::{Map, hashers::FHasher};
+use crate::{Map, Set, hashers::FHasher};
 use libloading::Library;
 use nanoserde::DeJson;
 use std::{
@@ -97,19 +97,19 @@ const MICRO_BATCH_WINDOW: usize = 100;
 enum Command {
     Allocate {
         bytes: Dim,
-        reply: Sender<Result<PoolBufferId, BackendError>>,
+        reply: Sender<Result<ChunkId, BackendError>>,
     },
     Retain {
-        buffer_id: PoolBufferId,
+        buffer_id: ChunkId,
     },
     Release {
-        buffer_id: PoolBufferId,
+        buffer_id: ChunkId,
     },
     /// Blocking read-back: the reply is sent after the data arrived in
     /// host memory. This is a sync point — all pending work is submitted
     /// and every queue is drained first.
     PoolToHost {
-        src: PoolBufferId,
+        src: ChunkId,
         dst: *mut u8,
         bytes: Dim,
         reply: Sender<Result<(), BackendError>>,
@@ -121,10 +121,10 @@ enum Command {
     /// the source pool (foreign sweep).
     Copy {
         src_pool: Pool,
-        src_buf: PoolBufferId,
+        src_buf: ChunkId,
         src_ptr: *const u8,
         bytes: Dim,
-        dst_buf: PoolBufferId,
+        dst_buf: ChunkId,
     },
     Compile {
         name: Box<str>,
@@ -492,7 +492,7 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                         return;
                     }
 
-                    let mut buffers: Slab<PoolBufferId, OpenCLBuffer> = Slab::new();
+                    let mut buffers: Slab<ChunkId, OpenCLBuffer> = Slab::new();
                     let mut programs: Slab<DeviceProgramId, OpenCLProgram> = Slab::new();
 
                     // Pending micro-batch window: launches and copies
@@ -506,15 +506,13 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                     // used it at all (WAR dependencies). These persist across
                     // windows: a consumer in window N+1 must still wait for a
                     // producer from window N if it lands on a different queue.
-                    let mut writer: Map<PoolBufferId, (usize, *mut c_void)> =
-                        Map::with_hasher(BuildHasherDefault::<FHasher>::new());
-                    let mut last_use: Map<PoolBufferId, (usize, *mut c_void)> =
-                        Map::with_hasher(BuildHasherDefault::<FHasher>::new());
+                    let mut writer: Map<ChunkId, (usize, *mut c_void)> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
+                    let mut last_use: Map<ChunkId, (usize, *mut c_void)> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
                     // Retained foreign source buffers of in-flight copies:
                     // (source pool, source buffer, completion event). Once the
                     // event completes, the source buffer is released back to
                     // its own pool (sweep_foreign).
-                    let mut foreign_dead: Vec<(Pool, PoolBufferId, *mut c_void)> = Vec::new();
+                    let mut foreign_dead: Vec<(Pool, ChunkId, *mut c_void)> = Vec::new();
                     // First async submission error since the last sync point
                     // (a failed fire-and-forget launch surfaces here, at the
                     // next PoolToHost / LaunchTimed).
@@ -852,19 +850,16 @@ enum Pending {
     },
     Copy {
         src_pool: Pool,
-        src_buf: PoolBufferId,
+        src_buf: ChunkId,
         src_ptr: *const u8,
         bytes: Dim,
-        dst: PoolBufferId,
+        dst: ChunkId,
     },
 }
 
 /// Reads/writes of a pending command. Launch args are in `Param` head order;
 /// programs carry their kinds from compile.
-fn pending_reads_writes(
-    programs: &Slab<DeviceProgramId, OpenCLProgram>,
-    cmd: &Pending,
-) -> (Vec<PoolBufferId>, Vec<PoolBufferId>) {
+fn pending_reads_writes(programs: &Slab<DeviceProgramId, OpenCLProgram>, cmd: &Pending) -> (Vec<ChunkId>, Vec<ChunkId>) {
     match cmd {
         Pending::Launch { program_id, args } => {
             let kinds: &[ParamKind] = &programs[*program_id].params;
@@ -873,10 +868,7 @@ fn pending_reads_writes(
             let mut writes = Vec::new();
             for (idx, arg) in args.iter().enumerate() {
                 match arg {
-                    LaunchArg::Buffer(id) => match kinds.get(idx).copied().unwrap_or(ParamKind::Global) {
-                        ParamKind::GlobalMut => writes.push(*id),
-                        ParamKind::Global | ParamKind::Variable => reads.push(*id),
-                    },
+                    LaunchArg::Buffer(_) => todo!("placement resolution in OpenCL reads/writes"),
                     LaunchArg::Variable(_) => {}
                 }
             }
@@ -892,7 +884,7 @@ fn pending_reads_writes(
 #[allow(clippy::too_many_arguments)]
 fn submit_launch(
     programs: &Slab<DeviceProgramId, OpenCLProgram>,
-    buffers: &Slab<PoolBufferId, OpenCLBuffer>,
+    buffers: &Slab<ChunkId, OpenCLBuffer>,
     program_id: DeviceProgramId,
     args: &[LaunchArg],
     queue: *mut c_void,
@@ -918,10 +910,8 @@ fn submit_launch(
     let mut i: u32 = 0;
     for arg in args {
         let (arg_ptr, arg_size): (*const c_void, usize) = match arg {
-            LaunchArg::Buffer(buffer_id) => {
-                let ptr = buffers[*buffer_id].ptr;
-                let value_ptr: *const _ = &raw const ptr;
-                (value_ptr.cast(), core::mem::size_of::<*mut c_void>())
+            LaunchArg::Buffer(_) => {
+                todo!("placement resolution in OpenCL submit_launch")
             }
             LaunchArg::Variable(constant) => {
                 scalar_values.push(constant.to_le_bytes().into());
@@ -996,11 +986,11 @@ fn submit_launch(
 fn flush_window(
     pending: &mut Vec<Pending>,
     queues: &[OpenCLQueue],
-    buffers: &Slab<PoolBufferId, OpenCLBuffer>,
+    buffers: &Slab<ChunkId, OpenCLBuffer>,
     programs: &Slab<DeviceProgramId, OpenCLProgram>,
-    writer: &mut Map<PoolBufferId, (usize, *mut c_void)>,
-    last_use: &mut Map<PoolBufferId, (usize, *mut c_void)>,
-    foreign_dead: &mut Vec<(Pool, PoolBufferId, *mut c_void)>,
+    writer: &mut Map<ChunkId, (usize, *mut c_void)>,
+    last_use: &mut Map<ChunkId, (usize, *mut c_void)>,
+    foreign_dead: &mut Vec<(Pool, ChunkId, *mut c_void)>,
     debug_dev: bool,
     clEnqueueNDRangeKernel: unsafe extern "C" fn(
         *mut c_void,
@@ -1149,7 +1139,7 @@ fn release_distinct(mut events: Vec<*mut c_void>, clReleaseEvent: unsafe extern 
 /// Called every loop iteration (a cheap `clGetEventInfo` poll) and after
 /// every full drain, where completion is guaranteed.
 fn sweep_foreign(
-    foreign_dead: &mut Vec<(Pool, PoolBufferId, *mut c_void)>,
+    foreign_dead: &mut Vec<(Pool, ChunkId, *mut c_void)>,
     clGetEventInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
     clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
 ) {
@@ -1180,7 +1170,7 @@ impl OpenCLMemoryPool {
         self.free_bytes.load(Ordering::SeqCst) as i64
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
         let (reply, reply_rx) = channel();
         self.tx.send(Command::Allocate { bytes, reply }).unwrap();
         reply_rx.recv().unwrap()
@@ -1188,7 +1178,7 @@ impl OpenCLMemoryPool {
 
     /// Increment the buffer's reference count (allocate starts it at 1).
     /// Checked math: overflow panics.
-    pub fn retain(&mut self, buffer_id: PoolBufferId) {
+    pub fn retain(&mut self, buffer_id: ChunkId) {
         self.tx.send(Command::Retain { buffer_id }).unwrap();
     }
 
@@ -1196,12 +1186,24 @@ impl OpenCLMemoryPool {
     /// pending window and drains every in-order queue before freeing — the
     /// buffer is never freed behind in-flight work (the worker drains;
     /// callers never block).
-    pub fn release(&mut self, buffer_id: PoolBufferId) {
+    pub fn release(&mut self, buffer_id: ChunkId) {
         self.tx.send(Command::Release { buffer_id }).unwrap();
     }
 
+    pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
+        todo!()
+    }
+
+    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        todo!()
+    }
+
+    pub fn dispose(&mut self) {
+        todo!()
+    }
+
     /// Blocking read-back (sync point).
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         let (reply, reply_rx) = channel();
         self.tx.send(Command::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len() as Dim, reply }).unwrap();
         reply_rx.recv().unwrap()
@@ -1210,66 +1212,8 @@ impl OpenCLMemoryPool {
     /// Fire-and-forget copy into this pool (dst-owned). The source pool
     /// buffer is retained here and released by this device's worker once the
     /// copy completes — see `flush_window` / `sweep_foreign`.
-    pub fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
-        // Retain the source buffer for the duration of the async copy; this
-        // device's worker releases it back once the copy completes.
-        src.retain(src_buf);
-        match src {
-            Pool::Host => {
-                let src_pool = super::host::pool();
-                let src_pool = super::lock(src, &src_pool);
-                let bytes = src_pool.get_buffer(src_buf).len() as Dim;
-                let src_ptr = src_pool.get_buffer(src_buf).as_ptr();
-                drop(src_pool);
-                self.tx.send(Command::Copy { src_pool: Pool::Host, src_buf, src_ptr, bytes, dst_buf }).unwrap();
-                Ok(())
-            }
-            Pool::Disk => {
-                // Stage through a HOST-POOL buffer (never a Vec: tensors can
-                // be tens of GB): the disk mapping is read into it, then the
-                // copy proceeds like a host source; the worker releases the
-                // staging buffer on completion. The disk buffer is only read
-                // here, synchronously — its retain is balanced immediately.
-                let bytes = {
-                    let src_pool = super::disk::pool();
-                    let src_pool = super::lock(src, &src_pool);
-                    let bytes = src_pool.buffer_bytes(src_buf);
-                    bytes
-                };
-                let tmp = Pool::Host.allocate(bytes)?;
-                {
-                    let host_pool = super::host::pool();
-                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
-                    let src_pool = super::disk::pool();
-                    let mut src_pool = super::lock(src, &src_pool);
-                    let staged =
-                        src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
-                    drop(src_pool);
-                    match staged {
-                        Ok(()) => src.release(src_buf),
-                        Err(err) => {
-                            src.release(src_buf);
-                            Pool::Host.release(tmp);
-                            return Err(err);
-                        }
-                    }
-                }
-                let (bytes, src_ptr) = {
-                    let host_pool = super::host::pool();
-                    let host_pool = super::lock(Pool::Host, &host_pool);
-                    (host_pool.get_buffer(tmp).len() as Dim, host_pool.get_buffer(tmp).as_ptr())
-                };
-                self.tx.send(Command::Copy { src_pool: Pool::Host, src_buf: tmp, src_ptr, bytes, dst_buf }).unwrap();
-                Ok(())
-            }
-            Pool::Cuda(_) => todo!("cross-pool copy from CUDA to OpenCL"),
-            Pool::OpenCL(_) => todo!("cross-pool copy from OpenCL to OpenCL"),
-            Pool::Vulkan(_) | Pool::Dummy => todo!("cross-pool copy from {src:?} to OpenCL"),
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(_) => todo!("cross-pool copy from TT to OpenCL"),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(_) => todo!("cross-pool copy from WGPU to OpenCL"),
-        }
+    pub fn pool_to_pool(&mut self, src: Pool, src_buf: ChunkId, dst_buf: ChunkId) -> Result<(), BackendError> {
+        todo!("copies go through CmdQueue")
     }
 }
 

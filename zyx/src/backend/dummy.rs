@@ -1,9 +1,9 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use super::{DTypeCapability, DeviceInfo, DeviceProgramId, LaunchArg, Pool, PoolBufferId};
+use super::{ChunkId, DTypeCapability, DeviceInfo, DeviceProgramId, LaunchArg, Pool};
 use crate::{
-    DType,
+    DType, Set,
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
     shape::Dim,
@@ -32,7 +32,7 @@ pub struct DummyBuffer {
 #[derive(Debug)]
 pub struct DummyMemoryPool {
     free_bytes: Dim,
-    buffers: Slab<PoolBufferId, DummyBuffer>,
+    buffers: Slab<ChunkId, DummyBuffer>,
 }
 
 #[derive(Debug)]
@@ -116,7 +116,7 @@ impl DummyMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {
@@ -126,7 +126,7 @@ impl DummyMemoryPool {
     }
 
     /// Increment the buffer's reference count. Checked math: overflow panics.
-    pub fn retain(&mut self, buffer_id: PoolBufferId) {
+    pub fn retain(&mut self, buffer_id: ChunkId) {
         match self.buffers.get_mut(buffer_id) {
             Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("DummyBuffer rc overflow"),
             None => debug_assert!(false, "retain of unknown dummy buffer {buffer_id:?}"),
@@ -136,7 +136,7 @@ impl DummyMemoryPool {
     /// Decrement the reference count. At zero the buffer is freed immediately:
     /// the dummy pool is synchronous and holds no in-flight work — async
     /// consumers elsewhere retain the buffer while they still need it.
-    pub fn release(&mut self, buffer_id: PoolBufferId) {
+    pub fn release(&mut self, buffer_id: ChunkId) {
         let Some(buffer) = self.buffers.get_mut(buffer_id) else {
             debug_assert!(false, "release of unknown dummy buffer {buffer_id:?}");
             return;
@@ -148,20 +148,28 @@ impl DummyMemoryPool {
         }
     }
 
+    pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
+        todo!()
+    }
+
+    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        todo!()
+    }
+
+    pub fn dispose(&mut self) {
+        todo!()
+    }
+
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         // The dummy pool holds no data — nothing to read back.
         let _ = (self, src, dst);
         Ok(())
     }
 
-    /// The dummy pool never moves data: the copy is instantaneous, so the
-    /// retained source is released right away.
-    pub fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, _dst_buf: PoolBufferId) -> Result<(), BackendError> {
-        src.retain(src_buf);
-        src.release(src_buf);
-        Ok(())
+    pub fn pool_to_pool(&mut self, src: Pool, src_buf: ChunkId, _dst_buf: ChunkId) -> Result<(), BackendError> {
+        todo!("copies go through CmdQueue")
     }
 }
 
@@ -199,8 +207,8 @@ impl DummyDevice {
         let memory_pool = super::lock(pool_handle, memory_pool);
         for arg in args {
             match arg {
-                LaunchArg::Buffer(buffer_id) => {
-                    let _ = memory_pool.buffers[*buffer_id];
+                LaunchArg::Buffer(_) => {
+                    todo!("placement check in dummy launch")
                 }
                 LaunchArg::Variable(_) => {}
             }

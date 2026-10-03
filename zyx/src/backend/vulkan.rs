@@ -6,6 +6,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
+use crate::Set;
 use std::ffi::{CStr, CString};
 use std::sync::{
     Arc, Mutex, OnceLock,
@@ -26,7 +27,7 @@ use crate::{
     slab::Slab,
 };
 
-use super::{DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Pool, PoolBufferId, gws_from_kernel};
+use super::{ChunkId, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Pool, gws_from_kernel};
 
 // ── Global state ──────────────────────────────────────────────────────────────
 
@@ -392,13 +393,13 @@ const MICRO_BATCH_WINDOW: usize = 100;
 enum VulkanCommand {
     Allocate {
         bytes: Dim,
-        reply: Sender<Result<PoolBufferId, BackendError>>,
+        reply: Sender<Result<ChunkId, BackendError>>,
     },
     Retain {
-        buffer_id: PoolBufferId,
+        buffer_id: ChunkId,
     },
     Release {
-        buffer_id: PoolBufferId,
+        buffer_id: ChunkId,
     },
     /// Async copy into this pool's buffer (host-mapped memcpy on the worker,
     /// ordered against pending/in-flight GPU work). `VulkanMemoryPool::
@@ -406,16 +407,16 @@ enum VulkanCommand {
     /// once the copy is done.
     Copy {
         src_pool: Pool,
-        src_buf: PoolBufferId,
+        src_buf: ChunkId,
         src_ptr: *const u8,
         bytes: usize,
-        dst_buf: PoolBufferId,
+        dst_buf: ChunkId,
     },
     /// Blocking read-back: the reply is sent after the data arrived in host
     /// memory. This is a sync point — all pending work is submitted and
     /// every in-flight batch is drained first.
     PoolToHost {
-        src: PoolBufferId,
+        src: ChunkId,
         dst: *mut u8,
         bytes: usize,
         reply: Sender<Result<(), BackendError>>,
@@ -458,7 +459,7 @@ struct InFlight {
     fence: VkFence,
     cmds: Vec<VkCommandBuffer>,
     desc_sets: Vec<VkDescriptorSet>,
-    buffers: Vec<PoolBufferId>,
+    buffers: Vec<ChunkId>,
 }
 
 /// Single backend initializer: builds pools + devices together in one pass,
@@ -517,24 +518,33 @@ impl VulkanMemoryPool {
     pub(super) fn free_bytes(&self) -> Dim {
         self.free_bytes.load(Ordering::SeqCst) as i64
     }
-    pub(super) fn allocate(&mut self, bytes: Dim) -> Result<PoolBufferId, BackendError> {
+    pub(super) fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
         let (reply, rx) = channel();
         self.tx.send(VulkanCommand::Allocate { bytes, reply }).unwrap();
         rx.recv().unwrap()
     }
     /// Increment the buffer's reference count (allocate starts it at 1).
-    pub(super) fn retain(&mut self, buffer_id: PoolBufferId) {
+    pub(super) fn retain(&mut self, buffer_id: ChunkId) {
         self.tx.send(VulkanCommand::Retain { buffer_id }).unwrap();
     }
     /// Decrement the buffer's reference count. At zero the worker waits for
     /// all in-flight batches touching the buffer before freeing it — the
     /// buffer is never freed behind in-flight GPU work (the worker waits;
     /// callers never block).
-    pub(super) fn release(&mut self, buffer_id: PoolBufferId) {
+    pub(super) fn release(&mut self, buffer_id: ChunkId) {
         self.tx.send(VulkanCommand::Release { buffer_id }).unwrap();
     }
+    pub(super) fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
+        todo!()
+    }
+    pub(super) fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        todo!()
+    }
+    pub(super) fn dispose(&mut self) {
+        todo!()
+    }
     /// Blocking read-back (sync point).
-    pub(super) fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8]) -> Result<(), BackendError> {
+    pub(super) fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         let (reply, rx) = channel();
         self.tx.send(VulkanCommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len(), reply }).unwrap();
         rx.recv().unwrap()
@@ -543,66 +553,8 @@ impl VulkanMemoryPool {
     /// here and released by the worker once the copy is done. Host sources
     /// copy directly; every other pool stages through a temporary host-pool
     /// buffer.
-    pub(super) fn pool_to_pool(&mut self, src: Pool, src_buf: PoolBufferId, dst_buf: PoolBufferId) -> Result<(), BackendError> {
-        // Retain the source buffer for the duration of the copy; the worker
-        // releases it back once the copy is done.
-        src.retain(src_buf);
-        match src {
-            Pool::Host => {
-                let src_pool = super::host::pool();
-                let src_pool = super::lock(src, &src_pool);
-                let bytes = src_pool.get_buffer(src_buf).len();
-                let src_ptr = src_pool.get_buffer(src_buf).as_ptr();
-                drop(src_pool);
-                self.tx.send(VulkanCommand::Copy { src_pool: Pool::Host, src_buf, src_ptr, bytes, dst_buf }).unwrap();
-                Ok(())
-            }
-            Pool::Disk => {
-                // Stage through a HOST-POOL buffer (never a Vec: tensors can
-                // be tens of GB): the disk mapping is read into it, then the
-                // copy proceeds like a host source; the worker releases the
-                // staging buffer on completion. The disk buffer is only read
-                // here, synchronously — its retain is balanced immediately.
-                let bytes = {
-                    let src_pool = super::disk::pool();
-                    let src_pool = super::lock(src, &src_pool);
-                    let bytes = src_pool.buffer_bytes(src_buf);
-                    bytes
-                };
-                let tmp = Pool::Host.allocate(bytes)?;
-                {
-                    let host_pool = super::host::pool();
-                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
-                    let src_pool = super::disk::pool();
-                    let mut src_pool = super::lock(src, &src_pool);
-                    let staged =
-                        src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) });
-                    drop(src_pool);
-                    match staged {
-                        Ok(()) => src.release(src_buf),
-                        Err(err) => {
-                            src.release(src_buf);
-                            Pool::Host.release(tmp);
-                            return Err(err);
-                        }
-                    }
-                }
-                let (bytes, src_ptr) = {
-                    let host_pool = super::host::pool();
-                    let host_pool = super::lock(Pool::Host, &host_pool);
-                    (host_pool.get_buffer(tmp).len(), host_pool.get_buffer(tmp).as_ptr())
-                };
-                self.tx.send(VulkanCommand::Copy { src_pool: Pool::Host, src_buf: tmp, src_ptr, bytes, dst_buf }).unwrap();
-                Ok(())
-            }
-            Pool::Cuda(_) => todo!("cross-pool copy from CUDA to Vulkan"),
-            Pool::OpenCL(_) => todo!("cross-pool copy from OpenCL to Vulkan"),
-            Pool::Vulkan(_) | Pool::Dummy => todo!("cross-pool copy from {src:?} to Vulkan"),
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(_) => todo!("cross-pool copy from TT to Vulkan"),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(_) => todo!("cross-pool copy from WGPU to Vulkan"),
-        }
+    pub(super) fn pool_to_pool(&mut self, src: Pool, src_buf: ChunkId, dst_buf: ChunkId) -> Result<(), BackendError> {
+        todo!("copies go through CmdQueue")
     }
 }
 
@@ -710,7 +662,7 @@ fn submit_window(
     device: VkDevice,
     cmd_pool: VkCommandPool,
     desc_pool: VkDescriptorPool,
-    buffers: &Slab<PoolBufferId, VulkanBuffer>,
+    buffers: &Slab<ChunkId, VulkanBuffer>,
     programs: &Slab<DeviceProgramId, VulkanProgram>,
     max_grid: &[Dim],
     inflight: &mut Vec<InFlight>,
@@ -754,7 +706,7 @@ fn submit_window(
     }
     let mut cmds: Vec<VkCommandBuffer> = Vec::with_capacity(pending.len());
     let mut desc_sets: Vec<VkDescriptorSet> = Vec::with_capacity(pending.len());
-    let mut batch_buffers: Vec<PoolBufferId> = Vec::new();
+    let mut batch_buffers: Vec<ChunkId> = Vec::new();
     let mut submit_infos: Vec<VkSubmitInfo> = Vec::with_capacity(pending.len());
     for Pending::Launch { program_id, args } in pending.drain(..) {
         let prog = &programs[program_id];
@@ -796,9 +748,8 @@ fn submit_window(
                     push_constants[push_off as usize..push_off as usize + bytes.len()].copy_from_slice(&bytes);
                     push_off += size;
                 }
-                LaunchArg::Buffer(buffer_id) => {
-                    buf_infos.push(VkDescriptorBufferInfo { buffer: buffers[*buffer_id].buf, offset: 0, range: VK_WHOLE_SIZE });
-                    batch_buffers.push(*buffer_id);
+                LaunchArg::Buffer(_) => {
+                    todo!("placement resolution in Vulkan submit")
                 }
             }
         }
@@ -989,7 +940,7 @@ fn drain_all(
 #[allow(clippy::too_many_arguments)]
 fn drain_touching(
     inflight: &mut Vec<InFlight>,
-    buffer_id: PoolBufferId,
+    buffer_id: ChunkId,
     device: VkDevice,
     cmd_pool: VkCommandPool,
     desc_pool: VkDescriptorPool,
@@ -1599,7 +1550,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                     return;
                 }
 
-                let mut buffers: Slab<PoolBufferId, VulkanBuffer> = Slab::new();
+                let mut buffers: Slab<ChunkId, VulkanBuffer> = Slab::new();
                 let mut programs: Slab<DeviceProgramId, VulkanProgram> = Slab::new();
 
                 macro_rules! send_or_continue {

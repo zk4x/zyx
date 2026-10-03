@@ -15,10 +15,11 @@
 //! model selects the cheapest extraction for kernel compilation.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crate::{
     DType, Map, Set, ZyxError,
-    backend::{Buffer, Dev, LaunchArg, Pool, PoolBufferId, ProgramId},
+    backend::{ChunkId, Cmd, CmdQueue, Dev, LaunchArg, Placement, Pool, ProgramId, Shard},
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, Op, OpId, ParamKind, TTOp},
     runtime::{KernelId, Runtime, TensorData},
@@ -614,7 +615,7 @@ impl Graph {
     /// extracted path (chosen kernel output, chosen transfer output, or
     /// realized leaf buffer). User-inserted [`Node::ToDevice`] nodes are kept
     /// as-is and reused through hashconsing.
-    pub fn add_memory_ops(&mut self, buffer_map: &Map<TensorId, Buffer>, chosen: &[OpId]) -> Vec<OpId> {
+    pub fn add_memory_ops(&mut self, buffer_map: &Map<TensorId, Arc<Placement>>, chosen: &[OpId]) -> Vec<OpId> {
         // Pool each class lives in on the extracted path. Chosen kernel
         // outputs live in their kernel's pool, chosen transfers in their
         // target pool, realized leaves in their buffer pool. Variable leaves
@@ -622,7 +623,10 @@ impl Graph {
         let mut pool_of: Map<OpId, Pool> = Map::default();
         for (&cid, &tid) in &self.leaf_map {
             if let Some(buf) = buffer_map.get(&tid) {
-                pool_of.insert(cid, buf.pool);
+                let [Shard::Device { pool, .. }] = &buf.shards[..] else {
+                    todo!("multi-shard leaf in add_memory_ops")
+                };
+                pool_of.insert(cid, *pool);
             }
         }
 
@@ -1466,10 +1470,11 @@ impl Runtime {
         // buffer-backed graph tensors back to `Leaf` (the value is preserved,
         // not tombstoned).
         if matches!(self.tensors[tid], TensorData::Leaf { .. }) {
-            let (shape_id, dtype, rc, buffer_id) = match self.tensors[tid] {
-                TensorData::Leaf { shape_id, dtype, rc, buffer, .. } => (shape_id, dtype, rc, buffer),
+            let (shape_id, dtype, rc) = match self.tensors[tid] {
+                TensorData::Leaf { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
                 ref t => unreachable!("{t:?}"),
             };
+            let buffer = self.leaf_buffer(tid).expect("promote_to_graph: Leaf {tid} has no buffer (pending store not realized)");
             debug_assert!(
                 self.leaf_buffer(tid).is_some(),
                 "promote_to_graph: Leaf {tid} has no buffer (pending store not realized)"
@@ -1491,7 +1496,7 @@ impl Runtime {
             self.retain(tid);
             self.graphs[graph_id].leaf_classes.push(class_id);
             self.graphs[graph_id].ref_count += 1;
-            self.tensors[tid] = TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, rc: rc + 1, buffer: buffer_id };
+            self.tensors[tid] = TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, rc: rc + 1, buffer };
             return Ok(class_id);
         }
 
@@ -1911,7 +1916,7 @@ impl Runtime {
                                     // the affiliation — so a Leaf dropped
                                     // before the tape still keeps the
                                     // inventory consistent.
-                                    let (shape_id, dtype, rc, buffer) = (*shape_id, *dtype, *rc, *buffer);
+                                    let (shape_id, dtype, rc, buffer) = (*shape_id, *dtype, *rc, buffer.clone());
                                     self.tensors[load_tid] =
                                         TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, rc, buffer };
                                 }
@@ -2139,8 +2144,9 @@ impl Runtime {
             // graph shapes (never const-folded, never substituted).
             // `ek.loads` parallels the non-store defines and `ek.stores`
             // the mut defines; both invariants are asserted below.
+            // `args` holds only Variable values in Param order (no
+            // placeholders: buffer slots are bound per-device below).
             let mut args: Vec<LaunchArg> = Vec::new();
-            let mut mut_args: Vec<LaunchArg> = Vec::new();
             let mut ro_lens: Vec<Dim> = Vec::new();
             let mut mut_lens: Vec<Dim> = Vec::new();
             // True length in elements of a buffer class. Scalar (empty
@@ -2180,12 +2186,10 @@ impl Runtime {
                         Op::Param { kind: ParamKind::Global, .. } => {
                             ro_lens.push(resolve_len(ek.loads[load_idx]));
                             load_idx += 1;
-                            args.push(LaunchArg::Buffer(PoolBufferId::NULL));
                         }
                         Op::Param { kind: ParamKind::GlobalMut, .. } => {
                             mut_lens.push(resolve_len(ek.stores[store_idx]));
                             store_idx += 1;
-                            mut_args.push(LaunchArg::Buffer(PoolBufferId::NULL));
                         }
                         _ => {}
                     }
@@ -2194,7 +2198,6 @@ impl Runtime {
                 debug_assert_eq!(load_idx, ek.loads.len(), "loads must parallel Global|Variable defines");
                 debug_assert_eq!(store_idx, ek.stores.len(), "stores must parallel GlobalMut defines");
             }
-            args.extend(mut_args);
 
             for &dev_id in device_ids.iter() {
                 // AOT-only devices (e.g. cblas) never compile generic zyx kernels
@@ -2210,16 +2213,16 @@ impl Runtime {
                 let pool_id = dev_id.pool();
                 let mut full_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
                 let mut full_mut: Vec<LaunchArg> = Vec::with_capacity(mut_lens.len());
-                let mut fresh: Vec<PoolBufferId> = Vec::new();
+                let mut fresh: Vec<ChunkId> = Vec::new();
                 {
-                    let (mut ri, mut rli, mut mli) = (0usize, 0usize, 0usize);
+                    let (mut vi, mut rli, mut mli) = (0usize, 0usize, 0usize);
                     let mut p = kernel.head;
                     while !p.is_null() {
                         if let Op::Param { kind, dtype, .. } = kernel.ops[p].op {
                             match kind {
                                 ParamKind::Variable => {
-                                    full_args.push(args[ri].clone());
-                                    ri += 1;
+                                    full_args.push(args[vi].clone());
+                                    vi += 1;
                                 }
                                 ParamKind::Global | ParamKind::GlobalMut => {
                                     let (len, is_mut) = if kind == ParamKind::GlobalMut {
@@ -2268,14 +2271,31 @@ impl Runtime {
                                                 }
                                             }
                                         }
-                                        pool_id.pool_to_pool(Pool::Host, host_buf, buf)?;
+                                        // Upload through a one-copy queue: slot 0 is
+                                        // the host staging placement, slot 1
+                                        // the fresh device placement.
+                                        let mut queue = CmdQueue::new();
+                                        queue.push(Cmd::Copy { src: OpId::from(0), dst: OpId::from(1), dst_pool: pool_id });
+                                        let mut boundary = Map::default();
+                                        boundary.insert(
+                                            OpId::from(0),
+                                            Arc::new(Placement {
+                                                shards: vec![Shard::Device { pool: Pool::Host, chunk: host_buf }],
+                                            }),
+                                        );
+                                        boundary.insert(
+                                            OpId::from(1),
+                                            Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: buf }] }),
+                                        );
+                                        queue.schedule().replay(boundary)?;
                                         Pool::Host.release(host_buf);
                                     }
+                                    let placed =
+                                        Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: buf }] });
                                     if is_mut {
-                                        full_mut.push(LaunchArg::Buffer(buf));
+                                        full_mut.push(LaunchArg::Buffer(placed));
                                     } else {
-                                        full_args.push(LaunchArg::Buffer(buf));
-                                        ri += 1;
+                                        full_args.push(LaunchArg::Buffer(placed));
                                     }
                                 }
                             }
@@ -2423,7 +2443,7 @@ impl Runtime {
         // extraction chose the same-device producer.
         // Leaf buffers collected into an owned map so the immutable borrow
         // ends before the &mut add call below.
-        let buffer_map: Map<TensorId, Buffer> =
+        let buffer_map: Map<TensorId, Arc<Placement>> =
             self.graphs[graph_id].leaf_map.values().filter_map(|&tid| self.leaf_buffer(tid).map(|buf| (tid, buf))).collect();
         let nodes = self.graphs[graph_id].add_memory_ops(&buffer_map, &nodes);
 
@@ -2434,7 +2454,10 @@ impl Runtime {
             // Variable leaves have no buffer and no pool — they bind per exec
             // from the tensors slab, so no pool invariant applies to them.
             if let Some(buf) = self.leaf_buffer(tid) {
-                leaf_pools.insert(cid, buf.pool);
+                let [Shard::Device { pool, .. }] = &buf.shards[..] else {
+                    todo!("multi-shard leaf in compile-time leaf pools")
+                };
+                leaf_pools.insert(cid, *pool);
             }
         }
         let plan = ExecPlan::new(&self.graphs[graph_id], &nodes, output_set, &leaf_pools);
@@ -2447,36 +2470,41 @@ impl Runtime {
         Ok(plan)
     }
 
-    pub fn eagerify(&mut self, tid: TensorId, new_buffer_id: Buffer) {
-        let graph_id = match self.tensors[tid] {
+    pub fn eagerify(&mut self, tid: TensorId, new_buffer: Option<Arc<Placement>>) {
+        // `None` = demote-only (no realization buffer); `Some` = the plan
+        // computed this class into the placement.
+        // Snapshot the replacement (borrows end here); the slot is assigned below.
+        let (graph_id, next) = match &self.tensors[tid] {
             TensorData::Promoted { kernel_id, op_id, graph_id, shape_id, rc, dtype, .. } => {
                 // Unrealized promoted tensor: the eager producer kernel was
                 // never mutated, so just demote in place.
-                self.tensors[tid] = TensorData::Eager { kernel_id, op_id, shape_id, dtype, rc };
-                graph_id
+                (
+                    *graph_id,
+                    TensorData::Eager { kernel_id: *kernel_id, op_id: *op_id, shape_id: *shape_id, dtype: *dtype, rc: *rc },
+                )
             }
             // Realized graph output: the plan computed this class into
-            // `new_buffer_id` — leave the graph as a buffer-backed Leaf
+            // `new_buffer` — leave the graph as a buffer-backed Leaf
             // (normal plan execution; no special launch). Only reached
-            // from realize's output loop, which always passes a real
-            // buffer — drop never eagerifies Graph tensors.
+            // from realize's output loop, which always passes a placement —
+            // drop never eagerifies Graph tensors.
             TensorData::Graph { graph_id, shape_id, dtype, rc, .. } => {
-                debug_assert_ne!(new_buffer_id, Buffer::NULL, "eagerify: realized graph tensor {tid} given a null buffer");
-                self.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer: new_buffer_id, rc };
-                graph_id
+                let Some(new_buffer) = new_buffer else {
+                    panic!("eagerify: realized graph tensor {tid} given no buffer");
+                };
+                (*graph_id, TensorData::Leaf { shape_id: *shape_id, dtype: *dtype, buffer: new_buffer, rc: *rc })
             }
-            TensorData::GraphLeaf { graph_id, shape_id, dtype, rc, buffer: old, .. } => {
-                // Realized: release the previous buffer and re-point at the
-                // realization's buffer. No producer to detach from (GraphLeaf
-                // carries no kernel_id). When both are the SAME buffer (an
-                // assign's After class aliases the base leaf's buffer), the
-                // rc transfers to the kept binding — releasing would
-                // deallocate the buffer this Leaf continues to hold.
-                if old != new_buffer_id {
-                    old.pool.release(old.buffer_id);
-                }
-                self.tensors[tid] = TensorData::Leaf { shape_id, dtype, buffer: new_buffer_id, rc };
-                graph_id
+            TensorData::GraphLeaf { graph_id, shape_id, dtype, rc, .. } => {
+                let Some(new_buffer) = new_buffer else {
+                    panic!("eagerify: realized graph-leaf tensor {tid} given no buffer");
+                };
+                // Realized: re-point at the realization's placement. No
+                // producer to detach from (GraphLeaf carries no kernel_id).
+                // The overwritten placement drops with the slot: its final
+                // clone runs `Placement::drop`. When both are the SAME
+                // placement (an assign's After class aliases the base leaf's
+                // buffer), the count never hits zero — nothing is released.
+                (*graph_id, TensorData::Leaf { shape_id: *shape_id, dtype: *dtype, buffer: new_buffer, rc: *rc })
             }
             // Already-realized leaves carry no graph affiliation and eagerify
             // is only called on graph tensors: reaching them is a bug.
@@ -2486,6 +2514,7 @@ impl Runtime {
             // Already eager or a pure-slab value: nothing to do.
             TensorData::Eager { .. } | TensorData::Symbolic { .. } => return,
         };
+        self.tensors[tid] = next;
 
         self.graphs[graph_id].ref_count -= 1;
     }
