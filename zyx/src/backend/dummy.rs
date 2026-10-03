@@ -26,13 +26,13 @@ pub struct DummyConfig {
 #[derive(Debug)]
 pub struct DummyBuffer {
     bytes: Dim,
-    rc: u16,
 }
 
 #[derive(Debug)]
 pub struct DummyMemoryPool {
     free_bytes: Dim,
     buffers: Slab<ChunkId, DummyBuffer>,
+    free_set: Set<ChunkId>,
 }
 
 #[derive(Debug)]
@@ -65,7 +65,7 @@ fn ensure_pool() -> Result<DummyMemoryPool, BackendError> {
         println!("[dummy] initialized");
         println!("[dummy] device total memory: {} MB", 1024 * 1024);
     }
-    Ok(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() })
+    Ok(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new(), free_set: Set::default() })
 }
 
 pub(super) fn device() -> Result<&'static Mutex<DummyDevice>, BackendError> {
@@ -122,42 +122,60 @@ impl DummyMemoryPool {
         } else {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM".into() });
         }
-        Ok(self.buffers.push(DummyBuffer { bytes, rc: 1 }))
+        Ok(self.buffers.push(DummyBuffer { bytes }))
     }
 
-    /// Increment the buffer's reference count. Checked math: overflow panics.
-    pub fn retain(&mut self, buffer_id: ChunkId) {
-        match self.buffers.get_mut(buffer_id) {
-            Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("DummyBuffer rc overflow"),
-            None => debug_assert!(false, "retain of unknown dummy buffer {buffer_id:?}"),
-        }
-    }
-
-    /// Decrement the reference count. At zero the buffer is freed immediately:
-    /// the dummy pool is synchronous and holds no in-flight work — async
-    /// consumers elsewhere retain the buffer while they still need it.
+    /// Put a buffer into the free list for stable-address reuse. Frees
+    /// nothing; memory is reclaimed only by [`DummyMemoryPool::dispose`].
     pub fn release(&mut self, buffer_id: ChunkId) {
-        let Some(buffer) = self.buffers.get_mut(buffer_id) else {
+        if !self.buffers.contains_id(buffer_id) {
             debug_assert!(false, "release of unknown dummy buffer {buffer_id:?}");
             return;
-        };
-        buffer.rc = buffer.rc.checked_sub(1).expect("DummyBuffer rc underflow");
-        if buffer.rc == 0 {
-            let DummyBuffer { bytes, .. } = unsafe { self.buffers.remove_and_return(buffer_id) };
-            self.free_bytes += bytes;
         }
+        debug_assert!(!self.free_set.contains(&buffer_id), "double release of dummy buffer {buffer_id:?}");
+        self.free_set.insert(buffer_id);
     }
 
+    /// Tries to reuse existing allocations, all or nothing: every id must
+    /// be on the free list (stable addresses) or nothing is claimed.
     pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
-        todo!()
+        let ok = buffer_ids.iter().all(|id| self.free_set.contains(id));
+        if ok {
+            for id in buffer_ids {
+                self.free_set.remove(id);
+            }
+        }
+        ok
     }
 
+    /// Scratch for queue intermediaries: reuses the smallest fitting free
+    /// buffer, else allocates fresh. Never fails on fragmentation.
     pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        todo!()
+        let best = self
+            .free_set
+            .iter()
+            .filter_map(|id| {
+                let len = self.buffers[*id].bytes;
+                (len >= bytes).then_some((len, *id))
+            })
+            .min();
+        if let Some((_, id)) = best {
+            self.free_set.remove(&id);
+            return Ok(id);
+        }
+        self.allocate(bytes)
     }
 
+    /// Free all buffers in the free list at once.
     pub fn dispose(&mut self) {
-        todo!()
+        // Synchronous pool, no in-flight work: drop every free buffer and
+        // give the bytes back.
+        for id in core::mem::take(&mut self.free_set) {
+            if let Some(buffer) = self.buffers.get(id) {
+                self.free_bytes += buffer.bytes;
+            }
+            self.buffers.remove(id);
+        }
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -166,10 +184,6 @@ impl DummyMemoryPool {
         // The dummy pool holds no data — nothing to read back.
         let _ = (self, src, dst);
         Ok(())
-    }
-
-    pub fn pool_to_pool(&mut self, src: Pool, src_buf: ChunkId, _dst_buf: ChunkId) -> Result<(), BackendError> {
-        todo!("copies go through CmdQueue")
     }
 }
 

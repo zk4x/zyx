@@ -395,16 +395,27 @@ enum VulkanCommand {
         bytes: Dim,
         reply: Sender<Result<ChunkId, BackendError>>,
     },
-    Retain {
-        buffer_id: ChunkId,
-    },
+    /// Put a buffer on the free list for stable-address reuse. Frees
+    /// nothing; VRAM is reclaimed only by `Dispose`.
     Release {
         buffer_id: ChunkId,
     },
+    /// Free every free-list buffer at once (submit + full drain first).
+    /// The only VRAM reclamation; every released id becomes invalid.
+    Dispose,
+    /// All-or-nothing claim of free-list ids for stable addresses.
+    TryReuse {
+        buffer_ids: Set<ChunkId>,
+        reply: Sender<Result<bool, BackendError>>,
+    },
+    /// Smallest fitting free buffer, else a fresh allocation.
+    AllocateScratch {
+        bytes: Dim,
+        reply: Sender<Result<ChunkId, BackendError>>,
+    },
     /// Async copy into this pool's buffer (host-mapped memcpy on the worker,
-    /// ordered against pending/in-flight GPU work). `VulkanMemoryPool::
-    /// pool_to_pool` retained the source pool buffer; the worker releases it
-    /// once the copy is done.
+    /// ordered against pending/in-flight GPU work). The worker releases the
+    /// source buffer back to its own pool once the copy is done.
     Copy {
         src_pool: Pool,
         src_buf: ChunkId,
@@ -523,38 +534,35 @@ impl VulkanMemoryPool {
         self.tx.send(VulkanCommand::Allocate { bytes, reply }).unwrap();
         rx.recv().unwrap()
     }
-    /// Increment the buffer's reference count (allocate starts it at 1).
-    pub(super) fn retain(&mut self, buffer_id: ChunkId) {
-        self.tx.send(VulkanCommand::Retain { buffer_id }).unwrap();
-    }
-    /// Decrement the buffer's reference count. At zero the worker waits for
-    /// all in-flight batches touching the buffer before freeing it — the
-    /// buffer is never freed behind in-flight GPU work (the worker waits;
-    /// callers never block).
+    /// Put a buffer on the free list for stable-address reuse. Frees
+    /// nothing; VRAM is reclaimed only by [`VulkanMemoryPool::dispose`].
     pub(super) fn release(&mut self, buffer_id: ChunkId) {
         self.tx.send(VulkanCommand::Release { buffer_id }).unwrap();
     }
-    pub(super) fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
-        todo!()
-    }
-    pub(super) fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        todo!()
-    }
+    /// Free every free-list buffer at once (submit + full drain first).
+    /// The only VRAM reclamation; every released id becomes invalid.
     pub(super) fn dispose(&mut self) {
-        todo!()
+        self.tx.send(VulkanCommand::Dispose).unwrap();
+    }
+    /// Tries to reuse existing allocations, all or nothing: every id must
+    /// be on the free list (stable addresses) or nothing is claimed.
+    pub(super) fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
+        let (reply, reply_rx) = channel();
+        self.tx.send(VulkanCommand::TryReuse { buffer_ids: buffer_ids.clone(), reply }).unwrap();
+        reply_rx.recv().unwrap().unwrap_or(false)
+    }
+    /// Scratch for queue intermediaries: reuses the smallest fitting free
+    /// buffer, else allocates fresh. Never fails on fragmentation.
+    pub(super) fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        let (reply, reply_rx) = channel();
+        self.tx.send(VulkanCommand::AllocateScratch { bytes, reply }).unwrap();
+        reply_rx.recv().unwrap()
     }
     /// Blocking read-back (sync point).
     pub(super) fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         let (reply, rx) = channel();
         self.tx.send(VulkanCommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len(), reply }).unwrap();
         rx.recv().unwrap()
-    }
-    /// Copy into this pool (dst-owned). The source pool buffer is retained
-    /// here and released by the worker once the copy is done. Host sources
-    /// copy directly; every other pool stages through a temporary host-pool
-    /// buffer.
-    pub(super) fn pool_to_pool(&mut self, src: Pool, src_buf: ChunkId, dst_buf: ChunkId) -> Result<(), BackendError> {
-        todo!("copies go through CmdQueue")
     }
 }
 
@@ -577,7 +585,6 @@ pub(super) struct VulkanBuffer {
     mem: VkDeviceMemory,
     ptr: *mut u8,
     bytes: usize,
-    rc: u16,
 }
 
 // ── Device ───────────────────────────────────────────────────────────────────
@@ -1551,6 +1558,11 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                 }
 
                 let mut buffers: Slab<ChunkId, VulkanBuffer> = Slab::new();
+                // Free-list ids for stable-address reuse (`Release`
+                // inserts, `TryReuse`/`AllocateScratch` claim, `Dispose`
+                // frees). Slab entries stay so ChunkIds are monotonic and
+                // never alias a different buffer.
+                let mut free_set: Set<ChunkId> = Set::default();
                 let mut programs: Slab<DeviceProgramId, VulkanProgram> = Slab::new();
 
                 macro_rules! send_or_continue {
@@ -1659,27 +1671,30 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                         VulkanCommand::Allocate { bytes, reply } => {
                             let size = (bytes + 3) & !3;
                             let (buf, mem, ptr) = send_or_continue!(create_buffer(size as u64), reply);
-                            let id = buffers.push(VulkanBuffer { buf, mem, ptr, bytes: bytes as usize, rc: 1 });
+                            let id = buffers.push(VulkanBuffer { buf, mem, ptr, bytes: bytes as usize });
                             free_bytes_atomic.fetch_sub(size as u64, Ordering::SeqCst);
                             let _ = reply.send(Ok(id));
                         }
-                        VulkanCommand::Retain { buffer_id } => match buffers.get_mut(buffer_id) {
-                            Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("VulkanBuffer rc overflow"),
-                            None => debug_assert!(false, "retain of unknown Vulkan buffer {buffer_id:?}"),
-                        },
                         VulkanCommand::Release { buffer_id } => {
-                            let Some(buffer) = buffers.get_mut(buffer_id) else {
+                            // Put the id on the free list for
+                            // stable-address reuse. Frees nothing: VRAM is
+                            // reclaimed only by Dispose. In-flight tracking
+                            // stays: a claimed address keeps its batches, so
+                            // reuse waits on prior work via drain_touching.
+                            if !buffers.contains_id(buffer_id) {
                                 debug_assert!(false, "release of unknown Vulkan buffer {buffer_id:?}");
                                 continue;
-                            };
-                            buffer.rc = buffer.rc.checked_sub(1).expect("VulkanBuffer rc underflow");
-                            if buffer.rc > 0 {
-                                continue;
                             }
-                            // rc hit zero: submit pending launches, then wait
-                            // for every in-flight batch that touched this
-                            // buffer before destroying it. The worker waits;
-                            // callers never block.
+                            debug_assert!(!free_set.contains(&buffer_id), "double release of Vulkan buffer {buffer_id:?}");
+                            free_set.insert(buffer_id);
+                        }
+                        VulkanCommand::Dispose => {
+                            // The only reclamation: submit the pending
+                            // window, then drain every in-flight batch —
+                            // completion implies completion of every queued
+                            // use of every free buffer. Then destroy the
+                            // whole free list at once; every released id
+                            // becomes invalid.
                             if let Err(err) = submit_window(
                                 &mut pending,
                                 queue,
@@ -1706,9 +1721,8 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                             {
                                 last_error = Some(err);
                             }
-                            drain_touching(
+                            drain_all(
                                 &mut inflight,
-                                buffer_id,
                                 device,
                                 cmd_pool,
                                 desc_pool,
@@ -1717,22 +1731,58 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 vkFreeDescriptorSets,
                                 vkDestroyFence,
                             );
-                            let VulkanBuffer { buf, mem, ptr, bytes: size, .. } = unsafe { buffers.remove_and_return(buffer_id) };
-                            if !ptr.is_null() {
-                                unsafe { vkUnmapMemory(device, mem) };
+                            for buffer_id in core::mem::take(&mut free_set) {
+                                let VulkanBuffer { buf, mem, ptr, bytes } =
+                                    unsafe { buffers.remove_and_return(buffer_id) };
+                                if !ptr.is_null() {
+                                    unsafe { vkUnmapMemory(device, mem) };
+                                }
+                                unsafe {
+                                    vkDestroyBuffer(device, buf, std::ptr::null());
+                                    vkFreeMemory(device, mem, std::ptr::null());
+                                }
+                                free_bytes_atomic.fetch_add(((bytes + 3) & !3) as u64, Ordering::SeqCst);
                             }
-                            unsafe {
-                                vkDestroyBuffer(device, buf, std::ptr::null());
-                                vkFreeMemory(device, mem, std::ptr::null());
+                        }
+                        VulkanCommand::TryReuse { buffer_ids, reply } => {
+                            // All-or-nothing: every id must be on the free
+                            // list, else some address moved and the graph
+                            // must be retraced.
+                            let ok = buffer_ids.iter().all(|id| free_set.contains(id));
+                            if ok {
+                                for id in &buffer_ids {
+                                    free_set.remove(id);
+                                }
                             }
-                            free_bytes_atomic.fetch_add(size as u64, Ordering::SeqCst);
+                            let _ = reply.send(Ok(ok));
+                        }
+                        VulkanCommand::AllocateScratch { bytes, reply } => {
+                            // Smallest fitting free buffer wins; never fails
+                            // on fragmentation — falls back to a fresh
+                            // allocation.
+                            let best = free_set
+                                .iter()
+                                .filter_map(|id| {
+                                    let len = buffers[*id].bytes;
+                                    (len >= bytes as usize).then_some((len, *id))
+                                })
+                                .min();
+                            if let Some((_, id)) = best {
+                                free_set.remove(&id);
+                                let _ = reply.send(Ok(id));
+                                continue;
+                            }
+                            let size = (bytes + 3) & !3;
+                            let (buf, mem, ptr) = send_or_continue!(create_buffer(size as u64), reply);
+                            let id = buffers.push(VulkanBuffer { buf, mem, ptr, bytes: bytes as usize });
+                            free_bytes_atomic.fetch_sub(size as u64, Ordering::SeqCst);
+                            let _ = reply.send(Ok(id));
                         }
                         VulkanCommand::Copy { src_pool, src_buf, src_ptr, bytes, dst_buf } => {
                             // Host-mapped memcpy done on the worker: order it
                             // against pending + in-flight GPU work first. The
-                            // copy itself is a CPU memcpy — the retained
-                            // source is consumed by it and released right
-                            // after.
+                            // copy itself is a CPU memcpy — the source is
+                            // consumed by it and released right after.
                             if let Err(err) = submit_window(
                                 &mut pending,
                                 queue,

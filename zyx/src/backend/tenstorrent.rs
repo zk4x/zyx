@@ -21,7 +21,7 @@
 
 use super::{ChunkId, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Pool, gws_from_kernel};
 use crate::{
-    DType,
+    DType, Set,
     backend::DTypeCapability,
     error::{BackendError, ErrorStatus},
     shape::Dim,
@@ -141,7 +141,6 @@ pub struct TTConfig {
 pub(crate) struct TTBuffer {
     dev_index: u32,
     pub(crate) size: u64,
-    rc: u16,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +169,7 @@ fn no_pool(id: u16) -> BackendError {
 #[derive(Debug)]
 pub struct TTMemoryPool {
     pub(crate) buffers: Slab<ChunkId, TTBuffer>,
+    free_set: Set<ChunkId>,
     runtime: Arc<Mutex<RuntimeProcess>>,
     free_bytes: Dim,
     dev_info: DeviceInfo,
@@ -228,6 +228,7 @@ pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Ve
     dtype_capability[DType::F8E5M2 as usize] = DTypeCapability::ZERO;
     pools.push(Mutex::new(TTMemoryPool {
         buffers: Slab::new(),
+        free_set: Set::default(),
         runtime: runtime.clone(),
         free_bytes: Dim::from(dram_bytes as i64),
         dev_info: DeviceInfo {
@@ -318,31 +319,64 @@ impl TTMemoryPool {
         let rt = &self.runtime;
         let tile_bytes: u64 = 2048;
         let dev_index = rt.lock().unwrap().alloc_buf(bytes_u64, tile_bytes)?;
-        let buf = TTBuffer { dev_index, size: bytes_u64, rc: 1 };
+        let buf = TTBuffer { dev_index, size: bytes_u64 };
         Ok(self.buffers.push(buf))
     }
 
-    /// Increment the buffer's reference count. Checked math: overflow panics.
-    pub fn retain(&mut self, buffer_id: ChunkId) {
-        match self.buffers.get_mut(buffer_id) {
-            Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("TTBuffer rc overflow"),
-            None => debug_assert!(false, "retain of unknown TT buffer {buffer_id:?}"),
-        }
-    }
-
-    /// Decrement the reference count. At zero the buffer is freed immediately:
-    /// the TT shim is synchronous and holds no in-flight work — async
-    /// consumers elsewhere retain the buffer while they still need it.
+    /// Put a buffer into the free list for stable-address reuse. Frees
+    /// nothing; device memory is reclaimed only by [`TTMemoryPool::dispose`].
+    /// Safe without a sync: the TT shim is synchronous, so no launch can
+    /// still be using the buffer when its placement drops.
     pub fn release(&mut self, buffer_id: ChunkId) {
-        let Some(buffer) = self.buffers.get_mut(buffer_id) else {
+        if !self.buffers.contains_id(buffer_id) {
             debug_assert!(false, "release of unknown TT buffer {buffer_id:?}");
             return;
-        };
-        buffer.rc = buffer.rc.checked_sub(1).expect("TTBuffer rc underflow");
-        if buffer.rc == 0 {
-            let buf = unsafe { self.buffers.remove_and_return(buffer_id) };
-            self.free_bytes += buf.size as Dim;
-            let _ = self.runtime.lock().unwrap().free_buf(buf.dev_index);
+        }
+        debug_assert!(!self.free_set.contains(&buffer_id), "double release of TT buffer {buffer_id:?}");
+        self.free_set.insert(buffer_id);
+    }
+
+    /// Tries to reuse existing allocations, all or nothing: every id must
+    /// be on the free list (stable addresses) or nothing is claimed.
+    pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
+        let ok = buffer_ids.iter().all(|id| self.free_set.contains(id));
+        if ok {
+            for id in buffer_ids {
+                self.free_set.remove(id);
+            }
+        }
+        ok
+    }
+
+    /// Scratch for queue intermediaries: reuses the smallest fitting free
+    /// buffer, else allocates fresh. Never fails on fragmentation.
+    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        let best = self
+            .free_set
+            .iter()
+            .filter_map(|id| {
+                let len = self.buffers[*id].size as Dim;
+                (len >= bytes).then_some((len, *id))
+            })
+            .min();
+        if let Some((_, id)) = best {
+            self.free_set.remove(&id);
+            return Ok(id);
+        }
+        self.allocate(bytes)
+    }
+
+    /// Free all buffers in the free list at once: release every free buffer
+    /// back to the runtime and give the bytes back.
+    pub fn dispose(&mut self) {
+        for id in core::mem::take(&mut self.free_set) {
+            let Some(buffer) = self.buffers.get(id) else {
+                continue;
+            };
+            self.free_bytes += buffer.size as Dim;
+            let dev_index = buffer.dev_index;
+            self.buffers.remove(id);
+            let _ = self.runtime.lock().unwrap().free_buf(dev_index);
         }
     }
 
@@ -382,44 +416,6 @@ impl TTMemoryPool {
             libc::shm_unlink(cname.as_ptr());
         }
         Ok(())
-    }
-
-    /// Synchronous copy into this pool (the TT shim has no async queues): the
-    /// source is consumed within this call, so no retain is needed. Host
-    /// sources upload directly; every other pool stages through host memory.
-    pub fn pool_to_pool(&mut self, src: Pool, src_buf: ChunkId, dst_buf: ChunkId) -> Result<(), BackendError> {
-        match src {
-            Pool::Host => {
-                let src_pool = super::host::pool();
-                let src_pool = super::lock(src, &src_pool);
-                let data = src_pool.get_buffer(src_buf);
-                self.host_to_pool(data, dst_buf)
-            }
-            // No P2P path in the tt-runtime shim yet — stage through a
-            // HOST-POOL buffer (never a Vec: tensors can be tens of GB).
-            _ => {
-                let len = {
-                    let dst_ref = self.buffers.get(dst_buf).ok_or_else(|| BackendError {
-                        status: ErrorStatus::MemoryCopyP2H,
-                        context: "invalid dst buffer id".into(),
-                    })?;
-                    dst_ref.size as usize
-                };
-                let tmp = Pool::Host.allocate(len as _)?;
-                {
-                    let host_pool = super::host::pool();
-                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
-                    src.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, len) })?;
-                }
-                let result = {
-                    let host_pool = super::host::pool();
-                    let host_pool = super::lock(Pool::Host, &host_pool);
-                    self.host_to_pool(host_pool.get_buffer(tmp), dst_buf)
-                };
-                Pool::Host.release(tmp);
-                result
-            }
-        }
     }
 
     pub fn dev_index(&self, buffer_id: ChunkId) -> Result<u32, BackendError> {

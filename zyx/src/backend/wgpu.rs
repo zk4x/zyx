@@ -3,7 +3,7 @@
 
 use super::{BackendError, ChunkId, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Pool, gws_from_kernel};
 use crate::{
-    DType,
+    DType, Set,
     backend::{DTypeCapability, DeviceProgramId},
     kernel::{Kernel, Op, ParamKind, RangeKind},
     shape::Dim,
@@ -33,7 +33,6 @@ impl Default for WGPUConfig {
 pub struct WGPUBuffer {
     buffer: wgpu::Buffer,
     bytes: Dim,
-    rc: u16,
 }
 
 #[derive(Debug)]
@@ -43,6 +42,7 @@ pub struct WGPUMemoryPool {
     queue: Arc<wgpu::Queue>,
     adapter: wgpu::Adapter,
     buffers: Slab<ChunkId, WGPUBuffer>,
+    free_set: Set<ChunkId>,
     dev_info: DeviceInfo,
 }
 
@@ -215,6 +215,7 @@ pub(super) fn ensure_pool_table(config: &WGPUConfig, debug_dev: bool) -> Result<
         queue,
         adapter: wgpu_adapter,
         buffers: Slab::new(),
+        free_set: Set::default(),
         dev_info: DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![100_000; 3],
@@ -279,31 +280,64 @@ impl WGPUMemoryPool {
             mapped_at_creation: false,
         });
         self.free_bytes -= bytes;
-        Ok(self.buffers.push(WGPUBuffer { buffer, bytes, rc: 1 }))
+        Ok(self.buffers.push(WGPUBuffer { buffer, bytes }))
     }
 
-    /// Increment the buffer's reference count. Checked math: overflow panics.
-    pub fn retain(&mut self, buffer_id: ChunkId) {
-        match self.buffers.get_mut(buffer_id) {
-            Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("WGPUBuffer rc overflow"),
-            None => debug_assert!(false, "retain of unknown WGPU buffer {buffer_id:?}"),
-        }
-    }
-
-    /// Decrement the buffer's reference count. At zero the buffer is
-    /// destroyed immediately: wgpu defers the driver-level destruction behind
-    /// all in-flight work itself, and async consumers elsewhere retain the
-    /// buffer while they still need it.
+    /// Put a buffer into the free list for stable-address reuse. Frees
+    /// nothing; VRAM is reclaimed only by [`WGPUMemoryPool::dispose`]. The
+    /// mod.rs dispatch flushes the pending window before calling this, so no
+    /// unsubmitted launch still uses the buffer.
     pub fn release(&mut self, buffer_id: ChunkId) {
-        let Some(buffer) = self.buffers.get_mut(buffer_id) else {
+        if !self.buffers.contains_id(buffer_id) {
             debug_assert!(false, "release of unknown WGPU buffer {buffer_id:?}");
             return;
-        };
-        buffer.rc = buffer.rc.checked_sub(1).expect("WGPUBuffer rc underflow");
-        if buffer.rc == 0 {
-            let WGPUBuffer { buffer, bytes, .. } = unsafe { self.buffers.remove_and_return(buffer_id) };
-            self.free_bytes += bytes;
-            buffer.destroy();
+        }
+        debug_assert!(!self.free_set.contains(&buffer_id), "double release of WGPU buffer {buffer_id:?}");
+        self.free_set.insert(buffer_id);
+    }
+
+    /// Tries to reuse existing allocations, all or nothing: every id must
+    /// be on the free list (stable addresses) or nothing is claimed.
+    pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
+        let ok = buffer_ids.iter().all(|id| self.free_set.contains(id));
+        if ok {
+            for id in buffer_ids {
+                self.free_set.remove(id);
+            }
+        }
+        ok
+    }
+
+    /// Scratch for queue intermediaries: reuses the smallest fitting free
+    /// buffer, else allocates fresh. Never fails on fragmentation.
+    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        let best = self
+            .free_set
+            .iter()
+            .filter_map(|id| {
+                let len = self.buffers[*id].bytes;
+                (len >= bytes).then_some((len, *id))
+            })
+            .min();
+        if let Some((_, id)) = best {
+            self.free_set.remove(&id);
+            return Ok(id);
+        }
+        self.allocate(bytes)
+    }
+
+    /// Free all buffers in the free list at once: destroy every free buffer
+    /// and give the bytes back. wgpu defers driver-level destruction behind
+    /// in-flight work itself.
+    pub fn dispose(&mut self) {
+        for id in core::mem::take(&mut self.free_set) {
+            if let Some(buffer) = self.buffers.get(id) {
+                self.free_bytes += buffer.bytes;
+            }
+            if self.buffers.contains_id(id) {
+                let entry = unsafe { self.buffers.remove_and_return(id) };
+                entry.buffer.destroy();
+            }
         }
     }
 
@@ -368,90 +402,6 @@ impl WGPUMemoryPool {
         Ok(())
     }
 
-    /// Synchronous copy into this pool: `queue.write_buffer` stages the host
-    /// data immediately (the single in-order queue then executes it after all
-    /// previously submitted work), so the source is consumed within this call
-    /// and no retain is needed. Host sources copy directly; every other pool
-    /// stages through host memory.
-    pub fn pool_to_pool(&mut self, src: Pool, src_buf: ChunkId, dst_buf: ChunkId) -> Result<(), BackendError> {
-        match src {
-            Pool::Host => {
-                let src_pool = super::host::pool();
-                let src_pool = super::lock(src, &src_pool);
-                let data = src_pool.get_buffer(src_buf);
-                self.write_bytes(data, dst_buf);
-                Ok(())
-            }
-            Pool::Disk => {
-                // Stage through a HOST-POOL buffer (never a Vec: tensors can
-                // be tens of GB).
-                let bytes = {
-                    let src_pool = super::disk::pool();
-                    let src_pool = super::lock(src, &src_pool);
-                    let bytes = src_pool.buffer_bytes(src_buf);
-                    bytes
-                };
-                let tmp = Pool::Host.allocate(bytes)?;
-                {
-                    let host_pool = super::host::pool();
-                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
-                    let src_pool = super::disk::pool();
-                    let mut src_pool = super::lock(src, &src_pool);
-                    src_pool.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) })?;
-                }
-                let result = {
-                    let host_pool = super::host::pool();
-                    let host_pool = super::lock(Pool::Host, &host_pool);
-                    self.write_bytes(host_pool.get_buffer(tmp), dst_buf);
-                    Pool::Host.release(tmp);
-                    Ok(())
-                };
-                result
-            }
-            Pool::Cuda(_) => todo!("cross-pool copy from CUDA to WGPU"),
-            Pool::OpenCL(_) => todo!("cross-pool copy from OpenCL to WGPU"),
-            Pool::Vulkan(_) | Pool::Dummy => todo!("cross-pool copy from {src:?} to WGPU"),
-            Pool::WGPU(_) => {
-                // Same-pool copy: stage through a HOST-POOL buffer (never a
-                // Vec: tensors can be tens of GB). The mod.rs dispatch
-                // flushes the pending window first, so all launches writing
-                // src are submitted.
-                let bytes = self.buffers[src_buf].bytes;
-                let tmp = Pool::Host.allocate(bytes)?;
-                {
-                    let host_pool = super::host::pool();
-                    let staging_ptr = super::lock(Pool::Host, &host_pool).buffer_ptr_mut(tmp);
-                    self.pool_to_host(src_buf, unsafe { std::slice::from_raw_parts_mut(staging_ptr, bytes as usize) })?;
-                }
-                {
-                    let host_pool = super::host::pool();
-                    let host_pool = super::lock(Pool::Host, &host_pool);
-                    self.write_bytes(host_pool.get_buffer(tmp), dst_buf);
-                }
-                Pool::Host.release(tmp);
-                Ok(())
-            }
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(_) => todo!("cross-pool copy from TT to WGPU"),
-        }
-    }
-
-    /// wgpu requires writes to be multiples of 4 bytes; pad the tail with
-    /// zeros when the source length is unaligned.
-    fn write_bytes(&mut self, src: &[u8], dst: ChunkId) {
-        const ALIGN: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
-        let dst = &self.buffers[dst].buffer;
-        let full_chunks = src.len() / ALIGN;
-        let remaining = src.len() % ALIGN;
-        if full_chunks > 0 {
-            self.queue.write_buffer(dst, 0, &src[..full_chunks * ALIGN]);
-        }
-        if remaining > 0 {
-            let mut padded: [u8; 4] = [0; 4];
-            padded[..remaining].copy_from_slice(&src[full_chunks * ALIGN..]);
-            self.queue.write_buffer(dst, (full_chunks * ALIGN) as u64, &padded);
-        }
-    }
 }
 
 impl WGPUDevice {
@@ -653,8 +603,8 @@ impl WGPUDevice {
 }
 
 /// Flushes the device's pending micro-batch window. Called by the `mod.rs`
-/// dispatch before every WGPU sync point (pool_to_host / pool_to_pool /
-/// release), so pool operations never race unsubmitted launches.
+/// dispatch before every WGPU sync point (pool_to_host / release), so pool
+/// operations never race unsubmitted launches.
 pub(super) fn flush_pending(id: u16) -> Result<(), BackendError> {
     let dev = device(id)?;
     let mut dev = dev.lock().unwrap_or_else(|_| panic!("WGPU device lock poisoned"));

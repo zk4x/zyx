@@ -645,9 +645,9 @@ impl Pool {
             Pool::OpenCL(id) => opencl::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
             Pool::Vulkan(id) => vulkan::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
             #[cfg(feature = "tenstorrent")]
-            Pool::TT(_) => todo!("TT try_reuse_allocations"),
+            Pool::TT(id) => tenstorrent::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
             #[cfg(feature = "wgpu")]
-            Pool::WGPU(_) => todo!("WGPU try_reuse_allocations"),
+            Pool::WGPU(id) => wgpu::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
             Pool::Dummy => dummy::pool().map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
         }
     }

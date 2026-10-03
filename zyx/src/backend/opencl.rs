@@ -65,7 +65,6 @@ pub struct OpenCLMemoryPool {
 pub struct OpenCLBuffer {
     pub ptr: *mut c_void,
     pub bytes: Dim,
-    rc: u16,
 }
 
 #[derive(Debug)]
@@ -99,11 +98,23 @@ enum Command {
         bytes: Dim,
         reply: Sender<Result<ChunkId, BackendError>>,
     },
-    Retain {
-        buffer_id: ChunkId,
-    },
+    /// Put a buffer on the free list for stable-address reuse. Frees
+    /// nothing; VRAM is reclaimed only by `Dispose`.
     Release {
         buffer_id: ChunkId,
+    },
+    /// Free every free-list buffer at once (hard sync first). The only
+    /// VRAM reclamation; every released id becomes invalid.
+    Dispose,
+    /// All-or-nothing claim of free-list ids for stable addresses.
+    TryReuse {
+        buffer_ids: Set<ChunkId>,
+        reply: Sender<Result<bool, BackendError>>,
+    },
+    /// Smallest fitting free buffer, else a fresh allocation.
+    AllocateScratch {
+        bytes: Dim,
+        reply: Sender<Result<ChunkId, BackendError>>,
     },
     /// Blocking read-back: the reply is sent after the data arrived in
     /// host memory. This is a sync point — all pending work is submitted
@@ -116,9 +127,8 @@ enum Command {
     },
     /// Async copy into this pool's buffer, fire-and-forget: appended to the
     /// pending micro-batch window, submitted (with computed waits) when the
-    /// window flushes. `OpenCLMemoryPool::pool_to_pool` retained the source
-    /// pool buffer; once the copy completes, this worker releases it back to
-    /// the source pool (foreign sweep).
+    /// window flushes. Once the copy completes, this worker releases the
+    /// source buffer back to its own pool (foreign sweep).
     Copy {
         src_pool: Pool,
         src_buf: ChunkId,
@@ -493,6 +503,11 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                     }
 
                     let mut buffers: Slab<ChunkId, OpenCLBuffer> = Slab::new();
+                    // Free-list ids for stable-address reuse (`Release`
+                    // inserts, `TryReuse`/`AllocateScratch` claim, `Dispose`
+                    // frees). Slab entries stay so ChunkIds are monotonic and
+                    // never alias a different buffer.
+                    let mut free_set: Set<ChunkId> = Set::default();
                     let mut programs: Slab<DeviceProgramId, OpenCLProgram> = Slab::new();
 
                     // Pending micro-batch window: launches and copies
@@ -508,7 +523,7 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                     // producer from window N if it lands on a different queue.
                     let mut writer: Map<ChunkId, (usize, *mut c_void)> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
                     let mut last_use: Map<ChunkId, (usize, *mut c_void)> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
-                    // Retained foreign source buffers of in-flight copies:
+                    // Foreign source buffers of in-flight copies:
                     // (source pool, source buffer, completion event). Once the
                     // event completes, the source buffer is released back to
                     // its own pool (sweep_foreign).
@@ -550,62 +565,94 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                     continue 'work_thread_loop;
                                 }
                                 free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
-                                let id = buffers.push(OpenCLBuffer { ptr: buffer, bytes, rc: 1 });
+                                let id = buffers.push(OpenCLBuffer { ptr: buffer, bytes });
                                 let _ = reply.send(Ok(id));
                             }
-                            Command::Retain { buffer_id } => match buffers.get_mut(buffer_id) {
-                                Some(buffer) => buffer.rc = buffer.rc.checked_add(1).expect("OpenCLBuffer rc overflow"),
-                                None => debug_assert!(false, "retain of unknown OpenCL buffer {buffer_id:?}"),
-                            },
                             Command::Release { buffer_id } => {
-                                let Some(buffer) = buffers.get_mut(buffer_id) else {
+                                // Put the id on the free list for
+                                // stable-address reuse. Frees nothing: VRAM is
+                                // reclaimed only by Dispose. Dependency state
+                                // (`writer`/`last_use`) stays: a claimed
+                                // address keeps waiting on its prior work.
+                                if !buffers.contains_id(buffer_id) {
                                     debug_assert!(false, "release of unknown OpenCL buffer {buffer_id:?}");
                                     continue;
-                                };
-                                buffer.rc = buffer.rc.checked_sub(1).expect("OpenCLBuffer rc underflow");
-                                if buffer.rc > 0 {
-                                    continue;
                                 }
-                                // rc hit zero: the buffer's last use may still
-                                // be queued. Flush the pending window, then
-                                // drain every in-order queue — completion of
-                                // all queues implies completion of every
-                                // queued use of this buffer. The worker
-                                // drains; callers never block.
-                                if let Err(err) = flush_window(
-                                    &mut pending,
-                                    &queues,
-                                    &buffers,
-                                    &programs,
-                                    &mut writer,
-                                    &mut last_use,
-                                    &mut foreign_dead,
-                                    debug_dev,
-                                    clEnqueueNDRangeKernel,
-                                    clEnqueueWriteBuffer,
-                                    clSetKernelArg,
-                                    clReleaseEvent,
-                                ) && last_error.is_none()
-                                {
-                                    last_error = Some(err);
-                                }
+                                debug_assert!(!free_set.contains(&buffer_id), "double release of OpenCL buffer {buffer_id:?}");
+                                free_set.insert(buffer_id);
+                            }
+                            Command::Dispose => {
+                                // The only reclamation: drain every in-order
+                                // queue (completion of all queues implies
+                                // completion of every queued use of every free
+                                // buffer), then free the whole list at once.
+                                // Every released id becomes invalid.
                                 for q in &queues {
                                     let _ = unsafe { (clFinish)(q.queue) }.check(ErrorStatus::MemoryDeallocation);
                                 }
                                 sweep_foreign(&mut foreign_dead, clGetEventInfo, clReleaseEvent);
-                                let mut retired = Vec::new();
-                                if let Some((_, old)) = writer.remove(&buffer_id) {
-                                    retired.push(old);
+                                for buffer_id in core::mem::take(&mut free_set) {
+                                    let mut retired = Vec::new();
+                                    if let Some((_, old)) = writer.remove(&buffer_id) {
+                                        retired.push(old);
+                                    }
+                                    if let Some((_, old)) = last_use.remove(&buffer_id) {
+                                        retired.push(old);
+                                    }
+                                    release_distinct(retired, clReleaseEvent);
+                                    let OpenCLBuffer { ptr, bytes } = buffers[buffer_id];
+                                    debug_assert!(!ptr.is_null(), "deallocating null buffer is invalid");
+                                    let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::MemoryDeallocation);
+                                    free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
+                                    buffers.remove(buffer_id);
                                 }
-                                if let Some((_, old)) = last_use.remove(&buffer_id) {
-                                    retired.push(old);
+                            }
+                            Command::TryReuse { buffer_ids, reply } => {
+                                // All-or-nothing: every id must be on the free
+                                // list, else some address moved and the graph
+                                // must be retraced.
+                                let ok = buffer_ids.iter().all(|id| free_set.contains(id));
+                                if ok {
+                                    for id in &buffer_ids {
+                                        free_set.remove(id);
+                                    }
                                 }
-                                release_distinct(retired, clReleaseEvent);
-                                let OpenCLBuffer { ptr, bytes, .. } = buffers[buffer_id];
-                                debug_assert!(!ptr.is_null(), "deallocating null buffer is invalid");
-                                let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::MemoryDeallocation);
-                                free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
-                                buffers.remove(buffer_id);
+                                let _ = reply.send(Ok(ok));
+                            }
+                            Command::AllocateScratch { bytes, reply } => {
+                                // Smallest fitting free buffer wins; never
+                                // fails on fragmentation — falls back to a
+                                // fresh allocation.
+                                let best = free_set
+                                    .iter()
+                                    .filter_map(|id| {
+                                        let b = &buffers[*id];
+                                        (b.bytes >= bytes).then_some((b.bytes, *id))
+                                    })
+                                    .min();
+                                if let Some((_, id)) = best {
+                                    free_set.remove(&id);
+                                    let _ = reply.send(Ok(id));
+                                    continue;
+                                }
+                                if bytes > free_bytes_atomic.load(Ordering::SeqCst) as i64 {
+                                    let _ = reply.send(Err(BackendError {
+                                        status: ErrorStatus::MemoryAllocation,
+                                        context: "Allocation failure".into(),
+                                    }));
+                                    continue 'work_thread_loop;
+                                }
+                                let mut status = OpenCLStatus::CL_SUCCESS;
+                                let buffer = unsafe {
+                                    clCreateBuffer(context, CL_MEM_READ_WRITE, bytes as usize, ptr::null_mut(), &raw mut status)
+                                };
+                                if let Err(e) = status.check(ErrorStatus::MemoryAllocation) {
+                                    let _ = reply.send(Err(e));
+                                    continue 'work_thread_loop;
+                                }
+                                free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
+                                let id = buffers.push(OpenCLBuffer { ptr: buffer, bytes });
+                                let _ = reply.send(Ok(id));
                             }
                             Command::Copy { src_pool, src_buf, src_ptr, bytes, dst_buf } => {
                                 // Fire-and-forget: append to the micro-batch
@@ -1077,13 +1124,13 @@ fn flush_window(
                 .check(ErrorStatus::MemoryCopyH2P);
                 match status {
                     Ok(()) => {
-                        // Release the retained source buffer once this
-                        // completion event fires (sweep_foreign).
+                        // Release the source buffer back to its pool once
+                        // this completion event fires (sweep_foreign).
                         foreign_dead.push((src_pool, src_buf, event));
                         Ok(event)
                     }
                     Err(err) => {
-                        // The copy was never enqueued: balance the retain now.
+                        // The copy was never enqueued: release the source now.
                         src_pool.release(src_buf);
                         Err(err)
                     }
@@ -1135,7 +1182,7 @@ fn release_distinct(mut events: Vec<*mut c_void>, clReleaseEvent: unsafe extern 
     }
 }
 
-/// Releases retained foreign source buffers whose copy event has completed.
+/// Releases foreign source buffers whose copy event has completed.
 /// Called every loop iteration (a cheap `clGetEventInfo` poll) and after
 /// every full drain, where completion is guaranteed.
 fn sweep_foreign(
@@ -1176,30 +1223,32 @@ impl OpenCLMemoryPool {
         reply_rx.recv().unwrap()
     }
 
-    /// Increment the buffer's reference count (allocate starts it at 1).
-    /// Checked math: overflow panics.
-    pub fn retain(&mut self, buffer_id: ChunkId) {
-        self.tx.send(Command::Retain { buffer_id }).unwrap();
-    }
-
-    /// Decrement the buffer's reference count. At zero the worker flushes the
-    /// pending window and drains every in-order queue before freeing — the
-    /// buffer is never freed behind in-flight work (the worker drains;
-    /// callers never block).
+    /// Put a buffer on the free list for stable-address reuse. Frees
+    /// nothing; VRAM is reclaimed only by [`OpenCLMemoryPool::dispose`].
     pub fn release(&mut self, buffer_id: ChunkId) {
         self.tx.send(Command::Release { buffer_id }).unwrap();
     }
 
-    pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
-        todo!()
-    }
-
-    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        todo!()
-    }
-
+    /// Free all buffers in the free list at once (hard sync first). The
+    /// only VRAM reclamation; every released id becomes invalid.
     pub fn dispose(&mut self) {
-        todo!()
+        self.tx.send(Command::Dispose).unwrap();
+    }
+
+    /// Tries to reuse existing allocations, all or nothing: every id must
+    /// be on the free list (stable addresses) or nothing is claimed.
+    pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
+        let (reply, reply_rx) = channel();
+        self.tx.send(Command::TryReuse { buffer_ids: buffer_ids.clone(), reply }).unwrap();
+        reply_rx.recv().unwrap().unwrap_or(false)
+    }
+
+    /// Scratch for queue intermediaries: reuses the smallest fitting free
+    /// buffer, else allocates fresh. Never fails on fragmentation.
+    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        let (reply, reply_rx) = channel();
+        self.tx.send(Command::AllocateScratch { bytes, reply }).unwrap();
+        reply_rx.recv().unwrap()
     }
 
     /// Blocking read-back (sync point).
@@ -1207,13 +1256,6 @@ impl OpenCLMemoryPool {
         let (reply, reply_rx) = channel();
         self.tx.send(Command::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len() as Dim, reply }).unwrap();
         reply_rx.recv().unwrap()
-    }
-
-    /// Fire-and-forget copy into this pool (dst-owned). The source pool
-    /// buffer is retained here and released by this device's worker once the
-    /// copy completes — see `flush_window` / `sweep_foreign`.
-    pub fn pool_to_pool(&mut self, src: Pool, src_buf: ChunkId, dst_buf: ChunkId) -> Result<(), BackendError> {
-        todo!("copies go through CmdQueue")
     }
 }
 
