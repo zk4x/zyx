@@ -268,9 +268,10 @@ impl CDevice {
     }
 
     /// Copy executing a transfer into the host pool, matching on the source
-    /// pool: host memcpys directly, disk stages through the disk pool's
-    /// file read, every other source is later work. The destination is
-    /// always host-resident. Single-shard placements only.
+    /// pool: host memcpys directly, disk reads straight from the file
+    /// mapping, CUDA DMAs straight into the destination, every other
+    /// source is later work. The destination is always host-resident.
+    /// Single-shard placements only.
     pub fn copy(&self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
         debug_assert!(bytes >= 0, "C copy of negative bytes");
         let host = super::host::pool();
@@ -291,16 +292,31 @@ impl CDevice {
                 }
             }
             Pool::Disk => {
+                // Straight into the destination: the mapping is the source,
+                // no staging buffer. The destination is over-allocated (one
+                // extra element); the extent holds exact tensor bytes only.
                 let disk = super::disk::pool();
                 let mut dpool = super::lock(Pool::Disk, disk);
-                let mut staging = vec![0u8; bytes as usize];
-                dpool.pool_to_host(src_shard.chunk, &mut staging)?;
+                let n = bytes.min(dpool.buffer_bytes(src_shard.chunk));
                 let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
-                unsafe {
-                    std::ptr::copy_nonoverlapping(staging.as_ptr(), dst_ptr, bytes as usize);
-                }
+                dpool.pool_to_host(
+                    src_shard.chunk,
+                    unsafe { std::slice::from_raw_parts_mut(dst_ptr, n as usize) },
+                )?;
             }
-            Pool::Cuda(_) | Pool::OpenCL(_) | Pool::Vulkan(_) => {
+            Pool::Cuda(id) => {
+                // Device-to-host DMA straight into the destination, no
+                // staging buffer: the worker drains the stream first, the
+                // reply arrives after the data did.
+                let cuda = super::cuda::pool(id)?;
+                let mut cpool = super::lock(Pool::Cuda(id), cuda);
+                let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+                cpool.pool_to_host(
+                    src_shard.chunk,
+                    unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) },
+                )?;
+            }
+            Pool::OpenCL(_) | Pool::Vulkan(_) => {
                 todo!("C copy from {:?}", src_shard.pool)
             }
             #[cfg(feature = "tenstorrent")]

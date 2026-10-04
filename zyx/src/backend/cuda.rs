@@ -399,6 +399,11 @@ enum CUDACommand {
     /// The host pointer stays valid for the roundtrip (caller holds the
     /// host pool lock across send + recv).
     CopyHtoD { src: *const u8, dst: ChunkId, bytes: Dim, reply: Sender<Result<(), BackendError>> },
+    /// Blocking upload straight from a file mapping: registers the mapped
+    /// range for DMA, uploads, unregisters — all on the worker thread, which
+    /// owns the CUDA context (caller threads have none). No staging buffer,
+    /// no read call.
+    CopyDiskToD { ptr: *const u8, extent: Dim, bytes: Dim, dst: ChunkId, reply: Sender<Result<(), BackendError>> },
     /// Blocking same-device device-to-device copy (single pool).
     CopyDtoD { src: ChunkId, dst: ChunkId, bytes: Dim, reply: Sender<Result<(), BackendError>> },
     /// Destroy a captured graph exec (from `CudaGraph::drop`): tolerant —
@@ -1438,6 +1443,32 @@ fn spawn_worker(
                     })();
                     let _ = reply.send(result);
                 }
+                CUDACommand::CopyDiskToD { ptr, extent, bytes, dst, reply } => {
+                    let result = (|| -> Result<(), BackendError> {
+                        for st in &streams {
+                            unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::MemoryCopyP2P)?;
+                        }
+                        let Some(dst_buf) = buffers.get(dst) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::MemoryCopyP2P,
+                                context: "disk upload into unknown buffer".into(),
+                            });
+                        };
+                        let bytes = bytes.min(dst_buf.bytes);
+                        // No pinning: the driver rejects registering file
+                        // mappings, and async DMA needs none (registration
+                        // is bandwidth-only, a measured optimization later).
+                        // The caller clamps to the mapped extent already.
+                        debug_assert!(bytes <= extent, "disk upload past the mapped extent");
+                        if std::env::var("ZYX_DRY_RUN").is_err() {
+                            unsafe { (cuMemcpyHtoDAsync)(dst_buf.ptr, ptr.cast(), bytes as usize, streams[0].stream) }
+                                .check(ErrorStatus::MemoryCopyP2P)?;
+                            unsafe { (cuStreamSynchronize)(streams[0].stream) }.check(ErrorStatus::MemoryCopyP2P)?;
+                        }
+                        Ok(())
+                    })();
+                    let _ = reply.send(result);
+                }
                 CUDACommand::CopyDtoD { src, dst, bytes, reply } => {
                     let result = (|| -> Result<(), BackendError> {
                         for st in &streams {
@@ -1864,26 +1895,48 @@ impl CUDADevice {
         let dead = |_| BackendError { status: ErrorStatus::MemoryCopyP2P, context: "cuda worker thread died".into() };
         let dead_rx =
             |_: std::sync::mpsc::RecvError| BackendError { status: ErrorStatus::MemoryCopyP2P, context: "cuda worker hung up".into() };
-        if src_shard.pool == self.memory_pool {
-            let (reply, reply_rx) = channel();
-            self.tx
-                .send(CUDACommand::CopyDtoD { src: src_shard.chunk, dst: dst_shard.chunk, bytes, reply })
-                .map_err(dead)?;
-            return reply_rx.recv().map_err(dead_rx)?;
+        match src_shard.pool {
+            p if p == self.memory_pool => {
+                let (reply, reply_rx) = channel();
+                self.tx
+                    .send(CUDACommand::CopyDtoD { src: src_shard.chunk, dst: dst_shard.chunk, bytes, reply })
+                    .map_err(dead)?;
+                return reply_rx.recv().map_err(dead_rx)?;
+            }
+            Pool::Host => {
+                // The host lock is held across the blocking roundtrip: the
+                // source pointer stays valid. The worker never takes it.
+                let host = super::host::pool();
+                let pool = super::lock(Pool::Host, host);
+                let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
+                let (reply, reply_rx) = channel();
+                self.tx
+                    .send(CUDACommand::CopyHtoD { src: src_ptr, dst: dst_shard.chunk, bytes, reply })
+                    .map_err(dead)?;
+                return reply_rx.recv().map_err(dead_rx)?;
+            }
+            #[cfg(unix)]
+            Pool::Disk => {
+                // Direct DMA from the file mapping, executed fully on the
+                // worker (pin bracketing needs the worker's CUDA context).
+                // The extent holds exact tensor bytes; the destination is
+                // over-allocated (one extra element) — never read past the
+                // extent.
+                let disk = super::disk::pool();
+                let dpool = super::lock(Pool::Disk, disk);
+                let (ptr, extent) = dpool.mapped_ptr(src_shard.chunk);
+                let n = bytes.min(extent);
+                let (reply, reply_rx) = channel();
+                self.tx
+                    .send(CUDACommand::CopyDiskToD { ptr, extent, bytes: n, dst: dst_shard.chunk, reply })
+                    .map_err(dead)?;
+                let res = reply_rx.recv().map_err(dead_rx)?;
+                return res;
+            }
+            #[cfg(windows)]
+            Pool::Disk => todo!("CUDA copy from disk on windows"),
+            p => todo!("CUDA copy from {p:?}"),
         }
-        if src_shard.pool == Pool::Host {
-            // The host lock is held across the blocking roundtrip: the
-            // source pointer stays valid. The worker never takes it.
-            let host = super::host::pool();
-            let pool = super::lock(Pool::Host, host);
-            let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
-            let (reply, reply_rx) = channel();
-            self.tx
-                .send(CUDACommand::CopyHtoD { src: src_ptr, dst: dst_shard.chunk, bytes, reply })
-                .map_err(dead)?;
-            return reply_rx.recv().map_err(dead_rx)?;
-        }
-        todo!("CUDA copy from {:?}", src_shard.pool)
     }
 }
 

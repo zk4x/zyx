@@ -739,8 +739,7 @@ impl Pool {
                 }
             }
             Pool::Host => lock(self, host::pool()).release(buffer_id),
-            // Disk buffers are file mappings — nothing to free behind rc.
-            Pool::Disk => {}
+            Pool::Disk => lock(self, disk::pool()).release(buffer_id),
             Pool::OpenCL(id) => {
                 if let Ok(pool) = opencl::pool(id) {
                     lock(self, &pool).release(buffer_id);
