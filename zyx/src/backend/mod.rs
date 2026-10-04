@@ -144,6 +144,7 @@ pub enum Cmd {
     Copy {
         src: OpId,
         dst: OpId,
+        src_pool: Pool,
         dst_pool: Pool,
         dst_dtype: Dim,
         dst_dims: Vec<PlanDim>,
@@ -157,20 +158,11 @@ pub enum Cmd {
 impl Cmd {
     /// Value reads: launch args plus copy sources plus alias targets.
     /// Outputs excluded.
-    fn reads(&self) -> Vec<OpId> {
+    pub(crate) fn reads(&self) -> Vec<OpId> {
         match self {
             Cmd::Launch { args, .. } => args.clone(),
             Cmd::Copy { src, .. } => vec![*src],
             Cmd::Alias { to, .. } => vec![*to],
-        }
-    }
-
-    /// Value defs: launch outputs plus copy destinations plus alias classes.
-    fn defs(&self) -> Vec<OpId> {
-        match self {
-            Cmd::Launch { outputs, .. } => outputs.iter().map(|(slot, _, _)| *slot).collect(),
-            Cmd::Copy { dst, .. } => vec![*dst],
-            Cmd::Alias { class, .. } => vec![*class],
         }
     }
 }
@@ -203,11 +195,106 @@ impl CmdQueue {
 
 impl CmdQueue {
     /// Schedule the queue against `outputs` (slots escaping the plan):
-    /// partition into executables with residency planning — outputs must
-    /// survive, dead intermediaries drain at last use.
+    /// slice into maximal same-device launch runs (each scheduled by its
+    /// device), with cross-pool copies as [`PlanPartition::Copy`] executed
+    /// by the destination device. Same-pool copies and aliases join the
+    /// surrounding run. Residency note: every run pins `outputs` plus the
+    /// slots read after it, so replay frees everything else at last use.
     pub fn schedule(self, outputs: &Set<OpId>) -> Plan {
-        let _ = outputs;
-        todo!()
+        let n = self.cmds.len();
+        // suffix[idx] = slots read by cmds[idx..]: a run ending at `end`
+        // pins outputs plus suffix[end].
+        let mut suffix: Vec<Set<OpId>> = vec![Set::default(); n + 1];
+        for (idx, cmd) in self.cmds.iter().enumerate().rev() {
+            suffix[idx] = suffix[idx + 1].clone();
+            suffix[idx].extend(cmd.reads());
+        }
+        let mut partitions: Vec<PlanPartition> = Vec::new();
+        let mut run_dev: Option<Dev> = None;
+        let mut run: Vec<Cmd> = Vec::new();
+        // Same-pool copies and aliases before the first launch of a run wait
+        // in `pending` and join the next run in program order.
+        let mut pending: Vec<Cmd> = Vec::new();
+        let mut idx = 0;
+        for cmd in self.cmds {
+            let end = idx + 1;
+            match cmd {
+                Cmd::Copy { src, dst, src_pool, dst_pool, dst_dtype, dst_dims } if src_pool != dst_pool => {
+                    // Pending came textually first: run it before the copy.
+                    run.extend(pending.drain(..));
+                    Self::flush_run(&mut partitions, &mut run_dev, &mut run, idx, outputs, &suffix);
+                    let dst_dev = match dst_pool {
+                        Pool::Host => Dev::C,
+                        Pool::Cuda(id) => Dev::Cuda(id),
+                        Pool::Disk => todo!("schedule copy into the disk pool"),
+                        Pool::OpenCL(_) | Pool::Vulkan(_) => todo!("schedule copy into {dst_pool:?}"),
+                        #[cfg(feature = "tenstorrent")]
+                        Pool::TT(_) => todo!("schedule copy into {dst_pool:?}"),
+                        #[cfg(feature = "wgpu")]
+                        Pool::WGPU(_) => todo!("schedule copy into {dst_pool:?}"),
+                        Pool::Dummy => todo!("schedule copy into the dummy pool"),
+                    };
+                    let free_src = !suffix[end].contains(&src) && !outputs.contains(&src);
+                    partitions.push(PlanPartition::Copy {
+                        dst: dst_dev,
+                        ops: vec![CopyOp { src, dst, dtype: dst_dtype, dims: dst_dims, free_src }],
+                    });
+                }
+                Cmd::Launch { program, args, outputs: specs } => {
+                    if run_dev.is_some_and(|d| d != program.dev) {
+                        Self::flush_run(&mut partitions, &mut run_dev, &mut run, idx, outputs, &suffix);
+                    }
+                    run_dev = Some(program.dev);
+                    run.extend(pending.drain(..));
+                    run.push(Cmd::Launch { program, args, outputs: specs });
+                }
+                cmd => pending.push(cmd),
+            }
+            idx = end;
+        }
+        // Trailing pending with no run left: a queue of only aliases and
+        // same-pool copies (e.g. an all-alias plan).
+        if !pending.is_empty() {
+            run.extend(pending.drain(..));
+        }
+        Self::flush_run(&mut partitions, &mut run_dev, &mut run, n, outputs, &suffix);
+        Plan { partitions }
+    }
+
+    /// Finalize the current run (`run[..]` = cmds[start..end]) into a device
+    /// partition. A run with no launches (only aliases and same-pool copies)
+    /// runs on C iff everything is host-pool — aliases and host copies need
+    /// no compute.
+    fn flush_run(
+        partitions: &mut Vec<PlanPartition>,
+        run_dev: &mut Option<Dev>,
+        run: &mut Vec<Cmd>,
+        end: usize,
+        outputs: &Set<OpId>,
+        suffix: &[Set<OpId>],
+    ) {
+        if run.is_empty() {
+            *run_dev = None;
+            return;
+        }
+        let live_out = suffix[end].clone();
+        match *run_dev {
+            Some(Dev::C) => partitions.push(PlanPartition::Cpu(c::CDevice::schedule(std::mem::take(run), outputs, live_out))),
+            Some(dev) => todo!("schedule launch run for {dev:?}"),
+            None => {
+                let host_only = run.iter().all(|cmd| match cmd {
+                    Cmd::Copy { src_pool, dst_pool, .. } => *src_pool == Pool::Host && *dst_pool == Pool::Host,
+                    Cmd::Alias { .. } => true,
+                    Cmd::Launch { .. } => unreachable!("launchless run holds a launch"),
+                });
+                if host_only {
+                    partitions.push(PlanPartition::Cpu(c::CDevice::schedule(std::mem::take(run), outputs, live_out)));
+                } else {
+                    todo!("schedule launchless non-host run")
+                }
+            }
+        }
+        *run_dev = None;
     }
 }
 
@@ -216,29 +303,75 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Replay the plan against the boundary table and symbolic values: slots
-    /// resolve to placements, dynamic sizes evaluate from `vars`,
-    /// partitions build (or reuse) backend executables and launch, patching
-    /// per-replay addresses, values, and sizes into the executables.
-    /// Eager replays immediately; ping-pong replays repeatedly. Returns the
-    /// new placements (intermediaries and outputs) — holding the map keeps
-    /// every buffer alive across replays.
+    /// Replay the plan against the boundary table and symbolic values:
+    /// one shared slot map threads through every partition in order
+    /// (allocated once, never rehashed on the hot path); each partition
+    /// allocates its unbound defs, executes, and drains its dead slots.
+    /// Eager replays immediately; ping-pong replays repeatedly. Returns
+    /// the placements — intermediaries drain by `Drop` once the caller
+    /// drops everything but the escaping outputs.
     pub fn replay(
         &self,
         boundary: Map<OpId, Arc<Placement>>,
         vars: &Map<OpId, Constant>,
     ) -> Result<Map<OpId, Arc<Placement>>, ZyxError> {
-        let _ = boundary;
-        let _ = vars;
-        todo!()
+        let mut resolved = boundary;
+        for partition in &self.partitions {
+            match partition {
+                PlanPartition::Cpu(cpu) => {
+                    let device = c::device()?;
+                    let mut dev = dlock(Dev::C, &device);
+                    cpu.replay(&mut dev, &mut resolved, vars)?;
+                }
+                PlanPartition::Copy { dst, ops } => {
+                    for op in ops {
+                        if resolved.contains_key(&op.dst) {
+                            continue;
+                        }
+                        let bytes = op.dims.iter().map(|d| d.eval(vars)).fold(op.dtype, |a, b| a * b);
+                        debug_assert!(bytes >= 0, "replay copied negative bytes");
+                        let pool = dst.pool();
+                        let chunk = pool.allocate(bytes)?;
+                        let placed = Arc::new(Placement { shards: vec![Shard::Device { pool, chunk }] });
+                        let src_placed =
+                            resolved.get(&op.src).unwrap_or_else(|| panic!("replay: copy src {:?} is unplaced", op.src)).clone();
+                        match dst {
+                            Dev::C => {
+                                let device = c::device()?;
+                                let dev = dlock(Dev::C, &device);
+                                dev.copy(&src_placed, &placed, bytes)?;
+                            }
+                            _ => todo!("replay copy into {dst:?}"),
+                        }
+                        if op.free_src {
+                            resolved.remove(&op.src);
+                        }
+                        resolved.insert(op.dst, placed);
+                    }
+                }
+            }
+        }
+        Ok(resolved)
     }
 }
 
-enum PlanPartition {
-    CudaGraph,
-    VulkanPipeline,
-    CpuGraph,
-    // and so on
+/// One preplanned transfer of a cross-pool copy: queue-local slots plus
+/// the dtype byte size and one dim expression per axis (flat bytes at
+/// replay). `free_src` releases the source right after the copy when
+/// nothing later reads it and it escapes nowhere.
+pub(crate) struct CopyOp {
+    src: OpId,
+    dst: OpId,
+    dtype: Dim,
+    dims: Vec<PlanDim>,
+    free_src: bool,
+}
+
+pub(crate) enum PlanPartition {
+    /// Ordered CPU commands with death lists, executed by the C device.
+    Cpu(c::CPartition),
+    /// Cross-pool copies, executed by the destination device.
+    Copy { dst: Dev, ops: Vec<CopyOp> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

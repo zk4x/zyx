@@ -1776,6 +1776,11 @@ impl Runtime {
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
+                    src_pool: match buf_id.shards[..] {
+                        [Shard::Device { pool, .. }, ..] => pool,
+                        [Shard::Host { .. }, ..] => Pool::Host,
+                        [] => panic!("to_device: source placement has no shards"),
+                    },
                     dst_pool,
                     dst_dtype: 1,
                     dst_dims: vec![PlanDim::Const(alloc_bytes)],
@@ -1820,6 +1825,11 @@ impl Runtime {
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
+                    src_pool: match buf_id.shards[..] {
+                        [Shard::Device { pool, .. }, ..] => pool,
+                        [Shard::Host { .. }, ..] => Pool::Host,
+                        [] => panic!("to_device: source placement has no shards"),
+                    },
                     dst_pool,
                     dst_dtype: 1,
                     dst_dims: vec![PlanDim::Const(alloc_bytes)],
@@ -4100,6 +4110,7 @@ impl Runtime {
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
+                    src_pool,
                     dst_pool: pool_id,
                     dst_dtype: 1,
                     dst_dims: vec![PlanDim::Const(alloc_bytes as Dim)],
@@ -4148,9 +4159,10 @@ impl Runtime {
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
+                    src_pool,
                     dst_pool: pool_id,
                     dst_dtype: 1,
-                    dst_dims: vec![PlanDim::Const(alloc_bytes)],
+                    dst_dims: vec![PlanDim::Const(alloc_bytes as Dim)],
                 });
                 let mut boundary = Map::default();
                 boundary.insert(OpId::from(0), buf);

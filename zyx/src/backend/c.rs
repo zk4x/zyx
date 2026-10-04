@@ -9,12 +9,14 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{DTypeCapability, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Pool, Shard};
+use super::{Cmd, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Pool, Shard};
 use crate::DType;
+use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
-use crate::kernel::{Kernel, Op, RangeKind};
+use crate::kernel::{Kernel, Op, OpId, RangeKind};
 use crate::shape::Dim;
 use crate::slab::Slab;
+use crate::{Map, Set};
 use libloading::{Library, Symbol};
 use nanoserde::DeJson;
 use std::{
@@ -53,6 +55,100 @@ pub struct CDevice {
     device_info: Arc<DeviceInfo>,
     programs: Slab<DeviceProgramId, CProgram>,
     pub has_openmp: bool,
+}
+
+/// Preplanned CPU partition: the ordered commands plus per-command death
+/// lists (slots whose final read is that command and which nothing later
+/// needs). Replay allocates unbound defs on the fly from their specs,
+/// launches programs back-to-back, and drops dead slots per the lists —
+/// no address resolution beyond direct map indexing.
+#[derive(Debug)]
+pub(crate) struct CPartition {
+    cmds: Vec<Cmd>,
+    deaths: Vec<Vec<OpId>>,
+}
+
+impl CPartition {
+    pub(crate) fn replay(
+        &self,
+        dev: &mut CDevice,
+        resolved: &mut Map<OpId, Arc<Placement>>,
+        vars: &Map<OpId, Constant>,
+    ) -> Result<(), BackendError> {
+        let host = super::host::pool();
+        let mut pool = super::lock(Pool::Host, host);
+        for (idx, cmd) in self.cmds.iter().enumerate() {
+            match cmd {
+                Cmd::Launch { program, args, outputs } => {
+                    debug_assert_eq!(program.dev, Dev::C, "C partition holds a non-C program");
+                    for (slot, dtype, dims) in outputs {
+                        if resolved.contains_key(slot) {
+                            continue;
+                        }
+                        let bytes = dims.iter().map(|d| d.eval(vars)).fold(*dtype, |a, b| a * b);
+                        debug_assert!(bytes >= 0, "C replay allocated negative bytes");
+                        let chunk = pool.allocate(bytes)?;
+                        resolved.insert(*slot, Arc::new(Placement { shards: vec![Shard::Device { pool: Pool::Host, chunk }] }));
+                    }
+                    // Resolve args to pointers. Variables are not stored
+                    // anywhere — the value is copied into a local byte box
+                    // here, so the kernel reads it by pointer.
+                    let mut var_boxes: Vec<Box<[u8]>> = Vec::new();
+                    let mut ptrs: Vec<*mut u8> = Vec::with_capacity(args.len());
+                    for arg in args {
+                        if let Some(placement) = resolved.get(arg) {
+                            ptrs.push(host_ptr(&mut pool, placement));
+                        } else if let Some(constant) = vars.get(arg) {
+                            var_boxes.push(constant.to_le_bytes().into_boxed_slice());
+                            ptrs.push(var_boxes.last_mut().unwrap().as_mut_ptr());
+                        } else {
+                            panic!("C replay: launch arg {arg:?} is neither placed nor bound");
+                        }
+                    }
+                    let program_ref = &dev.programs[program.program_id];
+                    let func_name = CString::new(program_ref.name.as_str()).unwrap();
+                    unsafe {
+                        let func: Symbol<unsafe extern "C" fn(*const *mut std::ffi::c_void, usize)> =
+                            program_ref.lib.get(func_name.as_bytes()).map_err(|e| BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("Failed to find kernel symbol: {e}").into(),
+                            })?;
+                        let ptrs_raw: Vec<*mut std::ffi::c_void> = ptrs.iter().map(|p| (*p).cast::<std::ffi::c_void>()).collect();
+                        func(ptrs_raw.as_ptr(), ptrs_raw.len());
+                    }
+                }
+                Cmd::Copy { src, dst, dst_dtype, dst_dims, .. } => {
+                    if resolved.contains_key(dst) {
+                        continue;
+                    }
+                    let bytes = dst_dims.iter().map(|d| d.eval(vars)).fold(*dst_dtype, |a, b| a * b);
+                    debug_assert!(bytes >= 0, "C replay copied negative bytes");
+                    let chunk = pool.allocate(bytes)?;
+                    let src_ptr = {
+                        let src_placed = resolved.get(src).unwrap_or_else(|| panic!("C replay: copy src {src:?} is unplaced"));
+                        let [Shard::Device { pool: src_pool, chunk: src_chunk }] = &src_placed.shards[..] else {
+                            todo!("C replay copy of multi-shard or inline source placement")
+                        };
+                        debug_assert_eq!(*src_pool, Pool::Host, "C replay copy source is not host-resident");
+                        pool.get_buffer(*src_chunk).as_ptr()
+                    };
+                    let dst_ptr = pool.buffer_ptr_mut(chunk);
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, bytes as usize);
+                    }
+                    resolved.insert(*dst, Arc::new(Placement { shards: vec![Shard::Device { pool: Pool::Host, chunk }] }));
+                }
+                Cmd::Alias { class, to } => {
+                    let placed = resolved.get(to).unwrap_or_else(|| panic!("C replay: alias target {to:?} is unplaced")).clone();
+                    resolved.insert(*class, placed);
+                }
+            }
+            for dead in &self.deaths[idx] {
+                resolved.remove(dead);
+            }
+        }
+        Ok(())
+    }
 }
 
 fn device_with(config: &CConfig, debug_dev: bool) -> Result<&'static Mutex<CDevice>, BackendError> {
@@ -168,6 +264,51 @@ fn host_ptr(memory_pool: &mut super::host::HostMemoryPool, placement: &Placement
 }
 
 impl CDevice {
+    /// Schedule a command run for the C device: orders nothing (queue order
+    /// is program order), precomputes per-command death lists from the final
+    /// read of every slot. A slot dies at its last use unless pinned
+    /// (a plan output or read after this partition).
+    pub(crate) fn schedule(cmds: Vec<Cmd>, outputs: &Set<OpId>, live_out: Set<OpId>) -> CPartition {
+        let mut last_use: Map<OpId, usize> = Map::default();
+        for (idx, cmd) in cmds.iter().enumerate() {
+            for r in cmd.reads() {
+                last_use.insert(r, idx);
+            }
+        }
+        let mut pinned = outputs.clone();
+        pinned.extend(live_out);
+        let mut deaths: Vec<Vec<OpId>> = vec![Vec::new(); cmds.len()];
+        for (slot, idx) in last_use {
+            if !pinned.contains(&slot) {
+                deaths[idx].push(slot);
+            }
+        }
+        CPartition { cmds, deaths }
+    }
+
+    /// Host-pool copy: resolves both placements to host bytes and memcpys.
+    /// Executes cross-pool transfers into the host pool (and same-pool host
+    /// copies). Single-shard host placements only; anything else is later work.
+    pub fn copy(&self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
+        debug_assert!(bytes >= 0, "C copy of negative bytes");
+        let host = super::host::pool();
+        let mut pool = super::lock(Pool::Host, host);
+        let [Shard::Device { pool: src_pool, chunk: src_chunk }] = &src.shards[..] else {
+            todo!("C copy of multi-shard or inline source placement")
+        };
+        let [Shard::Device { pool: dst_pool, chunk: dst_chunk }] = &dst.shards[..] else {
+            todo!("C copy of multi-shard or inline destination placement")
+        };
+        debug_assert_eq!(*src_pool, Pool::Host, "C copy source is not host-resident");
+        debug_assert_eq!(*dst_pool, Pool::Host, "C copy destination is not host-resident");
+        let src_ptr = pool.get_buffer(*src_chunk).as_ptr();
+        let dst_ptr = pool.buffer_ptr_mut(*dst_chunk);
+        unsafe {
+            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, bytes as usize);
+        }
+        Ok(())
+    }
+
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.device_info.clone()
     }

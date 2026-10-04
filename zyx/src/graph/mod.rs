@@ -2275,6 +2275,7 @@ impl Runtime {
                                         queue.push(Cmd::Copy {
                                             src: OpId::from(0),
                                             dst: OpId::from(1),
+                                            src_pool: Pool::Host,
                                             dst_pool: pool_id,
                                             dst_dtype: 1,
                                             dst_dims: vec![PlanDim::Const(bytes_alloc)],
@@ -2530,6 +2531,7 @@ impl Runtime {
                         queue.push(Cmd::Copy {
                             src: to,
                             dst: class,
+                            src_pool: leaf_pools[&to],
                             dst_pool: *pool,
                             dst_dtype: dtype_size,
                             dst_dims: dims.clone(),
@@ -2574,7 +2576,18 @@ impl Runtime {
                     let pool = device.pool();
                     let class_of = graph.ops[nid].class_of;
                     let (dtype_size, dims) = alloc_spec(graph, class_of);
-                    queue.push(Cmd::Copy { src: x, dst: class_of, dst_pool: pool, dst_dtype: dtype_size, dst_dims: dims });
+                    queue.push(Cmd::Copy {
+                        src: x,
+                        dst: class_of,
+                        src_pool: store_pool
+                            .get(&x)
+                            .copied()
+                            .or_else(|| leaf_pools.get(&x).copied())
+                            .expect("compile_graph: ToDevice source class has no known pool"),
+                        dst_pool: pool,
+                        dst_dtype: dtype_size,
+                        dst_dims: dims,
+                    });
                 }
                 _ => unreachable!(),
             }
