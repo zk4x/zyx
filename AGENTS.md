@@ -56,7 +56,7 @@ cd zyx && cargo fmt
 
 ```
 zyx/           core tensor library (all the real work)
-  src/backend/   one file per backend (c, cuda, hip, opencl, vulkan, disk, host, dummy, tenstorrent, wgpu)
+  src/backend/   one file per backend (c, cuda, hip, opencl, vulkan, disk, host, tenstorrent, wgpu)
   src/graph/     the egraph + autograd + kernelizer + plan
   src/kernel/    kernel IR, codegen, and ALL optimization passes
   tests/         integration tests
@@ -97,7 +97,7 @@ The egraph lives in `src/graph/` and is **entirely OUTSIDE `src/kernel/`** — n
 ## Backends
 
 - Most backends are always compiled in, selected at runtime via config. **NEVER touch `~/.config/zyx/config.json`** (user-owned). Only `--features wgpu` and `--features tenstorrent` exist.
-- Defaults with no config: C on, Dummy off, CUDA/HIP/Vulkan/OpenCL try to init and silently skip if the driver is missing; HIP always tries (skipped only without `libamdhip64.so`). If all fail, tests print nothing.
+- Defaults with no config: C on, CUDA/HIP/Vulkan/OpenCL try to init and silently skip if the driver is missing; HIP always tries (skipped only without `libamdhip64.so`). If all fail, tests print nothing.
 
 ### HARDWARE SAFETY — the Tenstorrent board (READ BEFORE ANYTHING TT-RELATED)
 

@@ -50,16 +50,17 @@ impl DiskMemoryPool {
         self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes })
     }
 
-    /// Return the size in bytes of a disk-backed buffer.
-    pub fn buffer_bytes(&self, src: ChunkId) -> Dim {
-        self.buffers[src].bytes
-    }
-
     /// Read a slice of the file backing the buffer into host memory.
     /// Synchronous — the disk pool never defers work.
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
         let buffer = &self.buffers[src];
+        debug_assert!(
+            dst.len() as Dim <= buffer.bytes,
+            "disk read of {} bytes exceeds buffer extent of {} bytes",
+            dst.len(),
+            buffer.bytes
+        );
         let f = File::open(&buffer.path).unwrap();
         #[cfg(unix)]
         let result = f.read_exact_at(dst, buffer.offset_bytes);

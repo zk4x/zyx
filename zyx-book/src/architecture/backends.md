@@ -24,8 +24,6 @@ pub enum Dev {
     OpenCL(u16),
     /// WGPU device with the given index.
     WGPU(u16),        // feature = "wgpu"
-    /// Testing dummy device (config-gated).
-    Dummy,
 }
 ```
 
@@ -46,8 +44,6 @@ pub enum Pool {
     Vulkan(u16),
     TT(u16),          // feature = "tenstorrent"
     WGPU(u16),        // feature = "wgpu"
-    /// Testing dummy pool (config-gated).
-    Dummy,
 }
 ```
 
@@ -60,7 +56,7 @@ There is no upfront backend-initialization phase. `Dev::all()` triggers lazy ini
 ```rust,ignore
 impl Dev {
     pub fn all() -> Vec<Dev> {
-        // C, CBLAS, Dummy: single devices, included if init succeeds.
+        // C, CBLAS: single devices, included if init succeeds.
         // CUDA / TT / Vulkan / OpenCL / WGPU: one entry per detected device.
     }
 }
@@ -98,7 +94,6 @@ What is left for a backend is exactly the **non-searchable, non-SSA residue**: r
 | Vulkan | `vulkan.rs` | SPIR-V | Vulkan via `ash` crate |
 | WGPU | `wgpu.rs` | SPIR-V | WGPU (feature: `wgpu`) |
 | Tenstorrent | `tenstorrent.rs` | C++ RISC-V kernels | TT-Metalium (feature: `tenstorrent`) |
-| Dummy | `dummy.rs` | — | No hardware needed (fake device) |
 
 All backends except WGPU and Tenstorrent are compiled in by default; those two require `--features wgpu` / `--features tenstorrent`.
 

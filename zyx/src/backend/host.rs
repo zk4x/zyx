@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use super::{ChunkId, Pool};
+use super::ChunkId;
 use crate::{
     Set,
     error::{BackendError, ErrorStatus},
@@ -60,6 +60,20 @@ impl HostMemoryPool {
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        // Best-fit from the free list first (stable addresses across
+        // repeats — those bytes were already paid for); else fresh.
+        let best = self
+            .free_set
+            .iter()
+            .filter_map(|id| {
+                let len = self.buffers[*id].data.len() as Dim;
+                (len >= bytes).then_some((len, *id))
+            })
+            .min();
+        if let Some((_, id)) = best {
+            self.free_set.remove(&id);
+            return Ok(id);
+        }
         let bytes: usize = bytes
             .try_into()
             .map_err(|_| BackendError { status: ErrorStatus::MemoryAllocation, context: "allocation size too large".into() })?;
@@ -86,24 +100,6 @@ impl HostMemoryPool {
             }
         }
         ok
-    }
-
-    /// Scratch for queue intermediaries: reuses the smallest fitting free
-    /// buffer, else allocates fresh. Never fails on fragmentation.
-    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        let best = self
-            .free_set
-            .iter()
-            .filter_map(|id| {
-                let len = self.buffers[*id].data.len() as Dim;
-                (len >= bytes).then_some((len, *id))
-            })
-            .min();
-        if let Some((_, id)) = best {
-            self.free_set.remove(&id);
-            return Ok(id);
-        }
-        self.allocate(bytes)
     }
 
     /// Put single buffer into the free list

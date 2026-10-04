@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-450aa6e1.js";
+            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -190,7 +190,7 @@
         Tensor { id: self.id }
     }
 }</code></pre>
-<p>If we used <code>Arc</code> instead, we would still need <code>Mutex</code> for the <code>Runtime</code> — <code>Tensor(id, Arc&lt;Mutex&lt;Runtime&gt;&gt;)</code>. The current approach avoids the <code>Arc</code> overhead and keeps <code>Tensor</code> at 4 bytes. Since every tensor operation already locks the runtime to append a graph node, there’s no additional lock contention from reference counting.</p>
+<p>If we used <code>Arc</code> instead, we would still need <code>Mutex</code> for the <code>Runtime</code> — <code>Tensor(id, Arc&lt;Mutex&lt;Runtime&gt;&gt;)</code>. The current approach avoids the <code>Arc</code> overhead and keeps <code>Tensor</code> at 4 bytes. Since every tensor operation already locks the runtime to append a graph op, there’s no additional lock contention from reference counting.</p>
 <h3 id="execution"><a class="header" href="#execution">Execution</a></h3>
 <p>Outside a tape, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
@@ -202,7 +202,7 @@ let z = y.tanh();     // appended to same kernel
 // at some point the kernel compiles and executes
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>Inside a tape, operations build graph nodes lazily and execute when the tape is realized (dropping only cleans up graph state — no computation is performed). The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.</p>
+<p>Inside a tape, operations build graph ops lazily and execute when the tape is realized (dropping only cleans up graph state — no computation is performed). The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.</p>
 <h3 id="construction-methods"><a class="header" href="#construction-methods">Construction Methods</a></h3>
 <p>Tensors can be created from:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;

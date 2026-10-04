@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-450aa6e1.js";
+            window.path_to_searchindex_js = "searchindex-b6821f4c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-58fb2f25.js"></script>
@@ -177,7 +177,7 @@
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
 <p>This book documents the internals of zyx — a machine learning library and compiler.</p>
-<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> — but only inside a <code>Tape</code> scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a <code>Tape</code>, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~20 node types.</p>
+<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> — but only inside a <code>Tape</code> scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a <code>Tape</code>, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~20 op types.</p>
 <h2 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who This is For</a></h2>
 <p>This book is for developers who want to understand how zyx works under the hood: the architecture decisions, the optimization passes, the backend system, and how pieces fit together.</p>
 <h2 id="two-execution-modes"><a class="header" href="#two-execution-modes">Two Execution Modes</a></h2>
@@ -191,13 +191,13 @@
 </li>
 </ul>
 <h2 id="the-architecture-at-a-glance"><a class="header" href="#the-architecture-at-a-glance">The Architecture at a Glance</a></h2>
-<p>Every tensor operation creates a graph node. What happens next depends on the mode:</p>
+<p>Every tensor operation creates a graph op. What happens next depends on the mode:</p>
 <p><strong>Eager-ish (default) — direct fusion, no graph:</strong></p>
 <pre><code class="language-text">Tensor op ──► append to kernel ──► compile + execute (if fusion not possible)
 </code></pre>
 <p>Each op is appended directly to the kernel that produced its inputs. When a new op can’t fuse (different device, incompatible data flow), the pending kernel compiles and executes. No graph, no separate realize step.</p>
 <p><strong>Tape — lazy graph, egraph exploration:</strong></p>
-<pre><code class="language-text">Tensor op ──► graph node (accumulates) ──► Autograd (reverse-mode on same graph)
+<pre><code class="language-text">Tensor op ──► graph op (accumulates) ──► Autograd (reverse-mode on same graph)
                                   │
                                   ▼
                            Tape::realize()
@@ -209,7 +209,7 @@
                                   ▼
                     Kernel IR ──► Opt ──► Codegen ──► Execute
 </code></pre>
-<p>Inside a tape, graph nodes accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph nodes — the tape prevents their deletion so the backward pass can traverse them.</p>
+<p>Inside a tape, graph ops accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph ops — the tape prevents their deletion so the backward pass can traverse them.</p>
 <h2 id="why-this-design"><a class="header" href="#why-this-design">Why This Design</a></h2>
 <p>Most deep learning libraries use two separate graphs:</p>
 <ol>
@@ -218,7 +218,7 @@
 </ol>
 <p>Zyx uses <strong>one graph</strong> for both. This means:</p>
 <ul>
-<li>The autograd system doesn’t need its own graph infrastructure — it reuses the same nodes</li>
+<li>The autograd system doesn’t need its own graph infrastructure — it reuses the same ops</li>
 <li>Kernel fusion works across operation boundaries without special handling</li>
 <li>The implementation is debuggable (one graph to inspect, not two)</li>
 <li>Memory overhead is minimal: tensor handles are <code>u32</code> (4 bytes)</li>
@@ -244,9 +244,9 @@ let y = x.relu();
 let z = y * 2.0;
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>Outside a <code>Tape</code>, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes — no graph, no separate realize step. Inside a <code>Tape</code>, ops build graph nodes lazily. Either way, each operation returns a lightweight <code>Tensor</code> handle.</p>
+<p>Outside a <code>Tape</code>, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes — no graph, no separate realize step. Inside a <code>Tape</code>, ops build graph ops lazily. Either way, each operation returns a lightweight <code>Tensor</code> handle.</p>
 <h3 id="2-the-graph"><a class="header" href="#2-the-graph">2. The Graph</a></h3>
-<p>The graph opset was taken from tinygrad, with changes to make it even smaller. This is the minimal set of operations that can express ALL linear algebra operations and ALL PyTorch ops — by stacking these nodes:</p>
+<p>The graph opset was taken from tinygrad, with changes to make it even smaller. This is the minimal set of operations that can express ALL linear algebra operations and ALL PyTorch ops — by stacking these ops:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -254,7 +254,7 @@ let z = y * 2.0;
 </thead>
 <tbody>
 <tr><td><code>Const</code></td><td>A constant value baked into kernels</td></tr>
-<tr><td><code>Leaf</code></td><td>A tensor stored on device</td></tr>
+<tr><td><code>Param</code></td><td>A kernel parameter — one of the arguments passed to the compiled GPU kernel at launch</td></tr>
 <tr><td><code>Expand</code></td><td>Broadcast a dimension</td></tr>
 <tr><td><code>Permute</code></td><td>Transpose axes</td></tr>
 <tr><td><code>Reshape</code></td><td>Change shape without changing data</td></tr>
@@ -267,8 +267,7 @@ let z = y * 2.0;
 <tr><td><code>Bitcast</code></td><td>Reinterpret raw bits</td></tr>
 <tr><td><code>Unary</code></td><td>Element-wise: relu, exp, sin, etc.</td></tr>
 <tr><td><code>Binary</code></td><td>Element-wise: add, mul, etc.</td></tr>
-<tr><td><code>Assign</code></td><td>In-place update</td></tr>
-<tr><td><code>After</code></td><td>Ordering for side-effecting nodes</td></tr>
+<tr><td><code>After</code></td><td>Ordering for side-effecting ops</td></tr>
 <tr><td><code>ToDevice</code></td><td>Move data between devices</td></tr>
 <tr><td><code>Contiguous</code></td><td>Materialize a layout</td></tr>
 <tr><td><code>Kernel</code></td><td>A compiled kernel boundary</td></tr>
@@ -279,7 +278,7 @@ let z = y * 2.0;
 <p>Tensor handles are <code>u32</code> (4 bytes) into the slab. Still small enough that 10,000 handles cost ~40 kB.</p>
 <p>The graph is stored in a <code>Slab</code> — a dense array with free-list tracking. <code>TensorId</code> is a <code>u32</code> index into this slab, making tensor handles 4 bytes.</p>
 <h3 id="3-the-kernelizer"><a class="header" href="#3-the-kernelizer">3. The Kernelizer</a></h3>
-<p>The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when <code>Tape::realize()</code> is called (dropping only cleans up graph state). The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
+<p>The kernelizer fuses compatible graph ops into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when <code>Tape::realize()</code> is called (dropping only cleans up graph state). The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce op used by multiple downstream ops does not necessarily force a split. If two downstream ops are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
 <p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming “free” — they don’t create separate operations.</p>
 <h3 id="4-the-kernel-ir"><a class="header" href="#4-the-kernel-ir">4. The Kernel IR</a></h3>
 <p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). Each <code>OpNode</code> is <strong>32 bytes</strong> stored inline in the arena — no <code>Box</code>, no vtables, no indirection.</p>
@@ -308,7 +307,6 @@ let z = y * 2.0;
     Vulkan(VulkanDevice),
     WGPU(WGPUDevice),
     HIP(HIPDevice),
-    Dummy(DummyDevice),
     // Tenstorrent, etc.
 }</code></pre>
 <p>All backends are compiled into the library and selected at runtime.</p>
@@ -338,9 +336,9 @@ let z = y * 2.0;
 <li><strong>One graph for everything</strong> — autograd and computation share the same graph. No need to specify which tensors require gradients.</li>
 <li><strong>Symbolic dims everywhere</strong> — the eager path and the graph path BOTH work with symbolic dimensions, always. Every symbolic dim bottoms out in a <code>Param { Variable }</code> scalar (<code>IDX_T</code>) whose value lives in a backend pool’s variable slot, so any dim expression can be fully evaluated to a concrete constant at any time: walk the tree, fold <code>Const</code> leaves via <code>Constant::unary</code> / <code>Constant::binary</code>, and read variable slots at <code>Param { Variable }</code> leaves. Consumers must evaluate dims this way instead of fabricating placeholder values (<code>0</code>, <code>-1</code>, …) where evaluation can produce the real value.</li>
 <li><strong>Inline ops</strong> — all ops live in the arena as flat 32-byte entries. No <code>Box</code>, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.</li>
-<li><strong>Linear IR</strong> — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.</li>
+<li><strong>Linear IR</strong> — linked list of fixed-size ops. Optimizations traverse front-to-back or back-to-back.</li>
 <li><strong>Backend codegen is trivial</strong> — the hard work is in the IR-level optimization passes.</li>
-<li><strong>Tape-scoped lazy graph</strong> — ops inside a tape build graph nodes instead of executing eagerly. Enables egraph fusion, device allocation search, and plan caching across iterations.</li>
+<li><strong>Tape-scoped lazy graph</strong> — ops inside a tape build graph ops instead of executing eagerly. Enables egraph fusion, device allocation search, and plan caching across iterations.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-tensor"><a class="header" href="#the-tensor">The Tensor</a></h1>
@@ -359,7 +357,7 @@ let z = y * 2.0;
         Tensor { id: self.id }
     }
 }</code></pre>
-<p>If we used <code>Arc</code> instead, we would still need <code>Mutex</code> for the <code>Runtime</code> — <code>Tensor(id, Arc&lt;Mutex&lt;Runtime&gt;&gt;)</code>. The current approach avoids the <code>Arc</code> overhead and keeps <code>Tensor</code> at 4 bytes. Since every tensor operation already locks the runtime to append a graph node, there’s no additional lock contention from reference counting.</p>
+<p>If we used <code>Arc</code> instead, we would still need <code>Mutex</code> for the <code>Runtime</code> — <code>Tensor(id, Arc&lt;Mutex&lt;Runtime&gt;&gt;)</code>. The current approach avoids the <code>Arc</code> overhead and keeps <code>Tensor</code> at 4 bytes. Since every tensor operation already locks the runtime to append a graph op, there’s no additional lock contention from reference counting.</p>
 <h3 id="execution"><a class="header" href="#execution">Execution</a></h3>
 <p>Outside a tape, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
@@ -371,7 +369,7 @@ let z = y.tanh();     // appended to same kernel
 // at some point the kernel compiles and executes
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>Inside a tape, operations build graph nodes lazily and execute when the tape is realized (dropping only cleans up graph state — no computation is performed). The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.</p>
+<p>Inside a tape, operations build graph ops lazily and execute when the tape is realized (dropping only cleans up graph state — no computation is performed). The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.</p>
 <h3 id="construction-methods"><a class="header" href="#construction-methods">Construction Methods</a></h3>
 <p>Tensors can be created from:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
@@ -397,56 +395,55 @@ let x_plus_one = &amp;x + 1.0;  // new tensor, no mutation
 <p>This makes autograd simpler (no mutation to track) and eliminates backpropagation errors from in-place modifications.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-graph"><a class="header" href="#the-graph">The Graph</a></h1>
-<p>The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites and optimization. Inside a <code>Tape</code>, every operation builds a node in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.</p>
+<p>The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites and optimization. Inside a <code>Tape</code>, every operation builds an <code>Op</code> in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.</p>
 <h2 id="data-structure"><a class="header" href="#data-structure">Data Structure</a></h2>
 <p>The graph is stored in the <code>Runtime</code>:</p>
 <pre><code class="language-rust ignore">pub struct Graph {
-    hashcons: Map&lt;Node, NodeId&gt;,
-    nodes: Slab&lt;NodeId, NodeData&gt;,
-    classes: Slab&lt;ClassId, EClass&gt;,
-    ekernels: Slab&lt;EKernelId, EKernelData&gt;,
-    kernel_map: Map&lt;NodeId, EKernelId&gt;,
-    leaf_map: Map&lt;ClassId, TensorId&gt;,
-    rc: u32,
-    max_leaf_id: u32,
+    hashcons: Map&lt;Op, OpId&gt;,
+    ops: Slab&lt;OpId, OpNode&gt;,
+    jit_kernels: Slab&lt;JitKernelId, JitKernelData&gt;,
+    leaf_classes: Vec&lt;OpId&gt;,
+    leaf_map: Map&lt;OpId, TensorId&gt;,
+    ref_count: u64,
+    dead: bool,
+    max_cons_id: u32,
 }</code></pre>
-<p>The <code>hashcons</code> deduplicates structurally identical nodes — if the same operation on the same inputs already exists, the existing <code>NodeId</code> is reused. This provides CSE (common subexpression elimination) for free.</p>
-<p>Each <code>NodeId</code> maps to a <code>NodeData</code> entry in the <code>nodes</code> slab, and each node belongs to an equivalence <code>ClassId</code> in the <code>classes</code> slab. Equivalent forms of the same computation (e.g. different layouts of a matmul) live in the same class.</p>
-<h3 id="node-types"><a class="header" href="#node-types">Node Types</a></h3>
-<p>The graph opset is derived from tinygrad. By stacking these types, zyx can express ALL linear algebra operations and ALL PyTorch ops:</p>
-<pre><code class="language-rust ignore">enum Node {
+<p>The <code>hashcons</code> deduplicates structurally identical ops — if the same operation on the same inputs already exists, the existing <code>OpId</code> is reused. This provides CSE (common subexpression elimination) for free.</p>
+<p>Each <code>OpId</code> maps to an <code>OpNode</code> entry in the <code>ops</code> slab. Each op belongs to an equivalence class identified by its <code>class_of</code> field (the root <code>OpId</code> of the class). Equivalent forms of the same computation (e.g. different layouts of a matmul) live in the same class.</p>
+<h3 id="op-types"><a class="header" href="#op-types">Op Types</a></h3>
+<p>The graph opset is derived from tinygrad. By stacking these variants, zyx can express ALL linear algebra operations and ALL PyTorch ops:</p>
+<pre><code class="language-rust ignore">enum Op {
     Const(Constant),
-    Leaf { cons_id: u32, dtype: DType, shape: ClassId },
-    Expand { x: ClassId, shape: ClassId },
-    Permute { x: ClassId, axes: Box&lt;[UAxis]&gt; },
-    Reshape { x: ClassId, shape: ClassId },
-    Pad { x: ClassId, axis: UAxis, lp: ClassId, len: ClassId },
-    Flip { x: ClassId, axes: Box&lt;[UAxis]&gt; },
-    Narrow { x: ClassId, axis: UAxis, start: ClassId, len: ClassId },
-    Stack { ops: Box&lt;[ClassId]&gt; },
-    Reduce { x: ClassId, rop: BOp, axes: Box&lt;[UAxis]&gt; },
-    Cast { x: ClassId, dtype: DType },
-    Bitcast { x: ClassId, dtype: DType },
-    Unary { x: ClassId, uop: UOp },
-    Binary { x: ClassId, y: ClassId, bop: BOp },
-    Assign { dst: ClassId, src: ClassId },
-    After { x: ClassId, dep: ClassId },
-    ToDevice { x: ClassId, device: Dev, time: u64 },
-    Contiguous { x: ClassId },
-    Kernel { inputs: Box&lt;[ClassId]&gt;, outputs: Box&lt;[ClassId]&gt;, program_id: ProgramId, time: u64 },
-    Custom { inputs: Box&lt;[ClassId]&gt;, outputs: Box&lt;[(ClassId, ClassId, DType)]&gt;, /* ... */ },
+    Param { dtype: DType, kind: ParamKind, shape: OpId, cons_id: u32 },
+    Reshape { x: OpId, shape: OpId },
+    Expand { x: OpId, shape: OpId },
+    Permute { x: OpId, axes: TinyVec&lt;UAxis&gt; },
+    Pad { x: OpId, axis: UAxis, lp: OpId, len: OpId },
+    Flip { x: OpId, axes: TinyVec&lt;UAxis&gt; },
+    Narrow { x: OpId, axis: UAxis, start: OpId, len: OpId },
+    Stack { ops: Box&lt;[OpId]&gt; },
+    Reduce { x: OpId, rop: BOp, reduce_axis: OpId },
+    Cast { x: OpId, dtype: DType },
+    Bitcast { x: OpId, dtype: DType },
+    Unary { x: OpId, uop: UOp },
+    Binary { x: OpId, y: OpId, bop: BOp },
+    After { x: OpId, dep: OpId },
+    ToDevice { x: OpId, device: Dev, time: u64 },
+    Contiguous { x: OpId },
+    Kernel { inputs: OpId, outputs: OpId, info: Box&lt;(ProgramId, u64)&gt; },
+    Custom(Box&lt;CustomKernel&gt;),
 }</code></pre>
-<p>All inputs reference <code>ClassId</code> rather than <code>TensorId</code> — nodes operate on equivalence classes, not specific tensors. View nodes (<code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code>) are per-axis and stackable; <code>Stack</code> builds vectors; <code>Bitcast</code> reinterprets bits without value conversion; <code>Assign</code> models in-place updates; <code>After</code> orders side-effecting nodes; <code>Contiguous</code> materializes a layout; <code>Custom</code> wraps opaque custom kernels.</p>
+<p>All inputs reference <code>OpId</code> rather than <code>TensorId</code> — ops operate on equivalence classes, not specific tensors. View ops (<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code>) are per-axis and stackable; <code>Stack</code> builds vectors; <code>Bitcast</code> reinterprets bits without value conversion; <code>After</code> orders side-effecting ops; <code>Contiguous</code> materializes a layout; <code>Custom</code> wraps opaque custom kernels.</p>
 <h2 id="lifecycle-with-tape"><a class="header" href="#lifecycle-with-tape">Lifecycle with Tape</a></h2>
 <p>There is no graph outside a tape — ops are fused directly into kernels.</p>
-<p>Inside a tape, nodes accumulate until <code>Tape::realize()</code> or drop. The graph supports rewrites that produce equivalent forms of a computation:</p>
+<p>Inside a tape, ops accumulate until <code>Tape::realize()</code> or drop. The graph supports rewrites that produce equivalent forms of a computation:</p>
 <ul>
 <li><strong>CSE</strong> via hashconsing</li>
 <li><strong>Algebraic rewrites</strong> like transpose fusion</li>
 <li><strong>Layout rewrites</strong>: matmul can be realized as transposed or un-transposed</li>
 <li><strong>Shape rewrites</strong>: reshape and padding can be fused or split</li>
 </ul>
-<p>There is no cost model: each fusion variant is individually autotuned, and <code>Graph::extract</code> picks by measured timing. Realized nodes that the tape references are preserved for autograd; unreferenced nodes are released.</p>
+<p>There is no cost model: each fusion variant is individually autotuned, and <code>Graph::extract</code> picks by measured timing. Realized ops that the tape references are preserved for autograd; unreferenced ops are released.</p>
 <h2 id="graph-size"><a class="header" href="#graph-size">Graph Size</a></h2>
 <p>The graph is designed to stay small. Tensor handles are <code>u32</code> (4 bytes), so 10,000 handles cost ~40 kB. When the tape is dropped, the graph shrinks back to baseline.</p>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -463,16 +460,16 @@ let z = y * 2.0;
 tape.realize([&amp;z])?;
 // kernelizer runs → optimizes → executes</code></pre>
 <h2 id="fusion-logic"><a class="header" href="#fusion-logic">Fusion Logic</a></h2>
-<p>In tape mode, the kernelizer processes graph nodes <strong>bottom-up</strong> in topological order. Each graph node type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.</p>
-<h3 id="per-node-type-behavior"><a class="header" href="#per-node-type-behavior">Per-Node Type Behavior</a></h3>
+<p>In tape mode, the kernelizer processes graph ops <strong>bottom-up</strong> in topological order. Each graph op type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.</p>
+<h3 id="per-op-type-behavior"><a class="header" href="#per-op-type-behavior">Per-Op Type Behavior</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Graph Node</th><th>Kernel Decision</th></tr>
+<tr><th>Graph Op</th><th>Kernel Decision</th></tr>
 </thead>
 <tbody>
 <tr><td><code>Unary</code>, <code>Cast</code></td><td>Always fuse — add op to the input’s kernel</td></tr>
-<tr><td><code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code></td><td>Add <code>Move</code> op to the input’s kernel (free after unfolding)</td></tr>
+<tr><td><code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code></td><td>Fused into the input’s kernel (unfolded to index arithmetic)</td></tr>
 <tr><td><code>Binary</code></td><td>Merge both input kernels into one</td></tr>
 <tr><td><code>Reduce</code></td><td>Add reduce op to the input’s kernel</td></tr>
 <tr><td><code>Const</code></td><td>Create a new kernel with a constant</td></tr>
@@ -500,24 +497,21 @@ tape.realize([&amp;z])?;
     graph: &amp;'a Graph,
     // ...
 }</code></pre>
-<p>The <code>visited</code> map tracks which graph nodes have been converted to kernel ops. When a graph node is already in <code>visited</code>, the kernelizer uses the existing kernel result instead of recomputing — this is how shared subgraphs are handled.</p>
+<p>The <code>visited</code> map tracks which graph ops have been converted to kernel ops. When a graph op is already in <code>visited</code>, the kernelizer uses the existing kernel result instead of recomputing — this is how shared subgraphs are handled.</p>
 <h2 id="building-kernel-ops"><a class="header" href="#building-kernel-ops">Building Kernel Ops</a></h2>
-<p>Each graph node type maps to kernel IR operations:</p>
+<p>Each graph op type maps to kernel IR operations:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Graph Node</th><th>Kernel IR</th></tr>
+<tr><th>Graph Op</th><th>Kernel IR</th></tr>
 </thead>
 <tbody>
 <tr><td><code>Const</code></td><td><code>Op::Const</code></td></tr>
-<tr><td><code>Leaf</code></td><td><code>Op::Define</code> (global memory)</td></tr>
+<tr><td><code>Param</code></td><td><code>Op::Param</code> (global memory)</td></tr>
 <tr><td><code>Unary</code></td><td><code>Op::Unary</code></td></tr>
 <tr><td><code>Binary</code></td><td><code>Op::Binary</code> or <code>Op::Mad</code></td></tr>
 <tr><td><code>Reduce</code></td><td><code>Op::Reduce</code></td></tr>
-<tr><td><code>Reshape</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
-<tr><td><code>Expand</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
-<tr><td><code>Permute</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
-<tr><td><code>Pad</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
+<tr><td><code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Flip</code>, <code>Pad</code>, <code>Narrow</code></td><td>View ops folded into <code>Load</code>/<code>Store</code> index arithmetic</td></tr>
 </tbody>
 </table>
 </div>
@@ -545,7 +539,7 @@ pub struct OpNode {
 }</code></pre>
 <p>The <code>Slab&lt;OpId, OpNode&gt;</code> is a <code>Vec&lt;OpNode&gt;</code> with a free-list. <code>OpId</code> is a <code>u32</code> index — random access is O(1).</p>
 <h2 id="unfolding"><a class="header" href="#unfolding">Unfolding</a></h2>
-<p>Before any optimization passes run, the kernel IR is <strong>unfolded</strong> — <code>LoadView</code>, <code>StoreView</code>, and <code>Move</code> ops are converted to direct index arithmetic (<code>Load</code>, <code>Store</code> with computed indices). After unfolding, all ops are fixed-size inline entries in the arena — no <code>Box</code>, no vtables, no per-op indirection.</p>
+<p>Before linearization, view ops (<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Flip</code>, <code>Pad</code>, <code>Narrow</code>) are represented directly as <code>Op</code> variants. They are unfolded into index arithmetic during the linearization pass — after unfolding, all ops are fixed-size inline entries in the arena — no <code>Box</code>, no vtables, no per-op indirection.</p>
 <p>The IR is in SSA form, except for <code>Loop</code>, <code>If</code>, and <code>Define</code> ops (which can carry mutable state).</p>
 <h2 id="op-variants"><a class="header" href="#op-variants">Op Variants</a></h2>
 <h3 id="parameters"><a class="header" href="#parameters">Parameters</a></h3>
@@ -583,9 +577,14 @@ Op::TransposeTile { x, .. }
 Op::BroadcastTile { x, .. }</code></pre>
 <h3 id="backend-specific"><a class="header" href="#backend-specific">Backend-Specific</a></h3>
 <pre><code class="language-rust ignore">Op::Asm { .. }  // inline assembly for backends with JIT asm (e.g. Tenstorrent)</code></pre>
-<h3 id="view-before-unfolding"><a class="header" href="#view-before-unfolding">View (before unfolding)</a></h3>
-<pre><code class="language-rust ignore">Op::Move { x: OpId, mop: Box&lt;MoveOp&gt; }
-Op::Reduce { x: OpId, rop, n_axes }</code></pre>
+<h3 id="view-ops"><a class="header" href="#view-ops">View Ops</a></h3>
+<pre><code class="language-rust ignore">Op::Reshape { x: OpId, shape: OpId }
+Op::Expand { x: OpId, shape: OpId }
+Op::Permute { x: OpId, axes: TinyVec&lt;UAxis&gt; }
+Op::Flip { x: OpId, axes: TinyVec&lt;UAxis&gt; }
+Op::Pad { x: OpId, axis: UAxis, lp: OpId, len: OpId }
+Op::Narrow { x: OpId, axis: UAxis, start: OpId, len: OpId }
+Op::Reduce { x: OpId, rop: BOp, reduce_axis: OpId }</code></pre>
 <h2 id="memory-layouts-and-scopes"><a class="header" href="#memory-layouts-and-scopes">Memory Layouts and Scopes</a></h2>
 <pre><code class="language-rust ignore">pub enum MemLayout {
     Scalar,
@@ -722,8 +721,6 @@ r19: i32 = r18[r1]  // 0..=3 load
     OpenCL(u16),
     /// WGPU device with the given index.
     WGPU(u16),        // feature = "wgpu"
-    /// Testing dummy device (config-gated).
-    Dummy,
 }</code></pre>
 <p>Trait objects would require downcasting to reach backend-specific functionality; the enum makes every method an exhaustive match instead. <code>Dev::Auto</code> is the scheduling placeholder — it is resolved by the scheduler before placement, so the device API never sees it. The <code>panic!</code> arms for <code>Auto</code> in methods like <code>info()</code> and <code>free_compute()</code> are guards on that invariant, not behavior; and the device’s memory pool is always derived from the device via <code>Dev::pool()</code> — never the reverse.</p>
 <h2 id="pool--memory"><a class="header" href="#pool--memory"><code>Pool</code> — Memory</a></h2>
@@ -738,15 +735,13 @@ r19: i32 = r18[r1]  // 0..=3 load
     Vulkan(u16),
     TT(u16),          // feature = "tenstorrent"
     WGPU(u16),        // feature = "wgpu"
-    /// Testing dummy pool (config-gated).
-    Dummy,
 }</code></pre>
 <p>Each variant owns its globals — one <code>Mutex&lt;pool&gt;</code> per ordinal (<code>Host</code> is a <code>OnceLock&lt;Mutex&lt;_&gt;&gt;</code>, <code>Disk</code> is a const <code>Mutex</code> with no <code>OnceLock</code> at all, the rest are <code>OnceLock&lt;Vec&lt;Mutex&lt;_&gt;&gt;&gt;</code> with one <code>Mutex&lt;()&gt;</code> per backend serializing first construction where it matters — cheap backends have no init lock). All globals live at the top of each <code>backend/*.rs</code> file, so the process-wide state is visible before any logic. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.</p>
 <h2 id="lazy-initialization"><a class="header" href="#lazy-initialization">Lazy Initialization</a></h2>
 <p>There is no upfront backend-initialization phase. <code>Dev::all()</code> triggers lazy init of every backend; backends that are configured out, whose driver is missing, or whose hardware is absent contribute nothing to the returned list. This keeps startup free and makes device discovery idempotent:</p>
 <pre><code class="language-rust ignore">impl Dev {
     pub fn all() -&gt; Vec&lt;Dev&gt; {
-        // C, CBLAS, Dummy: single devices, included if init succeeds.
+        // C, CBLAS: single devices, included if init succeeds.
         // CUDA / TT / Vulkan / OpenCL / WGPU: one entry per detected device.
     }
 }</code></pre>
@@ -775,7 +770,6 @@ pub fn launch_timed(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -
 <tr><td>Vulkan</td><td><code>vulkan.rs</code></td><td>SPIR-V</td><td>Vulkan via <code>ash</code> crate</td></tr>
 <tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>SPIR-V</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
 <tr><td>Tenstorrent</td><td><code>tenstorrent.rs</code></td><td>C++ RISC-V kernels</td><td>TT-Metalium (feature: <code>tenstorrent</code>)</td></tr>
-<tr><td>Dummy</td><td><code>dummy.rs</code></td><td>—</td><td>No hardware needed (fake device)</td></tr>
 </tbody>
 </table>
 </div>
@@ -855,7 +849,7 @@ pub fn launch_timed(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -
 <h1 id="autograd"><a class="header" href="#autograd">Autograd</a></h1>
 <p>Zyx implements automatic differentiation through an explicit <code>Tape</code>. Unlike other frameworks, there is no separate autograd graph — it uses the <strong>same graph</strong> as computation.</p>
 <h2 id="the-key-insight"><a class="header" href="#the-key-insight">The Key Insight</a></h2>
-<p>In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx’s tape keeps all graph nodes alive until <code>realize()</code> or drop, and simply prevents their deletion until gradients are computed.</p>
+<p>In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx’s tape keeps all graph ops alive until <code>realize()</code> or drop, and simply prevents their deletion until gradients are computed.</p>
 <h2 id="tape-api"><a class="header" href="#tape-api">Tape API</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
 </span><span class="boring">use zyx::{DType, Tape, Tensor, ZyxError};
@@ -896,10 +890,10 @@ let h = tape.gradient(&amp;g[0], vec![&amp;x]);  // second derivative</code></pr
 <li><strong>No separate backward graph</strong> — backward ops live in the same graph as forward ops, so they get the same treatment: CSE, fusion, and kernel caching apply to backward code for free.</li>
 <li><strong>Gradients are first-class tensors</strong> — they can feed further computation, be stored, or be differentiated again.</li>
 <li><strong>Nothing is snapshotted or frozen</strong> — since the transform only appends, the tape needs no copy of the forward graph and no special “backward mode”.</li>
-<li><strong>Memory behavior is uniform</strong> — graph nodes accumulate until <code>realize()</code> or drop, whether they came from forward ops or backward ops.</li>
+<li><strong>Memory behavior is uniform</strong> — graph ops accumulate until <code>realize()</code> or drop, whether they came from forward ops or backward ops.</li>
 </ul>
 <h2 id="memory-efficiency"><a class="header" href="#memory-efficiency">Memory Efficiency</a></h2>
-<p>Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only <code>TensorId</code> values — not the actual data. When the tape is dropped, all tape-preserved nodes are released.</p>
+<p>Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only <code>TensorId</code> values — not the actual data. When the tape is dropped, all tape-preserved ops are released.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-system"><a class="header" href="#module-system">Module System</a></h1>
 <p>The module system provides a way to group tensors (parameters) into neural network layers. It’s defined by the <code>Module</code> trait and powered by <code>#[derive(Module)]</code>.</p>
@@ -1014,7 +1008,6 @@ model.set_params(&amp;mut params);</code></pre>
 <tr><td><code>"c": { "enabled": true }</code></td><td>Enable CPU backend (off by default)</td></tr>
 <tr><td><code>"cuda": { "device_ids": [] }</code></td><td>Disable all CUDA devices</td></tr>
 <tr><td><code>"opencl": { "platform_ids": [] }</code></td><td>Disable all OpenCL</td></tr>
-<tr><td><code>"dummy": { "enabled": true }</code></td><td>Enable dummy backend</td></tr>
 </tbody>
 </table>
 </div>

@@ -300,7 +300,7 @@ impl CDevice {
                     std::ptr::copy_nonoverlapping(staging.as_ptr(), dst_ptr, bytes as usize);
                 }
             }
-            Pool::Cuda(_) | Pool::OpenCL(_) | Pool::Vulkan(_) | Pool::Dummy => {
+            Pool::Cuda(_) | Pool::OpenCL(_) | Pool::Vulkan(_) => {
                 todo!("C copy from {:?}", src_shard.pool)
             }
             #[cfg(feature = "tenstorrent")]

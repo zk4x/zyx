@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-450aa6e1.js";
+            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -175,56 +175,55 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-graph"><a class="header" href="#the-graph">The Graph</a></h1>
-<p>The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites and optimization. Inside a <code>Tape</code>, every operation builds a node in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.</p>
+<p>The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites and optimization. Inside a <code>Tape</code>, every operation builds an <code>Op</code> in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.</p>
 <h2 id="data-structure"><a class="header" href="#data-structure">Data Structure</a></h2>
 <p>The graph is stored in the <code>Runtime</code>:</p>
 <pre><code class="language-rust ignore">pub struct Graph {
-    hashcons: Map&lt;Node, NodeId&gt;,
-    nodes: Slab&lt;NodeId, NodeData&gt;,
-    classes: Slab&lt;ClassId, EClass&gt;,
-    ekernels: Slab&lt;EKernelId, EKernelData&gt;,
-    kernel_map: Map&lt;NodeId, EKernelId&gt;,
-    leaf_map: Map&lt;ClassId, TensorId&gt;,
-    rc: u32,
-    max_leaf_id: u32,
+    hashcons: Map&lt;Op, OpId&gt;,
+    ops: Slab&lt;OpId, OpNode&gt;,
+    jit_kernels: Slab&lt;JitKernelId, JitKernelData&gt;,
+    leaf_classes: Vec&lt;OpId&gt;,
+    leaf_map: Map&lt;OpId, TensorId&gt;,
+    ref_count: u64,
+    dead: bool,
+    max_cons_id: u32,
 }</code></pre>
-<p>The <code>hashcons</code> deduplicates structurally identical nodes — if the same operation on the same inputs already exists, the existing <code>NodeId</code> is reused. This provides CSE (common subexpression elimination) for free.</p>
-<p>Each <code>NodeId</code> maps to a <code>NodeData</code> entry in the <code>nodes</code> slab, and each node belongs to an equivalence <code>ClassId</code> in the <code>classes</code> slab. Equivalent forms of the same computation (e.g. different layouts of a matmul) live in the same class.</p>
-<h3 id="node-types"><a class="header" href="#node-types">Node Types</a></h3>
-<p>The graph opset is derived from tinygrad. By stacking these types, zyx can express ALL linear algebra operations and ALL PyTorch ops:</p>
-<pre><code class="language-rust ignore">enum Node {
+<p>The <code>hashcons</code> deduplicates structurally identical ops — if the same operation on the same inputs already exists, the existing <code>OpId</code> is reused. This provides CSE (common subexpression elimination) for free.</p>
+<p>Each <code>OpId</code> maps to an <code>OpNode</code> entry in the <code>ops</code> slab. Each op belongs to an equivalence class identified by its <code>class_of</code> field (the root <code>OpId</code> of the class). Equivalent forms of the same computation (e.g. different layouts of a matmul) live in the same class.</p>
+<h3 id="op-types"><a class="header" href="#op-types">Op Types</a></h3>
+<p>The graph opset is derived from tinygrad. By stacking these variants, zyx can express ALL linear algebra operations and ALL PyTorch ops:</p>
+<pre><code class="language-rust ignore">enum Op {
     Const(Constant),
-    Leaf { cons_id: u32, dtype: DType, shape: ClassId },
-    Expand { x: ClassId, shape: ClassId },
-    Permute { x: ClassId, axes: Box&lt;[UAxis]&gt; },
-    Reshape { x: ClassId, shape: ClassId },
-    Pad { x: ClassId, axis: UAxis, lp: ClassId, len: ClassId },
-    Flip { x: ClassId, axes: Box&lt;[UAxis]&gt; },
-    Narrow { x: ClassId, axis: UAxis, start: ClassId, len: ClassId },
-    Stack { ops: Box&lt;[ClassId]&gt; },
-    Reduce { x: ClassId, rop: BOp, axes: Box&lt;[UAxis]&gt; },
-    Cast { x: ClassId, dtype: DType },
-    Bitcast { x: ClassId, dtype: DType },
-    Unary { x: ClassId, uop: UOp },
-    Binary { x: ClassId, y: ClassId, bop: BOp },
-    Assign { dst: ClassId, src: ClassId },
-    After { x: ClassId, dep: ClassId },
-    ToDevice { x: ClassId, device: Dev, time: u64 },
-    Contiguous { x: ClassId },
-    Kernel { inputs: Box&lt;[ClassId]&gt;, outputs: Box&lt;[ClassId]&gt;, program_id: ProgramId, time: u64 },
-    Custom { inputs: Box&lt;[ClassId]&gt;, outputs: Box&lt;[(ClassId, ClassId, DType)]&gt;, /* ... */ },
+    Param { dtype: DType, kind: ParamKind, shape: OpId, cons_id: u32 },
+    Reshape { x: OpId, shape: OpId },
+    Expand { x: OpId, shape: OpId },
+    Permute { x: OpId, axes: TinyVec&lt;UAxis&gt; },
+    Pad { x: OpId, axis: UAxis, lp: OpId, len: OpId },
+    Flip { x: OpId, axes: TinyVec&lt;UAxis&gt; },
+    Narrow { x: OpId, axis: UAxis, start: OpId, len: OpId },
+    Stack { ops: Box&lt;[OpId]&gt; },
+    Reduce { x: OpId, rop: BOp, reduce_axis: OpId },
+    Cast { x: OpId, dtype: DType },
+    Bitcast { x: OpId, dtype: DType },
+    Unary { x: OpId, uop: UOp },
+    Binary { x: OpId, y: OpId, bop: BOp },
+    After { x: OpId, dep: OpId },
+    ToDevice { x: OpId, device: Dev, time: u64 },
+    Contiguous { x: OpId },
+    Kernel { inputs: OpId, outputs: OpId, info: Box&lt;(ProgramId, u64)&gt; },
+    Custom(Box&lt;CustomKernel&gt;),
 }</code></pre>
-<p>All inputs reference <code>ClassId</code> rather than <code>TensorId</code> — nodes operate on equivalence classes, not specific tensors. View nodes (<code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code>) are per-axis and stackable; <code>Stack</code> builds vectors; <code>Bitcast</code> reinterprets bits without value conversion; <code>Assign</code> models in-place updates; <code>After</code> orders side-effecting nodes; <code>Contiguous</code> materializes a layout; <code>Custom</code> wraps opaque custom kernels.</p>
+<p>All inputs reference <code>OpId</code> rather than <code>TensorId</code> — ops operate on equivalence classes, not specific tensors. View ops (<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code>) are per-axis and stackable; <code>Stack</code> builds vectors; <code>Bitcast</code> reinterprets bits without value conversion; <code>After</code> orders side-effecting ops; <code>Contiguous</code> materializes a layout; <code>Custom</code> wraps opaque custom kernels.</p>
 <h2 id="lifecycle-with-tape"><a class="header" href="#lifecycle-with-tape">Lifecycle with Tape</a></h2>
 <p>There is no graph outside a tape — ops are fused directly into kernels.</p>
-<p>Inside a tape, nodes accumulate until <code>Tape::realize()</code> or drop. The graph supports rewrites that produce equivalent forms of a computation:</p>
+<p>Inside a tape, ops accumulate until <code>Tape::realize()</code> or drop. The graph supports rewrites that produce equivalent forms of a computation:</p>
 <ul>
 <li><strong>CSE</strong> via hashconsing</li>
 <li><strong>Algebraic rewrites</strong> like transpose fusion</li>
 <li><strong>Layout rewrites</strong>: matmul can be realized as transposed or un-transposed</li>
 <li><strong>Shape rewrites</strong>: reshape and padding can be fused or split</li>
 </ul>
-<p>There is no cost model: each fusion variant is individually autotuned, and <code>Graph::extract</code> picks by measured timing. Realized nodes that the tape references are preserved for autograd; unreferenced nodes are released.</p>
+<p>There is no cost model: each fusion variant is individually autotuned, and <code>Graph::extract</code> picks by measured timing. Realized ops that the tape references are preserved for autograd; unreferenced ops are released.</p>
 <h2 id="graph-size"><a class="header" href="#graph-size">Graph Size</a></h2>
 <p>The graph is designed to stay small. Tensor handles are <code>u32</code> (4 bytes), so 10,000 handles cost ~40 kB. When the tape is dropped, the graph shrinks back to baseline.</p>
 

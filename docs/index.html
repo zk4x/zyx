@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-450aa6e1.js";
+            window.path_to_searchindex_js = "searchindex-b6821f4c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-58fb2f25.js"></script>
@@ -176,7 +176,7 @@
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
 <p>This book documents the internals of zyx — a machine learning library and compiler.</p>
-<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> — but only inside a <code>Tape</code> scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a <code>Tape</code>, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~20 node types.</p>
+<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> — but only inside a <code>Tape</code> scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a <code>Tape</code>, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~20 op types.</p>
 <h2 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who This is For</a></h2>
 <p>This book is for developers who want to understand how zyx works under the hood: the architecture decisions, the optimization passes, the backend system, and how pieces fit together.</p>
 <h2 id="two-execution-modes"><a class="header" href="#two-execution-modes">Two Execution Modes</a></h2>
@@ -190,13 +190,13 @@
 </li>
 </ul>
 <h2 id="the-architecture-at-a-glance"><a class="header" href="#the-architecture-at-a-glance">The Architecture at a Glance</a></h2>
-<p>Every tensor operation creates a graph node. What happens next depends on the mode:</p>
+<p>Every tensor operation creates a graph op. What happens next depends on the mode:</p>
 <p><strong>Eager-ish (default) — direct fusion, no graph:</strong></p>
 <pre><code class="language-text">Tensor op ──► append to kernel ──► compile + execute (if fusion not possible)
 </code></pre>
 <p>Each op is appended directly to the kernel that produced its inputs. When a new op can’t fuse (different device, incompatible data flow), the pending kernel compiles and executes. No graph, no separate realize step.</p>
 <p><strong>Tape — lazy graph, egraph exploration:</strong></p>
-<pre><code class="language-text">Tensor op ──► graph node (accumulates) ──► Autograd (reverse-mode on same graph)
+<pre><code class="language-text">Tensor op ──► graph op (accumulates) ──► Autograd (reverse-mode on same graph)
                                   │
                                   ▼
                            Tape::realize()
@@ -208,7 +208,7 @@
                                   ▼
                     Kernel IR ──► Opt ──► Codegen ──► Execute
 </code></pre>
-<p>Inside a tape, graph nodes accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph nodes — the tape prevents their deletion so the backward pass can traverse them.</p>
+<p>Inside a tape, graph ops accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph ops — the tape prevents their deletion so the backward pass can traverse them.</p>
 <h2 id="why-this-design"><a class="header" href="#why-this-design">Why This Design</a></h2>
 <p>Most deep learning libraries use two separate graphs:</p>
 <ol>
@@ -217,7 +217,7 @@
 </ol>
 <p>Zyx uses <strong>one graph</strong> for both. This means:</p>
 <ul>
-<li>The autograd system doesn’t need its own graph infrastructure — it reuses the same nodes</li>
+<li>The autograd system doesn’t need its own graph infrastructure — it reuses the same ops</li>
 <li>Kernel fusion works across operation boundaries without special handling</li>
 <li>The implementation is debuggable (one graph to inspect, not two)</li>
 <li>Memory overhead is minimal: tensor handles are <code>u32</code> (4 bytes)</li>

@@ -408,11 +408,6 @@ enum VulkanCommand {
         buffer_ids: Set<ChunkId>,
         reply: Sender<Result<bool, BackendError>>,
     },
-    /// Smallest fitting free buffer, else a fresh allocation.
-    AllocateScratch {
-        bytes: Dim,
-        reply: Sender<Result<ChunkId, BackendError>>,
-    },
     /// Async copy into this pool's buffer (host-mapped memcpy on the worker,
     /// ordered against pending/in-flight GPU work). The worker releases the
     /// source buffer back to its own pool once the copy is done.
@@ -550,13 +545,6 @@ impl VulkanMemoryPool {
         let (reply, reply_rx) = channel();
         self.tx.send(VulkanCommand::TryReuse { buffer_ids: buffer_ids.clone(), reply }).unwrap();
         reply_rx.recv().unwrap().unwrap_or(false)
-    }
-    /// Scratch for queue intermediaries: reuses the smallest fitting free
-    /// buffer, else allocates fresh. Never fails on fragmentation.
-    pub(super) fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        let (reply, reply_rx) = channel();
-        self.tx.send(VulkanCommand::AllocateScratch { bytes, reply }).unwrap();
-        reply_rx.recv().unwrap()
     }
     /// Blocking read-back (sync point).
     pub(super) fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
@@ -1559,7 +1547,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
 
                 let mut buffers: Slab<ChunkId, VulkanBuffer> = Slab::new();
                 // Free-list ids for stable-address reuse (`Release`
-                // inserts, `TryReuse`/`AllocateScratch` claim, `Dispose`
+                // inserts, `TryReuse`/`Allocate` claim, `Dispose`
                 // frees). Slab entries stay so ChunkIds are monotonic and
                 // never alias a different buffer.
                 let mut free_set: Set<ChunkId> = Set::default();
@@ -1669,6 +1657,20 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                     );
                     match cmd {
                         VulkanCommand::Allocate { bytes, reply } => {
+                            // Best-fit from the free list first (stable
+                            // addresses across repeats); else fresh.
+                            let best = free_set
+                                .iter()
+                                .filter_map(|id| {
+                                    let len = buffers[*id].bytes;
+                                    (len >= bytes as usize).then_some((len, *id))
+                                })
+                                .min();
+                            if let Some((_, id)) = best {
+                                free_set.remove(&id);
+                                let _ = reply.send(Ok(id));
+                                continue;
+                            }
                             let size = (bytes + 3) & !3;
                             let (buf, mem, ptr) = send_or_continue!(create_buffer(size as u64), reply);
                             let id = buffers.push(VulkanBuffer { buf, mem, ptr, bytes: bytes as usize });
@@ -1754,28 +1756,6 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 }
                             }
                             let _ = reply.send(Ok(ok));
-                        }
-                        VulkanCommand::AllocateScratch { bytes, reply } => {
-                            // Smallest fitting free buffer wins; never fails
-                            // on fragmentation — falls back to a fresh
-                            // allocation.
-                            let best = free_set
-                                .iter()
-                                .filter_map(|id| {
-                                    let len = buffers[*id].bytes;
-                                    (len >= bytes as usize).then_some((len, *id))
-                                })
-                                .min();
-                            if let Some((_, id)) = best {
-                                free_set.remove(&id);
-                                let _ = reply.send(Ok(id));
-                                continue;
-                            }
-                            let size = (bytes + 3) & !3;
-                            let (buf, mem, ptr) = send_or_continue!(create_buffer(size as u64), reply);
-                            let id = buffers.push(VulkanBuffer { buf, mem, ptr, bytes: bytes as usize });
-                            free_bytes_atomic.fetch_sub(size as u64, Ordering::SeqCst);
-                            let _ = reply.send(Ok(id));
                         }
                         VulkanCommand::Copy { src_pool, src_buf, src_ptr, bytes, dst_buf } => {
                             // Host-mapped memcpy done on the worker: order it

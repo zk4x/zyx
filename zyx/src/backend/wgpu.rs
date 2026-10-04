@@ -268,6 +268,20 @@ impl WGPUMemoryPool {
     pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
         let align = wgpu::COPY_BUFFER_ALIGNMENT as Dim;
         let bytes = (bytes + align - 1) / align * align;
+        // Best-fit from the free list first (stable addresses across
+        // repeats — those bytes were already paid for); else fresh.
+        let best = self
+            .free_set
+            .iter()
+            .filter_map(|id| {
+                let len = self.buffers[*id].bytes;
+                (len >= bytes).then_some((len, *id))
+            })
+            .min();
+        if let Some((_, id)) = best {
+            self.free_set.remove(&id);
+            return Ok(id);
+        }
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
@@ -306,24 +320,6 @@ impl WGPUMemoryPool {
             }
         }
         ok
-    }
-
-    /// Scratch for queue intermediaries: reuses the smallest fitting free
-    /// buffer, else allocates fresh. Never fails on fragmentation.
-    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        let best = self
-            .free_set
-            .iter()
-            .filter_map(|id| {
-                let len = self.buffers[*id].bytes;
-                (len >= bytes).then_some((len, *id))
-            })
-            .min();
-        if let Some((_, id)) = best {
-            self.free_set.remove(&id);
-            return Ok(id);
-        }
-        self.allocate(bytes)
     }
 
     /// Free all buffers in the free list at once: destroy every free buffer

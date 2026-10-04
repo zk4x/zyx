@@ -1,6 +1,4 @@
 - [ ] backend
-  - [x] dummy
-    - [ ] validation for program ids
   - [x] c (clang)
     - [x] optional openmp
   - [x] cuda

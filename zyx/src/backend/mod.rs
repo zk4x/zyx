@@ -43,7 +43,6 @@ mod c;
 mod cblas;
 mod cuda;
 mod disk;
-mod dummy;
 mod host;
 mod opencl;
 #[cfg(feature = "tenstorrent")]
@@ -119,7 +118,7 @@ impl PlanDim {
 
 /// Scheduler commands. Args and outputs are queue-local [`OpId`] slots;
 /// the per-replay boundary table maps input slots to [`Placement`]s.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Cmd {
     /// Run `program`. Arg regions must agree (cross-device staging of one
     /// value into one node is later work). Every output carries its dtype
@@ -183,11 +182,6 @@ impl CmdQueue {
     pub fn push(&mut self, cmd: Cmd) {
         self.cmds.push(cmd);
     }
-
-    /// Number of queued commands.
-    pub fn len(&self) -> usize {
-        self.cmds.len()
-    }
 }
 
 impl CmdQueue {
@@ -230,7 +224,6 @@ impl CmdQueue {
                         Pool::TT(_) => todo!("schedule copy into {dst_pool:?}"),
                         #[cfg(feature = "wgpu")]
                         Pool::WGPU(_) => todo!("schedule copy into {dst_pool:?}"),
-                        Pool::Dummy => todo!("schedule copy into the dummy pool"),
                     };
                     let free_src = !suffix[end].contains(&src) && !outputs.contains(&src);
                     partitions.push(PlanPartition::Copy {
@@ -281,6 +274,9 @@ impl CmdQueue {
             Some(Dev::Cblas) => {
                 partitions.push(PlanPartition::Cblas(cblas::CblasDevice::schedule(std::mem::take(run), outputs, live_out)))
             }
+            Some(Dev::Cuda(id)) => {
+                partitions.push(PlanPartition::Cuda(cuda::CUDADevice::schedule(std::mem::take(run), outputs, live_out, id)))
+            }
             Some(dev) => todo!("schedule launch run for {dev:?}"),
         }
         *run_dev = None;
@@ -317,6 +313,11 @@ impl Plan {
                     let mut dev = dlock(Dev::Cblas, &device);
                     cblas.replay(&mut dev, &mut resolved, vars)?;
                 }
+                PlanPartition::Cuda(cuda_part) => {
+                    let device = cuda::device(cuda_part.dev)?;
+                    let mut dev = dlock(Dev::Cuda(cuda_part.dev), &device);
+                    cuda_part.replay(&mut dev, &mut resolved, vars)?;
+                }
                 PlanPartition::Copy { dst, ops } => {
                     for op in ops {
                         if resolved.contains_key(&op.dst) {
@@ -333,6 +334,11 @@ impl Plan {
                             Dev::C => {
                                 let device = c::device()?;
                                 let dev = dlock(Dev::C, &device);
+                                dev.copy(&src_placed, &placed, bytes)?;
+                            }
+                            Dev::Cuda(id) => {
+                                let device = cuda::device(*id)?;
+                                let dev = dlock(Dev::Cuda(*id), &device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
                             _ => todo!("replay copy into {dst:?}"),
@@ -366,6 +372,9 @@ pub(crate) enum PlanPartition {
     Cpu(c::CPartition),
     /// Ordered BLAS commands with death lists, executed by the CBLAS device.
     Cblas(cblas::CblasPartition),
+    /// Ordered CUDA commands with death lists, executed by a CUDA device
+    /// through its worker (captured graphs, one roundtrip per replay).
+    Cuda(cuda::CudaPartition),
     /// Cross-pool copies, executed by the destination device.
     Copy { dst: Dev, ops: Vec<CopyOp> },
 }
@@ -399,8 +408,6 @@ pub enum Pool {
     /// WGPU device memory, one pool per device.
     #[cfg(feature = "wgpu")]
     WGPU(u16),
-    /// Testing dummy pool (config-gated).
-    Dummy,
 }
 
 /// Device selector and handle. `Copy`, names the backend plus the hardware
@@ -429,8 +436,6 @@ pub enum Dev {
     /// WGPU device with the given index.
     #[cfg(feature = "wgpu")]
     WGPU(u16),
-    /// Testing dummy device (config-gated).
-    Dummy,
 }
 
 pub(super) fn lock<'a, T>(pool: Pool, mutex: &'a Mutex<T>) -> std::sync::MutexGuard<'a, T> {
@@ -475,9 +480,6 @@ impl Dev {
             for i in 0..wgpu::device_count() {
                 out.push(Dev::WGPU(i));
             }
-            if dummy::device().is_ok() {
-                out.push(Dev::Dummy);
-            }
             out
         })
         .clone()
@@ -497,7 +499,6 @@ impl Dev {
             Dev::OpenCL(i) => Pool::OpenCL(i),
             #[cfg(feature = "wgpu")]
             Dev::WGPU(i) => Pool::WGPU(i),
-            Dev::Dummy => Pool::Dummy,
         }
     }
 
@@ -518,7 +519,6 @@ impl Dev {
             Dev::Vulkan(id) => Ok(dlock(self, vulkan::device(id)?).info()),
             #[cfg(feature = "wgpu")]
             Dev::WGPU(id) => Ok(dlock(self, wgpu::device(id)?).info()),
-            Dev::Dummy => Ok(dummy::device()?.lock().unwrap().info()),
         }
     }
 
@@ -539,7 +539,6 @@ impl Dev {
             Dev::Vulkan(id) => Ok(dlock(self, vulkan::device(id)?).free_compute()),
             #[cfg(feature = "wgpu")]
             Dev::WGPU(id) => Ok(dlock(self, wgpu::device(id)?).free_compute()),
-            Dev::Dummy => Ok(dummy::device()?.lock().unwrap().free_compute()),
         }
     }
 
@@ -559,7 +558,6 @@ impl Dev {
             Dev::Auto => "Auto",
             Dev::C => "C",
             Dev::Cblas => "CBLAS",
-            Dev::Dummy => "Dummy",
             Dev::Cuda(_) => "CUDA",
             Dev::OpenCL(_) => "OpenCL",
             #[cfg(feature = "tenstorrent")]
@@ -578,7 +576,6 @@ impl Dev {
             Dev::Auto => panic!("Dev::Auto cannot compile; resolve it with Dev::auto() first"),
             Dev::C => c::device().expect("C device unavailable").lock().unwrap().compile(kernel, debug_asm),
             Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().compile(kernel, debug_asm),
-            Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().compile(kernel, debug_asm),
             Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).compile(kernel, debug_asm),
             Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).compile(kernel, debug_asm),
             #[cfg(feature = "tenstorrent")]
@@ -599,7 +596,6 @@ impl Dev {
             Dev::Auto => panic!("Dev::Auto cannot release; resolve it with Dev::auto() first"),
             Dev::C => c::device().expect("C device unavailable").lock().unwrap().release(program_id),
             Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().release(program_id),
-            Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().release(program_id),
             Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).release(program_id),
             Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).release(program_id),
             #[cfg(feature = "tenstorrent")]
@@ -649,7 +645,6 @@ impl Dev {
                 c::device().expect("C device unavailable").lock().unwrap().launch_timed(program_id, pool, args)
             }
             Dev::Cblas => todo!("launch_timed not yet ported to the CBLAS device"),
-            Dev::Dummy => todo!("launch_timed not yet ported to the dummy device"),
             Dev::Vulkan(id) => {
                 dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).launch_timed(program_id, args)
             }
@@ -668,9 +663,6 @@ impl Pool {
     #[must_use]
     pub fn all() -> Vec<Pool> {
         let mut out = vec![Pool::Host, Pool::Disk];
-        if dummy::pool().is_ok() {
-            out.push(Pool::Dummy);
-        }
         for i in 0..cuda::pool_count() {
             out.push(Pool::Cuda(i));
         }
@@ -705,7 +697,6 @@ impl Pool {
             Pool::TT(id) => (lock(self, tenstorrent::pool(id)?).allocate(bytes), "tenstorrent"),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => (lock(self, wgpu::pool(id)?).allocate(bytes), "wgpu"),
-            Pool::Dummy => (lock(self, dummy::pool()?).allocate(bytes), "dummy"),
         };
         if let Ok(buffer_id) = &result {
             if crate::debug_mask().memory() {
@@ -760,11 +751,6 @@ impl Pool {
                     lock(self, &pool).release(buffer_id);
                 }
             }
-            Pool::Dummy => {
-                if let Ok(pool) = dummy::pool() {
-                    lock(self, &pool).release(buffer_id);
-                }
-            }
             #[cfg(feature = "tenstorrent")]
             Pool::TT(id) => {
                 if let Ok(pool) = tenstorrent::pool(id) {
@@ -798,24 +784,6 @@ impl Pool {
             Pool::TT(id) => tenstorrent::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => wgpu::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
-            Pool::Dummy => dummy::pool().map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
-        }
-    }
-
-    /// Scratch allocation for execution-graph intermediaries: reuses the
-    /// smallest free-list buffer that fits, else allocates fresh.
-    pub fn allocate_scratch(self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        match self {
-            Pool::Host => lock(self, host::pool()).allocate_scratch(bytes),
-            Pool::Disk => todo!("disk is not allocatable"),
-            Pool::Cuda(id) => lock(self, cuda::pool(id)?).allocate_scratch(bytes),
-            Pool::OpenCL(id) => lock(self, opencl::pool(id)?).allocate_scratch(bytes),
-            Pool::Vulkan(id) => lock(self, vulkan::pool(id)?).allocate_scratch(bytes),
-            #[cfg(feature = "tenstorrent")]
-            Pool::TT(id) => lock(self, tenstorrent::pool(id)?).allocate_scratch(bytes),
-            #[cfg(feature = "wgpu")]
-            Pool::WGPU(id) => lock(self, wgpu::pool(id)?).allocate_scratch(bytes),
-            Pool::Dummy => lock(self, dummy::pool()?).allocate_scratch(bytes),
         }
     }
 
@@ -852,11 +820,6 @@ impl Pool {
                     lock(self, &pool).dispose();
                 }
             }
-            Pool::Dummy => {
-                if let Ok(pool) = dummy::pool() {
-                    lock(self, &pool).dispose();
-                }
-            }
         }
     }
 
@@ -871,7 +834,6 @@ impl Pool {
             Pool::TT(id) => tenstorrent::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => wgpu::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
-            Pool::Dummy => dummy::pool().map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
         }
     }
 
@@ -889,7 +851,6 @@ impl Pool {
                 wgpu::flush_pending(id)?;
                 lock(self, wgpu::pool(id)?).pool_to_host(src, dst)
             }
-            Pool::Dummy => lock(self, dummy::pool()?).pool_to_host(src, dst),
         }
     }
 
@@ -908,7 +869,6 @@ impl Pool {
             Pool::TT(_) => todo!("TT buffers have no staging pointer"),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(_) => todo!("wgpu buffers have no staging pointer"),
-            Pool::Dummy => todo!("dummy buffers have no staging pointer"),
         }
     }
 }
@@ -1181,8 +1141,6 @@ pub struct Config {
     pub c: c::CConfig,
     /// CBLAS backend configuration
     pub cblas: cblas::CblasConfig,
-    /// Configuration of dummy device for testing
-    pub dummy: dummy::DummyConfig,
     /// CUDA configuration
     pub cuda: cuda::CUDAConfig,
     /// `OpenCL` configuration

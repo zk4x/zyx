@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-450aa6e1.js";
+            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -193,9 +193,9 @@ let y = x.relu();
 let z = y * 2.0;
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>Outside a <code>Tape</code>, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes — no graph, no separate realize step. Inside a <code>Tape</code>, ops build graph nodes lazily. Either way, each operation returns a lightweight <code>Tensor</code> handle.</p>
+<p>Outside a <code>Tape</code>, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes — no graph, no separate realize step. Inside a <code>Tape</code>, ops build graph ops lazily. Either way, each operation returns a lightweight <code>Tensor</code> handle.</p>
 <h3 id="2-the-graph"><a class="header" href="#2-the-graph">2. The Graph</a></h3>
-<p>The graph opset was taken from tinygrad, with changes to make it even smaller. This is the minimal set of operations that can express ALL linear algebra operations and ALL PyTorch ops — by stacking these nodes:</p>
+<p>The graph opset was taken from tinygrad, with changes to make it even smaller. This is the minimal set of operations that can express ALL linear algebra operations and ALL PyTorch ops — by stacking these ops:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -203,7 +203,7 @@ let z = y * 2.0;
 </thead>
 <tbody>
 <tr><td><code>Const</code></td><td>A constant value baked into kernels</td></tr>
-<tr><td><code>Leaf</code></td><td>A tensor stored on device</td></tr>
+<tr><td><code>Param</code></td><td>A kernel parameter — one of the arguments passed to the compiled GPU kernel at launch</td></tr>
 <tr><td><code>Expand</code></td><td>Broadcast a dimension</td></tr>
 <tr><td><code>Permute</code></td><td>Transpose axes</td></tr>
 <tr><td><code>Reshape</code></td><td>Change shape without changing data</td></tr>
@@ -216,8 +216,7 @@ let z = y * 2.0;
 <tr><td><code>Bitcast</code></td><td>Reinterpret raw bits</td></tr>
 <tr><td><code>Unary</code></td><td>Element-wise: relu, exp, sin, etc.</td></tr>
 <tr><td><code>Binary</code></td><td>Element-wise: add, mul, etc.</td></tr>
-<tr><td><code>Assign</code></td><td>In-place update</td></tr>
-<tr><td><code>After</code></td><td>Ordering for side-effecting nodes</td></tr>
+<tr><td><code>After</code></td><td>Ordering for side-effecting ops</td></tr>
 <tr><td><code>ToDevice</code></td><td>Move data between devices</td></tr>
 <tr><td><code>Contiguous</code></td><td>Materialize a layout</td></tr>
 <tr><td><code>Kernel</code></td><td>A compiled kernel boundary</td></tr>
@@ -228,7 +227,7 @@ let z = y * 2.0;
 <p>Tensor handles are <code>u32</code> (4 bytes) into the slab. Still small enough that 10,000 handles cost ~40 kB.</p>
 <p>The graph is stored in a <code>Slab</code> — a dense array with free-list tracking. <code>TensorId</code> is a <code>u32</code> index into this slab, making tensor handles 4 bytes.</p>
 <h3 id="3-the-kernelizer"><a class="header" href="#3-the-kernelizer">3. The Kernelizer</a></h3>
-<p>The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when <code>Tape::realize()</code> is called (dropping only cleans up graph state). The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
+<p>The kernelizer fuses compatible graph ops into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when <code>Tape::realize()</code> is called (dropping only cleans up graph state). The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce op used by multiple downstream ops does not necessarily force a split. If two downstream ops are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
 <p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming “free” — they don’t create separate operations.</p>
 <h3 id="4-the-kernel-ir"><a class="header" href="#4-the-kernel-ir">4. The Kernel IR</a></h3>
 <p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). Each <code>OpNode</code> is <strong>32 bytes</strong> stored inline in the arena — no <code>Box</code>, no vtables, no indirection.</p>
@@ -257,7 +256,6 @@ let z = y * 2.0;
     Vulkan(VulkanDevice),
     WGPU(WGPUDevice),
     HIP(HIPDevice),
-    Dummy(DummyDevice),
     // Tenstorrent, etc.
 }</code></pre>
 <p>All backends are compiled into the library and selected at runtime.</p>
@@ -287,9 +285,9 @@ let z = y * 2.0;
 <li><strong>One graph for everything</strong> — autograd and computation share the same graph. No need to specify which tensors require gradients.</li>
 <li><strong>Symbolic dims everywhere</strong> — the eager path and the graph path BOTH work with symbolic dimensions, always. Every symbolic dim bottoms out in a <code>Param { Variable }</code> scalar (<code>IDX_T</code>) whose value lives in a backend pool’s variable slot, so any dim expression can be fully evaluated to a concrete constant at any time: walk the tree, fold <code>Const</code> leaves via <code>Constant::unary</code> / <code>Constant::binary</code>, and read variable slots at <code>Param { Variable }</code> leaves. Consumers must evaluate dims this way instead of fabricating placeholder values (<code>0</code>, <code>-1</code>, …) where evaluation can produce the real value.</li>
 <li><strong>Inline ops</strong> — all ops live in the arena as flat 32-byte entries. No <code>Box</code>, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.</li>
-<li><strong>Linear IR</strong> — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.</li>
+<li><strong>Linear IR</strong> — linked list of fixed-size ops. Optimizations traverse front-to-back or back-to-back.</li>
 <li><strong>Backend codegen is trivial</strong> — the hard work is in the IR-level optimization passes.</li>
-<li><strong>Tape-scoped lazy graph</strong> — ops inside a tape build graph nodes instead of executing eagerly. Enables egraph fusion, device allocation search, and plan caching across iterations.</li>
+<li><strong>Tape-scoped lazy graph</strong> — ops inside a tape build graph ops instead of executing eagerly. Enables egraph fusion, device allocation search, and plan caching across iterations.</li>
 </ul>
 
                     </main>

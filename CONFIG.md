@@ -5,7 +5,7 @@ zyx is configured via a JSON file. The config file is searched for at:
 1. `$XDG_CONFIG_HOME/zyx/config.json` (if `XDG_CONFIG_HOME` is set and is absolute)
 2. `$HOME/.config/zyx/config.json`
 
-If no config file exists, **all backends try to initialize** with their defaults — C (CPU) via gcc/clang, GPU backends (CUDA, Vulkan, HIP, OpenCL) scan for hardware, and WGPU if compiled with `--features wgpu`. Only the Dummy test backend is off by default.
+If no config file exists, **all backends try to initialize** with their defaults — C (CPU) via gcc/clang, GPU backends (CUDA, Vulkan, HIP, OpenCL) scan for hardware, and WGPU if compiled with `--features wgpu`.
 
 The same directory is also used for the kernel cache (file named `cached_kernels`).
 
@@ -15,9 +15,6 @@ Run `ZYX_DEBUG=1` to see which backends initialized.
 
 ```json
 {
-  "dummy": {
-    "enabled": false
-  },
   "c": {
     "enabled": true
   },
@@ -54,14 +51,6 @@ Controls how zyx searches for optimal kernel configurations.
 | `n_added_per_step` | `usize` | Optimizations to try per iteration |
 | `n_removed_per_step` | `usize` | Optimizations to remove per iteration |
 | `n_total_opts` | `usize` | Max total optimizations to try |
-
-### `dummy` — Dummy test backend
-
-A fake device with ~1 TB memory used for testing. All operations succeed without actual computation.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `false` | Enable the dummy backend |
 
 ### `c` — C/Clang CPU backend
 
@@ -119,7 +108,6 @@ Requires `--features tenstorrent` at compile time.
 ## Backend selection rules
 
 - **c**: enabled when `"enabled": true` (default: `true`)
-- **dummy**: enabled when `"enabled": true` (default: `false`)
 - **cuda**: disabled when `"device_ids": []`; uses all devices when `null`
 - **hip**: currently always tries to initialize (ignores config); disabled only if `libamdhip64.so` is not found
 - **opencl**: disabled when `"platform_ids": []`; uses all platforms when `null`

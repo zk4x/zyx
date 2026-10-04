@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-450aa6e1.js";
+            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -195,8 +195,6 @@
     OpenCL(u16),
     /// WGPU device with the given index.
     WGPU(u16),        // feature = "wgpu"
-    /// Testing dummy device (config-gated).
-    Dummy,
 }</code></pre>
 <p>Trait objects would require downcasting to reach backend-specific functionality; the enum makes every method an exhaustive match instead. <code>Dev::Auto</code> is the scheduling placeholder — it is resolved by the scheduler before placement, so the device API never sees it. The <code>panic!</code> arms for <code>Auto</code> in methods like <code>info()</code> and <code>free_compute()</code> are guards on that invariant, not behavior; and the device’s memory pool is always derived from the device via <code>Dev::pool()</code> — never the reverse.</p>
 <h2 id="pool--memory"><a class="header" href="#pool--memory"><code>Pool</code> — Memory</a></h2>
@@ -211,15 +209,13 @@
     Vulkan(u16),
     TT(u16),          // feature = "tenstorrent"
     WGPU(u16),        // feature = "wgpu"
-    /// Testing dummy pool (config-gated).
-    Dummy,
 }</code></pre>
 <p>Each variant owns its globals — one <code>Mutex&lt;pool&gt;</code> per ordinal (<code>Host</code> is a <code>OnceLock&lt;Mutex&lt;_&gt;&gt;</code>, <code>Disk</code> is a const <code>Mutex</code> with no <code>OnceLock</code> at all, the rest are <code>OnceLock&lt;Vec&lt;Mutex&lt;_&gt;&gt;&gt;</code> with one <code>Mutex&lt;()&gt;</code> per backend serializing first construction where it matters — cheap backends have no init lock). All globals live at the top of each <code>backend/*.rs</code> file, so the process-wide state is visible before any logic. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.</p>
 <h2 id="lazy-initialization"><a class="header" href="#lazy-initialization">Lazy Initialization</a></h2>
 <p>There is no upfront backend-initialization phase. <code>Dev::all()</code> triggers lazy init of every backend; backends that are configured out, whose driver is missing, or whose hardware is absent contribute nothing to the returned list. This keeps startup free and makes device discovery idempotent:</p>
 <pre><code class="language-rust ignore">impl Dev {
     pub fn all() -&gt; Vec&lt;Dev&gt; {
-        // C, CBLAS, Dummy: single devices, included if init succeeds.
+        // C, CBLAS: single devices, included if init succeeds.
         // CUDA / TT / Vulkan / OpenCL / WGPU: one entry per detected device.
     }
 }</code></pre>
@@ -248,7 +244,6 @@ pub fn launch_timed(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -
 <tr><td>Vulkan</td><td><code>vulkan.rs</code></td><td>SPIR-V</td><td>Vulkan via <code>ash</code> crate</td></tr>
 <tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>SPIR-V</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
 <tr><td>Tenstorrent</td><td><code>tenstorrent.rs</code></td><td>C++ RISC-V kernels</td><td>TT-Metalium (feature: <code>tenstorrent</code>)</td></tr>
-<tr><td>Dummy</td><td><code>dummy.rs</code></td><td>—</td><td>No hardware needed (fake device)</td></tr>
 </tbody>
 </table>
 </div>

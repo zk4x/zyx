@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-450aa6e1.js";
+            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -177,7 +177,7 @@
                         <h1 id="autograd"><a class="header" href="#autograd">Autograd</a></h1>
 <p>Zyx implements automatic differentiation through an explicit <code>Tape</code>. Unlike other frameworks, there is no separate autograd graph — it uses the <strong>same graph</strong> as computation.</p>
 <h2 id="the-key-insight"><a class="header" href="#the-key-insight">The Key Insight</a></h2>
-<p>In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx’s tape keeps all graph nodes alive until <code>realize()</code> or drop, and simply prevents their deletion until gradients are computed.</p>
+<p>In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx’s tape keeps all graph ops alive until <code>realize()</code> or drop, and simply prevents their deletion until gradients are computed.</p>
 <h2 id="tape-api"><a class="header" href="#tape-api">Tape API</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
 </span><span class="boring">use zyx::{DType, Tape, Tensor, ZyxError};
@@ -218,10 +218,10 @@ let h = tape.gradient(&amp;g[0], vec![&amp;x]);  // second derivative</code></pr
 <li><strong>No separate backward graph</strong> — backward ops live in the same graph as forward ops, so they get the same treatment: CSE, fusion, and kernel caching apply to backward code for free.</li>
 <li><strong>Gradients are first-class tensors</strong> — they can feed further computation, be stored, or be differentiated again.</li>
 <li><strong>Nothing is snapshotted or frozen</strong> — since the transform only appends, the tape needs no copy of the forward graph and no special “backward mode”.</li>
-<li><strong>Memory behavior is uniform</strong> — graph nodes accumulate until <code>realize()</code> or drop, whether they came from forward ops or backward ops.</li>
+<li><strong>Memory behavior is uniform</strong> — graph ops accumulate until <code>realize()</code> or drop, whether they came from forward ops or backward ops.</li>
 </ul>
 <h2 id="memory-efficiency"><a class="header" href="#memory-efficiency">Memory Efficiency</a></h2>
-<p>Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only <code>TensorId</code> values — not the actual data. When the tape is dropped, all tape-preserved nodes are released.</p>
+<p>Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only <code>TensorId</code> values — not the actual data. When the tape is dropped, all tape-preserved ops are released.</p>
 
                     </main>
 

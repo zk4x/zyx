@@ -111,11 +111,6 @@ enum Command {
         buffer_ids: Set<ChunkId>,
         reply: Sender<Result<bool, BackendError>>,
     },
-    /// Smallest fitting free buffer, else a fresh allocation.
-    AllocateScratch {
-        bytes: Dim,
-        reply: Sender<Result<ChunkId, BackendError>>,
-    },
     /// Blocking read-back: the reply is sent after the data arrived in
     /// host memory. This is a sync point — all pending work is submitted
     /// and every queue is drained first.
@@ -504,7 +499,7 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
 
                     let mut buffers: Slab<ChunkId, OpenCLBuffer> = Slab::new();
                     // Free-list ids for stable-address reuse (`Release`
-                    // inserts, `TryReuse`/`AllocateScratch` claim, `Dispose`
+                    // inserts, `TryReuse`/`Allocate` claim, `Dispose`
                     // frees). Slab entries stay so ChunkIds are monotonic and
                     // never alias a different buffer.
                     let mut free_set: Set<ChunkId> = Set::default();
@@ -549,6 +544,21 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                         sweep_foreign(&mut foreign_dead, clGetEventInfo, clReleaseEvent);
                         match cmd {
                             Command::Allocate { bytes, reply } => {
+                                // Best-fit from the free list first (stable
+                                // addresses across repeats — those bytes were
+                                // already paid for); else fresh.
+                                let best = free_set
+                                    .iter()
+                                    .filter_map(|id| {
+                                        let b = &buffers[*id];
+                                        (b.bytes >= bytes).then_some((b.bytes, *id))
+                                    })
+                                    .min();
+                                if let Some((_, id)) = best {
+                                    free_set.remove(&id);
+                                    let _ = reply.send(Ok(id));
+                                    continue;
+                                }
                                 if bytes > free_bytes_atomic.load(Ordering::SeqCst) as i64 {
                                     let _ = reply.send(Err(BackendError {
                                         status: ErrorStatus::MemoryAllocation,
@@ -618,41 +628,6 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                     }
                                 }
                                 let _ = reply.send(Ok(ok));
-                            }
-                            Command::AllocateScratch { bytes, reply } => {
-                                // Smallest fitting free buffer wins; never
-                                // fails on fragmentation — falls back to a
-                                // fresh allocation.
-                                let best = free_set
-                                    .iter()
-                                    .filter_map(|id| {
-                                        let b = &buffers[*id];
-                                        (b.bytes >= bytes).then_some((b.bytes, *id))
-                                    })
-                                    .min();
-                                if let Some((_, id)) = best {
-                                    free_set.remove(&id);
-                                    let _ = reply.send(Ok(id));
-                                    continue;
-                                }
-                                if bytes > free_bytes_atomic.load(Ordering::SeqCst) as i64 {
-                                    let _ = reply.send(Err(BackendError {
-                                        status: ErrorStatus::MemoryAllocation,
-                                        context: "Allocation failure".into(),
-                                    }));
-                                    continue 'work_thread_loop;
-                                }
-                                let mut status = OpenCLStatus::CL_SUCCESS;
-                                let buffer = unsafe {
-                                    clCreateBuffer(context, CL_MEM_READ_WRITE, bytes as usize, ptr::null_mut(), &raw mut status)
-                                };
-                                if let Err(e) = status.check(ErrorStatus::MemoryAllocation) {
-                                    let _ = reply.send(Err(e));
-                                    continue 'work_thread_loop;
-                                }
-                                free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
-                                let id = buffers.push(OpenCLBuffer { ptr: buffer, bytes });
-                                let _ = reply.send(Ok(id));
                             }
                             Command::Copy { src_pool, src_buf, src_ptr, bytes, dst_buf } => {
                                 // Fire-and-forget: append to the micro-batch
@@ -1241,14 +1216,6 @@ impl OpenCLMemoryPool {
         let (reply, reply_rx) = channel();
         self.tx.send(Command::TryReuse { buffer_ids: buffer_ids.clone(), reply }).unwrap();
         reply_rx.recv().unwrap().unwrap_or(false)
-    }
-
-    /// Scratch for queue intermediaries: reuses the smallest fitting free
-    /// buffer, else allocates fresh. Never fails on fragmentation.
-    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        let (reply, reply_rx) = channel();
-        self.tx.send(Command::AllocateScratch { bytes, reply }).unwrap();
-        reply_rx.recv().unwrap()
     }
 
     /// Blocking read-back (sync point).

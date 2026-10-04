@@ -26,7 +26,6 @@ The runtime reads `$XDG_CONFIG_HOME/zyx/config.json` (or `~/.config/zyx/config.j
 | `"c": { "enabled": true }` | Enable CPU backend (off by default) |
 | `"cuda": { "device_ids": [] }` | Disable all CUDA devices |
 | `"opencl": { "platform_ids": [] }` | Disable all OpenCL |
-| `"dummy": { "enabled": true }` | Enable dummy backend |
 
 ## Environment Variables
 

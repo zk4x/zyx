@@ -103,7 +103,6 @@ pub enum Device {
     Vulkan(VulkanDevice),
     WGPU(WGPUDevice),
     HIP(HIPDevice),
-    Dummy(DummyDevice),
     // Tenstorrent, etc.
 }
 ```

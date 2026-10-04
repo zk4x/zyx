@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-450aa6e1.js";
+            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -187,16 +187,16 @@ let z = y * 2.0;
 tape.realize([&amp;z])?;
 // kernelizer runs → optimizes → executes</code></pre>
 <h2 id="fusion-logic"><a class="header" href="#fusion-logic">Fusion Logic</a></h2>
-<p>In tape mode, the kernelizer processes graph nodes <strong>bottom-up</strong> in topological order. Each graph node type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.</p>
-<h3 id="per-node-type-behavior"><a class="header" href="#per-node-type-behavior">Per-Node Type Behavior</a></h3>
+<p>In tape mode, the kernelizer processes graph ops <strong>bottom-up</strong> in topological order. Each graph op type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.</p>
+<h3 id="per-op-type-behavior"><a class="header" href="#per-op-type-behavior">Per-Op Type Behavior</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Graph Node</th><th>Kernel Decision</th></tr>
+<tr><th>Graph Op</th><th>Kernel Decision</th></tr>
 </thead>
 <tbody>
 <tr><td><code>Unary</code>, <code>Cast</code></td><td>Always fuse — add op to the input’s kernel</td></tr>
-<tr><td><code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code></td><td>Add <code>Move</code> op to the input’s kernel (free after unfolding)</td></tr>
+<tr><td><code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code></td><td>Fused into the input’s kernel (unfolded to index arithmetic)</td></tr>
 <tr><td><code>Binary</code></td><td>Merge both input kernels into one</td></tr>
 <tr><td><code>Reduce</code></td><td>Add reduce op to the input’s kernel</td></tr>
 <tr><td><code>Const</code></td><td>Create a new kernel with a constant</td></tr>
@@ -224,24 +224,21 @@ tape.realize([&amp;z])?;
     graph: &amp;'a Graph,
     // ...
 }</code></pre>
-<p>The <code>visited</code> map tracks which graph nodes have been converted to kernel ops. When a graph node is already in <code>visited</code>, the kernelizer uses the existing kernel result instead of recomputing — this is how shared subgraphs are handled.</p>
+<p>The <code>visited</code> map tracks which graph ops have been converted to kernel ops. When a graph op is already in <code>visited</code>, the kernelizer uses the existing kernel result instead of recomputing — this is how shared subgraphs are handled.</p>
 <h2 id="building-kernel-ops"><a class="header" href="#building-kernel-ops">Building Kernel Ops</a></h2>
-<p>Each graph node type maps to kernel IR operations:</p>
+<p>Each graph op type maps to kernel IR operations:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Graph Node</th><th>Kernel IR</th></tr>
+<tr><th>Graph Op</th><th>Kernel IR</th></tr>
 </thead>
 <tbody>
 <tr><td><code>Const</code></td><td><code>Op::Const</code></td></tr>
-<tr><td><code>Leaf</code></td><td><code>Op::Define</code> (global memory)</td></tr>
+<tr><td><code>Param</code></td><td><code>Op::Param</code> (global memory)</td></tr>
 <tr><td><code>Unary</code></td><td><code>Op::Unary</code></td></tr>
 <tr><td><code>Binary</code></td><td><code>Op::Binary</code> or <code>Op::Mad</code></td></tr>
 <tr><td><code>Reduce</code></td><td><code>Op::Reduce</code></td></tr>
-<tr><td><code>Reshape</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
-<tr><td><code>Expand</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
-<tr><td><code>Permute</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
-<tr><td><code>Pad</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
+<tr><td><code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Flip</code>, <code>Pad</code>, <code>Narrow</code></td><td>View ops folded into <code>Load</code>/<code>Store</code> index arithmetic</td></tr>
 </tbody>
 </table>
 </div>

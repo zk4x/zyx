@@ -135,8 +135,8 @@ macro_rules! send_or_continue {
 }
 
 use super::{
-    ChunkId, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Placement, Pool, ProgramId, Shard,
-    gws_from_kernel,
+    ChunkId, Cmd, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Placement, PlanDim, Pool, ProgramId,
+    Shard, gws_from_kernel,
 };
 
 /// CUDA configuration
@@ -186,6 +186,21 @@ pub struct CUDADevice {
     dev_info: Arc<DeviceInfo>,
     pub compute_capability: [c_int; 2],
     cudnn_available: bool,
+}
+
+/// Partition-held handle of a worker-captured graph executable. Dropping
+/// it destroys the graph on the worker (fire-and-forget — drop never
+/// blocks or fails loudly).
+#[derive(Debug)]
+pub(super) struct CudaGraph {
+    id: CudaGraphId,
+    tx: Sender<CUDACommand>,
+}
+
+impl Drop for CudaGraph {
+    fn drop(&mut self) {
+        let _ = self.tx.send(CUDACommand::DestroyGraph { id: self.id });
+    }
 }
 
 #[derive(Debug)]
@@ -265,6 +280,53 @@ pub(super) struct CUDAStream {
     stream: CUstream,
 }
 
+/// Worker-side id of a captured CUDA graph executable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) struct CudaGraphId(u32);
+
+impl From<usize> for CudaGraphId {
+    fn from(value: usize) -> Self {
+        CudaGraphId(u32::try_from(value).unwrap())
+    }
+}
+
+impl From<CudaGraphId> for usize {
+    fn from(value: CudaGraphId) -> Self {
+        value.0 as usize
+    }
+}
+
+impl SlabId for CudaGraphId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+/// A captured partition executable: the instantiated graph plus the
+/// launch-arg slots and their device pointers at last capture. The
+/// slots fix the comparison order; the pointers detect the steady
+/// state (identical pointers + vars: relaunch with no work at all).
+pub(super) struct CapturedGraph {
+    exec: CUgraphExec,
+    /// Launch-arg slots per kernel launch, in capture order.
+    node_args: Vec<Vec<OpId>>,
+    /// Device pointers of buffer slots at last capture, flat in the
+    /// same order as `node_args` (one entry per buffer slot).
+    ptrs: Vec<u64>,
+    /// Scalar values at last capture.
+    vars: Vec<(OpId, Constant)>,
+}
+
+/// Worker reply to `Replay`: freshly allocated chunks plus the captured
+/// graph id (`None` when nothing was captured: dry run or direct submit).
+pub(super) struct ReplayResult {
+    pub fresh: Vec<(OpId, ChunkId)>,
+    pub graph: Option<CudaGraphId>,
+}
+
 enum CUDACommand {
     Allocate {
         bytes: Dim,
@@ -280,12 +342,6 @@ enum CUDACommand {
     TryReuse {
         buffer_ids: Set<ChunkId>,
         reply: Sender<Result<bool, BackendError>>,
-    },
-    /// Scratch for queue intermediaries: reuses the smallest fitting free
-    /// buffer, else allocates fresh. Never fails on fragmentation.
-    AllocateScratch {
-        bytes: Dim,
-        reply: Sender<Result<ChunkId, BackendError>>,
     },
     /// Blocking read-back: the reply is sent after the data arrived in
     /// host memory. This is a sync point — all pending work is submitted
@@ -316,12 +372,6 @@ enum CUDACommand {
         graph: CudnnGraph,
         reply: Sender<Result<DeviceProgramId, BackendError>>,
     },
-    /// Fire-and-forget kernel launch: appended to the pending micro-batch
-    /// window; submitted (with computed waits) when the window flushes.
-    Launch {
-        program_id: DeviceProgramId,
-        args: Vec<LaunchArg>,
-    },
     /// Timed launch for autotune: flush + drain first (uncontended timing),
     /// then launch solo on one stream, bracket with timing events, reply nanos.
     LaunchTimed {
@@ -329,6 +379,31 @@ enum CUDACommand {
         args: Vec<LaunchArg>,
         reply: Sender<Result<u64, BackendError>>,
     },
+    /// Execute a preplanned partition: allocate unbound defs from their
+    /// specs, capture to a CUDA graph on first sight (or patch + relaunch
+    /// the `graph` executable), launch, reply fresh chunks + graph id.
+    /// Partitions holding cuDNN programs are submitted directly and never
+    /// captured. Dynamic-shape repeats (vars mismatch) recapture in place
+    /// under the same id.
+    Replay {
+        cmds: Vec<Cmd>,
+        /// Bound slots (inputs + kept outputs): queue-local slot to resident chunk.
+        bound: Vec<(OpId, ChunkId)>,
+        /// Scalar values for variable slots + dynamic dims.
+        vars: Vec<(OpId, Constant)>,
+        /// Device-side reuse hint: a live captured-graph id, if any.
+        graph: Option<CudaGraphId>,
+        reply: Sender<Result<ReplayResult, BackendError>>,
+    },
+    /// Blocking host-to-device upload for Copy partitions into CUDA.
+    /// The host pointer stays valid for the roundtrip (caller holds the
+    /// host pool lock across send + recv).
+    CopyHtoD { src: *const u8, dst: ChunkId, bytes: Dim, reply: Sender<Result<(), BackendError>> },
+    /// Blocking same-device device-to-device copy (single pool).
+    CopyDtoD { src: ChunkId, dst: ChunkId, bytes: Dim, reply: Sender<Result<(), BackendError>> },
+    /// Destroy a captured graph exec (from `CudaGraph::drop`): tolerant —
+    /// an unknown id is already gone.
+    DestroyGraph { id: CudaGraphId },
     ReleaseProgram {
         program_id: DeviceProgramId,
     },
@@ -392,10 +467,7 @@ pub(super) struct CudaFns {
     cuGraphLaunch: unsafe extern "C" fn(CUgraphExec, CUstream) -> CUDAStatus,
     cuGraphExecDestroy: unsafe extern "C" fn(CUgraphExec) -> CUDAStatus,
     cuGraphDestroy: unsafe extern "C" fn(CUgraph) -> CUDAStatus,
-    cuGraphGetNodes: unsafe extern "C" fn(CUgraph, *mut CUgraphNode, *mut usize) -> CUDAStatus,
-    cuGraphExecKernelNodeSetParams: unsafe extern "C" fn(CUgraphExec, CUgraphNode, *const CUDA_KERNEL_NODE_PARAMS) -> CUDAStatus,
-    cuGraphExecMemcpyNodeSetParams: unsafe extern "C" fn(CUgraphExec, CUgraphNode, *const CUDA_MEMCPY3D) -> CUDAStatus,
-    cuGraphNodeGetType: unsafe extern "C" fn(CUgraphNode, *mut CUgraphNodeType) -> CUDAStatus,
+    cuGraphExecUpdate: unsafe extern "C" fn(CUgraphExec, CUgraph, *mut CUgraphExecUpdateResultInfo) -> CUDAStatus,
     cuMemcpyDtoDAsync: unsafe extern "C" fn(CUdeviceptr, CUdeviceptr, usize, CUstream) -> CUDAStatus,
 }
 
@@ -544,17 +616,8 @@ fn load_driver() -> Result<(Arc<Library>, Option<Arc<CudnnLib>>, Vec<i32>, CudaF
     let cuGraphLaunch: unsafe extern "C" fn(CUgraphExec, CUstream) -> CUDAStatus = *unsafe { cuda.get(b"cuGraphLaunch\0") }?;
     let cuGraphExecDestroy: unsafe extern "C" fn(CUgraphExec) -> CUDAStatus = *unsafe { cuda.get(b"cuGraphExecDestroy\0") }?;
     let cuGraphDestroy: unsafe extern "C" fn(CUgraph) -> CUDAStatus = *unsafe { cuda.get(b"cuGraphDestroy\0") }?;
-    let cuGraphGetNodes: unsafe extern "C" fn(CUgraph, *mut CUgraphNode, *mut usize) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuGraphGetNodes\0") }?;
-    let cuGraphExecKernelNodeSetParams: unsafe extern "C" fn(
-        CUgraphExec,
-        CUgraphNode,
-        *const CUDA_KERNEL_NODE_PARAMS,
-    ) -> CUDAStatus = *unsafe { cuda.get(b"cuGraphExecKernelNodeSetParams\0") }?;
-    let cuGraphExecMemcpyNodeSetParams: unsafe extern "C" fn(CUgraphExec, CUgraphNode, *const CUDA_MEMCPY3D) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuGraphExecMemcpyNodeSetParams\0") }?;
-    let cuGraphNodeGetType: unsafe extern "C" fn(CUgraphNode, *mut CUgraphNodeType) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuGraphNodeGetType\0") }?;
+    let cuGraphExecUpdate: unsafe extern "C" fn(CUgraphExec, CUgraph, *mut CUgraphExecUpdateResultInfo) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuGraphExecUpdate_v2\0") }?;
     let cuMemcpyDtoDAsync: unsafe extern "C" fn(CUdeviceptr, CUdeviceptr, usize, CUstream) -> CUDAStatus =
         *unsafe { cuda.get(b"cuMemcpyDtoDAsync_v2\0") }?;
     //let cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus = *unsafe { cuda.get(b"cuCtxDestroy_v2\0") }?;
@@ -618,10 +681,7 @@ fn load_driver() -> Result<(Arc<Library>, Option<Arc<CudnnLib>>, Vec<i32>, CudaF
         cuGraphLaunch,
         cuGraphExecDestroy,
         cuGraphDestroy,
-        cuGraphGetNodes,
-        cuGraphExecKernelNodeSetParams,
-        cuGraphExecMemcpyNodeSetParams,
-        cuGraphNodeGetType,
+        cuGraphExecUpdate,
         cuMemcpyDtoDAsync,
     };
     let lib = Arc::new(cuda);
@@ -664,6 +724,14 @@ fn spawn_worker(
         cuStreamCreate,
         cuStreamSynchronize,
         cuStreamWaitEvent,
+        cuStreamBeginCapture,
+        cuStreamEndCapture,
+        cuGraphInstantiate,
+        cuGraphLaunch,
+        cuGraphExecDestroy,
+        cuGraphDestroy,
+        cuGraphExecUpdate,
+        cuMemcpyDtoDAsync,
         ..
     } = fns;
     std::thread::spawn(move || {
@@ -725,6 +793,10 @@ fn spawn_worker(
         // stack of buffers that are unused and can be reused
         let mut free_set: Set<ChunkId> = Set::default();
         let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
+        // Captured partition executables by worker-side id. The
+        // partition holds the live handle; a stale id recaptures, a
+        // vars-mismatched id updates in place under the same id.
+        let mut graphs: Slab<CudaGraphId, CapturedGraph> = Slab::new();
         // This worker's pool identity: placements resolve through the shard
         // addressed to this pool.
         let my_pool = pool;
@@ -744,6 +816,21 @@ fn spawn_worker(
         'work_thread_loop: while let Ok(cmd) = rx.recv() {
             match cmd {
                 CUDACommand::Allocate { bytes, reply } => {
+                    // Best-fit from the free list first (stable addresses
+                    // across repeats — those bytes were already paid for);
+                    // else fresh.
+                    let best = free_set
+                        .iter()
+                        .filter_map(|id| {
+                            let b = &buffers[*id];
+                            (b.bytes >= bytes).then_some((b.bytes, *id))
+                        })
+                        .min();
+                    if let Some((_, id)) = best {
+                        free_set.remove(&id);
+                        let _ = reply.send(Ok(id));
+                        continue;
+                    }
                     let mut ptr: CUdeviceptr = 0;
                     if let Err(err) = unsafe { (cuMemAlloc)(&raw mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation) {
                         let _ = reply.send(Err(err));
@@ -780,32 +867,6 @@ fn spawn_worker(
                         }
                     }
                     let _ = reply.send(Ok(ok));
-                }
-                CUDACommand::AllocateScratch { bytes, reply } => {
-                    // Smallest fitting free buffer wins; never fails on
-                    // fragmentation — falls back to a fresh allocation.
-                    let best = free_set
-                        .iter()
-                        .filter_map(|id| {
-                            let b = &buffers[*id];
-                            (b.bytes >= bytes).then_some((b.bytes, *id))
-                        })
-                        .min();
-                    if let Some((_, id)) = best {
-                        free_set.remove(&id);
-                        let _ = reply.send(Ok(id));
-                        continue;
-                    }
-                    let mut ptr: CUdeviceptr = 0;
-                    if let Err(err) = unsafe { (cuMemAlloc)(&raw mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation) {
-                        let _ = reply.send(Err(err));
-                        continue;
-                    }
-                    assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
-                    debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes as u64);
-                    free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
-                    let buffer_id = buffers.push(CUDABuffer { ptr, bytes });
-                    let _ = reply.send(Ok(buffer_id));
                 }
                 CUDACommand::PoolToHost { src, dst, bytes, reply } => {
                     // Sync point: drain the (single) stream, then read back.
@@ -887,9 +948,6 @@ fn spawn_worker(
                         }
                     }
                 }
-                CUDACommand::Launch { .. } => {
-                    todo!("kernel execution moves into Plan::schedule/CUDA-graph capture")
-                }
                 CUDACommand::LaunchTimed { program_id, args, reply } => {
                     // Uncontended timing for autotune: drain the stream, then
                     // run the kernel solo bracketed by timing events.
@@ -935,6 +993,483 @@ fn spawn_worker(
                     let _ = unsafe { (cuEventDestroy)(start) };
                     let _ = unsafe { (cuEventDestroy)(end) };
                     let _ = reply.send(result);
+                }
+                CUDACommand::Replay { cmds, bound, vars, graph, reply } => {
+                    let dry_run = std::env::var("ZYX_DRY_RUN").is_ok();
+                    let result = (|| -> Result<ReplayResult, BackendError> {
+                        let vars_map: Map<OpId, Constant> = vars.iter().copied().collect();
+                        // Resident chunks by slot, then fresh allocations.
+                        let mut slot_chunk: Map<OpId, ChunkId> = bound.into_iter().collect();
+                        let mut scalars: Map<OpId, Constant> = vars_map.clone();
+                        let mut fresh: Vec<(OpId, ChunkId)> = Vec::new();
+                        for cmd in &cmds {
+                            match cmd {
+                                Cmd::Launch { outputs, .. } => {
+                                    for (slot, dtype, dims) in outputs {
+                                        if slot_chunk.contains_key(slot) {
+                                            continue;
+                                        }
+                                        let bytes =
+                                            dims.iter().map(|d| d.eval(&vars_map)).fold(*dtype, |a, b| a * b);
+                                        if bytes < 0 {
+                                            return Err(BackendError {
+                                                status: ErrorStatus::MemoryAllocation,
+                                                context: format!("replay allocated negative bytes for {slot:?}").into(),
+                                            });
+                                        }
+                                        // Stable-address reuse first: steady-state
+                                        // replays land on the same chunks.
+                                        let id = match free_set
+                                            .iter()
+                                            .filter_map(|bid| {
+                                                let b = &buffers[*bid];
+                                                (b.bytes >= bytes).then_some((b.bytes, *bid))
+                                            })
+                                            .min()
+                                        {
+                                            Some((_, id)) => {
+                                                free_set.remove(&id);
+                                                id
+                                            }
+                                            None => {
+                                                let mut ptr: CUdeviceptr = 0;
+                                                unsafe { (cuMemAlloc)(&raw mut ptr, bytes as usize) }
+                                                    .check(ErrorStatus::MemoryAllocation)?;
+                                                assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
+                                                free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
+                                                buffers.push(CUDABuffer { ptr, bytes })
+                                            }
+                                        };
+                                        slot_chunk.insert(*slot, id);
+                                        fresh.push((*slot, id));
+                                    }
+                                }
+                                Cmd::Alias { class, to } => {
+                                    let chunk = *slot_chunk.get(to).ok_or_else(|| BackendError {
+                                        status: ErrorStatus::KernelLaunch,
+                                        context: format!("replay: alias target {to:?} is unplaced").into(),
+                                    })?;
+                                    slot_chunk.insert(*class, chunk);
+                                }
+                                Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
+                            }
+                        }
+                        // Slot resolution straight from the buffer slab.
+                        // No Placement values are ever constructed here:
+                        // they own their chunk and would release it.
+                        let ptr_of = |slot: &OpId| -> Result<u64, BackendError> {
+                            let chunk = slot_chunk.get(slot).ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: format!("replay: launch slot {slot:?} is unplaced").into(),
+                            })?;
+                            buffers.get(*chunk).map(|b| b.ptr).ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: format!("replay: unknown buffer for slot {slot:?}").into(),
+                            })
+                        };
+                        // Captured params for one launch: pinned
+                        // device-pointer slots plus boxed scalars (mirrors
+                        // submit_launch's assembly; the caller holds the
+                        // returned vec across the driver call).
+                        let params_of = |slots: &[OpId],
+                                         buffer_ptrs: &mut Vec<u64>,
+                                         scalar_values: &mut Vec<Box<[u8]>>|
+                         -> Result<Vec<*mut core::ffi::c_void>, BackendError> {
+                            for slot in slots {
+                                if slot_chunk.contains_key(slot) {
+                                    buffer_ptrs.push(ptr_of(slot)?);
+                                } else if !scalars.contains_key(slot) {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelLaunch,
+                                        context: format!("replay: launch slot {slot:?} is neither placed nor bound")
+                                            .into(),
+                                    });
+                                }
+                            }
+                            let mut params: Vec<*mut core::ffi::c_void> = Vec::with_capacity(slots.len());
+                            let mut buf_idx = 0usize;
+                            for slot in slots {
+                                if slot_chunk.contains_key(slot) {
+                                    let ptr = &buffer_ptrs[buf_idx];
+                                    buf_idx += 1;
+                                    let at: *const u64 = core::ptr::from_ref(ptr);
+                                    params.push(at.cast_mut().cast());
+                                } else {
+                                    scalar_values.push(scalars[slot].to_le_bytes().into());
+                                    let value = scalar_values.last().unwrap();
+                                    params.push(value.as_ptr().cast_mut().cast());
+                                }
+                            }
+                            Ok(params)
+                        };
+                        // Grid + block for a Module program under current
+                        // scalars, addressed by queue-local slot. Duplicates
+                        // submit_launch's evaluation: that fn submits, here
+                        // only the geometry is needed for capture-time
+                        // recording.
+                        let geometry_of = |program_id: DeviceProgramId,
+                                           slots: &[OpId]|
+                         -> Result<([u32; 3], [u32; 3]), BackendError> {
+                            let CUDAProgram::Module { lws, gws, .. } = &programs[program_id] else {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: "geometry of non-module program".into(),
+                                });
+                            };
+                            let grid = |gdim: &GwsDim| -> Dim {
+                                gdim.eval(&mut |ordinal| {
+                                    scalars
+                                        .get(&slots[ordinal])
+                                        .and_then(|c| c.as_dim())
+                                        .expect("gws param must be a Variable slot")
+                                })
+                            };
+                            let default_gws = GwsDim::Const(1);
+                            let (gx, gy, gz) = (
+                                grid(gws.first().unwrap_or(&default_gws)),
+                                grid(gws.get(1).unwrap_or(&default_gws)),
+                                grid(gws.get(2).unwrap_or(&default_gws)),
+                            );
+                            if gx < 0 || gy < 0 || gz < 0 || gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
+                                });
+                            }
+                            Ok((
+                                [gx as u32, gy as u32, gz as u32],
+                                [
+                                    u32::try_from(lws.first().copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(lws.get(1).copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(lws.get(2).copied().unwrap_or(1)).unwrap(),
+                                ],
+                            ))
+                        };
+                        // cuDNN programs rebuild their variant pack per
+                        // launch already — partitions holding one are
+                        // submitted directly and never captured.
+                        let has_cudnn = cmds.iter().any(|cmd| match cmd {
+                            Cmd::Launch { program, .. } => matches!(programs[program.program_id], CUDAProgram::Cudnn { .. }),
+                            _ => false,
+                        });
+                        if dry_run {
+                            return Ok(ReplayResult { fresh, graph: None });
+                        }
+                        if has_cudnn {
+                            // Direct submit, never captured: cuDNN rebuilds
+                            // its variant pack per launch anyway.
+                            let Some(cudnn) = cudnn.as_ref() else {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: "cuDNN library not loaded.".into(),
+                                });
+                            };
+                            let Some(handle) = cudnn_handle else {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: "cuDNN handle missing.".into(),
+                                });
+                            };
+                            for cmd in &cmds {
+                                let Cmd::Launch { program, args, .. } = cmd else { continue };
+                                match &programs[program.program_id] {
+                                    CUDAProgram::Module { function, .. } => {
+                                        let function = *function;
+                                let (grid, block) = geometry_of(program.program_id, args)?;
+                                let mut buffer_ptrs = Vec::new();
+                                        let mut scalar_values = Vec::new();
+                                        let mut kernel_params = params_of(args, &mut buffer_ptrs, &mut scalar_values)?;
+                                        unsafe {
+                                            (cuLaunchKernel)(
+                                                function,
+                                                grid[0],
+                                                grid[1],
+                                                grid[2],
+                                                block[0],
+                                                block[1],
+                                                block[2],
+                                                0,
+                                                streams[0].stream,
+                                                kernel_params.as_mut_ptr(),
+                                                ptr::null_mut(),
+                                            )
+                                        }
+                                        .check(ErrorStatus::KernelLaunch)?;
+                                    }
+                                    CUDAProgram::Cudnn { plan } => unsafe {
+                                        let mut variant_pack = ptr::null_mut();
+                                        if (cudnn.backend_create_descriptor)(
+                                            CUDNN_BACKEND_VARIANT_PACK_DESCRIPTOR,
+                                            &raw mut variant_pack,
+                                        ) != CUDNN_STATUS_SUCCESS
+                                        {
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelLaunch,
+                                                context: "cuDNN variant pack".into(),
+                                            });
+                                        }
+                                        let mut data_ptrs: Vec<*mut c_void> = Vec::with_capacity(args.len());
+                                        for slot in args {
+                                            if slot_chunk.contains_key(slot) {
+                                                data_ptrs.push(ptr_of(slot)? as *mut c_void);
+                                            } else {
+                                                let _ = (cudnn.backend_destroy_descriptor)(variant_pack);
+                                                todo!("scalar variant-pack entries in cuDNN launches");
+                                            }
+                                        }
+                                        let unique_ids: Vec<i64> = plan.arg_uids.clone();
+                                        let set_ok = (cudnn.backend_set_attribute)(
+                                            variant_pack,
+                                            CUDNN_ATTR_VARIANT_PACK_UNIQUE_IDS,
+                                            CUDNN_TYPE_INT64,
+                                            unique_ids.len() as i64,
+                                            unique_ids.as_ptr().cast(),
+                                        ) == CUDNN_STATUS_SUCCESS
+                                            && (cudnn.backend_set_attribute)(
+                                                variant_pack,
+                                                CUDNN_ATTR_VARIANT_PACK_DATA_POINTERS,
+                                                CUDNN_TYPE_VOID_PTR,
+                                                data_ptrs.len() as i64,
+                                                data_ptrs.as_ptr().cast(),
+                                            ) == CUDNN_STATUS_SUCCESS
+                                            && (if plan.workspace != 0 {
+                                                let ws_ptr: *mut c_void = plan.workspace as *mut c_void;
+                                                (cudnn.backend_set_attribute)(
+                                                    variant_pack,
+                                                    CUDNN_ATTR_VARIANT_PACK_WORKSPACE,
+                                                    CUDNN_TYPE_VOID_PTR,
+                                                    1,
+                                                    (&raw const ws_ptr).cast(),
+                                                ) == CUDNN_STATUS_SUCCESS
+                                            } else {
+                                                true
+                                            })
+                                            && (cudnn.backend_finalize)(variant_pack) == CUDNN_STATUS_SUCCESS;
+                                        if set_ok {
+                                            let _ = (cudnn.backend_execute)(handle, plan.plan, variant_pack);
+                                        }
+                                        let _ = (cudnn.backend_destroy_descriptor)(variant_pack);
+                                        if !set_ok {
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelLaunch,
+                                                context: "cuDNN variant pack config".into(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            return Ok(ReplayResult { fresh, graph: None });
+                        }
+                        // Fast tier: identical pointers and scalars — the
+                        // executable is untouched, stream order alone
+                        // serializes: relaunch with no other work.
+                        if let Some(id) = graph
+                            && let Some(g) = graphs.get(id)
+                            && g.vars == vars
+                        {
+                            let mut current = Vec::with_capacity(g.ptrs.len());
+                            for arg_slots in &g.node_args {
+                                let mut buffer_ptrs: Vec<u64> = Vec::new();
+                                let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
+                                params_of(arg_slots, &mut buffer_ptrs, &mut scalar_values)?;
+                                current.extend_from_slice(&buffer_ptrs);
+                            }
+                            if current == g.ptrs {
+                                unsafe { (cuGraphLaunch)(g.exec, streams[0].stream) }
+                                    .check(ErrorStatus::KernelLaunch)?;
+                                return Ok(ReplayResult { fresh, graph });
+                            }
+                        }
+                        // Recapture: re-record the partition into a fresh
+                        // temp graph under current addresses, grids, and
+                        // scalars, plus the metadata for the fast tier.
+                        let recaptured = (|| -> Result<(CUgraph, Vec<Vec<OpId>>, Vec<u64>), BackendError> {
+                            unsafe { (cuStreamBeginCapture)(streams[0].stream, 0) }
+                                .check(ErrorStatus::KernelLaunch)?;
+                            let mut node_args: Vec<Vec<OpId>> = Vec::new();
+                            let mut ptrs: Vec<u64> = Vec::new();
+                            for cmd in &cmds {
+                                let Cmd::Launch { program, args, .. } = cmd else { continue };
+                                // Capture path never holds cuDNN programs
+                                // (those take the direct path above).
+                                let CUDAProgram::Module { function, .. } = &programs[program.program_id] else {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelLaunch,
+                                        context: "capture of non-module program".into(),
+                                    });
+                                };
+                                let function = *function;
+                                let (grid, block) = geometry_of(program.program_id, args)?;
+                                let mut buffer_ptrs = Vec::new();
+                                let mut scalar_values = Vec::new();
+                                let mut kernel_params = params_of(args, &mut buffer_ptrs, &mut scalar_values)?;
+                                ptrs.extend_from_slice(&buffer_ptrs);
+                                unsafe {
+                                    (cuLaunchKernel)(
+                                        function,
+                                        grid[0],
+                                        grid[1],
+                                        grid[2],
+                                        block[0],
+                                        block[1],
+                                        block[2],
+                                        0,
+                                        streams[0].stream,
+                                        kernel_params.as_mut_ptr(),
+                                        ptr::null_mut(),
+                                    )
+                                }
+                                .check(ErrorStatus::KernelLaunch)?;
+                                node_args.push(args.clone());
+                            }
+                            let mut graph_raw: CUgraph = ptr::null_mut();
+                            unsafe { (cuStreamEndCapture)(streams[0].stream, &raw mut graph_raw) }
+                                .check(ErrorStatus::KernelLaunch)?;
+                            Ok((graph_raw, node_args, ptrs))
+                        })();
+                            // Update tier: an entry exists — swap the fresh
+                            // recording into the live executable. The
+                            // previous launch is async: drain first,
+                            // updating a running executable is undefined.
+                            if let Some(id) = graph
+                                && graphs.contains_id(id)
+                            {
+                                unsafe { (cuStreamSynchronize)(streams[0].stream) }
+                                    .check(ErrorStatus::KernelSync)?;
+                                let (tmp, node_args, ptrs) = match recaptured {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        graphs.remove(id);
+                                        return Err(e);
+                                    }
+                                };
+                                let exec = graphs.get(id).expect("replay: cached graph is missing").exec;
+                                let mut info = CUgraphExecUpdateResultInfo {
+                                    result: 0,
+                                    error_node: ptr::null_mut(),
+                                    error_from_node: ptr::null_mut(),
+                                };
+                                let updated = unsafe { (cuGraphExecUpdate)(exec, tmp, &raw mut info) }
+                                    .check(ErrorStatus::KernelLaunch)
+                                    .is_ok()
+                                    && info.result == 0;
+                                if updated {
+                                    unsafe { (cuGraphDestroy)(tmp) }
+                                        .check(ErrorStatus::Deinitialization)?;
+                                    if let Some(g) = graphs.get_mut(id) {
+                                        g.node_args = node_args;
+                                        g.ptrs = ptrs;
+                                        g.vars = vars.clone();
+                                    }
+                                    unsafe { (cuGraphLaunch)(exec, streams[0].stream) }
+                                        .check(ErrorStatus::KernelLaunch)?;
+                                    return Ok(ReplayResult { fresh, graph });
+                                }
+                                // Topology changed: replace the executable
+                                // under the same id, keep the temp only on
+                                // success so a failure keeps no half state.
+                                unsafe { (cuGraphExecDestroy)(exec) }
+                                    .check(ErrorStatus::Deinitialization)?;
+                                let mut new_exec: CUgraphExec = ptr::null_mut();
+                                if let Err(e) = unsafe {
+                                    (cuGraphInstantiate)(
+                                        &raw mut new_exec,
+                                        tmp,
+                                        ptr::null_mut(),
+                                        ptr::null_mut(),
+                                        0,
+                                    )
+                                }
+                                .check(ErrorStatus::KernelLaunch)
+                                {
+                                    unsafe { (cuGraphDestroy)(tmp) }
+                                        .check(ErrorStatus::Deinitialization)?;
+                                    graphs.remove(id);
+                                    return Err(e);
+                                }
+                                unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
+                                if let Some(g) = graphs.get_mut(id) {
+                                    *g = CapturedGraph { exec: new_exec, node_args, ptrs, vars: vars.clone() };
+                                }
+                                unsafe { (cuGraphLaunch)(new_exec, streams[0].stream) }
+                                    .check(ErrorStatus::KernelLaunch)?;
+                                return Ok(ReplayResult { fresh, graph });
+                            }
+                            // Capture path: no entry — instantiate the fresh
+                            // recording and store it.
+                            let (tmp, node_args, ptrs) = recaptured?;
+                            let mut exec: CUgraphExec = ptr::null_mut();
+                            if let Err(e) = unsafe {
+                                (cuGraphInstantiate)(&raw mut exec, tmp, ptr::null_mut(), ptr::null_mut(), 0)
+                            }
+                            .check(ErrorStatus::KernelLaunch)
+                            {
+                                unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
+                                return Err(e);
+                            }
+                            unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
+                            let id = graphs.push(CapturedGraph { exec, node_args, ptrs, vars: vars.clone() });
+                            unsafe { (cuGraphLaunch)(exec, streams[0].stream) }
+                                .check(ErrorStatus::KernelLaunch)?;
+                            Ok(ReplayResult { fresh, graph: Some(id) })
+                    })();
+                    let _ = reply.send(result);
+                }
+                CUDACommand::CopyHtoD { src, dst, bytes, reply } => {
+                    let result = (|| -> Result<(), BackendError> {
+                        // Sync point: drain first so no in-flight writer
+                        // aliases the fresh destination.
+                        for st in &streams {
+                            unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::MemoryCopyP2P)?;
+                        }
+                        let Some(dst_buf) = buffers.get(dst) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::MemoryCopyP2P,
+                                context: "upload into unknown buffer".into(),
+                            });
+                        };
+                        let bytes = bytes.min(dst_buf.bytes);
+                        if std::env::var("ZYX_DRY_RUN").is_err() {
+                            unsafe { (cuMemcpyHtoDAsync)(dst_buf.ptr, src.cast(), bytes as usize, streams[0].stream) }
+                                .check(ErrorStatus::MemoryCopyP2P)?;
+                            unsafe { (cuStreamSynchronize)(streams[0].stream) }.check(ErrorStatus::MemoryCopyP2P)?;
+                        }
+                        Ok(())
+                    })();
+                    let _ = reply.send(result);
+                }
+                CUDACommand::CopyDtoD { src, dst, bytes, reply } => {
+                    let result = (|| -> Result<(), BackendError> {
+                        for st in &streams {
+                            unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::MemoryCopyP2P)?;
+                        }
+                        let (src_ptr, dst_ptr) = match (buffers.get(src), buffers.get(dst)) {
+                            (Some(s), Some(d)) => (s.ptr, d.ptr),
+                            _ => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::MemoryCopyP2P,
+                                    context: "device copy of unknown buffer".into(),
+                                });
+                            }
+                        };
+                        if std::env::var("ZYX_DRY_RUN").is_err() {
+                            unsafe { (cuMemcpyDtoDAsync)(dst_ptr, src_ptr, bytes as usize, streams[0].stream) }
+                                .check(ErrorStatus::MemoryCopyP2P)?;
+                            unsafe { (cuStreamSynchronize)(streams[0].stream) }.check(ErrorStatus::MemoryCopyP2P)?;
+                        }
+                        Ok(())
+                    })();
+                    let _ = reply.send(result);
+                }
+                CUDACommand::DestroyGraph { id } => {
+                    // Tolerant: an unknown id is already gone (recapture
+                    // replaced it, or the worker never stored it). Drain:
+                    // the handle may drop while its launch is in flight.
+                    let _ = unsafe { (cuStreamSynchronize)(streams[0].stream) }.check(ErrorStatus::KernelSync);
+                    if graphs.contains_id(id) {
+                        let old = unsafe { graphs.remove_and_return(id) };
+                        let _ = unsafe { (cuGraphExecDestroy)(old.exec) }.check(ErrorStatus::Deinitialization);
+                    }
                 }
                 CUDACommand::ReleaseProgram { program_id } => {
                     match &programs[program_id] {
@@ -1140,14 +1675,6 @@ impl CUDAMemoryPool {
         reply_rx.recv().unwrap().unwrap_or(false)
     }
 
-    /// Scratch for queue intermediaries: reuses the smallest fitting free
-    /// buffer, else allocates fresh. Never fails on fragmentation.
-    pub fn allocate_scratch(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::AllocateScratch { bytes, reply }).unwrap();
-        reply_rx.recv().unwrap()
-    }
-
     /// Put single buffer into the free list
     pub fn release(&mut self, buffer_id: ChunkId) {
         self.tx.send(CUDACommand::Release { buffer_id }).unwrap();
@@ -1215,21 +1742,9 @@ impl CUDADevice {
         reply_rx.recv().unwrap()
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn launch(&mut self, program_id: DeviceProgramId, pool: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
-        // Buffers live worker-side; the pool handle only identifies the device.
-        debug_assert_eq!(pool, self.memory_pool);
-        // Fire and forget: the launch joins the worker's micro-batch window.
-        // Async submission errors surface at the next sync point
-        // (pool_to_host / launch_timed).
-        self.tx
-            .send(CUDACommand::Launch { program_id, args: args.into() })
-            .map_err(|_| BackendError { status: ErrorStatus::KernelLaunch, context: "cuda worker thread died".into() })
-    }
-
     /// Timed launch for autotune. Returns the kernel's run time in nanos,
-    /// measured uncontended: the worker flushes its pending window, drains
-    /// all queues, then runs this kernel solo bracketed by timing events.
+    /// measured uncontended: the worker drains all queues, then runs this
+    /// kernel solo bracketed by timing events.
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn launch_timed(&mut self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<u64, BackendError> {
         let (reply, reply_rx) = channel();
@@ -1296,6 +1811,132 @@ impl CUDADevice {
                 mm.out,
             );
         }
+    }
+}
+
+/// Preplanned CUDA partition: the ordered commands plus per-command death
+/// lists plus the worker-side captured graph, if this partition has run
+/// before. Replay ships the whole partition to the worker in one roundtrip
+/// (bound slots, scalars, cached-graph hint); the worker allocates unbound
+/// defs up front — nothing allocates inside the captured region — captures
+/// on first sight, updates + relaunches on repeats. The graph slot is
+/// interior-mutable: plans replay through shared references, and replacing
+/// the handle destroys the old executable on the worker via `Drop`.
+#[derive(Debug)]
+pub(crate) struct CudaPartition {
+    cmds: Vec<Cmd>,
+    deaths: Vec<Vec<OpId>>,
+    pub(crate) dev: u16,
+    graph: Mutex<Option<CudaGraph>>,
+}
+
+impl CUDADevice {
+    pub(crate) fn schedule(cmds: Vec<Cmd>, outputs: &Set<OpId>, live_out: Set<OpId>, dev: u16) -> CudaPartition {
+        let mut last_use: Map<OpId, usize> = Map::default();
+        for (idx, cmd) in cmds.iter().enumerate() {
+            for r in cmd.reads() {
+                last_use.insert(r, idx);
+            }
+        }
+        let mut pinned = outputs.clone();
+        pinned.extend(live_out);
+        let mut deaths: Vec<Vec<OpId>> = vec![Vec::new(); cmds.len()];
+        for (slot, idx) in last_use {
+            if !pinned.contains(&slot) {
+                deaths[idx].push(slot);
+            }
+        }
+        CudaPartition { cmds, deaths, dev, graph: Mutex::new(None) }
+    }
+
+    /// Copy executing a transfer into this device's pool: host uploads go
+    /// through a blocking HtoD, same-pool pairs through a blocking DtoD,
+    /// everything else is later work. Single-shard placements only.
+    pub fn copy(&self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
+        debug_assert!(bytes >= 0, "CUDA copy of negative bytes");
+        let [src_shard] = &src.shards[..] else {
+            todo!("CUDA copy of multi-shard source placement")
+        };
+        let [dst_shard] = &dst.shards[..] else {
+            todo!("CUDA copy of multi-shard destination placement")
+        };
+        debug_assert_eq!(dst_shard.pool, self.memory_pool, "CUDA copy destination is not on this device");
+        let dead = |_| BackendError { status: ErrorStatus::MemoryCopyP2P, context: "cuda worker thread died".into() };
+        let dead_rx =
+            |_: std::sync::mpsc::RecvError| BackendError { status: ErrorStatus::MemoryCopyP2P, context: "cuda worker hung up".into() };
+        if src_shard.pool == self.memory_pool {
+            let (reply, reply_rx) = channel();
+            self.tx
+                .send(CUDACommand::CopyDtoD { src: src_shard.chunk, dst: dst_shard.chunk, bytes, reply })
+                .map_err(dead)?;
+            return reply_rx.recv().map_err(dead_rx)?;
+        }
+        if src_shard.pool == Pool::Host {
+            // The host lock is held across the blocking roundtrip: the
+            // source pointer stays valid. The worker never takes it.
+            let host = super::host::pool();
+            let pool = super::lock(Pool::Host, host);
+            let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
+            let (reply, reply_rx) = channel();
+            self.tx
+                .send(CUDACommand::CopyHtoD { src: src_ptr, dst: dst_shard.chunk, bytes, reply })
+                .map_err(dead)?;
+            return reply_rx.recv().map_err(dead_rx)?;
+        }
+        todo!("CUDA copy from {:?}", src_shard.pool)
+    }
+}
+
+impl CudaPartition {
+    pub(crate) fn replay(
+        &self,
+        dev: &mut CUDADevice,
+        resolved: &mut Map<OpId, Arc<Placement>>,
+        vars: &Map<OpId, Constant>,
+    ) -> Result<(), BackendError> {
+        let my_pool = dev.memory_pool;
+        let mut bound = Vec::with_capacity(resolved.len());
+        for (slot, placement) in resolved.iter() {
+            let Some(shard) = placement.shards.iter().find(|s| s.pool == my_pool) else {
+                continue;
+            };
+            bound.push((*slot, shard.chunk));
+        }
+        // Sorted: the worker compares vars vectors directly for the
+        // fast-vs-update decision.
+        let mut vars_vec: Vec<(OpId, Constant)> = vars.iter().map(|(s, c)| (*s, *c)).collect();
+        vars_vec.sort_unstable_by_key(|(s, _)| *s);
+        let cached = self.graph.lock().expect("cuda partition graph slot poisoned").as_ref().map(|g| g.id);
+        let (reply, reply_rx) = channel();
+        let dead = |_| BackendError { status: ErrorStatus::KernelLaunch, context: "cuda worker thread died".into() };
+        let dead_rx =
+            |_: std::sync::mpsc::RecvError| BackendError { status: ErrorStatus::KernelLaunch, context: "cuda worker hung up".into() };
+        dev.tx
+            .send(CUDACommand::Replay {
+                cmds: self.cmds.clone(),
+                bound,
+                vars: vars_vec,
+                graph: cached,
+                reply,
+            })
+            .map_err(dead)?;
+        let res = reply_rx.recv().map_err(dead_rx)??;
+        if let Some(id) = res.graph {
+            let mut slot = self.graph.lock().expect("cuda partition graph slot poisoned");
+            // Repeats return the id they were given: only a fresh id
+            // replaces the handle (replacing with the same id would
+            // destroy the live executable via `Drop`).
+            if slot.as_ref().is_none_or(|g| g.id != id) {
+                *slot = Some(CudaGraph { id, tx: dev.tx.clone() });
+            }
+        }
+        for (slot, chunk) in res.fresh {
+            resolved.insert(slot, Arc::new(Placement { shards: vec![Shard { pool: my_pool, chunk }] }));
+        }
+        for dead in self.deaths.iter().flatten() {
+            resolved.remove(dead);
+        }
+        Ok(())
     }
 }
 
@@ -1978,20 +2619,17 @@ enum CUgraphNodeType {
     MemAlloc = 11,
     MemFree = 12,
 }
-/// Kernel-node params for capture-free node updates.
+/// Kernel-node params for capture-free node updates. v2 layout (CUDA 12+):
+/// the trailing `kern`/`ctx` are only referenced when `func` is NULL —
+/// `cuGraphExecUpdate` result info: only the status word is read here.
+/// Full header layout (`CUgraphExecUpdateResultInfo_v1`); `result == 0`
+/// is `CU_GRAPH_EXEC_UPDATE_SUCCESS`.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-struct CUDA_KERNEL_NODE_PARAMS {
-    func: CUfunction,
-    grid_dim_x: c_uint,
-    grid_dim_y: c_uint,
-    grid_dim_z: c_uint,
-    block_dim_x: c_uint,
-    block_dim_y: c_uint,
-    block_dim_z: c_uint,
-    shared_mem_bytes: c_uint,
-    kernel_params: *mut *mut c_void,
-    extra: *mut *mut c_void,
+struct CUgraphExecUpdateResultInfo {
+    result: u32,
+    error_node: CUgraphNode,
+    error_from_node: CUgraphNode,
 }
 #[allow(unused)]
 #[repr(u32)]
