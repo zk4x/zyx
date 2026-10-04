@@ -1285,6 +1285,11 @@ fn spawn_worker(
                                 return Ok(ReplayResult { fresh, graph });
                             }
                         }
+                        // TODO: multi-stream launch parallelism — assign
+                        // independent launches to different streams by slot
+                        // affinity (as OpenCL partitions do across queues).
+                        // Capture, update, and relaunch all pin to
+                        // streams[0] today, so launches serialize.
                         // Recapture: re-record the partition into a fresh
                         // temp graph under current addresses, grids, and
                         // scalars, plus the metadata for the fast tier.

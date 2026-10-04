@@ -9,11 +9,15 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{ChunkId, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Pool, gws_from_kernel};
+use super::{
+    ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Placement, Pool, Shard,
+    gws_from_kernel,
+};
 use crate::{
     DType,
+    dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{Kernel, Op, RangeKind},
+    kernel::{Kernel, Op, OpId, RangeKind},
     shape::Dim,
     slab::Slab,
 };
@@ -44,8 +48,10 @@ pub struct OpenCLConfig {
     /// If set to None, uses all available platforms.
     /// default = None
     pub platform_ids: Option<Vec<usize>>,
-    /// Number of in-order command queues per device that the micro-batch
-    /// window is distributed over.
+    /// Number of in-order command queues per device. Queue assignment is
+    /// static: the schedule spreads slot-disjoint launch chains across
+    /// queues (slot affinity); the worker submits each command to its
+    /// assigned queue with tail-event waits.
     /// default = 8
     pub queues: Option<usize>,
 }
@@ -90,9 +96,6 @@ pub(super) struct OpenCLQueue {
     queue: *mut c_void, // points to device queue
 }
 
-/// Pending commands accumulate until the micro-batch window is flushed.
-const MICRO_BATCH_WINDOW: usize = 100;
-
 enum Command {
     Allocate {
         bytes: Dim,
@@ -112,24 +115,25 @@ enum Command {
         reply: Sender<Result<bool, BackendError>>,
     },
     /// Blocking read-back: the reply is sent after the data arrived in
-    /// host memory. This is a sync point — all pending work is submitted
-    /// and every queue is drained first.
+    /// host memory. Sync point — every queue drains first.
     PoolToHost {
         src: ChunkId,
         dst: *mut u8,
         bytes: Dim,
         reply: Sender<Result<(), BackendError>>,
     },
-    /// Async copy into this pool's buffer, fire-and-forget: appended to the
-    /// pending micro-batch window, submitted (with computed waits) when the
-    /// window flushes. Once the copy completes, this worker releases the
-    /// source buffer back to its own pool (foreign sweep).
+    /// Blocking copy into this pool's buffer: the worker drains every
+    /// queue first, runs the transfer on queue 0, and replies after the
+    /// data arrived. Same-pool pairs use CopyBuffer; anything else reads
+    /// from `src_ptr` (host staging or a disk file mapping — valid across
+    /// the blocking call, released caller-side after the reply).
     Copy {
         src_pool: Pool,
         src_buf: ChunkId,
         src_ptr: *const u8,
         bytes: Dim,
         dst_buf: ChunkId,
+        reply: Sender<Result<(), BackendError>>,
     },
     Compile {
         name: Box<str>,
@@ -139,14 +143,25 @@ enum Command {
         params: Vec<ParamKind>,
         reply: Sender<Result<DeviceProgramId, BackendError>>,
     },
-    /// Fire-and-forget kernel launch: appended to the pending micro-batch
-    /// window; submitted (with computed waits) when the window flushes.
-    Launch {
-        program_id: DeviceProgramId,
-        args: Vec<LaunchArg>,
+    /// Run a whole partition at once — one roundtrip per replay. `cmds`
+    /// are the schedule-ordered launches/aliases; `queues`/`waits` their
+    /// static queue assignment + cross-queue wait sets; `bound` maps
+    /// already-placed slots to chunks; `vars` are the scalar slots. The
+    /// worker allocates unbound defs up front, submits every launch to
+    /// its queue, releases dead chunks, and replies the fresh slot→chunk
+    /// bindings. No capture: repeats resubmit (stable addresses come from
+    /// free-list best-fit reuse).
+    Replay {
+        cmds: Vec<Cmd>,
+        queues: Vec<usize>,
+        waits: Vec<Vec<usize>>,
+        bound: Vec<(OpId, ChunkId)>,
+        vars: Vec<(OpId, Constant)>,
+        deaths: Vec<Vec<OpId>>,
+        reply: Sender<Result<Vec<(OpId, ChunkId)>, BackendError>>,
     },
-    /// Timed launch for autotune: flush + drain first (uncontended timing),
-    /// then launch solo on one queue, reply nanos.
+    /// Timed launch for autotune: drain every queue first (uncontended
+    /// timing), then run the kernel solo on queue 0 and reply nanos.
     LaunchTimed {
         program_id: DeviceProgramId,
         args: Vec<LaunchArg>,
@@ -354,6 +369,17 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
         *const *mut c_void,
         *mut *mut c_void,
     ) -> OpenCLStatus = *unsafe { opencl.get(b"clEnqueueWriteBuffer\0") }?;
+    let clEnqueueCopyBuffer: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        usize,
+        usize,
+        usize,
+        cl_uint,
+        *const *mut c_void,
+        *mut *mut c_void,
+    ) -> OpenCLStatus = *unsafe { opencl.get(b"clEnqueueCopyBuffer\0") }?;
     let clCreateBuffer: unsafe extern "C" fn(*mut c_void, cl_bitfield, usize, *mut c_void, *mut OpenCLStatus) -> *mut c_void =
         *unsafe { opencl.get(b"clCreateBuffer\0") }?;
     let clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus = *unsafe { opencl.get(b"clFinish\0") }?;
@@ -457,6 +483,9 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
             // Cast to usize for Send safety through the closure
             let worker_device: usize = dev as usize;
             let worker_library = library.clone();
+            // This worker's own pool: submission resolves launch-arg
+            // placements through the shard addressed to it.
+            let worker_pool = Pool::OpenCL(u16::try_from(pools.len()).expect("So many OpenCL devices..."));
             thread::spawn({
                 let free_bytes_atomic = Arc::clone(&free_bytes_atomic);
                 move || {
@@ -505,28 +534,16 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                     let mut free_set: Set<ChunkId> = Set::default();
                     let mut programs: Slab<DeviceProgramId, OpenCLProgram> = Slab::new();
 
-                    // Pending micro-batch window: launches and copies
-                    // accumulate here in program order until
-                    // MICRO_BATCH_WINDOW is reached (or a sync point
-                    // arrives), then `flush_window` distributes them over
-                    // the in-order queues at once.
-                    let mut pending: Vec<Pending> = Vec::new();
-                    // Last queue that WROTE each buffer (RAW dependencies,
-                    // with the tail event of that write) and last queue that
-                    // used it at all (WAR dependencies). These persist across
-                    // windows: a consumer in window N+1 must still wait for a
-                    // producer from window N if it lands on a different queue.
+                    // Submission state, all worker-local. `tails` holds one
+                    // in-flight tail event per queue (schedule-assigned
+                    // cross-queue waits resolve against these). `writer`
+                    // maps each chunk to its last writer (RAW) and
+                    // `last_use` to its last touch of any kind (WAR) —
+                    // reused stable addresses stay ordered against prior
+                    // in-flight work on other queues.
+                    let mut tails: Vec<*mut c_void> = vec![ptr::null_mut(); queues.len()];
                     let mut writer: Map<ChunkId, (usize, *mut c_void)> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
                     let mut last_use: Map<ChunkId, (usize, *mut c_void)> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
-                    // Foreign source buffers of in-flight copies:
-                    // (source pool, source buffer, completion event). Once the
-                    // event completes, the source buffer is released back to
-                    // its own pool (sweep_foreign).
-                    let mut foreign_dead: Vec<(Pool, ChunkId, *mut c_void)> = Vec::new();
-                    // First async submission error since the last sync point
-                    // (a failed fire-and-forget launch surfaces here, at the
-                    // next PoolToHost / LaunchTimed).
-                    let mut last_error: Option<BackendError> = None;
 
                     // Unblock SIGABRT so it can be delivered (absorbed by the no-op handler)
                     const SIG_UNBLOCK: i32 = 1;
@@ -538,10 +555,6 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                     }
 
                     'work_thread_loop: while let Ok(cmd) = rx.recv() {
-                        // Poll deferred foreign releases: reap any source
-                        // buffer whose copy event completed. Cheap and
-                        // usually a no-op.
-                        sweep_foreign(&mut foreign_dead, clGetEventInfo, clReleaseEvent);
                         match cmd {
                             Command::Allocate { bytes, reply } => {
                                 // Best-fit from the free list first (stable
@@ -581,8 +594,8 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                             Command::Release { buffer_id } => {
                                 // Put the id on the free list for
                                 // stable-address reuse. Frees nothing: VRAM is
-                                // reclaimed only by Dispose. Dependency state
-                                // (`writer`/`last_use`) stays: a claimed
+                                // reclaimed only by Dispose. Chunk dependency
+                                // state (`writer`/`last_use`) stays: a claimed
                                 // address keeps waiting on its prior work.
                                 if !buffers.contains_id(buffer_id) {
                                     debug_assert!(false, "release of unknown OpenCL buffer {buffer_id:?}");
@@ -593,23 +606,14 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                             }
                             Command::Dispose => {
                                 // The only reclamation: drain every in-order
-                                // queue (completion of all queues implies
-                                // completion of every queued use of every free
-                                // buffer), then free the whole list at once.
-                                // Every released id becomes invalid.
+                                // queue, release every tracked event, then
+                                // free the whole list at once. Every released
+                                // id becomes invalid.
                                 for q in &queues {
                                     let _ = unsafe { (clFinish)(q.queue) }.check(ErrorStatus::MemoryDeallocation);
                                 }
-                                sweep_foreign(&mut foreign_dead, clGetEventInfo, clReleaseEvent);
+                                release_all_events(&mut tails, &mut writer, &mut last_use, clReleaseEvent);
                                 for buffer_id in core::mem::take(&mut free_set) {
-                                    let mut retired = Vec::new();
-                                    if let Some((_, old)) = writer.remove(&buffer_id) {
-                                        retired.push(old);
-                                    }
-                                    if let Some((_, old)) = last_use.remove(&buffer_id) {
-                                        retired.push(old);
-                                    }
-                                    release_distinct(retired, clReleaseEvent);
                                     let OpenCLBuffer { ptr, bytes } = buffers[buffer_id];
                                     debug_assert!(!ptr.is_null(), "deallocating null buffer is invalid");
                                     let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::MemoryDeallocation);
@@ -629,64 +633,68 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                 }
                                 let _ = reply.send(Ok(ok));
                             }
-                            Command::Copy { src_pool, src_buf, src_ptr, bytes, dst_buf } => {
-                                // Fire-and-forget: append to the micro-batch
-                                // window; the batched-submission algorithm
-                                // submits it (with computed waits) when the
-                                // window flushes.
-                                pending.push(Pending::Copy { src_pool, src_buf, src_ptr, bytes, dst: dst_buf });
-                                if pending.len() >= MICRO_BATCH_WINDOW
-                                    && let Err(err) = flush_window(
-                                        &mut pending,
-                                        &queues,
-                                        &buffers,
-                                        &programs,
-                                        &mut writer,
-                                        &mut last_use,
-                                        &mut foreign_dead,
-                                        debug_dev,
-                                        clEnqueueNDRangeKernel,
-                                        clEnqueueWriteBuffer,
-                                        clSetKernelArg,
-                                        clReleaseEvent,
-                                    )
-                                    && last_error.is_none()
-                                {
-                                    last_error = Some(err);
+                            Command::Copy { src_pool, src_buf, src_ptr, bytes, dst_buf, reply } => {
+                                // Blocking: drain every queue (prior launches
+                                // on any queue are ordered before this), run
+                                // the transfer on queue 0, reply after the
+                                // data arrived. Same-pool pairs use
+                                // CopyBuffer; hosted sources (host staging or
+                                // a disk mapping) upload from `src_ptr`.
+                                for q in &queues {
+                                    if let Err(err) = unsafe { (clFinish)(q.queue) }.check(ErrorStatus::MemoryCopyP2P) {
+                                        let _ = reply.send(Err(err));
+                                        continue 'work_thread_loop;
+                                    }
                                 }
+                                release_all_events(&mut tails, &mut writer, &mut last_use, clReleaseEvent);
+                                let dst_ptr = buffers[dst_buf].ptr;
+                                debug_assert!(!dst_ptr.is_null(), "copy into null memory. Internal bug.");
+                                let status = if src_pool == worker_pool {
+                                    let src_ptr = buffers[src_buf].ptr;
+                                    debug_assert!(!src_ptr.is_null(), "copy from null memory. Internal bug.");
+                                    unsafe {
+                                        (clEnqueueCopyBuffer)(
+                                            queues[0].queue,
+                                            src_ptr,
+                                            dst_ptr,
+                                            0,
+                                            0,
+                                            bytes as usize,
+                                            0,
+                                            ptr::null(),
+                                            ptr::null_mut(),
+                                        )
+                                    }
+                                    .check(ErrorStatus::MemoryCopyP2P)
+                                } else {
+                                    debug_assert!(!src_ptr.is_null(), "copy from null host memory. Internal bug.");
+                                    unsafe {
+                                        (clEnqueueWriteBuffer)(
+                                            queues[0].queue,
+                                            dst_ptr,
+                                            CL_BLOCKING,
+                                            0,
+                                            bytes as usize,
+                                            src_ptr.cast(),
+                                            0,
+                                            ptr::null(),
+                                            ptr::null_mut(),
+                                        )
+                                    }
+                                    .check(ErrorStatus::MemoryCopyH2P)
+                                };
+                                let _ = reply.send(status);
                             }
                             Command::PoolToHost { src, dst, bytes, reply } => {
-                                // Sync point: submit everything pending, drain
-                                // all queues, surface async submission errors,
-                                // then read back.
-                                if let Err(err) = flush_window(
-                                    &mut pending,
-                                    &queues,
-                                    &buffers,
-                                    &programs,
-                                    &mut writer,
-                                    &mut last_use,
-                                    &mut foreign_dead,
-                                    debug_dev,
-                                    clEnqueueNDRangeKernel,
-                                    clEnqueueWriteBuffer,
-                                    clSetKernelArg,
-                                    clReleaseEvent,
-                                ) && last_error.is_none()
-                                {
-                                    last_error = Some(err);
-                                }
+                                // Sync point: drain every queue, then read
+                                // back on queue 0.
                                 for q in &queues {
                                     if let Err(err) = unsafe { (clFinish)(q.queue) }.check(ErrorStatus::MemoryCopyP2H) {
                                         let _ = reply.send(Err(err));
                                         continue 'work_thread_loop;
                                     }
                                 }
-                                sweep_foreign(&mut foreign_dead, clGetEventInfo, clReleaseEvent);
-                                if let Some(err) = last_error.take() {
-                                    let _ = reply.send(Err(err));
-                                    continue;
-                                }
+                                release_all_events(&mut tails, &mut writer, &mut last_use, clReleaseEvent);
                                 let OpenCLBuffer { ptr, .. } = buffers[src];
                                 debug_assert!(!ptr.is_null(), "Trying to read null memory. Internal bug.");
                                 let status = unsafe {
@@ -756,82 +764,148 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                 let program_id = programs.push(OpenCLProgram { program, kernel, lws, gws, params });
                                 let _ = reply.send(Ok(program_id));
                             }
-                            Command::Launch { program_id, args } => {
-                                // Fire and forget: append to the micro-batch
-                                // window; the batched-submission algorithm
-                                // assigns it a queue (with computed waits)
-                                // when the window flushes.
-                                pending.push(Pending::Launch { program_id, args });
-                                if pending.len() >= MICRO_BATCH_WINDOW
-                                    && let Err(err) = flush_window(
-                                        &mut pending,
-                                        &queues,
-                                        &buffers,
-                                        &programs,
-                                        &mut writer,
-                                        &mut last_use,
-                                        &mut foreign_dead,
-                                        debug_dev,
-                                        clEnqueueNDRangeKernel,
-                                        clEnqueueWriteBuffer,
-                                        clSetKernelArg,
-                                        clReleaseEvent,
-                                    )
-                                    && last_error.is_none()
-                                {
-                                    last_error = Some(err);
-                                }
+                            Command::Replay { cmds, queues: assign, waits, bound, vars, deaths, reply } => {
+                                // One roundtrip per partition replay.
+                                // Allocation is per-command, parallelism-first:
+                                // each launch's outputs reuse a free chunk
+                                // only when it adds no wait (same queue or
+                                // tail already complete); otherwise fresh VRAM
+                                // — blocking reuse to save memory would
+                                // serialize parallel chains. Deterministic
+                                // order in, stable addresses out.
+                                let result = (|| -> Result<Vec<(OpId, ChunkId)>, BackendError> {
+                                    let vars_map: Map<OpId, Constant> = vars.into_iter().collect();
+                                    let mut slot_chunk: Map<OpId, ChunkId> = bound.into_iter().collect();
+                                    let mut fresh: Vec<(OpId, ChunkId)> = Vec::new();
+                                    debug_assert_eq!(cmds.len(), assign.len(), "replay queue assignment length mismatch");
+                                    debug_assert_eq!(cmds.len(), waits.len(), "replay wait set length mismatch");
+                                    for (idx, cmd) in cmds.iter().enumerate() {
+                                        match cmd {
+                                            Cmd::Launch { program, args, outputs } => {
+                                                let queue = assign[idx];
+                                                for (slot, dtype, dims) in outputs {
+                                                    if slot_chunk.contains_key(slot) {
+                                                        continue;
+                                                    }
+                                                    let bytes =
+                                                        dims.iter().map(|d| d.eval(&vars_map)).fold(*dtype, |a, b| a * b);
+                                                    if bytes < 0 {
+                                                        return Err(BackendError {
+                                                            status: ErrorStatus::MemoryAllocation,
+                                                            context: format!(
+                                                                "replay allocated negative bytes for {slot:?}"
+                                                            )
+                                                            .into(),
+                                                        });
+                                                    }
+                                                    let id = best_parallel_fit(
+                                                        &free_set,
+                                                        &buffers,
+                                                        &writer,
+                                                        &last_use,
+                                                        queue,
+                                                        bytes,
+                                                        clGetEventInfo,
+                                                    )
+                                                    .or_else(|| {
+                                                        if bytes > free_bytes_atomic.load(Ordering::SeqCst) as i64 {
+                                                            return None;
+                                                        }
+                                                        let mut status = OpenCLStatus::CL_SUCCESS;
+                                                        let buffer = unsafe {
+                                                            clCreateBuffer(
+                                                                context,
+                                                                CL_MEM_READ_WRITE,
+                                                                bytes as usize,
+                                                                ptr::null_mut(),
+                                                                &raw mut status,
+                                                            )
+                                                        };
+                                                        if status.check(ErrorStatus::MemoryAllocation).is_err() {
+                                                            return None;
+                                                        }
+                                                        free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
+                                                        Some(buffers.push(OpenCLBuffer { ptr: buffer, bytes }))
+                                                    })
+                                                    .ok_or(BackendError {
+                                                        status: ErrorStatus::MemoryAllocation,
+                                                        context: "Allocation failure".into(),
+                                                    })?;
+                                                    free_set.remove(&id);
+                                                    slot_chunk.insert(*slot, id);
+                                                    fresh.push((*slot, id));
+                                                }
+                                                submit_slots(
+                                                    &programs,
+                                                    &buffers,
+                                                    program.program_id,
+                                                    args,
+                                                    &slot_chunk,
+                                                    &vars_map,
+                                                    queue,
+                                                    &queues,
+                                                    &waits[idx],
+                                                    &mut tails,
+                                                    &mut writer,
+                                                    &mut last_use,
+                                                    clEnqueueNDRangeKernel,
+                                                    clSetKernelArg,
+                                                    clReleaseEvent,
+                                                )?;
+                                            }
+                                            Cmd::Alias { class, to } => {
+                                                let chunk = *slot_chunk.get(to).ok_or_else(|| BackendError {
+                                                    status: ErrorStatus::KernelLaunch,
+                                                    context: format!("replay: alias target {to:?} is unplaced").into(),
+                                                })?;
+                                                slot_chunk.insert(*class, chunk);
+                                            }
+                                            Cmd::Copy { .. } => {
+                                                unreachable!("copies are Copy partitions, never device runs")
+                                            }
+                                        }
+                                        for dead in &deaths[idx] {
+                                            if let Some(chunk) = slot_chunk.remove(dead) {
+                                                // Alias-shared chunks die twice;
+                                                // the guard keeps one entry.
+                                                if !free_set.contains(&chunk) {
+                                                    free_set.insert(chunk);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Ok(fresh)
+                                })();
+                                let _ = reply.send(result);
                             }
                             Command::LaunchTimed { program_id, args, reply } => {
-                                // Uncontended timing for autotune: submit the
-                                // pending window, drain every queue, surface
-                                // async errors, then run the kernel solo.
-                                if let Err(err) = flush_window(
-                                    &mut pending,
-                                    &queues,
-                                    &buffers,
-                                    &programs,
-                                    &mut writer,
-                                    &mut last_use,
-                                    &mut foreign_dead,
-                                    debug_dev,
-                                    clEnqueueNDRangeKernel,
-                                    clEnqueueWriteBuffer,
-                                    clSetKernelArg,
-                                    clReleaseEvent,
-                                ) && last_error.is_none()
-                                {
-                                    last_error = Some(err);
-                                }
+                                // Uncontended timing for autotune: drain
+                                // every queue, then run the kernel solo on
+                                // queue 0.
                                 for q in &queues {
                                     if let Err(err) = unsafe { (clFinish)(q.queue) }.check(ErrorStatus::KernelSync) {
                                         let _ = reply.send(Err(err));
                                         continue 'work_thread_loop;
                                     }
                                 }
-                                sweep_foreign(&mut foreign_dead, clGetEventInfo, clReleaseEvent);
-                                if let Some(err) = last_error.take() {
-                                    let _ = reply.send(Err(err));
-                                    continue;
-                                }
+                                release_all_events(&mut tails, &mut writer, &mut last_use, clReleaseEvent);
                                 let start = Instant::now();
                                 let result = submit_launch(
                                     &programs,
                                     &buffers,
+                                    worker_pool,
                                     program_id,
                                     &args,
-                                    queues[0].queue,
-                                    &[],
+                                    &queues,
+                                    &mut tails,
+                                    &mut writer,
+                                    &mut last_use,
                                     clEnqueueNDRangeKernel,
                                     clSetKernelArg,
+                                    clReleaseEvent,
                                 )
-                                .and_then(|event| {
-                                    let r = unsafe { (clFinish)(queues[0].queue) }.check(ErrorStatus::KernelSync);
-                                    if !event.is_null() {
-                                        let _ = unsafe { (clReleaseEvent)(event) };
-                                    }
-                                    r
-                                });
+                                .and_then(|()| unsafe { (clFinish)(queues[0].queue) }.check(ErrorStatus::KernelSync));
+                                release_all_events(&mut tails, &mut writer, &mut last_use, clReleaseEvent);
                                 let nanos = start.elapsed().as_nanos() as u64;
                                 let _ = reply.send(result.map(|()| nanos));
                             }
@@ -865,52 +939,46 @@ pub(super) fn device_count() -> u16 {
     backend().map(|(_, devs)| devs.len() as u16).unwrap_or(0)
 }
 
-enum Pending {
-    Launch {
-        program_id: DeviceProgramId,
-        args: Vec<LaunchArg>,
-    },
-    Copy {
-        src_pool: Pool,
-        src_buf: ChunkId,
-        src_ptr: *const u8,
-        bytes: Dim,
-        dst: ChunkId,
-    },
-}
-
-/// Reads/writes of a pending command. Launch args are in `Param` head order;
-/// programs carry their kinds from compile.
-fn pending_reads_writes(programs: &Slab<DeviceProgramId, OpenCLProgram>, cmd: &Pending) -> (Vec<ChunkId>, Vec<ChunkId>) {
-    match cmd {
-        Pending::Launch { program_id, args } => {
-            let kinds: &[ParamKind] = &programs[*program_id].params;
-            debug_assert!(args.len() <= kinds.len(), "more launch args than program params");
-            let mut reads = Vec::new();
-            let mut writes = Vec::new();
-            for (idx, arg) in args.iter().enumerate() {
-                match arg {
-                    LaunchArg::Buffer(_) => todo!("placement resolution in OpenCL reads/writes"),
-                    LaunchArg::Variable(_) => {}
-                }
-            }
-            (reads, writes)
-        }
-        Pending::Copy { dst, .. } => (Vec::new(), vec![*dst]),
+/// Releases every tracked event exactly once and clears the tracking:
+/// per-queue tails plus the per-chunk writer/last_use maps (one event can
+/// sit in several of them). Used after full drains, where completion is
+/// guaranteed.
+fn release_all_events(
+    tails: &mut Vec<*mut c_void>,
+    writer: &mut Map<ChunkId, (usize, *mut c_void)>,
+    last_use: &mut Map<ChunkId, (usize, *mut c_void)>,
+    clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
+) {
+    let mut events: Vec<*mut c_void> = tails.iter().copied().collect();
+    events.extend(writer.values().map(|&(_, e)| e));
+    events.extend(last_use.values().map(|&(_, e)| e));
+    release_distinct(events, clReleaseEvent);
+    for tail in tails.iter_mut() {
+        *tail = ptr::null_mut();
     }
+    writer.clear();
+    last_use.clear();
 }
 
-/// Resolves launch args against the buffer table and enqueues one kernel onto
-/// `queue`, waiting on `wait_events`. Returns the completion event. Shared by
-/// the batched-submission path and `LaunchTimed`.
+/// Enqueues one kernel with pre-resolved args onto the given queue and
+/// tracks the completion event: the queue tail plus per-chunk RAW
+/// (writer) and WAR (last_use) entries. Waits cover the schedule's
+/// cross-queue wait set plus any in-flight chunk tails on other queues —
+/// reused stable addresses stay ordered against prior work.
 #[allow(clippy::too_many_arguments)]
-fn submit_launch(
+fn enqueue_tracked(
     programs: &Slab<DeviceProgramId, OpenCLProgram>,
-    buffers: &Slab<ChunkId, OpenCLBuffer>,
     program_id: DeviceProgramId,
-    args: &[LaunchArg],
-    queue: *mut c_void,
-    wait_events: &[*mut c_void],
+    params: &[(*const c_void, usize)],
+    global_size: Vec<Dim>,
+    reads: &[ChunkId],
+    writes: &[ChunkId],
+    queue: usize,
+    queues: &[OpenCLQueue],
+    wait_queues: &[usize],
+    tails: &mut Vec<*mut c_void>,
+    writer: &mut Map<ChunkId, (usize, *mut c_void)>,
+    last_use: &mut Map<ChunkId, (usize, *mut c_void)>,
     clEnqueueNDRangeKernel: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -923,39 +991,16 @@ fn submit_launch(
         *mut *mut c_void,
     ) -> OpenCLStatus,
     clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus,
-) -> Result<*mut c_void, BackendError> {
+    clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
+) -> Result<(), BackendError> {
     debug_assert!(programs.contains_id(program_id), "launch of unknown program {program_id:?}");
+    debug_assert!(queue < queues.len(), "launch on missing queue {queue}");
     let program = &programs[program_id];
-    // clSetKernelArg copies the value immediately, so stable storage for the
-    // scalar bytes within this loop iteration is enough.
-    let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
     let mut i: u32 = 0;
-    for arg in args {
-        let (arg_ptr, arg_size): (*const c_void, usize) = match arg {
-            LaunchArg::Buffer(_) => {
-                todo!("placement resolution in OpenCL submit_launch")
-            }
-            LaunchArg::Variable(constant) => {
-                scalar_values.push(constant.to_le_bytes().into());
-                let value = scalar_values.last().unwrap();
-                (value.as_ptr().cast(), value.len())
-            }
-        };
-        unsafe { (clSetKernelArg)(program.kernel, i, arg_size, arg_ptr) }.check(ErrorStatus::IncorrectKernelArg)?;
+    for (arg_ptr, arg_size) in params {
+        unsafe { (clSetKernelArg)(program.kernel, i, *arg_size, *arg_ptr) }.check(ErrorStatus::IncorrectKernelArg)?;
         i += 1;
     }
-    let global_size: Vec<Dim> = program
-        .gws
-        .iter()
-        .zip(program.lws.iter())
-        .map(|(gdim, l)| {
-            let g = gdim.eval(&mut |ordinal| match &args[ordinal] {
-                LaunchArg::Variable(c) => c.as_dim().unwrap(),
-                LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
-            });
-            g * *l
-        })
-        .collect();
     let lws_ptr = if program.lws.is_empty() {
         ptr::null()
     } else {
@@ -972,48 +1017,140 @@ fn submit_launch(
             });
         }
     }
+    // One event per needed edge; the enqueued command retains them.
+    let mut waits: Vec<*mut c_void> = Vec::new();
+    for q in wait_queues {
+        if *q != queue
+            && let Some(&event) = tails.get(*q)
+            && !event.is_null()
+            && !waits.contains(&event)
+        {
+            waits.push(event);
+        }
+    }
+    for b in reads {
+        if let Some(&(w, event)) = writer.get(b)
+            && w != queue
+            && !event.is_null()
+            && !waits.contains(&event)
+        {
+            waits.push(event);
+        }
+    }
+    for b in writes {
+        if let Some(&(u, event)) = last_use.get(b)
+            && u != queue
+            && !event.is_null()
+            && !waits.contains(&event)
+        {
+            waits.push(event);
+        }
+    }
     let mut event: *mut c_void = ptr::null_mut();
     unsafe {
         (clEnqueueNDRangeKernel)(
-            queue,
+            queues[queue].queue,
             program.kernel,
             u32::try_from(global_size.len()).unwrap_or(3),
             ptr::null(),
             global_size.as_ptr().cast(),
             lws_ptr,
-            u32::try_from(wait_events.len()).unwrap_or(0),
-            if wait_events.is_empty() {
-                ptr::null()
-            } else {
-                wait_events.as_ptr()
-            },
+            u32::try_from(waits.len()).unwrap_or(0),
+            if waits.is_empty() { ptr::null() } else { waits.as_ptr() },
             &raw mut event,
         )
     }
     .check(ErrorStatus::KernelLaunch)?;
     debug_assert!(!event.is_null(), "kernel enqueue returned no event");
-    Ok(event)
+    let mut retired = Vec::new();
+    if let Some(&old) = tails.get(queue)
+        && !old.is_null()
+    {
+        retired.push(old);
+    }
+    tails[queue] = event;
+    for b in reads {
+        if let Some((_, old)) = last_use.insert(*b, (queue, event)) {
+            retired.push(old);
+        }
+    }
+    for b in writes {
+        if let Some((_, old)) = writer.insert(*b, (queue, event)) {
+            retired.push(old);
+        }
+        if let Some((_, old)) = last_use.insert(*b, (queue, event)) {
+            retired.push(old);
+        }
+    }
+    release_distinct(retired, clReleaseEvent);
+    Ok(())
 }
 
-/// Submits the pending micro-batch window. Commands are assigned to in-order
-/// queues greedily: prefer the queue that last wrote the first input buffer
-/// (locality — the RAW wait disappears), else the least-loaded queue.
-/// Cross-queue dependencies become event wait lists: RAW via `writer` (last
-/// queue that wrote the buffer, with its tail event), WAR via `last_use`.
-/// Commands are submitted in program order; the tracking maps persist across
-/// windows, so dependencies spanning two windows are handled too. Copy
-/// commands additionally record a completion event: the retained foreign
-/// source buffer is released when it fires (`sweep_foreign`).
-#[allow(clippy::too_many_arguments)]
-fn flush_window(
-    pending: &mut Vec<Pending>,
-    queues: &[OpenCLQueue],
+/// Best-fit free chunk that adds no wait on `queue`: same-queue tails
+/// order themselves on the in-order queue, completed tails need nothing,
+/// and only an in-flight tail on another queue blocks. `None` means
+/// allocate fresh — parallelism over memory savings, always.
+fn best_parallel_fit(
+    free_set: &Set<ChunkId>,
     buffers: &Slab<ChunkId, OpenCLBuffer>,
+    writer: &Map<ChunkId, (usize, *mut c_void)>,
+    last_use: &Map<ChunkId, (usize, *mut c_void)>,
+    queue: usize,
+    bytes: Dim,
+    clGetEventInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
+) -> Option<ChunkId> {
+    let mut cands: Vec<(Dim, ChunkId)> = free_set
+        .iter()
+        .filter_map(|id| {
+            let b = &buffers[*id];
+            (b.bytes >= bytes).then_some((b.bytes, *id))
+        })
+        .collect();
+    cands.sort_unstable();
+    cands.into_iter().find_map(|(_, id)| {
+        let blocked = [writer.get(&id), last_use.get(&id)].into_iter().flatten().any(|&(q, event)| {
+            q != queue && !event.is_null() && event_in_flight(event, clGetEventInfo)
+        });
+        (!blocked).then_some(id)
+    })
+}
+
+/// True while the event's command has not completed. A failed query is
+/// in-flight (conservative): never reuse under an unknown tail.
+fn event_in_flight(
+    event: *mut c_void,
+    clGetEventInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
+) -> bool {
+    let mut status: cl_int = 0;
+    let queried = unsafe {
+        (clGetEventInfo)(
+            event,
+            CL_EVENT_COMMAND_EXECUTION_STATUS,
+            core::mem::size_of::<cl_int>(),
+            (&raw mut status).cast(),
+            ptr::null_mut(),
+        )
+    } == OpenCLStatus::CL_SUCCESS;
+    !queried || status != CL_COMPLETE
+}
+
+/// Resolves queue-local slots against the replay's slot→chunk map (scalars
+/// from `vars`), evaluates the grid, and enqueues with tracking. The
+/// partition-replay path: args are slots, not placements.
+#[allow(clippy::too_many_arguments)]
+fn submit_slots(
     programs: &Slab<DeviceProgramId, OpenCLProgram>,
+    buffers: &Slab<ChunkId, OpenCLBuffer>,
+    program_id: DeviceProgramId,
+    args: &[OpId],
+    slot_chunk: &Map<OpId, ChunkId>,
+    scalars: &Map<OpId, Constant>,
+    queue: usize,
+    queues: &[OpenCLQueue],
+    wait_queues: &[usize],
+    tails: &mut Vec<*mut c_void>,
     writer: &mut Map<ChunkId, (usize, *mut c_void)>,
     last_use: &mut Map<ChunkId, (usize, *mut c_void)>,
-    foreign_dead: &mut Vec<(Pool, ChunkId, *mut c_void)>,
-    debug_dev: bool,
     clEnqueueNDRangeKernel: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -1025,13 +1162,94 @@ fn flush_window(
         *const *mut c_void,
         *mut *mut c_void,
     ) -> OpenCLStatus,
-    clEnqueueWriteBuffer: unsafe extern "C" fn(
+    clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus,
+    clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
+) -> Result<(), BackendError> {
+    debug_assert!(programs.contains_id(program_id), "launch of unknown program {program_id:?}");
+    let kinds: &[ParamKind] = &programs[program_id].params;
+    debug_assert!(args.len() <= kinds.len(), "more launch args than program params");
+    // clSetKernelArg copies the value immediately, so stable storage for
+    // the cl_mem handles and scalar bytes within this call is enough.
+    let mut mem_args: Vec<*mut c_void> = Vec::new();
+    let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
+    let mut params: Vec<(*const c_void, usize)> = Vec::with_capacity(args.len());
+    let mut reads: Vec<ChunkId> = Vec::new();
+    let mut writes: Vec<ChunkId> = Vec::new();
+    for (idx, slot) in args.iter().enumerate() {
+        if let Some(chunk) = slot_chunk.get(slot) {
+            mem_args.push(buffers[*chunk].ptr);
+            let value = mem_args.last().unwrap();
+            params.push((core::ptr::from_ref(value).cast(), core::mem::size_of::<*mut c_void>()));
+            match kinds.get(idx) {
+                Some(ParamKind::GlobalMut) => writes.push(*chunk),
+                _ => reads.push(*chunk),
+            }
+        } else if let Some(constant) = scalars.get(slot) {
+            scalar_values.push(constant.to_le_bytes().into());
+            let value = scalar_values.last().unwrap();
+            params.push((value.as_ptr().cast(), value.len()));
+        } else {
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("replay: launch slot {slot:?} is neither placed nor bound").into(),
+            });
+        }
+    }
+    let global_size: Vec<Dim> = programs[program_id]
+        .gws
+        .iter()
+        .zip(programs[program_id].lws.iter())
+        .map(|(gdim, l)| {
+            let g = gdim.eval(&mut |ordinal| {
+                scalars
+                    .get(&args[ordinal])
+                    .and_then(|c| c.as_dim())
+                    .expect("gws param must be a Variable slot")
+            });
+            g * *l
+        })
+        .collect();
+    enqueue_tracked(
+        programs,
+        program_id,
+        &params,
+        global_size,
+        &reads,
+        &writes,
+        queue,
+        queues,
+        wait_queues,
+        tails,
+        writer,
+        last_use,
+        clEnqueueNDRangeKernel,
+        clSetKernelArg,
+        clReleaseEvent,
+    )
+}
+
+/// Resolves `LaunchArg` placements against the buffer table through the
+/// shard addressed to this worker's pool, evaluates the grid, and
+/// enqueues with tracking. The autotune (`LaunchTimed`) path: args carry
+/// placements, not slots.
+#[allow(clippy::too_many_arguments)]
+fn submit_launch(
+    programs: &Slab<DeviceProgramId, OpenCLProgram>,
+    buffers: &Slab<ChunkId, OpenCLBuffer>,
+    worker_pool: Pool,
+    program_id: DeviceProgramId,
+    args: &[LaunchArg],
+    queues: &[OpenCLQueue],
+    tails: &mut Vec<*mut c_void>,
+    writer: &mut Map<ChunkId, (usize, *mut c_void)>,
+    last_use: &mut Map<ChunkId, (usize, *mut c_void)>,
+    clEnqueueNDRangeKernel: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
         cl_uint,
-        usize,
-        usize,
-        *const c_void,
+        *const usize,
+        *const usize,
+        *const usize,
         cl_uint,
         *const *mut c_void,
         *mut *mut c_void,
@@ -1039,111 +1257,72 @@ fn flush_window(
     clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus,
     clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
 ) -> Result<(), BackendError> {
-    let n_queues = queues.len();
-    let mut load = vec![0usize; n_queues];
-    let mut first_err: Option<BackendError> = None;
-    for cmd in pending.drain(..) {
-        let (reads, writes) = pending_reads_writes(programs, &cmd);
-        let chosen = reads
-            .first()
-            .and_then(|b| writer.get(b).map(|&(q, _)| q))
-            .filter(|&q| q < n_queues)
-            .unwrap_or_else(|| (0..n_queues).min_by_key(|&i| load[i]).unwrap());
-        // Cross-queue waits: one event per needed edge, passed as the
-        // enqueue's event wait list (the enqueued command retains them).
-        let mut waits: Vec<*mut c_void> = Vec::new();
-        for b in &reads {
-            if let Some(&(w, event)) = writer.get(b)
-                && w != chosen
-                && !event.is_null()
-                && !waits.contains(&event)
-            {
-                waits.push(event);
+    debug_assert!(programs.contains_id(program_id), "launch of unknown program {program_id:?}");
+    let kinds: &[ParamKind] = &programs[program_id].params;
+    debug_assert!(args.len() <= kinds.len(), "more launch args than program params");
+    // clSetKernelArg copies the value immediately, so stable storage for
+    // the cl_mem handles and scalar bytes within this call is enough.
+    let mut mem_args: Vec<*mut c_void> = Vec::new();
+    let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
+    let mut params: Vec<(*const c_void, usize)> = Vec::with_capacity(args.len());
+    let mut reads: Vec<ChunkId> = Vec::new();
+    let mut writes: Vec<ChunkId> = Vec::new();
+    for (idx, arg) in args.iter().enumerate() {
+        match arg {
+            LaunchArg::Buffer(placement) => {
+                let chunk = placement
+                    .shards
+                    .iter()
+                    .find(|shard| shard.pool == worker_pool)
+                    .ok_or(BackendError {
+                        status: ErrorStatus::KernelLaunch,
+                        context: "launch arg has no shard on this pool".into(),
+                    })?
+                    .chunk;
+                mem_args.push(buffers[chunk].ptr);
+                let value = mem_args.last().unwrap();
+                params.push((core::ptr::from_ref(value).cast(), core::mem::size_of::<*mut c_void>()));
+                match kinds.get(idx) {
+                    Some(ParamKind::GlobalMut) => writes.push(chunk),
+                    _ => reads.push(chunk),
+                }
+            }
+            LaunchArg::Variable(constant) => {
+                scalar_values.push(constant.to_le_bytes().into());
+                let value = scalar_values.last().unwrap();
+                params.push((value.as_ptr().cast(), value.len()));
             }
         }
-        for b in &writes {
-            if let Some(&(u, event)) = last_use.get(b)
-                && u != chosen
-                && !event.is_null()
-                && !waits.contains(&event)
-            {
-                waits.push(event);
-            }
-        }
-        let result: Result<*mut c_void, BackendError> = match cmd {
-            Pending::Launch { program_id, args } => submit_launch(
-                programs,
-                buffers,
-                program_id,
-                &args,
-                queues[chosen].queue,
-                &waits,
-                clEnqueueNDRangeKernel,
-                clSetKernelArg,
-            ),
-            Pending::Copy { src_pool, src_buf, src_ptr, bytes, dst } => {
-                let mut event: *mut c_void = ptr::null_mut();
-                let status = unsafe {
-                    (clEnqueueWriteBuffer)(
-                        queues[chosen].queue,
-                        buffers[dst].ptr,
-                        CL_NON_BLOCKING,
-                        0,
-                        bytes as usize,
-                        src_ptr.cast(),
-                        u32::try_from(waits.len()).unwrap_or(0),
-                        if waits.is_empty() { ptr::null() } else { waits.as_ptr() },
-                        &raw mut event,
-                    )
-                }
-                .check(ErrorStatus::MemoryCopyH2P);
-                match status {
-                    Ok(()) => {
-                        // Release the source buffer back to its pool once
-                        // this completion event fires (sweep_foreign).
-                        foreign_dead.push((src_pool, src_buf, event));
-                        Ok(event)
-                    }
-                    Err(err) => {
-                        // The copy was never enqueued: release the source now.
-                        src_pool.release(src_buf);
-                        Err(err)
-                    }
-                }
-            }
-        };
-        match result {
-            Ok(event) => {
-                debug_assert!(!event.is_null(), "enqueue returned no event");
-                let mut retired: Vec<*mut c_void> = Vec::new();
-                for b in &reads {
-                    if let Some((_, old)) = last_use.insert(*b, (chosen, event)) {
-                        retired.push(old);
-                    }
-                }
-                for b in &writes {
-                    if let Some((_, old)) = writer.insert(*b, (chosen, event)) {
-                        retired.push(old);
-                    }
-                    if let Some((_, old)) = last_use.insert(*b, (chosen, event)) {
-                        retired.push(old);
-                    }
-                }
-                release_distinct(retired, clReleaseEvent);
-            }
-            Err(err) => {
-                if debug_dev {
-                    println!("[opencl] batched submission error: {err:?}");
-                }
-                first_err.get_or_insert(err);
-            }
-        }
-        load[chosen] += 1;
     }
-    match first_err {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
+    let global_size: Vec<Dim> = programs[program_id]
+        .gws
+        .iter()
+        .zip(programs[program_id].lws.iter())
+        .map(|(gdim, l)| {
+            let g = gdim.eval(&mut |ordinal| match &args[ordinal] {
+                LaunchArg::Variable(c) => c.as_dim().unwrap(),
+                LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+            });
+            g * *l
+        })
+        .collect();
+    enqueue_tracked(
+        programs,
+        program_id,
+        &params,
+        global_size,
+        &reads,
+        &writes,
+        0,
+        queues,
+        &[],
+        tails,
+        writer,
+        last_use,
+        clEnqueueNDRangeKernel,
+        clSetKernelArg,
+        clReleaseEvent,
+    )
 }
 
 /// Releases each distinct non-null event exactly once (writer and last_use
@@ -1155,36 +1334,6 @@ fn release_distinct(mut events: Vec<*mut c_void>, clReleaseEvent: unsafe extern 
     for event in events {
         let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
     }
-}
-
-/// Releases foreign source buffers whose copy event has completed.
-/// Called every loop iteration (a cheap `clGetEventInfo` poll) and after
-/// every full drain, where completion is guaranteed.
-fn sweep_foreign(
-    foreign_dead: &mut Vec<(Pool, ChunkId, *mut c_void)>,
-    clGetEventInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
-    clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
-) {
-    foreign_dead.retain(|&(src_pool, src_buf, event)| {
-        if !event.is_null() {
-            let mut status: cl_int = 0;
-            let queried = unsafe {
-                (clGetEventInfo)(
-                    event,
-                    CL_EVENT_COMMAND_EXECUTION_STATUS,
-                    core::mem::size_of::<cl_int>(),
-                    (&raw mut status).cast(),
-                    ptr::null_mut(),
-                )
-            } == OpenCLStatus::CL_SUCCESS;
-            if !queried || status != CL_COMPLETE {
-                return true;
-            }
-            let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
-        }
-        src_pool.release(src_buf);
-        false
-    });
 }
 
 impl OpenCLMemoryPool {
@@ -1280,18 +1429,9 @@ impl OpenCLDevice {
         reply_rx.recv().unwrap()
     }
 
-    /// Fire-and-forget launch: the command is queued to the device's worker,
-    /// which appends it to the micro-batch window and submits it (with
-    /// computed waits) when the window flushes.
-    pub fn launch(&mut self, program_id: DeviceProgramId, pool_handle: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
-        debug_assert_eq!(pool_handle, self.memory_pool);
-        self.tx.send(Command::Launch { program_id, args: args.to_vec() }).unwrap();
-        Ok(())
-    }
-
-    /// Timed launch for autotune: the worker's pending window is submitted
-    /// and every queue drained first, then the kernel runs solo and the
-    /// wall-clock nanos are measured around enqueue+finish.
+    /// Timed launch for autotune: the worker drains every queue first,
+    /// then the kernel runs solo on queue 0; the wall-clock nanos are
+    /// measured around enqueue+finish.
     pub fn launch_timed(&mut self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<u64, BackendError> {
         let (reply, reply_rx) = channel();
         self.tx.send(Command::LaunchTimed { program_id, args: args.to_vec(), reply }).unwrap();
@@ -1305,6 +1445,204 @@ impl OpenCLDevice {
 
     pub fn free_compute(&self) -> u128 {
         self.dev_info.compute
+    }
+}
+
+/// Preplanned OpenCL partition: the ordered commands, per-command death
+/// lists, and the static queue assignment (per-command queue plus
+/// cross-queue wait sets). Replay ships the whole partition to the worker
+/// in one roundtrip (bound slots, scalars, assignment); the worker
+/// allocates unbound defs per-command (parallelism-first: fresh VRAM over
+/// blocking reuse), submits every launch to its queue, and releases dead
+/// chunks. No capture: repeats resubmit, stable addresses come from
+/// deterministic alloc order over the free list.
+#[derive(Debug)]
+pub(crate) struct OpenCLPartition {
+    cmds: Vec<Cmd>,
+    deaths: Vec<Vec<OpId>>,
+    queues: Vec<usize>,
+    waits: Vec<Vec<usize>>,
+    dev: u16,
+}
+
+impl OpenCLDevice {
+    pub(crate) fn schedule(cmds: Vec<Cmd>, outputs: &Set<OpId>, live_out: Set<OpId>, dev: u16) -> OpenCLPartition {
+        // Deaths: a slot dies at its last read unless pinned (a plan
+        // output or read after this partition).
+        let mut last_use: Map<OpId, usize> = Map::default();
+        for (idx, cmd) in cmds.iter().enumerate() {
+            for r in cmd.reads() {
+                last_use.insert(r, idx);
+            }
+        }
+        let mut pinned = outputs.clone();
+        pinned.extend(live_out);
+        let mut deaths: Vec<Vec<OpId>> = vec![Vec::new(); cmds.len()];
+        for (slot, idx) in last_use {
+            if !pinned.contains(&slot) {
+                deaths[idx].push(slot);
+            }
+        }
+        // Static queue assignment (slot affinity): a command joins its
+        // read-slots' queue when they agree (the RAW wait disappears);
+        // slot-disjoint chains spread round-robin so independent launches
+        // overlap on different queues. Waits name queues; the worker
+        // resolves them against per-queue tails at submit time.
+        let nq = super::config().opencl.queues.unwrap_or(8).max(1);
+        let mut slot_queue: Map<OpId, usize> = Map::default();
+        let mut round_robin = 0usize;
+        let mut assign: Vec<usize> = Vec::with_capacity(cmds.len());
+        let mut waits: Vec<Vec<usize>> = Vec::with_capacity(cmds.len());
+        for cmd in &cmds {
+            match cmd {
+                Cmd::Launch { args, outputs: defs, .. } => {
+                    let mut qs: Vec<usize> = Vec::new();
+                    for slot in args {
+                        if let Some(&q) = slot_queue.get(slot)
+                            && !qs.contains(&q)
+                        {
+                            qs.push(q);
+                        }
+                    }
+                    let queue = qs.first().copied().unwrap_or_else(|| {
+                        let q = round_robin % nq;
+                        round_robin += 1;
+                        q
+                    });
+                    waits.push(qs.into_iter().filter(|q| *q != queue).collect());
+                    assign.push(queue);
+                    for (slot, _, _) in defs {
+                        slot_queue.insert(*slot, queue);
+                    }
+                }
+                Cmd::Alias { class, to } => {
+                    // Zero-cost rebind: no executable, no queue traffic.
+                    let queue = slot_queue.get(to).copied().unwrap_or(0);
+                    assign.push(queue);
+                    waits.push(Vec::new());
+                    slot_queue.insert(*class, queue);
+                }
+                Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
+            }
+        }
+        OpenCLPartition { cmds, deaths, queues: assign, waits, dev }
+    }
+
+    /// Copy executing a transfer into this device's pool: host uploads go
+    /// through a blocking WriteBuffer, same-pool pairs through a blocking
+    /// CopyBuffer, disk uploads read straight from the file mapping —
+    /// everything else is later work. Single-shard placements only.
+    pub fn copy(&self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
+        debug_assert!(bytes >= 0, "OpenCL copy of negative bytes");
+        let [src_shard] = &src.shards[..] else {
+            todo!("OpenCL copy of multi-shard source placement")
+        };
+        let [dst_shard] = &dst.shards[..] else {
+            todo!("OpenCL copy of multi-shard destination placement")
+        };
+        debug_assert_eq!(dst_shard.pool, self.memory_pool, "OpenCL copy destination is not on this device");
+        let dead = |_| BackendError { status: ErrorStatus::MemoryCopyP2P, context: "opencl worker thread died".into() };
+        let dead_rx = |_: std::sync::mpsc::RecvError| BackendError {
+            status: ErrorStatus::MemoryCopyP2P,
+            context: "opencl worker hung up".into(),
+        };
+        let (reply, reply_rx) = channel();
+        let send = |cmd| self.tx.send(cmd).map_err(dead);
+        match src_shard.pool {
+            p if p == self.memory_pool => {
+                send(Command::Copy {
+                    src_pool: p,
+                    src_buf: src_shard.chunk,
+                    src_ptr: ptr::null(),
+                    bytes,
+                    dst_buf: dst_shard.chunk,
+                    reply,
+                })?;
+            }
+            Pool::Host => {
+                // The host lock is held across the blocking roundtrip: the
+                // source pointer stays valid. The worker never takes it.
+                let host = super::host::pool();
+                let pool = super::lock(Pool::Host, host);
+                let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
+                send(Command::Copy {
+                    src_pool: Pool::Host,
+                    src_buf: src_shard.chunk,
+                    src_ptr,
+                    bytes,
+                    dst_buf: dst_shard.chunk,
+                    reply,
+                })?;
+            }
+            #[cfg(unix)]
+            Pool::Disk => {
+                // Straight from the file mapping, no staging buffer. The
+                // extent holds exact tensor bytes; the destination is
+                // over-allocated — never read past the extent. The chunk
+                // stays mapped across the blocking call (released
+                // caller-side after the reply).
+                let disk = super::disk::pool();
+                let dpool = super::lock(Pool::Disk, disk);
+                let (ptr, extent) = dpool.mapped_ptr(src_shard.chunk);
+                let n = bytes.min(extent);
+                send(Command::Copy {
+                    src_pool: Pool::Disk,
+                    src_buf: src_shard.chunk,
+                    src_ptr: ptr,
+                    bytes: n,
+                    dst_buf: dst_shard.chunk,
+                    reply,
+                })?;
+            }
+            #[cfg(windows)]
+            Pool::Disk => todo!("OpenCL copy from disk on windows"),
+            p => todo!("OpenCL copy from {p:?}"),
+        }
+        reply_rx.recv().map_err(dead_rx)?
+    }
+}
+
+impl OpenCLPartition {
+    pub(crate) fn replay(
+        &self,
+        dev: &mut OpenCLDevice,
+        resolved: &mut Map<OpId, Arc<Placement>>,
+        vars: &Map<OpId, Constant>,
+    ) -> Result<(), BackendError> {
+        let my_pool = dev.memory_pool;
+        // Bound slots addressed to this pool; caller-side defs stay
+        // unbound for the worker's per-command allocator.
+        let mut bound = Vec::with_capacity(resolved.len());
+        for (slot, placement) in resolved.iter() {
+            if let Some(shard) = placement.shards.iter().find(|s| s.pool == my_pool) {
+                bound.push((*slot, shard.chunk));
+            }
+        }
+        let vars_vec: Vec<(OpId, Constant)> = vars.iter().map(|(s, c)| (*s, *c)).collect();
+        let dead = |_| BackendError { status: ErrorStatus::KernelLaunch, context: "opencl worker thread died".into() };
+        let dead_rx = |_: std::sync::mpsc::RecvError| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: "opencl worker hung up".into(),
+        };
+        let (reply, reply_rx) = channel();
+        dev.tx
+            .send(Command::Replay {
+                cmds: self.cmds.clone(),
+                queues: self.queues.clone(),
+                waits: self.waits.clone(),
+                bound,
+                vars: vars_vec,
+                deaths: self.deaths.clone(),
+                reply,
+            })
+            .map_err(dead)?;
+        for (slot, chunk) in reply_rx.recv().map_err(dead_rx)?? {
+            resolved.insert(slot, Arc::new(Placement { shards: vec![Shard { pool: my_pool, chunk }] }));
+        }
+        for dead in self.deaths.iter().flatten() {
+            resolved.remove(dead);
+        }
+        Ok(())
     }
 }
 
