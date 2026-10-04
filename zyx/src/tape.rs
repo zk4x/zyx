@@ -48,7 +48,7 @@ use std::sync::Arc;
 
 use crate::{
     DType, Map, RT, Set, Tensor, ZyxError,
-    backend::{Placement, Shard},
+    backend::Placement,
     dtype::Constant,
     graph::{Graph, GraphId},
     kernel::OpId,
@@ -197,40 +197,14 @@ impl Tape {
         let output_set: BTreeSet<OpId> = output_classes.iter().copied().collect();
         let cache_key = rt.plan_cache_key(graph_id, &output_set);
 
-        if let Some(plan) = rt.plan_cache.get(&cache_key) {
-            let mut class_buf: Map<OpId, Arc<Placement>> = Map::default();
-            let mut class_vars: Map<OpId, Constant> = Map::default();
-            for &cid in &plan.leaf_classes {
-                let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
-                if let Some(buf_id) = rt.leaf_buffer(tid) {
-                    class_buf.insert(cid, buf_id);
-                } else {
-                    // Variable leaf: no buffer anywhere; its scalar value
-                    // resolves from variable_map (directly or symbolically).
-                    let value = rt.resolve_symbolic(tid).expect("leaf class tid resolves neither to a buffer nor a variable");
-                    class_vars.insert(cid, value);
-                }
-            }
-
-            rt.execute_plan(cache_key, &mut class_buf, &class_vars)?;
-            // Two output tensors can share one class (CSE-identical grads,
-            // e.g. d(x+y)/dx and d(x+y)/dy): the plan allocates a single
-            // placement for the class, and every receiver takes its own
-            // `Arc` clone below — the chunk returns to the free list when
-            // the last owner dies.
-            for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
-                rt.eagerify(tid, Some(Arc::clone(&class_buf[&cid])));
-            }
-            rt.debug_assert_no_stray_buffers(graph_id, &output_tids);
-
-            return Ok(());
+        if !rt.plan_cache.contains_key(&cache_key) {
+            let plan = rt.compile_graph(graph_id, &output_set)?;
+            rt.plan_cache.insert(cache_key, plan);
         }
-
-        let plan = rt.compile_graph(graph_id, &output_set)?;
 
         let mut class_buf: Map<OpId, Arc<Placement>> = Map::default();
         let mut class_vars: Map<OpId, Constant> = Map::default();
-        for &cid in &plan.leaf_classes {
+        for &cid in &rt.graphs[graph_id].leaf_classes {
             let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
             if let Some(buf_id) = rt.leaf_buffer(tid) {
                 class_buf.insert(cid, buf_id);
@@ -242,13 +216,14 @@ impl Tape {
             }
         }
 
-        rt.plan_cache.insert(cache_key, plan);
-
-        rt.execute_plan(cache_key, &mut class_buf, &class_vars)?;
-        // Same-class outputs share one plan placement: every receiver takes
-        // its own `Arc` clone (see the cached-plan path).
+        let out = rt.plan_cache.get(&cache_key).unwrap().replay(class_buf, &class_vars)?;
+        // Two output tensors can share one class (CSE-identical grads,
+        // e.g. d(x+y)/dx and d(x+y)/dy): replay allocates a single
+        // placement for the class, and every receiver takes its own
+        // `Arc` clone below — the chunk returns to the free list when
+        // the last owner dies.
         for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
-            rt.eagerify(tid, Some(Arc::clone(&class_buf[&cid])));
+            rt.eagerify(tid, Some(Arc::clone(&out[&cid])));
         }
         rt.debug_assert_no_stray_buffers(graph_id, &output_tids);
 
@@ -473,13 +448,13 @@ impl Tape {
         let cache_key = rt.plan_cache_key(graph_id, &output_set);
 
         if rt.plan_cache.contains_key(&cache_key) {
-            return Ok(FrozenTape { cache_key, outputs });
+            return Ok(FrozenTape { cache_key, graph_id, outputs });
         }
 
         let plan = rt.compile_graph(graph_id, &output_set)?;
         rt.plan_cache.insert(cache_key, plan);
 
-        Ok(FrozenTape { cache_key, outputs })
+        Ok(FrozenTape { cache_key, graph_id, outputs })
     }
 }
 
@@ -487,6 +462,7 @@ impl Tape {
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct FrozenTape {
     cache_key: u64,
+    graph_id: GraphId,
     outputs: Vec<(OpId, Vec<Dim>, DType)>,
 }
 
@@ -494,28 +470,12 @@ impl FrozenTape {
     /// Replay the tape
     pub fn replay<'a>(&self, inputs: impl IntoIterator<Item = &'a Tensor>) -> Result<Vec<Tensor>, ZyxError> {
         let mut rt = RT.lock();
+        let graph_id = self.graph_id;
 
         let mut class_buf: Map<OpId, Arc<Placement>> = Map::default();
         let mut class_vars: Map<OpId, Constant> = Map::default();
-        for (tensor, &cid) in inputs.into_iter().zip(rt.plan_cache[&self.cache_key].leaf_classes.iter()) {
-            // The frozen contract: leaf bindings are fixed since `freeze` — a
-            // compiled plan bakes pool-dependent decisions (ExecPlan::new's
-            // cross-pool alias handling), so replaying with a leaf buffer in a
-            // different pool would execute a wrong plan. Loud error instead:
-            // re-freeze the tape.
+        for (tensor, &cid) in inputs.into_iter().zip(rt.graphs[graph_id].leaf_classes.iter()) {
             if let Some(buf) = rt.leaf_buffer(tensor.id) {
-                let expected = rt.plan_cache[&self.cache_key].leaf_pools.get(&cid).copied();
-                let [Shard::Device { pool: found, .. }] = &buf.shards[..] else {
-                    todo!("multi-shard frozen replay input")
-                };
-                if expected != Some(*found) {
-                    return Err(ZyxError::frozen_plan_stale(
-                        format!(
-                            "frozen tape replayed with leaf class {cid:?} in pool {found:?}, but the frozen plan compiled it in pool {expected:?} — bindings changed since freeze, re-freeze the tape",
-                        )
-                        .into(),
-                    ));
-                }
                 class_buf.insert(cid, buf);
             } else {
                 // Variable leaf: no buffer anywhere; its scalar value
@@ -525,7 +485,7 @@ impl FrozenTape {
             }
         }
 
-        rt.execute_plan(self.cache_key, &mut class_buf, &class_vars)?;
+        let out = rt.plan_cache.get(&self.cache_key).unwrap().replay(class_buf, &class_vars)?;
 
         let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {
@@ -539,7 +499,7 @@ impl FrozenTape {
                 }
                 s
             };
-            let tid = rt.new_eager_tensor(stid, *dtype, Arc::clone(&class_buf[cid]));
+            let tid = rt.new_eager_tensor(stid, *dtype, Arc::clone(&out[cid]));
             outputs.push(Tensor::from_id(tid));
         }
 
@@ -564,7 +524,7 @@ impl Runtime {
                 {
                     debug_assert!(
                         self.leaf_buffer(tid).is_none(),
-                        "non-leaf, non-output graph tensor {tid} realized after execute_plan"
+                        "non-leaf, non-output graph tensor {tid} realized after replay"
                     );
                 }
             }

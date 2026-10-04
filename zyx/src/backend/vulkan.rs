@@ -1732,8 +1732,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 vkDestroyFence,
                             );
                             for buffer_id in core::mem::take(&mut free_set) {
-                                let VulkanBuffer { buf, mem, ptr, bytes } =
-                                    unsafe { buffers.remove_and_return(buffer_id) };
+                                let VulkanBuffer { buf, mem, ptr, bytes } = unsafe { buffers.remove_and_return(buffer_id) };
                                 if !ptr.is_null() {
                                     unsafe { vkUnmapMemory(device, mem) };
                                 }

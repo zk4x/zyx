@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::{
     DType, Map, Set, ZyxError,
-    backend::{ChunkId, Cmd, CmdQueue, Dev, LaunchArg, Placement, Pool, ProgramId, Shard},
+    backend::{Cmd, CmdQueue, Dev, LaunchArg, Placement, Plan, PlanDim, Pool, ProgramId, Shard},
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, Op, OpId, ParamKind, TTOp},
     runtime::{KernelId, Runtime, TensorData},
@@ -32,8 +32,6 @@ use crate::{
 
 mod autograd;
 mod kernelizer;
-pub(crate) mod plan;
-pub use plan::ExecPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GraphId(pub u16);
@@ -223,7 +221,7 @@ impl Graph {
 
     /// Walks back through single-input movement nodes until reaching dst's base
     /// leaf class (a key of `leaf_map`). Used to find which leaf buffer an
-    /// [`ExecNode`] class's store aliases.
+    /// `After` class's store aliases.
     pub(crate) fn base_leaf(&self, mut c: OpId) -> OpId {
         loop {
             if self.leaf_map.contains_key(&c) {
@@ -2213,7 +2211,7 @@ impl Runtime {
                 let pool_id = dev_id.pool();
                 let mut full_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
                 let mut full_mut: Vec<LaunchArg> = Vec::with_capacity(mut_lens.len());
-                let mut fresh: Vec<ChunkId> = Vec::new();
+                let mut fresh: Vec<Arc<Placement>> = Vec::new();
                 {
                     let (mut vi, mut rli, mut mli) = (0usize, 0usize, 0usize);
                     let mut p = kernel.head;
@@ -2235,8 +2233,6 @@ impl Runtime {
                                         (len, false)
                                     };
                                     let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
-                                    let buf = pool_id.allocate(bytes_alloc)?;
-                                    fresh.push(buf);
                                     if !is_mut {
                                         // Fill with dtype ONE, element by
                                         // element, directly into a HOST-POOL
@@ -2273,9 +2269,16 @@ impl Runtime {
                                         }
                                         // Upload through a one-copy queue: slot 0 is
                                         // the host staging placement, slot 1
-                                        // the fresh device placement.
+                                        // the destination, allocated by replay
+                                        // from its byte size.
                                         let mut queue = CmdQueue::new();
-                                        queue.push(Cmd::Copy { src: OpId::from(0), dst: OpId::from(1), dst_pool: pool_id });
+                                        queue.push(Cmd::Copy {
+                                            src: OpId::from(0),
+                                            dst: OpId::from(1),
+                                            dst_pool: pool_id,
+                                            dst_dtype: 1,
+                                            dst_dims: vec![PlanDim::Const(bytes_alloc)],
+                                        });
                                         let mut boundary = Map::default();
                                         boundary.insert(
                                             OpId::from(0),
@@ -2283,19 +2286,23 @@ impl Runtime {
                                                 shards: vec![Shard::Device { pool: Pool::Host, chunk: host_buf }],
                                             }),
                                         );
-                                        boundary.insert(
-                                            OpId::from(1),
-                                            Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: buf }] }),
-                                        );
-                                        queue.schedule().replay(boundary)?;
+                                        let out = {
+                                            let mut outputs = Set::default();
+                                            outputs.insert(OpId::from(1));
+                                            queue.schedule(&outputs).replay(boundary, &Map::default())?
+                                        };
                                         Pool::Host.release(host_buf);
-                                    }
-                                    let placed =
-                                        Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: buf }] });
-                                    if is_mut {
-                                        full_mut.push(LaunchArg::Buffer(placed));
-                                    } else {
+                                        let placed = Arc::clone(&out[&OpId::from(1)]);
+                                        fresh.push(Arc::clone(&placed));
                                         full_args.push(LaunchArg::Buffer(placed));
+                                    } else {
+                                        // Mut timing buffers are written by the
+                                        // kernel: allocate directly, no upload.
+                                        let buf = pool_id.allocate(bytes_alloc)?;
+                                        let placed =
+                                            Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: buf }] });
+                                        fresh.push(Arc::clone(&placed));
+                                        full_mut.push(LaunchArg::Buffer(placed));
                                     }
                                 }
                             }
@@ -2305,9 +2312,9 @@ impl Runtime {
                 }
                 full_args.extend(full_mut);
                 let (dev_prog, timing) = self.get_or_autotune(kernel, &full_args)?;
-                for buf in fresh {
-                    pool_id.release(buf);
-                }
+                // Dropping the fresh placements returns every timing buffer
+                // to its pool's free list (last-owner Drop).
+                drop(fresh);
                 let prog = ProgramId { dev: dev_id, program_id: dev_prog };
 
                 let g = &mut self.graphs[graph_id];
@@ -2371,10 +2378,11 @@ impl Runtime {
         }
     }
 
-    /// Compiles the graph into an [`ExecPlan`]: pattern-matches AOT kernels,
+    /// Compiles the graph into a backend [`Plan`]: pattern-matches AOT kernels,
     /// kernelizes the remaining structural nodes, autotunes the fused kernels,
-    /// extracts the cheapest kernel path, and returns the resulting plan.
-    pub(crate) fn compile_graph(&mut self, graph_id: GraphId, output_set: &BTreeSet<OpId>) -> Result<ExecPlan, ZyxError> {
+    /// extracts the cheapest kernel path, lowers it to a [`CmdQueue`], and
+    /// schedules the resulting plan.
+    pub(crate) fn compile_graph(&mut self, graph_id: GraphId, output_set: &BTreeSet<OpId>) -> Result<Plan, ZyxError> {
         debug_assert!(self.graphs.contains_id(graph_id));
         self.debug_assert_pre_realize(graph_id);
 
@@ -2447,12 +2455,12 @@ impl Runtime {
             self.graphs[graph_id].leaf_map.values().filter_map(|&tid| self.leaf_buffer(tid).map(|buf| (tid, buf))).collect();
         let nodes = self.graphs[graph_id].add_memory_ops(&buffer_map, &nodes);
 
-        // Leaf pools at compile time — the plan bakes the alias binding (and
-        // any cross-pool copy) into its ExecNodes, so leaves must stay put.
+        // Leaf pools at compile time — cross-pool aliases copy through the
+        // kernel pool, so leaves must stay put across replays.
         let mut leaf_pools: Map<OpId, Pool> = Map::default();
         for (&cid, &tid) in &self.graphs[graph_id].leaf_map {
-            // Variable leaves have no buffer and no pool — they bind per exec
-            // from the tensors slab, so no pool invariant applies to them.
+            // Variable leaves have no buffer and no pool — they bind per
+            // replay from the tensors slab, so no pool invariant applies.
             if let Some(buf) = self.leaf_buffer(tid) {
                 let [Shard::Device { pool, .. }] = &buf.shards[..] else {
                     todo!("multi-shard leaf in compile-time leaf pools")
@@ -2460,13 +2468,121 @@ impl Runtime {
                 leaf_pools.insert(cid, *pool);
             }
         }
-        let plan = ExecPlan::new(&self.graphs[graph_id], &nodes, output_set, &leaf_pools);
-        if crate::debug_mask().egraph() {
-            plan.debug();
-        }
-        #[cfg(feature = "viz")]
-        self.viz.snapshot(&self.graphs[graph_id], &plan);
 
+        // Lower the extracted nodes to a command queue: kernels become
+        // launches (outputs sized symbolically for replay), transfers become
+        // copies, After outputs alias their base leaf buffer. Replay
+        // allocates every unbound def and resolves aliases through the
+        // boundary — no allocation or liveness decisions are made here.
+        fn dim_expr(graph: &Graph, dim: OpId) -> PlanDim {
+            match graph.ops[dim].op {
+                Op::Const(c) => PlanDim::Const(c.as_dim().unwrap_or_else(|| panic!("dim class {dim:?} is not a constant"))),
+                Op::Param { .. } => PlanDim::Leaf(dim),
+                Op::Binary { x, y, bop } => {
+                    PlanDim::Binary { x: Box::new(dim_expr(graph, x)), y: Box::new(dim_expr(graph, y)), bop }
+                }
+                Op::Cast { x, dtype } => PlanDim::Cast { x: Box::new(dim_expr(graph, x)), dtype },
+                ref op => unreachable!("alloc dim class {dim:?} must be a dim over Const/leaf leaves, got {op:?}"),
+            }
+        }
+        fn alloc_spec(graph: &Graph, class: OpId) -> (Dim, Vec<PlanDim>) {
+            let dtype_size = Dim::from(graph.dtype(class).bit_size() / 8);
+            let dims = graph.shape(class).iter().map(|&d| dim_expr(graph, d)).collect();
+            (dtype_size, dims)
+        }
+        let graph = &self.graphs[graph_id];
+
+        // After output classes alias the buffer of x's base leaf class: the
+        // assign writes the new buffer version in-place into that leaf
+        // buffer, so an After class shares the leaf's buffer. A cross-pool
+        // leaf needs one kernel-pool copy of itself shared by every alias
+        // of that leaf — chained assigns must write the same physical
+        // buffer or the intermediate writes are lost.
+        let mut aliases: Vec<(OpId, OpId, Dim, Vec<PlanDim>)> = Vec::new();
+        for (cid, nd) in graph.ops.iter().filter(|(id, nd)| nd.class_of == *id) {
+            if let Op::After { x, .. } = nd.op {
+                let base = graph.base_leaf(x);
+                let (dtype_size, dims) = alloc_spec(graph, cid);
+                aliases.push((cid, base, dtype_size, dims));
+            }
+        }
+
+        // Pool of the kernel that stores each alias class.
+        let mut store_pool: Map<OpId, Pool> = Map::default();
+        for &nid in &nodes {
+            if let Op::Kernel { outputs, ref info, .. } = graph.ops[nid].op {
+                let Op::Stack { ops: outputs } = &graph.ops[outputs].op else {
+                    unreachable!()
+                };
+                let pool = info.0.dev.pool();
+                for &oc in outputs {
+                    store_pool.insert(oc, pool);
+                }
+            }
+        }
+
+        let mut queue = CmdQueue::new();
+        let mut leaf_copy: Map<OpId, OpId> = Map::default();
+        for &(class, to, dtype_size, ref dims) in &aliases {
+            match store_pool.get(&class) {
+                Some(pool) if leaf_pools[&to] != *pool => {
+                    let owner = *leaf_copy.entry(to).or_insert_with(|| {
+                        queue.push(Cmd::Copy {
+                            src: to,
+                            dst: class,
+                            dst_pool: *pool,
+                            dst_dtype: dtype_size,
+                            dst_dims: dims.clone(),
+                        });
+                        class
+                    });
+                    if owner != class {
+                        queue.push(Cmd::Alias { class, to: owner });
+                    }
+                }
+                _ => queue.push(Cmd::Alias { class, to }),
+            }
+        }
+
+        // One launch per kernel node (args in head order: loads then
+        // stores), one copy per transfer. A repeated output class keeps a
+        // single allocation spec — replay resolves the duplicate def to the
+        // first placement, mirroring the old single-buffer behavior.
+        let mut emitted: Set<OpId> = Set::default();
+        for &nid in &nodes {
+            match graph.ops[nid].op {
+                Op::Kernel { inputs, outputs, ref info, .. } => {
+                    let Op::Stack { ops: inputs } = &graph.ops[inputs].op else {
+                        unreachable!()
+                    };
+                    let Op::Stack { ops: outputs } = &graph.ops[outputs].op else {
+                        unreachable!()
+                    };
+                    let mut args: Vec<OpId> = inputs.to_vec();
+                    let mut specs = Vec::new();
+                    for &oc in outputs {
+                        args.push(oc);
+                        if emitted.insert(oc) {
+                            let (dtype_size, dims) = alloc_spec(graph, oc);
+                            specs.push((oc, dtype_size, dims));
+                        }
+                    }
+                    queue.push(Cmd::Launch { program: info.0, args, outputs: specs });
+                }
+                Op::ToDevice { x, device, .. } => {
+                    // Pool is always derived from the device, never the reverse.
+                    let pool = device.pool();
+                    let class_of = graph.ops[nid].class_of;
+                    let (dtype_size, dims) = alloc_spec(graph, class_of);
+                    queue.push(Cmd::Copy { src: x, dst: class_of, dst_pool: pool, dst_dtype: dtype_size, dst_dims: dims });
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        #[cfg(feature = "viz")]
+        self.viz.snapshot(&self.graphs[graph_id], &queue.cmds);
+        let plan = queue.schedule(&output_set.iter().copied().collect());
         Ok(plan)
     }
 

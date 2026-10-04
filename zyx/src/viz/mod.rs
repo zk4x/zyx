@@ -5,7 +5,7 @@
 //!
 //! Compiled only behind the `viz` feature (`--features viz`). Every realized
 //! graph adds one tab to a web page served at `0.0.0.0:4242`. The tab shows
-//! the ExecPlan as an interactive graph; clicking a kernel shows its
+//! the scheduled command queue as an interactive graph; clicking a kernel shows its
 //! pre-linearize IR (`ZYX_DEBUG=4` view), optimized IR (`ZYX_DEBUG=8` view)
 //! and generated source code (`ZYX_DEBUG=16` view).
 //!
@@ -19,8 +19,8 @@ mod server;
 
 use crate::{
     Map,
-    backend::{DeviceInfo, ProgramId},
-    graph::{ClassId, ExecPlan, Graph},
+    backend::{Cmd, DeviceInfo, ProgramId},
+    graph::{ClassId, Graph},
     kernel::Kernel,
 };
 use std::sync::{Arc, Mutex, OnceLock};
@@ -97,8 +97,8 @@ impl Viz {
         self.data().lock().unwrap().staged.insert(program_id, cap);
     }
 
-    /// Add one tab for `plan` compiled from `graph`.
-    pub(crate) fn snapshot(&self, graph: &Graph, plan: &ExecPlan) {
+    /// Add one tab for the queue compiled from `graph`.
+    pub(crate) fn snapshot(&self, graph: &Graph, cmds: &[Cmd]) {
         let data = self.data();
         let mut d = data.lock().unwrap();
         let name = format!("graph {}", d.graphs.len());
@@ -117,12 +117,12 @@ impl Viz {
             })
         };
 
-        for node in &plan.nodes {
-            let crate::graph::plan::ExecNode::Launch { program_id, load_classes, store_classes } = node else {
+        for cmd in cmds {
+            let Cmd::Launch { program, args, outputs } = cmd else {
                 continue;
             };
             let kid = kernels.len();
-            let (label, captured) = match d.staged.get(program_id) {
+            let (label, captured) = match d.staged.get(program) {
                 Some(cap) => (format!("kernel {kid}\n{}", cap.device_label), Some(cap)),
                 None => ("AOT\nkernel".to_string(), None),
             };
@@ -136,16 +136,19 @@ impl Viz {
             }));
             let launch_id = LAUNCH_NODE_BASE + kid;
             nodes.push(PlanNode { id: launch_id, label, kernel: kid as i64 });
-            for &c in &**load_classes {
-                let from = class_node(c, &mut nodes, &mut class_nodes);
-                if seen_edges.insert((from, launch_id)) {
-                    edges.push((from, launch_id, "load".to_string()));
-                }
-            }
-            for &c in &**store_classes {
+            for &(c, _, _) in outputs {
                 let to = class_node(c, &mut nodes, &mut class_nodes);
                 if seen_edges.insert((launch_id, to)) {
                     edges.push((launch_id, to, "store".to_string()));
+                }
+            }
+            for &c in args {
+                if outputs.iter().any(|&(o, _, _)| o == c) {
+                    continue;
+                }
+                let from = class_node(c, &mut nodes, &mut class_nodes);
+                if seen_edges.insert((from, launch_id)) {
+                    edges.push((from, launch_id, "load".to_string()));
                 }
             }
         }

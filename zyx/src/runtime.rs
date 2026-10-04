@@ -224,9 +224,9 @@ use std::{collections::BTreeSet, hash::BuildHasherDefault, path::Path, sync::Arc
 use crate::viz::Viz;
 use crate::{
     DType, Dev, Map, Scalar, Set, ZyxError,
-    backend::{ChunkId, Cmd, CmdQueue, DTypeCapability, DeviceProgramId, LaunchArg, Placement, Pool, ProgramId, Shard},
+    backend::{Cmd, CmdQueue, DTypeCapability, DeviceProgramId, LaunchArg, Placement, Plan, PlanDim, Pool, ProgramId, Shard},
     dtype::Constant,
-    graph::{ExecPlan, Graph, GraphId},
+    graph::{Graph, GraphId},
     kernel::{BOp, Kernel, Op, OpId, ParamKind, UOp},
     rng::Rng,
     scalar::{bf16, f8e4m3, f8e5m2, f16},
@@ -441,7 +441,7 @@ pub struct Runtime {
     pub rng: Rng,
     pub implicit_casts: bool,
     pub training: bool,
-    pub plan_cache: Map<u64, ExecPlan>,
+    pub plan_cache: Map<u64, Plan>,
     #[cfg(feature = "viz")]
     pub viz: Viz,
 }
@@ -449,10 +449,9 @@ pub struct Runtime {
 impl Runtime {
     /// Cache key for the plan cache: the graph's content key (structure +
     /// outputs) folded together with the pool each leaf class's buffer lives
-    /// in at call time. The compiled plan bakes pool-dependent bindings
-    /// (`ExecPlan::leaf_pools`, cross-pool alias handling), so two realizations
-    /// of the same graph shape may only share a plan when the leaf pool layout
-    /// matches; otherwise the plan recompiles.
+    /// in at call time. Alias copies are planned through the kernel pool, so
+    /// two realizations of the same graph shape may only share a plan when
+    /// the leaf pool layout matches; otherwise the plan recompiles.
     pub(crate) fn plan_cache_key(&self, graph_id: GraphId, outputs: &BTreeSet<OpId>) -> u64 {
         use std::hash::{Hash, Hasher};
         let graph = &self.graphs[graph_id];
@@ -1771,16 +1770,22 @@ impl Runtime {
                 let shape = self.resolve_shape(x);
                 let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
                 let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
-                let dst_buf = dst_pool.allocate(alloc_bytes)?;
-                let dst_placement = Arc::new(Placement { shards: vec![Shard::Device { pool: dst_pool, chunk: dst_buf }] });
                 // Single-copy queue: slot 0 is the source placement, slot 1
-                // the fresh destination placement.
+                // the destination, allocated by replay from its byte size.
                 let mut queue = CmdQueue::new();
-                queue.push(Cmd::Copy { src: OpId::from(0), dst: OpId::from(1), dst_pool });
+                queue.push(Cmd::Copy {
+                    src: OpId::from(0),
+                    dst: OpId::from(1),
+                    dst_pool,
+                    dst_dtype: 1,
+                    dst_dims: vec![PlanDim::Const(alloc_bytes)],
+                });
                 let mut boundary = Map::default();
                 boundary.insert(OpId::from(0), buf_id);
-                boundary.insert(OpId::from(1), Arc::clone(&dst_placement));
-                queue.schedule().replay(boundary)?;
+                let mut outputs = Set::default();
+                outputs.insert(OpId::from(1));
+                let out = queue.schedule(&outputs).replay(boundary, &Map::default())?;
+                let dst_placement = Arc::clone(&out[&OpId::from(1)]);
                 debug_assert!(!shape_id.is_scalar(), "to_device: eager tensor {x} has no shape expression");
 
                 let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer: dst_placement, rc: 1 });
@@ -1809,16 +1814,22 @@ impl Runtime {
                 let shape = self.resolve_shape(x);
                 let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
                 let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
-                let dst_buf = dst_pool.allocate(alloc_bytes)?;
-                let dst_placement = Arc::new(Placement { shards: vec![Shard::Device { pool: dst_pool, chunk: dst_buf }] });
                 // Single-copy queue: slot 0 is the source placement, slot 1
-                // the fresh destination placement.
+                // the destination, allocated by replay from its byte size.
                 let mut queue = CmdQueue::new();
-                queue.push(Cmd::Copy { src: OpId::from(0), dst: OpId::from(1), dst_pool });
+                queue.push(Cmd::Copy {
+                    src: OpId::from(0),
+                    dst: OpId::from(1),
+                    dst_pool,
+                    dst_dtype: 1,
+                    dst_dims: vec![PlanDim::Const(alloc_bytes)],
+                });
                 let mut boundary = Map::default();
                 boundary.insert(OpId::from(0), buf_id);
-                boundary.insert(OpId::from(1), Arc::clone(&dst_placement));
-                queue.schedule().replay(boundary)?;
+                let mut outputs = Set::default();
+                outputs.insert(OpId::from(1));
+                let out = queue.schedule(&outputs).replay(boundary, &Map::default())?;
+                let dst_placement = Arc::clone(&out[&OpId::from(1)]);
                 debug_assert!(!shape_id.is_scalar(), "to_device: eager tensor {x} has no shape expression");
 
                 let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer: dst_placement, rc: 1 });
@@ -4082,17 +4093,23 @@ impl Runtime {
                     (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
                 let alloc_bytes = bytes + dtypes[&tid].bit_size() as usize / 8;
 
-                let dst = pool_id.allocate(alloc_bytes as Dim)?;
-                let dst_placement = Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: dst }] });
                 debug_assert_ne!(src_pool, pool_id, "copy across the same pool is disallowed");
                 // Single-copy queue: slot 0 is the source placement, slot 1
-                // the fresh destination placement.
+                // the destination, allocated by replay from its byte size.
                 let mut queue = CmdQueue::new();
-                queue.push(Cmd::Copy { src: OpId::from(0), dst: OpId::from(1), dst_pool: pool_id });
+                queue.push(Cmd::Copy {
+                    src: OpId::from(0),
+                    dst: OpId::from(1),
+                    dst_pool: pool_id,
+                    dst_dtype: 1,
+                    dst_dims: vec![PlanDim::Const(alloc_bytes as Dim)],
+                });
                 let mut boundary = Map::default();
                 boundary.insert(OpId::from(0), buf);
-                boundary.insert(OpId::from(1), Arc::clone(&dst_placement));
-                queue.schedule().replay(boundary)?;
+                let mut outputs = Set::default();
+                outputs.insert(OpId::from(1));
+                let out = queue.schedule(&outputs).replay(boundary, &Map::default())?;
+                let dst_placement = Arc::clone(&out[&OpId::from(1)]);
                 src_pool.release(src_chunk);
                 // Record the new location in place: leaf_buffer reads the slab.
                 match &mut self.tensors[tid] {
@@ -4124,17 +4141,23 @@ impl Runtime {
                     (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
                 let alloc_bytes = bytes as Dim + Dim::from(dtypes[&tid].bit_size() / 8);
 
-                let dst = pool_id.allocate(alloc_bytes)?;
-                let dst_placement = Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: dst }] });
                 debug_assert_ne!(src_pool, pool_id, "copy across the same pool is disallowed");
                 // Single-copy queue: slot 0 is the source placement, slot 1
-                // the fresh destination placement.
+                // the destination, allocated by replay from its byte size.
                 let mut queue = CmdQueue::new();
-                queue.push(Cmd::Copy { src: OpId::from(0), dst: OpId::from(1), dst_pool: pool_id });
+                queue.push(Cmd::Copy {
+                    src: OpId::from(0),
+                    dst: OpId::from(1),
+                    dst_pool: pool_id,
+                    dst_dtype: 1,
+                    dst_dims: vec![PlanDim::Const(alloc_bytes)],
+                });
                 let mut boundary = Map::default();
                 boundary.insert(OpId::from(0), buf);
-                boundary.insert(OpId::from(1), Arc::clone(&dst_placement));
-                queue.schedule().replay(boundary)?;
+                let mut outputs = Set::default();
+                outputs.insert(OpId::from(1));
+                let out = queue.schedule(&outputs).replay(boundary, &Map::default())?;
+                let dst_placement = Arc::clone(&out[&OpId::from(1)]);
                 src_pool.release(src_chunk);
                 // Record the new location in place on the pending store.
                 match &mut self.tensors[tid] {

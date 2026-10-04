@@ -19,7 +19,7 @@
 // single-core launch uses `gidx0 = 0, gidx1 = 0` (also written `{0, 0}`
 // in CoreCoord notation).
 
-use super::{ChunkId, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Pool, gws_from_kernel};
+use super::{ChunkId, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Pool, Shard, gws_from_kernel};
 use crate::{
     DType, Set,
     backend::DTypeCapability,
@@ -948,8 +948,11 @@ impl TTDevice {
         for (ordinal, arg) in args.iter().enumerate() {
             let ordinal = ordinal as u32;
             match arg {
-                LaunchArg::Buffer(buffer_id) => {
-                    let idx = memory_pool.dev_index(*buffer_id).map_err(|e| BackendError {
+                LaunchArg::Buffer(placement) => {
+                    let [Shard::Device { chunk, .. }] = placement.shards.as_slice() else {
+                        todo!("multi-shard placement in TT launch")
+                    };
+                    let idx = memory_pool.dev_index(*chunk).map_err(|e| BackendError {
                         status: ErrorStatus::KernelLaunch,
                         context: format!("param {ordinal} dev_index: {e}").into(),
                     })?;

@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use std::sync::Arc;
 
-use crate::backend::{DeviceInfo, LaunchArg, Placement, Pool, ProgramId, Shard};
+use crate::backend::{DeviceInfo, LaunchArg, Placement, ProgramId, Shard};
 use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;

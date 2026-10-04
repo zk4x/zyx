@@ -46,7 +46,7 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <body>
 <header><span style="color:#9aa3af">graphs:</span><span id="tabs"></span></header>
 <main>
-  <section id="plan_section"><h2>ExecPlan</h2><div id="network"></div></section>
+  <section id="plan_section"><h2>Plan</h2><div id="network"></div></section>
   <div class="divider"></div>
   <section id="sched_section"><h2>sched IR (pre-linearize)</h2><pre id="sched">click a kernel</pre></section>
   <div class="divider"></div>

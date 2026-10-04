@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use super::{BackendError, ChunkId, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Pool, gws_from_kernel};
+use super::{BackendError, ChunkId, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Pool, Shard, gws_from_kernel};
 use crate::{
     DType, Set,
     backend::{DTypeCapability, DeviceProgramId},
@@ -401,7 +401,6 @@ impl WGPUMemoryPool {
 
         Ok(())
     }
-
 }
 
 impl WGPUDevice {
@@ -565,8 +564,11 @@ impl WGPUDevice {
                 .iter()
                 .enumerate()
                 .filter_map(|(bind_id, arg)| {
-                    let LaunchArg::Buffer(buffer_id) = arg else { return None };
-                    let buffer = &memory_pool.buffers[*buffer_id].buffer;
+                    let LaunchArg::Buffer(placement) = arg else { return None };
+                    let [Shard::Device { chunk, .. }] = placement.shards.as_slice() else {
+                        todo!("multi-shard placement in WGPU launch")
+                    };
+                    let buffer = &memory_pool.buffers[*chunk].buffer;
                     Some(wgpu::BindGroupEntry { binding: u32::try_from(bind_id).unwrap(), resource: buffer.as_entire_binding() })
                 })
                 .collect();

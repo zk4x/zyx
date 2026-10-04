@@ -83,43 +83,94 @@ impl Drop for Placement {
     }
 }
 
+/// One dim of an allocation spec: an expression tree over compile-time
+/// constants and leaf-class values (variables bound between plan runs).
+/// Computation stays symbolic so a plan compiled once serves any variable
+/// values; evaluation happens at execution time inside `replay`.
+#[derive(Debug, Clone)]
+pub enum PlanDim {
+    Const(Dim),
+    Leaf(OpId),
+    Binary { x: Box<PlanDim>, y: Box<PlanDim>, bop: BOp },
+    Cast { x: Box<PlanDim>, dtype: DType },
+}
+
+impl PlanDim {
+    /// Evaluate the dim expression against the leaf classes' scalar values.
+    /// Fails loudly on an unbound leaf — a missing value is a bug, never a
+    /// default.
+    pub(crate) fn eval(&self, class_vars: &Map<OpId, Constant>) -> Dim {
+        match self {
+            PlanDim::Const(c) => *c,
+            PlanDim::Leaf(cid) => class_vars
+                .get(cid)
+                .and_then(|c| c.as_dim())
+                .unwrap_or_else(|| panic!("dynamic dim class {cid:?} is unbound at execution time")),
+            PlanDim::Binary { x, y, bop } => {
+                Constant::binary(Constant::idx(x.eval(class_vars)), Constant::idx(y.eval(class_vars)), *bop)
+                    .as_dim()
+                    .unwrap_or_else(|| panic!("dim binary op {bop:?} did not produce a dim"))
+            }
+            PlanDim::Cast { x, dtype } => Constant::idx(x.eval(class_vars))
+                .cast(*dtype)
+                .as_dim()
+                .unwrap_or_else(|| panic!("dim cast to {dtype:?} did not produce a dim")),
+        }
+    }
+}
+
 /// Scheduler commands. Args and outputs are queue-local [`OpId`] slots;
-/// the per-replay boundary table maps slots to [`Placement`]s.
+/// the per-replay boundary table maps input slots to [`Placement`]s.
 #[derive(Debug)]
 pub enum Cmd {
     /// Run `program`. Arg regions must agree (cross-device staging of one
-    /// value into one node is later work).
+    /// value into one node is later work). Every output carries its dtype
+    /// byte size plus one dim expression per axis: replay evaluates them
+    /// from `vars` and allocates the output, unless the slot is already
+    /// bound (a realized leaf class reuses its buffer).
     Launch {
         program: ProgramId,
         args: Vec<OpId>,
-        outputs: Vec<OpId>,
-        params: Vec<ParamKind>,
-        out_bytes: Vec<u64>,
-        scalars: Vec<(OpId, i64)>,
+        outputs: Vec<(OpId, Dim, Vec<PlanDim>)>,
     },
     /// Copy from `src` value to `dst` value. `dst_pool` names the
     /// destination pool: same-pool fresh `dst`s are assigned there; a
     /// cross-pool fresh `dst` is rejected (cross into a caller pre-placed
     /// boundary value). Cross-pool copies stage through host temps or go
     /// peer (same vendor). Host-resident sources never become nodes: they
-    /// upload eagerly around capture/launch.
-    Copy { src: OpId, dst: OpId, dst_pool: Pool },
+    /// upload eagerly around capture/launch. The destination carries its
+    /// dtype byte size plus one dim expression per axis, like a launch
+    /// output: replay allocates it unless the slot is already bound.
+    Copy {
+        src: OpId,
+        dst: OpId,
+        dst_pool: Pool,
+        dst_dtype: Dim,
+        dst_dims: Vec<PlanDim>,
+    },
+    /// Bind slot `class` to the placement of slot `to`: an in-place assign
+    /// output aliases its base buffer. Zero-cost — replay resolves both
+    /// slots to one placement, no executable.
+    Alias { class: OpId, to: OpId },
 }
 
 impl Cmd {
-    /// Value reads: launch args plus copy sources. Outputs excluded.
+    /// Value reads: launch args plus copy sources plus alias targets.
+    /// Outputs excluded.
     fn reads(&self) -> Vec<OpId> {
         match self {
             Cmd::Launch { args, .. } => args.clone(),
             Cmd::Copy { src, .. } => vec![*src],
+            Cmd::Alias { to, .. } => vec![*to],
         }
     }
 
-    /// Value defs: launch outputs plus copy destinations.
+    /// Value defs: launch outputs plus copy destinations plus alias classes.
     fn defs(&self) -> Vec<OpId> {
         match self {
-            Cmd::Launch { outputs, .. } => outputs.clone(),
+            Cmd::Launch { outputs, .. } => outputs.iter().map(|(slot, _, _)| *slot).collect(),
             Cmd::Copy { dst, .. } => vec![*dst],
+            Cmd::Alias { class, .. } => vec![*class],
         }
     }
 }
@@ -130,7 +181,7 @@ impl Cmd {
 /// binds them to [`Placement`]s.
 #[derive(Debug, Default)]
 pub struct CmdQueue {
-    cmds: Vec<Cmd>,
+    pub(crate) cmds: Vec<Cmd>,
 }
 
 impl CmdQueue {
@@ -151,7 +202,11 @@ impl CmdQueue {
 }
 
 impl CmdQueue {
-    pub fn schedule(self) -> Plan {
+    /// Schedule the queue against `outputs` (slots escaping the plan):
+    /// partition into executables with residency planning — outputs must
+    /// survive, dead intermediaries drain at last use.
+    pub fn schedule(self, outputs: &Set<OpId>) -> Plan {
+        let _ = outputs;
         todo!()
     }
 }
@@ -161,11 +216,20 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Replay the plan against the boundary table: slots resolve to
-    /// placements, partitions build (or reuse) backend executables and
-    /// launch. Eager replays immediately; ping-pong replays repeatedly.
-    pub fn replay(&self, boundary: Map<OpId, Arc<Placement>>) -> Result<(), ZyxError> {
+    /// Replay the plan against the boundary table and symbolic values: slots
+    /// resolve to placements, dynamic sizes evaluate from `vars`,
+    /// partitions build (or reuse) backend executables and launch, patching
+    /// per-replay addresses, values, and sizes into the executables.
+    /// Eager replays immediately; ping-pong replays repeatedly. Returns the
+    /// new placements (intermediaries and outputs) — holding the map keeps
+    /// every buffer alive across replays.
+    pub fn replay(
+        &self,
+        boundary: Map<OpId, Arc<Placement>>,
+        vars: &Map<OpId, Constant>,
+    ) -> Result<Map<OpId, Arc<Placement>>, ZyxError> {
         let _ = boundary;
+        let _ = vars;
         todo!()
     }
 }
