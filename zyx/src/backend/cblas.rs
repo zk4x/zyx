@@ -16,9 +16,10 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(clippy::needless_pass_by_ref_mut)]
 
-use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Pool, ProgramId};
+use super::{Cmd, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, Placement, Pool, ProgramId};
 use crate::{
-    DType, Set,
+    DType, Map, Set,
+    dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::Graph,
     kernel::{Kernel, Op, OpId},
@@ -239,43 +240,105 @@ impl CblasDevice {
             );
         }
     }
+}
 
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn launch(&mut self, program_id: DeviceProgramId, pool_handle: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
-        // Sequential CPU: the kernel runs to completion before returning.
-        debug_assert_eq!(pool_handle, Pool::Host);
-        let host = super::host::pool();
-        let mut memory_pool = super::lock(pool_handle, host);
+/// Preplanned CBLAS partition: the ordered commands plus per-command
+/// death lists. Mirrors [`super::c::CPartition`] — replay allocates
+/// unbound defs on the fly from their specs, invokes sgemm
+/// back-to-back, and drops dead slots per the lists.
+#[derive(Debug)]
+pub(crate) struct CblasPartition {
+    cmds: Vec<Cmd>,
+    deaths: Vec<Vec<OpId>>,
+}
 
-        let program = &self.programs[program_id];
-        let kernel = &self.kernels[program.kernel];
-
-        let m: i32 = i32::try_from(program.m)
-            .map_err(|_| BackendError { status: ErrorStatus::IncorrectKernelArg, context: "m exceeds i32 range".into() })?;
-        let n: i32 = i32::try_from(program.n)
-            .map_err(|_| BackendError { status: ErrorStatus::IncorrectKernelArg, context: "n exceeds i32 range".into() })?;
-        let k: i32 = i32::try_from(program.k)
-            .map_err(|_| BackendError { status: ErrorStatus::IncorrectKernelArg, context: "k exceeds i32 range".into() })?;
-
-        // args are [a, b, out] — loads first, then stores
-        let LaunchArg::Buffer(ref b0) = args[0] else {
-            unreachable!("cblas sgemm args are plain buffers")
-        };
-        let LaunchArg::Buffer(ref b1) = args[1] else {
-            unreachable!("cblas sgemm args are plain buffers")
-        };
-        let LaunchArg::Buffer(ref b2) = args[2] else {
-            unreachable!("cblas sgemm args are plain buffers")
-        };
-        let a = host_ptr(&mut memory_pool, b0) as *mut f32;
-        let b = host_ptr(&mut memory_pool, b1) as *mut f32;
-        let c = host_ptr(&mut memory_pool, b2) as *mut f32;
-
-        unsafe {
-            // Row-major, NoTrans x NoTrans: C(m, n) = A(m, k) @ B(k, n)
-            (kernel.sgemm)(CBLAS_ROW_MAJOR, CBLAS_NO_TRANS, CBLAS_NO_TRANS, m, n, k, 1.0, a, k, b, n, 0.0, c, n);
+impl CblasDevice {
+    pub(crate) fn schedule(cmds: Vec<Cmd>, outputs: &Set<OpId>, live_out: Set<OpId>) -> CblasPartition {
+        let mut last_use: Map<OpId, usize> = Map::default();
+        for (idx, cmd) in cmds.iter().enumerate() {
+            for r in cmd.reads() {
+                last_use.insert(r, idx);
+            }
         }
+        let mut pinned = outputs.clone();
+        pinned.extend(live_out);
+        let mut deaths: Vec<Vec<OpId>> = vec![Vec::new(); cmds.len()];
+        for (slot, idx) in last_use {
+            if !pinned.contains(&slot) {
+                deaths[idx].push(slot);
+            }
+        }
+        CblasPartition { cmds, deaths }
+    }
+}
 
+impl CblasPartition {
+    pub(crate) fn replay(
+        &self,
+        dev: &mut CblasDevice,
+        resolved: &mut Map<OpId, Arc<Placement>>,
+        vars: &Map<OpId, Constant>,
+    ) -> Result<(), BackendError> {
+        // Sequential CPU: the kernel runs to completion before returning.
+        let host = super::host::pool();
+        let mut memory_pool = super::lock(Pool::Host, host);
+        for (idx, cmd) in self.cmds.iter().enumerate() {
+            match cmd {
+                Cmd::Launch { program, args, outputs } => {
+                    debug_assert_eq!(program.dev, Dev::Cblas, "CBLAS partition holds a non-CBLAS program");
+                    for (slot, dtype, dims) in outputs {
+                        if resolved.contains_key(slot) {
+                            continue;
+                        }
+                        let bytes = dims.iter().map(|d| d.eval(vars)).fold(*dtype, |a, b| a * b);
+                        debug_assert!(bytes >= 0, "CBLAS replay allocated negative bytes");
+                        let chunk = memory_pool.allocate(bytes)?;
+                        resolved.insert(*slot, Arc::new(Placement { shards: vec![super::Shard { pool: Pool::Host, chunk }] }));
+                    }
+                    let program_ref = &dev.programs[program.program_id];
+                    let kernel = &dev.kernels[program_ref.kernel];
+
+                    let m: i32 = i32::try_from(program_ref.m).map_err(|_| BackendError {
+                        status: ErrorStatus::IncorrectKernelArg,
+                        context: "m exceeds i32 range".into(),
+                    })?;
+                    let n: i32 = i32::try_from(program_ref.n).map_err(|_| BackendError {
+                        status: ErrorStatus::IncorrectKernelArg,
+                        context: "n exceeds i32 range".into(),
+                    })?;
+                    let k: i32 = i32::try_from(program_ref.k).map_err(|_| BackendError {
+                        status: ErrorStatus::IncorrectKernelArg,
+                        context: "k exceeds i32 range".into(),
+                    })?;
+
+                    // args are [a, b, out] — loads first, then stores;
+                    // sgemm takes plain buffers, never scalars.
+                    let a =
+                        host_ptr(&mut memory_pool, resolved.get(&args[0]).expect("cblas sgemm arg 0 is unplaced")) as *const f32;
+                    let b =
+                        host_ptr(&mut memory_pool, resolved.get(&args[1]).expect("cblas sgemm arg 1 is unplaced")) as *const f32;
+                    let c =
+                        host_ptr(&mut memory_pool, resolved.get(&args[2]).expect("cblas sgemm arg 2 is unplaced")) as *mut f32;
+
+                    // Dry run: skip device execution, keep arg binding validation.
+                    if std::env::var("ZYX_DRY_RUN").is_err() {
+                        unsafe {
+                            // Row-major, NoTrans x NoTrans: C(m, n) = A(m, k) @ B(k, n)
+                            (kernel.sgemm)(CBLAS_ROW_MAJOR, CBLAS_NO_TRANS, CBLAS_NO_TRANS, m, n, k, 1.0, a, k, b, n, 0.0, c, n);
+                        }
+                    }
+                }
+                Cmd::Alias { class, to } => {
+                    let placed =
+                        resolved.get(to).unwrap_or_else(|| panic!("CBLAS replay: alias target {to:?} is unplaced")).clone();
+                    resolved.insert(*class, placed);
+                }
+                Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
+            }
+            for dead in &self.deaths[idx] {
+                resolved.remove(dead);
+            }
+        }
         Ok(())
     }
 }

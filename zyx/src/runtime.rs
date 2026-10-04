@@ -4260,10 +4260,48 @@ impl Runtime {
             buffers.push(LaunchArg::Buffer(buf));
         }
 
-        // Compile and launch (caches in kernel_map / programs)
+        // Compile (caches in kernel_map / programs; timed probes inside
+        // use launch_timed, which stays).
         let (dev_prog, _timing) = self.get_or_autotune(kernel, &buffers)?;
 
-        dev_id.launch(dev_prog, &buffers)?;
+        // One-off launch queue: one slot per arg in positional order
+        // (loads ↔ Global+Variable defines, then stores ↔ GlobalMut).
+        // Buffers ride in the boundary map, scalars in `vars`; the kept
+        // store buffers are already bound, so replay reuses them.
+        let mut queue = CmdQueue::new();
+        let mut args: Vec<OpId> = Vec::with_capacity(loads.len() + stores.len());
+        let mut boundary = Map::default();
+        let mut vars = Map::default();
+        for (i, &tid) in loads.iter().enumerate() {
+            let slot = OpId::from(i);
+            if let Some(value) = self.resolve_symbolic(tid) {
+                vars.insert(slot, value);
+            } else {
+                boundary.insert(slot, self.leaf_buffer(tid).expect("materialize: load without buffer"));
+            }
+            args.push(slot);
+        }
+        let mut outputs = Vec::with_capacity(stores.len());
+        for (j, &tid) in stores.iter().enumerate() {
+            let slot = OpId::from(loads.len() + j);
+            let buf = match &self.tensors[tid] {
+                TensorData::PendingLeaf { old_buffer: Some(buf), .. } => Arc::clone(buf),
+                ref t => panic!("materialize: store {tid} has no buffer for the launch queue: {t:?}"),
+            };
+            boundary.insert(slot, buf);
+            outputs.push((
+                slot,
+                dtypes[&tid].bit_size() as Dim / 8,
+                self.resolve_shape(tid).iter().map(|&d| PlanDim::Const(d)).collect::<Vec<_>>(),
+            ));
+            args.push(slot);
+        }
+        queue.push(Cmd::Launch { program: ProgramId { dev: dev_id, program_id: dev_prog }, args, outputs });
+        let mut out_set = Set::default();
+        for j in 0..stores.len() {
+            out_set.insert(OpId::from(loads.len() + j));
+        }
+        let _ = queue.schedule(&out_set).replay(boundary, &vars)?;
 
         // The kernel launch gives new buffers: ALL stores are turned into
         // Leafs over their (kept or freshly allocated) buffer at once.

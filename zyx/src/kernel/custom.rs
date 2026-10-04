@@ -16,11 +16,10 @@
 //! The custom kernel system allows backends to compile kernels
 //! to their native instruction set and cache them for repeated use.
 
-use std::collections::BTreeSet;
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use std::sync::Arc;
 
-use crate::backend::{DeviceInfo, LaunchArg, Placement, ProgramId, Shard};
+use crate::backend::{Cmd, CmdQueue, DeviceInfo, LaunchArg, Placement, PlanDim, ProgramId, Shard};
 use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;
@@ -35,7 +34,7 @@ use crate::symbolic::{Expr, ExprId};
 use crate::tensor::TensorId;
 use crate::types::{TinyString, TinyVec};
 use crate::{DType, Tensor, ZyxError, bf16, f16, shape::Dim};
-use crate::{Dev, Map, Scalar};
+use crate::{Dev, Map, Scalar, Set};
 
 /// A compiled kernel ready for repeated execution.
 ///
@@ -1337,29 +1336,35 @@ impl Runtime {
         // NOTE: all async — allocate is pool bump, launch is stream enqueue, sync is deferred to to_vec/item.
         let device_id = program.dev;
         let pool_id = device_id.pool();
-        let mut input_args: Vec<LaunchArg> = Vec::with_capacity(inputs.len());
-        let mut all_bufs = BTreeSet::new();
-        for &input in inputs {
+        // One-off launch queue: one slot per kernel param in positional
+        // order (inputs, then outputs — the order the old eager `args`
+        // vec used). Buffers ride in the boundary map, scalars in `vars`;
+        // replay allocates the outputs from their (all-`Const`) specs.
+        let mut args: Vec<OpId> = Vec::with_capacity(inputs.len() + output_dtypes.len());
+        let mut boundary = Map::default();
+        let mut vars = Map::default();
+        for (i, &input) in inputs.iter().enumerate() {
+            let slot = OpId::from(i);
             if let Some(value) = self.resolve_symbolic(input) {
-                input_args.push(LaunchArg::Variable(value));
-                continue;
+                vars.insert(slot, value);
+            } else {
+                if self.leaf_buffer(input).is_none() {
+                    self.add_store(input)?;
+                }
+                let buffer = self.leaf_buffer(input).unwrap();
+                let [Shard { pool: found, .. }] = &buffer.shards[..] else {
+                    todo!("multi-shard custom kernel input")
+                };
+                if *found != pool_id {
+                    return Err(ZyxError::BackendError(BackendError {
+                        status: crate::error::ErrorStatus::IncorrectKernelArg,
+                        context: format!("custom kernel input tensor {input} is on a different device than the compiled kernel")
+                            .into(),
+                    }));
+                }
+                boundary.insert(slot, Arc::clone(&buffer));
             }
-            if self.leaf_buffer(input).is_none() {
-                self.add_store(input)?;
-            }
-            let buffer = self.leaf_buffer(input).unwrap();
-            let [Shard { pool: found, .. }] = &buffer.shards[..] else {
-                todo!("multi-shard custom kernel input")
-            };
-            if *found != pool_id {
-                return Err(ZyxError::BackendError(BackendError {
-                    status: crate::error::ErrorStatus::IncorrectKernelArg,
-                    context: format!("custom kernel input tensor {input} is on a different device than the compiled kernel")
-                        .into(),
-                }));
-            }
-            input_args.push(LaunchArg::Buffer(Arc::clone(&buffer)));
-            all_bufs.insert(buffer);
+            args.push(slot);
         }
         debug_assert!(inputs.iter().all(|&input| self.leaf_buffer(input).is_some() || self.resolve_symbolic(input).is_some()));
 
@@ -1379,30 +1384,48 @@ impl Runtime {
         }
         let shapes = dims;
 
-        let mut output_bufs = Vec::new();
-        for (i, dtype) in output_dtypes.iter().enumerate() {
-            let shape = &shapes[i];
-            let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
-            let buf = pool_id.allocate(bytes)?;
-            let placement = Arc::new(Placement { shards: vec![Shard { pool: pool_id, chunk: buf }] });
-            output_bufs.push(Arc::clone(&placement));
-            all_bufs.insert(placement);
+        let mut outputs = Vec::with_capacity(shapes.len());
+        for (j, (dtype, shape)) in output_dtypes.iter().zip(shapes.iter()).enumerate() {
+            let slot = OpId::from(inputs.len() + j);
+            outputs.push((slot, dtype.bit_size() as Dim / 8, shape.iter().map(|&d| PlanDim::Const(d)).collect::<Vec<_>>()));
+            args.push(slot);
         }
 
-        let mut args = input_args;
-        for buf in &output_bufs {
-            args.push(LaunchArg::Buffer(Arc::clone(buf)));
-        }
         let _launch_t = std::time::Instant::now();
         // Perf estimate present (set at compile under the dev debug bit):
-        // synchronous timed launch, then the perf line. No estimate means
-        // plain async enqueue.
-        if let Some((flop, read, write)) = perf {
-            let nanos = device_id.launch_timed(program.program_id, &args)?;
+        // synchronous timed launch outside the queue, then the perf line.
+        // No estimate means the normal queue path below.
+        let out = if let Some((flop, read, write)) = perf {
+            // Dev-debug path: allocate the outputs here (the queue would
+            // do it on the normal path) and launch directly.
+            let empty_vars = Map::default();
+            for (slot, dtype, dims) in &outputs {
+                let bytes = (dims.iter().map(|d| d.eval(&empty_vars)).product::<Dim>() * *dtype + 7) / 8;
+                let buf = pool_id.allocate(bytes)?;
+                boundary.insert(*slot, Arc::new(Placement { shards: vec![Shard { pool: pool_id, chunk: buf }] }));
+            }
+            let mut launch_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
+            for &slot in &args {
+                if let Some(buf) = boundary.get(&slot) {
+                    launch_args.push(LaunchArg::Buffer(Arc::clone(buf)));
+                } else if let Some(&value) = vars.get(&slot) {
+                    launch_args.push(LaunchArg::Variable(value));
+                } else {
+                    panic!("forward: launch slot {slot:?} is neither placed nor bound");
+                }
+            }
+            let nanos = device_id.launch_timed(program.program_id, &launch_args)?;
             println!("{}", crate::get_perf(flop, read, write, nanos));
+            boundary
         } else {
-            device_id.launch(program.program_id, &args)?;
-        }
+            let mut queue = CmdQueue::new();
+            queue.push(Cmd::Launch { program, args, outputs });
+            let mut out_set = Set::default();
+            for j in 0..shapes.len() {
+                out_set.insert(OpId::from(inputs.len() + j));
+            }
+            queue.schedule(&out_set).replay(boundary, &vars)?
+        };
         /*eprintln!(
             "[forward async] launch enqueue {}us total {}us (async, no sync)",
             _launch_t.elapsed().as_micros(),
@@ -1414,7 +1437,8 @@ impl Runtime {
         // Consumers mint their own load kernels (Runtime::new_kernel_from_leaf), so no
         // NULL op ids ever leak into eager ops built on the result.
         let mut tensors = Vec::new();
-        for ((dtype, buffer_id), shape) in output_dtypes.iter().copied().zip(output_bufs).zip(shapes) {
+        for (j, (dtype, shape)) in output_dtypes.iter().copied().zip(shapes).enumerate() {
+            let buffer_id = out[&OpId::from(inputs.len() + j)].clone();
             // Build the slab-side shape expression (constant dims) for the
             // new tensor before pushing it.
             let dim_tids: Vec<TensorId> =

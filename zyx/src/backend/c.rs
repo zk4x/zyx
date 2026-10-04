@@ -114,7 +114,11 @@ impl CPartition {
                                 context: format!("Failed to find kernel symbol: {e}").into(),
                             })?;
                         let ptrs_raw: Vec<*mut std::ffi::c_void> = ptrs.iter().map(|p| (*p).cast::<std::ffi::c_void>()).collect();
-                        func(ptrs_raw.as_ptr(), ptrs_raw.len());
+                        // Dry run: skip device execution, keep arg binding validation.
+                        // Output buffers hold uninitialized contents; callers must not read them.
+                        if std::env::var("ZYX_DRY_RUN").is_err() {
+                            func(ptrs_raw.as_ptr(), ptrs_raw.len());
+                        }
                     }
                 }
                 Cmd::Alias { class, to } => {
@@ -427,7 +431,16 @@ impl CDevice {
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    pub fn launch(&mut self, program_id: DeviceProgramId, pool_handle: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
+    pub fn launch_timed(
+        &mut self,
+        program_id: DeviceProgramId,
+        pool_handle: Pool,
+        args: &[LaunchArg],
+    ) -> Result<u64, BackendError> {
+        // Sequential CPU: no queues, no pending window — the kernel runs to
+        // completion before returning, so a wall-clock bracket is already an
+        // uncontended measurement.
+        let start = Instant::now();
         // Sequential CPU: the kernel runs to completion before returning.
         debug_assert_eq!(pool_handle, Pool::Host);
         let host = super::host::pool();
@@ -463,21 +476,6 @@ impl CDevice {
             func(ptrs_raw.as_ptr(), ptrs_raw.len());
         }
 
-        Ok(())
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn launch_timed(
-        &mut self,
-        program_id: DeviceProgramId,
-        pool_handle: Pool,
-        args: &[LaunchArg],
-    ) -> Result<u64, BackendError> {
-        // Sequential CPU: no queues, no pending window — the kernel runs to
-        // completion before returning, so a wall-clock bracket is already an
-        // uncontended measurement.
-        let start = Instant::now();
-        self.launch(program_id, pool_handle, args)?;
         Ok(start.elapsed().as_nanos() as u64)
     }
 }

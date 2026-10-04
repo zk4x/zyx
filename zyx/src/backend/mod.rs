@@ -278,6 +278,9 @@ impl CmdQueue {
             Some(Dev::C) | None => {
                 partitions.push(PlanPartition::Cpu(c::CDevice::schedule(std::mem::take(run), outputs, live_out)))
             }
+            Some(Dev::Cblas) => {
+                partitions.push(PlanPartition::Cblas(cblas::CblasDevice::schedule(std::mem::take(run), outputs, live_out)))
+            }
             Some(dev) => todo!("schedule launch run for {dev:?}"),
         }
         *run_dev = None;
@@ -308,6 +311,11 @@ impl Plan {
                     let device = c::device()?;
                     let mut dev = dlock(Dev::C, &device);
                     cpu.replay(&mut dev, &mut resolved, vars)?;
+                }
+                PlanPartition::Cblas(cblas) => {
+                    let device = cblas::device()?;
+                    let mut dev = dlock(Dev::Cblas, &device);
+                    cblas.replay(&mut dev, &mut resolved, vars)?;
                 }
                 PlanPartition::Copy { dst, ops } => {
                     for op in ops {
@@ -356,6 +364,8 @@ pub(crate) struct CopyOp {
 pub(crate) enum PlanPartition {
     /// Ordered CPU commands with death lists, executed by the C device.
     Cpu(c::CPartition),
+    /// Ordered BLAS commands with death lists, executed by the CBLAS device.
+    Cblas(cblas::CblasPartition),
     /// Cross-pool copies, executed by the destination device.
     Copy { dst: Dev, ops: Vec<CopyOp> },
 }
@@ -612,49 +622,6 @@ impl Dev {
         // A vendor pass adds Node::Kernel nodes with input edges; those must
         // never close a dependency cycle over the class graph.
         graph.verify();
-    }
-
-    /// Launch a kernel on the device. Waits on all events in `event_wait_list`
-    /// before submitting to the GPU queue (ensures input buffers are ready).
-    /// Returns an event that signals when the kernel completes.
-    ///
-    /// The `args` are the `LaunchArg`s for the kernel in the order the
-    /// `Param` ops appear in the kernel IR given to compile (flat, head order, all
-    /// kinds: `Variable`/`Global`/`GlobalMut`). `Op::Storage` is NOT a kernel
-    /// parameter. `LaunchArg::Buffer` placements must carry a shard for this
-    /// device; `LaunchArg::Variable` carries the scalar
-    /// value directly — backends never store variables. The grid (gws) is NOT
-    /// passed here — each backend derives it at launch from the per-axis
-    /// `GwsDim` it stored at compile, evaluating `Param(ordinal)` leaves
-    /// against `args[ordinal]` (`LaunchArg::Variable` → `Constant::as_dim()`).
-    pub fn launch(self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<(), BackendError> {
-        // A kernel always has at least one Param (its output); launching with
-        // no args means buffer binding failed upstream — backends would pass
-        // garbage param pointers to the driver.
-        debug_assert!(!args.is_empty(), "launch with empty args: buffer binding failed upstream");
-        // Dry run: skip device execution, keep compile + arg binding validation.
-        // Output buffers hold uninitialized contents; callers must not read them.
-        if std::env::var("ZYX_DRY_RUN").is_ok() {
-            return Ok(());
-        }
-        let pool = self.pool();
-        match self {
-            Dev::Auto => panic!("Dev::Auto cannot launch; resolve it with Dev::auto() first"),
-            Dev::C => c::device().expect("C device unavailable").lock().unwrap().launch(program_id, pool, args),
-            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().launch(program_id, pool, args),
-            Dev::Dummy => dummy::device().expect("dummy device unavailable").lock().unwrap().launch(program_id, pool, args),
-            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).launch(program_id, pool, args),
-            Dev::OpenCL(id) => {
-                dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).launch(program_id, pool, args)
-            }
-            #[cfg(feature = "tenstorrent")]
-            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).launch(program_id, pool, args),
-            Dev::Vulkan(id) => {
-                dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).launch(program_id, pool, args)
-            }
-            #[cfg(feature = "wgpu")]
-            Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).launch(program_id, pool, args),
-        }
     }
 
     /// Timed launch for autotune: returns the kernel's run time in nanos.
