@@ -52,14 +52,14 @@ mod vulkan;
 #[cfg(feature = "wgpu")]
 mod wgpu;
 
-/// One device-resident (or host-resident) piece of a placed value.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Shard {
-    /// Host-owned bytes (loaded data, weights staging, readback targets).
-    Host { data: Vec<u8> },
-    /// A chunk in a backend pool. The chunk's address is stable for the
-    /// chunk's lifetime; reuse from the free list preserves it.
-    Device { pool: Pool, chunk: ChunkId },
+/// One piece of a placed value: a chunk in a backend pool (host memory
+/// is just [`Pool::Host`]). The chunk's address is stable for the chunk's
+/// lifetime; reuse from the free list preserves it. One shard for the
+/// common single-device case, several for sharded tensors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Shard {
+    pub pool: Pool,
+    pub chunk: ChunkId,
 }
 
 /// A placed value: one [`Shard`] per device holding it (one shard for the
@@ -70,15 +70,13 @@ pub struct Placement {
 }
 
 impl Drop for Placement {
-    /// Last-owner cleanup: every device shard goes back on its pool's free
+    /// Last-owner cleanup: every shard goes back on its pool's free
     /// list (`Pool::release` frees nothing — only `dispose` reclaims).
-    /// Inline host data drops with the struct. A placement shared by cloned
-    /// `Arc`s releases each chunk exactly once, when the final clone drops.
+    /// A placement shared by cloned `Arc`s releases each chunk exactly
+    /// once, when the final clone drops.
     fn drop(&mut self) {
         for shard in &self.shards {
-            if let Shard::Device { pool, chunk } = shard {
-                pool.release(*chunk);
-            }
+            shard.pool.release(shard.chunk);
         }
     }
 }
@@ -144,7 +142,6 @@ pub enum Cmd {
     Copy {
         src: OpId,
         dst: OpId,
-        src_pool: Pool,
         dst_pool: Pool,
         dst_dtype: Dim,
         dst_dims: Vec<PlanDim>,
@@ -196,10 +193,11 @@ impl CmdQueue {
 impl CmdQueue {
     /// Schedule the queue against `outputs` (slots escaping the plan):
     /// slice into maximal same-device launch runs (each scheduled by its
-    /// device), with cross-pool copies as [`PlanPartition::Copy`] executed
-    /// by the destination device. Same-pool copies and aliases join the
-    /// surrounding run. Residency note: every run pins `outputs` plus the
-    /// slots read after it, so replay frees everything else at last use.
+    /// device); every copy becomes a [`PlanPartition::Copy`] executed by
+    /// the destination device — device runs never copy. Aliases join the
+    /// surrounding run (zero-cost map binds). Residency note: every run
+    /// pins `outputs` plus the slots read after it, so replay frees
+    /// everything else at last use.
     pub fn schedule(self, outputs: &Set<OpId>) -> Plan {
         let n = self.cmds.len();
         // suffix[idx] = slots read by cmds[idx..]: a run ending at `end`
@@ -212,14 +210,14 @@ impl CmdQueue {
         let mut partitions: Vec<PlanPartition> = Vec::new();
         let mut run_dev: Option<Dev> = None;
         let mut run: Vec<Cmd> = Vec::new();
-        // Same-pool copies and aliases before the first launch of a run wait
-        // in `pending` and join the next run in program order.
+        // Aliases before the first launch of a run wait in `pending` and
+        // join the next run in program order.
         let mut pending: Vec<Cmd> = Vec::new();
         let mut idx = 0;
         for cmd in self.cmds {
             let end = idx + 1;
             match cmd {
-                Cmd::Copy { src, dst, src_pool, dst_pool, dst_dtype, dst_dims } if src_pool != dst_pool => {
+                Cmd::Copy { src, dst, dst_pool, dst_dtype, dst_dims } => {
                     // Pending came textually first: run it before the copy.
                     run.extend(pending.drain(..));
                     Self::flush_run(&mut partitions, &mut run_dev, &mut run, idx, outputs, &suffix);
@@ -252,8 +250,7 @@ impl CmdQueue {
             }
             idx = end;
         }
-        // Trailing pending with no run left: a queue of only aliases and
-        // same-pool copies (e.g. an all-alias plan).
+        // Trailing pending with no run left: a queue of only aliases.
         if !pending.is_empty() {
             run.extend(pending.drain(..));
         }
@@ -262,9 +259,8 @@ impl CmdQueue {
     }
 
     /// Finalize the current run (`run[..]` = cmds[start..end]) into a device
-    /// partition. A run with no launches (only aliases and same-pool copies)
-    /// runs on C iff everything is host-pool — aliases and host copies need
-    /// no compute.
+    /// partition. A run with no launches holds only aliases — zero-cost map
+    /// binds needing no compute, so it runs anywhere: C.
     fn flush_run(
         partitions: &mut Vec<PlanPartition>,
         run_dev: &mut Option<Dev>,
@@ -279,20 +275,10 @@ impl CmdQueue {
         }
         let live_out = suffix[end].clone();
         match *run_dev {
-            Some(Dev::C) => partitions.push(PlanPartition::Cpu(c::CDevice::schedule(std::mem::take(run), outputs, live_out))),
-            Some(dev) => todo!("schedule launch run for {dev:?}"),
-            None => {
-                let host_only = run.iter().all(|cmd| match cmd {
-                    Cmd::Copy { src_pool, dst_pool, .. } => *src_pool == Pool::Host && *dst_pool == Pool::Host,
-                    Cmd::Alias { .. } => true,
-                    Cmd::Launch { .. } => unreachable!("launchless run holds a launch"),
-                });
-                if host_only {
-                    partitions.push(PlanPartition::Cpu(c::CDevice::schedule(std::mem::take(run), outputs, live_out)));
-                } else {
-                    todo!("schedule launchless non-host run")
-                }
+            Some(Dev::C) | None => {
+                partitions.push(PlanPartition::Cpu(c::CDevice::schedule(std::mem::take(run), outputs, live_out)))
             }
+            Some(dev) => todo!("schedule launch run for {dev:?}"),
         }
         *run_dev = None;
     }
@@ -332,7 +318,7 @@ impl Plan {
                         debug_assert!(bytes >= 0, "replay copied negative bytes");
                         let pool = dst.pool();
                         let chunk = pool.allocate(bytes)?;
-                        let placed = Arc::new(Placement { shards: vec![Shard::Device { pool, chunk }] });
+                        let placed = Arc::new(Placement { shards: vec![Shard { pool, chunk }] });
                         let src_placed =
                             resolved.get(&op.src).unwrap_or_else(|| panic!("replay: copy src {:?} is unplaced", op.src)).clone();
                         match dst {

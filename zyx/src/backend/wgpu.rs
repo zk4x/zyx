@@ -565,7 +565,7 @@ impl WGPUDevice {
                 .enumerate()
                 .filter_map(|(bind_id, arg)| {
                     let LaunchArg::Buffer(placement) = arg else { return None };
-                    let [Shard::Device { chunk, .. }] = placement.shards.as_slice() else {
+                    let [Shard { chunk, .. }] = placement.shards.as_slice() else {
                         todo!("multi-shard placement in WGPU launch")
                     };
                     let buffer = &memory_pool.buffers[*chunk].buffer;

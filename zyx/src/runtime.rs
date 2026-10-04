@@ -461,7 +461,7 @@ impl Runtime {
             let &tid = graph.leaf_map.get(&cid).unwrap();
             self.leaf_buffer(tid)
                 .map(|b| match &b.shards[..] {
-                    [Shard::Device { pool, .. }] => *pool,
+                    [Shard { pool, .. }] => *pool,
                     _ => todo!("multi-shard plan cache key"),
                 })
                 .hash(&mut hasher);
@@ -1188,7 +1188,7 @@ impl Runtime {
         // into its memory — no intermediate Vec, no zero-then-copy double
         // pass. Only the small padding tail (trash element) is zeroed.
         let buf_id = Pool::Host.allocate(alloc_bytes as Dim)?;
-        let buffer = Arc::new(Placement { shards: vec![Shard::Device { pool: Pool::Host, chunk: buf_id }] });
+        let buffer = Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk: buf_id }] });
         {
             let dst = Pool::Host.buffer_ptr_mut(buf_id);
             unsafe {
@@ -1228,7 +1228,7 @@ impl Runtime {
         let bytes: Dim = ((resolved.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
 
         let buffer = Arc::new(Placement {
-            shards: vec![Shard::Device { pool: Pool::Disk, chunk: Pool::Disk.disk_buffer_from_path(bytes, path, offset_bytes) }],
+            shards: vec![Shard { pool: Pool::Disk, chunk: Pool::Disk.disk_buffer_from_path(bytes, path, offset_bytes) }],
         });
         let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer, rc: 1 });
         Ok(tid)
@@ -1693,7 +1693,7 @@ impl Runtime {
         if let Some(buf) = self.leaf_buffer(x) {
             // The host pool is shared by the C and Cblas devices; report C.
             // The disk pool has no device; report Auto.
-            let [Shard::Device { pool, .. }] = &buf.shards[..] else {
+            let [Shard { pool, .. }] = &buf.shards[..] else {
                 todo!("multi-shard tensor device")
             };
             let pool = *pool;
@@ -1712,7 +1712,7 @@ impl Runtime {
             // A kept buffer reports its pool's device, same mapping as
             // realized tensors above; otherwise the producer kernel's device.
             TensorData::PendingLeaf { old_buffer: Some(ref buf), .. } => {
-                let [Shard::Device { pool, .. }] = &buf.shards[..] else {
+                let [Shard { pool, .. }] = &buf.shards[..] else {
                     todo!("multi-shard kept-buffer device")
                 };
                 match *pool {
@@ -1748,7 +1748,7 @@ impl Runtime {
             // pools (not devices via device(x)): the source pool may have no
             // devices attached at all (e.g. disk), which device(x) panics on.
             // Single-shard only; multi-shard placements take the copy path.
-            if let [Shard::Device { pool: src_pool, .. }] = &buf_id.shards[..]
+            if let [Shard { pool: src_pool, .. }] = &buf_id.shards[..]
                 && *src_pool == dst_pool
             {
                 self.retain(x);
@@ -1761,7 +1761,7 @@ impl Runtime {
                 // Materialization may have placed x in the destination pool
                 // already (e.g. an unrealized eager tensor on the target
                 // device). Copying pool-to-itself is unsupported: skip it.
-                if let [Shard::Device { pool: src_pool, .. }] = &buf_id.shards[..]
+                if let [Shard { pool: src_pool, .. }] = &buf_id.shards[..]
                     && *src_pool == dst_pool
                 {
                     self.retain(x);
@@ -1776,11 +1776,6 @@ impl Runtime {
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
-                    src_pool: match buf_id.shards[..] {
-                        [Shard::Device { pool, .. }, ..] => pool,
-                        [Shard::Host { .. }, ..] => Pool::Host,
-                        [] => panic!("to_device: source placement has no shards"),
-                    },
                     dst_pool,
                     dst_dtype: 1,
                     dst_dims: vec![PlanDim::Const(alloc_bytes)],
@@ -1810,7 +1805,7 @@ impl Runtime {
                 // Materialization may have placed x in the destination pool
                 // already (e.g. an unrealized eager tensor on the target
                 // device). Copying pool-to-itself is unsupported: skip it.
-                if let [Shard::Device { pool: src_pool, .. }] = &buf_id.shards[..]
+                if let [Shard { pool: src_pool, .. }] = &buf_id.shards[..]
                     && *src_pool == dst_pool
                 {
                     self.retain(x);
@@ -1825,11 +1820,6 @@ impl Runtime {
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
-                    src_pool: match buf_id.shards[..] {
-                        [Shard::Device { pool, .. }, ..] => pool,
-                        [Shard::Host { .. }, ..] => Pool::Host,
-                        [] => panic!("to_device: source placement has no shards"),
-                    },
                     dst_pool,
                     dst_dtype: 1,
                     dst_dims: vec![PlanDim::Const(alloc_bytes)],
@@ -2797,7 +2787,7 @@ impl Runtime {
             let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
             let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
             let buffer_id = this.leaf_buffer(x).expect("load: tensor has no buffer after materialization");
-            let [Shard::Device { pool: src_pool, chunk }] = &buffer_id.shards[..] else {
+            let [Shard { pool: src_pool, chunk }] = &buffer_id.shards[..] else {
                 todo!("multi-shard tensor readback")
             };
             src_pool.pool_to_host(*chunk, byte_slice)?;
@@ -2825,7 +2815,7 @@ impl Runtime {
         }
         let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
         let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
-        let [Shard::Device { pool: src_pool, chunk }] = &buffer_id.shards[..] else {
+        let [Shard { pool: src_pool, chunk }] = &buffer_id.shards[..] else {
             todo!("multi-shard tensor readback")
         };
         src_pool.pool_to_host(*chunk, byte_slice)?;
@@ -4006,7 +3996,7 @@ impl Runtime {
         let mut store_pools: BTreeSet<Pool> = BTreeSet::new();
         for &tid in &stores {
             if let TensorData::PendingLeaf { old_buffer: Some(ref buf), .. } = self.tensors[tid] {
-                let [Shard::Device { pool, .. }] = &buf.shards[..] else {
+                let [Shard { pool, .. }] = &buf.shards[..] else {
                     todo!("multi-shard store pool in materialize")
                 };
                 store_pools.insert(*pool);
@@ -4052,7 +4042,7 @@ impl Runtime {
             let mut loaded_bytes: Map<Pool, Dim> = Map::default();
             for &tid in &loads {
                 if let Some(buf) = self.leaf_buffer(tid) {
-                    let [Shard::Device { pool, .. }] = &buf.shards[..] else {
+                    let [Shard { pool, .. }] = &buf.shards[..] else {
                         todo!("multi-shard load pool in materialize")
                     };
                     let dtype = dtypes[&tid];
@@ -4093,11 +4083,11 @@ impl Runtime {
         // not backed by any buffer — they bind at launch from `variable_map`.
         for &tid in &loads {
             let Some(buf) = self.leaf_buffer(tid) else { continue };
-            let [Shard::Device { pool: src_pool, chunk: src_chunk }] = &buf.shards[..] else {
+            let [Shard { pool: src_pool, chunk: src_chunk }] = &buf.shards[..] else {
                 todo!("multi-shard load move in materialize")
             };
             // Copy out: `buf` moves into the boundary below.
-            let (src_pool, src_chunk) = (*src_pool, *src_chunk);
+            let (src_pool, _) = (*src_pool, *src_chunk);
             if src_pool != pool_id {
                 let bytes =
                     (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
@@ -4110,7 +4100,6 @@ impl Runtime {
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
-                    src_pool,
                     dst_pool: pool_id,
                     dst_dtype: 1,
                     dst_dims: vec![PlanDim::Const(alloc_bytes as Dim)],
@@ -4121,7 +4110,8 @@ impl Runtime {
                 outputs.insert(OpId::from(1));
                 let out = queue.schedule(&outputs).replay(boundary, &Map::default())?;
                 let dst_placement = Arc::clone(&out[&OpId::from(1)]);
-                src_pool.release(src_chunk);
+                // No manual release: `buf`'s Arc lives in `out` (frees on
+                // drop) and the tensor slot below (frees on replace).
                 // Record the new location in place: leaf_buffer reads the slab.
                 match &mut self.tensors[tid] {
                     TensorData::Leaf { buffer, .. } | TensorData::GraphLeaf { buffer, .. } => {
@@ -4142,11 +4132,11 @@ impl Runtime {
             }) else {
                 continue;
             };
-            let [Shard::Device { pool: src_pool, chunk: src_chunk }] = &buf.shards[..] else {
+            let [Shard { pool: src_pool, chunk: src_chunk }] = &buf.shards[..] else {
                 todo!("multi-shard store move in materialize")
             };
             // Copy out: `buf` moves into the boundary below.
-            let (src_pool, src_chunk) = (*src_pool, *src_chunk);
+            let (src_pool, _) = (*src_pool, *src_chunk);
             if src_pool != pool_id {
                 let bytes =
                     (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
@@ -4159,7 +4149,6 @@ impl Runtime {
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
-                    src_pool,
                     dst_pool: pool_id,
                     dst_dtype: 1,
                     dst_dims: vec![PlanDim::Const(alloc_bytes as Dim)],
@@ -4170,7 +4159,8 @@ impl Runtime {
                 outputs.insert(OpId::from(1));
                 let out = queue.schedule(&outputs).replay(boundary, &Map::default())?;
                 let dst_placement = Arc::clone(&out[&OpId::from(1)]);
-                src_pool.release(src_chunk);
+                // No manual release: `buf`'s Arc lives in `out` (frees on
+                // drop) and the tensor slot below (frees on replace).
                 // Record the new location in place on the pending store.
                 match &mut self.tensors[tid] {
                     TensorData::PendingLeaf { old_buffer: Some(buffer), .. } => {
@@ -4202,7 +4192,7 @@ impl Runtime {
             let bytes = (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
             let alloc_bytes = bytes as Dim + Dim::from(dtypes[&tid].bit_size() / 8);
             let buf = pool_id.allocate(alloc_bytes)?;
-            let placement = Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: buf }] });
+            let placement = Arc::new(Placement { shards: vec![Shard { pool: pool_id, chunk: buf }] });
             kernel_buffers.insert(Arc::clone(&placement));
             match &mut self.tensors[tid] {
                 TensorData::PendingLeaf { old_buffer: slot @ None, .. } => {

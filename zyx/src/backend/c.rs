@@ -88,7 +88,7 @@ impl CPartition {
                         let bytes = dims.iter().map(|d| d.eval(vars)).fold(*dtype, |a, b| a * b);
                         debug_assert!(bytes >= 0, "C replay allocated negative bytes");
                         let chunk = pool.allocate(bytes)?;
-                        resolved.insert(*slot, Arc::new(Placement { shards: vec![Shard::Device { pool: Pool::Host, chunk }] }));
+                        resolved.insert(*slot, Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk }] }));
                     }
                     // Resolve args to pointers. Variables are not stored
                     // anywhere — the value is copied into a local byte box
@@ -117,31 +117,11 @@ impl CPartition {
                         func(ptrs_raw.as_ptr(), ptrs_raw.len());
                     }
                 }
-                Cmd::Copy { src, dst, dst_dtype, dst_dims, .. } => {
-                    if resolved.contains_key(dst) {
-                        continue;
-                    }
-                    let bytes = dst_dims.iter().map(|d| d.eval(vars)).fold(*dst_dtype, |a, b| a * b);
-                    debug_assert!(bytes >= 0, "C replay copied negative bytes");
-                    let chunk = pool.allocate(bytes)?;
-                    let src_ptr = {
-                        let src_placed = resolved.get(src).unwrap_or_else(|| panic!("C replay: copy src {src:?} is unplaced"));
-                        let [Shard::Device { pool: src_pool, chunk: src_chunk }] = &src_placed.shards[..] else {
-                            todo!("C replay copy of multi-shard or inline source placement")
-                        };
-                        debug_assert_eq!(*src_pool, Pool::Host, "C replay copy source is not host-resident");
-                        pool.get_buffer(*src_chunk).as_ptr()
-                    };
-                    let dst_ptr = pool.buffer_ptr_mut(chunk);
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, bytes as usize);
-                    }
-                    resolved.insert(*dst, Arc::new(Placement { shards: vec![Shard::Device { pool: Pool::Host, chunk }] }));
-                }
                 Cmd::Alias { class, to } => {
                     let placed = resolved.get(to).unwrap_or_else(|| panic!("C replay: alias target {to:?} is unplaced")).clone();
                     resolved.insert(*class, placed);
                 }
+                Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
             }
             for dead in &self.deaths[idx] {
                 resolved.remove(dead);
@@ -250,16 +230,13 @@ pub(super) fn device() -> Result<&'static Mutex<CDevice>, BackendError> {
 }
 
 /// Resolves a launch arg placement to a host pointer: the shard addressed to
-/// the host pool, or inline host data.
+/// the host pool.
 fn host_ptr(memory_pool: &mut super::host::HostMemoryPool, placement: &Placement) -> *mut u8 {
     placement
         .shards
         .iter()
-        .find_map(|shard| match shard {
-            Shard::Device { pool, chunk } if *pool == Pool::Host => Some(memory_pool.buffer_ptr_mut(*chunk)),
-            Shard::Host { data } => Some(data.as_ptr() as *mut u8),
-            Shard::Device { .. } => None,
-        })
+        .find(|shard| shard.pool == Pool::Host)
+        .map(|shard| memory_pool.buffer_ptr_mut(shard.chunk))
         .expect("C launch arg has no host shard")
 }
 
@@ -286,25 +263,46 @@ impl CDevice {
         CPartition { cmds, deaths }
     }
 
-    /// Host-pool copy: resolves both placements to host bytes and memcpys.
-    /// Executes cross-pool transfers into the host pool (and same-pool host
-    /// copies). Single-shard host placements only; anything else is later work.
+    /// Copy executing a transfer into the host pool, matching on the source
+    /// pool: host memcpys directly, disk stages through the disk pool's
+    /// file read, every other source is later work. The destination is
+    /// always host-resident. Single-shard placements only.
     pub fn copy(&self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
         debug_assert!(bytes >= 0, "C copy of negative bytes");
         let host = super::host::pool();
         let mut pool = super::lock(Pool::Host, host);
-        let [Shard::Device { pool: src_pool, chunk: src_chunk }] = &src.shards[..] else {
-            todo!("C copy of multi-shard or inline source placement")
+        let [src_shard] = &src.shards[..] else {
+            todo!("C copy of multi-shard source placement")
         };
-        let [Shard::Device { pool: dst_pool, chunk: dst_chunk }] = &dst.shards[..] else {
-            todo!("C copy of multi-shard or inline destination placement")
+        let [dst_shard] = &dst.shards[..] else {
+            todo!("C copy of multi-shard destination placement")
         };
-        debug_assert_eq!(*src_pool, Pool::Host, "C copy source is not host-resident");
-        debug_assert_eq!(*dst_pool, Pool::Host, "C copy destination is not host-resident");
-        let src_ptr = pool.get_buffer(*src_chunk).as_ptr();
-        let dst_ptr = pool.buffer_ptr_mut(*dst_chunk);
-        unsafe {
-            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, bytes as usize);
+        debug_assert_eq!(dst_shard.pool, Pool::Host, "C copy destination is not host-resident");
+        match src_shard.pool {
+            Pool::Host => {
+                let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
+                let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, bytes as usize);
+                }
+            }
+            Pool::Disk => {
+                let disk = super::disk::pool();
+                let mut dpool = super::lock(Pool::Disk, disk);
+                let mut staging = vec![0u8; bytes as usize];
+                dpool.pool_to_host(src_shard.chunk, &mut staging)?;
+                let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(staging.as_ptr(), dst_ptr, bytes as usize);
+                }
+            }
+            Pool::Cuda(_) | Pool::OpenCL(_) | Pool::Vulkan(_) | Pool::Dummy => {
+                todo!("C copy from {:?}", src_shard.pool)
+            }
+            #[cfg(feature = "tenstorrent")]
+            Pool::TT(_) => todo!("C copy from {:?}", src_shard.pool),
+            #[cfg(feature = "wgpu")]
+            Pool::WGPU(_) => todo!("C copy from {:?}", src_shard.pool),
         }
         Ok(())
     }

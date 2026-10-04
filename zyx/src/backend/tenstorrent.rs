@@ -949,7 +949,7 @@ impl TTDevice {
             let ordinal = ordinal as u32;
             match arg {
                 LaunchArg::Buffer(placement) => {
-                    let [Shard::Device { chunk, .. }] = placement.shards.as_slice() else {
+                    let [Shard { chunk, .. }] = placement.shards.as_slice() else {
                         todo!("multi-shard placement in TT launch")
                     };
                     let idx = memory_pool.dev_index(*chunk).map_err(|e| BackendError {

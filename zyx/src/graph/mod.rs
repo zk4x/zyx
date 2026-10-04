@@ -621,7 +621,7 @@ impl Graph {
         let mut pool_of: Map<OpId, Pool> = Map::default();
         for (&cid, &tid) in &self.leaf_map {
             if let Some(buf) = buffer_map.get(&tid) {
-                let [Shard::Device { pool, .. }] = &buf.shards[..] else {
+                let [Shard { pool, .. }] = &buf.shards[..] else {
                     todo!("multi-shard leaf in add_memory_ops")
                 };
                 pool_of.insert(cid, *pool);
@@ -2275,7 +2275,6 @@ impl Runtime {
                                         queue.push(Cmd::Copy {
                                             src: OpId::from(0),
                                             dst: OpId::from(1),
-                                            src_pool: Pool::Host,
                                             dst_pool: pool_id,
                                             dst_dtype: 1,
                                             dst_dims: vec![PlanDim::Const(bytes_alloc)],
@@ -2283,16 +2282,16 @@ impl Runtime {
                                         let mut boundary = Map::default();
                                         boundary.insert(
                                             OpId::from(0),
-                                            Arc::new(Placement {
-                                                shards: vec![Shard::Device { pool: Pool::Host, chunk: host_buf }],
-                                            }),
+                                            Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk: host_buf }] }),
                                         );
                                         let out = {
                                             let mut outputs = Set::default();
                                             outputs.insert(OpId::from(1));
                                             queue.schedule(&outputs).replay(boundary, &Map::default())?
                                         };
-                                        Pool::Host.release(host_buf);
+                                        // No manual release: the boundary Arc
+                                        // in `out` frees the staging chunk on
+                                        // drop (Placement Drop semantics).
                                         let placed = Arc::clone(&out[&OpId::from(1)]);
                                         fresh.push(Arc::clone(&placed));
                                         full_args.push(LaunchArg::Buffer(placed));
@@ -2300,8 +2299,7 @@ impl Runtime {
                                         // Mut timing buffers are written by the
                                         // kernel: allocate directly, no upload.
                                         let buf = pool_id.allocate(bytes_alloc)?;
-                                        let placed =
-                                            Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: buf }] });
+                                        let placed = Arc::new(Placement { shards: vec![Shard { pool: pool_id, chunk: buf }] });
                                         fresh.push(Arc::clone(&placed));
                                         full_mut.push(LaunchArg::Buffer(placed));
                                     }
@@ -2463,7 +2461,7 @@ impl Runtime {
             // Variable leaves have no buffer and no pool — they bind per
             // replay from the tensors slab, so no pool invariant applies.
             if let Some(buf) = self.leaf_buffer(tid) {
-                let [Shard::Device { pool, .. }] = &buf.shards[..] else {
+                let [Shard { pool, .. }] = &buf.shards[..] else {
                     todo!("multi-shard leaf in compile-time leaf pools")
                 };
                 leaf_pools.insert(cid, *pool);
@@ -2531,7 +2529,6 @@ impl Runtime {
                         queue.push(Cmd::Copy {
                             src: to,
                             dst: class,
-                            src_pool: leaf_pools[&to],
                             dst_pool: *pool,
                             dst_dtype: dtype_size,
                             dst_dims: dims.clone(),
@@ -2576,18 +2573,7 @@ impl Runtime {
                     let pool = device.pool();
                     let class_of = graph.ops[nid].class_of;
                     let (dtype_size, dims) = alloc_spec(graph, class_of);
-                    queue.push(Cmd::Copy {
-                        src: x,
-                        dst: class_of,
-                        src_pool: store_pool
-                            .get(&x)
-                            .copied()
-                            .or_else(|| leaf_pools.get(&x).copied())
-                            .expect("compile_graph: ToDevice source class has no known pool"),
-                        dst_pool: pool,
-                        dst_dtype: dtype_size,
-                        dst_dims: dims,
-                    });
+                    queue.push(Cmd::Copy { src: x, dst: class_of, dst_pool: pool, dst_dtype: dtype_size, dst_dims: dims });
                 }
                 _ => unreachable!(),
             }

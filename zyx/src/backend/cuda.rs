@@ -1305,11 +1305,8 @@ fn placement_ptr(buffers: &Slab<ChunkId, CUDABuffer>, my_pool: Pool, placement: 
     placement
         .shards
         .iter()
-        .find_map(|shard| match shard {
-            Shard::Device { pool, chunk } if *pool == my_pool => Some(*chunk),
-            Shard::Device { .. } | Shard::Host { .. } => None,
-        })
-        .and_then(|chunk| buffers.get(chunk).map(|b| b.ptr))
+        .find(|shard| shard.pool == my_pool)
+        .and_then(|shard| buffers.get(shard.chunk).map(|b| b.ptr))
         .ok_or(BackendError { status: ErrorStatus::KernelLaunch, context: "launch arg has no shard on this pool".into() })
 }
 

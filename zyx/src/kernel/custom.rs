@@ -1190,7 +1190,7 @@ impl Runtime {
                     continue;
                 }
                 let Some(buffer) = self.leaf_buffer(input) else { continue };
-                let [Shard::Device { pool, .. }] = &buffer.shards[..] else {
+                let [Shard { pool, .. }] = &buffer.shards[..] else {
                     todo!("multi-shard custom kernel input check")
                 };
                 if *pool != prog_pool {
@@ -1348,7 +1348,7 @@ impl Runtime {
                 self.add_store(input)?;
             }
             let buffer = self.leaf_buffer(input).unwrap();
-            let [Shard::Device { pool: found, .. }] = &buffer.shards[..] else {
+            let [Shard { pool: found, .. }] = &buffer.shards[..] else {
                 todo!("multi-shard custom kernel input")
             };
             if *found != pool_id {
@@ -1384,7 +1384,7 @@ impl Runtime {
             let shape = &shapes[i];
             let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
             let buf = pool_id.allocate(bytes)?;
-            let placement = Arc::new(Placement { shards: vec![Shard::Device { pool: pool_id, chunk: buf }] });
+            let placement = Arc::new(Placement { shards: vec![Shard { pool: pool_id, chunk: buf }] });
             output_bufs.push(Arc::clone(&placement));
             all_bufs.insert(placement);
         }

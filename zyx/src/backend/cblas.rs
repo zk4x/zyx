@@ -16,7 +16,7 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(clippy::needless_pass_by_ref_mut)]
 
-use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Pool, ProgramId, Shard};
+use super::{DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Pool, ProgramId};
 use crate::{
     DType, Set,
     error::{BackendError, ErrorStatus},
@@ -184,16 +184,13 @@ pub(super) fn device() -> Result<&'static Mutex<CblasDevice>, BackendError> {
 }
 
 /// Resolves a launch arg placement to a host pointer: the shard addressed to
-/// the host pool, or inline host data.
+/// the host pool.
 fn host_ptr(memory_pool: &mut super::host::HostMemoryPool, placement: &Placement) -> *mut u8 {
     placement
         .shards
         .iter()
-        .find_map(|shard| match shard {
-            Shard::Device { pool, chunk } if *pool == Pool::Host => Some(memory_pool.buffer_ptr_mut(*chunk)),
-            Shard::Host { data } => Some(data.as_ptr() as *mut u8),
-            Shard::Device { .. } => None,
-        })
+        .find(|shard| shard.pool == Pool::Host)
+        .map(|shard| memory_pool.buffer_ptr_mut(shard.chunk))
         .expect("cblas launch arg has no host shard")
 }
 
