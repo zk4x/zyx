@@ -219,7 +219,8 @@ impl CmdQueue {
                         Pool::Host => Dev::C,
                         Pool::Cuda(id) => Dev::Cuda(id),
                         Pool::Disk => todo!("schedule copy into the disk pool"),
-                        Pool::OpenCL(_) | Pool::Vulkan(_) => todo!("schedule copy into {dst_pool:?}"),
+                        Pool::OpenCL(id) => Dev::OpenCL(id),
+                        Pool::Vulkan(_) => todo!("schedule copy into {dst_pool:?}"),
                         #[cfg(feature = "tenstorrent")]
                         Pool::TT(_) => todo!("schedule copy into {dst_pool:?}"),
                         #[cfg(feature = "wgpu")]
@@ -277,6 +278,14 @@ impl CmdQueue {
             Some(Dev::Cuda(id)) => {
                 partitions.push(PlanPartition::Cuda(cuda::CUDADevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
+            Some(Dev::OpenCL(id)) => {
+                partitions.push(PlanPartition::OpenCL(opencl::OpenCLDevice::schedule(
+                    std::mem::take(run),
+                    outputs,
+                    live_out,
+                    id,
+                )))
+            }
             Some(dev) => todo!("schedule launch run for {dev:?}"),
         }
         *run_dev = None;
@@ -318,6 +327,11 @@ impl Plan {
                     let mut dev = dlock(Dev::Cuda(cuda_part.dev), &device);
                     cuda_part.replay(&mut dev, &mut resolved, vars)?;
                 }
+                PlanPartition::OpenCL(ocl_part) => {
+                    let device = opencl::device(ocl_part.dev)?;
+                    let mut dev = dlock(Dev::OpenCL(ocl_part.dev), &device);
+                    ocl_part.replay(&mut dev, &mut resolved, vars)?;
+                }
                 PlanPartition::Copy { dst, ops } => {
                     for op in ops {
                         if resolved.contains_key(&op.dst) {
@@ -339,6 +353,11 @@ impl Plan {
                             Dev::Cuda(id) => {
                                 let device = cuda::device(*id)?;
                                 let dev = dlock(Dev::Cuda(*id), &device);
+                                dev.copy(&src_placed, &placed, bytes)?;
+                            }
+                            Dev::OpenCL(id) => {
+                                let device = opencl::device(*id)?;
+                                let dev = dlock(Dev::OpenCL(*id), &device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
                             _ => todo!("replay copy into {dst:?}"),
@@ -375,6 +394,10 @@ pub(crate) enum PlanPartition {
     /// Ordered CUDA commands with death lists, executed by a CUDA device
     /// through its worker (captured graphs, one roundtrip per replay).
     Cuda(cuda::CudaPartition),
+    /// Ordered OpenCL commands with death lists and static queue
+    /// assignment, executed by an OpenCL device through its worker (one
+    /// roundtrip per replay, direct multi-queue submit, no capture).
+    OpenCL(opencl::OpenCLPartition),
     /// Cross-pool copies, executed by the destination device.
     Copy { dst: Dev, ops: Vec<CopyOp> },
 }

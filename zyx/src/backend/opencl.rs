@@ -766,6 +766,11 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                             }
                             Command::Replay { cmds, queues: assign, waits, bound, vars, deaths, reply } => {
                                 // One roundtrip per partition replay.
+                                // Ownership split: bound inputs and escaping
+                                // defs are caller-side Placements (Drop
+                                // releases them). Intermediaries never become
+                                // Placements: the worker allocates them here
+                                // and returns them to the free list at death.
                                 // Allocation is per-command, parallelism-first:
                                 // each launch's outputs reuse a free chunk
                                 // only when it adds no wait (same queue or
@@ -866,15 +871,27 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         }
                                         for dead in &deaths[idx] {
                                             if let Some(chunk) = slot_chunk.remove(dead) {
-                                                // Alias-shared chunks die twice;
-                                                // the guard keeps one entry.
-                                                if !free_set.contains(&chunk) {
+                                                // Worker-allocated intermediary:
+                                                // back to the free list, it
+                                                // never became a Placement so
+                                                // no Drop is involved. Bound
+                                                // inputs stay caller-owned —
+                                                // the caller's Drop releases
+                                                // those. Alias-shared chunks
+                                                // die twice; the guard keeps
+                                                // one entry.
+                                                if fresh.iter().any(|(s, _)| s == dead)
+                                                    && !free_set.contains(&chunk)
+                                                {
                                                     free_set.insert(chunk);
                                                 }
                                             }
                                         }
                                     }
-                                    Ok(fresh)
+                                    // Survivors escape the partition: caller
+                                    // turns them into Placements. The freed
+                                    // intermediaries are gone from the map.
+                                    Ok(fresh.into_iter().filter(|(s, _)| slot_chunk.contains_key(s)).collect())
                                 })();
                                 let _ = reply.send(result);
                             }
@@ -940,6 +957,7 @@ pub(super) fn device_count() -> u16 {
 }
 
 /// Releases every tracked event exactly once and clears the tracking:
+///
 /// per-queue tails plus the per-chunk writer/last_use maps (one event can
 /// sit in several of them). Used after full drains, where completion is
 /// guaranteed.
@@ -952,7 +970,7 @@ fn release_all_events(
     let mut events: Vec<*mut c_void> = tails.iter().copied().collect();
     events.extend(writer.values().map(|&(_, e)| e));
     events.extend(last_use.values().map(|&(_, e)| e));
-    release_distinct(events, clReleaseEvent);
+    release_distinct(events.len(), events, clReleaseEvent);
     for tail in tails.iter_mut() {
         *tail = ptr::null_mut();
     }
@@ -996,15 +1014,24 @@ fn enqueue_tracked(
     debug_assert!(programs.contains_id(program_id), "launch of unknown program {program_id:?}");
     debug_assert!(queue < queues.len(), "launch on missing queue {queue}");
     let program = &programs[program_id];
+    // No Group ranges (local-only kernel): exactly one work-group of the
+    // stored local shape, mirroring CUDA. work_dim=0 is invalid, and
+    // a lone thread would under-launch multi-thread local shapes (a [1]
+    // global against a [2] local is itself invalid: global must be a
+    // multiple of local).
+    let global_size = if global_size.is_empty() { program.lws.clone() } else { global_size };
     let mut i: u32 = 0;
     for (arg_ptr, arg_size) in params {
         unsafe { (clSetKernelArg)(program.kernel, i, *arg_size, *arg_ptr) }.check(ErrorStatus::IncorrectKernelArg)?;
         i += 1;
     }
+    // The driver requires exactly work_dim local sizes: slice the stored
+    // triple to the enqueued dim count (global and local pair up by
+    // construction in the zip above).
     let lws_ptr = if program.lws.is_empty() {
         ptr::null()
     } else {
-        program.lws.as_ptr().cast()
+        program.lws[..global_size.len().min(program.lws.len())].as_ptr().cast()
     };
     // Global work size is checked against the device grid limits before
     // enqueueing (same values the compile-time check in gws_from_kernel uses).
@@ -1062,27 +1089,26 @@ fn enqueue_tracked(
     }
     .check(ErrorStatus::KernelLaunch)?;
     debug_assert!(!event.is_null(), "kernel enqueue returned no event");
-    let mut retired = Vec::new();
-    if let Some(&old) = tails.get(queue)
-        && !old.is_null()
-    {
-        retired.push(old);
-    }
+    // Overwrite, never eagerly release: a replaced event can still be
+    // referenced from another slot (tails of other queues, other chunks),
+    // and releasing it there would double-release. Replaced events stay
+    // tracked until the next full drain, which releases everything exactly
+    // once (drains bound event lifetime: every readback/autotune probe
+    // drains, so nothing accumulates beyond one sync interval).
     tails[queue] = event;
-    for b in reads {
-        if let Some((_, old)) = last_use.insert(*b, (queue, event)) {
-            retired.push(old);
-        }
+    let mut reads = reads.to_vec();
+    reads.sort();
+    reads.dedup();
+    let mut writes = writes.to_vec();
+    writes.sort();
+    writes.dedup();
+    for b in &reads {
+        last_use.insert(*b, (queue, event));
     }
-    for b in writes {
-        if let Some((_, old)) = writer.insert(*b, (queue, event)) {
-            retired.push(old);
-        }
-        if let Some((_, old)) = last_use.insert(*b, (queue, event)) {
-            retired.push(old);
-        }
+    for b in &writes {
+        writer.insert(*b, (queue, event));
+        last_use.insert(*b, (queue, event));
     }
-    release_distinct(retired, clReleaseEvent);
     Ok(())
 }
 
@@ -1169,9 +1195,11 @@ fn submit_slots(
     let kinds: &[ParamKind] = &programs[program_id].params;
     debug_assert!(args.len() <= kinds.len(), "more launch args than program params");
     // clSetKernelArg copies the value immediately, so stable storage for
-    // the cl_mem handles and scalar bytes within this call is enough.
-    let mut mem_args: Vec<*mut c_void> = Vec::new();
-    let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
+    // the cl_mem handles and scalar bytes within this call is enough —
+    // reserved up front: `params` below borrows these vecs while they
+    // grow, and any reallocation would dangle the stored pointers.
+    let mut mem_args: Vec<*mut c_void> = Vec::with_capacity(args.len());
+    let mut scalar_values: Vec<Box<[u8]>> = Vec::with_capacity(args.len());
     let mut params: Vec<(*const c_void, usize)> = Vec::with_capacity(args.len());
     let mut reads: Vec<ChunkId> = Vec::new();
     let mut writes: Vec<ChunkId> = Vec::new();
@@ -1261,9 +1289,11 @@ fn submit_launch(
     let kinds: &[ParamKind] = &programs[program_id].params;
     debug_assert!(args.len() <= kinds.len(), "more launch args than program params");
     // clSetKernelArg copies the value immediately, so stable storage for
-    // the cl_mem handles and scalar bytes within this call is enough.
-    let mut mem_args: Vec<*mut c_void> = Vec::new();
-    let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
+    // the cl_mem handles and scalar bytes within this call is enough —
+    // reserved up front: `params` below borrows these vecs while they
+    // grow, and any reallocation would dangle the stored pointers.
+    let mut mem_args: Vec<*mut c_void> = Vec::with_capacity(args.len());
+    let mut scalar_values: Vec<Box<[u8]>> = Vec::with_capacity(args.len());
     let mut params: Vec<(*const c_void, usize)> = Vec::with_capacity(args.len());
     let mut reads: Vec<ChunkId> = Vec::new();
     let mut writes: Vec<ChunkId> = Vec::new();
@@ -1294,6 +1324,7 @@ fn submit_launch(
             }
         }
     }
+    eprintln!("[MK] submit prepped reads={} writes={} lws={:?}", reads.len(), writes.len(), programs[program_id].lws);
     let global_size: Vec<Dim> = programs[program_id]
         .gws
         .iter()
@@ -1327,12 +1358,14 @@ fn submit_launch(
 
 /// Releases each distinct non-null event exactly once (writer and last_use
 /// can hold the same event for a buffer).
-fn release_distinct(mut events: Vec<*mut c_void>, clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus) {
+#[inline(never)]
+fn release_distinct(n: usize, mut events: Vec<*mut c_void>, clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus) {
     events.retain(|event| !event.is_null());
     events.sort();
     events.dedup();
-    for event in events {
-        let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
+    for (i, event) in events.iter().enumerate() {
+        eprintln!("[MK] release {i} event {event:?} (collected {n})");
+        let _ = unsafe { (clReleaseEvent)(*event) }.check(ErrorStatus::Deinitialization);
     }
 }
 
@@ -1462,7 +1495,7 @@ pub(crate) struct OpenCLPartition {
     deaths: Vec<Vec<OpId>>,
     queues: Vec<usize>,
     waits: Vec<Vec<usize>>,
-    dev: u16,
+    pub(crate) dev: u16,
 }
 
 impl OpenCLDevice {
@@ -1609,6 +1642,7 @@ impl OpenCLPartition {
         resolved: &mut Map<OpId, Arc<Placement>>,
         vars: &Map<OpId, Constant>,
     ) -> Result<(), BackendError> {
+        eprintln!("[MK] ocl replay enter cmds={}", self.cmds.len());
         let my_pool = dev.memory_pool;
         // Bound slots addressed to this pool; caller-side defs stay
         // unbound for the worker's per-command allocator.
@@ -1837,7 +1871,6 @@ const CL_DEVICE_TYPE_ALL: cl_bitfield = 0xFFFF_FFFF;
 const CL_MEM_READ_WRITE: cl_bitfield = 1;
 //const CL_MEM_READ_ONLY: cl_bitfield = 4;
 const CL_BLOCKING: cl_uint = 1;
-const CL_NON_BLOCKING: cl_uint = 0;
 const CL_PROGRAM_BUILD_LOG: cl_uint = 0x1183; // 4483
 const CL_EVENT_COMMAND_EXECUTION_STATUS: cl_uint = 0x1283; // 4763
 const CL_COMPLETE: cl_int = 0x0;

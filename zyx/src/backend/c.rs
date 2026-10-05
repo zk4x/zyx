@@ -316,7 +316,19 @@ impl CDevice {
                     unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) },
                 )?;
             }
-            Pool::OpenCL(_) | Pool::Vulkan(_) => {
+            Pool::OpenCL(id) => {
+                // Device-to-host read straight into the destination, no
+                // staging buffer: the worker drains every queue first, the
+                // reply arrives after the data did.
+                let ocl = super::opencl::pool(id)?;
+                let mut opool = super::lock(Pool::OpenCL(id), ocl);
+                let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+                opool.pool_to_host(
+                    src_shard.chunk,
+                    unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) },
+                )?;
+            }
+            Pool::Vulkan(_) => {
                 todo!("C copy from {:?}", src_shard.pool)
             }
             #[cfg(feature = "tenstorrent")]
