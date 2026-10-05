@@ -84,7 +84,7 @@ impl Drop for Placement {
 /// constants and leaf-class values (variables bound between plan runs).
 /// Computation stays symbolic so a plan compiled once serves any variable
 /// values; evaluation happens at execution time inside `replay`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanDim {
     Const(Dim),
     Leaf(OpId),
@@ -279,12 +279,7 @@ impl CmdQueue {
                 partitions.push(PlanPartition::Cuda(cuda::CUDADevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
             Some(Dev::OpenCL(id)) => {
-                partitions.push(PlanPartition::OpenCL(opencl::OpenCLDevice::schedule(
-                    std::mem::take(run),
-                    outputs,
-                    live_out,
-                    id,
-                )))
+                partitions.push(PlanPartition::OpenCL(opencl::OpenCLDevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
             Some(dev) => todo!("schedule launch run for {dev:?}"),
         }

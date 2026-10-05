@@ -10,7 +10,7 @@
 #![allow(clippy::unused_self)]
 
 use super::{
-    ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Placement, Pool, Shard,
+    ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Placement, PlanDim, Pool, Shard,
     gws_from_kernel,
 };
 use crate::{
@@ -21,12 +21,11 @@ use crate::{
     shape::Dim,
     slab::Slab,
 };
-use crate::{Map, Set, hashers::FHasher};
+use crate::{Map, Set};
 use libloading::Library;
 use nanoserde::DeJson;
 use std::{
     ffi::{CString, c_void},
-    hash::BuildHasherDefault,
     ptr,
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
@@ -143,18 +142,23 @@ enum Command {
         params: Vec<ParamKind>,
         reply: Sender<Result<DeviceProgramId, BackendError>>,
     },
-    /// Run a whole partition at once — one roundtrip per replay. `cmds`
-    /// are the schedule-ordered launches/aliases; `queues`/`waits` their
-    /// static queue assignment + cross-queue wait sets; `bound` maps
+    /// Run a whole partition at once — one roundtrip per replay.
+    /// `cmds` are the schedule-ordered launches/aliases; `queues` their
+    /// static queue assignment; `waits` the per-command producer-command
+    /// edges (cross-queue RAW/WAR/WAW — same-queue needs nothing, the
+    /// in-order queue is the guarantee); `allocs` the per-def allocation
+    /// plan (`Reuse` a dead slot's chunk or `Fresh`); `bound` maps
     /// already-placed slots to chunks; `vars` are the scalar slots. The
-    /// worker allocates unbound defs up front, submits every launch to
-    /// its queue, releases dead chunks, and replies the fresh slot→chunk
-    /// bindings. No capture: repeats resubmit (stable addresses come from
-    /// free-list best-fit reuse).
+    /// worker resolves edges to events by array index, allocates per plan,
+    /// submits every launch to its queue, stashes dead chunks, holds the
+    /// command events, and replies the fresh slot→chunk bindings WITHOUT
+    /// draining: launches overlap caller-side CPU work, and the next
+    /// queue-touching command drains first. No capture: repeats resubmit.
     Replay {
         cmds: Vec<Cmd>,
         queues: Vec<usize>,
         waits: Vec<Vec<usize>>,
+        allocs: Vec<Vec<AllocPlan>>,
         bound: Vec<(OpId, ChunkId)>,
         vars: Vec<(OpId, Constant)>,
         deaths: Vec<Vec<OpId>>,
@@ -299,8 +303,6 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
         *unsafe { opencl.get(b"clCreateCommandQueue\0") }?;
     let clGetDeviceIDs: unsafe extern "C" fn(*mut c_void, cl_bitfield, cl_uint, *mut *mut c_void, *mut cl_uint) -> OpenCLStatus =
         *unsafe { opencl.get(b"clGetDeviceIDs\0") }?;
-    let clGetEventInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus =
-        *unsafe { opencl.get(b"clGetEventInfo\0") }?;
     let _clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus =
         *unsafe { opencl.get(b"clReleaseCommandQueue\0") }?;
     let clEnqueueNDRangeKernel: unsafe extern "C" fn(
@@ -534,16 +536,18 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                     let mut free_set: Set<ChunkId> = Set::default();
                     let mut programs: Slab<DeviceProgramId, OpenCLProgram> = Slab::new();
 
-                    // Submission state, all worker-local. `tails` holds one
-                    // in-flight tail event per queue (schedule-assigned
-                    // cross-queue waits resolve against these). `writer`
-                    // maps each chunk to its last writer (RAW) and
-                    // `last_use` to its last touch of any kind (WAR) —
-                    // reused stable addresses stay ordered against prior
-                    // in-flight work on other queues.
-                    let mut tails: Vec<*mut c_void> = vec![ptr::null_mut(); queues.len()];
-                    let mut writer: Map<ChunkId, (usize, *mut c_void)> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
-                    let mut last_use: Map<ChunkId, (usize, *mut c_void)> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
+                    // Submission state, all worker-local. `held` retains one
+                    // event per replay command (null for aliases) across the
+                    // async gap: every queue-touching command drains first
+                    // (previous launches complete), then releases these
+                    // exactly once. `pending_free` holds same-replay deaths
+                    // aside: their last readers may still be in flight, so
+                    // they join the free list only at the next drain, when
+                    // completion is proven. Fresh allocation scans a
+                    // snapshot of the free list taken after that drain —
+                    // every scanned chunk is complete, no polling ever.
+                    let mut held: Vec<*mut c_void> = Vec::new();
+                    let mut pending_free: Vec<ChunkId> = Vec::new();
 
                     // Unblock SIGABRT so it can be delivered (absorbed by the no-op handler)
                     const SIG_UNBLOCK: i32 = 1;
@@ -594,9 +598,7 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                             Command::Release { buffer_id } => {
                                 // Put the id on the free list for
                                 // stable-address reuse. Frees nothing: VRAM is
-                                // reclaimed only by Dispose. Chunk dependency
-                                // state (`writer`/`last_use`) stays: a claimed
-                                // address keeps waiting on its prior work.
+                                // reclaimed only by Dispose.
                                 if !buffers.contains_id(buffer_id) {
                                     debug_assert!(false, "release of unknown OpenCL buffer {buffer_id:?}");
                                     continue;
@@ -606,13 +608,19 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                             }
                             Command::Dispose => {
                                 // The only reclamation: drain every in-order
-                                // queue, release every tracked event, then
-                                // free the whole list at once. Every released
-                                // id becomes invalid.
+                                // queue, release the held events, merge
+                                // proven-complete deaths, then free the whole
+                                // list at once. Every released id becomes
+                                // invalid.
                                 for q in &queues {
                                     let _ = unsafe { (clFinish)(q.queue) }.check(ErrorStatus::MemoryDeallocation);
                                 }
-                                release_all_events(&mut tails, &mut writer, &mut last_use, clReleaseEvent);
+                                for event in held.drain(..) {
+                                    if !event.is_null() {
+                                        let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
+                                    }
+                                }
+                                free_set.extend(pending_free.drain(..));
                                 for buffer_id in core::mem::take(&mut free_set) {
                                     let OpenCLBuffer { ptr, bytes } = buffers[buffer_id];
                                     debug_assert!(!ptr.is_null(), "deallocating null buffer is invalid");
@@ -646,7 +654,12 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         continue 'work_thread_loop;
                                     }
                                 }
-                                release_all_events(&mut tails, &mut writer, &mut last_use, clReleaseEvent);
+                                for event in held.drain(..) {
+                                    if !event.is_null() {
+                                        let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
+                                    }
+                                }
+                                free_set.extend(pending_free.drain(..));
                                 let dst_ptr = buffers[dst_buf].ptr;
                                 debug_assert!(!dst_ptr.is_null(), "copy into null memory. Internal bug.");
                                 let status = if src_pool == worker_pool {
@@ -694,7 +707,12 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         continue 'work_thread_loop;
                                     }
                                 }
-                                release_all_events(&mut tails, &mut writer, &mut last_use, clReleaseEvent);
+                                for event in held.drain(..) {
+                                    if !event.is_null() {
+                                        let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
+                                    }
+                                }
+                                free_set.extend(pending_free.drain(..));
                                 let OpenCLBuffer { ptr, .. } = buffers[src];
                                 debug_assert!(!ptr.is_null(), "Trying to read null memory. Internal bug.");
                                 let status = unsafe {
@@ -764,83 +782,134 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                 let program_id = programs.push(OpenCLProgram { program, kernel, lws, gws, params });
                                 let _ = reply.send(Ok(program_id));
                             }
-                            Command::Replay { cmds, queues: assign, waits, bound, vars, deaths, reply } => {
+                            Command::Replay { cmds, queues: assign, waits, allocs, bound, vars, deaths, reply } => {
                                 // One roundtrip per partition replay.
+                                // Opening fence: the previous replay's
+                                // launches are async — drain every queue
+                                // first, so bound slots and free-list chunks
+                                // are complete. Held events release exactly
+                                // once; proven-complete deaths join the free
+                                // list. NO end drain: this replay's launches
+                                // overlap caller-side CPU work; the next
+                                // queue-touching command fences.
+                                for q in &queues {
+                                    if let Err(err) = unsafe { (clFinish)(q.queue) }.check(ErrorStatus::KernelSync) {
+                                        let _ = reply.send(Err(err));
+                                        continue 'work_thread_loop;
+                                    }
+                                }
+                                for event in held.drain(..) {
+                                    if !event.is_null() {
+                                        let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
+                                    }
+                                }
+                                free_set.extend(pending_free.drain(..));
+                                // Snapshot: everything in here is
+                                // drained-complete. Same-replay deaths park
+                                // in pending_free, invisible to the
+                                // fallback scan by construction — a reused
+                                // chunk's last reader may still be in
+                                // flight, and only a schedule edge (baked
+                                // reuse) or a fence (next replay) proves it
+                                // complete. No polling, ever.
+                                let mut snapshot: Set<ChunkId> = free_set.clone();
                                 // Ownership split: bound inputs and escaping
                                 // defs are caller-side Placements (Drop
                                 // releases them). Intermediaries never become
                                 // Placements: the worker allocates them here
-                                // and returns them to the free list at death.
-                                // Allocation is per-command, parallelism-first:
-                                // each launch's outputs reuse a free chunk
-                                // only when it adds no wait (same queue or
-                                // tail already complete); otherwise fresh VRAM
-                                // — blocking reuse to save memory would
-                                // serialize parallel chains. Deterministic
+                                // and parks them aside at death. Deterministic
                                 // order in, stable addresses out.
                                 let result = (|| -> Result<Vec<(OpId, ChunkId)>, BackendError> {
                                     let vars_map: Map<OpId, Constant> = vars.into_iter().collect();
                                     let mut slot_chunk: Map<OpId, ChunkId> = bound.into_iter().collect();
-                                    let mut fresh: Vec<(OpId, ChunkId)> = Vec::new();
+                                    let mut fresh: Set<OpId> = Set::default();
+                                    let mut stashed: Map<OpId, ChunkId> = Map::default();
+                                    let mut cmd_events: Vec<*mut c_void> = vec![ptr::null_mut(); cmds.len()];
                                     debug_assert_eq!(cmds.len(), assign.len(), "replay queue assignment length mismatch");
-                                    debug_assert_eq!(cmds.len(), waits.len(), "replay wait set length mismatch");
+                                    debug_assert_eq!(cmds.len(), waits.len(), "replay wait edge length mismatch");
+                                    debug_assert_eq!(cmds.len(), allocs.len(), "replay alloc plan length mismatch");
                                     for (idx, cmd) in cmds.iter().enumerate() {
                                         match cmd {
                                             Cmd::Launch { program, args, outputs } => {
                                                 let queue = assign[idx];
-                                                for (slot, dtype, dims) in outputs {
+                                                for ((slot, dtype, dims), plan) in outputs.iter().zip(allocs[idx].iter()) {
                                                     if slot_chunk.contains_key(slot) {
                                                         continue;
                                                     }
-                                                    let bytes =
-                                                        dims.iter().map(|d| d.eval(&vars_map)).fold(*dtype, |a, b| a * b);
-                                                    if bytes < 0 {
-                                                        return Err(BackendError {
-                                                            status: ErrorStatus::MemoryAllocation,
-                                                            context: format!(
-                                                                "replay allocated negative bytes for {slot:?}"
-                                                            )
-                                                            .into(),
-                                                        });
-                                                    }
-                                                    let id = best_parallel_fit(
-                                                        &free_set,
-                                                        &buffers,
-                                                        &writer,
-                                                        &last_use,
-                                                        queue,
-                                                        bytes,
-                                                        clGetEventInfo,
-                                                    )
-                                                    .or_else(|| {
-                                                        if bytes > free_bytes_atomic.load(Ordering::SeqCst) as i64 {
-                                                            return None;
+                                                    let chunk = match plan {
+                                                        AllocPlan::Reuse(dead) => stashed.remove(dead),
+                                                        AllocPlan::Fresh => None,
+                                                    };
+                                                    let chunk = match chunk {
+                                                        Some(chunk) => chunk,
+                                                        None => {
+                                                            let bytes =
+                                                                dims.iter().map(|d| d.eval(&vars_map)).fold(*dtype, |a, b| a * b);
+                                                            if bytes < 0 {
+                                                                return Err(BackendError {
+                                                                    status: ErrorStatus::MemoryAllocation,
+                                                                    context: format!(
+                                                                        "replay allocated negative bytes for {slot:?}"
+                                                                    )
+                                                                    .into(),
+                                                                });
+                                                            }
+                                                            // Poll-free best-fit over the
+                                                            // snapshot only. Fresh VRAM
+                                                            // last — parallelism over
+                                                            // memory savings, always.
+                                                            let best = snapshot
+                                                                .iter()
+                                                                .filter_map(|id| {
+                                                                    let b = &buffers[*id];
+                                                                    (b.bytes >= bytes).then_some((b.bytes, *id))
+                                                                })
+                                                                .min();
+                                                            if let Some((_, id)) = best {
+                                                                snapshot.remove(&id);
+                                                                free_set.remove(&id);
+                                                                id
+                                                            } else {
+                                                                if bytes > free_bytes_atomic.load(Ordering::SeqCst) as i64 {
+                                                                    return Err(BackendError {
+                                                                        status: ErrorStatus::MemoryAllocation,
+                                                                        context: "Allocation failure".into(),
+                                                                    });
+                                                                }
+                                                                let mut status = OpenCLStatus::CL_SUCCESS;
+                                                                let buffer = unsafe {
+                                                                    clCreateBuffer(
+                                                                        context,
+                                                                        CL_MEM_READ_WRITE,
+                                                                        bytes as usize,
+                                                                        ptr::null_mut(),
+                                                                        &raw mut status,
+                                                                    )
+                                                                };
+                                                                status.check(ErrorStatus::MemoryAllocation)?;
+                                                                free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
+                                                                buffers.push(OpenCLBuffer { ptr: buffer, bytes })
+                                                            }
                                                         }
-                                                        let mut status = OpenCLStatus::CL_SUCCESS;
-                                                        let buffer = unsafe {
-                                                            clCreateBuffer(
-                                                                context,
-                                                                CL_MEM_READ_WRITE,
-                                                                bytes as usize,
-                                                                ptr::null_mut(),
-                                                                &raw mut status,
-                                                            )
-                                                        };
-                                                        if status.check(ErrorStatus::MemoryAllocation).is_err() {
-                                                            return None;
-                                                        }
-                                                        free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
-                                                        Some(buffers.push(OpenCLBuffer { ptr: buffer, bytes }))
-                                                    })
-                                                    .ok_or(BackendError {
-                                                        status: ErrorStatus::MemoryAllocation,
-                                                        context: "Allocation failure".into(),
-                                                    })?;
-                                                    free_set.remove(&id);
-                                                    slot_chunk.insert(*slot, id);
-                                                    fresh.push((*slot, id));
+                                                    };
+                                                    slot_chunk.insert(*slot, chunk);
+                                                    fresh.insert(*slot);
                                                 }
-                                                submit_slots(
+                                                // Edges resolve to events by
+                                                // array index: producers are
+                                                // earlier launches (schedule
+                                                // invariant); aliases produce
+                                                // nothing to wait on.
+                                                let mut edge_events: Vec<*mut c_void> = Vec::with_capacity(waits[idx].len());
+                                                for &p in &waits[idx] {
+                                                    debug_assert!(p < idx, "replay: wait edge points forward");
+                                                    let event = cmd_events[p];
+                                                    debug_assert!(!event.is_null(), "replay: wait edge points at an alias");
+                                                    if !edge_events.contains(&event) {
+                                                        edge_events.push(event);
+                                                    }
+                                                }
+                                                cmd_events[idx] = submit_slots(
                                                     &programs,
                                                     &buffers,
                                                     program.program_id,
@@ -849,13 +918,9 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                                     &vars_map,
                                                     queue,
                                                     &queues,
-                                                    &waits[idx],
-                                                    &mut tails,
-                                                    &mut writer,
-                                                    &mut last_use,
+                                                    &edge_events,
                                                     clEnqueueNDRangeKernel,
                                                     clSetKernelArg,
-                                                    clReleaseEvent,
                                                 )?;
                                             }
                                             Cmd::Alias { class, to } => {
@@ -871,41 +936,56 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         }
                                         for dead in &deaths[idx] {
                                             if let Some(chunk) = slot_chunk.remove(dead) {
-                                                // Worker-allocated intermediary:
-                                                // back to the free list, it
-                                                // never became a Placement so
-                                                // no Drop is involved. Bound
-                                                // inputs stay caller-owned —
-                                                // the caller's Drop releases
-                                                // those. Alias-shared chunks
-                                                // die twice; the guard keeps
-                                                // one entry.
-                                                if fresh.iter().any(|(s, _)| s == dead)
-                                                    && !free_set.contains(&chunk)
+                                                // Worker-owned intermediaries
+                                                // park in the stash: a baked
+                                                // reuse takes them by slot,
+                                                // leftovers join pending at
+                                                // the end. Bound inputs stay
+                                                // caller-owned — the caller's
+                                                // Drop releases those.
+                                                // Alias-shared chunks die
+                                                // twice; the chunk guard
+                                                // keeps one entry.
+                                                if fresh.contains(dead)
+                                                    && !stashed.values().any(|&c| c == chunk)
+                                                    && !pending_free.contains(&chunk)
                                                 {
-                                                    free_set.insert(chunk);
+                                                    stashed.insert(*dead, chunk);
                                                 }
                                             }
                                         }
                                     }
+                                    // Unclaimed stashes never had a taker:
+                                    // park them for the next fence.
+                                    pending_free.extend(stashed.drain().map(|(_, chunk)| chunk));
+                                    // This replay's events outlive the reply
+                                    // (async): the next fence releases them.
+                                    held = cmd_events;
                                     // Survivors escape the partition: caller
-                                    // turns them into Placements. The freed
-                                    // intermediaries are gone from the map.
-                                    Ok(fresh.into_iter().filter(|(s, _)| slot_chunk.contains_key(s)).collect())
+                                    // turns them into Placements.
+                                    Ok(fresh.iter().filter(|s| slot_chunk.contains_key(s)).map(|s| (*s, slot_chunk[s])).collect())
                                 })();
                                 let _ = reply.send(result);
                             }
                             Command::LaunchTimed { program_id, args, reply } => {
                                 // Uncontended timing for autotune: drain
-                                // every queue, then run the kernel solo on
-                                // queue 0.
+                                // every queue, release the held events, merge
+                                // proven-complete deaths, then run the kernel
+                                // solo on queue 0 with no waits. The finish
+                                // proves it complete, so its event releases
+                                // immediately — nothing is held.
                                 for q in &queues {
                                     if let Err(err) = unsafe { (clFinish)(q.queue) }.check(ErrorStatus::KernelSync) {
                                         let _ = reply.send(Err(err));
                                         continue 'work_thread_loop;
                                     }
                                 }
-                                release_all_events(&mut tails, &mut writer, &mut last_use, clReleaseEvent);
+                                for event in held.drain(..) {
+                                    if !event.is_null() {
+                                        let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
+                                    }
+                                }
+                                free_set.extend(pending_free.drain(..));
                                 let start = Instant::now();
                                 let result = submit_launch(
                                     &programs,
@@ -914,15 +994,14 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                     program_id,
                                     &args,
                                     &queues,
-                                    &mut tails,
-                                    &mut writer,
-                                    &mut last_use,
                                     clEnqueueNDRangeKernel,
                                     clSetKernelArg,
-                                    clReleaseEvent,
                                 )
-                                .and_then(|()| unsafe { (clFinish)(queues[0].queue) }.check(ErrorStatus::KernelSync));
-                                release_all_events(&mut tails, &mut writer, &mut last_use, clReleaseEvent);
+                                .and_then(|event| {
+                                    let status = unsafe { (clFinish)(queues[0].queue) }.check(ErrorStatus::KernelSync);
+                                    let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
+                                    status
+                                });
                                 let nanos = start.elapsed().as_nanos() as u64;
                                 let _ = reply.send(result.map(|()| nanos));
                             }
@@ -956,47 +1035,19 @@ pub(super) fn device_count() -> u16 {
     backend().map(|(_, devs)| devs.len() as u16).unwrap_or(0)
 }
 
-/// Releases every tracked event exactly once and clears the tracking:
-///
-/// per-queue tails plus the per-chunk writer/last_use maps (one event can
-/// sit in several of them). Used after full drains, where completion is
-/// guaranteed.
-fn release_all_events(
-    tails: &mut Vec<*mut c_void>,
-    writer: &mut Map<ChunkId, (usize, *mut c_void)>,
-    last_use: &mut Map<ChunkId, (usize, *mut c_void)>,
-    clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
-) {
-    let mut events: Vec<*mut c_void> = tails.iter().copied().collect();
-    events.extend(writer.values().map(|&(_, e)| e));
-    events.extend(last_use.values().map(|&(_, e)| e));
-    release_distinct(events, clReleaseEvent);
-    for tail in tails.iter_mut() {
-        *tail = ptr::null_mut();
-    }
-    writer.clear();
-    last_use.clear();
-}
-
-/// Enqueues one kernel with pre-resolved args onto the given queue and
-/// tracks the completion event: the queue tail plus per-chunk RAW
-/// (writer) and WAR (last_use) entries. Waits cover the schedule's
-/// cross-queue wait set plus any in-flight chunk tails on other queues —
-/// reused stable addresses stay ordered against prior work.
+/// Enqueues one kernel onto the given queue with the schedule-computed
+/// wait events and returns its completion event. No tracking: ordering
+/// is the schedule's edges (same-queue is FIFO) plus the replay fences.
+/// The caller holds the event until the next fence releases it.
 #[allow(clippy::too_many_arguments)]
 fn enqueue_tracked(
     programs: &Slab<DeviceProgramId, OpenCLProgram>,
     program_id: DeviceProgramId,
     params: &[(*const c_void, usize)],
     global_size: Vec<Dim>,
-    reads: &[ChunkId],
-    writes: &[ChunkId],
     queue: usize,
     queues: &[OpenCLQueue],
-    wait_queues: &[usize],
-    tails: &mut Vec<*mut c_void>,
-    writer: &mut Map<ChunkId, (usize, *mut c_void)>,
-    last_use: &mut Map<ChunkId, (usize, *mut c_void)>,
+    waits: &[*mut c_void],
     clEnqueueNDRangeKernel: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -1009,8 +1060,7 @@ fn enqueue_tracked(
         *mut *mut c_void,
     ) -> OpenCLStatus,
     clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus,
-    clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
-) -> Result<(), BackendError> {
+) -> Result<*mut c_void, BackendError> {
     debug_assert!(programs.contains_id(program_id), "launch of unknown program {program_id:?}");
     debug_assert!(queue < queues.len(), "launch on missing queue {queue}");
     let program = &programs[program_id];
@@ -1041,35 +1091,8 @@ fn enqueue_tracked(
             });
         }
     }
-    // One event per needed edge; the enqueued command retains them.
-    let mut waits: Vec<*mut c_void> = Vec::new();
-    for q in wait_queues {
-        if *q != queue
-            && let Some(&event) = tails.get(*q)
-            && !event.is_null()
-            && !waits.contains(&event)
-        {
-            waits.push(event);
-        }
-    }
-    for b in reads {
-        if let Some(&(w, event)) = writer.get(b)
-            && w != queue
-            && !event.is_null()
-            && !waits.contains(&event)
-        {
-            waits.push(event);
-        }
-    }
-    for b in writes {
-        if let Some(&(u, event)) = last_use.get(b)
-            && u != queue
-            && !event.is_null()
-            && !waits.contains(&event)
-        {
-            waits.push(event);
-        }
-    }
+    // The waits are schedule-computed producer events; the enqueued
+    // command retains them, the caller holds the returned event.
     let mut event: *mut c_void = ptr::null_mut();
     unsafe {
         (clEnqueueNDRangeKernel)(
@@ -1086,80 +1109,13 @@ fn enqueue_tracked(
     }
     .check(ErrorStatus::KernelLaunch)?;
     debug_assert!(!event.is_null(), "kernel enqueue returned no event");
-    // Overwrite, never eagerly release: a replaced event can still be
-    // referenced from another slot (tails of other queues, other chunks),
-    // and releasing it there would double-release. Replaced events stay
-    // tracked until the next full drain, which releases everything exactly
-    // once (drains bound event lifetime: every readback/autotune probe
-    // drains, so nothing accumulates beyond one sync interval).
-    tails[queue] = event;
-    let mut reads = reads.to_vec();
-    reads.sort();
-    reads.dedup();
-    let mut writes = writes.to_vec();
-    writes.sort();
-    writes.dedup();
-    for b in &reads {
-        last_use.insert(*b, (queue, event));
-    }
-    for b in &writes {
-        writer.insert(*b, (queue, event));
-        last_use.insert(*b, (queue, event));
-    }
-    Ok(())
-}
-
-/// Best-fit free chunk that adds no wait on `queue`: same-queue tails
-/// order themselves on the in-order queue, completed tails need nothing,
-/// and only an in-flight tail on another queue blocks. `None` means
-/// allocate fresh — parallelism over memory savings, always.
-fn best_parallel_fit(
-    free_set: &Set<ChunkId>,
-    buffers: &Slab<ChunkId, OpenCLBuffer>,
-    writer: &Map<ChunkId, (usize, *mut c_void)>,
-    last_use: &Map<ChunkId, (usize, *mut c_void)>,
-    queue: usize,
-    bytes: Dim,
-    clGetEventInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
-) -> Option<ChunkId> {
-    let mut cands: Vec<(Dim, ChunkId)> = free_set
-        .iter()
-        .filter_map(|id| {
-            let b = &buffers[*id];
-            (b.bytes >= bytes).then_some((b.bytes, *id))
-        })
-        .collect();
-    cands.sort_unstable();
-    cands.into_iter().find_map(|(_, id)| {
-        let blocked = [writer.get(&id), last_use.get(&id)].into_iter().flatten().any(|&(q, event)| {
-            q != queue && !event.is_null() && event_in_flight(event, clGetEventInfo)
-        });
-        (!blocked).then_some(id)
-    })
-}
-
-/// True while the event's command has not completed. A failed query is
-/// in-flight (conservative): never reuse under an unknown tail.
-fn event_in_flight(
-    event: *mut c_void,
-    clGetEventInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
-) -> bool {
-    let mut status: cl_int = 0;
-    let queried = unsafe {
-        (clGetEventInfo)(
-            event,
-            CL_EVENT_COMMAND_EXECUTION_STATUS,
-            core::mem::size_of::<cl_int>(),
-            (&raw mut status).cast(),
-            ptr::null_mut(),
-        )
-    } == OpenCLStatus::CL_SUCCESS;
-    !queried || status != CL_COMPLETE
+    Ok(event)
 }
 
 /// Resolves queue-local slots against the replay's slot→chunk map (scalars
-/// from `vars`), evaluates the grid, and enqueues with tracking. The
-/// partition-replay path: args are slots, not placements.
+/// from `vars`), evaluates the grid, and enqueues with the
+/// schedule-computed wait events. The partition-replay path: args are
+/// slots, not placements. Returns the completion event.
 #[allow(clippy::too_many_arguments)]
 fn submit_slots(
     programs: &Slab<DeviceProgramId, OpenCLProgram>,
@@ -1170,10 +1126,7 @@ fn submit_slots(
     scalars: &Map<OpId, Constant>,
     queue: usize,
     queues: &[OpenCLQueue],
-    wait_queues: &[usize],
-    tails: &mut Vec<*mut c_void>,
-    writer: &mut Map<ChunkId, (usize, *mut c_void)>,
-    last_use: &mut Map<ChunkId, (usize, *mut c_void)>,
+    waits: &[*mut c_void],
     clEnqueueNDRangeKernel: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -1186,11 +1139,10 @@ fn submit_slots(
         *mut *mut c_void,
     ) -> OpenCLStatus,
     clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus,
-    clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
-) -> Result<(), BackendError> {
+) -> Result<*mut c_void, BackendError> {
     debug_assert!(programs.contains_id(program_id), "launch of unknown program {program_id:?}");
-    let kinds: &[ParamKind] = &programs[program_id].params;
-    debug_assert!(args.len() <= kinds.len(), "more launch args than program params");
+    debug_assert!(queue < queues.len(), "launch on missing queue {queue}");
+    assert!(args.len() <= programs[program_id].params.len(), "more launch args than program params");
     // clSetKernelArg copies the value immediately, so stable storage for
     // the cl_mem handles and scalar bytes within this call is enough —
     // reserved up front: `params` below borrows these vecs while they
@@ -1198,17 +1150,11 @@ fn submit_slots(
     let mut mem_args: Vec<*mut c_void> = Vec::with_capacity(args.len());
     let mut scalar_values: Vec<Box<[u8]>> = Vec::with_capacity(args.len());
     let mut params: Vec<(*const c_void, usize)> = Vec::with_capacity(args.len());
-    let mut reads: Vec<ChunkId> = Vec::new();
-    let mut writes: Vec<ChunkId> = Vec::new();
-    for (idx, slot) in args.iter().enumerate() {
+    for slot in args.iter() {
         if let Some(chunk) = slot_chunk.get(slot) {
             mem_args.push(buffers[*chunk].ptr);
             let value = mem_args.last().unwrap();
             params.push((core::ptr::from_ref(value).cast(), core::mem::size_of::<*mut c_void>()));
-            match kinds.get(idx) {
-                Some(ParamKind::GlobalMut) => writes.push(*chunk),
-                _ => reads.push(*chunk),
-            }
         } else if let Some(constant) = scalars.get(slot) {
             scalar_values.push(constant.to_le_bytes().into());
             let value = scalar_values.last().unwrap();
@@ -1227,10 +1173,7 @@ fn submit_slots(
                 .get(i)
                 .map(|gdim| {
                     gdim.eval(&mut |ordinal| {
-                        scalars
-                            .get(&args[ordinal])
-                            .and_then(|c| c.as_dim())
-                            .expect("gws param must be a Variable slot")
+                        scalars.get(&args[ordinal]).and_then(|c| c.as_dim()).expect("gws param must be a Variable slot")
                     })
                 })
                 .unwrap_or(1);
@@ -1241,29 +1184,14 @@ fn submit_slots(
             g * programs[program_id].lws.get(i).copied().unwrap_or(1)
         })
         .collect();
-    enqueue_tracked(
-        programs,
-        program_id,
-        &params,
-        global_size,
-        &reads,
-        &writes,
-        queue,
-        queues,
-        wait_queues,
-        tails,
-        writer,
-        last_use,
-        clEnqueueNDRangeKernel,
-        clSetKernelArg,
-        clReleaseEvent,
-    )
+    enqueue_tracked(programs, program_id, &params, global_size, queue, queues, waits, clEnqueueNDRangeKernel, clSetKernelArg)
 }
 
 /// Resolves `LaunchArg` placements against the buffer table through the
 /// shard addressed to this worker's pool, evaluates the grid, and
-/// enqueues with tracking. The autotune (`LaunchTimed`) path: args carry
-/// placements, not slots.
+/// enqueues with no waits (solo use: the caller drained first). The
+/// autotune (`LaunchTimed`) path: args carry placements, not slots.
+/// Returns the completion event.
 #[allow(clippy::too_many_arguments)]
 fn submit_launch(
     programs: &Slab<DeviceProgramId, OpenCLProgram>,
@@ -1272,9 +1200,6 @@ fn submit_launch(
     program_id: DeviceProgramId,
     args: &[LaunchArg],
     queues: &[OpenCLQueue],
-    tails: &mut Vec<*mut c_void>,
-    writer: &mut Map<ChunkId, (usize, *mut c_void)>,
-    last_use: &mut Map<ChunkId, (usize, *mut c_void)>,
     clEnqueueNDRangeKernel: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -1287,11 +1212,9 @@ fn submit_launch(
         *mut *mut c_void,
     ) -> OpenCLStatus,
     clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus,
-    clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
-) -> Result<(), BackendError> {
+) -> Result<*mut c_void, BackendError> {
     debug_assert!(programs.contains_id(program_id), "launch of unknown program {program_id:?}");
-    let kinds: &[ParamKind] = &programs[program_id].params;
-    debug_assert!(args.len() <= kinds.len(), "more launch args than program params");
+    assert!(args.len() <= programs[program_id].params.len(), "more launch args than program params");
     // clSetKernelArg copies the value immediately, so stable storage for
     // the cl_mem handles and scalar bytes within this call is enough —
     // reserved up front: `params` below borrows these vecs while they
@@ -1299,9 +1222,7 @@ fn submit_launch(
     let mut mem_args: Vec<*mut c_void> = Vec::with_capacity(args.len());
     let mut scalar_values: Vec<Box<[u8]>> = Vec::with_capacity(args.len());
     let mut params: Vec<(*const c_void, usize)> = Vec::with_capacity(args.len());
-    let mut reads: Vec<ChunkId> = Vec::new();
-    let mut writes: Vec<ChunkId> = Vec::new();
-    for (idx, arg) in args.iter().enumerate() {
+    for arg in args.iter() {
         match arg {
             LaunchArg::Buffer(placement) => {
                 let chunk = placement
@@ -1316,10 +1237,6 @@ fn submit_launch(
                 mem_args.push(buffers[chunk].ptr);
                 let value = mem_args.last().unwrap();
                 params.push((core::ptr::from_ref(value).cast(), core::mem::size_of::<*mut c_void>()));
-                match kinds.get(idx) {
-                    Some(ParamKind::GlobalMut) => writes.push(chunk),
-                    _ => reads.push(chunk),
-                }
             }
             LaunchArg::Variable(constant) => {
                 scalar_values.push(constant.to_le_bytes().into());
@@ -1347,34 +1264,7 @@ fn submit_launch(
             g * programs[program_id].lws.get(i).copied().unwrap_or(1)
         })
         .collect();
-    enqueue_tracked(
-        programs,
-        program_id,
-        &params,
-        global_size,
-        &reads,
-        &writes,
-        0,
-        queues,
-        &[],
-        tails,
-        writer,
-        last_use,
-        clEnqueueNDRangeKernel,
-        clSetKernelArg,
-        clReleaseEvent,
-    )
-}
-
-/// Releases each distinct non-null event exactly once (writer and last_use
-/// can hold the same event for a buffer).
-fn release_distinct(mut events: Vec<*mut c_void>, clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus) {
-    events.retain(|event| !event.is_null());
-    events.sort();
-    events.dedup();
-    for event in events {
-        let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
-    }
+    enqueue_tracked(programs, program_id, &params, global_size, 0, queues, &[], clEnqueueNDRangeKernel, clSetKernelArg)
 }
 
 impl OpenCLMemoryPool {
@@ -1489,20 +1379,27 @@ impl OpenCLDevice {
     }
 }
 
-/// Preplanned OpenCL partition: the ordered commands, per-command death
-/// lists, and the static queue assignment (per-command queue plus
-/// cross-queue wait sets). Replay ships the whole partition to the worker
-/// in one roundtrip (bound slots, scalars, assignment); the worker
-/// allocates unbound defs per-command (parallelism-first: fresh VRAM over
-/// blocking reuse), submits every launch to its queue, and releases dead
-/// chunks. No capture: repeats resubmit, stable addresses come from
-/// deterministic alloc order over the free list.
+/// Per-def allocation plan, computed by schedule. `Reuse` hands the def
+/// the dead slot's chunk (same shape ⇒ same bytes, structurally equal
+/// spec); `Fresh` allocates from the free-list snapshot or fresh VRAM.
+/// The worker resolves `Reuse` by array lookup — no search, no polling.
+#[derive(Debug, Clone)]
+pub(super) enum AllocPlan {
+    Reuse(OpId),
+    Fresh,
+}
+
+/// A scheduled OpenCL partition: commands plus every decision replay
+/// needs — per-command queue, producer-command wait edges, per-def
+/// allocation plans, deaths. Replay resolves edges and plans against
+/// runtime state (events, chunks) and submits; it computes nothing.
 #[derive(Debug)]
 pub(crate) struct OpenCLPartition {
     cmds: Vec<Cmd>,
     deaths: Vec<Vec<OpId>>,
     queues: Vec<usize>,
     waits: Vec<Vec<usize>>,
+    allocs: Vec<Vec<AllocPlan>>,
     pub(crate) dev: u16,
 }
 
@@ -1527,14 +1424,41 @@ impl OpenCLDevice {
         // Static queue assignment (slot affinity): a command joins its
         // read-slots' queue when they agree (the RAW wait disappears);
         // slot-disjoint chains spread round-robin so independent launches
-        // overlap on different queues. Waits name queues; the worker
-        // resolves them against per-queue tails at submit time.
+        // overlap on different queues. Same-queue commands need no edge:
+        // the in-order queue is the ordering guarantee. Cross-queue
+        // RAW/WAR/WAW become explicit producer-command edges; replay turns
+        // them into event waits by array index. Bound inputs (no producing
+        // command here) need no edge: the opening drain of every replay
+        // proves the previous partition complete.
+        //
+        // Aliases are transparent: tracking is keyed by canonical slot
+        // (union-find over rebinds), so readers of an alias order against
+        // the base's writer, and reuse of a dead base waits the alias's
+        // readers too.
+        //
+        // Allocation pairing is structural: a def reuses a dead slot's
+        // chunk only for an identical (dtype bytes, dims) spec — equal
+        // bytes by construction, no evaluation. Each dead chunk is paired
+        // at most once; the reuse's overwrite edges the dead slot's last
+        // readers explicitly (the def may not read the slot itself).
         let nq = super::config().opencl.queues.unwrap_or(8).max(1);
         let mut slot_queue: Map<OpId, usize> = Map::default();
+        let mut parent: Map<OpId, OpId> = Map::default();
+        let canon = |mut slot: OpId, parent: &Map<OpId, OpId>| -> OpId {
+            while let Some(&p) = parent.get(&slot) {
+                slot = p;
+            }
+            slot
+        };
+        let mut writer: Map<OpId, (usize, usize)> = Map::default();
+        let mut readers: Map<OpId, Vec<(usize, usize)>> = Map::default();
+        let mut spec: Map<OpId, (Dim, Vec<PlanDim>)> = Map::default();
+        let mut paired: Set<OpId> = Set::default();
         let mut round_robin = 0usize;
         let mut assign: Vec<usize> = Vec::with_capacity(cmds.len());
         let mut waits: Vec<Vec<usize>> = Vec::with_capacity(cmds.len());
-        for cmd in &cmds {
+        let mut allocs: Vec<Vec<AllocPlan>> = Vec::with_capacity(cmds.len());
+        for (idx, cmd) in cmds.iter().enumerate() {
             match cmd {
                 Cmd::Launch { args, outputs: defs, .. } => {
                     let mut qs: Vec<usize> = Vec::new();
@@ -1550,23 +1474,85 @@ impl OpenCLDevice {
                         round_robin += 1;
                         q
                     });
-                    waits.push(qs.into_iter().filter(|q| *q != queue).collect());
-                    assign.push(queue);
-                    for (slot, _, _) in defs {
+                    let mut edges: Vec<usize> = Vec::new();
+                    let edge = |producer: usize, queue_of: usize, queue: usize, edges: &mut Vec<usize>| {
+                        if queue_of != queue && producer < idx && !edges.contains(&producer) {
+                            edges.push(producer);
+                        }
+                    };
+                    for slot in args {
+                        let root = canon(*slot, &parent);
+                        if let Some(&(w, wq)) = writer.get(&root) {
+                            edge(w, wq, queue, &mut edges);
+                        }
+                        readers.entry(root).or_default().push((idx, queue));
+                    }
+                    let mut plans: Vec<AllocPlan> = Vec::with_capacity(defs.len());
+                    for (slot, dtype, dims) in defs {
+                        let root = canon(*slot, &parent);
+                        if let Some(&(w, wq)) = writer.get(&root) {
+                            edge(w, wq, queue, &mut edges);
+                        }
+                        if let Some(rs) = readers.get(&root) {
+                            for &(r, rq) in rs {
+                                edge(r, rq, queue, &mut edges);
+                            }
+                        }
+                        // Reuse scan: dead strictly before this command (a
+                        // slot dying here may be read by this very launch —
+                        // overwriting it would corrupt the read), identical
+                        // spec, unpaired. Death order is static; the first
+                        // structural match wins (deterministic).
+                        let mut reuse = None;
+                        for dead_list in deaths.iter().take(idx) {
+                            for dead in dead_list {
+                                if paired.contains(dead) {
+                                    continue;
+                                }
+                                if spec.get(dead).is_some_and(|s| s.0 == *dtype && s.1 == *dims) {
+                                    reuse = Some(*dead);
+                                    break;
+                                }
+                            }
+                            if reuse.is_some() {
+                                break;
+                            }
+                        }
+                        if let Some(dead) = reuse {
+                            paired.insert(dead);
+                            for &(r, rq) in readers.get(&canon(dead, &parent)).map(Vec::as_slice).unwrap_or(&[]) {
+                                edge(r, rq, queue, &mut edges);
+                            }
+                            plans.push(AllocPlan::Reuse(dead));
+                        } else {
+                            plans.push(AllocPlan::Fresh);
+                        }
+                        writer.insert(root, (idx, queue));
+                        readers.insert(root, Vec::new());
+                        spec.insert(*slot, (*dtype, dims.clone()));
                         slot_queue.insert(*slot, queue);
                     }
+                    edges.sort_unstable();
+                    waits.push(edges);
+                    allocs.push(plans);
+                    assign.push(queue);
                 }
                 Cmd::Alias { class, to } => {
-                    // Zero-cost rebind: no executable, no queue traffic.
+                    // Zero-cost rebind: no executable, no queue traffic, no
+                    // edges. Union the slots so later tracking sees one
+                    // value; the alias itself reads nothing executable.
+                    let root = canon(*to, &parent);
+                    parent.insert(*class, root);
                     let queue = slot_queue.get(to).copied().unwrap_or(0);
                     assign.push(queue);
                     waits.push(Vec::new());
+                    allocs.push(Vec::new());
                     slot_queue.insert(*class, queue);
                 }
                 Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
             }
         }
-        OpenCLPartition { cmds, deaths, queues: assign, waits, dev }
+        OpenCLPartition { cmds, deaths, queues: assign, waits, allocs, dev }
     }
 
     /// Copy executing a transfer into this device's pool: host uploads go
@@ -1671,6 +1657,7 @@ impl OpenCLPartition {
                 cmds: self.cmds.clone(),
                 queues: self.queues.clone(),
                 waits: self.waits.clone(),
+                allocs: self.allocs.clone(),
                 bound,
                 vars: vars_vec,
                 deaths: self.deaths.clone(),
@@ -1879,8 +1866,6 @@ const CL_MEM_READ_WRITE: cl_bitfield = 1;
 //const CL_MEM_READ_ONLY: cl_bitfield = 4;
 const CL_BLOCKING: cl_uint = 1;
 const CL_PROGRAM_BUILD_LOG: cl_uint = 0x1183; // 4483
-const CL_EVENT_COMMAND_EXECUTION_STATUS: cl_uint = 0x1283; // 4763
-const CL_COMPLETE: cl_int = 0x0;
 
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Copy, Clone, PartialEq, Debug, Eq)]
