@@ -6,6 +6,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
+use crate::Map;
 use crate::Set;
 use std::ffi::{CStr, CString};
 use std::sync::{
@@ -18,16 +19,20 @@ use libloading::Library;
 use nanoserde::DeJson;
 use std::time::Instant;
 
-use crate::kernel::{Op, RangeKind};
+use crate::kernel::{Op, OpId, RangeKind};
 use crate::{
     DType,
+    dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
     shape::Dim,
     slab::Slab,
 };
 
-use super::{ChunkId, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Pool, gws_from_kernel};
+use super::{
+    AllocPlan, ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Placement, PlanDim, Pool, Shard,
+    gws_from_kernel,
+};
 
 // ── Global state ──────────────────────────────────────────────────────────────
 
@@ -56,7 +61,6 @@ type VkSampler = *mut std::ffi::c_void;
 type VkResult = i32;
 
 const VK_SUCCESS: VkResult = 0;
-const VK_WHOLE_SIZE: u64 = !0;
 const VK_API_VERSION_1_2: u32 = (1 << 22) | (2 << 12);
 const VK_NULL_HANDLE: VkPipelineCache = std::ptr::null_mut();
 
@@ -409,14 +413,14 @@ enum VulkanCommand {
         reply: Sender<Result<bool, BackendError>>,
     },
     /// Async copy into this pool's buffer (host-mapped memcpy on the worker,
-    /// ordered against pending/in-flight GPU work). The worker releases the
-    /// source buffer back to its own pool once the copy is done.
+    /// ordered against pending/in-flight GPU work). The staging chunk is
+    /// caller-owned: the caller releases it after the reply, holding the
+    /// host lock throughout. The reply fires after the memcpy.
     Copy {
-        src_pool: Pool,
-        src_buf: ChunkId,
         src_ptr: *const u8,
         bytes: usize,
         dst_buf: ChunkId,
+        reply: Sender<Result<(), BackendError>>,
     },
     /// Blocking read-back: the reply is sent after the data arrived in host
     /// memory. This is a sync point — all pending work is submitted and
@@ -432,19 +436,27 @@ enum VulkanCommand {
         debug_asm: bool,
         reply: Sender<Result<DeviceProgramId, BackendError>>,
     },
-    /// Fire-and-forget kernel launch: appended to the pending micro-batch
-    /// window; the whole window is submitted as one batched vkQueueSubmit
-    /// when it flushes.
-    Launch {
-        program_id: DeviceProgramId,
-        args: Vec<LaunchArg>,
-    },
     /// Timed launch for autotune: flush + drain first (uncontended timing),
     /// then launch solo and measure enqueue-to-fence.
     LaunchTimed {
         program_id: DeviceProgramId,
         args: Vec<LaunchArg>,
         reply: Sender<Result<u64, BackendError>>,
+    },
+    /// Partition replay: one roundtrip per replay. Carries schedule's
+    /// decisions (commands, per-def alloc plans, deaths) plus the
+    /// boundary table and symbolic values. The worker flushes prior
+    /// work, drains (proving bound slots and free-list chunks complete),
+    /// allocates defs, records launches into the micro-batch window, and
+    /// replies after submit — kernels still running (async). The next
+    /// queue-touching command fences first.
+    Replay {
+        cmds: Vec<Cmd>,
+        allocs: Vec<Vec<AllocPlan>>,
+        bound: Vec<(OpId, ChunkId, usize, usize)>,
+        vars: Vec<(OpId, Constant)>,
+        deaths: Vec<Vec<OpId>>,
+        reply: Sender<Result<Vec<(OpId, ChunkId, usize)>, BackendError>>,
     },
     ReleaseProgram(DeviceProgramId),
 }
@@ -454,10 +466,20 @@ unsafe impl Send for VulkanCommand {}
 enum Pending {
     Launch {
         program_id: DeviceProgramId,
-        args: Vec<LaunchArg>,
+        args: Vec<ResolvedArg>,
     },
 }
 
+/// A launch arg resolved to worker-local handles: buffer args carry
+/// their chunk plus the live region (offset, length) on it — descriptors
+/// index the buffer table at record time. Deliberately NOT a Placement:
+/// an `Arc<Placement>` dropped here would run `Placement::drop` →
+/// `pool.release` → send `Release` to this same worker and double-free
+/// the buffer. Plain ids; ownership stays caller-side.
+enum ResolvedArg {
+    Buffer { chunk: ChunkId, offset: usize, len: usize },
+    Variable(Constant),
+}
 /// One batched submission: the window's command buffers were recorded and
 /// submitted with a single fence. Resources are freed once the fence signals
 /// (sweep/drain) — never behind in-flight GPU work.
@@ -465,7 +487,6 @@ struct InFlight {
     fence: VkFence,
     cmds: Vec<VkCommandBuffer>,
     desc_sets: Vec<VkDescriptorSet>,
-    buffers: Vec<ChunkId>,
 }
 
 /// Single backend initializer: builds pools + devices together in one pass,
@@ -604,20 +625,6 @@ impl VulkanDevice {
         self.tx.send(VulkanCommand::Compile { kernel: Box::new(kernel.clone()), debug_asm, reply }).unwrap();
         rx.recv().unwrap()
     }
-    /// Fire-and-forget launch: the command is queued to the device's worker,
-    /// which appends it to the micro-batch window; the whole window is
-    /// submitted as one batched vkQueueSubmit when it flushes.
-    pub(super) fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        pool_handle: Pool,
-        args: &[LaunchArg],
-    ) -> Result<(), BackendError> {
-        debug_assert_eq!(pool_handle, self.memory_pool);
-        self.tx.send(VulkanCommand::Launch { program_id, args: args.to_vec() }).unwrap();
-        Ok(())
-    }
-
     /// Timed launch for autotune: the worker's pending window is submitted
     /// and every in-flight batch drained first, then the kernel runs solo and
     /// the wall-clock nanos are measured around submit-to-fence.
@@ -625,6 +632,210 @@ impl VulkanDevice {
         let (reply, rx) = channel();
         self.tx.send(VulkanCommand::LaunchTimed { program_id, args: args.to_vec(), reply }).unwrap();
         rx.recv().unwrap()
+    }
+
+    /// Copy executing a transfer into this device's pool. Every source
+    /// stages through a proper [`Pool::Host`] chunk — never a temp `Vec`:
+    /// the source lands in the staging chunk first (device sources via
+    /// their own ordered read-back, host/disk via memcpy), then the worker
+    /// memcpys chunk → device buffer in channel order and releases the
+    /// staging chunk itself. The host lock is held across both blocking
+    /// roundtrips: the staging pointer stays valid. The worker never
+    /// takes it. Single-shard placements only.
+    pub fn copy(&self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
+        debug_assert!(bytes >= 0, "Vulkan copy of negative bytes");
+        let [src_shard] = &src.shards[..] else {
+            todo!("Vulkan copy of multi-shard source placement")
+        };
+        let [dst_shard] = &dst.shards[..] else {
+            todo!("Vulkan copy of multi-shard destination placement")
+        };
+        debug_assert_eq!(dst_shard.pool, self.memory_pool, "Vulkan copy destination is not on this device");
+        let dead = |_| BackendError { status: ErrorStatus::MemoryCopyP2P, context: "vulkan worker thread died".into() };
+        let dead_rx = |_: std::sync::mpsc::RecvError| BackendError {
+            status: ErrorStatus::MemoryCopyP2P,
+            context: "vulkan worker hung up".into(),
+        };
+        let stage = Pool::Host.allocate(bytes)?;
+        let host = super::host::pool();
+        let mut hpool = super::lock(Pool::Host, host);
+        let stage_ptr = hpool.buffer_ptr_mut(stage);
+        let n = bytes as usize;
+        let stage_slice = unsafe { std::slice::from_raw_parts_mut(stage_ptr, n) };
+        match src_shard.pool {
+            p if p == self.memory_pool => {
+                let Pool::Vulkan(id) = p else {
+                    unreachable!("Vulkan copy source pool is not Vulkan")
+                };
+                super::lock(self.memory_pool, pool(id)?).pool_to_host(src_shard.chunk, stage_slice)?;
+            }
+            Pool::Host => {
+                let src_bytes = hpool.get_buffer(src_shard.chunk);
+                debug_assert!(src_bytes.len() >= n, "Vulkan copy source host buffer is short");
+                unsafe { std::ptr::copy_nonoverlapping(src_bytes.as_ptr(), stage_ptr, n) };
+            }
+            #[cfg(unix)]
+            Pool::Disk => {
+                // Straight from the file mapping into the staging chunk.
+                // The chunk stays mapped across the memcpy (released
+                // caller-side with the plan's deaths).
+                let disk = super::disk::pool();
+                let dpool = super::lock(Pool::Disk, disk);
+                let (ptr, extent) = dpool.mapped_ptr(src_shard.chunk);
+                let m = bytes.min(extent);
+                debug_assert!(m >= 0, "Vulkan copy mapped extent is negative");
+                unsafe { std::ptr::copy_nonoverlapping(ptr, stage_ptr, m as usize) };
+            }
+            #[cfg(windows)]
+            Pool::Disk => todo!("Vulkan copy from disk on windows"),
+            p => {
+                // Other device pools read back through their own ordered path.
+                p.pool_to_host(src_shard.chunk, stage_slice)?;
+            }
+        }
+        let (reply, reply_rx) = channel();
+        self.tx.send(VulkanCommand::Copy { src_ptr: stage_ptr, bytes: n, dst_buf: dst_shard.chunk, reply }).map_err(dead)?;
+        let out = reply_rx.recv().map_err(dead_rx)?;
+        // Staging is caller-owned: release it through the held guard
+        // (Pool::release would re-lock the held host pool).
+        hpool.release(stage);
+        out
+    }
+}
+
+/// A scheduled Vulkan partition: commands plus per-def allocation plans
+/// and deaths. No queues, no wait edges: the worker records every launch
+/// into one in-order micro-batch window on its single queue, so program
+/// order is the ordering guarantee. Replay resolves plans against runtime
+/// state (chunks) and submits; it computes nothing.
+#[derive(Debug)]
+pub(crate) struct VulkanPartition {
+    cmds: Vec<Cmd>,
+    deaths: Vec<Vec<OpId>>,
+    allocs: Vec<Vec<AllocPlan>>,
+    pub(crate) dev: u16,
+}
+
+impl VulkanDevice {
+    pub(crate) fn schedule(cmds: Vec<Cmd>, outputs: &Set<OpId>, live_out: Set<OpId>, dev: u16) -> VulkanPartition {
+        // Deaths: a slot dies at its last read unless pinned (a plan
+        // output or read after this partition).
+        // output or read after this partition).
+        let mut last_use: Map<OpId, usize> = Map::default();
+        for (idx, cmd) in cmds.iter().enumerate() {
+            for r in cmd.reads() {
+                last_use.insert(r, idx);
+            }
+        }
+        let mut pinned = outputs.clone();
+        pinned.extend(live_out);
+        let mut deaths: Vec<Vec<OpId>> = vec![Vec::new(); cmds.len()];
+        for (slot, idx) in last_use {
+            if !pinned.contains(&slot) {
+                deaths[idx].push(slot);
+            }
+        }
+        // Allocation pairing is structural: a def reuses a dead slot's
+        // chunk only for an identical (dtype bytes, dims) spec — equal
+        // bytes by construction, no evaluation. Each dead chunk is paired
+        // at most once. Reuse scan covers deaths strictly before this
+        // command (a slot dying here may be read by this very launch).
+        // Death order is static; the first structural match wins.
+        // Aliases are transparent via union-find over rebinds.
+        let mut parent: Map<OpId, OpId> = Map::default();
+        let canon = |mut slot: OpId, parent: &Map<OpId, OpId>| -> OpId {
+            while let Some(&p) = parent.get(&slot) {
+                slot = p;
+            }
+            slot
+        };
+        let mut spec: Map<OpId, (Dim, Vec<PlanDim>)> = Map::default();
+        let mut paired: Set<OpId> = Set::default();
+        let mut allocs: Vec<Vec<AllocPlan>> = Vec::with_capacity(cmds.len());
+        for (idx, cmd) in cmds.iter().enumerate() {
+            match cmd {
+                Cmd::Launch { outputs: defs, .. } => {
+                    let mut plans: Vec<AllocPlan> = Vec::with_capacity(defs.len());
+                    for (slot, dtype, dims) in defs {
+                        let mut reuse = None;
+                        for dead_list in deaths.iter().take(idx) {
+                            for dead in dead_list {
+                                if paired.contains(dead) {
+                                    continue;
+                                }
+                                if spec.get(dead).is_some_and(|s| s.0 == *dtype && s.1 == *dims) {
+                                    reuse = Some(*dead);
+                                    break;
+                                }
+                            }
+                            if reuse.is_some() {
+                                break;
+                            }
+                        }
+                        if let Some(dead) = reuse {
+                            paired.insert(dead);
+                            plans.push(AllocPlan::Reuse(dead));
+                        } else {
+                            plans.push(AllocPlan::Fresh);
+                        }
+                        spec.insert(*slot, (*dtype, dims.clone()));
+                    }
+                    allocs.push(plans);
+                }
+                Cmd::Alias { class, to } => {
+                    // Zero-cost rebind: no executable, no queue traffic.
+                    // Union the slots so later tracking sees one value.
+                    let root = canon(*to, &parent);
+                    parent.insert(*class, root);
+                    allocs.push(Vec::new());
+                }
+                Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
+            }
+        }
+        VulkanPartition { cmds, deaths, allocs, dev }
+    }
+}
+
+impl VulkanPartition {
+    pub(crate) fn replay(
+        &self,
+        dev: &mut VulkanDevice,
+        resolved: &mut Map<OpId, Arc<Placement>>,
+        vars: &Map<OpId, Constant>,
+    ) -> Result<(), BackendError> {
+        // Bound slots addressed to this pool; caller-side defs stay
+        // unbound for the worker's per-command allocator.
+        let my_pool = dev.memory_pool;
+        let mut bound = Vec::with_capacity(resolved.len());
+        for (slot, placement) in resolved.iter() {
+            if let Some(shard) = placement.shards.iter().find(|s| s.pool == my_pool) {
+                bound.push((*slot, shard.chunk, shard.offset, shard.len));
+            }
+        }
+        let vars_vec: Vec<(OpId, Constant)> = vars.iter().map(|(s, c)| (*s, *c)).collect();
+        let dead = |_| BackendError { status: ErrorStatus::KernelLaunch, context: "vulkan worker thread died".into() };
+        let dead_rx = |_: std::sync::mpsc::RecvError| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: "vulkan worker hung up".into(),
+        };
+        let (reply, reply_rx) = channel();
+        dev.tx
+            .send(VulkanCommand::Replay {
+                cmds: self.cmds.clone(),
+                allocs: self.allocs.clone(),
+                bound,
+                vars: vars_vec,
+                deaths: self.deaths.clone(),
+                reply,
+            })
+            .map_err(dead)?;
+        for (slot, chunk, len) in reply_rx.recv().map_err(dead_rx)?? {
+            resolved.insert(slot, Arc::new(Placement { shards: vec![Shard { pool: my_pool, chunk, offset: 0, len }] }));
+        }
+        for dead in self.deaths.iter().flatten() {
+            resolved.remove(dead);
+        }
+        Ok(())
     }
 }
 
@@ -651,6 +862,20 @@ fn find_mem_type(
 /// program order on the single in-order queue, so no cross-command waits are
 /// needed.
 #[allow(clippy::too_many_arguments)]
+/// Resolve one eager launch arg to a worker-local handle: buffer args
+/// carry their chunk on this pool, variables carry their constant.
+/// Single-pool launches only — a buffer arg with no shard resident here
+/// is a missing Copy, never a default.
+/// Resolve one eager launch arg to a worker-local handle: copy the
+/// region fields, variables carry their constant. No pool lookup — the
+/// region is fully described, single-pool by construction.
+fn resolve_arg(arg: &LaunchArg) -> ResolvedArg {
+    match arg {
+        LaunchArg::Buffer { chunk, offset, len } => ResolvedArg::Buffer { chunk: *chunk, offset: *offset, len: *len },
+        LaunchArg::Variable(c) => ResolvedArg::Variable(*c),
+    }
+}
+
 fn submit_window(
     pending: &mut Vec<Pending>,
     queue: VkQueue,
@@ -701,7 +926,6 @@ fn submit_window(
     }
     let mut cmds: Vec<VkCommandBuffer> = Vec::with_capacity(pending.len());
     let mut desc_sets: Vec<VkDescriptorSet> = Vec::with_capacity(pending.len());
-    let mut batch_buffers: Vec<ChunkId> = Vec::new();
     let mut submit_infos: Vec<VkSubmitInfo> = Vec::with_capacity(pending.len());
     for Pending::Launch { program_id, args } in pending.drain(..) {
         let prog = &programs[program_id];
@@ -728,9 +952,9 @@ fn submit_window(
         let mut buf_infos: Vec<VkDescriptorBufferInfo> = Vec::with_capacity(args.len());
         let mut push_constants: Vec<u8> = vec![0u8; prog.push_constants_size as usize];
         let mut push_off: u32 = 0;
-        for arg_id in &args {
-            match arg_id {
-                LaunchArg::Variable(constant) => {
+        for arg in &args {
+            match arg {
+                ResolvedArg::Variable(constant) => {
                     let storage_bits = if constant.dtype() == crate::DType::Bool {
                         32
                     } else {
@@ -743,8 +967,12 @@ fn submit_window(
                     push_constants[push_off as usize..push_off as usize + bytes.len()].copy_from_slice(&bytes);
                     push_off += size;
                 }
-                LaunchArg::Buffer(_) => {
-                    todo!("placement resolution in Vulkan submit")
+                ResolvedArg::Buffer { chunk, offset, len } => {
+                    debug_assert!(buffers.contains_id(*chunk), "vulkan launch arg addresses an unknown buffer");
+                    let resolved = &buffers[*chunk];
+                    debug_assert!(!resolved.buf.is_null(), "vulkan launch arg addresses a null buffer");
+                    debug_assert!(offset.saturating_add(*len) <= resolved.bytes, "vulkan launch arg region overruns its chunk");
+                    buf_infos.push(VkDescriptorBufferInfo { buffer: resolved.buf, offset: *offset as u64, range: *len as u64 });
                 }
             }
         }
@@ -799,8 +1027,8 @@ fn submit_window(
         let default_gws = GwsDim::Const(1);
         let grid = |gdim: &GwsDim| -> Dim {
             gdim.eval(&mut |ordinal| match &args[ordinal] {
-                LaunchArg::Variable(c) => c.as_dim().unwrap(),
-                LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+                ResolvedArg::Variable(c) => c.as_dim().unwrap(),
+                ResolvedArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
             })
         };
         let gx = grid(prog.gws.first().unwrap_or(&default_gws));
@@ -874,6 +1102,13 @@ fn submit_window(
     }
 
     // pCommandBuffers must point at stable storage — cmds outlives the submit.
+    // NOTE: each entry must address its OWN command buffer (cmds[i]), not
+    // the loop variable: every submit_info created in the loop above holds
+    // the address of the same stack slot, which ends up holding only the
+    // last recorded buffer (earlier kernels would silently never run).
+    for (info, cmd) in submit_infos.iter_mut().zip(cmds.iter()) {
+        info.pCommandBuffers = cmd as *const VkCommandBuffer;
+    }
     let res = unsafe { vkQueueSubmit(queue, submit_infos.len() as u32, submit_infos.as_ptr(), fence) };
     if res != VK_SUCCESS {
         if debug_dev {
@@ -882,7 +1117,7 @@ fn submit_window(
         return Err(BackendError { status: ErrorStatus::KernelLaunch, context: format!("vkQueueSubmit: {res}").into() });
     }
 
-    inflight.push(InFlight { fence, cmds, desc_sets, buffers: batch_buffers });
+    inflight.push(InFlight { fence, cmds, desc_sets });
     Ok(())
 }
 
@@ -933,33 +1168,6 @@ fn drain_all(
 /// Single in-order queue: waiting the batch fence completes all earlier
 /// batches too, so every use of the buffer up to the release is covered.
 #[allow(clippy::too_many_arguments)]
-fn drain_touching(
-    inflight: &mut Vec<InFlight>,
-    buffer_id: ChunkId,
-    device: VkDevice,
-    cmd_pool: VkCommandPool,
-    desc_pool: VkDescriptorPool,
-    vkWaitForFences: unsafe extern "system" fn(VkDevice, u32, *const VkFence, u32, u64) -> VkResult,
-    vkFreeCommandBuffers: unsafe extern "system" fn(VkDevice, VkCommandPool, u32, *const VkCommandBuffer),
-    vkFreeDescriptorSets: unsafe extern "system" fn(VkDevice, VkDescriptorPool, u32, *const VkDescriptorSet) -> VkResult,
-    vkDestroyFence: unsafe extern "system" fn(VkDevice, VkFence, *const std::ffi::c_void),
-) {
-    let mut remaining = Vec::new();
-    for batch in inflight.drain(..) {
-        if batch.buffers.contains(&buffer_id) {
-            let res = unsafe { vkWaitForFences(device, 1, &batch.fence, 1, u64::MAX) };
-            if res != VK_SUCCESS {
-                // Broken device: reap and continue; the error surfaces at the
-                // next sync point.
-            }
-            destroy_batch(device, cmd_pool, desc_pool, batch, vkFreeCommandBuffers, vkFreeDescriptorSets, vkDestroyFence);
-        } else {
-            remaining.push(batch);
-        }
-    }
-    *inflight = remaining;
-}
-
 /// Reaps batches whose fence has signaled (a cheap `vkGetFenceStatus` poll).
 #[allow(clippy::too_many_arguments)]
 fn sweep_inflight(
@@ -1639,6 +1847,11 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                 // fence signals (swept each loop iteration, drained at sync
                 // points and buffer releases).
                 let mut inflight: Vec<InFlight> = Vec::new();
+                // Same-replay deaths: their last readers may still be in
+                // flight, so they join the free list only at the next
+                // full drain (Replay opening, PoolToHost, LaunchTimed,
+                // Dispose), when completion is proven. No polling, ever.
+                let mut pending_free: Vec<ChunkId> = Vec::new();
                 // First async submission error since the last sync point.
                 let mut last_error: Option<BackendError> = None;
 
@@ -1680,9 +1893,12 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                         VulkanCommand::Release { buffer_id } => {
                             // Put the id on the free list for
                             // stable-address reuse. Frees nothing: VRAM is
-                            // reclaimed only by Dispose. In-flight tracking
-                            // stays: a claimed address keeps its batches, so
-                            // reuse waits on prior work via drain_touching.
+                            // reclaimed only by Dispose. A released id may
+                            // still be in flight (async replays release
+                            // early) — claims stay safe because every
+                            // CPU-side use (Copy, PoolToHost) and every
+                            // replay opening drains first, and GPU-side
+                            // order comes from the single in-order queue.
                             if !buffers.contains_id(buffer_id) {
                                 debug_assert!(false, "release of unknown Vulkan buffer {buffer_id:?}");
                                 continue;
@@ -1733,6 +1949,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 vkFreeDescriptorSets,
                                 vkDestroyFence,
                             );
+                            free_set.extend(pending_free.drain(..));
                             for buffer_id in core::mem::take(&mut free_set) {
                                 let VulkanBuffer { buf, mem, ptr, bytes } = unsafe { buffers.remove_and_return(buffer_id) };
                                 if !ptr.is_null() {
@@ -1757,11 +1974,15 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                             }
                             let _ = reply.send(Ok(ok));
                         }
-                        VulkanCommand::Copy { src_pool, src_buf, src_ptr, bytes, dst_buf } => {
-                            // Host-mapped memcpy done on the worker: order it
-                            // against pending + in-flight GPU work first. The
-                            // copy itself is a CPU memcpy — the source is
-                            // consumed by it and released right after.
+                        VulkanCommand::Copy { src_ptr, bytes, dst_buf, reply } => {
+                            // Host-mapped memcpy done on the worker. Full
+                            // sync point (like PoolToHost): the destination
+                            // chunk may have been claimed from the free
+                            // list while its last reader was still in
+                            // flight (async replays release early), so only
+                            // a fence proves it safe to overwrite. Copies
+                            // are off the hot path — correctness over
+                            // pipelining here.
                             if let Err(err) = submit_window(
                                 &mut pending,
                                 queue,
@@ -1788,9 +2009,8 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                             {
                                 last_error = Some(err);
                             }
-                            drain_touching(
+                            drain_all(
                                 &mut inflight,
-                                dst_buf,
                                 device,
                                 cmd_pool,
                                 desc_pool,
@@ -1799,9 +2019,18 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 vkFreeDescriptorSets,
                                 vkDestroyFence,
                             );
+                            if let Some(err) = last_error.take() {
+                                let _ = reply.send(Err(err));
+                                continue;
+                            }
+                            free_set.extend(pending_free.drain(..));
                             let VulkanBuffer { ptr, .. } = buffers[dst_buf];
                             unsafe { std::ptr::copy_nonoverlapping(src_ptr, ptr, bytes) };
-                            src_pool.release(src_buf);
+                            // No release here: the caller releases the
+                            // staging chunk after the reply, holding the
+                            // host lock throughout (releasing here would
+                            // deadlock on the caller's held lock).
+                            let _ = reply.send(Ok(()));
                         }
                         VulkanCommand::PoolToHost { src, dst, bytes, reply } => {
                             // Sync point: submit everything pending, drain all
@@ -1843,6 +2072,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 vkFreeDescriptorSets,
                                 vkDestroyFence,
                             );
+                            free_set.extend(pending_free.drain(..));
                             if let Some(err) = last_error.take() {
                                 let _ = reply.send(Err(err));
                                 continue;
@@ -2051,41 +2281,6 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 programs.push(VulkanProgram { pipeline, pipeline_layout, desc_layout, push_constants_size, gws });
                             let _ = reply.send(Ok(id));
                         }
-                        VulkanCommand::Launch { program_id, args } => {
-                            // Fire and forget: append to the micro-batch
-                            // window; the whole window is recorded and
-                            // submitted as one batched vkQueueSubmit when it
-                            // flushes.
-                            pending.push(Pending::Launch { program_id, args });
-                            if pending.len() >= MICRO_BATCH_WINDOW
-                                && let Err(err) = submit_window(
-                                    &mut pending,
-                                    queue,
-                                    device,
-                                    cmd_pool,
-                                    desc_pool,
-                                    &buffers,
-                                    &programs,
-                                    &dev_info.max_global_work_dims,
-                                    &mut inflight,
-                                    debug_dev,
-                                    vkAllocateDescriptorSets,
-                                    vkUpdateDescriptorSets,
-                                    vkAllocateCommandBuffers,
-                                    vkBeginCommandBuffer,
-                                    vkEndCommandBuffer,
-                                    vkCmdBindPipeline,
-                                    vkCmdPushConstants,
-                                    vkCmdBindDescriptorSets,
-                                    vkCmdDispatch,
-                                    vkCreateFence,
-                                    vkQueueSubmit,
-                                )
-                                && last_error.is_none()
-                            {
-                                last_error = Some(err);
-                            }
-                        }
                         VulkanCommand::LaunchTimed { program_id, args, reply } => {
                             // Uncontended timing for autotune: submit the
                             // pending window, drain every in-flight batch,
@@ -2127,13 +2322,15 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 vkFreeDescriptorSets,
                                 vkDestroyFence,
                             );
+                            free_set.extend(pending_free.drain(..));
                             if let Some(err) = last_error.take() {
                                 let _ = reply.send(Err(err));
                                 continue;
                             }
+                            let resolved: Vec<ResolvedArg> = args.iter().map(resolve_arg).collect();
                             let start = Instant::now();
                             let result = submit_window(
-                                &mut vec![Pending::Launch { program_id, args }],
+                                &mut vec![Pending::Launch { program_id, args: resolved }],
                                 queue,
                                 device,
                                 cmd_pool,
@@ -2186,6 +2383,270 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                             });
                             let nanos = start.elapsed().as_nanos() as u64;
                             let _ = reply.send(result.map(|()| nanos));
+                        }
+                        VulkanCommand::Replay { cmds, allocs, bound, vars, deaths, reply } => {
+                            // One roundtrip per partition replay. Opening:
+                            // flush the pending window, then drain every
+                            // in-flight batch — the previous replay's
+                            // launches are async, and only a fence proves
+                            // bound slots and free-list chunks complete.
+                            // Proven deaths join the free list. NO end
+                            // drain: this replay's launches overlap
+                            // caller-side CPU work; the next queue-touching
+                            // command fences first.
+                            if let Err(err) = submit_window(
+                                &mut pending,
+                                queue,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                &buffers,
+                                &programs,
+                                &dev_info.max_global_work_dims,
+                                &mut inflight,
+                                debug_dev,
+                                vkAllocateDescriptorSets,
+                                vkUpdateDescriptorSets,
+                                vkAllocateCommandBuffers,
+                                vkBeginCommandBuffer,
+                                vkEndCommandBuffer,
+                                vkCmdBindPipeline,
+                                vkCmdPushConstants,
+                                vkCmdBindDescriptorSets,
+                                vkCmdDispatch,
+                                vkCreateFence,
+                                vkQueueSubmit,
+                            ) && last_error.is_none()
+                            {
+                                last_error = Some(err);
+                            }
+                            drain_all(
+                                &mut inflight,
+                                device,
+                                cmd_pool,
+                                desc_pool,
+                                vkWaitForFences,
+                                vkFreeCommandBuffers,
+                                vkFreeDescriptorSets,
+                                vkDestroyFence,
+                            );
+                            if let Some(err) = last_error.take() {
+                                let _ = reply.send(Err(err));
+                                continue;
+                            }
+                            free_set.extend(pending_free.drain(..));
+                            // Ownership split (OpenCL pattern): bound inputs
+                            // and escaping defs are caller-side Placements
+                            // (Drop releases them). Intermediaries never
+                            // become Placements: the worker allocates them
+                            // here and parks them aside at death.
+                            let result = (|| -> Result<Vec<(OpId, ChunkId, usize)>, BackendError> {
+                                let vars_map: Map<OpId, Constant> = vars.into_iter().collect();
+                                let mut slot_chunk: Map<OpId, (ChunkId, usize, usize)> =
+                                    bound.into_iter().map(|(s, c, o, l)| (s, (c, o, l))).collect();
+                                // Fresh defs' region lengths (offset is 0
+                                // for worker-allocated defs; the length
+                                // travels back so the caller names the
+                                // live region on the chunk).
+                                let mut fresh: Map<OpId, usize> = Map::default();
+                                let mut stashed: Map<OpId, (ChunkId, usize, usize)> = Map::default();
+                                // Proven-complete by the opening drain;
+                                // same-replay deaths park in the stash, then
+                                // pending_free — invisible to the scan by
+                                // construction. Cloned for iteration safety;
+                                // claims remove from both.
+                                let mut snapshot: Set<ChunkId> = free_set.clone();
+                                debug_assert_eq!(cmds.len(), allocs.len(), "replay alloc plan length mismatch");
+                                debug_assert_eq!(cmds.len(), deaths.len(), "replay death length mismatch");
+                                for (idx, cmd) in cmds.iter().enumerate() {
+                                    match cmd {
+                                        Cmd::Launch { program, args, outputs } => {
+                                            for ((slot, dtype, dims), plan) in outputs.iter().zip(allocs[idx].iter()) {
+                                                if slot_chunk.contains_key(slot) {
+                                                    continue;
+                                                }
+                                                let chunk = match plan {
+                                                    AllocPlan::Reuse(dead) => stashed.remove(dead),
+                                                    AllocPlan::Fresh => None,
+                                                };
+                                                // Fresh defs name their region length
+                                                // (evaluated bytes, offset 0); reused
+                                                // defs inherit the dead slot's region.
+                                                let (chunk, offset, len) = match chunk {
+                                                    Some(region) => region,
+                                                    None => {
+                                                        let bytes =
+                                                            dims.iter().map(|d| d.eval(&vars_map)).fold(*dtype, |a, b| a * b);
+                                                        if bytes < 0 {
+                                                            return Err(BackendError {
+                                                                status: ErrorStatus::MemoryAllocation,
+                                                                context: format!("replay allocated negative bytes for {slot:?}")
+                                                                    .into(),
+                                                            });
+                                                        }
+                                                        // Best-fit over the
+                                                        // snapshot only; fresh
+                                                        // VRAM last.
+                                                        let best = snapshot
+                                                            .iter()
+                                                            .filter_map(|id| {
+                                                                let b = &buffers[*id];
+                                                                (b.bytes >= bytes as usize).then_some((b.bytes, *id))
+                                                            })
+                                                            .min();
+                                                        if let Some((_, id)) = best {
+                                                            snapshot.remove(&id);
+                                                            free_set.remove(&id);
+                                                            (id, 0, bytes as usize)
+                                                        } else {
+                                                            let size = (bytes + 3) & !3;
+                                                            let (buf, mem, ptr) = create_buffer(size as u64)?;
+                                                            free_bytes_atomic.fetch_sub(size as u64, Ordering::SeqCst);
+                                                            let id = buffers.push(VulkanBuffer {
+                                                                buf,
+                                                                mem,
+                                                                ptr,
+                                                                bytes: bytes as usize,
+                                                            });
+                                                            (id, 0, bytes as usize)
+                                                        }
+                                                    }
+                                                };
+                                                slot_chunk.insert(*slot, (chunk, offset, len));
+                                                fresh.insert(*slot, len);
+                                            }
+                                            // Args in param order (GWS
+                                            // ordinals index this vec):
+                                            // placed slots become buffer
+                                            // regions, variable slots
+                                            // become push-constant args.
+                                            // Bare ids, never
+                                            // Placements (see ResolvedArg).
+                                            let mut launch_args: Vec<ResolvedArg> = Vec::with_capacity(args.len());
+                                            for slot in args {
+                                                if let Some((chunk, offset, len)) = slot_chunk.get(slot) {
+                                                    launch_args.push(ResolvedArg::Buffer {
+                                                        chunk: *chunk,
+                                                        offset: *offset,
+                                                        len: *len,
+                                                    });
+                                                } else if let Some(c) = vars_map.get(slot) {
+                                                    launch_args.push(ResolvedArg::Variable(*c));
+                                                } else {
+                                                    return Err(BackendError {
+                                                        status: ErrorStatus::KernelLaunch,
+                                                        context: format!(
+                                                            "replay: launch slot {slot:?} is neither placed nor bound"
+                                                        )
+                                                        .into(),
+                                                    });
+                                                }
+                                            }
+                                            debug_assert!(
+                                                programs.contains_id(program.program_id),
+                                                "replay: launch of unknown program"
+                                            );
+                                            pending.push(Pending::Launch { program_id: program.program_id, args: launch_args });
+                                            if pending.len() >= MICRO_BATCH_WINDOW
+                                                && let Err(err) = submit_window(
+                                                    &mut pending,
+                                                    queue,
+                                                    device,
+                                                    cmd_pool,
+                                                    desc_pool,
+                                                    &buffers,
+                                                    &programs,
+                                                    &dev_info.max_global_work_dims,
+                                                    &mut inflight,
+                                                    debug_dev,
+                                                    vkAllocateDescriptorSets,
+                                                    vkUpdateDescriptorSets,
+                                                    vkAllocateCommandBuffers,
+                                                    vkBeginCommandBuffer,
+                                                    vkEndCommandBuffer,
+                                                    vkCmdBindPipeline,
+                                                    vkCmdPushConstants,
+                                                    vkCmdBindDescriptorSets,
+                                                    vkCmdDispatch,
+                                                    vkCreateFence,
+                                                    vkQueueSubmit,
+                                                )
+                                                && last_error.is_none()
+                                            {
+                                                last_error = Some(err);
+                                            }
+                                        }
+                                        Cmd::Alias { class, to } => {
+                                            let region = *slot_chunk.get(to).ok_or_else(|| BackendError {
+                                                status: ErrorStatus::KernelLaunch,
+                                                context: format!("replay: alias target {to:?} is unplaced").into(),
+                                            })?;
+                                            slot_chunk.insert(*class, region);
+                                        }
+                                        Cmd::Copy { .. } => {
+                                            unreachable!("copies are Copy partitions, never device runs")
+                                        }
+                                    }
+                                    for dead in &deaths[idx] {
+                                        if let Some(region) = slot_chunk.remove(dead) {
+                                            // Worker-owned intermediaries
+                                            // park in the stash: a baked
+                                            // reuse takes them by slot,
+                                            // leftovers join pending at
+                                            // the end. Bound inputs stay
+                                            // caller-owned — the caller's
+                                            // Drop releases those.
+                                            // Alias-shared chunks die
+                                            // twice; the chunk guard keeps
+                                            // one entry.
+                                            if fresh.contains_key(dead)
+                                                && !stashed.values().any(|&c| c == region)
+                                                && !pending_free.contains(&region.0)
+                                            {
+                                                stashed.insert(*dead, region);
+                                            }
+                                        }
+                                    }
+                                }
+                                // Unclaimed stashes never had a taker:
+                                // park them for the next fence.
+                                pending_free.extend(stashed.drain().map(|(_, region)| region.0));
+                                // Submit the remainder. Errors abort the
+                                // replay; submitted launches keep running
+                                // (async) and the caller propagates.
+                                submit_window(
+                                    &mut pending,
+                                    queue,
+                                    device,
+                                    cmd_pool,
+                                    desc_pool,
+                                    &buffers,
+                                    &programs,
+                                    &dev_info.max_global_work_dims,
+                                    &mut inflight,
+                                    debug_dev,
+                                    vkAllocateDescriptorSets,
+                                    vkUpdateDescriptorSets,
+                                    vkAllocateCommandBuffers,
+                                    vkBeginCommandBuffer,
+                                    vkEndCommandBuffer,
+                                    vkCmdBindPipeline,
+                                    vkCmdPushConstants,
+                                    vkCmdBindDescriptorSets,
+                                    vkCmdDispatch,
+                                    vkCreateFence,
+                                    vkQueueSubmit,
+                                )?;
+                                // Survivors escape the partition: caller
+                                // turns them into Placements, naming the
+                                // live region length on each chunk.
+                                Ok(fresh
+                                    .iter()
+                                    .filter(|(s, _)| slot_chunk.contains_key(s))
+                                    .map(|(s, len)| (*s, slot_chunk[s].0, *len))
+                                    .collect())
+                            })();
+                            let _ = reply.send(result);
                         }
                         VulkanCommand::ReleaseProgram(program_id) => {
                             if programs.contains_id(program_id) {

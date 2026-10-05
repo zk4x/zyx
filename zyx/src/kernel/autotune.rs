@@ -263,7 +263,8 @@ impl BeamSearch {
         let mut args: Vec<LaunchArg> = Vec::with_capacity(tensors.len());
         for tensor in tensors {
             if let Some(buf) = rt.leaf_buffer(tensor.id()) {
-                args.push(LaunchArg::Buffer(buf));
+                let [shard] = &buf.shards[..] else { todo!("multi-shard tensor in autotune launch") };
+                args.push(LaunchArg::Buffer { chunk: shard.chunk, offset: shard.offset, len: shard.len });
             } else if let Some(value) = rt.resolve_symbolic(tensor.id()) {
                 args.push(LaunchArg::Variable(value));
             } else {

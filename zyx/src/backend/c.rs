@@ -9,7 +9,7 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{Cmd, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Pool, Shard};
+use super::{ChunkId, Cmd, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Pool, Shard};
 use crate::DType;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
@@ -88,7 +88,10 @@ impl CPartition {
                         let bytes = dims.iter().map(|d| d.eval(vars)).fold(*dtype, |a, b| a * b);
                         debug_assert!(bytes >= 0, "C replay allocated negative bytes");
                         let chunk = pool.allocate(bytes)?;
-                        resolved.insert(*slot, Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk }] }));
+                        resolved.insert(
+                            *slot,
+                            Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: bytes as usize }] }),
+                        );
                     }
                     // Resolve args to pointers. Variables are not stored
                     // anywhere — the value is copied into a local byte box
@@ -97,7 +100,8 @@ impl CPartition {
                     let mut ptrs: Vec<*mut u8> = Vec::with_capacity(args.len());
                     for arg in args {
                         if let Some(placement) = resolved.get(arg) {
-                            ptrs.push(host_ptr(&mut pool, placement));
+                            let [shard] = &placement.shards[..] else { todo!("multi-shard slot in C launch") };
+                            ptrs.push(host_ptr(&mut pool, shard.chunk, shard.offset));
                         } else if let Some(constant) = vars.get(arg) {
                             var_boxes.push(constant.to_le_bytes().into_boxed_slice());
                             ptrs.push(var_boxes.last_mut().unwrap().as_mut_ptr());
@@ -233,15 +237,11 @@ pub(super) fn device() -> Result<&'static Mutex<CDevice>, BackendError> {
     device_with(&super::config().c, super::debug_backends())
 }
 
-/// Resolves a launch arg placement to a host pointer: the shard addressed to
-/// the host pool.
-fn host_ptr(memory_pool: &mut super::host::HostMemoryPool, placement: &Placement) -> *mut u8 {
-    placement
-        .shards
-        .iter()
-        .find(|shard| shard.pool == Pool::Host)
-        .map(|shard| memory_pool.buffer_ptr_mut(shard.chunk))
-        .expect("C launch arg has no host shard")
+/// Resolves a launch arg region to a host pointer: chunk base plus the
+/// region offset. Host memory is directly addressable, so any offset
+/// applies here.
+fn host_ptr(memory_pool: &mut super::host::HostMemoryPool, chunk: ChunkId, offset: usize) -> *mut u8 {
+    unsafe { memory_pool.buffer_ptr_mut(chunk).add(offset) }
 }
 
 impl CDevice {
@@ -482,8 +482,8 @@ impl CDevice {
         let mut ptrs: Vec<*mut u8> = Vec::with_capacity(args.len());
         for arg in args {
             match *arg {
-                LaunchArg::Buffer(ref placement) => {
-                    ptrs.push(host_ptr(&mut memory_pool, placement));
+                LaunchArg::Buffer { chunk, offset, .. } => {
+                    ptrs.push(host_ptr(&mut memory_pool, chunk, offset));
                 }
                 LaunchArg::Variable(constant) => {
                     vars.push(constant.to_le_bytes().into_boxed_slice());

@@ -1402,12 +1402,16 @@ impl Runtime {
             for (slot, dtype, dims) in &outputs {
                 let bytes = (dims.iter().map(|d| d.eval(&empty_vars)).product::<Dim>() * *dtype + 7) / 8;
                 let buf = pool_id.allocate(bytes)?;
-                boundary.insert(*slot, Arc::new(Placement { shards: vec![Shard { pool: pool_id, chunk: buf }] }));
+                boundary.insert(
+                    *slot,
+                    Arc::new(Placement { shards: vec![Shard { pool: pool_id, chunk: buf, offset: 0, len: bytes as usize }] }),
+                );
             }
             let mut launch_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
             for &slot in &args {
                 if let Some(buf) = boundary.get(&slot) {
-                    launch_args.push(LaunchArg::Buffer(Arc::clone(buf)));
+                    let [shard] = &buf.shards[..] else { todo!("multi-shard slot in custom launch") };
+                    launch_args.push(LaunchArg::Buffer { chunk: shard.chunk, offset: shard.offset, len: shard.len });
                 } else if let Some(&value) = vars.get(&slot) {
                     launch_args.push(LaunchArg::Variable(value));
                 } else {

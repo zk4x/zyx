@@ -10,8 +10,8 @@
 #![allow(clippy::unused_self)]
 
 use super::{
-    ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Placement, PlanDim, Pool, Shard,
-    gws_from_kernel,
+    AllocPlan, ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Placement, PlanDim, Pool,
+    Shard, gws_from_kernel,
 };
 use crate::{
     DType,
@@ -159,10 +159,10 @@ enum Command {
         queues: Vec<usize>,
         waits: Vec<Vec<usize>>,
         allocs: Vec<Vec<AllocPlan>>,
-        bound: Vec<(OpId, ChunkId)>,
+        bound: Vec<(OpId, ChunkId, usize)>,
         vars: Vec<(OpId, Constant)>,
         deaths: Vec<Vec<OpId>>,
-        reply: Sender<Result<Vec<(OpId, ChunkId)>, BackendError>>,
+        reply: Sender<Result<Vec<(OpId, ChunkId, usize)>, BackendError>>,
     },
     /// Timed launch for autotune: drain every queue first (uncontended
     /// timing), then run the kernel solo on queue 0 and reply nanos.
@@ -819,11 +819,16 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                 // Placements: the worker allocates them here
                                 // and parks them aside at death. Deterministic
                                 // order in, stable addresses out.
-                                let result = (|| -> Result<Vec<(OpId, ChunkId)>, BackendError> {
+                                let result = (|| -> Result<Vec<(OpId, ChunkId, usize)>, BackendError> {
                                     let vars_map: Map<OpId, Constant> = vars.into_iter().collect();
-                                    let mut slot_chunk: Map<OpId, ChunkId> = bound.into_iter().collect();
-                                    let mut fresh: Set<OpId> = Set::default();
-                                    let mut stashed: Map<OpId, ChunkId> = Map::default();
+                                    let mut slot_chunk: Map<OpId, (ChunkId, usize)> =
+                                        bound.into_iter().map(|(s, c, o)| (s, (c, o))).collect();
+                                    // Fresh defs' region lengths (offset is 0
+                                    // for worker-allocated defs; the length
+                                    // travels back so the caller names the
+                                    // live region on the chunk).
+                                    let mut fresh: Map<OpId, usize> = Map::default();
+                                    let mut stashed: Map<OpId, (ChunkId, usize)> = Map::default();
                                     let mut cmd_events: Vec<*mut c_void> = vec![ptr::null_mut(); cmds.len()];
                                     debug_assert_eq!(cmds.len(), assign.len(), "replay queue assignment length mismatch");
                                     debug_assert_eq!(cmds.len(), waits.len(), "replay wait edge length mismatch");
@@ -840,8 +845,11 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                                         AllocPlan::Reuse(dead) => stashed.remove(dead),
                                                         AllocPlan::Fresh => None,
                                                     };
-                                                    let chunk = match chunk {
-                                                        Some(chunk) => chunk,
+                                                    // Fresh defs name their region length (evaluated
+                                                    // bytes, offset 0); reused defs inherit the dead
+                                                    // slot's region.
+                                                    let (chunk, len) = match chunk {
+                                                        Some(region) => region,
                                                         None => {
                                                             let bytes =
                                                                 dims.iter().map(|d| d.eval(&vars_map)).fold(*dtype, |a, b| a * b);
@@ -868,7 +876,7 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                                             if let Some((_, id)) = best {
                                                                 snapshot.remove(&id);
                                                                 free_set.remove(&id);
-                                                                id
+                                                                (id, bytes as usize)
                                                             } else {
                                                                 if bytes > free_bytes_atomic.load(Ordering::SeqCst) as i64 {
                                                                     return Err(BackendError {
@@ -888,12 +896,13 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                                                 };
                                                                 status.check(ErrorStatus::MemoryAllocation)?;
                                                                 free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
-                                                                buffers.push(OpenCLBuffer { ptr: buffer, bytes })
+                                                                let id = buffers.push(OpenCLBuffer { ptr: buffer, bytes });
+                                                                (id, bytes as usize)
                                                             }
                                                         }
                                                     };
-                                                    slot_chunk.insert(*slot, chunk);
-                                                    fresh.insert(*slot);
+                                                    slot_chunk.insert(*slot, (chunk, 0));
+                                                    fresh.insert(*slot, len);
                                                 }
                                                 // Edges resolve to events by
                                                 // array index: producers are
@@ -935,7 +944,7 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                             }
                                         }
                                         for dead in &deaths[idx] {
-                                            if let Some(chunk) = slot_chunk.remove(dead) {
+                                            if let Some(region) = slot_chunk.remove(dead) {
                                                 // Worker-owned intermediaries
                                                 // park in the stash: a baked
                                                 // reuse takes them by slot,
@@ -946,24 +955,29 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                                 // Alias-shared chunks die
                                                 // twice; the chunk guard
                                                 // keeps one entry.
-                                                if fresh.contains(dead)
-                                                    && !stashed.values().any(|&c| c == chunk)
-                                                    && !pending_free.contains(&chunk)
+                                                if fresh.contains_key(dead)
+                                                    && !stashed.values().any(|&c| c == region)
+                                                    && !pending_free.contains(&region.0)
                                                 {
-                                                    stashed.insert(*dead, chunk);
+                                                    stashed.insert(*dead, region);
                                                 }
                                             }
                                         }
                                     }
                                     // Unclaimed stashes never had a taker:
                                     // park them for the next fence.
-                                    pending_free.extend(stashed.drain().map(|(_, chunk)| chunk));
+                                    pending_free.extend(stashed.drain().map(|(_, region)| region.0));
                                     // This replay's events outlive the reply
                                     // (async): the next fence releases them.
                                     held = cmd_events;
                                     // Survivors escape the partition: caller
-                                    // turns them into Placements.
-                                    Ok(fresh.iter().filter(|s| slot_chunk.contains_key(s)).map(|s| (*s, slot_chunk[s])).collect())
+                                    // turns them into Placements, naming the
+                                    // live region length on each chunk.
+                                    Ok(fresh
+                                        .iter()
+                                        .filter(|(s, _)| slot_chunk.contains_key(s))
+                                        .map(|(s, len)| (*s, slot_chunk[s].0, *len))
+                                        .collect())
                                 })();
                                 let _ = reply.send(result);
                             }
@@ -990,7 +1004,6 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                 let result = submit_launch(
                                     &programs,
                                     &buffers,
-                                    worker_pool,
                                     program_id,
                                     &args,
                                     &queues,
@@ -1122,7 +1135,7 @@ fn submit_slots(
     buffers: &Slab<ChunkId, OpenCLBuffer>,
     program_id: DeviceProgramId,
     args: &[OpId],
-    slot_chunk: &Map<OpId, ChunkId>,
+    slot_chunk: &Map<OpId, (ChunkId, usize)>,
     scalars: &Map<OpId, Constant>,
     queue: usize,
     queues: &[OpenCLQueue],
@@ -1151,7 +1164,9 @@ fn submit_slots(
     let mut scalar_values: Vec<Box<[u8]>> = Vec::with_capacity(args.len());
     let mut params: Vec<(*const c_void, usize)> = Vec::with_capacity(args.len());
     for slot in args.iter() {
-        if let Some(chunk) = slot_chunk.get(slot) {
+        if let Some((chunk, offset)) = slot_chunk.get(slot) {
+            // cl_mem is opaque: the region offset must be 0.
+            debug_assert_eq!(*offset, 0, "OpenCL replay slot with nonzero offset");
             mem_args.push(buffers[*chunk].ptr);
             let value = mem_args.last().unwrap();
             params.push((core::ptr::from_ref(value).cast(), core::mem::size_of::<*mut c_void>()));
@@ -1187,16 +1202,14 @@ fn submit_slots(
     enqueue_tracked(programs, program_id, &params, global_size, queue, queues, waits, clEnqueueNDRangeKernel, clSetKernelArg)
 }
 
-/// Resolves `LaunchArg` placements against the buffer table through the
-/// shard addressed to this worker's pool, evaluates the grid, and
-/// enqueues with no waits (solo use: the caller drained first). The
-/// autotune (`LaunchTimed`) path: args carry placements, not slots.
+/// Resolves `LaunchArg` regions against the buffer table, evaluates the
+/// grid, and enqueues with no waits (solo use: the caller drained first).
+/// The autotune (`LaunchTimed`) path: args carry regions, not slots.
 /// Returns the completion event.
 #[allow(clippy::too_many_arguments)]
 fn submit_launch(
     programs: &Slab<DeviceProgramId, OpenCLProgram>,
     buffers: &Slab<ChunkId, OpenCLBuffer>,
-    worker_pool: Pool,
     program_id: DeviceProgramId,
     args: &[LaunchArg],
     queues: &[OpenCLQueue],
@@ -1224,17 +1237,11 @@ fn submit_launch(
     let mut params: Vec<(*const c_void, usize)> = Vec::with_capacity(args.len());
     for arg in args.iter() {
         match arg {
-            LaunchArg::Buffer(placement) => {
-                let chunk = placement
-                    .shards
-                    .iter()
-                    .find(|shard| shard.pool == worker_pool)
-                    .ok_or(BackendError {
-                        status: ErrorStatus::KernelLaunch,
-                        context: "launch arg has no shard on this pool".into(),
-                    })?
-                    .chunk;
-                mem_args.push(buffers[chunk].ptr);
+            LaunchArg::Buffer { chunk, offset, len: _ } => {
+                // cl_mem objects are opaque: no sub-buffer views, so the
+                // region offset must be 0 (Vulkan/CUDA apply it natively).
+                debug_assert_eq!(*offset, 0, "OpenCL launch arg with nonzero offset");
+                mem_args.push(buffers[*chunk].ptr);
                 let value = mem_args.last().unwrap();
                 params.push((core::ptr::from_ref(value).cast(), core::mem::size_of::<*mut c_void>()));
             }
@@ -1253,7 +1260,7 @@ fn submit_launch(
                 .map(|gdim| {
                     gdim.eval(&mut |ordinal| match &args[ordinal] {
                         LaunchArg::Variable(c) => c.as_dim().unwrap(),
-                        LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+                        LaunchArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
                     })
                 })
                 .unwrap_or(1);
@@ -1377,16 +1384,6 @@ impl OpenCLDevice {
     pub fn free_compute(&self) -> u128 {
         self.dev_info.compute
     }
-}
-
-/// Per-def allocation plan, computed by schedule. `Reuse` hands the def
-/// the dead slot's chunk (same shape ⇒ same bytes, structurally equal
-/// spec); `Fresh` allocates from the free-list snapshot or fresh VRAM.
-/// The worker resolves `Reuse` by array lookup — no search, no polling.
-#[derive(Debug, Clone)]
-pub(super) enum AllocPlan {
-    Reuse(OpId),
-    Fresh,
 }
 
 /// A scheduled OpenCL partition: commands plus every decision replay
@@ -1642,7 +1639,7 @@ impl OpenCLPartition {
         let mut bound = Vec::with_capacity(resolved.len());
         for (slot, placement) in resolved.iter() {
             if let Some(shard) = placement.shards.iter().find(|s| s.pool == my_pool) {
-                bound.push((*slot, shard.chunk));
+                bound.push((*slot, shard.chunk, shard.offset));
             }
         }
         let vars_vec: Vec<(OpId, Constant)> = vars.iter().map(|(s, c)| (*s, *c)).collect();
@@ -1664,8 +1661,8 @@ impl OpenCLPartition {
                 reply,
             })
             .map_err(dead)?;
-        for (slot, chunk) in reply_rx.recv().map_err(dead_rx)?? {
-            resolved.insert(slot, Arc::new(Placement { shards: vec![Shard { pool: my_pool, chunk }] }));
+        for (slot, chunk, len) in reply_rx.recv().map_err(dead_rx)?? {
+            resolved.insert(slot, Arc::new(Placement { shards: vec![Shard { pool: my_pool, chunk, offset: 0, len }] }));
         }
         for dead in self.deaths.iter().flatten() {
             resolved.remove(dead);

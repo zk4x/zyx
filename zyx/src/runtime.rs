@@ -1188,7 +1188,7 @@ impl Runtime {
         // into its memory — no intermediate Vec, no zero-then-copy double
         // pass. Only the small padding tail (trash element) is zeroed.
         let buf_id = Pool::Host.allocate(alloc_bytes as Dim)?;
-        let buffer = Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk: buf_id }] });
+        let buffer = Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk: buf_id, offset: 0, len: bytes }] });
         {
             let dst = Pool::Host.buffer_ptr_mut(buf_id);
             unsafe {
@@ -1228,7 +1228,7 @@ impl Runtime {
         let bytes: Dim = ((resolved.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
 
         let buffer = Arc::new(Placement {
-            shards: vec![Shard { pool: Pool::Disk, chunk: Pool::Disk.disk_buffer_from_path(bytes, path, offset_bytes) }],
+            shards: vec![Shard { pool: Pool::Disk, chunk: Pool::Disk.disk_buffer_from_path(bytes, path, offset_bytes), offset: 0, len: bytes as usize }],
         });
         let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer, rc: 1 });
         Ok(tid)
@@ -2787,10 +2787,12 @@ impl Runtime {
             let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
             let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
             let buffer_id = this.leaf_buffer(x).expect("load: tensor has no buffer after materialization");
-            let [Shard { pool: src_pool, chunk }] = &buffer_id.shards[..] else {
+            let [Shard { pool: src_pool, chunk, .. }] = &buffer_id.shards[..] else {
                 todo!("multi-shard tensor readback")
             };
             src_pool.pool_to_host(*chunk, byte_slice)?;
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> x={x}, {:?}", self.tensors[x]);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> x={x}, {:?}", self.tensors[x]);
             return Ok(());
@@ -2815,7 +2817,7 @@ impl Runtime {
         }
         let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
         let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
-        let [Shard { pool: src_pool, chunk }] = &buffer_id.shards[..] else {
+        let [Shard { pool: src_pool, chunk, .. }] = &buffer_id.shards[..] else {
             todo!("multi-shard tensor readback")
         };
         src_pool.pool_to_host(*chunk, byte_slice)?;
@@ -4083,7 +4085,7 @@ impl Runtime {
         // not backed by any buffer — they bind at launch from `variable_map`.
         for &tid in &loads {
             let Some(buf) = self.leaf_buffer(tid) else { continue };
-            let [Shard { pool: src_pool, chunk: src_chunk }] = &buf.shards[..] else {
+            let [Shard { pool: src_pool, chunk: src_chunk, .. }] = &buf.shards[..] else {
                 todo!("multi-shard load move in materialize")
             };
             // Copy out: `buf` moves into the boundary below.
@@ -4132,7 +4134,7 @@ impl Runtime {
             }) else {
                 continue;
             };
-            let [Shard { pool: src_pool, chunk: src_chunk }] = &buf.shards[..] else {
+            let [Shard { pool: src_pool, chunk: src_chunk, .. }] = &buf.shards[..] else {
                 todo!("multi-shard store move in materialize")
             };
             // Copy out: `buf` moves into the boundary below.
@@ -4192,7 +4194,7 @@ impl Runtime {
             let bytes = (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
             let alloc_bytes = bytes as Dim + Dim::from(dtypes[&tid].bit_size() / 8);
             let buf = pool_id.allocate(alloc_bytes)?;
-            let placement = Arc::new(Placement { shards: vec![Shard { pool: pool_id, chunk: buf }] });
+            let placement = Arc::new(Placement { shards: vec![Shard { pool: pool_id, chunk: buf, offset: 0, len: bytes }] });
             kernel_buffers.insert(Arc::clone(&placement));
             match &mut self.tensors[tid] {
                 TensorData::PendingLeaf { old_buffer: slot @ None, .. } => {
@@ -4249,7 +4251,9 @@ impl Runtime {
             if let Some(value) = var_value {
                 buffers.push(LaunchArg::Variable(value));
             } else {
-                buffers.push(LaunchArg::Buffer(self.leaf_buffer(tid).expect("materialize: load without buffer")));
+                let placed = self.leaf_buffer(tid).expect("materialize: load without buffer");
+                let [shard] = &placed.shards[..] else { todo!("multi-shard tensor in materialize launch") };
+                buffers.push(LaunchArg::Buffer { chunk: shard.chunk, offset: shard.offset, len: shard.len });
             }
         }
         for &tid in &stores {
@@ -4257,7 +4261,8 @@ impl Runtime {
                 TensorData::PendingLeaf { old_buffer: Some(buf), .. } => Arc::clone(buf),
                 ref t => panic!("materialize: store {tid} has no buffer after realization: {t:?}"),
             };
-            buffers.push(LaunchArg::Buffer(buf));
+            let [shard] = &buf.shards[..] else { todo!("multi-shard tensor in materialize store") };
+            buffers.push(LaunchArg::Buffer { chunk: shard.chunk, offset: shard.offset, len: shard.len });
         }
 
         // Compile (caches in kernel_map / programs; timed probes inside

@@ -2282,7 +2282,9 @@ impl Runtime {
                                         let mut boundary = Map::default();
                                         boundary.insert(
                                             OpId::from(0),
-                                            Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk: host_buf }] }),
+                                            Arc::new(Placement {
+                                                shards: vec![Shard { pool: Pool::Host, chunk: host_buf, offset: 0, len: fill_bytes }],
+                                            }),
                                         );
                                         let out = {
                                             let mut outputs = Set::default();
@@ -2294,14 +2296,23 @@ impl Runtime {
                                         // drop (Placement Drop semantics).
                                         let placed = Arc::clone(&out[&OpId::from(1)]);
                                         fresh.push(Arc::clone(&placed));
-                                        full_args.push(LaunchArg::Buffer(placed));
+                                        let [shard] = &placed.shards[..] else {
+                                            todo!("multi-shard staging upload in graph launch")
+                                        };
+                                        full_args.push(LaunchArg::Buffer {
+                                            chunk: shard.chunk,
+                                            offset: shard.offset,
+                                            len: shard.len,
+                                        });
                                     } else {
                                         // Mut timing buffers are written by the
                                         // kernel: allocate directly, no upload.
                                         let buf = pool_id.allocate(bytes_alloc)?;
-                                        let placed = Arc::new(Placement { shards: vec![Shard { pool: pool_id, chunk: buf }] });
+                                        let placed = Arc::new(Placement {
+                                            shards: vec![Shard { pool: pool_id, chunk: buf, offset: 0, len: bytes_alloc as usize }],
+                                        });
                                         fresh.push(Arc::clone(&placed));
-                                        full_mut.push(LaunchArg::Buffer(placed));
+                                        full_mut.push(LaunchArg::Buffer { chunk: buf, offset: 0, len: bytes_alloc as usize });
                                     }
                                 }
                             }

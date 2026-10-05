@@ -55,10 +55,18 @@ mod wgpu;
 /// is just [`Pool::Host`]). The chunk's address is stable for the chunk's
 /// lifetime; reuse from the free list preserves it. One shard for the
 /// common single-device case, several for sharded tensors.
+///
+/// A shard names its live region, not just its chunk: best-fit reuse
+/// hands out chunks larger than the tensor, so `len` (region bytes from
+/// `offset`) is what kernels may touch. `offset` is 0 everywhere today —
+/// no sub-chunk views exist yet — but the field makes the region
+/// explicit so a chunk id is never ambiguous.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Shard {
     pub pool: Pool,
     pub chunk: ChunkId,
+    pub offset: usize,
+    pub len: usize,
 }
 
 /// A placed value: one [`Shard`] per device holding it (one shard for the
@@ -220,7 +228,7 @@ impl CmdQueue {
                         Pool::Cuda(id) => Dev::Cuda(id),
                         Pool::Disk => todo!("schedule copy into the disk pool"),
                         Pool::OpenCL(id) => Dev::OpenCL(id),
-                        Pool::Vulkan(_) => todo!("schedule copy into {dst_pool:?}"),
+                        Pool::Vulkan(id) => Dev::Vulkan(id),
                         #[cfg(feature = "tenstorrent")]
                         Pool::TT(_) => todo!("schedule copy into {dst_pool:?}"),
                         #[cfg(feature = "wgpu")]
@@ -281,6 +289,9 @@ impl CmdQueue {
             Some(Dev::OpenCL(id)) => {
                 partitions.push(PlanPartition::OpenCL(opencl::OpenCLDevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
+            Some(Dev::Vulkan(id)) => {
+                partitions.push(PlanPartition::Vulkan(vulkan::VulkanDevice::schedule(std::mem::take(run), outputs, live_out, id)))
+            }
             Some(dev) => todo!("schedule launch run for {dev:?}"),
         }
         *run_dev = None;
@@ -327,6 +338,11 @@ impl Plan {
                     let mut dev = dlock(Dev::OpenCL(ocl_part.dev), &device);
                     ocl_part.replay(&mut dev, &mut resolved, vars)?;
                 }
+                PlanPartition::Vulkan(vk_part) => {
+                    let device = vulkan::device(vk_part.dev)?;
+                    let mut dev = dlock(Dev::Vulkan(vk_part.dev), &device);
+                    vk_part.replay(&mut dev, &mut resolved, vars)?;
+                }
                 PlanPartition::Copy { dst, ops } => {
                     for op in ops {
                         if resolved.contains_key(&op.dst) {
@@ -336,7 +352,8 @@ impl Plan {
                         debug_assert!(bytes >= 0, "replay copied negative bytes");
                         let pool = dst.pool();
                         let chunk = pool.allocate(bytes)?;
-                        let placed = Arc::new(Placement { shards: vec![Shard { pool, chunk }] });
+                        let placed =
+                            Arc::new(Placement { shards: vec![Shard { pool, chunk, offset: 0, len: bytes as usize }] });
                         let src_placed =
                             resolved.get(&op.src).unwrap_or_else(|| panic!("replay: copy src {:?} is unplaced", op.src)).clone();
                         match dst {
@@ -353,6 +370,11 @@ impl Plan {
                             Dev::OpenCL(id) => {
                                 let device = opencl::device(*id)?;
                                 let dev = dlock(Dev::OpenCL(*id), &device);
+                                dev.copy(&src_placed, &placed, bytes)?;
+                            }
+                            Dev::Vulkan(id) => {
+                                let device = vulkan::device(*id)?;
+                                let dev = dlock(Dev::Vulkan(*id), &device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
                             _ => todo!("replay copy into {dst:?}"),
@@ -381,6 +403,16 @@ pub(crate) struct CopyOp {
     free_src: bool,
 }
 
+/// Per-def allocation plan, computed by schedule. `Reuse` hands the def
+/// the dead slot's chunk (same shape ⇒ same bytes, structurally equal
+/// spec); `Fresh` allocates from the free-list snapshot or fresh VRAM.
+/// The worker resolves `Reuse` by array lookup — no search, no polling.
+#[derive(Debug, Clone)]
+pub(crate) enum AllocPlan {
+    Reuse(OpId),
+    Fresh,
+}
+
 pub(crate) enum PlanPartition {
     /// Ordered CPU commands with death lists, executed by the C device.
     Cpu(c::CPartition),
@@ -393,6 +425,11 @@ pub(crate) enum PlanPartition {
     /// assignment, executed by an OpenCL device through its worker (one
     /// roundtrip per replay, direct multi-queue submit, no capture).
     OpenCL(opencl::OpenCLPartition),
+    /// Ordered Vulkan commands with death lists (no queues, no edges —
+    /// the single in-order micro-batch window is the ordering), executed
+    /// by a Vulkan device through its worker (one roundtrip per replay,
+    /// async: the reply fires after submit while kernels still run).
+    Vulkan(vulkan::VulkanPartition),
     /// Cross-pool copies, executed by the destination device.
     Copy { dst: Dev, ops: Vec<CopyOp> },
 }
@@ -949,9 +986,12 @@ pub(crate) fn autotune_config() -> crate::kernel::autotune::BeamSearch {
 
 #[derive(Debug, Clone)]
 pub enum LaunchArg {
-    /// A placed value: the backend resolves the shard for its own device to
-    /// a raw pointer at submission. The caller guarantees a shard exists.
-    Buffer(Arc<Placement>),
+    /// A placed value's live region: the backend offsets the chunk's raw
+    /// pointer by `offset` and touches `len` bytes. Plain data — dropping
+    /// it releases nothing, so workers can hold it freely (no last-clone
+    /// trap). Read off the single shard at construction; multi-shard
+    /// launches are later work.
+    Buffer { chunk: ChunkId, offset: usize, len: usize },
     /// A scalar value for a `Param { kind: Variable }`. Used both as a kernel
     /// param and (via group-index lengths) to derive the grid size host-side.
     Variable(Constant),

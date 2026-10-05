@@ -1173,8 +1173,32 @@ impl Kernel {
                     Op::Const(_) => {
                         // Already emitted in pass 1
                     }
-                    Op::Param { .. } => {
-                        // Already declared as module-level variable
+                    Op::Param { kind, .. } => {
+                        // Already declared as module-level variable. Scalar
+                        // Variables additionally load here so every later
+                        // use resolves through spv_values (the OpenCL
+                        // register-copy pattern). Param defines precede
+                        // their uses; the layout pre-pass ran first, so the
+                        // member is present.
+                        if matches!(kind, ParamKind::Variable)
+                            && let Some(&(member_const, storage_type, is_bool)) = variable_members.get(&op_id)
+                        {
+                            let elem_ptr =
+                                push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_PUSH_CONSTANT, storage_type);
+                            let access = asm.id();
+                            asm.emit_typed(OpAccessChain, elem_ptr, access, &[push_constant_var, member_const]);
+                            let loaded = asm.id();
+                            asm.emit_typed(OpLoad, storage_type, loaded, &[access]);
+                            if is_bool {
+                                // Bool stored as u32; compare != 0 to recover the boolean.
+                                let bool_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::Bool);
+                                let bool_val = asm.id();
+                                asm.emit_typed(OpINotEqual, bool_type, bool_val, &[loaded, const_u32_0]);
+                                spv_values.insert(op_id, bool_val);
+                            } else {
+                                spv_values.insert(op_id, loaded);
+                            }
+                        }
                     }
                     Op::Storage { scope, .. } => {
                         match scope {

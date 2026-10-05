@@ -322,8 +322,10 @@ pub(super) struct CapturedGraph {
 
 /// Worker reply to `Replay`: freshly allocated chunks plus the captured
 /// graph id (`None` when nothing was captured: dry run or direct submit).
+/// Fresh triples carry the region length (evaluated bytes, offset 0) so the
+/// caller names the live region on the (possibly over-allocated) chunk.
 pub(super) struct ReplayResult {
-    pub fresh: Vec<(OpId, ChunkId)>,
+    pub fresh: Vec<(OpId, ChunkId, usize)>,
     pub graph: Option<CudaGraphId>,
 }
 
@@ -388,7 +390,7 @@ enum CUDACommand {
     Replay {
         cmds: Vec<Cmd>,
         /// Bound slots (inputs + kept outputs): queue-local slot to resident chunk.
-        bound: Vec<(OpId, ChunkId)>,
+        bound: Vec<(OpId, ChunkId, usize)>,
         /// Scalar values for variable slots + dynamic dims.
         vars: Vec<(OpId, Constant)>,
         /// Device-side reuse hint: a live captured-graph id, if any.
@@ -980,7 +982,6 @@ fn spawn_worker(
                         submit_launch(
                             &programs,
                             &buffers,
-                            my_pool,
                             program_id,
                             &args,
                             streams[0].stream,
@@ -1003,10 +1004,11 @@ fn spawn_worker(
                     let dry_run = std::env::var("ZYX_DRY_RUN").is_ok();
                     let result = (|| -> Result<ReplayResult, BackendError> {
                         let vars_map: Map<OpId, Constant> = vars.iter().copied().collect();
-                        // Resident chunks by slot, then fresh allocations.
-                        let mut slot_chunk: Map<OpId, ChunkId> = bound.into_iter().collect();
+                        // Resident (chunk, offset) by slot, then fresh allocations.
+                        let mut slot_chunk: Map<OpId, (ChunkId, usize)> =
+                            bound.into_iter().map(|(s, c, o)| (s, (c, o))).collect();
                         let mut scalars: Map<OpId, Constant> = vars_map.clone();
-                        let mut fresh: Vec<(OpId, ChunkId)> = Vec::new();
+                        let mut fresh: Vec<(OpId, ChunkId, usize)> = Vec::new();
                         for cmd in &cmds {
                             match cmd {
                                 Cmd::Launch { outputs, .. } => {
@@ -1045,16 +1047,16 @@ fn spawn_worker(
                                                 buffers.push(CUDABuffer { ptr, bytes })
                                             }
                                         };
-                                        slot_chunk.insert(*slot, id);
-                                        fresh.push((*slot, id));
+                                        slot_chunk.insert(*slot, (id, 0));
+                                        fresh.push((*slot, id, bytes as usize));
                                     }
                                 }
                                 Cmd::Alias { class, to } => {
-                                    let chunk = *slot_chunk.get(to).ok_or_else(|| BackendError {
+                                    let region = *slot_chunk.get(to).ok_or_else(|| BackendError {
                                         status: ErrorStatus::KernelLaunch,
                                         context: format!("replay: alias target {to:?} is unplaced").into(),
                                     })?;
-                                    slot_chunk.insert(*class, chunk);
+                                    slot_chunk.insert(*class, region);
                                 }
                                 Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
                             }
@@ -1063,14 +1065,17 @@ fn spawn_worker(
                         // No Placement values are ever constructed here:
                         // they own their chunk and would release it.
                         let ptr_of = |slot: &OpId| -> Result<u64, BackendError> {
-                            let chunk = slot_chunk.get(slot).ok_or_else(|| BackendError {
+                            let (chunk, offset) = slot_chunk.get(slot).ok_or_else(|| BackendError {
                                 status: ErrorStatus::KernelLaunch,
                                 context: format!("replay: launch slot {slot:?} is unplaced").into(),
                             })?;
-                            buffers.get(*chunk).map(|b| b.ptr).ok_or_else(|| BackendError {
-                                status: ErrorStatus::KernelLaunch,
-                                context: format!("replay: unknown buffer for slot {slot:?}").into(),
-                            })
+                            buffers
+                                .get(*chunk)
+                                .map(|b| b.ptr + *offset as u64)
+                                .ok_or_else(|| BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("replay: unknown buffer for slot {slot:?}").into(),
+                                })
                         };
                         // Captured params for one launch: pinned
                         // device-pointer slots plus boxed scalars (mirrors
@@ -1958,7 +1963,7 @@ impl CudaPartition {
             let Some(shard) = placement.shards.iter().find(|s| s.pool == my_pool) else {
                 continue;
             };
-            bound.push((*slot, shard.chunk));
+            bound.push((*slot, shard.chunk, shard.offset));
         }
         // Sorted: the worker compares vars vectors directly for the
         // fast-vs-update decision.
@@ -1988,8 +1993,8 @@ impl CudaPartition {
                 *slot = Some(CudaGraph { id, tx: dev.tx.clone() });
             }
         }
-        for (slot, chunk) in res.fresh {
-            resolved.insert(slot, Arc::new(Placement { shards: vec![Shard { pool: my_pool, chunk }] }));
+        for (slot, chunk, len) in res.fresh {
+            resolved.insert(slot, Arc::new(Placement { shards: vec![Shard { pool: my_pool, chunk, offset: 0, len }] }));
         }
         for dead in self.deaths.iter().flatten() {
             resolved.remove(dead);
@@ -1998,15 +2003,16 @@ impl CudaPartition {
     }
 }
 
-/// Resolves a launch arg placement to a device pointer through the shard
-/// addressed to this worker's pool.
-fn placement_ptr(buffers: &Slab<ChunkId, CUDABuffer>, my_pool: Pool, placement: &Placement) -> Result<u64, BackendError> {
-    placement
-        .shards
-        .iter()
-        .find(|shard| shard.pool == my_pool)
-        .and_then(|shard| buffers.get(shard.chunk).map(|b| b.ptr))
-        .ok_or(BackendError { status: ErrorStatus::KernelLaunch, context: "launch arg has no shard on this pool".into() })
+/// Resolves a launch arg region to a device pointer: chunk base plus the
+/// region offset. Debug-checked against the allocation size — the region
+/// must lie inside the chunk (best-fit slack is allowed, overrun is not).
+fn buffer_ptr(buffers: &Slab<ChunkId, CUDABuffer>, chunk: ChunkId, offset: usize, len: usize) -> Result<u64, BackendError> {
+    let buf = buffers.get(chunk).ok_or(BackendError {
+        status: ErrorStatus::KernelLaunch,
+        context: "launch arg addresses an unknown buffer".into(),
+    })?;
+    debug_assert!((offset + len) as u64 <= buf.bytes as u64, "launch arg region overruns its chunk");
+    Ok(buf.ptr + offset as u64)
 }
 
 /// Resolves launch args against the buffer table and submits one kernel (or
@@ -2015,7 +2021,6 @@ fn placement_ptr(buffers: &Slab<ChunkId, CUDABuffer>, my_pool: Pool, placement: 
 fn submit_launch(
     programs: &Slab<DeviceProgramId, CUDAProgram>,
     buffers: &Slab<ChunkId, CUDABuffer>,
-    my_pool: Pool,
     program_id: DeviceProgramId,
     args: &[LaunchArg],
     stream: CUstream,
@@ -2047,14 +2052,16 @@ fn submit_launch(
             let mut buffer_ptrs: Vec<u64> = Vec::with_capacity(args.len());
             for arg in args.iter() {
                 match arg {
-                    LaunchArg::Buffer(placement) => buffer_ptrs.push(placement_ptr(buffers, my_pool, placement)?),
+                    LaunchArg::Buffer { chunk, offset, len } => {
+                        buffer_ptrs.push(buffer_ptr(buffers, *chunk, *offset, *len)?)
+                    }
                     LaunchArg::Variable(_) => {}
                 }
             }
             let mut buf_ptr_idx = 0usize;
             for arg in args.iter() {
                 match arg {
-                    LaunchArg::Buffer(_) => {
+                    LaunchArg::Buffer { .. } => {
                         let ptr = &buffer_ptrs[buf_ptr_idx];
                         buf_ptr_idx += 1;
                         let slot: *const u64 = core::ptr::from_ref(ptr);
@@ -2070,7 +2077,7 @@ fn submit_launch(
             let grid = |gdim: &GwsDim| -> Dim {
                 gdim.eval(&mut |ordinal| match &args[ordinal] {
                     LaunchArg::Variable(c) => c.as_dim().unwrap(),
-                    LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+                    LaunchArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
                 })
             };
             let default_gws = GwsDim::Const(1);
@@ -2106,7 +2113,7 @@ fn submit_launch(
             }
             .check(ErrorStatus::KernelLaunch)
         }
-        CUDAProgram::Cudnn { plan } => unsafe { launch_cudnn_plan(cudnn, cudnn_handle, plan, buffers, my_pool, args, stream) },
+        CUDAProgram::Cudnn { plan } => unsafe { launch_cudnn_plan(cudnn, cudnn_handle, plan, buffers, args, stream) },
     }
 }
 
@@ -2481,7 +2488,6 @@ unsafe fn launch_cudnn_plan(
     handle: Option<cudnnHandle_t>,
     plan: &CudnnPlan,
     buffers: &Slab<ChunkId, CUDABuffer>,
-    my_pool: Pool,
     args: &[LaunchArg],
     stream: CUstream,
 ) -> Result<(), BackendError> {
@@ -2504,7 +2510,9 @@ unsafe fn launch_cudnn_plan(
         for arg in args.iter() {
             match arg {
                 LaunchArg::Variable(_) => todo!("scalar variant-pack entries in cuDNN launches"),
-                LaunchArg::Buffer(placement) => data_ptrs.push(placement_ptr(buffers, my_pool, placement)? as *mut c_void),
+                LaunchArg::Buffer { chunk, offset, len } => {
+                    data_ptrs.push(buffer_ptr(buffers, *chunk, *offset, *len)? as *mut c_void)
+                }
             }
         }
         let unique_ids: Vec<i64> = plan.arg_uids.clone();

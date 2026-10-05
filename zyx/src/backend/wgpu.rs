@@ -560,10 +560,7 @@ impl WGPUDevice {
                 .iter()
                 .enumerate()
                 .filter_map(|(bind_id, arg)| {
-                    let LaunchArg::Buffer(placement) = arg else { return None };
-                    let [Shard { chunk, .. }] = placement.shards.as_slice() else {
-                        todo!("multi-shard placement in WGPU launch")
-                    };
+                    let LaunchArg::Buffer { chunk, .. } = arg else { return None };
                     let buffer = &memory_pool.buffers[*chunk].buffer;
                     Some(wgpu::BindGroupEntry { binding: u32::try_from(bind_id).unwrap(), resource: buffer.as_entire_binding() })
                 })
@@ -584,7 +581,7 @@ impl WGPUDevice {
                 let grid = |gdim: &GwsDim| -> u32 {
                     gdim.eval(&mut |ordinal| match &args[ordinal] {
                         LaunchArg::Variable(c) => c.as_dim().unwrap(),
-                        LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+                        LaunchArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
                     })
                     .try_into()
                     .unwrap()

@@ -944,10 +944,7 @@ impl TTDevice {
         for (ordinal, arg) in args.iter().enumerate() {
             let ordinal = ordinal as u32;
             match arg {
-                LaunchArg::Buffer(placement) => {
-                    let [Shard { chunk, .. }] = placement.shards.as_slice() else {
-                        todo!("multi-shard placement in TT launch")
-                    };
+                LaunchArg::Buffer { chunk, .. } => {
                     let idx = memory_pool.dev_index(*chunk).map_err(|e| BackendError {
                         status: ErrorStatus::KernelLaunch,
                         context: format!("param {ordinal} dev_index: {e}").into(),

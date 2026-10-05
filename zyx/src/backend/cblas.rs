@@ -293,7 +293,10 @@ impl CblasPartition {
                         let bytes = dims.iter().map(|d| d.eval(vars)).fold(*dtype, |a, b| a * b);
                         debug_assert!(bytes >= 0, "CBLAS replay allocated negative bytes");
                         let chunk = memory_pool.allocate(bytes)?;
-                        resolved.insert(*slot, Arc::new(Placement { shards: vec![super::Shard { pool: Pool::Host, chunk }] }));
+                        resolved.insert(
+                            *slot,
+                            Arc::new(Placement { shards: vec![super::Shard { pool: Pool::Host, chunk, offset: 0, len: bytes as usize }] }),
+                        );
                     }
                     let program_ref = &dev.programs[program.program_id];
                     let kernel = &dev.kernels[program_ref.kernel];
