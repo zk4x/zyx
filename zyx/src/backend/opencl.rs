@@ -970,7 +970,7 @@ fn release_all_events(
     let mut events: Vec<*mut c_void> = tails.iter().copied().collect();
     events.extend(writer.values().map(|&(_, e)| e));
     events.extend(last_use.values().map(|&(_, e)| e));
-    release_distinct(events.len(), events, clReleaseEvent);
+    release_distinct(events, clReleaseEvent);
     for tail in tails.iter_mut() {
         *tail = ptr::null_mut();
     }
@@ -1014,20 +1014,17 @@ fn enqueue_tracked(
     debug_assert!(programs.contains_id(program_id), "launch of unknown program {program_id:?}");
     debug_assert!(queue < queues.len(), "launch on missing queue {queue}");
     let program = &programs[program_id];
-    // No Group ranges (local-only kernel): exactly one work-group of the
-    // stored local shape, mirroring CUDA. work_dim=0 is invalid, and
-    // a lone thread would under-launch multi-thread local shapes (a [1]
-    // global against a [2] local is itself invalid: global must be a
-    // multiple of local).
-    let global_size = if global_size.is_empty() { program.lws.clone() } else { global_size };
+    // Callers always pass the full 3D grid (missing group factors are
+    // single groups); work_dim is 3 and every ranged axis is addressable.
+    // A caller-side empty grid would be work_dim=0, which is invalid.
+    debug_assert!(!global_size.is_empty(), "empty global work size is work_dim=0");
     let mut i: u32 = 0;
     for (arg_ptr, arg_size) in params {
         unsafe { (clSetKernelArg)(program.kernel, i, *arg_size, *arg_ptr) }.check(ErrorStatus::IncorrectKernelArg)?;
         i += 1;
     }
-    // The driver requires exactly work_dim local sizes: slice the stored
-    // triple to the enqueued dim count (global and local pair up by
-    // construction in the zip above).
+    // The driver requires exactly work_dim local sizes: the stored triple
+    // pairs with the 3D grid by construction.
     let lws_ptr = if program.lws.is_empty() {
         ptr::null()
     } else {
@@ -1223,18 +1220,25 @@ fn submit_slots(
             });
         }
     }
-    let global_size: Vec<Dim> = programs[program_id]
-        .gws
-        .iter()
-        .zip(programs[program_id].lws.iter())
-        .map(|(gdim, l)| {
-            let g = gdim.eval(&mut |ordinal| {
-                scalars
-                    .get(&args[ordinal])
-                    .and_then(|c| c.as_dim())
-                    .expect("gws param must be a Variable slot")
-            });
-            g * *l
+    let global_size: Vec<Dim> = (0..3)
+        .map(|i| {
+            let g = programs[program_id]
+                .gws
+                .get(i)
+                .map(|gdim| {
+                    gdim.eval(&mut |ordinal| {
+                        scalars
+                            .get(&args[ordinal])
+                            .and_then(|c| c.as_dim())
+                            .expect("gws param must be a Variable slot")
+                    })
+                })
+                .unwrap_or(1);
+            // 3D grid always (mirroring CUDA): a missing group factor is a
+            // single group, never a dropped axis. Truncating to the zipped
+            // length orphans local-only axes, whose indices then read
+            // garbage from nonexistent dimensions.
+            g * programs[program_id].lws.get(i).copied().unwrap_or(1)
         })
         .collect();
     enqueue_tracked(
@@ -1324,17 +1328,23 @@ fn submit_launch(
             }
         }
     }
-    eprintln!("[MK] submit prepped reads={} writes={} lws={:?}", reads.len(), writes.len(), programs[program_id].lws);
-    let global_size: Vec<Dim> = programs[program_id]
-        .gws
-        .iter()
-        .zip(programs[program_id].lws.iter())
-        .map(|(gdim, l)| {
-            let g = gdim.eval(&mut |ordinal| match &args[ordinal] {
-                LaunchArg::Variable(c) => c.as_dim().unwrap(),
-                LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
-            });
-            g * *l
+    let global_size: Vec<Dim> = (0..3)
+        .map(|i| {
+            let g = programs[program_id]
+                .gws
+                .get(i)
+                .map(|gdim| {
+                    gdim.eval(&mut |ordinal| match &args[ordinal] {
+                        LaunchArg::Variable(c) => c.as_dim().unwrap(),
+                        LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+                    })
+                })
+                .unwrap_or(1);
+            // 3D grid always (mirroring CUDA): a missing group factor is a
+            // single group, never a dropped axis. Truncating to the zipped
+            // length orphans local-only axes, whose indices then read
+            // garbage from nonexistent dimensions.
+            g * programs[program_id].lws.get(i).copied().unwrap_or(1)
         })
         .collect();
     enqueue_tracked(
@@ -1358,14 +1368,12 @@ fn submit_launch(
 
 /// Releases each distinct non-null event exactly once (writer and last_use
 /// can hold the same event for a buffer).
-#[inline(never)]
-fn release_distinct(n: usize, mut events: Vec<*mut c_void>, clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus) {
+fn release_distinct(mut events: Vec<*mut c_void>, clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus) {
     events.retain(|event| !event.is_null());
     events.sort();
     events.dedup();
-    for (i, event) in events.iter().enumerate() {
-        eprintln!("[MK] release {i} event {event:?} (collected {n})");
-        let _ = unsafe { (clReleaseEvent)(*event) }.check(ErrorStatus::Deinitialization);
+    for event in events {
+        let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
     }
 }
 
@@ -1642,7 +1650,6 @@ impl OpenCLPartition {
         resolved: &mut Map<OpId, Arc<Placement>>,
         vars: &Map<OpId, Constant>,
     ) -> Result<(), BackendError> {
-        eprintln!("[MK] ocl replay enter cmds={}", self.cmds.len());
         let my_pool = dev.memory_pool;
         // Bound slots addressed to this pool; caller-side defs stay
         // unbound for the worker's per-command allocator.

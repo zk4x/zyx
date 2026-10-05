@@ -92,6 +92,24 @@ impl Kernel {
                 Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
+                Op::Param { kind: ParamKind::Variable, .. } => {
+                    // Scalar variables are kernel arguments; copy the argument
+                    // into a register so every later use resolves through the
+                    // normal register path. Param defines precede their uses.
+                    match rcs.get(&op_id) {
+                        Some(&rc) => {
+                            let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id], rc, loop_id);
+                            _ = writeln!(source, "{indent}r{reg} = p{op_id};");
+                        }
+                        // No refcount: nothing references this variable.
+                        // Every operand kind is refcounted in
+                        // compute_dtypes_and_rcs (including Range/Loop
+                        // lengths), and DCE never removes Params, so this
+                        // is a live-but-unused kernel argument that stays
+                        // declared in the signature. No register needed.
+                        None => {}
+                    }
+                }
                 Op::Param { .. } => {}
                 Op::Storage { dtype, scope, len } => match scope {
                     MemScope::Local => {
@@ -345,8 +363,12 @@ impl Kernel {
                     indices.insert(op_id, loop_id);
                     let (idx_expr, max_idx) = match scope {
                         RangeKind::Group(len_id) => {
-                            let max =
-                                self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap().saturating_sub(1);
+                            // Dynamic dims are `-1`; the bound is only a source comment.
+                            let max = self
+                                .resolve_const(len_id)
+                                .and_then(crate::dtype::Constant::as_dim)
+                                .unwrap_or(-1)
+                                .saturating_sub(1);
                             (format!("get_group_id({axis})"), max)
                         }
                         RangeKind::Local(len) => (format!("get_local_id({axis})"), i64::from(len).saturating_sub(1)),
