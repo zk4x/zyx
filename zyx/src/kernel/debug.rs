@@ -46,13 +46,6 @@ impl Kernel {
     pub fn debug(&self) {
         println!("{self}")
     }
-
-    /// Render the kernel as a string.
-    ///
-    /// The `remap_ids` parameter is ignored in this implementation.
-    pub fn render(&self, _remap_ids: bool) -> String {
-        format!("{self}")
-    }
 }
 
 impl Display for Kernel {
@@ -81,7 +74,7 @@ impl Display for Kernel {
                 op_id
             };
             match self.ops[op_id].op {
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
                 Op::Reduce { x, rop, reduce_axis } => {
@@ -189,10 +182,10 @@ impl Display for Kernel {
                     writeln!(f, "{indent}{red}reduce_uninit{reset}").unwrap();
                 }
                 Op::TT(TTOp::EndReader) => {
-                    writeln!(f, "{indent}{red}end_reader{reset}").unwrap();
+                    writeln!(f, "{indent}{blue}end_reader{reset}").unwrap();
                 }
                 Op::TT(TTOp::EndCompute) => {
-                    writeln!(f, "{indent}{red}end_compute{reset}").unwrap();
+                    writeln!(f, "{indent}{blue}end_compute{reset}").unwrap();
                 }
                 Op::TT(TTOp::LLK { ref asm, ref ops }) => {
                     // Opaque LLK call template: U8 is a display
@@ -200,7 +193,7 @@ impl Display for Kernel {
                     let dtype = ops.iter().next().and_then(|x| dtypes.get(x)).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}llk{reset} {asm:?} {ops:?}").unwrap();
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}llk{reset} {asm} {ops:?}").unwrap();
                 }
                 Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, x, scaler }) => {
                     let dtype = dtypes.get(&cb_in).copied().unwrap_or(DType::U8);
@@ -273,48 +266,24 @@ impl Display for Kernel {
                     .unwrap();
                 }
                 Op::Load { src } => {
-                    if let Op::GEP { x, index, layout } = self.ops[src].op {
-                        let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
-                        dtypes.insert(op_id, dtype);
-                        let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                        let x = id_map.get(&x).copied().unwrap_or(x);
-                        let index = id_map.get(&index).copied().unwrap_or(index);
-                        writeln!(
-                            f,
-                            "{indent}r{out_id}{grey}: {dtype}{reset} = {red}r{x}{reset}[r{index} @ {layout}]    // {lb}..={ub} {green}load{reset}"
-                        )
-                        .unwrap();
-                    } else {
-                        let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
-                        dtypes.insert(op_id, dtype);
-                        let src = id_map.get(&src).copied().unwrap_or(src);
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} r{src}").unwrap();
-                    }
+                    let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let src = id_map.get(&src).copied().unwrap_or(src);
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} r{src}").unwrap();
                 }
                 Op::Store { dst, src: x } => {
-                    if let Op::GEP { x: buf, index, layout } = self.ops[dst].op {
-                        let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
-                        dtypes.insert(op_id, dtype);
-                        let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                        let buf = id_map.get(&buf).copied().unwrap_or(buf);
-                        let index = id_map.get(&index).copied().unwrap_or(index);
-                        let x = id_map.get(&x).copied().unwrap_or(x);
-                        writeln!(f, "{indent}{red}r{buf}{reset}[r{index} @ {layout}] = r{x}    // {lb}..={ub} {red}store{reset}")
-                            .unwrap();
-                    } else {
-                        let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
-                        dtypes.insert(op_id, dtype);
-                        let dst = id_map.get(&dst).copied().unwrap_or(dst);
-                        let x = id_map.get(&x).copied().unwrap_or(x);
-                        writeln!(f, "{indent}{red}r{dst}{reset} = r{x}    {red}store{reset}").unwrap();
-                    }
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let dst = id_map.get(&dst).copied().unwrap_or(dst);
+                    let x = id_map.get(&x).copied().unwrap_or(x);
+                    writeln!(f, "{indent}{red}store{reset} r{dst} = r{x}").unwrap();
                 }
                 Op::Copy { src, dst } => {
                     let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let src = id_map.get(&src).copied().unwrap_or(src);
                     let dst = id_map.get(&dst).copied().unwrap_or(dst);
-                    writeln!(f, "{indent}{red}r{dst}{reset} = r{src}    {red}copy{reset}").unwrap();
+                    writeln!(f, "{indent}r{dst} = r{src}    // {red}copy{reset}").unwrap();
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
@@ -461,7 +430,7 @@ impl Display for Kernel {
                     let dtype = ops.iter().next().and_then(|x| dtypes.get(x)).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}asm{reset} {asm:?} {ops:?}").unwrap();
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}asm{reset} {asm} {ops:?}").unwrap();
                 }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes.get(&ops[0]).copied().unwrap_or(DType::U8);
@@ -537,6 +506,9 @@ impl Display for Kernel {
                 }
                 Op::Barrier => {
                     writeln!(f, "{indent}barrier").unwrap();
+                }
+                Op::Source(ref src) => {
+                    writeln!(f, "{}", src.as_str()).unwrap();
                 }
             }
             op_id = self.ops[op_id].next;

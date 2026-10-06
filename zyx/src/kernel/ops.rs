@@ -23,6 +23,28 @@ pub enum ParamKind {
     GlobalMut,
 }
 
+/// Program source block: an opaque chunk of backend source text carried
+/// through the IR (e.g. a hand-written kernel body). Boxed `str` (16 bytes)
+/// keeps `Op` within its 24-byte budget; `String` (24 bytes inline) does not,
+/// and `TinyString` caps at 255 bytes. `SerBin` is manual — `nanoserde` has
+/// no `SerBin for str` — and serialize-only, matching `Op` (no `DeBin`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SourceBlock(pub Box<str>);
+
+impl SourceBlock {
+    /// Source text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl SerBin for SourceBlock {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        self.as_str().len().ser_bin(output);
+        output.extend_from_slice(self.as_str().as_bytes());
+    }
+}
+
 #[derive(Debug, Clone, SerBin)]
 /// Kernel IR op: one node of the op list, walked `head` → `next_op`.
 /// Pre-linearization ops are pure DAG views/reduces; post-linearization
@@ -323,6 +345,9 @@ pub enum Op {
         /// Value to materialize.
         x: OpId,
     },
+
+    /// Program source block
+    Source(SourceBlock),
     /// A compiled kernel boundary: `info` is the owning program and measured
     /// timing. Both `inputs` and `outputs` are `OpId`s of `Stack` ops holding
     /// the input/output classes — the lists are shared nodes, not per-kernel
@@ -340,7 +365,7 @@ pub enum Op {
     /// its 24-byte budget. `outputs` triples are `(class, shape, dtype)`.
     /// `time` is measured timing, ignored by `Eq`/`Hash` (mirrors the
     /// former `Node::Custom`, which also never compares equal).
-    Custom(Box<CustomKernel>),
+    Kernel(Box<CustomKernel>),
 
     // Backend specific extensions
     /// TT
@@ -565,13 +590,14 @@ impl Op {
             Op::Barrier => 17,
             Op::Wmma { .. } => 18,
             Op::TT(_) => 19,
+            Op::Source { .. } => 20,
             Op::Asm { .. } => 23,
             Op::Reduce { .. } => 25,
             Op::After { .. } => 26,
             Op::ToDevice { .. } => 27,
             Op::Contiguous { .. } => 28,
             Op::Program { .. } => 29,
-            Op::Custom(_) => 30,
+            Op::Kernel(_) => 30,
             Op::Reshape { .. } => 31,
             Op::Expand { .. } => 32,
             Op::Permute { .. } => 33,
@@ -624,7 +650,7 @@ impl PartialEq for Op {
             (Op::Program { inputs: ai, outputs: ao, info: a }, Op::Program { inputs: bi, outputs: bo, info: b }) => {
                 ai == bi && ao == bo && a.0 == b.0
             }
-            (Op::Custom(_), Op::Custom(_)) => false,
+            (Op::Kernel(_), Op::Kernel(_)) => false,
             (Op::Reshape { x: a, shape: as_ }, Op::Reshape { x: b, shape: bs }) => a == b && as_ == bs,
             (Op::Expand { x: a, shape: as_ }, Op::Expand { x: b, shape: bs }) => a == b && as_ == bs,
             (Op::Permute { x: a, axes: aa }, Op::Permute { x: b, axes: ba }) => a == b && aa.as_slice() == ba.as_slice(),
@@ -739,7 +765,7 @@ impl Hash for Op {
                 outputs.hash(state);
                 info.0.hash(state);
             }
-            Op::Custom(c) => {
+            Op::Kernel(c) => {
                 c.inputs.hash(state);
                 c.outputs.hash(state);
                 c.program_id.hash(state);
@@ -771,6 +797,9 @@ impl Hash for Op {
                 axis.hash(state);
                 start.hash(state);
                 len.hash(state);
+            }
+            Op::Source(src) => {
+                src.hash(state);
             }
         }
     }
@@ -824,7 +853,7 @@ impl Ord for Op {
             (Op::Program { inputs: ai, outputs: ao, info: a }, Op::Program { inputs: bi, outputs: bo, info: b }) => {
                 (ai, ao, a.0).cmp(&(bi, bo, b.0))
             }
-            (Op::Custom(_), Op::Custom(_)) => std::cmp::Ordering::Equal,
+            (Op::Kernel(_), Op::Kernel(_)) => std::cmp::Ordering::Equal,
             (Op::Reshape { x: a, shape: as_ }, Op::Reshape { x: b, shape: bs }) => (a, as_).cmp(&(b, bs)),
             (Op::Expand { x: a, shape: as_ }, Op::Expand { x: b, shape: bs }) => (a, as_).cmp(&(b, bs)),
             (Op::Permute { x: a, axes: aa }, Op::Permute { x: b, axes: ba }) => (a, aa.as_slice()).cmp(&(b, ba.as_slice())),
@@ -1179,8 +1208,8 @@ impl Op {
             Op::After { x, dep } => vec![*x, *dep],
             Op::ToDevice { x, .. } => vec![*x],
             Op::Contiguous { x } => vec![*x],
-            Op::Program { .. } | Op::Custom(_) => {
-                todo!("parameters: graph-only op in ordered kernel")
+            Op::Source(_) | Op::Program { .. } | Op::Kernel(_) => {
+                vec![]
             }
         }
         .into_iter()
@@ -1189,7 +1218,16 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
         match self {
-            Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::Barrier => vec![],
+            Op::Kernel(_)
+            | Op::Program { .. }
+            | Op::Source(_)
+            | Op::Const { .. }
+            | Op::Storage { .. }
+            | Op::EndLoop
+            | Op::Barrier => vec![],
+            Op::Contiguous { x, .. } => vec![x],
+            Op::ToDevice { x, .. } => vec![x],
+            Op::After { x, dep } => vec![x, dep],
             Op::Param { shape, .. } => {
                 // Shape is null after linearize
                 if shape.is_null() { vec![] } else { vec![shape] }
@@ -1237,9 +1275,6 @@ impl Op {
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().collect(),
             Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
             Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
-            Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
-                todo!("parameters_mut: graph-only op in ordered kernel")
-            }
         }
         .into_iter()
     }

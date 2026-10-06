@@ -113,8 +113,13 @@ impl Kernel {
                     | Op::Binary { .. }
                     | Op::Stack { .. } => {}
                     // Graph-only ops must never reach kernel IR.
-                    Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
-                        unreachable!("graph-only op at {scan:?} in kernel IR")
+                    Op::Source(_)
+                    | Op::After { .. }
+                    | Op::ToDevice { .. }
+                    | Op::Contiguous { .. }
+                    | Op::Program { .. }
+                    | Op::Kernel(_) => {
+                        todo!()
                     }
                 }
                 scan = self.next_op(scan);
@@ -604,8 +609,13 @@ impl Kernel {
                     stack.pop();
                 }
                 Op::Barrier => {}
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
-                    todo!("verify: graph-only op in ordered kernel")
+                Op::Source(_)
+                | Op::After { .. }
+                | Op::ToDevice { .. }
+                | Op::Contiguous { .. }
+                | Op::Program { .. }
+                | Op::Kernel(_) => {
+                    todo!()
                 }
             }
             stack.last_mut().unwrap().insert(op_id);

@@ -107,6 +107,12 @@ impl fmt::Debug for TinyString {
     }
 }
 
+impl fmt::Display for TinyString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl Clone for TinyString {
     fn clone(&self) -> Self {
         Self::new(self.as_str())

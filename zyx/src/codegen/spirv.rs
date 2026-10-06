@@ -1135,6 +1135,7 @@ impl Kernel {
                     panic!("generate_spirv did not finish in 10000 steps");
                 }
                 match self.ops[op_id].op {
+                    Op::Source(_) => todo!(),
                     Op::TT { .. }
                     | Op::Expand { .. }
                     | Op::Permute { .. }
@@ -1148,7 +1149,7 @@ impl Kernel {
                     | Op::ToDevice { .. }
                     | Op::Contiguous { .. }
                     | Op::Program { .. }
-                    | Op::Custom(_) => {
+                    | Op::Kernel(_) => {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: "SPIR-V: unexpected kernel op (should be unfolded)".into(),

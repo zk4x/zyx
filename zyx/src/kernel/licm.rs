@@ -52,16 +52,19 @@ impl Kernel {
         while !op_id.is_null() {
             let depth = match self.ops[op_id].op {
                 Op::Reshape { .. }
+                | Op::Source(_)
                 | Op::Pad { .. }
                 | Op::Permute { .. }
                 | Op::Expand { .. }
                 | Op::Flip { .. }
                 | Op::Narrow { .. }
                 | Op::Reduce { .. }
-                | Op::TT(TTOp::ReduceTile { .. }) => {
-                    unreachable!()
-                }
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
+                | Op::TT(TTOp::ReduceTile { .. })
+                | Op::After { .. }
+                | Op::ToDevice { .. }
+                | Op::Contiguous { .. }
+                | Op::Program { .. }
+                | Op::Kernel(_) => {
                     unreachable!()
                 }
                 Op::TT(TTOp::MatmulTile { x, y, acc }) => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&acc]),
@@ -144,10 +147,13 @@ impl Kernel {
                 | Op::Expand { .. }
                 | Op::Flip { .. }
                 | Op::Narrow { .. }
-                | Op::Reduce { .. } => {
-                    unreachable!()
-                }
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
+                | Op::Reduce { .. }
+                | Op::Source(_)
+                | Op::After { .. }
+                | Op::ToDevice { .. }
+                | Op::Contiguous { .. }
+                | Op::Program { .. }
+                | Op::Kernel(_) => {
                     unreachable!()
                 }
                 Op::TT(TTOp::ReduceTile { x, scaler, acc, .. }) => loop_dep[x].max(loop_dep[scaler]).max(loop_dep[acc]),

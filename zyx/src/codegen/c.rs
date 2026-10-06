@@ -93,6 +93,7 @@ impl Kernel {
                 panic!("generate_c did not finish in 10000 steps");
             }
             match self.ops[op_id].op {
+                Op::Source(_) => todo!(),
                 Op::Range { kind: scope, .. } => {
                     let RangeKind::Group(len) = scope else {
                         return Err(BackendError {
@@ -472,7 +473,7 @@ impl Kernel {
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
                 | Op::Program { .. }
-                | Op::Custom(_) => {
+                | Op::Kernel(_) => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "C codegen: ConstView/LoadView/StoreView/Move/Reduce should not appear".into(),

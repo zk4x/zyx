@@ -401,8 +401,9 @@ impl Runtime {
                 }
                 Op::Param { .. } | Op::Const { .. } => {}
                 Op::Program { .. } => todo!("backward through custom kernel"),
-                Op::Custom { .. } => todo!("backward through custom kernel"),
-                Op::Storage { .. }
+                Op::Kernel { .. } => todo!("backward through custom kernel"),
+                Op::Source { .. }
+                | Op::Storage { .. }
                 | Op::GEP { .. }
                 | Op::Load { .. }
                 | Op::Copy { .. }

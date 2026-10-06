@@ -99,6 +99,7 @@ impl Kernel {
         k.tt_sync_cbs();
         k.tt_place_pops();
         k.verify();
+        k.debug();
 
         // Param ordinals + input/output dtypes, flat head order.
         let mut param_ordinal_of: Map<OpId, u32> = Map::default();
@@ -533,7 +534,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     3
                 } else if text.starts_with("transpose_wh_tile(") {
                     2
-                } else if text.starts_with("sigmoid_tile(") || text.starts_with("silu_tile(") {
+                } else if text.starts_with("sigmoid_tile(") || text.starts_with("silu_tile(") || text.starts_with("exp_tile(") {
                     // Fused unary: single in-place tile. The operand is
                     // the feeder value (a circular load copied in fresh
                     // at the call, exactly like the unfused `exp_tile(s)`

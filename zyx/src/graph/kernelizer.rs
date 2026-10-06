@@ -126,7 +126,7 @@ impl Graph {
                 // The same holds for user custom kernels (`Node::Custom` and its
                 // lowered `Node::Kernel` twin): their inputs are materialized via
                 // `kernel_inputs` in `fill_gaps`, not via reference counting here.
-                if matches!(&self.ops[nid].op, Op::Program { .. } | Op::Custom { .. }) {
+                if matches!(&self.ops[nid].op, Op::Program { .. } | Op::Kernel { .. }) {
                     continue;
                 }
                 // Everything counts — data operands and descriptor fields
@@ -167,7 +167,7 @@ impl Graph {
                             vec![]
                         }
                     }
-                    Op::Custom(ref inner) => inner.inputs.to_vec(),
+                    Op::Kernel(ref inner) => inner.inputs.to_vec(),
                     _ => todo!(),
                 };
                 for child in data_slots {
@@ -238,7 +238,7 @@ impl Graph {
                         // Output selection of a multi-output kernel: the
                         // Custom kernel stored this buffer — consumers load
                         // it like any AOT kernel output.
-                        Op::Custom { .. } | Op::Program { .. } => {
+                        Op::Kernel { .. } | Op::Program { .. } => {
                             let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
                             visited.insert(cid, (kid, op_id));
                         }
@@ -958,7 +958,7 @@ impl Graph {
                     // the `Node::Kernel` twin carries the producer edge, and the
                     // Custom class is always a region input (its output class is
                     // an active kernel output), so it is loaded, never fused.
-                    Op::Custom { .. } => {}
+                    Op::Kernel { .. } => {}
                     _ => todo!(),
                 }
             }
@@ -1380,7 +1380,7 @@ impl Graph {
         let node_ids: Vec<OpId> = self.ops.ids().collect();
         for nid in node_ids {
             match self.ops[nid].op {
-                Op::Custom(ref inner) => {
+                Op::Kernel(ref inner) => {
                     let class_of = inner.outputs[0].0;
                     let info = Box::new((inner.program_id, inner.time));
                     let ops = inner.outputs.iter().map(|x| x.0).collect();

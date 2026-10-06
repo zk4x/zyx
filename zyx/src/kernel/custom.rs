@@ -1278,7 +1278,7 @@ impl Runtime {
             // descriptor is patched to the Index classes after they exist;
             // hashcons is bypassed for the Custom node because it references
             // classes that only exist once it does.
-            let node = Op::Custom(Box::new(super::ops::CustomKernel {
+            let node = Op::Kernel(Box::new(super::ops::CustomKernel {
                 inputs: input_classes.into(),
                 outputs: Box::new([]),
                 program_id: program,
@@ -1309,7 +1309,7 @@ impl Runtime {
                 .map(|((cid, shape), dtype)| (cid, shape, dtype))
                 .collect();
             match &mut self.graphs[graph_id].ops[nid].op {
-                Op::Custom(inner) => {
+                Op::Kernel(inner) => {
                     inner.outputs = outputs.into();
                 }
                 n => unreachable!("patching outputs of non-Custom node {n:?}"),

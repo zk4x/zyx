@@ -96,7 +96,7 @@ impl Kernel {
                     | Op::Reduce { .. } => {
                         unreachable!()
                     }
-                    Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
+                    Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                         unreachable!()
                     }
                     Op::Stack { ref ops } => {
@@ -239,6 +239,7 @@ impl Kernel {
                         | TTOp::EndReader
                         | TTOp::EndCompute => {}
                     },
+                    Op::Source(_) => todo!(),
                     Op::Barrier | Op::EndLoop => {}
                 }
                 op_id = self.next_op(op_id);
@@ -327,7 +328,8 @@ impl Kernel {
                 | Op::Reshape { .. }
                 | Op::Pad { .. } => todo!(),
                 Op::Reduce { .. } => todo!(),
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
+                Op::Source(_) => todo!(),
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
             };
@@ -662,7 +664,8 @@ impl Kernel {
                 Op::Barrier => {
                     wi_barriers += loop_mult;
                 }
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
+                Op::Source(_) => todo!(),
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
             }

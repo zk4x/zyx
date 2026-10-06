@@ -39,6 +39,7 @@ impl Kernel {
             let next = self.next_op(op_id);
             match self.ops[op_id].op {
                 Op::Asm { .. }
+                | Op::Source { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }
@@ -59,7 +60,7 @@ impl Kernel {
                 | Op::Range { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
                 Op::Stack { ref ops } => {

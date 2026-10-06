@@ -317,7 +317,8 @@ impl Kernel {
                 break;
             }
             match self.ops[op_id].op {
-                Op::Reshape { .. }
+                Op::Source(_)
+                | Op::Reshape { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }
@@ -327,7 +328,7 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { .. }) => {
                     unreachable!()
                 }
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     unreachable!()
                 }
                 Op::Const(x) => {
@@ -508,7 +509,7 @@ impl Kernel {
     pub(crate) fn layout(&self, mut op_id: OpId) -> MemLayout {
         for _ in 0..10000 {
             match self.ops[op_id].op {
-                Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => return MemLayout::Scalar,
+                Op::Source(_) | Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => return MemLayout::Scalar,
                 Op::Range { .. } => return MemLayout::Scalar,
                 Op::Cast { x, .. } | Op::Bitcast { x, .. } => op_id = x,
                 Op::Load { src, .. } => op_id = src,
@@ -569,7 +570,7 @@ impl Kernel {
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
                 | Op::TT(TTOp::PopFront { .. }) => todo!("layout: CB sync op produces no value"),
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
                 Op::Reshape { x, .. }
@@ -588,6 +589,7 @@ impl Kernel {
         //println!("getting dtype of id: {op_id:?}'");
         for _ in 0..10000 {
             match self.ops[op_id].op {
+                Op::Source(_) => todo!(),
                 Op::Const(c) => return c.dtype(),
                 Op::Param { dtype, .. } => return dtype,
                 Op::Storage { dtype, .. } => return dtype,
@@ -643,7 +645,7 @@ impl Kernel {
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
                 | Op::TT(TTOp::PopFront { .. }) => todo!("dtype: CB sync op produces no value"),
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
                 Op::Reshape { x, .. }

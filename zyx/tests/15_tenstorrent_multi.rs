@@ -23,22 +23,22 @@ fn tenstorrent_add_add() -> Result<(), ZyxError> {
     let a = k.param(DType::F16);
     let b = k.param(DType::F16);
     let out = k.param_mut(DType::F16);
-
     let ca = k.circular_storage(DType::F16, 1);
     let cb = k.circular_storage(DType::F16, 1);
     let cout = k.circular_storage(DType::F16, 1);
-
     let _g = k.group_range(0, 1);
 
     k.copy_global_to_circular(a, 0, ca, 0);
     k.copy_global_to_circular(b, 0, cb, 0);
     k.tt_end_reader();
+
     let va = k.load_circular(ca, 0);
     let vb = k.load_circular(cb, 0);
     let t = k.add(va, vb);
     let s = k.add(t, va);
     k.store_circular(cout, s, 0);
     k.tt_end_compute();
+
     k.copy_circular_to_global(cout, 0, out, 0);
 
     k.verify();

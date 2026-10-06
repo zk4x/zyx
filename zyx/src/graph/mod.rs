@@ -444,7 +444,7 @@ impl Graph {
                         }
                     }
                 }
-                Op::Custom(ref inner) => {
+                Op::Kernel(ref inner) => {
                     if WITHOUT_KERNELS && !inputs.contains(&cid) {
                         continue;
                     }
@@ -580,7 +580,7 @@ impl Graph {
                     Op::Cast { dtype, .. } => format!("Cast {:?}", dtype),
                     Op::Bitcast { dtype, .. } => format!("Bitcast {:?}", dtype),
                     Op::Program { .. } => format!("Kernel"),
-                    Op::Custom { .. } => format!("Custom"),
+                    Op::Kernel { .. } => format!("Custom"),
                     Op::Reshape { .. } => "Reshape".into(),
                     Op::Expand { .. } => "Expand".into(),
                     Op::Permute { .. } => "Permute".into(),
@@ -1097,7 +1097,7 @@ impl Graph {
                 Op::Stack { ops } => self.shape(ops[*idx]),
                 // Projection of a multi-output kernel: the shape metadata of
                 // output `idx` lives in the Custom node's descriptor.
-                Op::Custom(inner) => self.dims(inner.outputs[*idx].1),
+                Op::Kernel(inner) => self.dims(inner.outputs[*idx].1),
                 n => panic!("Index vec must be a Stack or Custom class, got {n:?}"),
             },
             Op::Param { shape, .. } => self.dims(*shape),
@@ -1148,12 +1148,13 @@ impl Graph {
             }
             // A Custom node is a member of every one of its output classes, so
             // the queried class selects the matching output's shape metadata.
-            Op::Custom(inner) => {
+            Op::Kernel(inner) => {
                 let (_, shape, _) =
                     inner.outputs.iter().find(|(c, _, _)| *c == class).expect("Custom node queried outside its output classes");
                 self.dims(*shape)
             }
-            Op::Storage { .. }
+            Op::Source(_)
+            | Op::Storage { .. }
             | Op::GEP { .. }
             | Op::Load { .. }
             | Op::Copy { .. }
@@ -1312,7 +1313,7 @@ impl Graph {
                 Op::Stack { ops } => self.dtype(ops[*idx]),
                 // Projection of a multi-output kernel: the dtype of output
                 // `idx` lives in the Custom node's descriptor.
-                Op::Custom(inner) => inner.outputs[*idx].2,
+                Op::Kernel(inner) => inner.outputs[*idx].2,
                 n => panic!("Index vec must be a Stack or Custom class, got {n:?}"),
             },
             Op::Param { dtype, .. } => *dtype,
@@ -1325,7 +1326,7 @@ impl Graph {
                 };
                 self.dtype(ops[0])
             }
-            Op::Custom(inner) => {
+            Op::Kernel(inner) => {
                 let (_, _, dtype) =
                     inner.outputs.iter().find(|(c, ..)| *c == class).expect("Custom node queried outside its output classes");
                 *dtype
@@ -1344,6 +1345,7 @@ impl Graph {
             | Op::Contiguous { x }
             | Op::Binary { x, .. } => self.dtype(*x),
             Op::Storage { .. }
+            | Op::Source(_)
             | Op::GEP { .. }
             | Op::Load { .. }
             | Op::Copy { .. }
@@ -1408,32 +1410,14 @@ impl Graph {
                 | Op::EndLoop
                 | Op::Barrier
                 | Op::Wmma { .. }
-                | Op::TT(TTOp::ReduceTile { .. })
-                | Op::TT(TTOp::MatmulTile { .. })
-                | Op::TT(TTOp::TransposeTile { .. })
-                | Op::TT(TTOp::BroadcastTile { .. })
-                | Op::TT(TTOp::ReserveBack { .. })
-                | Op::TT(TTOp::PushBack { .. })
-                | Op::TT(TTOp::WaitFront { .. })
-                | Op::TT(TTOp::PopFront { .. })
-                | Op::TT(TTOp::MathLock)
-                | Op::TT(TTOp::MathUnlock)
-                | Op::TT(TTOp::PackLock)
-                | Op::TT(TTOp::PackUnlock)
-                | Op::TT(TTOp::NocReadBarrier)
-                | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
-                | Op::TT(TTOp::EndReader)
-                | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::LLK { .. })
-                | Op::TT(TTOp::LLKReduce { .. })
-                | Op::TT(TTOp::LLKBcast { .. })
+                | Op::TT(_)
                 | Op::Asm { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
+                | Op::Source(_)
                 | Op::Program { .. }
-                | Op::Custom { .. } => return None,
+                | Op::Kernel { .. } => return None,
             }
             order.push(node_id);
         }
@@ -1753,8 +1737,9 @@ impl Runtime {
                     | Op::After { .. }
                     | Op::ToDevice { .. }
                     | Op::Contiguous { .. }
+                    | Op::Source(_)
                     | Op::Program { .. }
-                    | Op::Custom(_) => {
+                    | Op::Kernel(_) => {
                         unreachable!("promote_to_graph: eager kernel op {oid:?}")
                     }
                 }
@@ -1890,8 +1875,9 @@ impl Runtime {
                                     | Op::After { .. }
                                     | Op::ToDevice { .. }
                                     | Op::Contiguous { .. }
+                                    | Op::Source(_)
                                     | Op::Program { .. }
-                                    | Op::Custom(_) => {
+                                    | Op::Kernel(_) => {
                                         unreachable!("promote_to_graph: dim op {entry:?} in param shape stack")
                                     }
                                 });

@@ -405,10 +405,11 @@ impl Kernel {
     pub fn tt_fuse_llks(&mut self) {
         let x = Pat::bind('x');
         let sigmoid_pat = (x.neg().exp() + 1.).recip();
-        let silu_pat = x * &sigmoid_pat;
+        let silu_pat = &x * &sigmoid_pat;
         for (pat, init, call) in [
             (&silu_pat, "silu_tile_init();", "silu_tile({0});"),
             (&sigmoid_pat, "sigmoid_tile_init();", "sigmoid_tile({0});"),
+            (&Pat::exp(x), "exp_tile_init();", "exp_tile({0});"),
         ] {
             // Total user counts: users[v] = ops taking v as a data operand.
             let mut users: Map<OpId, Vec<OpId>> = Map::default();
@@ -466,6 +467,7 @@ impl Kernel {
         // would draw CB waits for pages the fused call already covers.
         // LLK calls and Asm inits are DCE roots, so the fused calls
         // (and their inits) survive.
+        self.common_subexpression_elimination();
         self.dead_code_elimination();
         self.verify();
     }
