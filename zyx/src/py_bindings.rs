@@ -1475,12 +1475,6 @@ impl Tensor {
         self.item::<f64>()
     }
 
-    #[pyo3(name = "to_vec_f32")]
-    pub fn to_vec_f32_py(&self) -> PyResult<Vec<f32>> {
-        let v: Vec<f32> = self.clone().try_into().map_err(|e: ZyxError| PyOSError::new_err(format!("{e:?}")))?;
-        Ok(v)
-    }
-
     #[pyo3(name = "cross_entropy")]
     pub fn cross_entropy_py(&self, target: &Bound<'_, PyAny>, reduction: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         let target = extract_tensor_or_scalar(target).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;

@@ -478,8 +478,11 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn sigmoid(&self) -> Tensor {
-        let exp_x = self.exp();
-        exp_x.clone() / (exp_x + 1)
+        // Stable form: exp(-x) overflows only for very negative x, where the
+        // result correctly rounds to 0. The e^{+x}/(e^{+x}+1) form overflows
+        // to INF/INF = NaN for x > ~11 in low precision.
+        let neg_exp_x = (-self.clone()).exp();
+        1 / (neg_exp_x + 1)
     }
 
     /// Element-wise hard sigmoid: `clamp(x/6 + 0.5, 0, 1)` for `x > -3`.
