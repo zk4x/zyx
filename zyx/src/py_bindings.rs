@@ -1797,11 +1797,6 @@ impl PyDev {
     fn wgpu(id: u16) -> Self {
         Self(Dev::WGPU(id))
     }
-    /// Testing dummy device.
-    #[staticmethod]
-    fn dummy() -> Self {
-        Self(Dev::Dummy)
-    }
     fn __repr__(&self) -> String {
         format!("Dev::{:?}", self.0)
     }

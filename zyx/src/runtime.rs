@@ -1696,14 +1696,14 @@ impl Runtime {
     /// If the tensor's buffer pool has no devices attached.
     pub fn device(&self, x: TensorId) -> Dev {
         if let Some(buf) = self.leaf_buffer(x) {
-            // The host pool is shared by the C and Cblas devices; report C.
-            // The disk pool has no device; report Auto.
+            // The host pool belongs to no compute device; report the
+            // transfer-only Host. The disk pool has no device; report Auto.
             let [Shard { pool, .. }] = &buf.shards[..] else {
                 todo!("multi-shard tensor device")
             };
             let pool = *pool;
             return match pool {
-                Pool::Host => Dev::C,
+                Pool::Host => Dev::Host,
                 Pool::Disk => Dev::Auto,
                 pool => Dev::all().into_iter().find(|d| d.pool() == pool).unwrap_or_else(|| {
                     panic!(
@@ -1721,7 +1721,7 @@ impl Runtime {
                     todo!("multi-shard kept-buffer device")
                 };
                 match *pool {
-                Pool::Host => Dev::C,
+                Pool::Host => Dev::Host,
                 Pool::Disk => Dev::Auto,
                 pool => Dev::all().into_iter().find(|d| d.pool() == pool).unwrap_or_else(|| {
                     panic!(
@@ -3774,7 +3774,7 @@ impl Runtime {
                     device_label: device_id.name(),
                     cc: match device_id {
                         Dev::Cuda(_) => Some(dev_info.cc),
-                        Dev::Auto | Dev::C | Dev::Cblas | Dev::Vulkan(_) | Dev::OpenCL(_) | Dev::WGPU(_) | Dev::Dummy => None,
+                        Dev::Auto | Dev::C | Dev::Cblas | Dev::Host | Dev::Vulkan(_) | Dev::OpenCL(_) | Dev::WGPU(_) => None,
                         #[cfg(feature = "tenstorrent")]
                         Dev::TT(_) => None,
                     },

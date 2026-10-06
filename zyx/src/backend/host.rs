@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use super::ChunkId;
+use super::{ChunkId, Placement, Pool};
 use crate::{
     Set,
     error::{BackendError, ErrorStatus},
@@ -39,6 +39,79 @@ pub(super) fn ensure_pool() -> HostMemoryPool {
 
 pub(super) fn pool() -> &'static Mutex<HostMemoryPool> {
     HOST_POOL.get_or_init(|| Mutex::new(ensure_pool()))
+}
+
+/// Copy executing a transfer into the host pool, matching on the source
+/// pool: host memcpys directly, disk reads straight from the file
+/// mapping, CUDA DMAs straight into the destination, every other
+/// source is later work. The destination is always host-resident.
+/// Single-shard placements only. Needs no device init — the host pool
+/// is always available, which is what makes [`super::Dev::Host`] work
+/// with every compute backend configured out.
+pub(super) fn copy(src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
+    debug_assert!(bytes >= 0, "host copy of negative bytes");
+    let host = pool();
+    let mut pool = super::lock(Pool::Host, host);
+    let [src_shard] = &src.shards[..] else {
+        todo!("host copy of multi-shard source placement")
+    };
+    let [dst_shard] = &dst.shards[..] else {
+        todo!("host copy of multi-shard destination placement")
+    };
+    debug_assert_eq!(dst_shard.pool, Pool::Host, "host copy destination is not host-resident");
+    match src_shard.pool {
+        Pool::Host => {
+            let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
+            let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+            unsafe {
+                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, bytes as usize);
+            }
+        }
+        Pool::Disk => {
+            // Straight into the destination: the mapping is the source,
+            // no staging buffer. The destination is over-allocated (one
+            // extra element); the extent holds exact tensor bytes only.
+            let disk = super::disk::pool();
+            let mut dpool = super::lock(Pool::Disk, disk);
+            let n = bytes.min(dpool.buffer_bytes(src_shard.chunk));
+            let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+            dpool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, n as usize) })?;
+        }
+        Pool::Cuda(id) => {
+            // Device-to-host DMA straight into the destination, no
+            // staging buffer: the worker drains the stream first, the
+            // reply arrives after the data did.
+            let cuda = super::cuda::pool(id)?;
+            let mut cpool = super::lock(Pool::Cuda(id), cuda);
+            let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+            cpool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
+        }
+        Pool::OpenCL(id) => {
+            // Device-to-host read straight into the destination, no
+            // staging buffer: the worker drains every queue first, the
+            // reply arrives after the data did.
+            let ocl = super::opencl::pool(id)?;
+            let mut opool = super::lock(Pool::OpenCL(id), ocl);
+            let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+            opool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
+        }
+        Pool::Vulkan(_) => {
+            todo!("host copy from {:?}", src_shard.pool)
+        }
+        #[cfg(feature = "tenstorrent")]
+        Pool::TT(id) => {
+            // Device-to-host download straight into the destination, no
+            // staging buffer: the shim IPC is synchronous, so the reply
+            // arrives after the data did.
+            let tt = super::tenstorrent::pool(id)?;
+            let mut tpool = super::lock(Pool::TT(id), tt);
+            let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+            tpool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
+        }
+        #[cfg(feature = "wgpu")]
+        Pool::WGPU(_) => todo!("host copy from {:?}", src_shard.pool),
+    }
+    Ok(())
 }
 
 fn detect_host_memory_bytes() -> u64 {

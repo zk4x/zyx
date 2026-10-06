@@ -224,7 +224,7 @@ impl CmdQueue {
                     run.extend(pending.drain(..));
                     Self::flush_run(&mut partitions, &mut run_dev, &mut run, idx, outputs, &suffix);
                     let dst_dev = match dst_pool {
-                        Pool::Host => Dev::C,
+                        Pool::Host => Dev::Host,
                         Pool::Cuda(id) => Dev::Cuda(id),
                         Pool::Disk => todo!("schedule copy into the disk pool"),
                         Pool::OpenCL(id) => Dev::OpenCL(id),
@@ -372,6 +372,11 @@ impl Plan {
                                 let dev = dlock(Dev::C, &device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
+                            Dev::Host => {
+                                // Transfer-only: needs no device init, so it
+                                // works with every compute backend out.
+                                host::copy(&src_placed, &placed, bytes)?;
+                            }
                             Dev::Cuda(id) => {
                                 let device = cuda::device(*id)?;
                                 let dev = dlock(Dev::Cuda(*id), &device);
@@ -462,13 +467,13 @@ pub struct ChunkId(u64);
 /// and resolves directly to that pool's global `Arc<Mutex<...>>` — no slab ids.
 ///
 /// Each variant owns its globals (one `Arc<Mutex<pool>>` per ordinal, singletons
-/// for `Host`/`Disk`/`Dummy`), lazily initialized on first pool access. Pools are
+/// for `Host`/`Disk`), lazily initialized on first pool access. Pools are
 /// process-wide: they outlive any `Runtime` and are never deinitialized.
 /// The only lock takers are the device-API entry points below
 /// (alloc/free/copy/compile/launch); the per-op tensor path never touches them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Pool {
-    /// Host RAM. Shared by the C and CBLAS devices, which own no pool.
+    /// Host RAM. Shared by the C, CBLAS, and Host devices, which own no pool.
     Host,
     /// Disk-backed tensors (paths, not bytes).
     Disk,
@@ -500,6 +505,10 @@ pub enum Dev {
     C,
     /// CBLAS backend for AOT matmuls (runs on the host pool).
     Cblas,
+    /// Transfer-only pseudo-device (runs on the host pool). Always
+    /// available, never enumerated by [`Dev::all`]: it implements copies
+    /// into host memory, never compiles or launches.
+    Host,
     /// CUDA GPU with the given driver ordinal.
     Cuda(u16),
     /// Tenstorrent chip with the given id.
@@ -567,7 +576,7 @@ impl Dev {
     pub fn pool(self) -> Pool {
         match self {
             Dev::Auto => panic!("Dev::Auto has no pool; resolve it with Dev::auto() first"),
-            Dev::C | Dev::Cblas => Pool::Host,
+            Dev::C | Dev::Cblas | Dev::Host => Pool::Host,
             Dev::Cuda(i) => Pool::Cuda(i),
             #[cfg(feature = "tenstorrent")]
             Dev::TT(i) => Pool::TT(i),
@@ -588,6 +597,7 @@ impl Dev {
             Dev::Auto => panic!("Dev::Auto has no info; resolve it with Dev::auto() first"),
             Dev::C => Ok(c::device()?.lock().unwrap().info()),
             Dev::Cblas => Ok(cblas::device()?.lock().unwrap().info()),
+            Dev::Host => panic!("Dev::Host has no device info; it is transfer-only"),
             Dev::Cuda(id) => Ok(dlock(self, cuda::device(id)?).info()),
             Dev::OpenCL(id) => Ok(dlock(self, opencl::device(id)?).info()),
             #[cfg(feature = "tenstorrent")]
@@ -608,6 +618,7 @@ impl Dev {
             Dev::Auto => panic!("Dev::Auto has no compute; resolve it with Dev::auto() first"),
             Dev::C => Ok(c::device()?.lock().unwrap().free_compute()),
             Dev::Cblas => Ok(cblas::device()?.lock().unwrap().free_compute()),
+            Dev::Host => panic!("Dev::Host has no compute; it is transfer-only"),
             Dev::Cuda(id) => Ok(dlock(self, cuda::device(id)?).free_compute()),
             Dev::OpenCL(id) => Ok(dlock(self, opencl::device(id)?).free_compute()),
             #[cfg(feature = "tenstorrent")]
@@ -621,10 +632,11 @@ impl Dev {
     // TODO remove this somehow perhaps
     /// Whether this device only runs AOT (precompiled) kernels and cannot
     /// compile generic zyx kernels (e.g. the cblas backend). Such devices
-    /// must be skipped by generic kernel autotuning.
+    /// must be skipped by generic kernel autotuning. Transfer-only devices
+    /// (e.g. Host, which compiles nothing at all) also report true.
     #[must_use]
     pub const fn aot_only(self) -> bool {
-        matches!(self, Self::Cblas)
+        matches!(self, Self::Cblas | Self::Host)
     }
 
     /// Human-readable device name (e.g. "CUDA", "OpenCL", "C").
@@ -634,6 +646,7 @@ impl Dev {
             Dev::Auto => "Auto",
             Dev::C => "C",
             Dev::Cblas => "CBLAS",
+            Dev::Host => "Host",
             Dev::Cuda(_) => "CUDA",
             Dev::OpenCL(_) => "OpenCL",
             #[cfg(feature = "tenstorrent")]
@@ -652,6 +665,7 @@ impl Dev {
             Dev::Auto => panic!("Dev::Auto cannot compile; resolve it with Dev::auto() first"),
             Dev::C => c::device().expect("C device unavailable").lock().unwrap().compile(kernel, debug_asm),
             Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().compile(kernel, debug_asm),
+            Dev::Host => panic!("Dev::Host cannot compile; it is transfer-only"),
             Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).compile(kernel, debug_asm),
             Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).compile(kernel, debug_asm),
             #[cfg(feature = "tenstorrent")]
@@ -672,6 +686,7 @@ impl Dev {
             Dev::Auto => panic!("Dev::Auto cannot release; resolve it with Dev::auto() first"),
             Dev::C => c::device().expect("C device unavailable").lock().unwrap().release(program_id),
             Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().release(program_id),
+            Dev::Host => panic!("Dev::Host cannot release; it holds no programs"),
             Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).release(program_id),
             Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).release(program_id),
             #[cfg(feature = "tenstorrent")]
@@ -721,6 +736,7 @@ impl Dev {
                 c::device().expect("C device unavailable").lock().unwrap().launch_timed(program_id, pool, args)
             }
             Dev::Cblas => todo!("launch_timed not yet ported to the CBLAS device"),
+            Dev::Host => panic!("Dev::Host cannot launch; it is transfer-only"),
             Dev::Vulkan(id) => {
                 dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).launch_timed(program_id, args)
             }
