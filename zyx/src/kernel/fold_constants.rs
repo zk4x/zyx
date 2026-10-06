@@ -59,7 +59,7 @@ impl Kernel {
                 | Op::Range { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     todo!()
                 }
                 Op::Stack { ref ops } => {

@@ -18,6 +18,11 @@
 // end [12, 9], sized (end-start)+1 in `core_descriptor.cpp`). A
 // single-core launch uses `gidx0 = 0, gidx1 = 0` (also written `{0, 0}`
 // in CoreCoord notation).
+//
+// Device access goes through one worker thread per device, which owns the
+// tt-metal `MeshDevice` and serializes every call over an mpsc channel.
+// Rust holds only opaque `*mut c_void` handles; all C++ objects stay in
+// the `tt_runtime_shim` (`extern "C"` facade, exceptions never cross).
 
 use super::{ChunkId, Cmd, Dev, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Placement, Pool, Shard, gws_from_kernel};
 use crate::{
@@ -30,13 +35,10 @@ use crate::{
     slab::Slab,
 };
 use nanoserde::DeJson;
-use std::{
-    ffi::CString,
-    io::{BufRead, BufReader, BufWriter, Write as IoWrite},
-    path::PathBuf,
-    process::{Child, ChildStdin, ChildStdout, Command},
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::os::raw::{c_int, c_void};
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 
 // ── Global state ──────────────────────────────────────────────────────────────
 
@@ -48,7 +50,7 @@ struct TTBackend {
 /// One-shot backend init: `get_or_init` runs [`initialize_backend`]
 /// exactly once — concurrent threads block until it returns and
 /// reuse its tables. Without the Once, two threads can both spawn a
-/// tt-runtime process and race the same device's init (deadlock).
+/// device worker and race the same device's init (deadlock).
 static TT_BACKEND: OnceLock<TTBackend> = OnceLock::new();
 
 /// The single backend initializer: builds pools + devices together in
@@ -64,12 +66,575 @@ fn initialize_backend() -> TTBackend {
         devices.push(Mutex::new(TTDevice {
             device_info: Arc::new(guard.dev_info.clone()),
             memory_pool: pool_id,
-            runtime: guard.runtime.clone(),
+            worker: guard.worker.clone(),
             programs: Slab::new(),
         }));
         drop(guard);
     }
     TTBackend { pools, devices }
+}
+
+// ---------------------------------------------------------------------------
+// Worker thread: owns the device, buffers, and the command channel.
+// ---------------------------------------------------------------------------
+
+// The command payload carries opaque FFI handles (*mut c_void) owned by the
+// worker. They are Send/Sync because the worker is the only thread that
+// dereferences them, and they point to C-managed objects.
+unsafe impl Send for Command {}
+unsafe impl Sync for Command {}
+
+/// Command sent to the device worker. All tt-metal work happens on the worker
+/// thread; replies are sent back on the embedded reply channel.
+enum Command {
+    /// Query the tensix grid (rows, cols).
+    Grid {
+        reply: Sender<Result<(u32, u32), BackendError>>,
+    },
+    /// Allocate device DRAM. The ChunkId is chosen by the caller (Rust's
+    /// slab); the worker returns the real size and the opaque handle.
+    Allocate {
+        bytes: u64,
+        chunk_id: ChunkId,
+        reply: Sender<Result<(*mut c_void, u64), BackendError>>,
+    },
+    /// Free a buffer by Rust-side ChunkId (handle freed on the worker).
+    Free {
+        buffer_id: ChunkId,
+        handle: *mut c_void,
+        reply: Sender<()>,
+    },
+    /// Host -> device: enqueue a write and block until it completes. The `src`
+    /// vector is owned by the caller; the worker copies it into tt-metal.
+    Write {
+        buffer_id: ChunkId,
+        handle: *mut c_void,
+        src: Vec<u8>,
+        reply: Sender<Result<(), BackendError>>,
+    },
+    /// Device -> host: enqueues a blocking read directly into the caller's
+    /// buffer and returns the number of bytes copied. The caller blocks on
+    /// the reply, so `dst` stays valid for the whole call.
+    Read {
+        buffer_id: ChunkId,
+        handle: *mut c_void,
+        dst: *mut u8,
+        dst_len: usize,
+        reply: Sender<Result<usize, BackendError>>,
+    },
+    /// Cache the compilation of a kernel (sources + CB config + param ordinals).
+    /// Returns the shim's per-device program id.
+    Compile {
+        reader_src: Vec<u8>,
+        compute_src: Vec<u8>,
+        writer_src: Vec<u8>,
+        cb_idx: Vec<u32>,
+        cb_fmt: Vec<u32>,
+        cb_tile_bytes: Vec<u32>,
+        cb_num_tiles: Vec<u32>,
+        reader_params: Vec<u32>,
+        compute_params: Vec<u32>,
+        writer_params: Vec<u32>,
+        n_params: u32,
+        fp32_dest_acc_en: bool,
+        reply: Sender<Result<u32, BackendError>>,
+    },
+    /// Launch a cached program (shim id). Handles are passed directly (Rust
+    /// owns the slab keys; the worker owns the handles).
+    Launch {
+        program: u32,
+        src_handles: Vec<*mut c_void>,
+        dst_handles: Vec<*mut c_void>,
+        grid_dims: [u32; 2],
+        vars: Vec<(u32, u32)>,
+        reply: Sender<Result<(), BackendError>>,
+    },
+    /// Release a cached program (shim id) back to the device.
+    DestroyProgram {
+        program: u32,
+        reply: Sender<Result<(), BackendError>>,
+    },
+    /// Drain the channel and shut the worker down.
+    Shutdown { reply: Sender<()> },
+}
+
+/// Per-buffer tracking on the worker: one opaque handle per Rust-side ChunkId.
+struct WorkerBuffer {
+    size: u64,
+}
+
+/// Device worker: owns the device and the buffer table. Programs live in the
+/// shim's per-device cache; the worker only forwards their ids.
+struct TTWorker {
+    dev: *mut c_void,
+    buffers: Map<ChunkId, WorkerBuffer>,
+}
+
+/// Worker handle carried by the main thread. Senders are cloned cheaply; each
+/// clone routes to the same worker.
+#[derive(Debug)]
+pub(crate) struct RuntimeWorker {
+    sender: Arc<Sender<Command>>,
+}
+
+/// Translate the shim's thread-local error string into a `BackendError` of the
+/// given status. Must run on the same thread that made the failing shim call
+/// (the worker thread); every call site below upholds this.
+fn cpp_err(status: ErrorStatus) -> BackendError {
+    let mut buf = [0i8; 2048];
+    let n = unsafe { get_last_error(buf.as_mut_ptr(), buf.len() as c_int) };
+    let context = if n > 0 {
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(buf.as_ptr() as *const u8, n as usize)) }.to_string()
+    } else {
+        "unknown tt-metal error".into()
+    };
+    BackendError { status, context: context.into_boxed_str() }
+}
+
+// FFI declarations of the tt-metal shim (see `tt_runtime_shim.h`).
+unsafe extern "C" {
+    fn get_last_error(out: *mut i8, out_len: c_int) -> c_int;
+    fn has_error() -> bool;
+    fn create_device() -> *mut c_void;
+    fn destroy_device(dev: *mut c_void);
+    fn teardown_metal();
+    fn get_grid_size(dev: *mut c_void, rows: *mut u32, cols: *mut u32);
+    fn alloc_buffer(dev: *mut c_void, size: u64, tile_bytes: u64) -> *mut c_void;
+    fn free_buffer(dev: *mut c_void, buf: *mut c_void);
+    fn write_buffer(dev: *mut c_void, buf: *mut c_void, src: *const c_void, len: u64);
+    fn read_buffer(dev: *mut c_void, buf: *mut c_void, dst: *mut c_void, len: u64);
+    fn compile_program(
+        dev: *mut c_void,
+        reader_src: *const u8,
+        reader_src_len: usize,
+        compute_src: *const u8,
+        compute_src_len: usize,
+        writer_src: *const u8,
+        writer_src_len: usize,
+        cb_indices: *const u32,
+        cb_formats: *const u32,
+        cb_tile_bytes: *const u32,
+        cb_num_tiles: *const u32,
+        n_cbs: usize,
+        reader_params: *const u32,
+        n_reader_params: usize,
+        compute_params: *const u32,
+        n_compute_params: usize,
+        writer_params: *const u32,
+        n_writer_params: usize,
+        n_params: u32,
+        fp32_dest_acc_en: bool,
+    ) -> u32;
+    fn run_program(
+        dev: *mut c_void,
+        prog: u32,
+        src_buffers: *const *mut c_void,
+        n_src: usize,
+        dst_buffers: *const *mut c_void,
+        n_dst: usize,
+        grid_rows: u32,
+        grid_cols: u32,
+        var_ordinals: *const u32,
+        var_values: *const u32,
+        n_vars: usize,
+    ) -> bool;
+    fn destroy_program(dev: *mut c_void, prog: u32);
+}
+
+/// Exit-time sender registry + atexit hook.
+///
+/// `static` items never drop, so the worker's `destroy_device` would never
+/// run before tt-metal's own exit handlers tear down `MetalContext` (SIGABRT
+/// via `close_device` throwing from a destructor). Each spawned worker
+/// pushes a `Sender` clone here; the single `atexit` entry below drains the
+/// registry at process end and shuts every worker down first (LIFO: this
+/// hook registers after tt-metal's, so it runs before theirs). The handler
+/// never panics and never waits unboundedly — a wedged device must not hang
+/// process exit.
+static EXIT_SENDERS: std::sync::Mutex<Vec<Sender<Command>>> = std::sync::Mutex::new(Vec::new());
+static EXIT_HOOK: OnceLock<()> = OnceLock::new();
+
+extern "C" fn tt_atexit_shutdown() {
+    let senders = EXIT_SENDERS.lock().map(|mut v| core::mem::take(&mut *v)).unwrap_or_default();
+    for sender in &senders {
+        let (tx, rx) = channel();
+        if sender.send(Command::Shutdown { reply: tx }).is_err() {
+            continue;
+        }
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(30));
+    }
+}
+
+impl RuntimeWorker {
+    /// Spawn the worker thread. The worker creates the tt-metal device
+    /// internally, reports init success/failure over a oneshot, then services
+    /// commands until the sender is dropped (i.e., process exit).
+    pub(crate) fn spawn() -> Result<Self, BackendError> {
+        let (tx, rx) = channel();
+        let tx = Arc::new(tx);
+        let (init_tx, init_rx) = channel();
+
+        // Block SIGABRT during device creation; tt-metal's own signal handling
+        // expects SIGABRT to be deliverable once the device is up.
+        const SIGABRT: libc::c_int = 6;
+        let mut mask = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+        unsafe {
+            libc::sigemptyset(mask.as_mut_ptr());
+            libc::sigaddset(mask.as_mut_ptr(), SIGABRT);
+            libc::pthread_sigmask(libc::SIG_BLOCK, mask.as_ptr(), std::ptr::null_mut());
+        }
+
+        let worker_tx = tx.clone();
+        thread::spawn(move || {
+            let dev = unsafe { create_device() };
+            if dev.is_null() {
+                let err = cpp_err(ErrorStatus::Initialization);
+                let _ = init_tx.send(Err(err));
+                return;
+            }
+
+            // Unblock SIGABRT before servicing commands.
+            unsafe {
+                libc::pthread_sigmask(libc::SIG_UNBLOCK, mask.as_ptr(), std::ptr::null_mut());
+            }
+            let _ = init_tx.send(Ok(()));
+
+            let mut worker = TTWorker { dev, buffers: Map::default() };
+            'work_thread_loop: loop {
+                let cmd = match rx.recv() {
+                    Ok(cmd) => cmd,
+                    // All senders gone (process teardown): close the device
+                    // before tt-metal statics tear down, then exit. Without
+                    // this the open MeshDevice outlives MetalContext and
+                    // close_device throws from a destructor (SIGABRT).
+                    Err(_) => {
+                        unsafe { destroy_device(worker.dev) };
+                        break 'work_thread_loop;
+                    }
+                };
+
+                match cmd {
+                    Command::Grid { reply } => {
+                        let mut rows = 0u32;
+                        let mut cols = 0u32;
+                        unsafe { get_grid_size(worker.dev, &raw mut rows, &raw mut cols) };
+                        if unsafe { has_error() } {
+                            reply.send(Err(cpp_err(ErrorStatus::Initialization))).ok();
+                        } else {
+                            reply.send(Ok((rows, cols))).ok();
+                        }
+                        continue 'work_thread_loop;
+                    }
+
+                    Command::Allocate { bytes, chunk_id, reply } => {
+                        let handle = unsafe { alloc_buffer(worker.dev, bytes, 2048) };
+                        if handle.is_null() {
+                            reply.send(Err(cpp_err(ErrorStatus::MemoryAllocation))).ok();
+                            continue 'work_thread_loop;
+                        }
+                        let n_pages = (bytes + 4095) / 4096;
+                        let size = n_pages * 4096;
+                        worker.buffers.insert(chunk_id, WorkerBuffer { size });
+                        reply.send(Ok((handle, size))).ok();
+                        continue 'work_thread_loop;
+                    }
+
+                    Command::Free { buffer_id, handle, reply } => {
+                        if worker.buffers.remove(&buffer_id).is_some() {
+                            unsafe { free_buffer(worker.dev, handle) };
+                        }
+                        reply.send(()).ok();
+                        continue 'work_thread_loop;
+                    }
+
+                    Command::Write { buffer_id, handle, src, reply } => {
+                        let Some(entry) = worker.buffers.get(&buffer_id) else {
+                            reply
+                                .send(Err(BackendError {
+                                    status: ErrorStatus::MemoryAllocation,
+                                    context: "write buffer id not allocated".into(),
+                                }))
+                                .ok();
+                            continue 'work_thread_loop;
+                        };
+                        if src.len() as u64 > entry.size {
+                            reply
+                                .send(Err(BackendError {
+                                    status: ErrorStatus::MemoryCopyH2P,
+                                    context: "write length exceeds buffer size".into(),
+                                }))
+                                .ok();
+                            continue 'work_thread_loop;
+                        }
+                        unsafe { write_buffer(worker.dev, handle, src.as_ptr() as *const c_void, src.len() as u64) };
+                        if unsafe { has_error() } {
+                            reply.send(Err(cpp_err(ErrorStatus::MemoryCopyH2P))).ok();
+                        } else {
+                            reply.send(Ok(())).ok();
+                        }
+                        continue 'work_thread_loop;
+                    }
+
+                    Command::Read { buffer_id, handle, dst, dst_len, reply } => {
+                        let Some(entry) = worker.buffers.get(&buffer_id) else {
+                            reply
+                                .send(Err(BackendError {
+                                    status: ErrorStatus::MemoryAllocation,
+                                    context: "read buffer id not allocated".into(),
+                                }))
+                                .ok();
+                            continue 'work_thread_loop;
+                        };
+                        let cap = dst_len.min(entry.size as usize);
+                        unsafe { read_buffer(worker.dev, handle, dst as *mut c_void, cap as u64) };
+                        if unsafe { has_error() } {
+                            reply.send(Err(cpp_err(ErrorStatus::MemoryCopyP2H))).ok();
+                        } else {
+                            reply.send(Ok(cap)).ok();
+                        }
+                        continue 'work_thread_loop;
+                    }
+
+                    Command::Compile {
+                        reader_src,
+                        compute_src,
+                        writer_src,
+                        cb_idx,
+                        cb_fmt,
+                        cb_tile_bytes,
+                        cb_num_tiles,
+                        reader_params,
+                        compute_params,
+                        writer_params,
+                        n_params,
+                        fp32_dest_acc_en,
+                        reply,
+                    } => {
+                        let prog = unsafe {
+                            compile_program(
+                                worker.dev,
+                                reader_src.as_ptr(),
+                                reader_src.len(),
+                                compute_src.as_ptr(),
+                                compute_src.len(),
+                                writer_src.as_ptr(),
+                                writer_src.len(),
+                                cb_idx.as_ptr(),
+                                cb_fmt.as_ptr(),
+                                cb_tile_bytes.as_ptr(),
+                                cb_num_tiles.as_ptr(),
+                                cb_idx.len(),
+                                reader_params.as_ptr(),
+                                reader_params.len(),
+                                compute_params.as_ptr(),
+                                compute_params.len(),
+                                writer_params.as_ptr(),
+                                writer_params.len(),
+                                n_params,
+                                fp32_dest_acc_en,
+                            )
+                        };
+                        if prog == u32::MAX {
+                            reply.send(Err(cpp_err(ErrorStatus::KernelCompilation))).ok();
+                        } else {
+                            reply.send(Ok(prog)).ok();
+                        }
+                        continue 'work_thread_loop;
+                    }
+
+                    Command::Launch { program, src_handles, dst_handles, grid_dims, vars, reply } => {
+                        let ok = unsafe {
+                            let ordinals = vars.iter().map(|(o, _)| *o).collect::<Vec<u32>>();
+                            let values = vars.iter().map(|(_, v)| *v).collect::<Vec<u32>>();
+                            run_program(
+                                worker.dev,
+                                program,
+                                src_handles.as_ptr(),
+                                src_handles.len(),
+                                dst_handles.as_ptr(),
+                                dst_handles.len(),
+                                grid_dims[0],
+                                grid_dims[1],
+                                ordinals.as_ptr(),
+                                values.as_ptr(),
+                                vars.len(),
+                            )
+                        };
+                        if !ok {
+                            reply.send(Err(cpp_err(ErrorStatus::KernelLaunch))).ok();
+                        } else {
+                            reply.send(Ok(())).ok();
+                        }
+                        continue 'work_thread_loop;
+                    }
+
+                    Command::DestroyProgram { program, reply } => {
+                        unsafe { destroy_program(worker.dev, program) };
+                        reply.send(Ok(())).ok();
+                        continue 'work_thread_loop;
+                    }
+
+                    Command::Shutdown { reply } => {
+                        // Full teardown on the worker thread: destroy_device
+                        // closes the mesh device, teardown_metal destroys the
+                        // MetalContext (releasing UMD's CHIP_IN_USE guard as
+                        // its owning thread). Teardown runs even if the
+                        // device close reported an error; failures are
+                        // reported loudly instead of hanging process exit.
+                        unsafe { destroy_device(worker.dev) };
+                        if unsafe { has_error() } {
+                            eprintln!("tenstorrent worker: {}", cpp_err(ErrorStatus::Initialization).context);
+                        }
+                        unsafe { teardown_metal() };
+                        if unsafe { has_error() } {
+                            eprintln!("tenstorrent worker: {}", cpp_err(ErrorStatus::Initialization).context);
+                        }
+                        reply.send(()).ok();
+                        break 'work_thread_loop;
+                    }
+                };
+            }
+        });
+
+        // Wait for device init (fails loudly instead of serving grid/alloc
+        // against a dead worker).
+        init_rx.recv().map_err(|_| BackendError {
+            status: ErrorStatus::Initialization,
+            context: "tenstorrent worker exited during init".into(),
+        })??;
+
+        // Register the exit hook once per process and enlist this worker.
+        // From here on the worker is shut down at process end, before
+        // tt-metal's own handlers run.
+        if let Ok(mut senders) = EXIT_SENDERS.lock() {
+            senders.push(worker_tx.as_ref().clone());
+        }
+        EXIT_HOOK.get_or_init(|| unsafe {
+            libc::atexit(tt_atexit_shutdown);
+        });
+
+        Ok(RuntimeWorker { sender: worker_tx })
+    }
+
+    pub(crate) fn query_grid(&self) -> Result<(u32, u32), BackendError> {
+        let (tx, rx) = channel();
+        self.sender
+            .send(Command::Grid { reply: tx })
+            .map_err(|_| BackendError { status: ErrorStatus::Initialization, context: "tenstorrent worker gone".into() })?;
+        rx.recv().map_err(|_| BackendError {
+            status: ErrorStatus::Initialization,
+            context: "tenstorrent worker dropped grid reply".into(),
+        })?
+    }
+
+    pub(crate) fn allocate(&self, bytes: u64, chunk_id: ChunkId) -> Result<(*mut c_void, u64), BackendError> {
+        let (tx, rx) = channel();
+        self.sender
+            .send(Command::Allocate { bytes, chunk_id, reply: tx })
+            .map_err(|_| BackendError { status: ErrorStatus::MemoryAllocation, context: "tenstorrent worker gone".into() })?;
+        rx.recv().map_err(|_| BackendError {
+            status: ErrorStatus::MemoryAllocation,
+            context: "tenstorrent worker dropped alloc reply".into(),
+        })?
+    }
+
+    pub(crate) fn free(&self, buffer_id: ChunkId, handle: *mut c_void) {
+        let (tx, rx) = channel();
+        let _ = self.sender.send(Command::Free { buffer_id, handle, reply: tx });
+        let _ = rx.recv();
+    }
+
+    pub(crate) fn write(&self, handle: *mut c_void, buffer_id: ChunkId, src: Vec<u8>) -> Result<(), BackendError> {
+        let (tx, rx) = channel();
+        self.sender
+            .send(Command::Write { buffer_id, handle, src, reply: tx })
+            .map_err(|_| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "tenstorrent worker gone".into() })?;
+        rx.recv().map_err(|_| BackendError {
+            status: ErrorStatus::MemoryCopyH2P,
+            context: "tenstorrent worker dropped write reply".into(),
+        })?
+    }
+
+    pub(crate) fn read(&self, handle: *mut c_void, buffer_id: ChunkId, dst: &mut [u8]) -> Result<usize, BackendError> {
+        let (tx, rx) = channel();
+        self.sender
+            .send(Command::Read { buffer_id, handle, dst: dst.as_mut_ptr(), dst_len: dst.len(), reply: tx })
+            .map_err(|_| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "tenstorrent worker gone".into() })?;
+        rx.recv().map_err(|_| BackendError {
+            status: ErrorStatus::MemoryCopyP2H,
+            context: "tenstorrent worker dropped read reply".into(),
+        })?
+    }
+
+    pub(crate) fn compile(
+        &self,
+        reader_src: &[u8],
+        compute_src: &[u8],
+        writer_src: &[u8],
+        cb_indices: &[u32],
+        cb_fmt: &[u32],
+        cb_tile_bytes: &[u32],
+        cb_num_tiles: &[u32],
+        reader_params: &[u32],
+        compute_params: &[u32],
+        writer_params: &[u32],
+        n_params: u32,
+        fp32_dest_acc_en: bool,
+    ) -> Result<u32, BackendError> {
+        let (tx, rx) = channel();
+        self.sender
+            .send(Command::Compile {
+                reader_src: reader_src.to_vec(),
+                compute_src: compute_src.to_vec(),
+                writer_src: writer_src.to_vec(),
+                cb_idx: cb_indices.to_vec(),
+                cb_fmt: cb_fmt.to_vec(),
+                cb_tile_bytes: cb_tile_bytes.to_vec(),
+                cb_num_tiles: cb_num_tiles.to_vec(),
+                reader_params: reader_params.to_vec(),
+                compute_params: compute_params.to_vec(),
+                writer_params: writer_params.to_vec(),
+                n_params,
+                fp32_dest_acc_en,
+                reply: tx,
+            })
+            .map_err(|_| BackendError { status: ErrorStatus::KernelCompilation, context: "tenstorrent worker gone".into() })?;
+        rx.recv().map_err(|_| BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: "tenstorrent worker dropped compile reply".into(),
+        })?
+    }
+
+    pub(crate) fn run(
+        &self,
+        program: u32,
+        src_handles: &[*mut c_void],
+        dst_handles: &[*mut c_void],
+        grid_dims: [u32; 2],
+        vars: &[(u32, u32)],
+    ) -> Result<(), BackendError> {
+        let (tx, rx) = channel();
+        self.sender
+            .send(Command::Launch {
+                program,
+                src_handles: src_handles.to_vec(),
+                dst_handles: dst_handles.to_vec(),
+                grid_dims,
+                vars: vars.to_vec(),
+                reply: tx,
+            })
+            .map_err(|_| BackendError { status: ErrorStatus::KernelLaunch, context: "tenstorrent worker gone".into() })?;
+        rx.recv().map_err(|_| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: "tenstorrent worker dropped run reply".into(),
+        })?
+    }
+
+    pub(crate) fn destroy_program(&self, program: u32) {
+        let (tx, rx) = channel();
+        let _ = self.sender.send(Command::DestroyProgram { program, reply: tx });
+        let _ = rx.recv();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -136,19 +701,25 @@ pub struct TTConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Per-buffer tracking: index into C++ runtime's vector<MeshBuffer>
+// Per-buffer tracking: opaque handle owned by the worker thread.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub(crate) struct TTBuffer {
-    dev_index: u32,
+    handle: *mut c_void,
     pub(crate) size: u64,
 }
 
+// Opaque FFI handles are Send/Sync: the worker thread is the only thread that
+// dereferences them, and they point at C-managed objects.
+unsafe impl Send for TTBuffer {}
+unsafe impl Sync for TTBuffer {}
+
 // ---------------------------------------------------------------------------
-// Memory pool — device DRAM buffers managed by C++ runtime.
-// TTBuffer is a handle (u32 dev_index) into the runtime's buffer list.
-// The pool shares the runtime IPC channel with TTDevice via Arc<Mutex>.
+// Memory pool — device DRAM buffers managed by the worker.
+// ChunkId is chosen by Rust's slab; the worker owns the opaque handle.
+// Allocation reuses the free_set first (best-fit, stable addresses);
+// fresh device memory is requested only on a miss.
 // ---------------------------------------------------------------------------
 
 fn backend() -> Result<(&'static Vec<Mutex<TTMemoryPool>>, &'static Vec<Mutex<TTDevice>>), BackendError> {
@@ -172,9 +743,9 @@ fn no_pool(id: u16) -> BackendError {
 pub struct TTMemoryPool {
     pub(crate) buffers: Slab<ChunkId, TTBuffer>,
     free_set: Set<ChunkId>,
-    runtime: Arc<Mutex<RuntimeProcess>>,
     free_bytes: Dim,
-    dev_info: DeviceInfo,
+    pub(crate) worker: Arc<RuntimeWorker>,
+    pub(crate) dev_info: DeviceInfo,
 }
 
 pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Mutex<TTMemoryPool>>, BackendError> {
@@ -189,39 +760,14 @@ pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Ve
     }
 
     let dram_bytes = detect_dram_bytes();
+
+    // Spawn the worker — it creates the tt-metal device internally and
+    // fails loudly here (not lazily on first alloc) if init fails.
+    let worker = RuntimeWorker::spawn()?;
+    let (grid_rows, grid_cols) = worker.query_grid()?;
     if debug_dev {
         println!("[tenstorrent] device initialized");
         println!("[tenstorrent] device total memory: {} MB", dram_bytes / (1024 * 1024));
-    }
-
-    // Compute config dir from XDG convention
-    let config_base = std::env::var_os("XDG_CONFIG_HOME")
-        .and_then(|p| {
-            let p = PathBuf::from(p);
-            if p.is_absolute() { Some(p) } else { None }
-        })
-        .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
-        .unwrap();
-
-    let cache_dir = config_base.join("zyx/cache/tt");
-
-    // The runtime binary must be installed at the config dir by build.rs
-    let runtime_path = config_base.join("zyx/zyx-tt-runtime");
-    if !runtime_path.exists() {
-        return Err(BackendError {
-            status: ErrorStatus::Initialization,
-            context: format!("runtime not found at {}. Rebuild with TT_METAL_ROOT set.", runtime_path.display()).into(),
-        });
-    }
-
-    // Spawn the runtime eagerly — both pool and device need it
-    let runtime = Arc::new(Mutex::new(RuntimeProcess::new(&runtime_path.to_string_lossy(), &cache_dir.to_string_lossy())?));
-
-    // Real tensix grid (harvest-aware) bounds every group axis: const
-    // grid sizes fail at compile (via gws_from_kernel), dynamic ones at
-    // launch. max_global_work_dims IS the grid for TT.
-    let (grid_rows, grid_cols) = runtime.lock().unwrap().grid()?;
-    if debug_dev {
         println!("[tenstorrent] tensix grid {grid_rows} rows x {grid_cols} cols");
     }
 
@@ -231,8 +777,8 @@ pub(super) fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Ve
     pools.push(Mutex::new(TTMemoryPool {
         buffers: Slab::new(),
         free_set: Set::default(),
-        runtime: runtime.clone(),
         free_bytes: Dim::from(dram_bytes as i64),
+        worker: Arc::new(worker),
         dev_info: DeviceInfo {
             compute: 200_000_000_000_000, // ~200 TFLOPS BF16
             // Grid axes only (gidx0 row, gidx1 col); TT launches at most
@@ -272,47 +818,15 @@ pub(super) fn device_count() -> u16 {
     backend().map(|(_, devs)| devs.len() as u16).unwrap_or(0)
 }
 
-fn create_temp_shm(size: u64) -> Result<(CString, *mut u8, u64), BackendError> {
-    let pid = std::process::id();
-    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let name = format!("/zyx-tt-{pid:x}-{ns:x}");
-    let cname = CString::new(name.clone())
-        .map_err(|_| BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid shm path".into() })?;
-
-    let fd = unsafe { libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_RDWR | libc::O_EXCL, 0o600) };
-    if fd < 0 {
-        return Err(BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: format!("shm_open errno={}", std::io::Error::last_os_error()).into(),
-        });
-    }
-
-    if unsafe { libc::ftruncate(fd, size as i64) } < 0 {
-        unsafe { libc::close(fd) };
-        let _ = unsafe { libc::shm_unlink(cname.as_ptr()) };
-        return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "ftruncate shm".into() });
-    }
-
-    let ptr =
-        unsafe { libc::mmap(std::ptr::null_mut(), size as usize, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0) };
-    if ptr == libc::MAP_FAILED {
-        unsafe { libc::close(fd) };
-        let _ = unsafe { libc::shm_unlink(cname.as_ptr()) };
-        return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "mmap shm".into() });
-    }
-
-    unsafe { libc::close(fd) };
-    Ok((cname, ptr as *mut u8, size))
-}
-
 impl TTMemoryPool {
     pub fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        // Best-fit from the free list first (stable addresses across
+        // Best-fit from the free_set first (stable addresses across
         // repeats — those bytes were already paid for); else fresh.
+        // A hit costs no device call and no free_bytes change.
         let best = self
             .free_set
             .iter()
@@ -332,16 +846,17 @@ impl TTMemoryPool {
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "out of device memory".into() });
         }
-        let rt = &self.runtime;
-        let tile_bytes: u64 = 2048;
-        let dev_index = rt.lock().unwrap().alloc_buf(bytes_u64, tile_bytes)?;
-        let buf = TTBuffer { dev_index, size: bytes_u64 };
-        Ok(self.buffers.push(buf))
+        let chunk_id = self.buffers.push(TTBuffer { handle: std::ptr::null_mut(), size: 0 });
+        let (handle, size) = self.worker.allocate(bytes_u64, chunk_id)?;
+        debug_assert!(!handle.is_null(), "worker returned null handle without error");
+        self.buffers[chunk_id] = TTBuffer { handle, size };
+        self.free_bytes -= size as Dim;
+        Ok(chunk_id)
     }
 
     /// Put a buffer into the free list for stable-address reuse. Frees
     /// nothing; device memory is reclaimed only by [`TTMemoryPool::dispose`].
-    /// Safe without a sync: the TT shim is synchronous, so no launch can
+    /// Safe without a sync: the worker is synchronous, so no launch can
     /// still be using the buffer when its placement drops.
     pub fn release(&mut self, buffer_id: ChunkId) {
         if !self.buffers.contains_id(buffer_id) {
@@ -365,409 +880,46 @@ impl TTMemoryPool {
     }
 
     /// Free all buffers in the free list at once: release every free buffer
-    /// back to the runtime and give the bytes back.
+    /// back to the worker and give the bytes back.
     pub fn dispose(&mut self) {
         for id in core::mem::take(&mut self.free_set) {
-            let Some(buffer) = self.buffers.get(id) else {
-                continue;
-            };
-            self.free_bytes += buffer.size as Dim;
-            let dev_index = buffer.dev_index;
-            self.buffers.remove(id);
-            let _ = self.runtime.lock().unwrap().free_buf(dev_index);
+            let buf = unsafe { self.buffers.remove_and_return(id) };
+            self.free_bytes += buf.size as Dim;
+            self.worker.free(id, buf.handle);
         }
     }
 
-    /// Blocking shim upload (sync — the shim call runs to completion).
+    /// Blocking upload (sync — the worker runs the transfer to completion).
     pub fn host_to_pool(&mut self, src: &[u8], dst: ChunkId) -> Result<(), BackendError> {
-        let rt = &self.runtime;
         let buf = self
             .buffers
-            .get_mut(dst)
+            .get(dst)
             .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
         let len = src.len().min(buf.size as usize);
-        let (cname, shm_ptr, _) = create_temp_shm(len as u64)?;
-        let shm_path = cname.to_str().unwrap();
-        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), shm_ptr, len) };
-        rt.lock().unwrap().write_buf(buf.dev_index, shm_path, len as u64)?;
-        unsafe {
-            libc::munmap(shm_ptr as *mut libc::c_void, len as usize);
-            libc::shm_unlink(cname.as_ptr());
-        }
-        Ok(())
+        let data = src[..len].to_vec();
+        let handle = buf.handle;
+        self.worker.write(handle, dst, data)
     }
 
-    /// Blocking shim download (sync — the shim call runs to completion).
+    /// Blocking download (sync — the worker runs the transfer to completion).
     pub fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
-        let rt = &self.runtime;
         let buf = self
             .buffers
-            .get_mut(src)
+            .get(src)
             .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "invalid buffer id".into() })?;
-        let len = dst.len().min(buf.size as usize);
-        let (cname, shm_ptr, _) = create_temp_shm(len as u64)?;
-        let shm_path = cname.to_str().unwrap();
-        rt.lock().unwrap().read_buf(buf.dev_index, shm_path, len as u64)?;
-        unsafe {
-            std::ptr::copy_nonoverlapping(shm_ptr, dst.as_mut_ptr(), len);
-            libc::munmap(shm_ptr as *mut libc::c_void, len as usize);
-            libc::shm_unlink(cname.as_ptr());
-        }
+        let _len = dst.len().min(buf.size as usize);
+        let handle = buf.handle;
+        let _copied = self.worker.read(handle, src, dst)?;
         Ok(())
     }
 
-    pub fn dev_index(&self, buffer_id: ChunkId) -> Result<u32, BackendError> {
+    pub fn buffer_handle(&self, buffer_id: ChunkId) -> Result<*mut c_void, BackendError> {
         if self.buffers.contains_id(buffer_id) {
-            Ok(self.buffers[buffer_id].dev_index)
+            Ok(self.buffers[buffer_id].handle)
         } else {
             Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Runtime process management (JSON IPC over stdin/stdout)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-struct RuntimeProcess {
-    stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
-    child: Child,
-    timeout_ms: u64,
-}
-
-impl RuntimeProcess {
-    fn new(runtime_path: &str, cache_dir: &str) -> Result<Self, BackendError> {
-        eprintln!("[TT_DEBUG] spawning tt-runtime from {runtime_path}");
-
-        // Kill any previous zyx-tt-runtime that might still hold the device
-        let _ = std::process::Command::new("pkill").arg("-9").arg("zyx-tt-runtime").output();
-
-        let mut child = Command::new(runtime_path)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
-            .map_err(|e| BackendError {
-                status: ErrorStatus::Initialization,
-                context: format!("spawn tt-runtime {runtime_path}: {e}").into(),
-            })?;
-
-        eprintln!("[TT_DEBUG] child spawned, taking stdin/stdout");
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "tt-runtime: no stdin".into() })?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "tt-runtime: no stdout".into() })?;
-
-        let mut rt = RuntimeProcess { stdin: BufWriter::new(stdin), stdout: BufReader::new(stdout), child, timeout_ms: 30000 };
-
-        eprintln!("[TT_DEBUG] sending init");
-        let init_json = format!(r#"{{"cmd":"init","cache_dir":"{cache_dir}"}}"#);
-        rt.send(&init_json)?;
-        eprintln!("[TT_DEBUG] init sent, waiting for response");
-        let resp = rt.recv_with_timeout(rt.timeout_ms)?;
-        eprintln!("[TT_DEBUG] init response: {resp}");
-        if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap();
-            return Err(BackendError {
-                status: ErrorStatus::Initialization,
-                context: format!("tt-runtime init error: {msg}").into(),
-            });
-        }
-        Ok(rt)
-    }
-
-    fn send(&mut self, json: &str) -> Result<(), BackendError> {
-        self.stdin
-            .write_all(json.as_bytes())
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime write: {e}").into() })?;
-        self.stdin.write_all(b"\n").map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: format!("tt-runtime write nl: {e}").into(),
-        })?;
-        self.stdin
-            .flush()
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime flush: {e}").into() })?;
-        Ok(())
-    }
-
-    fn poll_read(&mut self, timeout_ms: u64) -> Result<bool, BackendError> {
-        match self.child.try_wait() {
-            Ok(Some(status)) => {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelLaunch,
-                    context: format!("tt-runtime exited unexpectedly (status {status})").into(),
-                });
-            }
-            Err(e) => {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelLaunch,
-                    context: format!("tt-runtime wait error: {e}").into(),
-                });
-            }
-            Ok(None) => {}
-        }
-
-        let fd = std::os::unix::io::AsRawFd::as_raw_fd(self.stdout.get_mut());
-        let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-
-        let timeout_ms = i32::try_from(timeout_ms).unwrap();
-        let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-
-        match ret {
-            -1 => {
-                let err = std::io::Error::last_os_error();
-                Err(BackendError { status: ErrorStatus::KernelLaunch, context: format!("poll error: {err}").into() })
-            }
-            0 => Ok(false),
-            _ => Ok(pollfd.revents & libc::POLLIN != 0),
-        }
-    }
-
-    fn recv_with_timeout(&mut self, timeout_ms: u64) -> Result<String, BackendError> {
-        let mut attempts = 0;
-        let max_attempts = 3;
-        let poll_timeout = timeout_ms / max_attempts;
-
-        while attempts < max_attempts {
-            if self.poll_read(poll_timeout)? {
-                let mut line = String::new();
-                match self.stdout.read_line(&mut line) {
-                    Ok(0) => {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelLaunch,
-                            context: "tt-runtime closed stdout".into(),
-                        });
-                    }
-                    Ok(_) => {
-                        let trimmed = line.trim().to_string();
-                        // Skip non-JSON lines (UMD log messages leaking to stdout)
-                        if trimmed.starts_with('{') {
-                            return Ok(trimmed);
-                        }
-                        // Log line — keep reading
-                        continue;
-                    }
-                    Err(_) => {
-                        attempts += 1;
-                        continue;
-                    }
-                }
-            }
-            match self.child.try_wait() {
-                Ok(Some(status)) => {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelLaunch,
-                        context: format!("tt-runtime exited unexpectedly during read (status {status})").into(),
-                    });
-                }
-                Err(e) => {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelLaunch,
-                        context: format!("tt-runtime wait error during read: {e}").into(),
-                    });
-                }
-                Ok(None) => {
-                    attempts += 1;
-                }
-            }
-        }
-        Err(BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: format!("tt-runtime read timeout after {}ms", timeout_ms).into(),
-        })
-    }
-
-    /// Logical tensix compute grid (rows, cols), harvest-aware, reported
-    /// by the driver. Feeds `max_global_work_dims`, so const grid axes
-    /// are bounds-checked at compile and dynamic ones at launch.
-    fn grid(&mut self) -> Result<(u32, u32), BackendError> {
-        self.send(r#"{"cmd":"grid"}"#)?;
-        let resp = self.recv_with_timeout(self.timeout_ms)?;
-        if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap();
-            return Err(BackendError { status: ErrorStatus::Initialization, context: format!("grid error: {msg}").into() });
-        }
-        let parse = |key: &str| {
-            extract_json_str(&resp, key)
-                .ok_or_else(|| BackendError {
-                    status: ErrorStatus::Initialization,
-                    context: format!("grid: no {key} in response").into(),
-                })?
-                .parse::<u32>()
-                .map_err(|_| BackendError { status: ErrorStatus::Initialization, context: format!("grid: invalid {key}").into() })
-        };
-        Ok((parse("rows")?, parse("cols")?))
-    }
-
-    fn alloc_buf(&mut self, size: u64, tile_bytes: u64) -> Result<u32, BackendError> {
-        let cmd = format!(r#"{{"cmd":"alloc_buf","size":{size},"tile_bytes":{tile_bytes}}}"#);
-        self.send(&cmd)?;
-        let resp = self.recv_with_timeout(self.timeout_ms)?;
-        if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap();
-            return Err(BackendError {
-                status: ErrorStatus::MemoryAllocation,
-                context: format!("alloc_buf error: {msg}").into(),
-            });
-        }
-        let idx_str = extract_json_str(&resp, "index").ok_or_else(|| BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: "alloc_buf: no index in response".into(),
-        })?;
-        let idx: u32 = idx_str.parse().map_err(|_| BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: format!("alloc_buf: invalid index '{idx_str}'").into(),
-        })?;
-        Ok(idx)
-    }
-
-    fn free_buf(&mut self, dev_index: u32) -> Result<(), BackendError> {
-        let cmd = format!(r#"{{"cmd":"free_buf","index":{dev_index}}}"#);
-        self.send(&cmd)?;
-        let resp = self.recv_with_timeout(self.timeout_ms)?;
-        if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap();
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: format!("free_buf error: {msg}").into() });
-        }
-        Ok(())
-    }
-
-    fn write_buf(&mut self, dev_index: u32, shm_path: &str, size: u64) -> Result<(), BackendError> {
-        let cmd = format!(r#"{{"cmd":"write_buf","index":{dev_index},"shm_path":"{shm_path}","size":{size}}}"#);
-        self.send(&cmd)?;
-        let resp = self.recv_with_timeout(self.timeout_ms)?;
-        if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap();
-            return Err(BackendError { status: ErrorStatus::MemoryCopyH2P, context: format!("write_buf error: {msg}").into() });
-        }
-        Ok(())
-    }
-
-    fn read_buf(&mut self, dev_index: u32, shm_path: &str, size: u64) -> Result<(), BackendError> {
-        let cmd = format!(r#"{{"cmd":"read_buf","index":{dev_index},"shm_path":"{shm_path}","size":{size}}}"#);
-        self.send(&cmd)?;
-        let resp = self.recv_with_timeout(self.timeout_ms)?;
-        if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap();
-            return Err(BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("read_buf error: {msg}").into() });
-        }
-        Ok(())
-    }
-
-    fn compile_program(
-        &mut self,
-        id: u32,
-        reader_source: &str,
-        compute_source: &str,
-        writer_source: &str,
-        cb_config: &[(u32, u32, u32)],
-        n_params: u32,
-        reader_params: &[u32],
-        compute_params: &[u32],
-        writer_params: &[u32],
-        fp32_dest_acc_en: bool,
-    ) -> Result<(), BackendError> {
-        let reader_source_len = reader_source.len();
-        let compute_source_len = compute_source.len();
-        let writer_source_len = writer_source.len();
-        let n_cbs = cb_config.len();
-        let dest_acc = fp32_dest_acc_en as u32;
-        let mut cmd = format!(
-            r#"{{"cmd":"compile_program","id":{id},"reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"writer_source_len":{writer_source_len},"n_cbs":{n_cbs},"n_params":{n_params},"n_reader_params":{},"n_compute_params":{},"n_writer_params":{},"fp32_dest_acc":{dest_acc}"#,
-            reader_params.len(),
-            compute_params.len(),
-            writer_params.len()
-        );
-        for (i, p) in reader_params.iter().enumerate() {
-            cmd.push_str(&format!(r#","rp{i}":{p}"#));
-        }
-        for (i, p) in compute_params.iter().enumerate() {
-            cmd.push_str(&format!(r#","cp{i}":{p}"#));
-        }
-        for (i, p) in writer_params.iter().enumerate() {
-            cmd.push_str(&format!(r#","wp{i}":{p}"#));
-        }
-        for (i, (fmt, tb, nt)) in cb_config.iter().enumerate() {
-            cmd.push_str(&format!(r#","cb_idx{i}":{i},"cb_fmt{i}":{fmt},"cb_tb{i}":{tb},"cb_nt{i}":{nt}"#));
-        }
-        cmd.push('}');
-        self.send(&cmd)?;
-        self.stdin.write_all(reader_source.as_bytes()).map_err(|e| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("tt-runtime write reader: {e}").into(),
-        })?;
-        self.stdin.write_all(compute_source.as_bytes()).map_err(|e| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("tt-runtime write compute: {e}").into(),
-        })?;
-        self.stdin.write_all(writer_source.as_bytes()).map_err(|e| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("tt-runtime write writer: {e}").into(),
-        })?;
-        self.stdin.flush().map_err(|e| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("tt-runtime flush: {e}").into(),
-        })?;
-        let resp = self.recv_with_timeout(self.timeout_ms)?;
-        if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap();
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("tt-runtime compile error: {msg}").into(),
-            });
-        }
-        Ok(())
-    }
-
-    fn run(
-        &mut self,
-        id: u32,
-        src_indices: &[u32],
-        dst_indices: &[u32],
-        grid_dims: [u32; 2],
-        vars: &[(u32, u32)],
-    ) -> Result<(), BackendError> {
-        let mut cmd = format!(
-            r#"{{"cmd":"run","id":{id},"gd0":{gd0},"gd1":{gd1},"n_vars":{}"#,
-            vars.len(),
-            gd0 = grid_dims[0],
-            gd1 = grid_dims[1]
-        );
-        for (i, idx) in src_indices.iter().enumerate() {
-            cmd.push_str(&format!(r#","src{i}":{idx}"#));
-        }
-        for (i, idx) in dst_indices.iter().enumerate() {
-            cmd.push_str(&format!(r#","dst{i}":{idx}"#));
-        }
-        for (i, (ordinal, value)) in vars.iter().enumerate() {
-            cmd.push_str(&format!(r#","vord{i}":{ordinal},"vval{i}":{value}"#));
-        }
-        cmd.push('}');
-        self.send(&cmd)?;
-        let resp = self.recv_with_timeout(self.timeout_ms)?;
-        if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap();
-            return Err(BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("tt-runtime run error: {msg}").into(),
-            });
-        }
-        Ok(())
-    }
-}
-
-fn extract_json_str(json: &str, key: &str) -> Option<String> {
-    let k = json.find(&format!("\"{key}\""))?;
-    let after_colon = &json[k + key.len() + 3..]; // skip past "key":
-    let start = after_colon.find('"')? + 1;
-    let end = after_colon[start..].find('"')?;
-    Some(after_colon[start..start + end].to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +928,8 @@ fn extract_json_str(json: &str, key: &str) -> Option<String> {
 
 #[derive(Debug)]
 struct TTProgram {
+    /// Opaque shim id (per-device program cache index).
+    shim: u32,
     input_dtypes: Vec<DType>,
     output_dtypes: Vec<DType>,
     /// Group-range lengths in axis order (gws): Const resolved at compile,
@@ -794,7 +948,7 @@ struct TTProgram {
 pub struct TTDevice {
     device_info: Arc<DeviceInfo>,
     memory_pool: Pool,
-    runtime: Arc<Mutex<RuntimeProcess>>,
+    worker: Arc<RuntimeWorker>,
     programs: Slab<DeviceProgramId, TTProgram>,
 }
 
@@ -829,7 +983,7 @@ impl TTDevice {
         // gidx0 (row) / gidx1 (col). GlobalMut occupies the tail of the
         // head-order param list, so the ascending sort already yields the
         // Global|Variable-then-GlobalMut layout; see
-        // `Kernel::generate_tenstorrent` and `tt_runtime.cpp`
+        // `Kernel::generate_tenstorrent` and `tt_runtime_shim.cpp`
         // `section_rt_args` for the consumption side.
         let n_params = param_len as u32;
         // Group grid via the shared helper (same as CUDA/OpenCL/wgpu/HIP):
@@ -838,17 +992,16 @@ impl TTDevice {
         // from the Variable arg.
         let gws = gws_from_kernel(kernel, &self.device_info.max_global_work_dims)?;
 
-        // TEMP DEBUG: remove — full legacy end-to-end run under ZYX_TT_LEGACY_RUN.
-        let reader = program.reader_src.as_str();
+        let reader = program.reader_src.as_bytes();
         let reader_params = program.reader_params.as_slice();
-        let compute = program.compute_src.as_str();
+        let compute = program.compute_src.as_bytes();
         let compute_params = program.compute_params.as_slice();
-        let writer = program.writer_src.as_str();
+        let writer = program.writer_src.as_bytes();
         let writer_params = program.writer_params.as_slice();
         if debug_asm {
-            eprintln!("[tenstorrent2] reader:\n{reader}");
-            eprintln!("[tenstorrent2] compute:\n{compute}");
-            eprintln!("[tenstorrent2] writer:\n{writer}");
+            eprintln!("[tenstorrent] reader:\n{}", String::from_utf8_lossy(reader));
+            eprintln!("[tenstorrent] compute:\n{}", String::from_utf8_lossy(compute));
+            eprintln!("[tenstorrent] writer:\n{}", String::from_utf8_lossy(writer));
         }
 
         // DST geometry follows the codegen mode: fp32 iff the kernel
@@ -869,35 +1022,38 @@ impl TTDevice {
                 context: "tenstorrent grid cols do not fit u32".into(),
             })?,
         ];
-        let prog_id = self.programs.push(TTProgram {
+
+        let cb_indices: Vec<u32> = (0..cb_config.len() as u32).collect();
+        let cb_formats: Vec<u32> = cb_config.iter().map(|c| c.0).collect();
+        let cb_tile_bytes: Vec<u32> = cb_config.iter().map(|c| c.1).collect();
+        let cb_num_tiles: Vec<u32> = cb_config.iter().map(|c| c.2).collect();
+        let shim = self.worker.compile(
+            reader,
+            compute,
+            writer,
+            &cb_indices,
+            &cb_formats,
+            &cb_tile_bytes,
+            &cb_num_tiles,
+            reader_params,
+            compute_params,
+            writer_params,
+            n_params,
+            fp32_dest_acc_en,
+        )?;
+        Ok(self.programs.push(TTProgram {
+            shim,
             input_dtypes: input_dtypes.clone(),
             output_dtypes: output_dtypes.clone(),
             gws,
             max_grid,
-        });
-
-        {
-            let mut rt_guard = self.runtime.lock().unwrap();
-            rt_guard.compile_program(
-                prog_id.0,
-                reader,
-                compute,
-                writer,
-                cb_config,
-                n_params,
-                reader_params,
-                compute_params,
-                writer_params,
-                fp32_dest_acc_en,
-            )?;
-        }
-
-        Ok(prog_id)
+        }))
     }
 
     pub fn release(&mut self, program_id: DeviceProgramId) {
         if self.programs.contains_id(program_id) {
-            unsafe { self.programs.remove_and_return(program_id) };
+            let prog = unsafe { self.programs.remove_and_return(program_id) };
+            self.worker.destroy_program(prog.shim);
         }
     }
 
@@ -913,8 +1069,7 @@ impl TTDevice {
         } else {
             return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "invalid program id".into() });
         };
-
-        let rt = &self.runtime;
+        let shim = prog.shim;
 
         let n_inputs = prog.input_dtypes.len();
         let n_outputs = prog.output_dtypes.len();
@@ -939,22 +1094,22 @@ impl TTDevice {
         debug_assert!(n_params >= n_inputs + n_outputs, "tt launch: {n_params} args for {n_inputs} inputs + {n_outputs} outputs");
 
         let globalmut_start = n_params - n_outputs;
-        let mut src_indices: Vec<u32> = Vec::with_capacity(n_inputs);
-        let mut dst_indices: Vec<u32> = Vec::with_capacity(n_outputs);
+        let mut src_handles: Vec<*mut c_void> = Vec::with_capacity(n_inputs);
+        let mut dst_handles: Vec<*mut c_void> = Vec::with_capacity(n_outputs);
         // Variable params: (ordinal, value) pairs.
         let mut vars: Vec<(u32, u32)> = Vec::new();
         for (ordinal, arg) in args.iter().enumerate() {
             let ordinal = ordinal as u32;
             match arg {
                 LaunchArg::Buffer { chunk, .. } => {
-                    let idx = memory_pool.dev_index(*chunk).map_err(|e| BackendError {
+                    let handle = memory_pool.buffer_handle(*chunk).map_err(|e| BackendError {
                         status: ErrorStatus::KernelLaunch,
-                        context: format!("param {ordinal} dev_index: {e}").into(),
+                        context: format!("param {ordinal} handle: {e}").into(),
                     })?;
                     if ordinal as usize >= globalmut_start {
-                        dst_indices.push(idx);
+                        dst_handles.push(handle);
                     } else {
-                        src_indices.push(idx);
+                        src_handles.push(handle);
                     }
                 }
                 LaunchArg::Variable(value) => {
@@ -971,8 +1126,8 @@ impl TTDevice {
                 }
             }
         }
-        debug_assert_eq!(src_indices.len(), n_inputs, "tt launch: {} src args for {} Global params", src_indices.len(), n_inputs);
-        debug_assert_eq!(dst_indices.len(), n_outputs, "tt launch: {} dst args for {} outputs", dst_indices.len(), n_outputs);
+        debug_assert_eq!(src_handles.len(), n_inputs, "tt launch: {} src args for {} Global params", src_handles.len(), n_inputs);
+        debug_assert_eq!(dst_handles.len(), n_outputs, "tt launch: {} dst args for {} outputs", dst_handles.len(), n_outputs);
 
         // Grid dims from the group-range lengths (gws), in axis order.
         let mut grid_dims = [1u32, 1u32];
@@ -1007,14 +1162,11 @@ impl TTDevice {
                 });
             }
         }
-        let mut rt_guard = rt.lock().unwrap();
-        rt_guard.run(program_id.0, &src_indices, &dst_indices, grid_dims, &vars)?;
-
-        Ok(())
+        self.worker.run(shim, &src_handles, &dst_handles, grid_dims, &vars)
     }
 
     /// Timed launch for autotune. Returns the kernel's run time in nanos.
-    /// Tenstorrent launches are synchronous (the runtime blocks through
+    /// Tenstorrent launches are synchronous (the worker blocks through
     /// Finish), so a wall-clock bracket is already an uncontended
     /// measurement.
     pub fn launch_timed(&mut self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<u64, BackendError> {
@@ -1024,9 +1176,10 @@ impl TTDevice {
     }
 
     /// Copy executing a transfer into this device's pool: host uploads go
-    /// through the blocking shim upload, CUDA sources stage through a host
+    /// through the blocking worker upload, CUDA sources stage through a host
     /// temp (no peer DMA between vendors; CUDA PoolToHost drains first),
-    /// everything else is later work. Single-shard placements only.
+    /// TT same-device is a no-op and cross-device routes through host.
+    /// Single-shard placements only.
     pub fn copy(&self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
         debug_assert!(bytes >= 0, "TT copy of negative bytes");
         let [src_shard] = &src.shards[..] else {
@@ -1038,18 +1191,18 @@ impl TTDevice {
         debug_assert_eq!(dst_shard.pool, self.memory_pool, "TT copy destination is not on this device");
         debug_assert_eq!(src_shard.offset, 0, "TT copy source has a nonzero offset");
         debug_assert_eq!(dst_shard.offset, 0, "TT copy destination has a nonzero offset");
+        let Pool::TT(my_id) = self.memory_pool else {
+            unreachable!("TT copy on a non-TT device")
+        };
         match src_shard.pool {
             Pool::Host => {
-                // The host lock is held across the blocking shim upload: the
-                // source pointer stays valid. The shim never takes it.
+                // The host lock is held across the blocking worker upload: the
+                // source pointer stays valid. The worker never takes it.
                 let host = super::host::pool();
                 let hpool = super::lock(Pool::Host, host);
                 let src_ptr = hpool.get_buffer(src_shard.chunk).as_ptr();
                 let src_bytes = unsafe { std::slice::from_raw_parts(src_ptr, bytes as usize) };
-                let Pool::TT(id) = self.memory_pool else {
-                    unreachable!("TT copy on a non-TT device")
-                };
-                let tt = pool(id)?;
+                let tt = pool(my_id)?;
                 let mut tpool = super::lock(self.memory_pool, tt);
                 tpool.host_to_pool(src_bytes, dst_shard.chunk)?;
             }
@@ -1062,22 +1215,34 @@ impl TTDevice {
                 {
                     let cuda = super::cuda::pool(id)?;
                     let mut cpool = super::lock(Pool::Cuda(id), cuda);
-                    cpool.pool_to_host(
-                        src_shard.chunk,
-                        unsafe { std::slice::from_raw_parts_mut(tmp_ptr, bytes as usize) },
-                    )?;
+                    cpool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(tmp_ptr, bytes as usize) })?;
                 }
                 let tmp_bytes = unsafe { std::slice::from_raw_parts(tmp_ptr, bytes as usize) };
-                let Pool::TT(id) = self.memory_pool else {
-                    unreachable!("TT copy on a non-TT device")
-                };
-                let tt = pool(id)?;
+                let tt = pool(my_id)?;
                 let mut tpool = super::lock(self.memory_pool, tt);
                 let r = tpool.host_to_pool(tmp_bytes, dst_shard.chunk);
                 hpool.release(tmp);
                 r?;
             }
-            p => todo!("TT copy from {p:?}"),
+            Pool::TT(other_id) => {
+                if other_id == my_id {
+                    return Ok(());
+                }
+                let mut buf = vec![0u8; bytes as usize];
+                let other = pool(other_id)?;
+                super::lock(Pool::TT(other_id), other).pool_to_host(src_shard.chunk, &mut buf)?;
+                let tt = pool(my_id)?;
+                let mut tpool = super::lock(self.memory_pool, tt);
+                tpool.host_to_pool(&buf, dst_shard.chunk)?;
+            }
+            p => {
+                // Other device pools: route through host memory.
+                let mut buf = vec![0u8; bytes as usize];
+                p.pool_to_host(src_shard.chunk, &mut buf)?;
+                let tt = pool(my_id)?;
+                let mut tpool = super::lock(self.memory_pool, tt);
+                tpool.host_to_pool(&buf, dst_shard.chunk)?;
+            }
         }
         Ok(())
     }
@@ -1086,7 +1251,7 @@ impl TTDevice {
 /// Preplanned Tenstorrent partition: the ordered commands plus
 /// per-command death lists (slots whose final read is that command and
 /// which nothing later needs). Replay allocates unbound defs on the fly
-/// from their specs and launches programs back-to-back — the shim IPC is
+/// from their specs and launches programs back-to-back — the worker is
 /// synchronous, so no queues, no edges, no worker: program order is the
 /// ordering guarantee.
 #[derive(Debug)]
@@ -1152,7 +1317,9 @@ impl TTPartition {
                     let mut launch_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
                     for arg in args {
                         if let Some(placement) = resolved.get(arg) {
-                            let [shard] = &placement.shards[..] else { todo!("multi-shard slot in TT launch") };
+                            let [shard] = &placement.shards[..] else {
+                                todo!("multi-shard slot in TT launch")
+                            };
                             debug_assert_eq!(shard.pool, my_pool, "TT launch arg is not on this device");
                             debug_assert_eq!(shard.offset, 0, "TT launch arg has a nonzero offset");
                             launch_args.push(LaunchArg::Buffer { chunk: shard.chunk, offset: 0, len: shard.len });

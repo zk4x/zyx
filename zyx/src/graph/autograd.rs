@@ -63,7 +63,7 @@ impl Runtime {
             };
 
             let nid = cid;
-            if matches!(&self.graphs[graph_id].ops[nid].op, Op::Param { .. } | Op::Const { .. } | Op::Kernel { .. }) {
+            if matches!(&self.graphs[graph_id].ops[nid].op, Op::Param { .. } | Op::Const { .. } | Op::Program { .. }) {
                 continue;
             }
 
@@ -400,7 +400,7 @@ impl Runtime {
                     accum_grad(self, graph_id, &mut grads, vec, grad);
                 }
                 Op::Param { .. } | Op::Const { .. } => {}
-                Op::Kernel { .. } => todo!("backward through custom kernel"),
+                Op::Program { .. } => todo!("backward through custom kernel"),
                 Op::Custom { .. } => todo!("backward through custom kernel"),
                 Op::Storage { .. }
                 | Op::GEP { .. }

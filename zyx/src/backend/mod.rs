@@ -277,9 +277,7 @@ impl CmdQueue {
         }
         let live_out = suffix[end].clone();
         match *run_dev {
-            Dev::C => {
-                partitions.push(PlanPartition::C(c::CDevice::schedule(std::mem::take(run), outputs, live_out)))
-            }
+            Dev::C => partitions.push(PlanPartition::C(c::CDevice::schedule(std::mem::take(run), outputs, live_out))),
             Dev::Cblas => {
                 partitions.push(PlanPartition::Cblas(cblas::CblasDevice::schedule(std::mem::take(run), outputs, live_out)))
             }
@@ -345,10 +343,8 @@ impl Plan {
                     for (idx, cmd) in cmds.iter().enumerate() {
                         match cmd {
                             Cmd::Alias { class, to } => {
-                                let placed = resolved
-                                    .get(to)
-                                    .unwrap_or_else(|| panic!("alias replay: target {to:?} is unplaced"))
-                                    .clone();
+                                let placed =
+                                    resolved.get(to).unwrap_or_else(|| panic!("alias replay: target {to:?} is unplaced")).clone();
                                 resolved.insert(*class, placed);
                             }
                             Cmd::Launch { .. } => {

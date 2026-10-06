@@ -2476,8 +2476,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                                     Some(region) => region,
                                                     None => {
                                                         let el = Dim::from(dtype.bit_size() / 8);
-                                                        let bytes =
-                                                            dims.iter().map(|d| d.eval(&vars_map)).fold(el, |a, b| a * b);
+                                                        let bytes = dims.iter().map(|d| d.eval(&vars_map)).fold(el, |a, b| a * b);
                                                         if bytes < 0 {
                                                             return Err(BackendError {
                                                                 status: ErrorStatus::MemoryAllocation,

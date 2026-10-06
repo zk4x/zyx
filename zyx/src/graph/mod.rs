@@ -431,7 +431,7 @@ impl Graph {
         let mut deps = Vec::new();
         for nid in self.class_nodes(cid) {
             match self.ops[nid].op {
-                Op::Kernel { inputs: kin, .. } => {
+                Op::Program { inputs: kin, .. } => {
                     if WITHOUT_KERNELS && !inputs.contains(&cid) {
                         continue;
                     }
@@ -485,7 +485,7 @@ impl Graph {
         let mut kdeps: Vec<OpId> = Vec::new();
         for nid in self.class_nodes(cid) {
             match self.ops[nid].op {
-                Op::Kernel { inputs, .. } => {
+                Op::Program { inputs, .. } => {
                     let Op::Stack { ref ops } = self.ops[inputs].op else {
                         unreachable!()
                     };
@@ -579,7 +579,7 @@ impl Graph {
                     Op::Unary { uop, .. } => format!("Unary {:?}", uop),
                     Op::Cast { dtype, .. } => format!("Cast {:?}", dtype),
                     Op::Bitcast { dtype, .. } => format!("Bitcast {:?}", dtype),
-                    Op::Kernel { .. } => format!("Kernel"),
+                    Op::Program { .. } => format!("Kernel"),
                     Op::Custom { .. } => format!("Custom"),
                     Op::Reshape { .. } => "Reshape".into(),
                     Op::Expand { .. } => "Expand".into(),
@@ -632,7 +632,7 @@ impl Graph {
         let mut emitted: Set<OpId> = Set::default();
         for &nid in chosen {
             let (device_id, inputs, class_of) = match &self.ops[nid].op {
-                Op::Kernel { info, inputs, .. } => {
+                Op::Program { info, inputs, .. } => {
                     debug_assert_ne!(info.0.dev, Dev::Auto);
                     (info.0.dev, inputs.clone(), self.ops[nid].class_of)
                 }
@@ -647,7 +647,7 @@ impl Graph {
                 _ => unreachable!("add_memory_ops runs on extracted nodes, which are only Kernel/ToDevice"),
             };
             let dev_pool = device_id.pool();
-            if let Op::Kernel { outputs, .. } = self.ops[nid].op {
+            if let Op::Program { outputs, .. } = self.ops[nid].op {
                 let Op::Stack { ref ops } = self.ops[outputs].op else {
                     unreachable!()
                 };
@@ -683,7 +683,7 @@ impl Graph {
             }
             if let Some(new_inputs) = new_inputs {
                 let stack = self.push_op(Op::Stack { ops: new_inputs.into_boxed_slice() });
-                if let Op::Kernel { inputs: node_inputs, .. } = &mut self.ops[nid].op {
+                if let Op::Program { inputs: node_inputs, .. } = &mut self.ops[nid].op {
                     *node_inputs = stack;
                 }
             }
@@ -769,7 +769,7 @@ impl Graph {
         for &cid in &order {
             for nid in self.class_nodes(cid) {
                 let (time, inputs, outputs) = match &self.ops[nid].op {
-                    Op::Kernel { inputs, outputs, info, .. } => {
+                    Op::Program { inputs, outputs, info, .. } => {
                         let time = info.1;
                         let Op::Stack { ref ops } = self.ops[*inputs].op else {
                             unreachable!("extract: kernel inputs must be a Stack class, got {:?}", self.ops[*inputs].op)
@@ -981,7 +981,7 @@ impl Graph {
                     needed[cid.0 as usize] = true;
                     if let Some(nid) = producer[cid.0 as usize] {
                         match &self.ops[nid].op {
-                            Op::Kernel { inputs, .. } => {
+                            Op::Program { inputs, .. } => {
                                 let Op::Stack { ref ops } = self.ops[*inputs].op else {
                                     unreachable!("extract: kernel inputs must be a Stack class, got {:?}", self.ops[*inputs].op)
                                 };
@@ -1140,7 +1140,7 @@ impl Graph {
                 s
             }
             Op::Store { dst, .. } => self.shape(*dst),
-            Op::Kernel { outputs, .. } => {
+            Op::Program { outputs, .. } => {
                 let Op::Stack { ref ops } = self.ops[*outputs].op else {
                     unreachable!("shape: kernel outputs must be a Stack class, got {:?}", self.ops[*outputs].op)
                 };
@@ -1319,7 +1319,7 @@ impl Graph {
             Op::Cast { dtype, .. } => *dtype,
             Op::Bitcast { dtype, .. } => *dtype,
             Op::Store { dst, .. } => self.dtype(*dst),
-            Op::Kernel { outputs, .. } => {
+            Op::Program { outputs, .. } => {
                 let Op::Stack { ref ops } = self.ops[*outputs].op else {
                     unreachable!("dtype: kernel outputs must be a Stack class, got {:?}", self.ops[*outputs].op)
                 };
@@ -1432,7 +1432,7 @@ impl Graph {
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
-                | Op::Kernel { .. }
+                | Op::Program { .. }
                 | Op::Custom { .. } => return None,
             }
             order.push(node_id);
@@ -1753,7 +1753,7 @@ impl Runtime {
                     | Op::After { .. }
                     | Op::ToDevice { .. }
                     | Op::Contiguous { .. }
-                    | Op::Kernel { .. }
+                    | Op::Program { .. }
                     | Op::Custom(_) => {
                         unreachable!("promote_to_graph: eager kernel op {oid:?}")
                     }
@@ -1890,7 +1890,7 @@ impl Runtime {
                                     | Op::After { .. }
                                     | Op::ToDevice { .. }
                                     | Op::Contiguous { .. }
-                                    | Op::Kernel { .. }
+                                    | Op::Program { .. }
                                     | Op::Custom(_) => {
                                         unreachable!("promote_to_graph: dim op {entry:?} in param shape stack")
                                     }
@@ -2378,7 +2378,7 @@ impl Runtime {
                 let g = &mut self.graphs[graph_id];
                 let inputs = g.push_op(Op::Stack { ops: ek.loads.clone().into() });
                 let outputs = g.push_op(Op::Stack { ops: ek.stores.clone().into() });
-                g.mint_node(Op::Kernel { inputs, outputs, info: Box::new((prog, timing)) }, class_of);
+                g.mint_node(Op::Program { inputs, outputs, info: Box::new((prog, timing)) }, class_of);
             }
         }
 
@@ -2389,7 +2389,7 @@ impl Runtime {
                     if !seen.insert(nid) {
                         continue;
                     }
-                    if let Op::Kernel { info, .. } = &self.graphs[graph_id].ops[nid].op {
+                    if let Op::Program { info, .. } = &self.graphs[graph_id].ops[nid].op {
                         debug_assert!(info.1 > 0, "Kernel node {nid:?} has zero cost after autotune");
                     }
                 }
@@ -2480,7 +2480,7 @@ impl Runtime {
         let mut pool_kernel_outputs: Map<Pool, Set<OpId>> = Map::default();
         for cid in self.graphs[graph_id].ops.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
             for nid in self.graphs[graph_id].class_nodes(cid) {
-                if let Op::Kernel { info, .. } = &self.graphs[graph_id].ops[nid].op {
+                if let Op::Program { info, .. } = &self.graphs[graph_id].ops[nid].op {
                     let pool = info.0.dev.pool();
                     pool_kernel_outputs.entry(pool).or_default().insert(cid);
                 }
@@ -2568,7 +2568,7 @@ impl Runtime {
         // Pool of the kernel that stores each alias class.
         let mut store_pool: Map<OpId, Pool> = Map::default();
         for &nid in &nodes {
-            if let Op::Kernel { outputs, ref info, .. } = graph.ops[nid].op {
+            if let Op::Program { outputs, ref info, .. } = graph.ops[nid].op {
                 let Op::Stack { ops: outputs } = &graph.ops[outputs].op else {
                     unreachable!()
                 };
@@ -2603,7 +2603,7 @@ impl Runtime {
         let mut emitted: Set<OpId> = Set::default();
         for &nid in &nodes {
             match graph.ops[nid].op {
-                Op::Kernel { inputs, outputs, ref info, .. } => {
+                Op::Program { inputs, outputs, ref info, .. } => {
                     let Op::Stack { ops: inputs } = &graph.ops[inputs].op else {
                         unreachable!()
                     };

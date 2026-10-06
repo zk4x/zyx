@@ -75,7 +75,7 @@ impl Kernel {
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
-                | Op::Kernel { .. }
+                | Op::Program { .. }
                 | Op::Custom(_) => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,

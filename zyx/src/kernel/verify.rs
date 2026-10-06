@@ -113,7 +113,7 @@ impl Kernel {
                     | Op::Binary { .. }
                     | Op::Stack { .. } => {}
                     // Graph-only ops must never reach kernel IR.
-                    Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                         unreachable!("graph-only op at {scan:?} in kernel IR")
                     }
                 }
@@ -604,7 +604,7 @@ impl Kernel {
                     stack.pop();
                 }
                 Op::Barrier => {}
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     todo!("verify: graph-only op in ordered kernel")
                 }
             }

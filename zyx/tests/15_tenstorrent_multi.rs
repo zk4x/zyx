@@ -2442,7 +2442,5 @@ fn run_tt_unary(
 
 #[test]
 fn tenstorrent_exp_bf16() -> Result<(), ZyxError> {
-    run_tt_unary("tenstorrent_exp_bf16", DType::BF16, 3e-2, tt_range(), |x: f32| x.exp(), |k: &mut Kernel, x: OpId| {
-        k.exp(x)
-    })
+    run_tt_unary("tenstorrent_exp_bf16", DType::BF16, 3e-2, tt_range(), |x: f32| x.exp(), |k: &mut Kernel, x: OpId| k.exp(x))
 }

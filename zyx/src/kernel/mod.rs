@@ -327,7 +327,7 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { .. }) => {
                     unreachable!()
                 }
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     unreachable!()
                 }
                 Op::Const(x) => {
@@ -569,7 +569,7 @@ impl Kernel {
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
                 | Op::TT(TTOp::PopFront { .. }) => todo!("layout: CB sync op produces no value"),
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     todo!()
                 }
                 Op::Reshape { x, .. }
@@ -643,7 +643,7 @@ impl Kernel {
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
                 | Op::TT(TTOp::PopFront { .. }) => todo!("dtype: CB sync op produces no value"),
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     todo!()
                 }
                 Op::Reshape { x, .. }

@@ -4293,11 +4293,7 @@ impl Runtime {
                 ref t => panic!("materialize: store {tid} has no buffer for the launch queue: {t:?}"),
             };
             boundary.insert(slot, buf);
-            outputs.push((
-                slot,
-                dtypes[&tid],
-                self.resolve_shape(tid).iter().map(|&d| PlanDim::Const(d)).collect::<Vec<_>>(),
-            ));
+            outputs.push((slot, dtypes[&tid], self.resolve_shape(tid).iter().map(|&d| PlanDim::Const(d)).collect::<Vec<_>>()));
             args.push(slot);
         }
         queue.push(Cmd::Launch { program: ProgramId { dev: dev_id, program_id: dev_prog }, args, outputs });

@@ -1400,8 +1400,7 @@ impl Runtime {
             // do it on the normal path) and launch directly.
             let empty_vars = Map::default();
             for (slot, dtype, dims) in &outputs {
-                let bytes =
-                    dims.iter().map(|d| d.eval(&empty_vars)).product::<Dim>() * Dim::from(dtype.bit_size() / 8);
+                let bytes = dims.iter().map(|d| d.eval(&empty_vars)).product::<Dim>() * Dim::from(dtype.bit_size() / 8);
                 let buf = pool_id.allocate(bytes)?;
                 boundary.insert(
                     *slot,
@@ -1411,7 +1410,9 @@ impl Runtime {
             let mut launch_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
             for &slot in &args {
                 if let Some(buf) = boundary.get(&slot) {
-                    let [shard] = &buf.shards[..] else { todo!("multi-shard slot in custom launch") };
+                    let [shard] = &buf.shards[..] else {
+                        todo!("multi-shard slot in custom launch")
+                    };
                     launch_args.push(LaunchArg::Buffer { chunk: shard.chunk, offset: shard.offset, len: shard.len });
                 } else if let Some(&value) = vars.get(&slot) {
                     launch_args.push(LaunchArg::Variable(value));

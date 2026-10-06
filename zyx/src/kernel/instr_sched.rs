@@ -206,7 +206,7 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute) => {}
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     todo!()
                 }
                 Op::Range { kind, .. } => match kind {

@@ -126,7 +126,7 @@ impl Graph {
                 // The same holds for user custom kernels (`Node::Custom` and its
                 // lowered `Node::Kernel` twin): their inputs are materialized via
                 // `kernel_inputs` in `fill_gaps`, not via reference counting here.
-                if matches!(&self.ops[nid].op, Op::Kernel { .. } | Op::Custom { .. }) {
+                if matches!(&self.ops[nid].op, Op::Program { .. } | Op::Custom { .. }) {
                     continue;
                 }
                 // Everything counts — data operands and descriptor fields
@@ -238,7 +238,7 @@ impl Graph {
                         // Output selection of a multi-output kernel: the
                         // Custom kernel stored this buffer — consumers load
                         // it like any AOT kernel output.
-                        Op::Custom { .. } | Op::Kernel { .. } => {
+                        Op::Custom { .. } | Op::Program { .. } => {
                             let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
                             visited.insert(cid, (kid, op_id));
                         }
@@ -953,7 +953,7 @@ impl Graph {
                         let (kid, op_id) = self.add_store(cid, kid, cast_op, &mut visited, &mut rcs);
                         visited.insert(cid, (kid, op_id));
                     }
-                    Op::Kernel { .. } => {}
+                    Op::Program { .. } => {}
                     // Lowered by `lower_custom_kernels` before kernelize runs:
                     // the `Node::Kernel` twin carries the producer edge, and the
                     // Custom class is always a region input (its output class is
@@ -967,7 +967,7 @@ impl Graph {
             // backend kernel, not by this fused kernel. Materialize the class into
             // storage and hand off to a fresh load kernel, so downstream ops (e.g.
             // relu) start from the stored class instead of fusing into this kernel.
-            if !inputs.contains(&cid) && self.class_nodes(cid).any(|nid| matches!(&self.ops[nid].op, Op::Kernel { .. })) {
+            if !inputs.contains(&cid) && self.class_nodes(cid).any(|nid| matches!(&self.ops[nid].op, Op::Program { .. })) {
                 let (kid, op_id) = visited[&cid];
                 let _ = self.add_store(cid, kid, op_id, &mut visited, &rcs);
             }
@@ -994,7 +994,7 @@ impl Graph {
                 // fresh-buffer store. AOT kernel classes are already materialized
                 // into storage by the backend kernel — storing the load kernel
                 // again would produce a self-copying kernel.
-                if !self.class_nodes(cid).any(|nid| matches!(&self.ops[nid].op, Op::After { .. } | Op::Kernel { .. })) {
+                if !self.class_nodes(cid).any(|nid| matches!(&self.ops[nid].op, Op::After { .. } | Op::Program { .. })) {
                     (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs);
                 }
                 *rcs.get_mut(&cid).unwrap() -= 1;
@@ -1390,7 +1390,7 @@ impl Graph {
                     // heading it), mirroring backend kernel twins whose
                     // `class_of` is the output class — downstream discovery of
                     // the twin's inputs walks `class_nodes(output_class)`.
-                    self.mint_node(Op::Kernel { inputs, outputs, info }, class_of);
+                    self.mint_node(Op::Program { inputs, outputs, info }, class_of);
                 }
                 _ => {}
             };
@@ -1417,7 +1417,7 @@ impl Graph {
         let mut kernel_inputs: Set<OpId> = Set::default();
         for &cid in active_outputs {
             for nid in self.class_nodes(cid) {
-                if let Op::Kernel { inputs: kin, .. } = &self.ops[nid].op {
+                if let Op::Program { inputs: kin, .. } = &self.ops[nid].op {
                     let Op::Stack { ref ops } = self.ops[*kin].op else {
                         unreachable!()
                     };

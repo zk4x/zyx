@@ -328,7 +328,7 @@ pub enum Op {
     /// the input/output classes — the lists are shared nodes, not per-kernel
     /// `Box` allocations. `info` is boxed so `Op` keeps its 24-byte budget.
     /// Timing is ignored by `Eq`/`Hash` (mirrors the former `Node::Kernel`).
-    Kernel {
+    Program {
         /// Input classes (`Stack` op).
         inputs: OpId,
         /// Output classes (`Stack` op).
@@ -570,7 +570,7 @@ impl Op {
             Op::After { .. } => 26,
             Op::ToDevice { .. } => 27,
             Op::Contiguous { .. } => 28,
-            Op::Kernel { .. } => 29,
+            Op::Program { .. } => 29,
             Op::Custom(_) => 30,
             Op::Reshape { .. } => 31,
             Op::Expand { .. } => 32,
@@ -621,7 +621,7 @@ impl PartialEq for Op {
             (Op::After { .. }, Op::After { .. }) => false,
             (Op::ToDevice { x: a, device: ad, .. }, Op::ToDevice { x: b, device: bd, .. }) => a == b && ad == bd,
             (Op::Contiguous { x: a }, Op::Contiguous { x: b }) => a == b,
-            (Op::Kernel { inputs: ai, outputs: ao, info: a }, Op::Kernel { inputs: bi, outputs: bo, info: b }) => {
+            (Op::Program { inputs: ai, outputs: ao, info: a }, Op::Program { inputs: bi, outputs: bo, info: b }) => {
                 ai == bi && ao == bo && a.0 == b.0
             }
             (Op::Custom(_), Op::Custom(_)) => false,
@@ -734,7 +734,7 @@ impl Hash for Op {
                 device.hash(state);
             }
             Op::Contiguous { x } => x.hash(state),
-            Op::Kernel { inputs, outputs, info } => {
+            Op::Program { inputs, outputs, info } => {
                 inputs.hash(state);
                 outputs.hash(state);
                 info.0.hash(state);
@@ -821,7 +821,7 @@ impl Ord for Op {
             (Op::After { .. }, Op::After { .. }) => std::cmp::Ordering::Equal,
             (Op::ToDevice { x: a, device: ad, .. }, Op::ToDevice { x: b, device: bd, .. }) => (a, ad).cmp(&(b, bd)),
             (Op::Contiguous { x: a }, Op::Contiguous { x: b }) => a.cmp(b),
-            (Op::Kernel { inputs: ai, outputs: ao, info: a }, Op::Kernel { inputs: bi, outputs: bo, info: b }) => {
+            (Op::Program { inputs: ai, outputs: ao, info: a }, Op::Program { inputs: bi, outputs: bo, info: b }) => {
                 (ai, ao, a.0).cmp(&(bi, bo, b.0))
             }
             (Op::Custom(_), Op::Custom(_)) => std::cmp::Ordering::Equal,
@@ -1179,7 +1179,7 @@ impl Op {
             Op::After { x, dep } => vec![*x, *dep],
             Op::ToDevice { x, .. } => vec![*x],
             Op::Contiguous { x } => vec![*x],
-            Op::Kernel { .. } | Op::Custom(_) => {
+            Op::Program { .. } | Op::Custom(_) => {
                 todo!("parameters: graph-only op in ordered kernel")
             }
         }
@@ -1237,7 +1237,7 @@ impl Op {
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().collect(),
             Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
             Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
-            Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+            Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                 todo!("parameters_mut: graph-only op in ordered kernel")
             }
         }

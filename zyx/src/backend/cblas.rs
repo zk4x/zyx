@@ -235,7 +235,7 @@ impl CblasDevice {
             let inputs = graph.push_op(Op::Stack { ops: Box::new([mm.a, mm.b]) });
             let outputs = graph.push_op(Op::Stack { ops: Box::new([mm.out]) });
             graph.mint_node(
-                Op::Kernel { inputs, outputs, info: Box::new((ProgramId { dev: Dev::Cblas, program_id }, 1)) },
+                Op::Program { inputs, outputs, info: Box::new((ProgramId { dev: Dev::Cblas, program_id }, 1)) },
                 mm.out,
             );
         }

@@ -96,7 +96,7 @@ impl Kernel {
                     | Op::Reduce { .. } => {
                         unreachable!()
                     }
-                    Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                    Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                         unreachable!()
                     }
                     Op::Stack { ref ops } => {
@@ -327,7 +327,7 @@ impl Kernel {
                 | Op::Reshape { .. }
                 | Op::Pad { .. } => todo!(),
                 Op::Reduce { .. } => todo!(),
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     todo!()
                 }
             };
@@ -662,7 +662,7 @@ impl Kernel {
                 Op::Barrier => {
                     wi_barriers += loop_mult;
                 }
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     todo!()
                 }
             }

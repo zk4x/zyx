@@ -81,7 +81,7 @@ impl Display for Kernel {
                 op_id
             };
             match self.ops[op_id].op {
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     todo!()
                 }
                 Op::Reduce { x, rop, reduce_axis } => {

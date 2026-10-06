@@ -61,7 +61,7 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { .. }) => {
                     unreachable!()
                 }
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     unreachable!()
                 }
                 Op::TT(TTOp::MatmulTile { x, y, acc }) => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&acc]),
@@ -147,7 +147,7 @@ impl Kernel {
                 | Op::Reduce { .. } => {
                     unreachable!()
                 }
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Kernel { .. } | Op::Custom(_) => {
+                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Custom(_) => {
                     unreachable!()
                 }
                 Op::TT(TTOp::ReduceTile { x, scaler, acc, .. }) => loop_dep[x].max(loop_dep[scaler]).max(loop_dep[acc]),

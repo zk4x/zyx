@@ -12,14 +12,9 @@ use std::{
 };
 
 use super::ChunkId;
-use crate::{
-    Map, Set,
-    error::BackendError,
-    shape::Dim,
-    slab::Slab,
-};
 #[cfg(windows)]
 use crate::error::ErrorStatus;
+use crate::{Map, Set, error::BackendError, shape::Dim, slab::Slab};
 use std::sync::Mutex;
 
 // ── Raw mmap bindings (unix) ──────────────────────────────────────────────────
@@ -116,16 +111,8 @@ impl DiskMemoryPool {
                 let base = if len == 0 {
                     core::ptr::null_mut()
                 } else {
-                    let base = unsafe {
-                        mmap::mmap(
-                            core::ptr::null_mut(),
-                            len,
-                            mmap::PROT_READ,
-                            mmap::MAP_SHARED,
-                            file.as_raw_fd(),
-                            0,
-                        )
-                    };
+                    let base =
+                        unsafe { mmap::mmap(core::ptr::null_mut(), len, mmap::PROT_READ, mmap::MAP_SHARED, file.as_raw_fd(), 0) };
                     assert!(base != mmap::MAP_FAILED, "disk: mmap failed");
                     base.cast()
                 };
@@ -167,10 +154,7 @@ impl DiskMemoryPool {
             if unmap {
                 let mapping = self.mappings.remove(&path).expect("disk: just-checked mapping is missing");
                 if mapping.len > 0 {
-                    assert!(
-                        unsafe { mmap::munmap(mapping.base.cast(), mapping.len) } == 0,
-                        "disk: munmap failed"
-                    );
+                    assert!(unsafe { mmap::munmap(mapping.base.cast(), mapping.len) } == 0, "disk: munmap failed");
                 }
             }
         }
@@ -197,11 +181,7 @@ impl DiskMemoryPool {
                 "disk read runs past the end of the mapped file"
             );
             unsafe {
-                core::ptr::copy_nonoverlapping(
-                    mapping.base.add(buffer.offset_bytes as usize),
-                    dst.as_mut_ptr(),
-                    dst.len(),
-                );
+                core::ptr::copy_nonoverlapping(mapping.base.add(buffer.offset_bytes as usize), dst.as_mut_ptr(), dst.len());
             }
             return Ok(());
         }

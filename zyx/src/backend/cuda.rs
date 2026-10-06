@@ -1831,7 +1831,7 @@ impl CUDADevice {
             let inputs = graph.push_op(Op::Stack { ops: Box::new([mm.a, mm.b]) });
             let outputs = graph.push_op(Op::Stack { ops: Box::new([mm.out]) });
             graph.mint_node(
-                Op::Kernel {
+                Op::Program {
                     inputs,
                     outputs,
                     info: Box::new((
