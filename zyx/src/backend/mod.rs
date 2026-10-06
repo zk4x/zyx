@@ -210,7 +210,7 @@ impl CmdQueue {
             suffix[idx].extend(cmd.reads());
         }
         let mut partitions: Vec<PlanPartition> = Vec::new();
-        let mut run_dev: Option<Dev> = None;
+        let mut run_dev: Dev = Dev::Auto;
         let mut run: Vec<Cmd> = Vec::new();
         // Aliases before the first launch of a run wait in `pending` and
         // join the next run in program order.
@@ -241,10 +241,10 @@ impl CmdQueue {
                     });
                 }
                 Cmd::Launch { program, args, outputs: specs } => {
-                    if run_dev.is_some_and(|d| d != program.dev) {
+                    if run_dev != Dev::Auto && run_dev != program.dev {
                         Self::flush_run(&mut partitions, &mut run_dev, &mut run, idx, outputs, &suffix);
                     }
-                    run_dev = Some(program.dev);
+                    run_dev = program.dev;
                     run.extend(pending.drain(..));
                     run.push(Cmd::Launch { program, args, outputs: specs });
                 }
@@ -265,40 +265,51 @@ impl CmdQueue {
     /// binds needing no compute, so it runs anywhere: C.
     fn flush_run(
         partitions: &mut Vec<PlanPartition>,
-        run_dev: &mut Option<Dev>,
+        run_dev: &mut Dev,
         run: &mut Vec<Cmd>,
         end: usize,
         outputs: &Set<OpId>,
         suffix: &[Set<OpId>],
     ) {
         if run.is_empty() {
-            *run_dev = None;
+            *run_dev = Dev::Auto;
             return;
         }
         let live_out = suffix[end].clone();
         match *run_dev {
-            Some(Dev::C) | None => {
-                partitions.push(PlanPartition::Cpu(c::CDevice::schedule(std::mem::take(run), outputs, live_out)))
+            Dev::C => {
+                partitions.push(PlanPartition::C(c::CDevice::schedule(std::mem::take(run), outputs, live_out)))
             }
-            Some(Dev::Cblas) => {
+            Dev::Cblas => {
                 partitions.push(PlanPartition::Cblas(cblas::CblasDevice::schedule(std::mem::take(run), outputs, live_out)))
             }
-            Some(Dev::Cuda(id)) => {
+            Dev::Cuda(id) => {
                 partitions.push(PlanPartition::Cuda(cuda::CUDADevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
-            Some(Dev::OpenCL(id)) => {
+            Dev::OpenCL(id) => {
                 partitions.push(PlanPartition::OpenCL(opencl::OpenCLDevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
-            Some(Dev::Vulkan(id)) => {
+            Dev::Vulkan(id) => {
                 partitions.push(PlanPartition::Vulkan(vulkan::VulkanDevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
             #[cfg(feature = "tenstorrent")]
-            Some(Dev::TT(id)) => {
+            Dev::TT(id) => {
                 partitions.push(PlanPartition::TT(tenstorrent::TTDevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
-            Some(dev) => todo!("schedule launch run for {dev:?}"),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(_) => todo!("schedule launch run for wgpu"),
+            Dev::Host => {
+                unreachable!("schedule launch run for Host: it never compiles")
+            }
+            Dev::Auto => {
+                // Deviceless run: only aliases (any Launch would have set
+                // a device). Deaths come from the same pure last-use
+                // computation as C runs; replay needs no device.
+                let cpu = c::CDevice::schedule(std::mem::take(run), outputs, live_out);
+                partitions.push(PlanPartition::Alias { cmds: cpu.cmds, deaths: cpu.deaths });
+            }
         }
-        *run_dev = None;
+        *run_dev = Dev::Auto;
     }
 }
 
@@ -322,10 +333,35 @@ impl Plan {
         let mut resolved = boundary;
         for partition in &self.partitions {
             match partition {
-                PlanPartition::Cpu(cpu) => {
+                PlanPartition::C(cpu) => {
                     let device = c::device()?;
                     let mut dev = dlock(Dev::C, &device);
                     cpu.replay(&mut dev, &mut resolved, vars)?;
+                }
+                PlanPartition::Alias { cmds, deaths } => {
+                    // Deviceless: only alias binds plus death drops. No
+                    // device init, so this works with every compute
+                    // backend configured out.
+                    for (idx, cmd) in cmds.iter().enumerate() {
+                        match cmd {
+                            Cmd::Alias { class, to } => {
+                                let placed = resolved
+                                    .get(to)
+                                    .unwrap_or_else(|| panic!("alias replay: target {to:?} is unplaced"))
+                                    .clone();
+                                resolved.insert(*class, placed);
+                            }
+                            Cmd::Launch { .. } => {
+                                unreachable!("alias-only partition holds a launch")
+                            }
+                            Cmd::Copy { .. } => {
+                                unreachable!("copies are Copy partitions, never device runs")
+                            }
+                        }
+                        for dead in &deaths[idx] {
+                            resolved.remove(dead);
+                        }
+                    }
                 }
                 PlanPartition::Cblas(cblas) => {
                     let device = cblas::device()?;
@@ -398,7 +434,16 @@ impl Plan {
                                 let dev = dlock(Dev::TT(*id), &device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
-                            _ => todo!("replay copy into {dst:?}"),
+                            Dev::Cblas => {
+                                unreachable!("replay copy into CBLAS: it owns no pool, schedule never emits it")
+                            }
+                            Dev::Auto => {
+                                unreachable!("replay copy into Auto: copies always name a concrete pool")
+                            }
+                            #[cfg(feature = "wgpu")]
+                            Dev::WGPU(_) => {
+                                unreachable!("replay copy into WGPU: schedule todos on WGPU copies first")
+                            }
                         }
                         if op.free_src {
                             resolved.remove(&op.src);
@@ -436,7 +481,7 @@ pub(crate) enum AllocPlan {
 
 pub(crate) enum PlanPartition {
     /// Ordered CPU commands with death lists, executed by the C device.
-    Cpu(c::CPartition),
+    C(c::CPartition),
     /// Ordered BLAS commands with death lists, executed by the CBLAS device.
     Cblas(cblas::CblasPartition),
     /// Ordered CUDA commands with death lists, executed by a CUDA device
@@ -458,6 +503,10 @@ pub(crate) enum PlanPartition {
     TT(tenstorrent::TTPartition),
     /// Cross-pool copies, executed by the destination device.
     Copy { dst: Dev, ops: Vec<CopyOp> },
+    /// Deviceless alias binds with death lists (a run with no launches).
+    /// Replays with no device init, so it works with every compute
+    /// backend configured out.
+    Alias { cmds: Vec<Cmd>, deaths: Vec<Vec<OpId>> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -702,9 +751,17 @@ impl Dev {
     /// kernels in extraction. No-op for devices without AOT kernels.
     pub fn match_graph(self, graph: &mut Graph, outputs: &BTreeSet<OpId>) {
         match self {
+            Dev::Auto => {}
+            Dev::C => {}
             Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().match_graph(graph, outputs),
+            Dev::Host => {}
             Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).match_graph(graph, outputs),
-            _ => {}
+            Dev::OpenCL(_) => {}
+            Dev::Vulkan(_) => {}
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(_) => {}
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(_) => {}
         }
         // A vendor pass adds Node::Kernel nodes with input edges; those must
         // never close a dependency cycle over the class graph.

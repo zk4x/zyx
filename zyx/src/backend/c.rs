@@ -64,8 +64,8 @@ pub struct CDevice {
 /// no address resolution beyond direct map indexing.
 #[derive(Debug)]
 pub(crate) struct CPartition {
-    cmds: Vec<Cmd>,
-    deaths: Vec<Vec<OpId>>,
+    pub(crate) cmds: Vec<Cmd>,
+    pub(crate) deaths: Vec<Vec<OpId>>,
 }
 
 impl CPartition {
