@@ -1029,18 +1029,56 @@ impl Graph {
             stack.extend(add);
         }
 
-        let mut result = Vec::new();
-        let mut seen: Set<OpId> = Set::default();
-        for &cid in &order {
+        // Node-topological emission order. Class order alone misorders
+        // multi-output kernels on either side: a consumer's latest output
+        // can precede its producer's latest output while still following
+        // the shared class, launching consumers before producers. Kahn
+        // over producer->consumer edges; ties break by latest-output
+        // position for a stable order. (The node graph is acyclic: a node
+        // cycle would need a class cycle, which the topo order forbids.)
+        let mut latest: Map<OpId, usize> = Map::default();
+        for (pos, &cid) in order.iter().enumerate() {
             if !needed[cid.0 as usize] {
                 continue;
             }
-            if let Some(nid) = producer[cid.0 as usize]
-                && seen.insert(nid)
-            {
-                result.push(nid);
+            if let Some(nid) = producer[cid.0 as usize] {
+                latest.entry(nid).and_modify(|p| *p = (*p).max(pos)).or_insert(pos);
             }
         }
+        let mut dep_count: Map<OpId, usize> = Map::default();
+        let mut dependents: Map<OpId, Vec<OpId>> = Map::default();
+        for &nid in latest.keys() {
+            dep_count.insert(nid, 0);
+        }
+        for &nid in latest.keys() {
+            for &i in &node_in[nid.0 as usize] {
+                if let Some(pnid) = producer[i.0 as usize]
+                    && pnid != nid
+                    && latest.contains_key(&pnid)
+                {
+                    dependents.entry(pnid).or_default().push(nid);
+                    *dep_count.get_mut(&nid).expect("kahn: node missing dep count") += 1;
+                }
+            }
+        }
+        let mut ready: Vec<OpId> = dep_count.iter().filter_map(|(&nid, &c)| (c == 0).then_some(nid)).collect();
+        ready.sort_by_key(|nid| latest[nid]);
+        let mut result = Vec::with_capacity(ready.len());
+        while let Some(nid) = ready.first().copied() {
+            ready.remove(0);
+            result.push(nid);
+            if let Some(ds) = dependents.remove(&nid) {
+                for d in ds {
+                    let c = dep_count.get_mut(&d).expect("kahn: dependent missing dep count");
+                    *c -= 1;
+                    if *c == 0 {
+                        let at = ready.iter().position(|&r| latest[&r] > latest[&d]).unwrap_or(ready.len());
+                        ready.insert(at, d);
+                    }
+                }
+            }
+        }
+        assert_eq!(result.len(), latest.len(), "extract: kernel dependency cycle — {dep_count:?}");
         result
     }
 
