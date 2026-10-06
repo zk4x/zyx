@@ -24,3 +24,6 @@ panic = "unwind"
 incremental = true
 codegen-units = 16
 debug = true
+
+[profile.test]
+opt-level = 1

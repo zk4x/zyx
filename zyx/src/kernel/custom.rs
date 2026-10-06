@@ -1387,7 +1387,7 @@ impl Runtime {
         let mut outputs = Vec::with_capacity(shapes.len());
         for (j, (dtype, shape)) in output_dtypes.iter().zip(shapes.iter()).enumerate() {
             let slot = OpId::from(inputs.len() + j);
-            outputs.push((slot, dtype.bit_size() as Dim / 8, shape.iter().map(|&d| PlanDim::Const(d)).collect::<Vec<_>>()));
+            outputs.push((slot, *dtype, shape.iter().map(|&d| PlanDim::Const(d)).collect::<Vec<_>>()));
             args.push(slot);
         }
 
@@ -1400,7 +1400,8 @@ impl Runtime {
             // do it on the normal path) and launch directly.
             let empty_vars = Map::default();
             for (slot, dtype, dims) in &outputs {
-                let bytes = (dims.iter().map(|d| d.eval(&empty_vars)).product::<Dim>() * *dtype + 7) / 8;
+                let bytes =
+                    dims.iter().map(|d| d.eval(&empty_vars)).product::<Dim>() * Dim::from(dtype.bit_size() / 8);
                 let buf = pool_id.allocate(bytes)?;
                 boundary.insert(
                     *slot,

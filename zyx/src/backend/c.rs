@@ -85,12 +85,14 @@ impl CPartition {
                         if resolved.contains_key(slot) {
                             continue;
                         }
-                        let bytes = dims.iter().map(|d| d.eval(vars)).fold(*dtype, |a, b| a * b);
+                        let bytes = dims.iter().map(|d| d.eval(vars)).fold(dtype.bit_size() as i64 / 8, |a, b| a * b);
                         debug_assert!(bytes >= 0, "C replay allocated negative bytes");
                         let chunk = pool.allocate(bytes)?;
                         resolved.insert(
                             *slot,
-                            Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: bytes as usize }] }),
+                            Arc::new(Placement {
+                                shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: bytes as usize }],
+                            }),
                         );
                     }
                     // Resolve args to pointers. Variables are not stored
@@ -100,7 +102,9 @@ impl CPartition {
                     let mut ptrs: Vec<*mut u8> = Vec::with_capacity(args.len());
                     for arg in args {
                         if let Some(placement) = resolved.get(arg) {
-                            let [shard] = &placement.shards[..] else { todo!("multi-shard slot in C launch") };
+                            let [shard] = &placement.shards[..] else {
+                                todo!("multi-shard slot in C launch")
+                            };
                             ptrs.push(host_ptr(&mut pool, shard.chunk, shard.offset));
                         } else if let Some(constant) = vars.get(arg) {
                             var_boxes.push(constant.to_le_bytes().into_boxed_slice());
@@ -299,10 +303,7 @@ impl CDevice {
                 let mut dpool = super::lock(Pool::Disk, disk);
                 let n = bytes.min(dpool.buffer_bytes(src_shard.chunk));
                 let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
-                dpool.pool_to_host(
-                    src_shard.chunk,
-                    unsafe { std::slice::from_raw_parts_mut(dst_ptr, n as usize) },
-                )?;
+                dpool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, n as usize) })?;
             }
             Pool::Cuda(id) => {
                 // Device-to-host DMA straight into the destination, no
@@ -311,10 +312,7 @@ impl CDevice {
                 let cuda = super::cuda::pool(id)?;
                 let mut cpool = super::lock(Pool::Cuda(id), cuda);
                 let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
-                cpool.pool_to_host(
-                    src_shard.chunk,
-                    unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) },
-                )?;
+                cpool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
             }
             Pool::OpenCL(id) => {
                 // Device-to-host read straight into the destination, no
@@ -323,10 +321,7 @@ impl CDevice {
                 let ocl = super::opencl::pool(id)?;
                 let mut opool = super::lock(Pool::OpenCL(id), ocl);
                 let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
-                opool.pool_to_host(
-                    src_shard.chunk,
-                    unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) },
-                )?;
+                opool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
             }
             Pool::Vulkan(_) => {
                 todo!("C copy from {:?}", src_shard.pool)
@@ -339,10 +334,7 @@ impl CDevice {
                 let tt = super::tenstorrent::pool(id)?;
                 let mut tpool = super::lock(Pool::TT(id), tt);
                 let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
-                tpool.pool_to_host(
-                    src_shard.chunk,
-                    unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) },
-                )?;
+                tpool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
             }
             #[cfg(feature = "wgpu")]
             Pool::WGPU(_) => todo!("C copy from {:?}", src_shard.pool),

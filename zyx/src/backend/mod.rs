@@ -130,13 +130,13 @@ impl PlanDim {
 pub enum Cmd {
     /// Run `program`. Arg regions must agree (cross-device staging of one
     /// value into one node is later work). Every output carries its dtype
-    /// byte size plus one dim expression per axis: replay evaluates them
-    /// from `vars` and allocates the output, unless the slot is already
-    /// bound (a realized leaf class reuses its buffer).
+    /// plus one dim expression per axis: replay evaluates them from `vars`
+    /// and allocates the output, unless the slot is already bound (a
+    /// realized leaf class reuses its buffer).
     Launch {
         program: ProgramId,
         args: Vec<OpId>,
-        outputs: Vec<(OpId, Dim, Vec<PlanDim>)>,
+        outputs: Vec<(OpId, DType, Vec<PlanDim>)>,
     },
     /// Copy from `src` value to `dst` value. `dst_pool` names the
     /// destination pool: same-pool fresh `dst`s are assigned there; a
@@ -144,13 +144,13 @@ pub enum Cmd {
     /// boundary value). Cross-pool copies stage through host temps or go
     /// peer (same vendor). Host-resident sources never become nodes: they
     /// upload eagerly around capture/launch. The destination carries its
-    /// dtype byte size plus one dim expression per axis, like a launch
-    /// output: replay allocates it unless the slot is already bound.
+    /// dtype plus one dim expression per axis, like a launch output:
+    /// replay allocates it unless the slot is already bound.
     Copy {
         src: OpId,
         dst: OpId,
         dst_pool: Pool,
-        dst_dtype: Dim,
+        dst_dtype: DType,
         dst_dims: Vec<PlanDim>,
     },
     /// Bind slot `class` to the placement of slot `to`: an in-place assign
@@ -358,12 +358,12 @@ impl Plan {
                         if resolved.contains_key(&op.dst) {
                             continue;
                         }
-                        let bytes = op.dims.iter().map(|d| d.eval(vars)).fold(op.dtype, |a, b| a * b);
+                        let el = Dim::from(op.dtype.bit_size() / 8);
+                        let bytes = op.dims.iter().map(|d| d.eval(vars)).fold(el, |a, b| a * b);
                         debug_assert!(bytes >= 0, "replay copied negative bytes");
                         let pool = dst.pool();
                         let chunk = pool.allocate(bytes)?;
-                        let placed =
-                            Arc::new(Placement { shards: vec![Shard { pool, chunk, offset: 0, len: bytes as usize }] });
+                        let placed = Arc::new(Placement { shards: vec![Shard { pool, chunk, offset: 0, len: bytes as usize }] });
                         let src_placed =
                             resolved.get(&op.src).unwrap_or_else(|| panic!("replay: copy src {:?} is unplaced", op.src)).clone();
                         match dst {
@@ -408,13 +408,13 @@ impl Plan {
 }
 
 /// One preplanned transfer of a cross-pool copy: queue-local slots plus
-/// the dtype byte size and one dim expression per axis (flat bytes at
-/// replay). `free_src` releases the source right after the copy when
-/// nothing later reads it and it escapes nowhere.
+/// the dtype and one dim expression per axis (flat bytes at replay).
+/// `free_src` releases the source right after the copy when nothing
+/// later reads it and it escapes nowhere.
 pub(crate) struct CopyOp {
     src: OpId,
     dst: OpId,
-    dtype: Dim,
+    dtype: DType,
     dims: Vec<PlanDim>,
     free_src: bool,
 }

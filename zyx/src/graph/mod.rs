@@ -2270,20 +2270,25 @@ impl Runtime {
                                         // Upload through a one-copy queue: slot 0 is
                                         // the host staging placement, slot 1
                                         // the destination, allocated by replay
-                                        // from its byte size.
+                                        // from dtype and element count.
                                         let mut queue = CmdQueue::new();
                                         queue.push(Cmd::Copy {
                                             src: OpId::from(0),
                                             dst: OpId::from(1),
                                             dst_pool: pool_id,
-                                            dst_dtype: 1,
-                                            dst_dims: vec![PlanDim::Const(bytes_alloc)],
+                                            dst_dtype: dtype,
+                                            dst_dims: vec![PlanDim::Const(len + 1)],
                                         });
                                         let mut boundary = Map::default();
                                         boundary.insert(
                                             OpId::from(0),
                                             Arc::new(Placement {
-                                                shards: vec![Shard { pool: Pool::Host, chunk: host_buf, offset: 0, len: fill_bytes }],
+                                                shards: vec![Shard {
+                                                    pool: Pool::Host,
+                                                    chunk: host_buf,
+                                                    offset: 0,
+                                                    len: fill_bytes,
+                                                }],
                                             }),
                                         );
                                         let out = {
@@ -2309,7 +2314,12 @@ impl Runtime {
                                         // kernel: allocate directly, no upload.
                                         let buf = pool_id.allocate(bytes_alloc)?;
                                         let placed = Arc::new(Placement {
-                                            shards: vec![Shard { pool: pool_id, chunk: buf, offset: 0, len: bytes_alloc as usize }],
+                                            shards: vec![Shard {
+                                                pool: pool_id,
+                                                chunk: buf,
+                                                offset: 0,
+                                                len: bytes_alloc as usize,
+                                            }],
                                         });
                                         fresh.push(Arc::clone(&placed));
                                         full_mut.push(LaunchArg::Buffer { chunk: buf, offset: 0, len: bytes_alloc as usize });
@@ -2495,10 +2505,10 @@ impl Runtime {
                 ref op => unreachable!("alloc dim class {dim:?} must be a dim over Const/leaf leaves, got {op:?}"),
             }
         }
-        fn alloc_spec(graph: &Graph, class: OpId) -> (Dim, Vec<PlanDim>) {
-            let dtype_size = Dim::from(graph.dtype(class).bit_size() / 8);
+        fn alloc_spec(graph: &Graph, class: OpId) -> (DType, Vec<PlanDim>) {
+            let dtype = graph.dtype(class);
             let dims = graph.shape(class).iter().map(|&d| dim_expr(graph, d)).collect();
-            (dtype_size, dims)
+            (dtype, dims)
         }
         let graph = &self.graphs[graph_id];
 
@@ -2508,12 +2518,12 @@ impl Runtime {
         // leaf needs one kernel-pool copy of itself shared by every alias
         // of that leaf — chained assigns must write the same physical
         // buffer or the intermediate writes are lost.
-        let mut aliases: Vec<(OpId, OpId, Dim, Vec<PlanDim>)> = Vec::new();
+        let mut aliases: Vec<(OpId, OpId, DType, Vec<PlanDim>)> = Vec::new();
         for (cid, nd) in graph.ops.iter().filter(|(id, nd)| nd.class_of == *id) {
             if let Op::After { x, .. } = nd.op {
                 let base = graph.base_leaf(x);
-                let (dtype_size, dims) = alloc_spec(graph, cid);
-                aliases.push((cid, base, dtype_size, dims));
+                let (dtype, dims) = alloc_spec(graph, cid);
+                aliases.push((cid, base, dtype, dims));
             }
         }
 
@@ -2533,17 +2543,11 @@ impl Runtime {
 
         let mut queue = CmdQueue::new();
         let mut leaf_copy: Map<OpId, OpId> = Map::default();
-        for &(class, to, dtype_size, ref dims) in &aliases {
+        for &(class, to, dtype, ref dims) in &aliases {
             match store_pool.get(&class) {
                 Some(pool) if leaf_pools[&to] != *pool => {
                     let owner = *leaf_copy.entry(to).or_insert_with(|| {
-                        queue.push(Cmd::Copy {
-                            src: to,
-                            dst: class,
-                            dst_pool: *pool,
-                            dst_dtype: dtype_size,
-                            dst_dims: dims.clone(),
-                        });
+                        queue.push(Cmd::Copy { src: to, dst: class, dst_pool: *pool, dst_dtype: dtype, dst_dims: dims.clone() });
                         class
                     });
                     if owner != class {
@@ -2573,8 +2577,8 @@ impl Runtime {
                     for &oc in outputs {
                         args.push(oc);
                         if emitted.insert(oc) {
-                            let (dtype_size, dims) = alloc_spec(graph, oc);
-                            specs.push((oc, dtype_size, dims));
+                            let (dtype, dims) = alloc_spec(graph, oc);
+                            specs.push((oc, dtype, dims));
                         }
                     }
                     queue.push(Cmd::Launch { program: info.0, args, outputs: specs });
@@ -2583,8 +2587,8 @@ impl Runtime {
                     // Pool is always derived from the device, never the reverse.
                     let pool = device.pool();
                     let class_of = graph.ops[nid].class_of;
-                    let (dtype_size, dims) = alloc_spec(graph, class_of);
-                    queue.push(Cmd::Copy { src: x, dst: class_of, dst_pool: pool, dst_dtype: dtype_size, dst_dims: dims });
+                    let (dtype, dims) = alloc_spec(graph, class_of);
+                    queue.push(Cmd::Copy { src: x, dst: class_of, dst_pool: pool, dst_dtype: dtype, dst_dims: dims });
                 }
                 _ => unreachable!(),
             }

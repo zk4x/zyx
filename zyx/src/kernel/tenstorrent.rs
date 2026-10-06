@@ -403,13 +403,13 @@ impl Kernel {
     /// sync accounting never sees them (a dead inner left in place
     /// would draw a second CB wait for the feeder's page).
     pub fn tt_fuse_llks(&mut self) {
-        eprintln!("FUSEDBG tt_fuse_llks entry");
         let x = Pat::bind('x');
         let sigmoid_pat = (x.neg().exp() + 1.).recip();
         let silu_pat = x * &sigmoid_pat;
-        for (pat, init, call) in
-            [(&silu_pat, "silu_tile_init();", "silu_tile({0});"), (&sigmoid_pat, "sigmoid_tile_init();", "sigmoid_tile({0});")]
-        {
+        for (pat, init, call) in [
+            (&silu_pat, "silu_tile_init();", "silu_tile({0});"),
+            (&sigmoid_pat, "sigmoid_tile_init();", "sigmoid_tile({0});"),
+        ] {
             // Total user counts: users[v] = ops taking v as a data operand.
             let mut users: Map<OpId, Vec<OpId>> = Map::default();
             let mut scan = self.head;
@@ -447,18 +447,15 @@ impl Kernel {
                     // Exclusive: the feeder and every cone op except the
                     // root have all their users inside the cone (or at the
                     // root). The root itself may feed outside readers.
-                    let feeder_ok = users
-                        .get(&feeder)
-                        .map(|us| us.iter().all(|u| *u == op_id || cone.contains(u)))
-                        .unwrap_or(true);
+                    let feeder_ok =
+                        users.get(&feeder).map(|us| us.iter().all(|u| *u == op_id || cone.contains(u))).unwrap_or(true);
                     let inners_ok = cone
                         .iter()
                         .filter(|c| **c != op_id)
                         .all(|c| users.get(c).map(|us| us.iter().all(|u| cone.contains(u))).unwrap_or(true));
                     if feeder_ok && inners_ok {
                         self.insert_before(op_id, Op::Asm { asm: TinyString::new(init), ops: TinyVec::new(&[]) });
-                        self.ops[op_id].op =
-                            Op::TT(TTOp::LLK { asm: TinyString::new(call), ops: TinyVec::new(&[feeder]) });
+                        self.ops[op_id].op = Op::TT(TTOp::LLK { asm: TinyString::new(call), ops: TinyVec::new(&[feeder]) });
                     }
                 }
                 op_id = next;

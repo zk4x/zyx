@@ -736,9 +736,9 @@ impl VulkanDevice {
             }
         }
         // Allocation pairing is structural: a def reuses a dead slot's
-        // chunk only for an identical (dtype bytes, dims) spec — equal
-        // bytes by construction, no evaluation. Each dead chunk is paired
-        // at most once. Reuse scan covers deaths strictly before this
+        // chunk only for an identical (dtype, dims) spec — equal bytes
+        // by construction, no evaluation. Each dead chunk is paired at
+        // most once. Reuse scan covers deaths strictly before this
         // command (a slot dying here may be read by this very launch).
         // Death order is static; the first structural match wins.
         // Aliases are transparent via union-find over rebinds.
@@ -749,7 +749,7 @@ impl VulkanDevice {
             }
             slot
         };
-        let mut spec: Map<OpId, (Dim, Vec<PlanDim>)> = Map::default();
+        let mut spec: Map<OpId, (DType, Vec<PlanDim>)> = Map::default();
         let mut paired: Set<OpId> = Set::default();
         let mut allocs: Vec<Vec<AllocPlan>> = Vec::with_capacity(cmds.len());
         for (idx, cmd) in cmds.iter().enumerate() {
@@ -2475,8 +2475,9 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                                 let (chunk, offset, len) = match chunk {
                                                     Some(region) => region,
                                                     None => {
+                                                        let el = Dim::from(dtype.bit_size() / 8);
                                                         let bytes =
-                                                            dims.iter().map(|d| d.eval(&vars_map)).fold(*dtype, |a, b| a * b);
+                                                            dims.iter().map(|d| d.eval(&vars_map)).fold(el, |a, b| a * b);
                                                         if bytes < 0 {
                                                             return Err(BackendError {
                                                                 status: ErrorStatus::MemoryAllocation,

@@ -400,17 +400,35 @@ enum CUDACommand {
     /// Blocking host-to-device upload for Copy partitions into CUDA.
     /// The host pointer stays valid for the roundtrip (caller holds the
     /// host pool lock across send + recv).
-    CopyHtoD { src: *const u8, dst: ChunkId, bytes: Dim, reply: Sender<Result<(), BackendError>> },
+    CopyHtoD {
+        src: *const u8,
+        dst: ChunkId,
+        bytes: Dim,
+        reply: Sender<Result<(), BackendError>>,
+    },
     /// Blocking upload straight from a file mapping: registers the mapped
     /// range for DMA, uploads, unregisters — all on the worker thread, which
     /// owns the CUDA context (caller threads have none). No staging buffer,
     /// no read call.
-    CopyDiskToD { ptr: *const u8, extent: Dim, bytes: Dim, dst: ChunkId, reply: Sender<Result<(), BackendError>> },
+    CopyDiskToD {
+        ptr: *const u8,
+        extent: Dim,
+        bytes: Dim,
+        dst: ChunkId,
+        reply: Sender<Result<(), BackendError>>,
+    },
     /// Blocking same-device device-to-device copy (single pool).
-    CopyDtoD { src: ChunkId, dst: ChunkId, bytes: Dim, reply: Sender<Result<(), BackendError>> },
+    CopyDtoD {
+        src: ChunkId,
+        dst: ChunkId,
+        bytes: Dim,
+        reply: Sender<Result<(), BackendError>>,
+    },
     /// Destroy a captured graph exec (from `CudaGraph::drop`): tolerant —
     /// an unknown id is already gone.
-    DestroyGraph { id: CudaGraphId },
+    DestroyGraph {
+        id: CudaGraphId,
+    },
     ReleaseProgram {
         program_id: DeviceProgramId,
     },
@@ -1016,8 +1034,10 @@ fn spawn_worker(
                                         if slot_chunk.contains_key(slot) {
                                             continue;
                                         }
-                                        let bytes =
-                                            dims.iter().map(|d| d.eval(&vars_map)).fold(*dtype, |a, b| a * b);
+                                        let bytes = dims
+                                            .iter()
+                                            .map(|d| d.eval(&vars_map))
+                                            .fold(dtype.bit_size() as i64 / 8, |a, b| a * b);
                                         if bytes < 0 {
                                             return Err(BackendError {
                                                 status: ErrorStatus::MemoryAllocation,
@@ -1069,13 +1089,10 @@ fn spawn_worker(
                                 status: ErrorStatus::KernelLaunch,
                                 context: format!("replay: launch slot {slot:?} is unplaced").into(),
                             })?;
-                            buffers
-                                .get(*chunk)
-                                .map(|b| b.ptr + *offset as u64)
-                                .ok_or_else(|| BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: format!("replay: unknown buffer for slot {slot:?}").into(),
-                                })
+                            buffers.get(*chunk).map(|b| b.ptr + *offset as u64).ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: format!("replay: unknown buffer for slot {slot:?}").into(),
+                            })
                         };
                         // Captured params for one launch: pinned
                         // device-pointer slots plus boxed scalars (mirrors
@@ -1091,8 +1108,7 @@ fn spawn_worker(
                                 } else if !scalars.contains_key(slot) {
                                     return Err(BackendError {
                                         status: ErrorStatus::KernelLaunch,
-                                        context: format!("replay: launch slot {slot:?} is neither placed nor bound")
-                                            .into(),
+                                        context: format!("replay: launch slot {slot:?} is neither placed nor bound").into(),
                                     });
                                 }
                             }
@@ -1117,44 +1133,43 @@ fn spawn_worker(
                         // submit_launch's evaluation: that fn submits, here
                         // only the geometry is needed for capture-time
                         // recording.
-                        let geometry_of = |program_id: DeviceProgramId,
-                                           slots: &[OpId]|
-                         -> Result<([u32; 3], [u32; 3]), BackendError> {
-                            let CUDAProgram::Module { lws, gws, .. } = &programs[program_id] else {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: "geometry of non-module program".into(),
-                                });
+                        let geometry_of =
+                            |program_id: DeviceProgramId, slots: &[OpId]| -> Result<([u32; 3], [u32; 3]), BackendError> {
+                                let CUDAProgram::Module { lws, gws, .. } = &programs[program_id] else {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelLaunch,
+                                        context: "geometry of non-module program".into(),
+                                    });
+                                };
+                                let grid = |gdim: &GwsDim| -> Dim {
+                                    gdim.eval(&mut |ordinal| {
+                                        scalars
+                                            .get(&slots[ordinal])
+                                            .and_then(|c| c.as_dim())
+                                            .expect("gws param must be a Variable slot")
+                                    })
+                                };
+                                let default_gws = GwsDim::Const(1);
+                                let (gx, gy, gz) = (
+                                    grid(gws.first().unwrap_or(&default_gws)),
+                                    grid(gws.get(1).unwrap_or(&default_gws)),
+                                    grid(gws.get(2).unwrap_or(&default_gws)),
+                                );
+                                if gx < 0 || gy < 0 || gz < 0 || gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelLaunch,
+                                        context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
+                                    });
+                                }
+                                Ok((
+                                    [gx as u32, gy as u32, gz as u32],
+                                    [
+                                        u32::try_from(lws.first().copied().unwrap_or(1)).unwrap(),
+                                        u32::try_from(lws.get(1).copied().unwrap_or(1)).unwrap(),
+                                        u32::try_from(lws.get(2).copied().unwrap_or(1)).unwrap(),
+                                    ],
+                                ))
                             };
-                            let grid = |gdim: &GwsDim| -> Dim {
-                                gdim.eval(&mut |ordinal| {
-                                    scalars
-                                        .get(&slots[ordinal])
-                                        .and_then(|c| c.as_dim())
-                                        .expect("gws param must be a Variable slot")
-                                })
-                            };
-                            let default_gws = GwsDim::Const(1);
-                            let (gx, gy, gz) = (
-                                grid(gws.first().unwrap_or(&default_gws)),
-                                grid(gws.get(1).unwrap_or(&default_gws)),
-                                grid(gws.get(2).unwrap_or(&default_gws)),
-                            );
-                            if gx < 0 || gy < 0 || gz < 0 || gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
-                                });
-                            }
-                            Ok((
-                                [gx as u32, gy as u32, gz as u32],
-                                [
-                                    u32::try_from(lws.first().copied().unwrap_or(1)).unwrap(),
-                                    u32::try_from(lws.get(1).copied().unwrap_or(1)).unwrap(),
-                                    u32::try_from(lws.get(2).copied().unwrap_or(1)).unwrap(),
-                                ],
-                            ))
-                        };
                         // cuDNN programs rebuild their variant pack per
                         // launch already — partitions holding one are
                         // submitted directly and never captured.
@@ -1185,8 +1200,8 @@ fn spawn_worker(
                                 match &programs[program.program_id] {
                                     CUDAProgram::Module { function, .. } => {
                                         let function = *function;
-                                let (grid, block) = geometry_of(program.program_id, args)?;
-                                let mut buffer_ptrs = Vec::new();
+                                        let (grid, block) = geometry_of(program.program_id, args)?;
+                                        let mut buffer_ptrs = Vec::new();
                                         let mut scalar_values = Vec::new();
                                         let mut kernel_params = params_of(args, &mut buffer_ptrs, &mut scalar_values)?;
                                         unsafe {
@@ -1265,7 +1280,7 @@ fn spawn_worker(
                                                 context: "cuDNN variant pack config".into(),
                                             });
                                         }
-                                    }
+                                    },
                                 }
                             }
                             return Ok(ReplayResult { fresh, graph: None });
@@ -1285,8 +1300,7 @@ fn spawn_worker(
                                 current.extend_from_slice(&buffer_ptrs);
                             }
                             if current == g.ptrs {
-                                unsafe { (cuGraphLaunch)(g.exec, streams[0].stream) }
-                                    .check(ErrorStatus::KernelLaunch)?;
+                                unsafe { (cuGraphLaunch)(g.exec, streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
                                 return Ok(ReplayResult { fresh, graph });
                             }
                         }
@@ -1299,8 +1313,7 @@ fn spawn_worker(
                         // temp graph under current addresses, grids, and
                         // scalars, plus the metadata for the fast tier.
                         let recaptured = (|| -> Result<(CUgraph, Vec<Vec<OpId>>, Vec<u64>), BackendError> {
-                            unsafe { (cuStreamBeginCapture)(streams[0].stream, 0) }
-                                .check(ErrorStatus::KernelLaunch)?;
+                            unsafe { (cuStreamBeginCapture)(streams[0].stream, 0) }.check(ErrorStatus::KernelLaunch)?;
                             let mut node_args: Vec<Vec<OpId>> = Vec::new();
                             let mut ptrs: Vec<u64> = Vec::new();
                             for cmd in &cmds {
@@ -1342,91 +1355,74 @@ fn spawn_worker(
                                 .check(ErrorStatus::KernelLaunch)?;
                             Ok((graph_raw, node_args, ptrs))
                         })();
-                            // Update tier: an entry exists — swap the fresh
-                            // recording into the live executable. The
-                            // previous launch is async: drain first,
-                            // updating a running executable is undefined.
-                            if let Some(id) = graph
-                                && graphs.contains_id(id)
-                            {
-                                unsafe { (cuStreamSynchronize)(streams[0].stream) }
-                                    .check(ErrorStatus::KernelSync)?;
-                                let (tmp, node_args, ptrs) = match recaptured {
-                                    Ok(t) => t,
-                                    Err(e) => {
-                                        graphs.remove(id);
-                                        return Err(e);
-                                    }
-                                };
-                                let exec = graphs.get(id).expect("replay: cached graph is missing").exec;
-                                let mut info = CUgraphExecUpdateResultInfo {
-                                    result: 0,
-                                    error_node: ptr::null_mut(),
-                                    error_from_node: ptr::null_mut(),
-                                };
-                                let updated = unsafe { (cuGraphExecUpdate)(exec, tmp, &raw mut info) }
-                                    .check(ErrorStatus::KernelLaunch)
-                                    .is_ok()
-                                    && info.result == 0;
-                                if updated {
-                                    unsafe { (cuGraphDestroy)(tmp) }
-                                        .check(ErrorStatus::Deinitialization)?;
-                                    if let Some(g) = graphs.get_mut(id) {
-                                        g.node_args = node_args;
-                                        g.ptrs = ptrs;
-                                        g.vars = vars.clone();
-                                    }
-                                    unsafe { (cuGraphLaunch)(exec, streams[0].stream) }
-                                        .check(ErrorStatus::KernelLaunch)?;
-                                    return Ok(ReplayResult { fresh, graph });
-                                }
-                                // Topology changed: replace the executable
-                                // under the same id, keep the temp only on
-                                // success so a failure keeps no half state.
-                                unsafe { (cuGraphExecDestroy)(exec) }
-                                    .check(ErrorStatus::Deinitialization)?;
-                                let mut new_exec: CUgraphExec = ptr::null_mut();
-                                if let Err(e) = unsafe {
-                                    (cuGraphInstantiate)(
-                                        &raw mut new_exec,
-                                        tmp,
-                                        ptr::null_mut(),
-                                        ptr::null_mut(),
-                                        0,
-                                    )
-                                }
-                                .check(ErrorStatus::KernelLaunch)
-                                {
-                                    unsafe { (cuGraphDestroy)(tmp) }
-                                        .check(ErrorStatus::Deinitialization)?;
+                        // Update tier: an entry exists — swap the fresh
+                        // recording into the live executable. The
+                        // previous launch is async: drain first,
+                        // updating a running executable is undefined.
+                        if let Some(id) = graph
+                            && graphs.contains_id(id)
+                        {
+                            unsafe { (cuStreamSynchronize)(streams[0].stream) }.check(ErrorStatus::KernelSync)?;
+                            let (tmp, node_args, ptrs) = match recaptured {
+                                Ok(t) => t,
+                                Err(e) => {
                                     graphs.remove(id);
                                     return Err(e);
                                 }
+                            };
+                            let exec = graphs.get(id).expect("replay: cached graph is missing").exec;
+                            let mut info = CUgraphExecUpdateResultInfo {
+                                result: 0,
+                                error_node: ptr::null_mut(),
+                                error_from_node: ptr::null_mut(),
+                            };
+                            let updated =
+                                unsafe { (cuGraphExecUpdate)(exec, tmp, &raw mut info) }.check(ErrorStatus::KernelLaunch).is_ok()
+                                    && info.result == 0;
+                            if updated {
                                 unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
                                 if let Some(g) = graphs.get_mut(id) {
-                                    *g = CapturedGraph { exec: new_exec, node_args, ptrs, vars: vars.clone() };
+                                    g.node_args = node_args;
+                                    g.ptrs = ptrs;
+                                    g.vars = vars.clone();
                                 }
-                                unsafe { (cuGraphLaunch)(new_exec, streams[0].stream) }
-                                    .check(ErrorStatus::KernelLaunch)?;
+                                unsafe { (cuGraphLaunch)(exec, streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
                                 return Ok(ReplayResult { fresh, graph });
                             }
-                            // Capture path: no entry — instantiate the fresh
-                            // recording and store it.
-                            let (tmp, node_args, ptrs) = recaptured?;
-                            let mut exec: CUgraphExec = ptr::null_mut();
-                            if let Err(e) = unsafe {
-                                (cuGraphInstantiate)(&raw mut exec, tmp, ptr::null_mut(), ptr::null_mut(), 0)
-                            }
-                            .check(ErrorStatus::KernelLaunch)
+                            // Topology changed: replace the executable
+                            // under the same id, keep the temp only on
+                            // success so a failure keeps no half state.
+                            unsafe { (cuGraphExecDestroy)(exec) }.check(ErrorStatus::Deinitialization)?;
+                            let mut new_exec: CUgraphExec = ptr::null_mut();
+                            if let Err(e) =
+                                unsafe { (cuGraphInstantiate)(&raw mut new_exec, tmp, ptr::null_mut(), ptr::null_mut(), 0) }
+                                    .check(ErrorStatus::KernelLaunch)
                             {
                                 unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
+                                graphs.remove(id);
                                 return Err(e);
                             }
                             unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
-                            let id = graphs.push(CapturedGraph { exec, node_args, ptrs, vars: vars.clone() });
-                            unsafe { (cuGraphLaunch)(exec, streams[0].stream) }
-                                .check(ErrorStatus::KernelLaunch)?;
-                            Ok(ReplayResult { fresh, graph: Some(id) })
+                            if let Some(g) = graphs.get_mut(id) {
+                                *g = CapturedGraph { exec: new_exec, node_args, ptrs, vars: vars.clone() };
+                            }
+                            unsafe { (cuGraphLaunch)(new_exec, streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
+                            return Ok(ReplayResult { fresh, graph });
+                        }
+                        // Capture path: no entry — instantiate the fresh
+                        // recording and store it.
+                        let (tmp, node_args, ptrs) = recaptured?;
+                        let mut exec: CUgraphExec = ptr::null_mut();
+                        if let Err(e) = unsafe { (cuGraphInstantiate)(&raw mut exec, tmp, ptr::null_mut(), ptr::null_mut(), 0) }
+                            .check(ErrorStatus::KernelLaunch)
+                        {
+                            unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
+                            return Err(e);
+                        }
+                        unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
+                        let id = graphs.push(CapturedGraph { exec, node_args, ptrs, vars: vars.clone() });
+                        unsafe { (cuGraphLaunch)(exec, streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
+                        Ok(ReplayResult { fresh, graph: Some(id) })
                     })();
                     let _ = reply.send(result);
                 }
@@ -1903,14 +1899,14 @@ impl CUDADevice {
         };
         debug_assert_eq!(dst_shard.pool, self.memory_pool, "CUDA copy destination is not on this device");
         let dead = |_| BackendError { status: ErrorStatus::MemoryCopyP2P, context: "cuda worker thread died".into() };
-        let dead_rx =
-            |_: std::sync::mpsc::RecvError| BackendError { status: ErrorStatus::MemoryCopyP2P, context: "cuda worker hung up".into() };
+        let dead_rx = |_: std::sync::mpsc::RecvError| BackendError {
+            status: ErrorStatus::MemoryCopyP2P,
+            context: "cuda worker hung up".into(),
+        };
         match src_shard.pool {
             p if p == self.memory_pool => {
                 let (reply, reply_rx) = channel();
-                self.tx
-                    .send(CUDACommand::CopyDtoD { src: src_shard.chunk, dst: dst_shard.chunk, bytes, reply })
-                    .map_err(dead)?;
+                self.tx.send(CUDACommand::CopyDtoD { src: src_shard.chunk, dst: dst_shard.chunk, bytes, reply }).map_err(dead)?;
                 return reply_rx.recv().map_err(dead_rx)?;
             }
             Pool::Host => {
@@ -1920,9 +1916,7 @@ impl CUDADevice {
                 let pool = super::lock(Pool::Host, host);
                 let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
                 let (reply, reply_rx) = channel();
-                self.tx
-                    .send(CUDACommand::CopyHtoD { src: src_ptr, dst: dst_shard.chunk, bytes, reply })
-                    .map_err(dead)?;
+                self.tx.send(CUDACommand::CopyHtoD { src: src_ptr, dst: dst_shard.chunk, bytes, reply }).map_err(dead)?;
                 return reply_rx.recv().map_err(dead_rx)?;
             }
             #[cfg(unix)]
@@ -1937,9 +1931,7 @@ impl CUDADevice {
                 let (ptr, extent) = dpool.mapped_ptr(src_shard.chunk);
                 let n = bytes.min(extent);
                 let (reply, reply_rx) = channel();
-                self.tx
-                    .send(CUDACommand::CopyDiskToD { ptr, extent, bytes: n, dst: dst_shard.chunk, reply })
-                    .map_err(dead)?;
+                self.tx.send(CUDACommand::CopyDiskToD { ptr, extent, bytes: n, dst: dst_shard.chunk, reply }).map_err(dead)?;
                 let res = reply_rx.recv().map_err(dead_rx)?;
                 return res;
             }
@@ -1972,16 +1964,12 @@ impl CudaPartition {
         let cached = self.graph.lock().expect("cuda partition graph slot poisoned").as_ref().map(|g| g.id);
         let (reply, reply_rx) = channel();
         let dead = |_| BackendError { status: ErrorStatus::KernelLaunch, context: "cuda worker thread died".into() };
-        let dead_rx =
-            |_: std::sync::mpsc::RecvError| BackendError { status: ErrorStatus::KernelLaunch, context: "cuda worker hung up".into() };
+        let dead_rx = |_: std::sync::mpsc::RecvError| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: "cuda worker hung up".into(),
+        };
         dev.tx
-            .send(CUDACommand::Replay {
-                cmds: self.cmds.clone(),
-                bound,
-                vars: vars_vec,
-                graph: cached,
-                reply,
-            })
+            .send(CUDACommand::Replay { cmds: self.cmds.clone(), bound, vars: vars_vec, graph: cached, reply })
             .map_err(dead)?;
         let res = reply_rx.recv().map_err(dead_rx)??;
         if let Some(id) = res.graph {
@@ -2007,10 +1995,9 @@ impl CudaPartition {
 /// region offset. Debug-checked against the allocation size — the region
 /// must lie inside the chunk (best-fit slack is allowed, overrun is not).
 fn buffer_ptr(buffers: &Slab<ChunkId, CUDABuffer>, chunk: ChunkId, offset: usize, len: usize) -> Result<u64, BackendError> {
-    let buf = buffers.get(chunk).ok_or(BackendError {
-        status: ErrorStatus::KernelLaunch,
-        context: "launch arg addresses an unknown buffer".into(),
-    })?;
+    let buf = buffers
+        .get(chunk)
+        .ok_or(BackendError { status: ErrorStatus::KernelLaunch, context: "launch arg addresses an unknown buffer".into() })?;
     debug_assert!((offset + len) as u64 <= buf.bytes as u64, "launch arg region overruns its chunk");
     Ok(buf.ptr + offset as u64)
 }
@@ -2052,9 +2039,7 @@ fn submit_launch(
             let mut buffer_ptrs: Vec<u64> = Vec::with_capacity(args.len());
             for arg in args.iter() {
                 match arg {
-                    LaunchArg::Buffer { chunk, offset, len } => {
-                        buffer_ptrs.push(buffer_ptr(buffers, *chunk, *offset, *len)?)
-                    }
+                    LaunchArg::Buffer { chunk, offset, len } => buffer_ptrs.push(buffer_ptr(buffers, *chunk, *offset, *len)?),
                     LaunchArg::Variable(_) => {}
                 }
             }

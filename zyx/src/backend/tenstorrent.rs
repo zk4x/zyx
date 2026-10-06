@@ -1024,8 +1024,9 @@ impl TTDevice {
     }
 
     /// Copy executing a transfer into this device's pool: host uploads go
-    /// through the blocking shim upload, everything else is later work.
-    /// Single-shard placements only.
+    /// through the blocking shim upload, CUDA sources stage through a host
+    /// temp (no peer DMA between vendors; CUDA PoolToHost drains first),
+    /// everything else is later work. Single-shard placements only.
     pub fn copy(&self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
         debug_assert!(bytes >= 0, "TT copy of negative bytes");
         let [src_shard] = &src.shards[..] else {
@@ -1051,6 +1052,30 @@ impl TTDevice {
                 let tt = pool(id)?;
                 let mut tpool = super::lock(self.memory_pool, tt);
                 tpool.host_to_pool(src_bytes, dst_shard.chunk)?;
+            }
+            Pool::Cuda(id) => {
+                // No peer DMA between vendors: stage through a host temp.
+                let host = super::host::pool();
+                let mut hpool = super::lock(Pool::Host, host);
+                let tmp = hpool.allocate(bytes)?;
+                let tmp_ptr = hpool.buffer_ptr_mut(tmp);
+                {
+                    let cuda = super::cuda::pool(id)?;
+                    let mut cpool = super::lock(Pool::Cuda(id), cuda);
+                    cpool.pool_to_host(
+                        src_shard.chunk,
+                        unsafe { std::slice::from_raw_parts_mut(tmp_ptr, bytes as usize) },
+                    )?;
+                }
+                let tmp_bytes = unsafe { std::slice::from_raw_parts(tmp_ptr, bytes as usize) };
+                let Pool::TT(id) = self.memory_pool else {
+                    unreachable!("TT copy on a non-TT device")
+                };
+                let tt = pool(id)?;
+                let mut tpool = super::lock(self.memory_pool, tt);
+                let r = tpool.host_to_pool(tmp_bytes, dst_shard.chunk);
+                hpool.release(tmp);
+                r?;
             }
             p => todo!("TT copy from {p:?}"),
         }
@@ -1112,7 +1137,8 @@ impl TTPartition {
                         if resolved.contains_key(slot) {
                             continue;
                         }
-                        let bytes = dims.iter().map(|d| d.eval(vars)).fold(*dtype, |a, b| a * b);
+                        let el = Dim::from(dtype.bit_size() / 8);
+                        let bytes = dims.iter().map(|d| d.eval(vars)).fold(el, |a, b| a * b);
                         debug_assert!(bytes >= 0, "TT replay allocated negative bytes");
                         let chunk = my_pool.allocate(bytes)?;
                         resolved.insert(

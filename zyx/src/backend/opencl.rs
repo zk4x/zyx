@@ -10,8 +10,8 @@
 #![allow(clippy::unused_self)]
 
 use super::{
-    AllocPlan, ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Placement, PlanDim, Pool,
-    Shard, gws_from_kernel,
+    AllocPlan, ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Placement, PlanDim,
+    Pool, Shard, gws_from_kernel,
 };
 use crate::{
     DType,
@@ -851,8 +851,9 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                                     let (chunk, len) = match chunk {
                                                         Some(region) => region,
                                                         None => {
+                                                            let el = Dim::from(dtype.bit_size() / 8);
                                                             let bytes =
-                                                                dims.iter().map(|d| d.eval(&vars_map)).fold(*dtype, |a, b| a * b);
+                                                                dims.iter().map(|d| d.eval(&vars_map)).fold(el, |a, b| a * b);
                                                             if bytes < 0 {
                                                                 return Err(BackendError {
                                                                     status: ErrorStatus::MemoryAllocation,
@@ -1434,9 +1435,9 @@ impl OpenCLDevice {
         // readers too.
         //
         // Allocation pairing is structural: a def reuses a dead slot's
-        // chunk only for an identical (dtype bytes, dims) spec — equal
-        // bytes by construction, no evaluation. Each dead chunk is paired
-        // at most once; the reuse's overwrite edges the dead slot's last
+        // chunk only for an identical (dtype, dims) spec — equal bytes
+        // by construction, no evaluation. Each dead chunk is paired at
+        // most once; the reuse's overwrite edges the dead slot's last
         // readers explicitly (the def may not read the slot itself).
         let nq = super::config().opencl.queues.unwrap_or(8).max(1);
         let mut slot_queue: Map<OpId, usize> = Map::default();
@@ -1449,7 +1450,7 @@ impl OpenCLDevice {
         };
         let mut writer: Map<OpId, (usize, usize)> = Map::default();
         let mut readers: Map<OpId, Vec<(usize, usize)>> = Map::default();
-        let mut spec: Map<OpId, (Dim, Vec<PlanDim>)> = Map::default();
+        let mut spec: Map<OpId, (DType, Vec<PlanDim>)> = Map::default();
         let mut paired: Set<OpId> = Set::default();
         let mut round_robin = 0usize;
         let mut assign: Vec<usize> = Vec::with_capacity(cmds.len());

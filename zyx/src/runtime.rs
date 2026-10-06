@@ -1228,7 +1228,12 @@ impl Runtime {
         let bytes: Dim = ((resolved.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
 
         let buffer = Arc::new(Placement {
-            shards: vec![Shard { pool: Pool::Disk, chunk: Pool::Disk.disk_buffer_from_path(bytes, path, offset_bytes), offset: 0, len: bytes as usize }],
+            shards: vec![Shard {
+                pool: Pool::Disk,
+                chunk: Pool::Disk.disk_buffer_from_path(bytes, path, offset_bytes),
+                offset: 0,
+                len: bytes as usize,
+            }],
         });
         let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer, rc: 1 });
         Ok(tid)
@@ -1768,17 +1773,15 @@ impl Runtime {
                     return Ok(x);
                 }
                 let shape = self.resolve_shape(x);
-                let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
-                let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
                 // Single-copy queue: slot 0 is the source placement, slot 1
-                // the destination, allocated by replay from its byte size.
+                // the destination, allocated by replay from dtype and shape.
                 let mut queue = CmdQueue::new();
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
                     dst_pool,
-                    dst_dtype: 1,
-                    dst_dims: vec![PlanDim::Const(alloc_bytes)],
+                    dst_dtype: dtype,
+                    dst_dims: shape.iter().map(|&d| PlanDim::Const(d)).collect(),
                 });
                 let mut boundary = Map::default();
                 boundary.insert(OpId::from(0), buf_id);
@@ -1812,17 +1815,15 @@ impl Runtime {
                     return Ok(x);
                 }
                 let shape = self.resolve_shape(x);
-                let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
-                let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
                 // Single-copy queue: slot 0 is the source placement, slot 1
-                // the destination, allocated by replay from its byte size.
+                // the destination, allocated by replay from dtype and shape.
                 let mut queue = CmdQueue::new();
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
                     dst_pool,
-                    dst_dtype: 1,
-                    dst_dims: vec![PlanDim::Const(alloc_bytes)],
+                    dst_dtype: dtype,
+                    dst_dims: shape.iter().map(|&d| PlanDim::Const(d)).collect(),
                 });
                 let mut boundary = Map::default();
                 boundary.insert(OpId::from(0), buf_id);
@@ -4091,20 +4092,17 @@ impl Runtime {
             // Copy out: `buf` moves into the boundary below.
             let (src_pool, _) = (*src_pool, *src_chunk);
             if src_pool != pool_id {
-                let bytes =
-                    (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
-                let alloc_bytes = bytes + dtypes[&tid].bit_size() as usize / 8;
-
+                let shape = self.resolve_shape(tid);
                 debug_assert_ne!(src_pool, pool_id, "copy across the same pool is disallowed");
                 // Single-copy queue: slot 0 is the source placement, slot 1
-                // the destination, allocated by replay from its byte size.
+                // the destination, allocated by replay from dtype and shape.
                 let mut queue = CmdQueue::new();
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
                     dst_pool: pool_id,
-                    dst_dtype: 1,
-                    dst_dims: vec![PlanDim::Const(alloc_bytes as Dim)],
+                    dst_dtype: dtypes[&tid],
+                    dst_dims: shape.iter().map(|&d| PlanDim::Const(d)).collect(),
                 });
                 let mut boundary = Map::default();
                 boundary.insert(OpId::from(0), buf);
@@ -4140,20 +4138,17 @@ impl Runtime {
             // Copy out: `buf` moves into the boundary below.
             let (src_pool, _) = (*src_pool, *src_chunk);
             if src_pool != pool_id {
-                let bytes =
-                    (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
-                let alloc_bytes = bytes as Dim + Dim::from(dtypes[&tid].bit_size() / 8);
-
+                let shape = self.resolve_shape(tid);
                 debug_assert_ne!(src_pool, pool_id, "copy across the same pool is disallowed");
                 // Single-copy queue: slot 0 is the source placement, slot 1
-                // the destination, allocated by replay from its byte size.
+                // the destination, allocated by replay from dtype and shape.
                 let mut queue = CmdQueue::new();
                 queue.push(Cmd::Copy {
                     src: OpId::from(0),
                     dst: OpId::from(1),
                     dst_pool: pool_id,
-                    dst_dtype: 1,
-                    dst_dims: vec![PlanDim::Const(alloc_bytes as Dim)],
+                    dst_dtype: dtypes[&tid],
+                    dst_dims: shape.iter().map(|&d| PlanDim::Const(d)).collect(),
                 });
                 let mut boundary = Map::default();
                 boundary.insert(OpId::from(0), buf);
@@ -4252,7 +4247,9 @@ impl Runtime {
                 buffers.push(LaunchArg::Variable(value));
             } else {
                 let placed = self.leaf_buffer(tid).expect("materialize: load without buffer");
-                let [shard] = &placed.shards[..] else { todo!("multi-shard tensor in materialize launch") };
+                let [shard] = &placed.shards[..] else {
+                    todo!("multi-shard tensor in materialize launch")
+                };
                 buffers.push(LaunchArg::Buffer { chunk: shard.chunk, offset: shard.offset, len: shard.len });
             }
         }
@@ -4261,7 +4258,9 @@ impl Runtime {
                 TensorData::PendingLeaf { old_buffer: Some(buf), .. } => Arc::clone(buf),
                 ref t => panic!("materialize: store {tid} has no buffer after realization: {t:?}"),
             };
-            let [shard] = &buf.shards[..] else { todo!("multi-shard tensor in materialize store") };
+            let [shard] = &buf.shards[..] else {
+                todo!("multi-shard tensor in materialize store")
+            };
             buffers.push(LaunchArg::Buffer { chunk: shard.chunk, offset: shard.offset, len: shard.len });
         }
 
@@ -4296,7 +4295,7 @@ impl Runtime {
             boundary.insert(slot, buf);
             outputs.push((
                 slot,
-                dtypes[&tid].bit_size() as Dim / 8,
+                dtypes[&tid],
                 self.resolve_shape(tid).iter().map(|&d| PlanDim::Const(d)).collect::<Vec<_>>(),
             ));
             args.push(slot);

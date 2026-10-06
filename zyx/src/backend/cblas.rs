@@ -290,12 +290,14 @@ impl CblasPartition {
                         if resolved.contains_key(slot) {
                             continue;
                         }
-                        let bytes = dims.iter().map(|d| d.eval(vars)).fold(*dtype, |a, b| a * b);
+                        let bytes = dims.iter().map(|d| d.eval(vars)).fold(dtype.bit_size() as i64 / 8, |a, b| a * b);
                         debug_assert!(bytes >= 0, "CBLAS replay allocated negative bytes");
                         let chunk = memory_pool.allocate(bytes)?;
                         resolved.insert(
                             *slot,
-                            Arc::new(Placement { shards: vec![super::Shard { pool: Pool::Host, chunk, offset: 0, len: bytes as usize }] }),
+                            Arc::new(Placement {
+                                shards: vec![super::Shard { pool: Pool::Host, chunk, offset: 0, len: bytes as usize }],
+                            }),
                         );
                     }
                     let program_ref = &dev.programs[program.program_id];
