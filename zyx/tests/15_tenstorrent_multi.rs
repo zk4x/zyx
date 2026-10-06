@@ -11,7 +11,7 @@
 
 #![cfg(feature = "tenstorrent")]
 
-use zyx::kernel::{BOp, Dev, Kernel, MemScope, TileDim};
+use zyx::kernel::{BOp, Dev, Kernel, MemScope, OpId, TileDim};
 use zyx::{DType, Tensor, ZyxError};
 
 /// Probe: add then add (same BINARY op twice, no exp anywhere).
@@ -2381,4 +2381,68 @@ for (int face = 0; face < 4; face++) {{
     println!("q4k asm dequant bad: {bad} / 4096");
     assert_eq!(bad, 0);
     Ok(())
+}
+
+/// Single-op BF16 exp, moved from `14_tenstorrent_single.rs`: the failure
+/// mode (top-octile precision loss) is fusion-context-sensitive, so it is
+/// tracked here alongside the other exp-bearing cones rather than in the
+/// single-op matrix.
+fn tt_range() -> Vec<f32> {
+    // [0, 2): F16/BF16-exact steps, safe for sqrt/exp.
+    (0..32 * 32).map(|j| (j % 32) as f32 * 0.0625).collect()
+}
+
+fn run_tt_unary(
+    name: &str,
+    dtype: DType,
+    tol: f32,
+    data: Vec<f32>,
+    expect: fn(f32) -> f32,
+    op: impl Fn(&mut Kernel, OpId) -> OpId,
+) -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(dtype);
+    let out = k.param_mut(dtype);
+
+    let ca = k.circular_storage(dtype, 1);
+    let cout = k.circular_storage(dtype, 1);
+
+    let _g = k.group_range(0, 1);
+
+    k.copy_global_to_circular(a, 0, ca, 0);
+    k.tt_end_reader();
+    let va = k.load_circular(ca, 0);
+    let v = op(&mut k, va);
+    k.store_circular(cout, v, 0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, 0, out, 0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    let a_t = Tensor::from_vec(data.clone(), [32, 32])?.tilize()?.cast(dtype).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[32, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).untilize(32, 32)?.to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (p, (&x, &v)) in data.iter().zip(z.iter()).enumerate() {
+        let expected = expect(x);
+        if (v - expected).abs() >= tol {
+            if bad < 10 || std::env::var("ZYX_TT_FULL").is_ok() {
+                println!("{name}[{p}] = {v}, expected {expected}");
+            }
+            bad += 1;
+        }
+    }
+    println!("{name} bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+#[test]
+fn tenstorrent_exp_bf16() -> Result<(), ZyxError> {
+    run_tt_unary("tenstorrent_exp_bf16", DType::BF16, 3e-2, tt_range(), |x: f32| x.exp(), |k: &mut Kernel, x: OpId| {
+        k.exp(x)
+    })
 }

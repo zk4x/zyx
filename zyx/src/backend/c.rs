@@ -332,7 +332,18 @@ impl CDevice {
                 todo!("C copy from {:?}", src_shard.pool)
             }
             #[cfg(feature = "tenstorrent")]
-            Pool::TT(_) => todo!("C copy from {:?}", src_shard.pool),
+            Pool::TT(id) => {
+                // Device-to-host download straight into the destination, no
+                // staging buffer: the shim IPC is synchronous, so the reply
+                // arrives after the data did.
+                let tt = super::tenstorrent::pool(id)?;
+                let mut tpool = super::lock(Pool::TT(id), tt);
+                let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+                tpool.pool_to_host(
+                    src_shard.chunk,
+                    unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) },
+                )?;
+            }
             #[cfg(feature = "wgpu")]
             Pool::WGPU(_) => todo!("C copy from {:?}", src_shard.pool),
         }

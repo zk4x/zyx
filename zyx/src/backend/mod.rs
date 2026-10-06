@@ -230,7 +230,7 @@ impl CmdQueue {
                         Pool::OpenCL(id) => Dev::OpenCL(id),
                         Pool::Vulkan(id) => Dev::Vulkan(id),
                         #[cfg(feature = "tenstorrent")]
-                        Pool::TT(_) => todo!("schedule copy into {dst_pool:?}"),
+                        Pool::TT(id) => Dev::TT(id),
                         #[cfg(feature = "wgpu")]
                         Pool::WGPU(_) => todo!("schedule copy into {dst_pool:?}"),
                     };
@@ -292,6 +292,10 @@ impl CmdQueue {
             Some(Dev::Vulkan(id)) => {
                 partitions.push(PlanPartition::Vulkan(vulkan::VulkanDevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
+            #[cfg(feature = "tenstorrent")]
+            Some(Dev::TT(id)) => {
+                partitions.push(PlanPartition::TT(tenstorrent::TTDevice::schedule(std::mem::take(run), outputs, live_out, id)))
+            }
             Some(dev) => todo!("schedule launch run for {dev:?}"),
         }
         *run_dev = None;
@@ -343,6 +347,12 @@ impl Plan {
                     let mut dev = dlock(Dev::Vulkan(vk_part.dev), &device);
                     vk_part.replay(&mut dev, &mut resolved, vars)?;
                 }
+                #[cfg(feature = "tenstorrent")]
+                PlanPartition::TT(tt_part) => {
+                    let device = tenstorrent::device(tt_part.dev)?;
+                    let mut dev = dlock(Dev::TT(tt_part.dev), &device);
+                    tt_part.replay(&mut dev, &mut resolved, vars)?;
+                }
                 PlanPartition::Copy { dst, ops } => {
                     for op in ops {
                         if resolved.contains_key(&op.dst) {
@@ -375,6 +385,12 @@ impl Plan {
                             Dev::Vulkan(id) => {
                                 let device = vulkan::device(*id)?;
                                 let dev = dlock(Dev::Vulkan(*id), &device);
+                                dev.copy(&src_placed, &placed, bytes)?;
+                            }
+                            #[cfg(feature = "tenstorrent")]
+                            Dev::TT(id) => {
+                                let device = tenstorrent::device(*id)?;
+                                let dev = dlock(Dev::TT(*id), &device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
                             _ => todo!("replay copy into {dst:?}"),
@@ -430,6 +446,11 @@ pub(crate) enum PlanPartition {
     /// by a Vulkan device through its worker (one roundtrip per replay,
     /// async: the reply fires after submit while kernels still run).
     Vulkan(vulkan::VulkanPartition),
+    /// Ordered Tenstorrent commands with death lists (no queues, no edges —
+    /// the synchronous shim IPC is the ordering), executed directly by a
+    /// Tenstorrent device (one blocking run per launch).
+    #[cfg(feature = "tenstorrent")]
+    TT(tenstorrent::TTPartition),
     /// Cross-pool copies, executed by the destination device.
     Copy { dst: Dev, ops: Vec<CopyOp> },
 }

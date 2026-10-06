@@ -1384,7 +1384,6 @@ tt_unary!(tenstorrent_floor_bf16, |k: &mut Kernel, x: OpId| k.floor(x), DType::B
 tt_unary!(tenstorrent_trunc_f16, |k: &mut Kernel, x: OpId| k.trunc(x), DType::F16, 1e-5, tt_centered, |x: f32| x.trunc(), ignore);
 tt_unary!(tenstorrent_trunc_bf16, |k: &mut Kernel, x: OpId| k.trunc(x), DType::BF16, 1e-5, tt_bf16_full, |x: f32| x.trunc());
 tt_unary!(tenstorrent_exp_f16, |k: &mut Kernel, x: OpId| k.exp(x), DType::F16, 3e-2, tt_range, |x: f32| x.exp());
-tt_unary!(tenstorrent_exp_bf16, |k: &mut Kernel, x: OpId| k.exp(x), DType::BF16, 3e-2, tt_range, |x: f32| x.exp());
 tt_unary!(tenstorrent_exp2_f16, |k: &mut Kernel, x: OpId| k.exp2(x), DType::F16, 3e-2, tt_range, |x: f32| x.exp2());
 tt_unary!(tenstorrent_exp2_bf16, |k: &mut Kernel, x: OpId| k.exp2(x), DType::BF16, 3e-2, tt_range, |x: f32| x.exp2());
 tt_unary!(tenstorrent_log2_f16, |k: &mut Kernel, x: OpId| k.log2(x), DType::F16, 3e-2, tt_positive, |x: f32| x.log2(), ignore);

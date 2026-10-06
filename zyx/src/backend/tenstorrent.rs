@@ -19,11 +19,13 @@
 // single-core launch uses `gidx0 = 0, gidx1 = 0` (also written `{0, 0}`
 // in CoreCoord notation).
 
-use super::{ChunkId, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Pool, Shard, gws_from_kernel};
+use super::{ChunkId, Cmd, Dev, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Placement, Pool, Shard, gws_from_kernel};
 use crate::{
-    DType, Set,
+    DType, Map, Set,
     backend::DTypeCapability,
+    dtype::Constant,
     error::{BackendError, ErrorStatus},
+    kernel::OpId,
     shape::Dim,
     slab::Slab,
 };
@@ -1019,5 +1021,137 @@ impl TTDevice {
         let start = std::time::Instant::now();
         self.launch(program_id, self.memory_pool, args)?;
         Ok(start.elapsed().as_nanos() as u64)
+    }
+
+    /// Copy executing a transfer into this device's pool: host uploads go
+    /// through the blocking shim upload, everything else is later work.
+    /// Single-shard placements only.
+    pub fn copy(&self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
+        debug_assert!(bytes >= 0, "TT copy of negative bytes");
+        let [src_shard] = &src.shards[..] else {
+            todo!("TT copy of multi-shard source placement")
+        };
+        let [dst_shard] = &dst.shards[..] else {
+            todo!("TT copy of multi-shard destination placement")
+        };
+        debug_assert_eq!(dst_shard.pool, self.memory_pool, "TT copy destination is not on this device");
+        debug_assert_eq!(src_shard.offset, 0, "TT copy source has a nonzero offset");
+        debug_assert_eq!(dst_shard.offset, 0, "TT copy destination has a nonzero offset");
+        match src_shard.pool {
+            Pool::Host => {
+                // The host lock is held across the blocking shim upload: the
+                // source pointer stays valid. The shim never takes it.
+                let host = super::host::pool();
+                let hpool = super::lock(Pool::Host, host);
+                let src_ptr = hpool.get_buffer(src_shard.chunk).as_ptr();
+                let src_bytes = unsafe { std::slice::from_raw_parts(src_ptr, bytes as usize) };
+                let Pool::TT(id) = self.memory_pool else {
+                    unreachable!("TT copy on a non-TT device")
+                };
+                let tt = pool(id)?;
+                let mut tpool = super::lock(self.memory_pool, tt);
+                tpool.host_to_pool(src_bytes, dst_shard.chunk)?;
+            }
+            p => todo!("TT copy from {p:?}"),
+        }
+        Ok(())
+    }
+}
+
+/// Preplanned Tenstorrent partition: the ordered commands plus
+/// per-command death lists (slots whose final read is that command and
+/// which nothing later needs). Replay allocates unbound defs on the fly
+/// from their specs and launches programs back-to-back — the shim IPC is
+/// synchronous, so no queues, no edges, no worker: program order is the
+/// ordering guarantee.
+#[derive(Debug)]
+pub(crate) struct TTPartition {
+    cmds: Vec<Cmd>,
+    deaths: Vec<Vec<OpId>>,
+    pub(crate) dev: u16,
+}
+
+impl TTDevice {
+    /// Schedule a command run for a Tenstorrent device: orders nothing
+    /// (program order is launch order), precomputes per-command death
+    /// lists from the final read of every slot. A slot dies at its last
+    /// use unless pinned (a plan output or read after this partition).
+    pub(crate) fn schedule(cmds: Vec<Cmd>, outputs: &Set<OpId>, live_out: Set<OpId>, dev: u16) -> TTPartition {
+        let mut last_use: Map<OpId, usize> = Map::default();
+        for (idx, cmd) in cmds.iter().enumerate() {
+            for r in cmd.reads() {
+                last_use.insert(r, idx);
+            }
+        }
+        let mut pinned = outputs.clone();
+        pinned.extend(live_out);
+        let mut deaths: Vec<Vec<OpId>> = vec![Vec::new(); cmds.len()];
+        for (slot, idx) in last_use {
+            if !pinned.contains(&slot) {
+                deaths[idx].push(slot);
+            }
+        }
+        TTPartition { cmds, deaths, dev }
+    }
+}
+
+impl TTPartition {
+    pub(crate) fn replay(
+        &self,
+        dev: &mut TTDevice,
+        resolved: &mut Map<OpId, Arc<Placement>>,
+        vars: &Map<OpId, Constant>,
+    ) -> Result<(), BackendError> {
+        let my_pool = dev.memory_pool;
+        debug_assert_eq!(my_pool, Pool::TT(self.dev), "TT partition replayed on the wrong device");
+        for (idx, cmd) in self.cmds.iter().enumerate() {
+            match cmd {
+                Cmd::Launch { program, args, outputs } => {
+                    debug_assert_eq!(program.dev, Dev::TT(self.dev), "TT partition holds a non-TT program");
+                    for (slot, dtype, dims) in outputs {
+                        if resolved.contains_key(slot) {
+                            continue;
+                        }
+                        let bytes = dims.iter().map(|d| d.eval(vars)).fold(*dtype, |a, b| a * b);
+                        debug_assert!(bytes >= 0, "TT replay allocated negative bytes");
+                        let chunk = my_pool.allocate(bytes)?;
+                        resolved.insert(
+                            *slot,
+                            Arc::new(Placement { shards: vec![Shard { pool: my_pool, chunk, offset: 0, len: bytes as usize }] }),
+                        );
+                    }
+                    // Resolve args to launch values. Buffers name their
+                    // chunk (offsets are 0 everywhere — no sub-chunk views
+                    // exist yet); variables carry their scalar value.
+                    let mut launch_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
+                    for arg in args {
+                        if let Some(placement) = resolved.get(arg) {
+                            let [shard] = &placement.shards[..] else { todo!("multi-shard slot in TT launch") };
+                            debug_assert_eq!(shard.pool, my_pool, "TT launch arg is not on this device");
+                            debug_assert_eq!(shard.offset, 0, "TT launch arg has a nonzero offset");
+                            launch_args.push(LaunchArg::Buffer { chunk: shard.chunk, offset: 0, len: shard.len });
+                        } else if let Some(constant) = vars.get(arg) {
+                            launch_args.push(LaunchArg::Variable(constant.clone()));
+                        } else {
+                            panic!("TT replay: launch arg {arg:?} is neither placed nor bound");
+                        }
+                    }
+                    // Dry run: skip device execution, keep arg binding validation.
+                    // Output buffers hold uninitialized contents; callers must not read them.
+                    if std::env::var("ZYX_DRY_RUN").is_err() {
+                        dev.launch(program.program_id, my_pool, &launch_args)?;
+                    }
+                }
+                Cmd::Alias { class, to } => {
+                    let placed = resolved.get(to).unwrap_or_else(|| panic!("TT replay: alias target {to:?} is unplaced")).clone();
+                    resolved.insert(*class, placed);
+                }
+                Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
+            }
+            for dead in &self.deaths[idx] {
+                resolved.remove(dead);
+            }
+        }
+        Ok(())
     }
 }
