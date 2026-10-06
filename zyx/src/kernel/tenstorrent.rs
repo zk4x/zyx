@@ -371,10 +371,16 @@ impl Kernel {
 
     /// Fused unary LLK claiming: `sigmoid`/`silu` composites built by
     /// the plain builders (`neg` → `exp` → `add` → `recip`, plus `mul`
-    /// for silu) become one `sigmoid_tile` / one `silu_tile` call.
-    /// Same approach as [`Kernel::fuse_mad`](super::fuse): one linear
-    /// walk, total user counts, single-pattern-contained inners,
-    /// rewrite in place, `verify`.
+    /// for silu, with `exp` spelled as `exp2(x * log2(e))` per the
+    /// builders) become one `sigmoid_tile` / one `silu_tile` call.
+    /// Same approach as [`Kernel::fuse_rsqrt`](super::fuse): use counts
+    /// gate the rewrite, orphaned inners stay dead in place, `verify`.
+    ///
+    /// Biggest first: a silu cone contains a sigmoid cone, so the silu
+    /// pass walks the whole kernel before the sigmoid pass sees it.
+    /// Claiming the inner sigmoid first would rewrite it and the silu
+    /// pattern could never match. Each pass recomputes use counts from
+    /// the current IR (a rewrite changes them).
     ///
     /// Containment (the test's pattern-exclusive-input rule): every
     /// non-const op of the pattern must have all its users inside the
@@ -382,7 +388,8 @@ impl Kernel {
     /// back to the plain composite — fusing it would re-time CB page
     /// traffic the second consumer still counts on. The pattern root
     /// itself may have outside users; they read the fused tile value
-    /// exactly as they read the unfused one.
+    /// exactly as they read the unfused one. Dead roots (no users —
+    /// orphaned inners of an already-fused bigger pattern) are skipped.
     ///
     /// The rewrite is an opaque [`TTOp::LLK`] over the feeder value
     /// (the sigmoid input `x`): `sync_cbs` waits its CB page through
@@ -391,42 +398,78 @@ impl Kernel {
     /// `exp_tile(s)` path). The engine-config init
     /// (`sigmoid_tile_init();` / `silu_tile_init();`) and the feeder
     /// copy init go right before the call, mirroring `init_math`'s
-    /// `asm_before` shapes. Orphaned inner ops stay dead in place
-    /// (same as `fuse_mad`'s dead multiply).
+    /// `asm_before` shapes. Orphaned inner ops are pruned by
+    /// `dead_code_elimination` at the end of the pass, so downstream
+    /// sync accounting never sees them (a dead inner left in place
+    /// would draw a second CB wait for the feeder's page).
     pub fn tt_fuse_llks(&mut self) {
         eprintln!("FUSEDBG tt_fuse_llks entry");
-        // Total user counts: users[v] = ops taking v as a data operand.
-        let mut users: Map<OpId, Vec<OpId>> = Map::default();
-        let mut scan = self.head;
-        while !scan.is_null() {
-            for p in self.at(scan).parameters() {
-                if !p.is_null() {
-                    users.entry(p).or_default().push(scan);
-                }
-            }
-            scan = self.next_op(scan);
-        }
-
         let x = Pat::bind('x');
         let sigmoid_pat = (x.neg().exp() + 1.).recip();
         let silu_pat = x * &sigmoid_pat;
-
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            // Silu first (it contains a sigmoid root): `mul(x, sig)`.
-            if let Some(m) = self.match_pat(op_id, &sigmoid_pat) {
-                self.insert_before(op_id, Op::Asm { asm: TinyString::new("silu_tile_init();"), ops: TinyVec::new(&[]) });
-                self.ops[op_id].op =
-                    Op::TT(TTOp::LLK { asm: TinyString::new("silu_tile({0});"), ops: TinyVec::new(&[m.op('x')]) });
-            } else if let Some(m) = self.match_pat(op_id, &silu_pat) {
-                self.insert_before(op_id, Op::Asm { asm: TinyString::new("sigmoid_tile_init();"), ops: TinyVec::new(&[]) });
-                self.ops[op_id].op =
-                    Op::TT(TTOp::LLK { asm: TinyString::new("sigmoid_tile({0});"), ops: TinyVec::new(&[m.op('x')]) });
+        for (pat, init, call) in
+            [(&silu_pat, "silu_tile_init();", "silu_tile({0});"), (&sigmoid_pat, "sigmoid_tile_init();", "sigmoid_tile({0});")]
+        {
+            // Total user counts: users[v] = ops taking v as a data operand.
+            let mut users: Map<OpId, Vec<OpId>> = Map::default();
+            let mut scan = self.head;
+            while !scan.is_null() {
+                for p in self.at(scan).parameters() {
+                    if !p.is_null() {
+                        users.entry(p).or_default().push(scan);
+                    }
+                }
+                scan = self.next_op(scan);
             }
-            op_id = next;
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                let next = self.next_op(op_id);
+                // Dead roots stay dead: without a user the fused call
+                // would wait a CB page nobody pushed.
+                if users.contains_key(&op_id)
+                    && let Some(m) = self.match_pat(op_id, pat)
+                {
+                    let feeder = m.op('x');
+                    // Cone: DFS from the root, stopping at consts (shared
+                    // consts are free) and the feeder (everything below it
+                    // is outside the pattern).
+                    let mut cone = Vec::new();
+                    let mut stack = vec![op_id];
+                    while let Some(id) = stack.pop() {
+                        if id.is_null() || id == feeder || matches!(self.at(id), Op::Const(_)) {
+                            continue;
+                        }
+                        if !cone.contains(&id) {
+                            cone.push(id);
+                            stack.extend(self.at(id).parameters());
+                        }
+                    }
+                    // Exclusive: the feeder and every cone op except the
+                    // root have all their users inside the cone (or at the
+                    // root). The root itself may feed outside readers.
+                    let feeder_ok = users
+                        .get(&feeder)
+                        .map(|us| us.iter().all(|u| *u == op_id || cone.contains(u)))
+                        .unwrap_or(true);
+                    let inners_ok = cone
+                        .iter()
+                        .filter(|c| **c != op_id)
+                        .all(|c| users.get(c).map(|us| us.iter().all(|u| cone.contains(u))).unwrap_or(true));
+                    if feeder_ok && inners_ok {
+                        self.insert_before(op_id, Op::Asm { asm: TinyString::new(init), ops: TinyVec::new(&[]) });
+                        self.ops[op_id].op =
+                            Op::TT(TTOp::LLK { asm: TinyString::new(call), ops: TinyVec::new(&[feeder]) });
+                    }
+                }
+                op_id = next;
+            }
         }
-
+        // Prune the orphaned inner ops: downstream sync accounting
+        // counts structural users, and a dead inner left in place
+        // would draw CB waits for pages the fused call already covers.
+        // LLK calls and Asm inits are DCE roots, so the fused calls
+        // (and their inits) survive.
+        self.dead_code_elimination();
         self.verify();
     }
 
@@ -1238,10 +1281,12 @@ impl Kernel {
                 }
             }
             // Unpack init at the load: a circular load consumed through
-            // a copy (tiled elementwise SSA, a direct pack store) is
-            // configured here, ahead of every copy site in walk (hence
-            // runtime) order. Fused consumers (LLK provenance, user Asm,
-            // markers) and dead loads need none.
+            // a copy (tiled elementwise SSA, a direct pack store, or a
+            // fused-unary LLK whose render copies its feeder into a
+            // fresh DST slot) is configured here, ahead of every copy
+            // site in walk (hence runtime) order. Other fused consumers
+            // (LLK provenance positions read straight from the CB,
+            // user Asm, markers) and dead loads need none.
             if let Op::Load { src } = self.ops[op_id].op {
                 if let Op::GEP { x: cb, .. } = self.ops[src].op
                     && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
@@ -1249,6 +1294,18 @@ impl Kernel {
                         us.iter().any(|u| {
                             matches!(self.ops[*u].op, Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. })
                                 || matches!(self.ops[*u].op, Op::Store { src: x, .. } if x == op_id)
+                                || match &self.ops[*u].op {
+                                    // Fused unary calls copy their feeder
+                                    // load into a fresh DST slot at the
+                                    // call, so the feeder needs its unpack
+                                    // init like any copied load. Any other
+                                    // LLK reads CBs/storage slots directly.
+                                    Op::TT(TTOp::LLK { asm, .. }) => {
+                                        let text = asm.as_str();
+                                        text.starts_with("sigmoid_tile(") || text.starts_with("silu_tile(")
+                                    }
+                                    _ => false,
+                                }
                         })
                     })
                 {
