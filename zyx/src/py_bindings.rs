@@ -1448,6 +1448,13 @@ impl Tensor {
         Ok(self / rhs)
     }
 
+    /// Floor division: `x // y`, equivalent to `(x / y).trunc()` (truncation toward zero).
+    /// Mirrors tinygrad's `div(rounding_mode="trunc")` / `__floordiv__` semantics.
+    fn __floordiv__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok((self / rhs).trunc())
+    }
+
     fn __pow__(&self, rhs: &Bound<PyAny>, _modulo: Option<&Bound<PyAny>>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
         self.pow(rhs)
