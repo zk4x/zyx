@@ -1428,9 +1428,9 @@ impl Graph {
 impl Runtime {
     pub fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<OpId, ZyxError> {
         let (class_id, gid) = match self.tensors[tid] {
-            TensorData::Graph { class_id, graph_id, .. } | TensorData::Promoted { class_id, graph_id, .. } => {
-                (class_id, graph_id)
-            }
+            TensorData::Graph { class_id, graph_id, .. }
+            | TensorData::Promoted { class_id, graph_id, .. }
+            | TensorData::GraphLeaf { class_id, graph_id, .. } => (class_id, graph_id),
             _ => (OpId::NULL, GraphId::NULL),
         };
         if !class_id.is_null() {

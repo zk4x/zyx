@@ -48,16 +48,16 @@ fn layer0() -> Result<(), ZyxError> {
     // GGUF weights, same file as the example. No output.weight exists here,
     // so the tied head path is the only option (matches the example).
     let (_meta, mut raw) = Tensor::load_gguf(format!("{base}/Llama-3.2-3B-Instruct-f16.gguf")).unwrap();
-    let embed = raw.remove("token_embd.weight").expect("token_embd.weight").t();
+    let embed = raw.remove("token_embd.weight").expect("token_embd.weight");
     let an_w = raw.remove("blk.0.attn_norm.weight").expect("blk.0.attn_norm.weight");
-    let qw = raw.remove("blk.0.attn_q.weight").expect("blk.0.attn_q.weight").t();
-    let kw = raw.remove("blk.0.attn_k.weight").expect("blk.0.attn_k.weight").t();
-    let vw = raw.remove("blk.0.attn_v.weight").expect("blk.0.attn_v.weight").t();
-    let ow = raw.remove("blk.0.attn_output.weight").expect("blk.0.attn_output.weight").t();
+    let qw = raw.remove("blk.0.attn_q.weight").expect("blk.0.attn_q.weight");
+    let kw = raw.remove("blk.0.attn_k.weight").expect("blk.0.attn_k.weight");
+    let vw = raw.remove("blk.0.attn_v.weight").expect("blk.0.attn_v.weight");
+    let ow = raw.remove("blk.0.attn_output.weight").expect("blk.0.attn_output.weight");
     let pn_w = raw.remove("blk.0.ffn_norm.weight").expect("blk.0.ffn_norm.weight");
-    let gw = raw.remove("blk.0.ffn_gate.weight").expect("blk.0.ffn_gate.weight").t();
-    let uw = raw.remove("blk.0.ffn_up.weight").expect("blk.0.ffn_up.weight").t();
-    let dw = raw.remove("blk.0.ffn_down.weight").expect("blk.0.ffn_down.weight").t();
+    let gw = raw.remove("blk.0.ffn_gate.weight").expect("blk.0.ffn_gate.weight");
+    let uw = raw.remove("blk.0.ffn_up.weight").expect("blk.0.ffn_up.weight");
+    let dw = raw.remove("blk.0.ffn_down.weight").expect("blk.0.ffn_down.weight");
 
     // Rope tables, same math as the example (llama3 scaling), cast to F16.
     let mut inv_freq: Vec<f32> = (0..hd)
@@ -231,7 +231,8 @@ fn layer0() -> Result<(), ZyxError> {
     let attn_out = o_proj.forward(ctx).unwrap();
     let xs_res = attn_out.clone() + xs0.clone();
     let h2 = post_norm.forward(&xs_res).unwrap();
-    let gate = gate_proj.forward(&h2).unwrap().swish();
+    let gate_raw = gate_proj.forward(&h2).unwrap();
+    let gate = gate_raw.clone().swish();
     let up = up_proj.forward(&h2).unwrap();
     let down = down_proj.forward(gate.clone() * up.clone()).unwrap();
     let block_out = down.clone() + xs_res.clone();
@@ -247,7 +248,7 @@ fn layer0() -> Result<(), ZyxError> {
         ("l0_attn_probs", probs.clone()),
         ("l0_attn_out", attn_out.clone()),
         ("l0_post_norm", h2.clone()),
-        ("l0_gate", gate.clone()),
+        ("l0_gate", gate_raw.clone()),
         ("l0_up", up.clone()),
         ("l0_mlp_down", down.clone()),
         ("l0_block_out", block_out.clone()),

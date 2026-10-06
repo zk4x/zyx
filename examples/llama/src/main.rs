@@ -810,8 +810,7 @@ struct Args {
 fn remap_gguf_weights(mut gguf: HashMap<String, Tensor>) -> HashMap<String, Tensor> {
     let mut out = HashMap::new();
     if let Some(t) = gguf.remove("token_embd.weight") {
-        // GGUF stores [embed_dim, vocab_size]; we need [vocab_size, embed_dim]
-        out.insert("model.embed_tokens.weight".to_string(), t.t());
+        out.insert("model.embed_tokens.weight".to_string(), t);
     }
     if let Some(t) = gguf.remove("output_norm.weight") {
         out.insert("model.norm.weight".to_string(), t);
@@ -831,12 +830,6 @@ fn remap_gguf_weights(mut gguf: HashMap<String, Tensor>) -> HashMap<String, Tens
         }
         let layer: usize = parts[1].parse().unwrap_or(0);
         let tensor = gguf.remove(&key).unwrap();
-        // GGUF stores weights as [in_features, out_features]; zyx-nn Linear
-        // does x.dot(weight.t()) expecting [out_features, in_features]. Transpose.
-        let tensor = match parts[2] {
-            "attn_norm" | "ffn_norm" => tensor,
-            _ => tensor.t(),
-        };
         let hf_key = match parts[2] {
             "attn_q" => format!("model.layers.{layer}.self_attn.q_proj.weight"),
             "attn_k" => format!("model.layers.{layer}.self_attn.k_proj.weight"),

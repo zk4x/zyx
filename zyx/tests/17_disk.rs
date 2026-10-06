@@ -53,7 +53,8 @@ fn gguf_load() -> Result<(), ZyxError> {
 
     let (_metadata, tensors) = Tensor::load_gguf(&path)?;
     let x = &tensors["test.tensor"];
-    assert_eq!(x.shape(), [2, 3]);
+    // File dims are fastest-first ([2, 3]); row-major shape is reversed.
+    assert_eq!(x.shape(), [3, 2]);
     assert_eq!(x.to_vec::<f32>()?, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 
     fs::remove_file(path)?;
