@@ -67,5 +67,8 @@ fn mnist() -> Result<(), ZyxError> {
             break;
         }
     }
+
+    std::thread::park();
+
     Ok(())
 }

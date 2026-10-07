@@ -8,7 +8,7 @@
 ///
 /// - Pretty-printed IR output
 /// - Bounds computation for value range analysis
-/// - Color-coded output (disabled when AGENT=1)
+/// - Color-coded output (disabled when AGENT=1 or stdout is not a terminal)
 ///
 /// Debug output is useful for:
 ///
@@ -34,8 +34,10 @@ use std::fmt::{Display, Formatter};
 impl Kernel {
     /// Print debug information for the kernel.
     ///
-    /// Output is color-coded for readability, but color is disabled
-    /// when running with `AGENT=1` (for cleaner log output).
+    /// Output is color-coded for readability when printed to an
+    /// interactive terminal, but color is disabled when running with
+    /// `AGENT=1` or when stdout is not a terminal (it will not colorize
+    /// captured or logged output).
     ///
     /// # Example
     ///
@@ -46,10 +48,8 @@ impl Kernel {
     pub fn debug(&self) {
         println!("{self}")
     }
-}
 
-impl Display for Kernel {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    pub(crate) fn format(&self, f: &mut Formatter<'_>, colorless: bool) -> std::fmt::Result {
         let remap_ids = false;
         let mut indent = String::from(" ");
         let bounds = self.compute_bounds();
@@ -58,7 +58,7 @@ impl Display for Kernel {
         let mut has_loops = false;
         let mut id_map = Map::default();
         let mut max_id = OpId::ZERO;
-        let colorless = std::env::var("AGENT").is_ok_and(|v| v == "1");
+        let colorless = colorless || std::env::var("AGENT").is_ok_and(|v| v == "1");
         let (bold, blue, cyan, green, grey, magenta, orange, red, reset, yellow) = if colorless {
             ("", "", "", "", "", "", "", "", "", "")
         } else {
@@ -556,5 +556,11 @@ impl Display for Kernel {
             op_id = self.ops[op_id].next;
         }
         writeln!(f)
+    }
+}
+
+impl Display for Kernel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.format(f, false)
     }
 }
