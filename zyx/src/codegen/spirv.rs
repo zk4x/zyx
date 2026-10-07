@@ -459,6 +459,33 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
+        // Push-constant block layout from the `Variable` params (same
+        // std140-scalar layout the Vulkan launcher writes): the worker
+        // only ever sees the descriptor, so this is computed here.
+        let mut push_cur: u32 = 0;
+        let mut push_vars = 0u32;
+        let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
+        while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("render_spirv did not finish in 10000 steps");
+            }
+            if let Op::Param { dtype, kind: ParamKind::Variable, .. } = self.at(op_id) {
+                let storage_bits = if *dtype == DType::Bool { 32 } else { dtype.bit_size() };
+                let size = storage_bits as u32 / 8;
+                let align = if size >= 8 { 8 } else { 4 };
+                push_cur = push_cur.next_multiple_of(align);
+                push_cur += size;
+                push_vars += 1;
+            }
+            op_id = self.next_op(op_id);
+        }
+        let push_constants_size = if push_vars == 0 {
+            0
+        } else {
+            push_cur.next_multiple_of(4).max(4)
+        };
         let mut rendered = Kernel {
             ops: Slab::new(),
             head: OpId::NULL,
@@ -471,6 +498,7 @@ impl Kernel {
         rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
         rendered.push_back(Op::Spirv(Box::new(SpirvOp::WordBytes(words.into_boxed_slice()))));
+        rendered.push_back(Op::Spirv(Box::new(SpirvOp::PushConstants(push_constants_size))));
         Ok(rendered)
     }
 

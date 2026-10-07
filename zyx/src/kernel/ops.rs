@@ -406,6 +406,10 @@ pub enum GPUOp {
 pub enum SpirvOp {
     /// Compiled SPIR-V word stream. Boxed to keep `Op` in budget.
     WordBytes(Box<[u32]>),
+    /// Precomputed push-constant block size in bytes (Vulkan): laid out
+    /// from the `Variable` params' dtypes at render, when the full kernel
+    /// is still available. Zero means no variables.
+    PushConstants(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]

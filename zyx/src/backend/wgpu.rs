@@ -431,9 +431,9 @@ impl WGPUDevice {
         let Some(Op::Spirv(spirv)) = order.next() else {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Spirv".into() });
         };
-        // Single-variant enum: irrefutable today, and adding a variant
-        // breaks this `let` at compile time, forcing decode handling.
-        let SpirvOp::WordBytes(words) = spirv.as_ref();
+        let SpirvOp::WordBytes(words) = spirv.as_ref() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not WordBytes".into() });
+        };
         let lws: [u32; 3] = *lws;
 
         let spirv_words = words.to_vec();

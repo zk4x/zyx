@@ -525,6 +525,9 @@ impl Display for Kernel {
                     SpirvOp::WordBytes(words) => {
                         writeln!(f, "{indent}spirv_words={}", words.len()).unwrap();
                     }
+                    SpirvOp::PushConstants(size) => {
+                        writeln!(f, "{indent}spirv_push_constants={size}").unwrap();
+                    }
                 },
             }
             op_id = self.ops[op_id].next;

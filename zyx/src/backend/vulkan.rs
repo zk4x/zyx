@@ -19,7 +19,7 @@ use libloading::Library;
 use nanoserde::DeJson;
 use std::time::Instant;
 
-use crate::kernel::{Op, OpId, RangeKind};
+use crate::kernel::{GPUOp, Op, OpId, SpirvOp};
 use crate::{
     DType,
     dtype::Constant,
@@ -31,7 +31,6 @@ use crate::{
 
 use super::{
     AllocPlan, ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Placement, PlanDim, Pool, Shard,
-    gws_from_kernel,
 };
 
 // ── Global state ──────────────────────────────────────────────────────────────
@@ -621,8 +620,9 @@ impl VulkanDevice {
         self.tx.send(VulkanCommand::ReleaseProgram(program_id)).unwrap();
     }
     pub(super) fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
+        let rendered = kernel.render()?;
         let (reply, rx) = channel();
-        self.tx.send(VulkanCommand::Compile { kernel: Box::new(kernel.clone()), debug_asm, reply }).unwrap();
+        self.tx.send(VulkanCommand::Compile { kernel: Box::new(rendered), debug_asm, reply }).unwrap();
         rx.recv().unwrap()
     }
     /// Timed launch for autotune: the worker's pending window is submitted
@@ -2081,33 +2081,61 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                             unsafe { std::ptr::copy_nonoverlapping(ptr, dst, bytes) };
                             let _ = reply.send(Ok(()));
                         }
-                        VulkanCommand::Compile { kernel, debug_asm, reply } => {
-                            let mut lws: [u32; 3] = [1; 3];
-                            let mut op_id = kernel.head;
-                            let mut steps_op_id = 0usize;
-                            while !op_id.is_null() {
-                                steps_op_id += 1;
-                                if steps_op_id > 10_000 {
-                                    panic!("find_mem_type did not finish in 10000 steps");
-                                }
-                                if let Op::Range { axis, kind: scope } = kernel.ops[op_id].op {
-                                    match scope {
-                                        RangeKind::Group(_) => {}
-                                        RangeKind::Local(len) => lws[axis as usize] = len,
-                                        // A warp is a view over a local range — adds no threads.
-                                        RangeKind::Warp(_) => {}
-                                    }
-                                }
-                                op_id = kernel.next_op(op_id);
-                            }
-
-                            let spirv = match kernel.generate_spirv(debug_asm) {
-                                Ok(spirv) => spirv,
-                                Err(e) => {
-                                    let _ = reply.send(Err(e));
-                                    continue;
-                                }
+                        VulkanCommand::Compile { kernel, debug_asm: _debug_asm, reply } => {
+                            // Debugging TBD: render takes no debug flag, so
+                            // SPIR-V disassembly is off here.
+                            let mut order = kernel.ops_in_order();
+                            let Some(GPUOp::Params(params)) = order.next().and_then(Op::as_gpu) else {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "head op is not Params".into(),
+                                }));
+                                continue;
                             };
+                            let Some(GPUOp::Grid(gws)) = order.next().and_then(Op::as_gpu) else {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "second op is not Grid".into(),
+                                }));
+                                continue;
+                            };
+                            let Some(GPUOp::LocalWorkSize(lws)) = order.next().and_then(Op::as_gpu) else {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "third op is not LocalWorkSize".into(),
+                                }));
+                                continue;
+                            };
+                            let Some(Op::Spirv(words)) = order.next() else {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "fourth op is not Spirv".into(),
+                                }));
+                                continue;
+                            };
+                            let SpirvOp::WordBytes(words) = words.as_ref() else {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "fourth op is not WordBytes".into(),
+                                }));
+                                continue;
+                            };
+                            let Some(Op::Spirv(push)) = order.next() else {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "fifth op is not Spirv".into(),
+                                }));
+                                continue;
+                            };
+                            let SpirvOp::PushConstants(push_constants_size) = push.as_ref() else {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "fifth op is not PushConstants".into(),
+                                }));
+                                continue;
+                            };
+                            let lws: [u32; 3] = *lws;
+                            let spirv: &[u32] = words;
 
                             let shader_ci = VkShaderModuleCreateInfo {
                                 sType: VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -2128,54 +2156,15 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 }
                             }
 
-                            let n_args = {
-                                let mut n = 0usize;
-                                let mut op = kernel.head;
-                                let mut steps_op = 0usize;
-                                while !op.is_null() {
-                                    steps_op += 1;
-                                    if steps_op > 10_000 {
-                                        panic!("find_mem_type did not finish in 10000 steps");
-                                    }
-                                    if let crate::kernel::Op::Param { kind, .. } = kernel.at(op)
-                                        && matches!(kind, crate::kernel::ParamKind::Global | crate::kernel::ParamKind::GlobalMut)
-                                    {
-                                        n += 1;
-                                    }
-                                    op = kernel.next_op(op);
-                                }
-                                n
-                            };
+                            let n_args = params
+                                .iter()
+                                .filter(|&kind| {
+                                    matches!(kind, crate::kernel::ParamKind::Global | crate::kernel::ParamKind::GlobalMut)
+                                })
+                                .count();
 
                             // Same layout as the SPIR-V push-constant block (std140 scalars; bool stored as u32)
-                            let (push_constants_size, _n_vars) = {
-                                let mut cur: u32 = 0;
-                                let mut n_vars = 0u32;
-                                let mut op = kernel.head;
-                                let mut steps_op = 0usize;
-                                while !op.is_null() {
-                                    steps_op += 1;
-                                    if steps_op > 10_000 {
-                                        panic!("find_mem_type did not finish in 10000 steps");
-                                    }
-                                    if let crate::kernel::Op::Param { dtype, kind: crate::kernel::ParamKind::Variable, .. } =
-                                        kernel.at(op)
-                                    {
-                                        let storage_bits = if *dtype == crate::DType::Bool { 32 } else { dtype.bit_size() };
-                                        let size = storage_bits as u32 / 8;
-                                        let align = if size >= 8 { 8 } else { 4 };
-                                        cur = cur.next_multiple_of(align);
-                                        cur += size;
-                                        n_vars += 1;
-                                    }
-                                    op = kernel.next_op(op);
-                                }
-                                if n_vars == 0 {
-                                    (0u32, 0u32)
-                                } else {
-                                    (cur.next_multiple_of(4).max(4), n_vars)
-                                }
-                            };
+                            let push_constants_size = *push_constants_size;
 
                             let bindings: Vec<VkDescriptorSetLayoutBinding> = (0..n_args as u32)
                                 .map(|i| VkDescriptorSetLayoutBinding {
@@ -2270,13 +2259,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
 
                             unsafe { vkDestroyShaderModule(device, shader, std::ptr::null()) };
 
-                            let gws = match gws_from_kernel(&kernel, &dev_info.max_global_work_dims) {
-                                Ok(gws) => gws,
-                                Err(err) => {
-                                    let _ = reply.send(Err(err));
-                                    continue;
-                                }
-                            };
+                            let gws = gws.to_vec();
                             let id =
                                 programs.push(VulkanProgram { pipeline, pipeline_layout, desc_layout, push_constants_size, gws });
                             let _ = reply.send(Ok(id));
