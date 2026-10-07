@@ -2641,6 +2641,10 @@ impl Runtime {
         #[cfg(feature = "viz")]
         self.viz.snapshot(&self.graphs[graph_id], &queue.cmds);
         let plan = queue.schedule(&output_set.iter().copied().collect());
+        #[cfg(feature = "viz")]
+        for (program, lane) in plan.lanes() {
+            self.viz.record_lane(program, lane);
+        }
         Ok(plan)
     }
 
