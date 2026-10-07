@@ -22,15 +22,14 @@
 use crate::DType;
 use crate::Map;
 use crate::Set;
-#[cfg(feature = "tenstorrent")]
 use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
-use crate::kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TTOp, TileDim, UOp};
-#[cfg(feature = "tenstorrent")]
-use crate::kernel::{GPUOp, SourceBlock, TTCbConfig, TTProgramDesc};
+use crate::kernel::{
+    BOp, GPUOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTCbConfig, TTOp, TTProgramDesc,
+    TileDim, UOp,
+};
 use crate::scalar::{bf16, f16};
-#[cfg(feature = "tenstorrent")]
 use crate::slab::Slab;
 
 /// DRAM page size in bytes.
@@ -96,8 +95,7 @@ impl Kernel {
     /// goes through here, including hand-built custom kernels (raw IR
     /// lowers exactly once; kernels already holding a `Source` pass
     /// through untouched in `render` and never reach this).
-    #[cfg(feature = "tenstorrent")]
-    pub(super) fn render_tt(&self) -> Result<Kernel, BackendError> {
+    pub(crate) fn render_tt(&self) -> Result<Kernel, BackendError> {
         let program = self.generate_tenstorrent()?;
         let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         if gws_vec.len() > 2 {
@@ -160,7 +158,7 @@ impl Kernel {
     /// a clone of this kernel (the caller's IR is untouched); emission
     /// derives CBs, DST slots, param ordinals, and grid axes from the
     /// resulting ops.
-    pub fn generate_tenstorrent(&self) -> Result<TTProgram, BackendError> {
+    pub(crate) fn generate_tenstorrent(&self) -> Result<TTProgram, BackendError> {
         let mut k = self.clone();
         // Lowering order: fused LLK claiming (sigmoid/silu composites
         // become opaque calls), storage (compute ops become LLK calls over

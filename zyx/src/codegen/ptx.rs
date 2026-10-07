@@ -382,7 +382,7 @@ impl Compiler {
 impl Kernel {
     /// Compile kernel to PTX assembly.
     #[allow(clippy::type_complexity)] // complex return type inherent to PTX backend API
-    pub fn generate_ptx(&self, name: &str) -> Result<(Vec<u8>, Vec<Dim>), BackendError> {
+    pub(crate) fn generate_ptx(&self, name: &str) -> Result<(Vec<u8>, Vec<Dim>), BackendError> {
         // Reject group lengths that are constant and exceed the device grid limits.
         gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let mut comp = Compiler {

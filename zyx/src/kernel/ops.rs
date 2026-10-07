@@ -380,6 +380,12 @@ pub enum Op {
     /// equal so CSE shares them. Void leaf, no operands. Boxed so `Op`
     /// keeps its 24-byte budget (mirrors `Op::GPU`).
     Spirv(Box<SpirvOp>),
+    /// PTX payload for CUDA: assembled PTX bytes emitted directly at
+    /// render (under `ZYX_PTX`), bypassing NVRTC at compile. Pure value:
+    /// equal contents compare equal so CSE shares them. Void leaf, no
+    /// operands. Boxed so `Op` keeps its 24-byte budget (mirrors
+    /// `Op::Spirv`).
+    PTX(Box<PTXOp>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -410,6 +416,14 @@ pub enum SpirvOp {
     /// from the `Variable` params' dtypes at render, when the full kernel
     /// is still available. Zero means no variables.
     PushConstants(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// PTX backend meta op: assembled PTX bytes. Lives inside [`Op::PTX`].
+pub enum PTXOp {
+    /// Assembled PTX assembly bytes, as handed to the driver (same shape
+    /// as NVRTC output). Boxed to keep `Op` in budget.
+    Bytes(Box<[u8]>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -708,6 +722,7 @@ impl Op {
             Op::Narrow { .. } => 36,
             Op::GPU(_) => 37,
             Op::Spirv(_) => 38,
+            Op::PTX(_) => 39,
         }
     }
 }
@@ -744,6 +759,7 @@ impl PartialEq for Op {
             (Op::TT(a), Op::TT(b)) => a == b,
             (Op::GPU(a), Op::GPU(b)) => a == b,
             (Op::Spirv(a), Op::Spirv(b)) => a == b,
+            (Op::PTX(a), Op::PTX(b)) => a == b,
             (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => aa == ba && ao == bo,
             (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
                 a == b && ar == br && aa == ba
@@ -850,6 +866,7 @@ impl Hash for Op {
             Op::TT(t) => t.hash(state),
             Op::GPU(g) => g.hash(state),
             Op::Spirv(s) => s.hash(state),
+            Op::PTX(p) => p.hash(state),
             Op::Asm { asm, ops } => {
                 asm.hash(state);
                 ops.hash(state);
@@ -1321,7 +1338,7 @@ impl Op {
             Op::Source(_) | Op::Program { .. } | Op::Kernel(_) | Op::GPU(_) => {
                 vec![]
             }
-            Op::Spirv(_) => vec![],
+            Op::Spirv(_) | Op::PTX(_) => vec![],
         }
         .into_iter()
     }
@@ -1338,7 +1355,7 @@ impl Op {
             | Op::EndLoop
             | Op::Barrier => vec![],
             Op::Contiguous { x, .. } => vec![x],
-            Op::Spirv(_) => vec![],
+            Op::Spirv(_) | Op::PTX(_) => vec![],
             Op::ToDevice { x, .. } => vec![x],
             Op::After { x, dep } => vec![x, dep],
             Op::Param { shape, .. } => {

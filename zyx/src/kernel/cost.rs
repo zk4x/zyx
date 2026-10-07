@@ -241,7 +241,7 @@ impl Kernel {
                         | TTOp::ProgramDesc(_)
                         | TTOp::TensixGrid(_) => {}
                     },
-                    Op::Source(_) | Op::GPU(_) | Op::Spirv(_) => todo!(),
+                    Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => todo!(),
                     Op::Barrier | Op::EndLoop => {}
                 }
                 op_id = self.next_op(op_id);
@@ -332,7 +332,7 @@ impl Kernel {
                 | Op::Reshape { .. }
                 | Op::Pad { .. } => todo!(),
                 Op::Reduce { .. } => todo!(),
-                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) => todo!(),
+                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
@@ -668,7 +668,7 @@ impl Kernel {
                 Op::Barrier => {
                     wi_barriers += loop_mult;
                 }
-                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) => todo!(),
+                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }

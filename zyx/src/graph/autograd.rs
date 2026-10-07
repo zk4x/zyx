@@ -405,6 +405,7 @@ impl Runtime {
                 Op::Source { .. }
                 | Op::GPU { .. }
                 | Op::Spirv { .. }
+                | Op::PTX { .. }
                 | Op::Storage { .. }
                 | Op::GEP { .. }
                 | Op::Load { .. }

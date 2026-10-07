@@ -26,7 +26,7 @@ use crate::kernel::{BOp, IDX_T, RangeKind, UOp};
 use crate::slab::SlabId;
 use crate::{
     BLUE, BOLD, CYAN, DType, GREEN, GREY, MAGENTA, Map, ORANGE, RED, RESET, YELLOW,
-    kernel::{GPUOp, Kernel, Op, OpId, SpirvOp, TTOp},
+    kernel::{GPUOp, Kernel, Op, OpId, PTXOp, SpirvOp, TTOp},
     shape::Dim,
 };
 use std::fmt::{Display, Formatter};
@@ -545,6 +545,11 @@ impl Display for Kernel {
                     }
                     SpirvOp::PushConstants(size) => {
                         writeln!(f, "{indent}spirv_push_constants={size}").unwrap();
+                    }
+                },
+                Op::PTX(ref ptx) => match ptx.as_ref() {
+                    PTXOp::Bytes(bytes) => {
+                        writeln!(f, "{indent}ptx_bytes={}", bytes.len()).unwrap();
                     }
                 },
             }

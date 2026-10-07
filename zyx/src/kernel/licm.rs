@@ -55,6 +55,7 @@ impl Kernel {
                 | Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)
+                | Op::PTX(_)
                 | Op::Pad { .. }
                 | Op::Permute { .. }
                 | Op::Expand { .. }
@@ -155,6 +156,7 @@ impl Kernel {
                 | Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)
+                | Op::PTX(_)
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }

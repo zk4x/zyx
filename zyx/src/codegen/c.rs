@@ -18,7 +18,7 @@ impl Kernel {
     /// snapshot's OpenMP setting baked into the pragma; backend `compile`
     /// only decodes positions and drives clang. The unlowered ops are
     /// consumed, never carried.
-    pub(super) fn render_c(&self) -> Result<Kernel, BackendError> {
+    pub(crate) fn render_c(&self) -> Result<Kernel, BackendError> {
         // Symbol name keys on the ORIGINAL kernel hash: compile hashes
         // pre-render for its disk cache, so both sides compute the same
         // value independently.
@@ -58,7 +58,7 @@ impl Kernel {
     }
 
     /// Compile kernel to C source code.
-    pub fn generate_c(&self, has_openmp: bool, name: &str) -> Result<String, BackendError> {
+    pub(crate) fn generate_c(&self, has_openmp: bool, name: &str) -> Result<String, BackendError> {
         // Reject group lengths that are constant and exceed the device grid limits.
         gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
@@ -141,6 +141,7 @@ impl Kernel {
                 Op::Source(_) => todo!(),
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
+                Op::PTX(_) => todo!(),
                 Op::Range { kind: scope, .. } => {
                     let RangeKind::Group(len) = scope else {
                         return Err(BackendError {

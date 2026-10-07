@@ -24,7 +24,7 @@ impl Kernel {
     /// `gws_from_kernel`, the source emits once. The launcher only ever
     /// reads head positions. Local size is validated against the
     /// device snapshot here, so backend `compile` never re-checks.
-    pub(super) fn render_opencl(&self) -> Result<Kernel, BackendError> {
+    pub(crate) fn render_opencl(&self) -> Result<Kernel, BackendError> {
         let mut lws = [1u32; 3];
         let mut op_id = self.head;
         let mut steps_op_id = 0usize;
@@ -128,6 +128,7 @@ impl Kernel {
                 Op::Source(_) => todo!(),
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
+                Op::PTX(_) => todo!(),
                 Op::TT { .. }
                 | Op::Reduce { .. }
                 | Op::Expand { .. }

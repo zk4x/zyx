@@ -415,7 +415,7 @@ fn elem_stride(dt: DType) -> usize {
 }
 
 impl Kernel {
-    pub(super) fn render_spirv(&self) -> Result<Kernel, BackendError> {
+    pub(crate) fn render_spirv(&self) -> Result<Kernel, BackendError> {
         // Max over local ranges per axis, mirroring generate_spirv's Pass 1
         // exactly (including the axis guard) so the entry-point name derived
         // there matches the `name` rebuilt at launch from this `lws`.
@@ -503,7 +503,7 @@ impl Kernel {
     }
 
     /// Compile kernel to SPIR-V binary.
-    pub fn generate_spirv(&self, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
+    pub(crate) fn generate_spirv(&self, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
         use OpCode::*;
         // Reject group lengths that are constant and exceed the device grid limits.
         gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
@@ -1226,6 +1226,7 @@ impl Kernel {
                     Op::Source(_) => todo!(),
                     Op::GPU(_) => todo!(),
                     Op::Spirv(_) => todo!(),
+                    Op::PTX(_) => todo!(),
                     Op::TT { .. }
                     | Op::Expand { .. }
                     | Op::Permute { .. }

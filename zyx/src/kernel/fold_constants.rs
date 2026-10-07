@@ -42,6 +42,7 @@ impl Kernel {
                 | Op::Source { .. }
                 | Op::GPU { .. }
                 | Op::Spirv { .. }
+                | Op::PTX { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }

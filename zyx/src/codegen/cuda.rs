@@ -7,7 +7,8 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{
-        BOp, GPUOp, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, UOp,
+        BOp, GPUOp, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind,
+        SourceBlock, UOp,
     },
     scalar::{bf16, f16},
     slab::Slab,
@@ -122,7 +123,7 @@ fn mma_helper(dims: MMADims, layout: MMALayout, dtype: MMADType) -> String {
 }
 
 impl Kernel {
-    pub(super) fn render_cuda(&self) -> Result<Kernel, BackendError> {
+    pub(crate) fn render_cuda(&self) -> Result<Kernel, BackendError> {
         let mut lws = [1u32; 3];
         let mut op_id = self.head;
         let mut steps_op_id = 0usize;
@@ -140,7 +141,18 @@ impl Kernel {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
         let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
-        let source = self.generate_cuda(&name)?;
+        // ZYX_PTX: emit PTX assembly directly at render (bypasses NVRTC
+        // at compile); otherwise emit CUDA C++ for the NVRTC path. The
+        // decision lives here so compile only decodes positions: a
+        // `Source` fourth op means CUDA source, a `PTX` fourth op means
+        // assembled bytes.
+        let fourth = if std::env::var("ZYX_PTX").is_ok() {
+            let (ptx, _) = self.generate_ptx(&name)?;
+            Op::PTX(Box::new(PTXOp::Bytes(ptx.into_boxed_slice())))
+        } else {
+            let source = self.generate_cuda(&name)?;
+            Op::Source(SourceBlock(source.into_boxed_str()))
+        };
         let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         if gws_vec.len() > 3 {
             return Err(BackendError {
@@ -171,12 +183,12 @@ impl Kernel {
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
-        rendered.push_back(Op::Source(SourceBlock(source.into_boxed_str())));
+        rendered.push_back(fourth);
         Ok(rendered)
     }
 
     /// Compile kernel to CUDA C++ source code.
-    pub fn generate_cuda(&self, name: &str) -> Result<String, BackendError> {
+    pub(crate) fn generate_cuda(&self, name: &str) -> Result<String, BackendError> {
         use std::fmt::Write;
 
         // Reject group lengths that are constant and exceed the device grid limits.
@@ -240,6 +252,7 @@ impl Kernel {
                 Op::Source(_) => todo!(),
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
+                Op::PTX(_) => todo!(),
                 Op::TT { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }

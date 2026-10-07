@@ -99,7 +99,8 @@ pub use crate::error::BackendError;
 pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{
-    BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, SourceBlock, SpirvOp, TTCbConfig, TTOp, TTProgramDesc, TileDim,
+    BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind, SourceBlock, SpirvOp, TTCbConfig, TTOp, TTProgramDesc,
+    TileDim,
 };
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, DtypeClass, Pat, VExpr};
@@ -322,6 +323,7 @@ impl Kernel {
                 Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)
+                | Op::PTX(_)
                 | Op::Reshape { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
@@ -515,7 +517,7 @@ impl Kernel {
     pub(crate) fn layout(&self, mut op_id: OpId) -> MemLayout {
         for _ in 0..10000 {
             match self.ops[op_id].op {
-                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => {
+                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) | Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => {
                     return MemLayout::Scalar;
                 }
                 Op::Range { .. } => return MemLayout::Scalar,
@@ -602,6 +604,7 @@ impl Kernel {
                 Op::Source(_) => todo!(),
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
+                Op::PTX(_) => todo!(),
                 Op::Const(c) => return c.dtype(),
                 Op::Param { dtype, .. } => return dtype,
                 Op::Storage { dtype, .. } => return dtype,

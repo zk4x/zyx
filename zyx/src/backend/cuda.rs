@@ -117,7 +117,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::Graph,
-    kernel::{GPUOp, Kernel, MMADType, MMADims, Op, OpId, ParamKind, RangeKind},
+    kernel::{GPUOp, Kernel, MMADType, MMADims, Op, OpId, PTXOp, ParamKind, RangeKind},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -1765,11 +1765,42 @@ impl CUDADevice {
         let Some(GPUOp::LocalWorkSize(lws)) = order.next().and_then(Op::as_gpu) else {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "third op is not LocalWorkSize".into() });
         };
-        let Some(Op::Source(source)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Source".into() });
+        let Some(fourth) = order.next() else {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "descriptor ends before fourth op".into(),
+            });
         };
         let lws: [u32; 3] = *lws;
         let mut name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
+        // PTX-direct descriptor (ZYX_PTX render): assembled bytes ride
+        // the descriptor and skip NVRTC entirely.
+        if let Op::PTX(ptx) = fourth {
+            // Single-variant enum: irrefutable today, and adding a
+            // variant breaks this `let` at compile time, forcing
+            // decode handling.
+            let PTXOp::Bytes(bytes) = ptx.as_ref();
+            let ptx_vec: Vec<u8> = bytes.to_vec();
+            name += "\0";
+            let (reply, reply_rx) = channel();
+            self.tx
+                .send(CUDACommand::Compile {
+                    lws,
+                    gws: gws.to_vec(),
+                    params: params.to_vec(),
+                    name: name.into_boxed_str(),
+                    ptx: ptx_vec,
+                    reply,
+                })
+                .unwrap();
+            return reply_rx.recv().unwrap();
+        }
+        let Op::Source(source) = fourth else {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "fourth op is neither Source nor PTX".into(),
+            });
+        };
         let source = source.as_str().to_string();
         if debug_asm {
             println!();
@@ -3054,40 +3085,6 @@ impl CUDAStatus {
 
             Err(BackendError { status, context: format!("{self:?}").into() })
         }
-    }
-}
-
-impl CUDADevice {
-    pub fn compile_ptx(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
-        let mut lws = vec![1; 3];
-        let mut op_id = kernel.head;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("compile_ptx did not finish in 10000 steps");
-            }
-            if let Op::Range { axis, kind: scope } = kernel.ops[op_id].op {
-                match scope {
-                    RangeKind::Group(_) => {}
-                    RangeKind::Local(len) => lws[axis as usize] = i64::from(len),
-                    // A warp is a view over a local range — adds no threads.
-                    RangeKind::Warp(_) => {}
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
-        if lws.iter().product::<i64>() > self.dev_info.max_local_threads as i64 {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
-        }
-        let mut name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
-        let (mut ptx, _) = kernel.generate_ptx(&name)?;
-        if debug_asm {
-            eprintln!("{}", std::str::from_utf8(&ptx).unwrap_or("<invalid utf8>"));
-        }
-        ptx.push(0);
-        name += "\0";
-        Ok((lws, name.into_boxed_str(), ptx))
     }
 }
 

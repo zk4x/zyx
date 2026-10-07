@@ -119,6 +119,7 @@ impl Kernel {
                     Op::Source(_)
                     | Op::GPU(_)
                     | Op::Spirv(_)
+                    | Op::PTX(_)
                     | Op::After { .. }
                     | Op::ToDevice { .. }
                     | Op::Contiguous { .. }
@@ -619,6 +620,7 @@ impl Kernel {
                 Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)
+                | Op::PTX(_)
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
