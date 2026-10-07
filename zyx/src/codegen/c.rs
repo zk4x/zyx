@@ -3,15 +3,60 @@
 
 use crate::{
     DType, Map,
-    backend::gws_from_kernel,
+    backend::{GwsDim, gws_from_kernel},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
+    kernel::{BOp, GPUOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, UOp},
     scalar::{bf16, f16},
+    slab::Slab,
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
 
 impl Kernel {
+    /// C render: lower to a descriptor-only kernel — head order `Params`,
+    /// `Grid`, `Source`. The C source emits once here, with the device
+    /// snapshot's OpenMP setting baked into the pragma; backend `compile`
+    /// only decodes positions and drives clang. The unlowered ops are
+    /// consumed, never carried.
+    pub(super) fn render_c(&self) -> Result<Kernel, BackendError> {
+        // Symbol name keys on the ORIGINAL kernel hash: compile hashes
+        // pre-render for its disk cache, so both sides compute the same
+        // value independently.
+        let name = format!("k_{:016x}", self.get_hash());
+        let source = self.generate_c(self.dev_info().has_openmp, &name)?;
+        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
+        if gws_vec.len() > 3 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("C render: grid rank {} exceeds 3D", gws_vec.len()).into(),
+            });
+        }
+        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            gws[i] = g;
+        }
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let mut rendered = Kernel {
+            ops: Slab::new(),
+            head: OpId::NULL,
+            tail: OpId::NULL,
+            dev: self.dev,
+            dev_info: self.dev_info.clone(),
+            shape_cache: Map::default(),
+        };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
+        rendered.push_back(Op::Source(SourceBlock(source.into_boxed_str())));
+        Ok(rendered)
+    }
+
     /// Compile kernel to C source code.
     pub fn generate_c(&self, has_openmp: bool, name: &str) -> Result<String, BackendError> {
         // Reject group lengths that are constant and exceed the device grid limits.

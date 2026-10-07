@@ -28,6 +28,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         match self.dev {
+            Dev::C => self.render_c(),
             Dev::Cuda(_) => self.render_cuda(),
             Dev::OpenCL(_) => self.render_opencl(),
             Dev::Vulkan(_) => self.render_spirv(),

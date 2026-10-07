@@ -9,11 +9,11 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{ChunkId, Cmd, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Pool, Shard};
+use super::{ChunkId, Cmd, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Placement, Pool, Shard};
 use crate::DType;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
-use crate::kernel::{Kernel, Op, OpId, RangeKind};
+use crate::kernel::{GPUOp, Kernel, Op, OpId};
 use crate::shape::Dim;
 use crate::slab::Slab;
 use crate::{Map, Set};
@@ -292,6 +292,9 @@ impl CDevice {
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         // --- Phase 0: Compute kernel hash and check disk cache ---
+        // Keyed on the ORIGINAL kernel hash: stable across the render
+        // port. render_c computes the same hash pre-render for the
+        // compiled symbol name, so cache hits still resolve.
         let hash = kernel.get_hash();
         let name = format!("k_{hash:016x}");
 
@@ -315,30 +318,34 @@ impl CDevice {
             }
         }
 
-        // --- Compute global work size ---
-        let mut gws0 = 1i64;
-        let mut op_id = kernel.head;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("compile did not finish in 10000 steps");
-            }
-            if let Op::Range { axis, kind: RangeKind::Group(len) } = kernel.ops[op_id].op
-                && axis == 0
-            {
-                gws0 = kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(1).max(1);
-            }
-            op_id = kernel.next_op(op_id);
+        // --- Render to descriptor; decode head positions ---
+        let rendered = kernel.render()?;
+        let mut order = rendered.ops_in_order();
+        let Some(GPUOp::Params(_params)) = order.next().and_then(Op::as_gpu) else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "head op is not Params".into() });
+        };
+        let Some(GPUOp::Grid(gws)) = order.next().and_then(Op::as_gpu) else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "second op is not Grid".into() });
+        };
+        let Some(Op::Source(source)) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "third op is not Source".into() });
+        };
+        // The -fopenmp link flag only pays off above one thread. A dynamic
+        // first axis falls back to serial — the same condition the old
+        // resolve-const unwrap_or(1) produced.
+        let gws0 = match &gws[0] {
+            GwsDim::Const(d) => *d,
+            _ => 1,
         }
+        .max(1);
 
-        // --- Codegen ---
+        // --- Codegen: the source rides in the descriptor; never re-run ---
         let tmp_dir = std::env::temp_dir().join(format!("zyx_c_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp_dir);
         let c_path = tmp_dir.join(format!("{name}.c"));
         let so_path = tmp_dir.join(format!("{name}.so"));
 
-        let full_source = kernel.generate_c(self.has_openmp, &name)?;
+        let full_source = source.as_str();
         std::fs::write(&c_path, &full_source).map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("Failed to write C source: {e}").into(),
