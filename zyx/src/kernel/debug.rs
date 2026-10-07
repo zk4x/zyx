@@ -510,9 +510,17 @@ impl Display for Kernel {
                 Op::Source(ref src) => {
                     writeln!(f, "{}", src.as_str()).unwrap();
                 }
-                Op::GPU(GPUOp::LocalWorkSize(size)) => {
-                    writeln!(f, "{indent}local_work_size=[{}, {}, {}]", size[0], size[1], size[2]).unwrap();
-                }
+                Op::GPU(ref gpu) => match gpu.as_ref() {
+                    GPUOp::LocalWorkSize(size) => {
+                        writeln!(f, "{indent}local_work_size=[{}, {}, {}]", size[0], size[1], size[2]).unwrap();
+                    }
+                    GPUOp::Grid(gws) => {
+                        writeln!(f, "{indent}grid={gws:?}").unwrap();
+                    }
+                    GPUOp::Params(params) => {
+                        writeln!(f, "{indent}params={params:?}").unwrap();
+                    }
+                },
             }
             op_id = self.ops[op_id].next;
         }

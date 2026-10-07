@@ -1090,7 +1090,7 @@ pub enum LaunchArg {
 /// Per-gws-axis launch size for a compiled kernel. Backends store one of these
 /// per gws axis at compile time and derive the actual grid at launch from it +
 /// the bound `args`. See AGENTS.md "gws (Global Work Size)".
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub enum GwsDim {
     /// The group length is an `Op::Const`; use this size directly.
     Const(Dim),

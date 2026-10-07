@@ -19,9 +19,9 @@ mod server;
 
 use crate::{
     Map,
-    backend::{Cmd, DeviceInfo, ProgramId},
+    backend::{Cmd, Dev, DeviceInfo, ProgramId},
     graph::{ClassId, Graph},
-    kernel::Kernel,
+    kernel::{Kernel, Op},
 };
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -226,7 +226,7 @@ fn derive_optimized(cap: &KernelCapture) -> Kernel {
 /// Generate the source code for `target` from the derived optimized kernel.
 /// Errors are rendered into the returned string (the UI shows them inline).
 pub(crate) fn generate_source(cap: &KernelCapture, target: Target) -> String {
-    let kernel = derive_optimized(cap);
+    let mut kernel = derive_optimized(cap);
     match target {
         Target::CudaC => match kernel.generate_cuda("zyx_viz") {
             Ok(source) => source,
@@ -241,10 +241,31 @@ pub(crate) fn generate_source(cap: &KernelCapture, target: Target) -> String {
                 Err(e) => format!("generate_ptx failed: {e:?}"),
             }
         }
-        Target::OpenCL => match kernel.generate_opencl("zyx_viz") {
-            Ok(source) => source,
-            Err(e) => format!("generate_opencl failed: {e:?}"),
-        },
+        Target::OpenCL => {
+            // Render through the kernel IR: switch the kernel to an
+            // available OpenCL device, then read back the embedded Source.
+            let Some(dev) = Dev::all().into_iter().find(|d| matches!(d, Dev::OpenCL(_))) else {
+                return "OpenCL render needs an OpenCL device (none available).".to_string();
+            };
+            kernel.dev = dev;
+            kernel.dev_info = match dev.info() {
+                Ok(info) => Some(info),
+                Err(e) => return format!("device info failed: {e:?}"),
+            };
+            match kernel.render() {
+                Ok(rendered) => {
+                    let mut op_id = rendered.head;
+                    while !op_id.is_null() {
+                        if let Op::Source(src) = &rendered.ops[op_id].op {
+                            return src.as_str().to_string();
+                        }
+                        op_id = rendered.next_op(op_id);
+                    }
+                    "render produced no Source".to_string()
+                }
+                Err(e) => format!("render failed: {e:?}"),
+            }
+        }
         Target::C => match kernel.generate_c(cap.has_openmp, "zyx_viz") {
             Ok(source) => source,
             Err(e) => format!("generate_c failed: {e:?}"),

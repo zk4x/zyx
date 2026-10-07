@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 
 use nanoserde::{DeBin, SerBin};
 
-use crate::backend::{Dev, ProgramId};
+use crate::backend::{Dev, GwsDim, ProgramId};
 use crate::dtype::Constant;
 use crate::kernel::{MemLayout, MemScope};
 use crate::shape::{Dim, UAxis};
@@ -372,8 +372,9 @@ pub enum Op {
     TT(TTOp),
     /// GPU launch configuration shared by all GPU backends (CUDA, HIP,
     /// OpenCL, Vulkan, ...). Pure value: equal contents compare equal so
-    /// CSE shares them. Void leaf, no operands.
-    GPU(GPUOp),
+    /// CSE shares them. Void leaf, no operands. Boxed so `Op` keeps its
+    /// 24-byte budget (mirrors `Op::Kernel`).
+    GPU(Box<GPUOp>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -384,6 +385,14 @@ pub enum GPUOp {
     /// threads per block (CUDA/HIP), x/y/z. Concrete by codegen time;
     /// validated against device limits at launch.
     LocalWorkSize([u32; 3]),
+    /// Global work size: one owned group-length expression per axis.
+    /// GPUs are always 3D (missing axes are `Const(1)`); more than three
+    /// group axes is a render-time error. Lowered once at render from the
+    /// `Group` ranges; the launcher evaluates each against the launch args.
+    Grid([GwsDim; 3]),
+    /// Head-order `ParamKind` per kernel param (reads vs writes split
+    /// and arity check at launch). Boxed to keep `Op` in budget.
+    Params(Box<[ParamKind]>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -580,6 +589,14 @@ pub struct CustomKernel {
 }
 
 impl Op {
+    /// The [`GPUOp`] payload if this is an [`Op::GPU`] descriptor op.
+    /// Backends decode rendered kernels positionally with this (`if let`
+    /// rather than a 37-arm match: every non-GPU variant is `None` by
+    /// construction, and a future variant is `None` too).
+    pub fn as_gpu(&self) -> Option<&GPUOp> {
+        if let Op::GPU(g) = self { Some(g) } else { None }
+    }
+
     /// Position of the variant in declaration order. Used to keep the manual
     /// `Ord` identical to the previously derived one (existing variants keep
     /// declaration order; the graph-only variants are appended last).

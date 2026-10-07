@@ -11,13 +11,13 @@
 
 use super::{
     AllocPlan, ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, ParamKind, Placement, PlanDim,
-    Pool, Shard, gws_from_kernel,
+    Pool, Shard,
 };
 use crate::{
     DType,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{Kernel, Op, OpId, RangeKind},
+    kernel::{GPUOp, Kernel, Op, OpId},
     shape::Dim,
     slab::Slab,
 };
@@ -83,7 +83,7 @@ pub struct OpenCLDevice {
 pub(super) struct OpenCLProgram {
     program: *mut c_void,
     kernel: *mut c_void,
-    lws: Vec<Dim>,
+    lws: [u32; 3],
     gws: Vec<GwsDim>,
     /// Per-`Param` kinds in head order, used at submission to split launch
     /// args into reads (`Global`) and writes (`GlobalMut`).
@@ -137,7 +137,7 @@ enum Command {
     Compile {
         name: Box<str>,
         source: String,
-        lws: Vec<Dim>,
+        lws: [u32; 3],
         gws: Vec<GwsDim>,
         params: Vec<ParamKind>,
         reply: Sender<Result<DeviceProgramId, BackendError>>,
@@ -1088,11 +1088,13 @@ fn enqueue_tracked(
         i += 1;
     }
     // The driver requires exactly work_dim local sizes: the stored triple
-    // pairs with the 3D grid by construction.
-    let lws_ptr = if program.lws.is_empty() {
+    // pairs with the 3D grid by construction. Widened to host `size_t`
+    // here: the stored `u32` triple must never reach the driver directly.
+    let lws64: [u64; 3] = program.lws.map(u64::from);
+    let lws_ptr = if global_size.is_empty() {
         ptr::null()
     } else {
-        program.lws[..global_size.len().min(program.lws.len())].as_ptr().cast()
+        lws64[..global_size.len().min(lws64.len())].as_ptr().cast()
     };
     // Global work size is checked against the device grid limits before
     // enqueueing (same values the compile-time check in gws_from_kernel uses).
@@ -1197,7 +1199,7 @@ fn submit_slots(
             // single group, never a dropped axis. Truncating to the zipped
             // length orphans local-only axes, whose indices then read
             // garbage from nonexistent dimensions.
-            g * programs[program_id].lws.get(i).copied().unwrap_or(1)
+            g * Dim::from(programs[program_id].lws[i])
         })
         .collect();
     enqueue_tracked(programs, program_id, &params, global_size, queue, queues, waits, clEnqueueNDRangeKernel, clSetKernelArg)
@@ -1269,7 +1271,7 @@ fn submit_launch(
             // single group, never a dropped axis. Truncating to the zipped
             // length orphans local-only axes, whose indices then read
             // garbage from nonexistent dimensions.
-            g * programs[program_id].lws.get(i).copied().unwrap_or(1)
+            g * Dim::from(programs[program_id].lws[i])
         })
         .collect();
     enqueue_tracked(programs, program_id, &params, global_size, 0, queues, &[], clEnqueueNDRangeKernel, clSetKernelArg)
@@ -1320,51 +1322,44 @@ impl OpenCLDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        // --- Codegen ---
-        let mut lws = vec![1i64; 3];
-        let mut op_id = kernel.head;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("compile did not finish in 10000 steps");
-            }
-            if let Op::Range { axis, kind: scope } = kernel.ops[op_id].op {
-                match scope {
-                    RangeKind::Group(_) => {}
-                    RangeKind::Local(len) => lws[axis as usize] = i64::from(len),
-                    // A warp is a view over a local range — adds no threads.
-                    RangeKind::Warp(_) => {}
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
-
-        if lws.iter().product::<i64>() > self.dev_info.max_local_threads as i64 {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
-        }
+        // --- Rendered descriptor: head order Params, Grid, LocalWorkSize, Source ---
+        let rendered = kernel.render()?;
+        let err = |what: &str| BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("OpenCL compile: {what}").into(),
+        };
+        let mut order = rendered.ops_in_order();
+        let Some(GPUOp::Params(params)) = order.next().and_then(Op::as_gpu) else {
+            return Err(err("head op is not Params"));
+        };
+        let Some(GPUOp::Grid(gws)) = order.next().and_then(Op::as_gpu) else {
+            return Err(err("second op is not Grid"));
+        };
+        let Some(GPUOp::LocalWorkSize(lws)) = order.next().and_then(Op::as_gpu) else {
+            return Err(err("third op is not LocalWorkSize"));
+        };
+        let Some(Op::Source(source)) = order.next() else {
+            return Err(err("fourth op is not Source"));
+        };
 
         let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
 
-        let source = kernel.generate_opencl(&name)?;
         if debug_asm {
             println!();
-            println!("{source}");
+            println!("{}", source.as_str());
         }
 
-        let gws = gws_from_kernel(kernel, &self.dev_info.max_global_work_dims)?;
-        // Collect per-Param kinds in head order — used by the submission path
-        // to split launch args into reads (Global) and writes (GlobalMut).
-        let mut params = Vec::new();
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = kernel.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = kernel.next_op(op_id);
-        }
         let (reply, reply_rx) = channel();
-        self.tx.send(Command::Compile { name: name.into(), source, lws, gws, params, reply }).unwrap();
+        self.tx
+            .send(Command::Compile {
+                name: name.into(),
+                source: source.as_str().to_string(),
+                lws: *lws,
+                gws: gws.to_vec(),
+                params: params.to_vec(),
+                reply,
+            })
+            .unwrap();
         reply_rx.recv().unwrap()
     }
 

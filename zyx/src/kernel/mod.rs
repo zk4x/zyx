@@ -98,7 +98,7 @@ pub use crate::backend::{Dev, DeviceInfo};
 pub use crate::error::BackendError;
 pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
-pub use ops::{BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, TTOp, TileDim};
+pub use ops::{BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, SourceBlock, TTOp, TileDim};
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, DtypeClass, Pat, VExpr};
 
@@ -680,6 +680,21 @@ impl Kernel {
     /// External passes walk `head` → `at` → `next_op`.
     pub fn next_op(&self, op_id: OpId) -> OpId {
         self.ops[op_id].next
+    }
+
+    /// The ops in head-to-tail definition order (the order `push_back` defined them).
+    /// Backends decode rendered kernels positionally with this instead of
+    /// chaining `head` → `next_op` by hand.
+    pub fn ops_in_order(&self) -> impl Iterator<Item = &Op> {
+        let mut next = self.head;
+        std::iter::from_fn(move || {
+            if next.is_null() {
+                return None;
+            }
+            let node = &self.ops[next];
+            next = node.next;
+            Some(&node.op)
+        })
     }
 
     /*pub fn ops_mut(&mut self) -> impl Iterator<Item = &mut Op> {

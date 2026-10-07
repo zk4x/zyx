@@ -25,7 +25,8 @@ use crate::error::BackendError;
 use crate::graph::OpNode;
 use crate::kernel::TTOp;
 use crate::kernel::{
-    BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp, ops::TileDim,
+    BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock,
+    UOp, ops::TileDim,
 };
 use crate::runtime::{Runtime, TensorData};
 use crate::shape::UAxis;
@@ -192,6 +193,22 @@ impl Kernel {
         let perf = crate::debug_mask().dev().then(|| self.flop_mem_rw());
         let program = crate::backend::ProgramId { dev: device_id, program_id };
         Ok(CompiledKernel { program, inputs, outputs, perf })
+    }
+
+    /// Append a hand-written backend source block (e.g. a custom compute
+    /// section). The kernel keeps its existing ops: `render` passes a
+    /// kernel that already holds a `Source` through untouched, and
+    /// `compile` launches from the embedded source plus the kernel's
+    /// meta ops. Returns the new op id.
+    pub fn source(&mut self, src: &str) -> OpId {
+        self.push_back(Op::Source(SourceBlock(src.into())))
+    }
+
+    /// Append a GPU local work size (work-items per work-group / threads
+    /// per block, x/y/z). Launch configuration only: no value, no
+    /// operands. Returns the new op id.
+    pub fn local_work_size(&mut self, size: [u32; 3]) -> OpId {
+        self.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(size))))
     }
 
     /// Permute tensor axes.
