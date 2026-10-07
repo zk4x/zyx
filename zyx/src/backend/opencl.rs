@@ -1388,9 +1388,9 @@ impl OpenCLDevice {
 /// runtime state (events, chunks) and submits; it computes nothing.
 #[derive(Debug)]
 pub(crate) struct OpenCLPartition {
-    cmds: Vec<Cmd>,
-    deaths: Vec<Vec<OpId>>,
-    queues: Vec<usize>,
+    pub(crate) cmds: Vec<Cmd>,
+    pub(crate) deaths: Vec<Vec<OpId>>,
+    pub(crate) queues: Vec<usize>,
     waits: Vec<Vec<usize>>,
     allocs: Vec<Vec<AllocPlan>>,
     pub(crate) dev: u16,

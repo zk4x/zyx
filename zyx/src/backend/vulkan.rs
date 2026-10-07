@@ -710,7 +710,7 @@ impl VulkanDevice {
 /// state (chunks) and submits; it computes nothing.
 #[derive(Debug)]
 pub(crate) struct VulkanPartition {
-    cmds: Vec<Cmd>,
+    pub(crate) cmds: Vec<Cmd>,
     deaths: Vec<Vec<OpId>>,
     allocs: Vec<Vec<AllocPlan>>,
     pub(crate) dev: u16,

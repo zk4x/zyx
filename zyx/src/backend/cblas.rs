@@ -248,7 +248,7 @@ impl CblasDevice {
 /// back-to-back, and drops dead slots per the lists.
 #[derive(Debug)]
 pub(crate) struct CblasPartition {
-    cmds: Vec<Cmd>,
+    pub(crate) cmds: Vec<Cmd>,
     deaths: Vec<Vec<OpId>>,
 }
 

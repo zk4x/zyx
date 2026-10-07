@@ -1278,7 +1278,7 @@ impl TTDevice {
 /// ordering guarantee.
 #[derive(Debug)]
 pub(crate) struct TTPartition {
-    cmds: Vec<Cmd>,
+    pub(crate) cmds: Vec<Cmd>,
     deaths: Vec<Vec<OpId>>,
     pub(crate) dev: u16,
 }

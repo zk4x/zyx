@@ -37,6 +37,10 @@ pub(crate) struct KernelCapture {
     pub(crate) sched_kernel: Kernel,
     /// Winner kernel of the autotune search for this program.
     pub(crate) winner: Kernel,
+    /// Program this capture belongs to (joins `VizData.lanes` at serve time).
+    pub(crate) program: ProgramId,
+    /// Measured autotune time in nanoseconds.
+    pub(crate) nanos: u64,
     /// Device info of the device this program was compiled for.
     pub(crate) dev_info: Arc<DeviceInfo>,
     /// Human readable device kind ("CUDA", "OpenCL", ...).
@@ -68,6 +72,11 @@ pub(crate) struct VizData {
     graphs: Vec<GraphViz>,
     /// Staged captures keyed by program id, moved into graphs on snapshot.
     staged: Map<ProgramId, KernelCapture>,
+    /// Execution lane (queue/stream index within the device) per program,
+    /// recorded when the plan replays — after snapshot moved captures into
+    /// graphs, so lanes join at serve time via `KernelCapture.program`.
+    /// Single-lane backends report 0.
+    lanes: Map<ProgramId, usize>,
 }
 
 /// Handle to the visualizer state. Stored as `Runtime::graph_viz`.
@@ -85,7 +94,7 @@ impl Viz {
     fn data(&self) -> Arc<Mutex<VizData>> {
         self.inner
             .get_or_init(|| {
-                let data = Arc::new(Mutex::new(VizData { graphs: Vec::new(), staged: Map::default() }));
+                let data = Arc::new(Mutex::new(VizData { graphs: Vec::new(), staged: Map::default(), lanes: Map::default() }));
                 server::spawn(Arc::clone(&data));
                 data
             })
@@ -95,6 +104,12 @@ impl Viz {
     /// Stage a kernel captured right after it was compiled into `program`.
     pub(crate) fn record(&self, program_id: ProgramId, cap: KernelCapture) {
         self.data().lock().unwrap().staged.insert(program_id, cap);
+    }
+
+    /// Record the execution lane of `program` (queue/stream index within its
+    /// device). Called with the plan's static assignment when it replays.
+    pub(crate) fn record_lane(&self, program: ProgramId, lane: usize) {
+        self.data().lock().unwrap().lanes.insert(program, lane);
     }
 
     /// Add one tab for the queue compiled from `graph`.
@@ -129,6 +144,8 @@ impl Viz {
             kernels.push(captured.map(|cap| KernelCapture {
                 sched_kernel: cap.sched_kernel.clone(),
                 winner: cap.winner.clone(),
+                program: cap.program,
+                nanos: cap.nanos,
                 dev_info: cap.dev_info.clone(),
                 device_label: cap.device_label,
                 cc: cap.cc,

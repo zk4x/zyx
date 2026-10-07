@@ -1447,7 +1447,12 @@ impl Runtime {
             for j in 0..shapes.len() {
                 out_set.insert(OpId::from(inputs.len() + j));
             }
-            queue.schedule(&out_set).replay(boundary, &vars)?
+            let plan = queue.schedule(&out_set);
+            #[cfg(feature = "viz")]
+            for (program, lane) in plan.lanes() {
+                self.viz.record_lane(program, lane);
+            }
+            plan.replay(boundary, &vars)?
         };
         /*eprintln!(
             "[forward async] launch enqueue {}us total {}us (async, no sync)",

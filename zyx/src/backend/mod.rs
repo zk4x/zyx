@@ -316,6 +316,37 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Execution lane per launch, in plan order: `(program, queue)` where
+    /// queue is the queue/stream index within the program's device.
+    /// OpenCL reports its static assignment; every other backend reports 0
+    /// (single queue today, including CUDA on streams[0] —
+    /// `CudaPartition.queues` carries the real assignment once multi-stream
+    /// lands, with no changes needed here).
+    #[cfg(feature = "viz")]
+    pub(crate) fn lanes(&self) -> Vec<(ProgramId, usize)> {
+        fn push(out: &mut Vec<(ProgramId, usize)>, cmds: &[Cmd], queues: Option<&[usize]>) {
+            debug_assert!(queues.map(|q| q.len() == cmds.len()).unwrap_or(true), "lane assignment length mismatch");
+            for (idx, cmd) in cmds.iter().enumerate() {
+                if let Cmd::Launch { program, .. } = cmd {
+                    out.push((*program, queues.map(|q| q[idx]).unwrap_or(0)));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for partition in &self.partitions {
+            match partition {
+                PlanPartition::C(p) => push(&mut out, &p.cmds, None),
+                PlanPartition::Cblas(p) => push(&mut out, &p.cmds, None),
+                PlanPartition::Cuda(p) => push(&mut out, &p.cmds, Some(&p.queues)),
+                PlanPartition::OpenCL(p) => push(&mut out, &p.cmds, Some(&p.queues)),
+                PlanPartition::Vulkan(p) => push(&mut out, &p.cmds, None),
+                #[cfg(feature = "tenstorrent")]
+                PlanPartition::TT(p) => push(&mut out, &p.cmds, None),
+                PlanPartition::Copy { .. } | PlanPartition::Alias { .. } => {}
+            }
+        }
+        out
+    }
     /// Replay the plan against the boundary table and symbolic values:
     /// one shared slot map threads through every partition in order
     /// (allocated once, never rehashed on the hot path); each partition

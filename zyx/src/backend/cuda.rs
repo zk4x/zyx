@@ -1999,8 +1999,13 @@ impl CUDADevice {
 /// the handle destroys the old executable on the worker via `Drop`.
 #[derive(Debug)]
 pub(crate) struct CudaPartition {
-    cmds: Vec<Cmd>,
-    deaths: Vec<Vec<OpId>>,
+    pub(crate) cmds: Vec<Cmd>,
+    pub(crate) deaths: Vec<Vec<OpId>>,
+    /// Execution lane per command. All zeros today: every launch submits on
+    /// streams[0] and serializes. When multi-stream lands, the assignment
+    /// flows through this vector (same shape as OpenCL) with no viz-side
+    /// changes — `Plan::lanes` already reads it.
+    pub(crate) queues: Vec<usize>,
     pub(crate) dev: u16,
     graph: Mutex<Option<CudaGraph>>,
 }
@@ -2021,7 +2026,9 @@ impl CUDADevice {
                 deaths[idx].push(slot);
             }
         }
-        CudaPartition { cmds, deaths, dev, graph: Mutex::new(None) }
+        // Lane per command (all stream 0 today); see `queues` field docs.
+        let queues = vec![0usize; cmds.len()];
+        CudaPartition { cmds, deaths, queues, dev, graph: Mutex::new(None) }
     }
 
     /// Copy executing a transfer into this device's pool: host uploads go

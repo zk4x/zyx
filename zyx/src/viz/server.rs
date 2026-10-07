@@ -74,7 +74,7 @@ fn route(data: &Arc<Mutex<VizData>>, path: &str, query: Option<&str>) -> Respons
         let Some(g) = d.graphs.get(id) else {
             return html("text/plain; charset=utf-8", "no such graph".to_string());
         };
-        return html("application/json", graph_json(g));
+        return html("application/json", graph_json(g, &d.lanes));
     }
 
     if let Some(rest) = path.strip_prefix("/api/kernel/") {
@@ -124,7 +124,7 @@ fn route(data: &Arc<Mutex<VizData>>, path: &str, query: Option<&str>) -> Respons
     html("text/plain; charset=utf-8", "not found".to_string())
 }
 
-fn graph_json(g: &super::GraphViz) -> String {
+fn graph_json(g: &super::GraphViz, lanes: &crate::Map<crate::backend::ProgramId, usize>) -> String {
     let nodes: Vec<String> =
         g.nodes.iter().map(|n| format!("{{\"id\":{},\"label\":{},\"kernel\":{}}}", n.id, escape(&n.label), n.kernel)).collect();
     let edges: Vec<String> = g.edges.iter().map(|(f, t, l)| format!("[{f},{t},{}]", escape(l))).collect();
@@ -136,7 +136,29 @@ fn graph_json(g: &super::GraphViz) -> String {
             None => "null".to_string(),
         })
         .collect();
-    format!("{{\"nodes\":[{}],\"edges\":[{}],\"devices\":[{}]}}", nodes.join(","), edges.join(","), devices.join(","))
+    let lane_of = |k: &Option<super::KernelCapture>| match k {
+        // Every replayed launch records its lane; a missing entry means the
+        // harvest site was skipped for this plan — fail loudly, not silently 0.
+        Some(cap) => lanes.get(&cap.program).copied().expect("viz lane missing for captured program").to_string(),
+        None => "null".to_string(),
+    };
+    let lane_list: Vec<String> = g.kernels.iter().map(lane_of).collect();
+    let nanos: Vec<String> = g
+        .kernels
+        .iter()
+        .map(|k| match k {
+            Some(cap) => cap.nanos.to_string(),
+            None => "null".to_string(),
+        })
+        .collect();
+    format!(
+        "{{\"nodes\":[{}],\"edges\":[{}],\"devices\":[{}],\"lanes\":[{}],\"nanos\":[{}]}}",
+        nodes.join(","),
+        edges.join(","),
+        devices.join(","),
+        lane_list.join(","),
+        nanos.join(",")
+    )
 }
 
 fn escape(s: &str) -> String {

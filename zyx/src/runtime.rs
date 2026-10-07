@@ -1787,7 +1787,12 @@ impl Runtime {
                 boundary.insert(OpId::from(0), buf_id);
                 let mut outputs = Set::default();
                 outputs.insert(OpId::from(1));
-                let out = queue.schedule(&outputs).replay(boundary, &Map::default())?;
+                let plan = queue.schedule(&outputs);
+                #[cfg(feature = "viz")]
+                for (program, lane) in plan.lanes() {
+                    self.viz.record_lane(program, lane);
+                }
+                let out = plan.replay(boundary, &Map::default())?;
                 let dst_placement = Arc::clone(&out[&OpId::from(1)]);
                 debug_assert!(!shape_id.is_scalar(), "to_device: eager tensor {x} has no shape expression");
 
@@ -1829,7 +1834,12 @@ impl Runtime {
                 boundary.insert(OpId::from(0), buf_id);
                 let mut outputs = Set::default();
                 outputs.insert(OpId::from(1));
-                let out = queue.schedule(&outputs).replay(boundary, &Map::default())?;
+                let plan = queue.schedule(&outputs);
+                #[cfg(feature = "viz")]
+                for (program, lane) in plan.lanes() {
+                    self.viz.record_lane(program, lane);
+                }
+                let out = plan.replay(boundary, &Map::default())?;
                 let dst_placement = Arc::clone(&out[&OpId::from(1)]);
                 debug_assert!(!shape_id.is_scalar(), "to_device: eager tensor {x} has no shape expression");
 
@@ -3770,6 +3780,8 @@ impl Runtime {
                 crate::viz::KernelCapture {
                     sched_kernel,
                     winner: winner.clone(),
+                    program: ProgramId { dev: device_id, program_id },
+                    nanos: timing,
                     dev_info: dev_info.clone(),
                     device_label: device_id.name(),
                     cc: match device_id {
@@ -3784,6 +3796,9 @@ impl Runtime {
                 }
             };
             self.viz.record(ProgramId { dev: device_id, program_id }, kc);
+            // Default lane: single-queue truth for most backends, overwritten
+            // below when the plan replays with a real queue assignment.
+            self.viz.record_lane(ProgramId { dev: device_id, program_id }, 0);
         }
 
         Ok((program_id, timing))
@@ -4110,7 +4125,12 @@ impl Runtime {
                 boundary.insert(OpId::from(0), buf);
                 let mut outputs = Set::default();
                 outputs.insert(OpId::from(1));
-                let out = queue.schedule(&outputs).replay(boundary, &Map::default())?;
+                let plan = queue.schedule(&outputs);
+                #[cfg(feature = "viz")]
+                for (program, lane) in plan.lanes() {
+                    self.viz.record_lane(program, lane);
+                }
+                let out = plan.replay(boundary, &Map::default())?;
                 let dst_placement = Arc::clone(&out[&OpId::from(1)]);
                 // No manual release: `buf`'s Arc lives in `out` (frees on
                 // drop) and the tensor slot below (frees on replace).
@@ -4156,7 +4176,12 @@ impl Runtime {
                 boundary.insert(OpId::from(0), buf);
                 let mut outputs = Set::default();
                 outputs.insert(OpId::from(1));
-                let out = queue.schedule(&outputs).replay(boundary, &Map::default())?;
+                let plan = queue.schedule(&outputs);
+                #[cfg(feature = "viz")]
+                for (program, lane) in plan.lanes() {
+                    self.viz.record_lane(program, lane);
+                }
+                let out = plan.replay(boundary, &Map::default())?;
                 let dst_placement = Arc::clone(&out[&OpId::from(1)]);
                 // No manual release: `buf`'s Arc lives in `out` (frees on
                 // drop) and the tensor slot below (frees on replace).
@@ -4303,7 +4328,12 @@ impl Runtime {
         for j in 0..stores.len() {
             out_set.insert(OpId::from(loads.len() + j));
         }
-        let _ = queue.schedule(&out_set).replay(boundary, &vars)?;
+        let plan = queue.schedule(&out_set);
+        #[cfg(feature = "viz")]
+        for (program, lane) in plan.lanes() {
+            self.viz.record_lane(program, lane);
+        }
+        let _ = plan.replay(boundary, &vars)?;
 
         // The kernel launch gives new buffers: ALL stores are turned into
         // Leafs over their (kept or freshly allocated) buffer at once.

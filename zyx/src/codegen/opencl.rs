@@ -525,7 +525,10 @@ impl Kernel {
         }
 
         let mut pragma = String::new();
-        if dtypes.values().any(|&x| x.0 == DType::F16) {
+        // F16 constants emit `as_half`, which needs the extension even when
+        // no register is F16 (e.g. a half zero stored through a wider op).
+        let has_f16_const = self.ops.values().any(|node| matches!(node.op, Op::Const(Constant::F16(_))));
+        if dtypes.values().any(|&x| x.0 == DType::F16) || has_f16_const {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
         }
         if dtypes.values().any(|&x| x.0 == DType::F64) {

@@ -2333,7 +2333,12 @@ impl Runtime {
                                         let out = {
                                             let mut outputs = Set::default();
                                             outputs.insert(OpId::from(1));
-                                            queue.schedule(&outputs).replay(boundary, &Map::default())?
+                                            let plan = queue.schedule(&outputs);
+                                            #[cfg(feature = "viz")]
+                                            for (program, lane) in plan.lanes() {
+                                                self.viz.record_lane(program, lane);
+                                            }
+                                            plan.replay(boundary, &Map::default())?
                                         };
                                         // No manual release: the boundary Arc
                                         // in `out` frees the staging chunk on
