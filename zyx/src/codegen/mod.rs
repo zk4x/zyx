@@ -10,7 +10,7 @@ mod c;
 mod cuda;
 mod opencl;
 mod ptx;
-mod spirv;
+pub(crate) mod spirv;
 #[cfg(feature = "tenstorrent")]
 pub mod tenstorrent;
 

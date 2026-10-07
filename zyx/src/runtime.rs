@@ -3774,7 +3774,9 @@ impl Runtime {
                     device_label: device_id.name(),
                     cc: match device_id {
                         Dev::Cuda(_) => Some(dev_info.cc),
-                        Dev::Auto | Dev::C | Dev::Cblas | Dev::Host | Dev::Vulkan(_) | Dev::OpenCL(_) | Dev::WGPU(_) => None,
+                        Dev::Auto | Dev::C | Dev::Cblas | Dev::Host | Dev::Vulkan(_) | Dev::OpenCL(_) => None,
+                        #[cfg(feature = "wgpu")]
+                        Dev::WGPU(_) => None,
                         #[cfg(feature = "tenstorrent")]
                         Dev::TT(_) => None,
                     },

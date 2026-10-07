@@ -103,8 +103,8 @@ fn route(data: &Arc<Mutex<VizData>>, path: &str, query: Option<&str>) -> Respons
         };
 
         let body = match stage {
-            "sched" => cap.sched_kernel.render(false),
-            "ir" => super::derive_optimized(&cap).render(false),
+            "sched" => cap.sched_kernel.to_string(),
+            "ir" => super::derive_optimized(&cap).to_string(),
             "asm" => {
                 let target =
                     query.and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("target="))).and_then(Target::from_str);

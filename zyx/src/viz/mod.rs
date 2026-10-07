@@ -20,8 +20,8 @@ mod server;
 use crate::{
     Map,
     backend::{Cmd, Dev, DeviceInfo, ProgramId},
-    graph::{ClassId, Graph},
-    kernel::{Kernel, Op},
+    graph::Graph,
+    kernel::{Kernel, Op, OpId},
 };
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -106,10 +106,10 @@ impl Viz {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         let mut seen_edges = crate::Set::default();
-        let mut class_nodes: Map<ClassId, usize> = Map::default();
+        let mut class_nodes: Map<OpId, usize> = Map::default();
         let mut kernels = Vec::new();
 
-        let class_node = |cid: ClassId, nodes: &mut Vec<PlanNode>, class_nodes: &mut Map<ClassId, usize>| -> usize {
+        let class_node = |cid: OpId, nodes: &mut Vec<PlanNode>, class_nodes: &mut Map<OpId, usize>| -> usize {
             *class_nodes.entry(cid).or_insert_with(|| {
                 let id = usize::from(cid);
                 nodes.push(PlanNode { id, label: class_label(graph, cid), kernel: -1 });
@@ -159,19 +159,19 @@ impl Viz {
 }
 
 /// Label for a class node: id, dtype and resolved shape dims.
-fn class_label(graph: &Graph, cid: ClassId) -> String {
+fn class_label(graph: &Graph, cid: OpId) -> String {
     let dtype = graph.dtype(cid);
     let shape: Vec<String> = graph.shape(cid).iter().map(|&d| dim_label(graph, d)).collect();
     format!("c{}\n{:?} {}", cid.0, dtype, shape.join("x"))
 }
 
 /// Resolve a dim class to its constant value, or "?" if dynamic.
-fn dim_label(graph: &Graph, dim: ClassId) -> String {
-    let Some(&nid) = graph.classes[dim].nodes.first() else {
+fn dim_label(graph: &Graph, dim: OpId) -> String {
+    let Some(nid) = graph.class_nodes(dim).next() else {
         return "?".to_string();
     };
-    match &graph.nodes[nid].node {
-        crate::graph::Node::Const { value, .. } => match value.as_dim() {
+    match &graph.ops[nid].op {
+        Op::Const(value) => match value.as_dim() {
             Some(v) => v.to_string(),
             None => "?".to_string(),
         },
