@@ -150,7 +150,7 @@ pub struct CUDAConfig {
     /// Whether to use cuDNN for AOT matmul kernels. Defaults to true.
     cudnn: bool,
     /// Number of hardware queues (CUDA streams) per device used by the
-    /// batched-submission worker. Defaults to 12 when unset.
+    /// batched-submission worker. Defaults to 8 when unset.
     queues: Option<usize>,
 }
 
@@ -318,6 +318,13 @@ pub(super) struct CapturedGraph {
     ptrs: Vec<u64>,
     /// Scalar values at last capture.
     vars: Vec<(OpId, Constant)>,
+    /// Sync events recorded into this capture, one per command index:
+    /// fresh per capture, since a capture may only wait on events
+    /// recorded inside itself (waiting on a stale occurrence is
+    /// CUDA_ERROR_STREAM_CAPTURE_ISOLATION). They stay alive with the
+    /// executable — the baked event nodes reference them on every
+    /// relaunch — and die with it.
+    events: Vec<CUevent>,
 }
 
 /// Worker reply to `Replay`: freshly allocated chunks plus the captured
@@ -393,6 +400,12 @@ enum CUDACommand {
         bound: Vec<(OpId, ChunkId, usize)>,
         /// Scalar values for variable slots + dynamic dims.
         vars: Vec<(OpId, Constant)>,
+        /// Static stream assignment per command (slot affinity from
+        /// schedule) and cross-stream producer edges by command index.
+        /// Same-stream launches need no edge (FIFO); the opening drain
+        /// covers bound inputs from previous partitions.
+        queues: Vec<usize>,
+        waits: Vec<Vec<usize>>,
         /// Device-side reuse hint: a live captured-graph id, if any.
         graph: Option<CudaGraphId>,
         reply: Sender<Result<ReplayResult, BackendError>>,
@@ -772,12 +785,20 @@ fn spawn_worker(
         }
 
         // Hardware queues (streams). Launches submit directly; graph
-        // capture replays them via a captured CUDA graph.
-        let queue_count = super::config().cuda.queues.unwrap_or(12);
+        // capture replays them via a captured CUDA graph. Non-blocking:
+        // see CU_STREAM_NON_BLOCKING (blocking streams cannot express
+        // cross-stream waits inside a capture). Safe: every launch and
+        // copy takes an explicit stream here (no NULL-stream users),
+        // intra-partition order is explicit event edges, and every fence
+        // point (replay entry, update tier, copies, readback, timed
+        // launches) drains all streams.
+        let queue_count = super::config().cuda.queues.unwrap_or(8);
         let mut streams: Vec<CUDAStream> = Vec::new();
         for _ in 0..queue_count {
             let mut stream = ptr::null_mut();
-            if let Err(err) = unsafe { cuStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization) {
+            if let Err(err) =
+                unsafe { cuStreamCreate(&raw mut stream, CU_STREAM_NON_BLOCKING) }.check(ErrorStatus::Initialization)
+            {
                 if debug_dev {
                     println!("[cuda] device {dev_ordinal}: stream init failed: {err:?}");
                 }
@@ -791,6 +812,11 @@ fn spawn_worker(
             }
             return;
         }
+        // Execution events, one per replay-command index: cross-stream
+        // edges become record/wait pairs. Grown to the largest partition
+        // seen and reused across replays — every wait is preceded by a
+        // fresh record in the same submit loop, so reuse is safe.
+        let mut events: Vec<CUevent> = Vec::new();
 
         // Per-axis max grid extents, checked against every evaluated
         // grid dimension before launching (see gws_from_kernel for the
@@ -894,7 +920,7 @@ fn spawn_worker(
                     let _ = reply.send(Ok(ok));
                 }
                 CUDACommand::PoolToHost { src, dst, bytes, reply } => {
-                    // Sync point: drain the (single) stream, then read back.
+                    // Sync point: drain all streams, then read back.
                     // No scheduler state: launches are submitted directly.
                     for st in &streams {
                         if let Err(err) = unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::MemoryCopyP2H) {
@@ -974,8 +1000,8 @@ fn spawn_worker(
                     }
                 }
                 CUDACommand::LaunchTimed { program_id, args, reply } => {
-                    // Uncontended timing for autotune: drain the stream, then
-                    // run the kernel solo bracketed by timing events.
+                    // Uncontended timing for autotune: drain all streams,
+                    // then run the kernel solo bracketed by timing events.
                     for st in &streams {
                         if let Err(err) = unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::KernelSync) {
                             let _ = reply.send(Err(err));
@@ -1018,7 +1044,7 @@ fn spawn_worker(
                     let _ = unsafe { (cuEventDestroy)(end) };
                     let _ = reply.send(result);
                 }
-                CUDACommand::Replay { cmds, bound, vars, graph, reply } => {
+                CUDACommand::Replay { cmds, bound, vars, queues, waits, graph, reply } => {
                     let dry_run = std::env::var("ZYX_DRY_RUN").is_ok();
                     let result = (|| -> Result<ReplayResult, BackendError> {
                         let vars_map: Map<OpId, Constant> = vars.iter().copied().collect();
@@ -1173,6 +1199,32 @@ fn spawn_worker(
                         if dry_run {
                             return Ok(ReplayResult { fresh, graph: None });
                         }
+                        // Opening drain: the previous partition is complete
+                        // before this one's streams diverge (mirrors the copy
+                        // sync points; bound inputs need no edges because of it).
+                        for st in &streams {
+                            unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::KernelSync)?;
+                        }
+                        // One event per command index (aliases never record;
+                        // waits only reference launches).
+                        while events.len() < cmds.len() {
+                            let mut ev: CUevent = ptr::null_mut();
+                            unsafe { (cuEventCreate)(&mut ev, 0) }.check(ErrorStatus::KernelSync)?;
+                            events.push(ev);
+                        }
+                        // Cross-stream edge as a record/wait pair by command
+                        // index. During capture both calls bake into the
+                        // graph; on the direct path they order live streams.
+                        let wait_for = |idx: usize, stream: CUstream| -> Result<(), BackendError> {
+                            for &p in &waits[idx] {
+                                unsafe { (cuStreamWaitEvent)(stream, events[p], 0) }.check(ErrorStatus::KernelLaunch)?;
+                            }
+                            Ok(())
+                        };
+                        let mark_done = |idx: usize, stream: CUstream| -> Result<(), BackendError> {
+                            unsafe { (cuEventRecord)(events[idx], stream) }.check(ErrorStatus::KernelLaunch)?;
+                            Ok(())
+                        };
                         if has_cudnn {
                             // Direct submit, never captured: cuDNN rebuilds
                             // its variant pack per launch anyway.
@@ -1188,8 +1240,18 @@ fn spawn_worker(
                                     context: "cuDNN handle missing.".into(),
                                 });
                             };
-                            for cmd in &cmds {
+                            for (idx, cmd) in cmds.iter().enumerate() {
                                 let Cmd::Launch { program, args, .. } = cmd else { continue };
+                                // cuDNN runs on the legacy default stream
+                                // (device-wide sync keeps it ordered); module
+                                // launches take their assigned stream.
+                                let on_cudnn = matches!(programs[program.program_id], CUDAProgram::Cudnn { .. });
+                                let stream = if on_cudnn {
+                                    streams[0].stream
+                                } else {
+                                    streams[queues[idx]].stream
+                                };
+                                wait_for(idx, stream)?;
                                 match &programs[program.program_id] {
                                     CUDAProgram::Module { function, .. } => {
                                         let function = *function;
@@ -1207,7 +1269,7 @@ fn spawn_worker(
                                                 block[1],
                                                 block[2],
                                                 0,
-                                                streams[0].stream,
+                                                stream,
                                                 kernel_params.as_mut_ptr(),
                                                 ptr::null_mut(),
                                             )
@@ -1275,6 +1337,7 @@ fn spawn_worker(
                                         }
                                     },
                                 }
+                                mark_done(idx, stream)?;
                             }
                             return Ok(ReplayResult { fresh, graph: None });
                         }
@@ -1297,19 +1360,64 @@ fn spawn_worker(
                                 return Ok(ReplayResult { fresh, graph });
                             }
                         }
-                        // TODO: multi-stream launch parallelism — assign
-                        // independent launches to different streams by slot
-                        // affinity (as OpenCL partitions do across queues).
-                        // Capture, update, and relaunch all pin to
-                        // streams[0] today, so launches serialize.
                         // Recapture: re-record the partition into a fresh
                         // temp graph under current addresses, grids, and
                         // scalars, plus the metadata for the fast tier.
+                        // Launches take their assigned streams; cross-stream
+                        // edges are event pairs baked into the recording.
+                        // Relaunch pins the executable to streams[0] (the
+                        // launch vehicle — internal concurrency is encoded).
+                        // Fresh sync events for this capture: the
+                        // worker-persistent `events` carry stale
+                        // occurrences from other partitions' executions
+                        // (or this partition's own prior launches), and
+                        // waiting on those inside a capture violates
+                        // stream-capture isolation. Fresh events have no
+                        // prior record, and every edge points at an
+                        // earlier launch, so each wait references a
+                        // record from this same capture — legal. Created
+                        // before BeginCapture (never inside it). One extra
+                        // trailing event is the fork root (index
+                        // `cmds.len()`): side streams enter capture only
+                        // via an entry wait on the origin stream.
+                        let mut cap_events: Vec<CUevent> = Vec::with_capacity(cmds.len() + 1);
+                        for _ in 0..cmds.len() + 1 {
+                            let mut ev: CUevent = ptr::null_mut();
+                            if let Err(e) = unsafe { (cuEventCreate)(&mut ev, 0) }.check(ErrorStatus::KernelSync) {
+                                for old in cap_events {
+                                    let _ = unsafe { (cuEventDestroy)(old) };
+                                }
+                                return Err(e);
+                            }
+                            cap_events.push(ev);
+                        }
+                        let entry = cmds.len();
                         let recaptured = (|| -> Result<(CUgraph, Vec<Vec<OpId>>, Vec<u64>), BackendError> {
                             unsafe { (cuStreamBeginCapture)(streams[0].stream, 0) }.check(ErrorStatus::KernelLaunch)?;
+                            // Fork root first: a record on a stream that
+                            // never entered capture is a non-captured
+                            // event, and waiting on one later is an
+                            // isolation error — every side stream forks
+                            // from this record (entry wait below).
+                            unsafe { (cuEventRecord)(cap_events[entry], streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
+                            let mut entered = vec![false; streams.len()];
                             let mut node_args: Vec<Vec<OpId>> = Vec::new();
                             let mut ptrs: Vec<u64> = Vec::new();
-                            for cmd in &cmds {
+                            // Capture-local edge pair: same record/wait
+                            // shape as the direct path, but over the fresh
+                            // events above so the baked nodes are
+                            // self-consistent on relaunch.
+                            let wait_for = |idx: usize, stream: CUstream| -> Result<(), BackendError> {
+                                for &p in &waits[idx] {
+                                    unsafe { (cuStreamWaitEvent)(stream, cap_events[p], 0) }.check(ErrorStatus::KernelLaunch)?;
+                                }
+                                Ok(())
+                            };
+                            let mark_done = |idx: usize, stream: CUstream| -> Result<(), BackendError> {
+                                unsafe { (cuEventRecord)(cap_events[idx], stream) }.check(ErrorStatus::KernelLaunch)?;
+                                Ok(())
+                            };
+                            for (idx, cmd) in cmds.iter().enumerate() {
                                 let Cmd::Launch { program, args, .. } = cmd else { continue };
                                 // Capture path never holds cuDNN programs
                                 // (those take the direct path above).
@@ -1325,6 +1433,19 @@ fn spawn_worker(
                                 let mut scalar_values = Vec::new();
                                 let mut kernel_params = params_of(args, &mut buffer_ptrs, &mut scalar_values)?;
                                 ptrs.extend_from_slice(&buffer_ptrs);
+                                let stream = streams[queues[idx]].stream;
+                                // Entry: the side stream's first launch
+                                // forks from the origin record — this wait
+                                // is what places the stream in capture mode.
+                                // Without it the stream's records execute
+                                // eagerly (non-captured events).
+                                let q = queues[idx];
+                                if q != 0 && !entered[q] {
+                                    entered[q] = true;
+                                    unsafe { (cuStreamWaitEvent)(stream, cap_events[entry], 0) }
+                                        .check(ErrorStatus::KernelLaunch)?;
+                                }
+                                wait_for(idx, stream)?;
                                 unsafe {
                                     (cuLaunchKernel)(
                                         function,
@@ -1335,13 +1456,34 @@ fn spawn_worker(
                                         block[1],
                                         block[2],
                                         0,
-                                        streams[0].stream,
+                                        stream,
                                         kernel_params.as_mut_ptr(),
                                         ptr::null_mut(),
                                     )
                                 }
                                 .check(ErrorStatus::KernelLaunch)?;
+                                mark_done(idx, stream)?;
                                 node_args.push(args.clone());
+                            }
+                            // Exit/join: every side stream that entered
+                            // capture must rejoin the origin before
+                            // EndCapture (UNJOINED otherwise). The origin
+                            // waits on each entered side stream's last
+                            // recorded event.
+                            for q in 1..streams.len() {
+                                if !entered[q] {
+                                    continue;
+                                }
+                                let mut last = None;
+                                for (idx, cmd) in cmds.iter().enumerate().rev() {
+                                    if matches!(cmd, Cmd::Launch { .. }) && queues[idx] == q {
+                                        last = Some(idx);
+                                        break;
+                                    }
+                                }
+                                let Some(l) = last else { continue };
+                                unsafe { (cuStreamWaitEvent)(streams[0].stream, cap_events[l], 0) }
+                                    .check(ErrorStatus::KernelLaunch)?;
                             }
                             let mut graph_raw: CUgraph = ptr::null_mut();
                             unsafe { (cuStreamEndCapture)(streams[0].stream, &raw mut graph_raw) }
@@ -1350,16 +1492,30 @@ fn spawn_worker(
                         })();
                         // Update tier: an entry exists — swap the fresh
                         // recording into the live executable. The
-                        // previous launch is async: drain first,
-                        // updating a running executable is undefined.
+                        // previous launch is async on several streams now:
+                        // drain them all, updating a running executable
+                        // is undefined.
                         if let Some(id) = graph
                             && graphs.contains_id(id)
                         {
-                            unsafe { (cuStreamSynchronize)(streams[0].stream) }.check(ErrorStatus::KernelSync)?;
+                            for st in &streams {
+                                unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::KernelSync)?;
+                            }
                             let (tmp, node_args, ptrs) = match recaptured {
                                 Ok(t) => t,
                                 Err(e) => {
-                                    graphs.remove(id);
+                                    // Retire the entry fully: the failed
+                                    // recording's fresh events die with it,
+                                    // and so does the stale executable (a
+                                    // failed recapture invalidates the graph).
+                                    for ev in cap_events {
+                                        let _ = unsafe { (cuEventDestroy)(ev) };
+                                    }
+                                    let old = unsafe { graphs.remove_and_return(id) };
+                                    let _ = unsafe { (cuGraphExecDestroy)(old.exec) }.check(ErrorStatus::Deinitialization);
+                                    for ev in old.events {
+                                        let _ = unsafe { (cuEventDestroy)(ev) };
+                                    }
                                     return Err(e);
                                 }
                             };
@@ -1375,6 +1531,14 @@ fn spawn_worker(
                             if updated {
                                 unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
                                 if let Some(g) = graphs.get_mut(id) {
+                                    // The updated executable references the
+                                    // fresh recording's events now: swap them
+                                    // in, destroy the previous set (drained
+                                    // above, no longer referenced).
+                                    let old = std::mem::replace(&mut g.events, cap_events);
+                                    for ev in old {
+                                        let _ = unsafe { (cuEventDestroy)(ev) };
+                                    }
                                     g.node_args = node_args;
                                     g.ptrs = ptrs;
                                     g.vars = vars.clone();
@@ -1392,28 +1556,51 @@ fn spawn_worker(
                                     .check(ErrorStatus::KernelLaunch)
                             {
                                 unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
-                                graphs.remove(id);
+                                for ev in cap_events {
+                                    let _ = unsafe { (cuEventDestroy)(ev) };
+                                }
+                                let old = unsafe { graphs.remove_and_return(id) };
+                                for ev in old.events {
+                                    let _ = unsafe { (cuEventDestroy)(ev) };
+                                }
                                 return Err(e);
                             }
                             unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
                             if let Some(g) = graphs.get_mut(id) {
-                                *g = CapturedGraph { exec: new_exec, node_args, ptrs, vars: vars.clone() };
+                                // Drained above: the previous set is dead,
+                                // destroy it before overwriting the entry.
+                                let old = std::mem::take(&mut g.events);
+                                for ev in old {
+                                    let _ = unsafe { (cuEventDestroy)(ev) };
+                                }
+                                *g = CapturedGraph { exec: new_exec, node_args, ptrs, vars: vars.clone(), events: cap_events };
                             }
                             unsafe { (cuGraphLaunch)(new_exec, streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
                             return Ok(ReplayResult { fresh, graph });
                         }
                         // Capture path: no entry — instantiate the fresh
                         // recording and store it.
-                        let (tmp, node_args, ptrs) = recaptured?;
+                        let (tmp, node_args, ptrs) = match recaptured {
+                            Ok(t) => t,
+                            Err(e) => {
+                                for ev in cap_events {
+                                    let _ = unsafe { (cuEventDestroy)(ev) };
+                                }
+                                return Err(e);
+                            }
+                        };
                         let mut exec: CUgraphExec = ptr::null_mut();
                         if let Err(e) = unsafe { (cuGraphInstantiate)(&raw mut exec, tmp, ptr::null_mut(), ptr::null_mut(), 0) }
                             .check(ErrorStatus::KernelLaunch)
                         {
                             unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
+                            for ev in cap_events {
+                                let _ = unsafe { (cuEventDestroy)(ev) };
+                            }
                             return Err(e);
                         }
                         unsafe { (cuGraphDestroy)(tmp) }.check(ErrorStatus::Deinitialization)?;
-                        let id = graphs.push(CapturedGraph { exec, node_args, ptrs, vars: vars.clone() });
+                        let id = graphs.push(CapturedGraph { exec, node_args, ptrs, vars: vars.clone(), events: cap_events });
                         unsafe { (cuGraphLaunch)(exec, streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
                         Ok(ReplayResult { fresh, graph: Some(id) })
                     })();
@@ -1499,6 +1686,9 @@ fn spawn_worker(
                     if graphs.contains_id(id) {
                         let old = unsafe { graphs.remove_and_return(id) };
                         let _ = unsafe { (cuGraphExecDestroy)(old.exec) }.check(ErrorStatus::Deinitialization);
+                        for ev in old.events {
+                            let _ = unsafe { (cuEventDestroy)(ev) };
+                        }
                     }
                 }
                 CUDACommand::ReleaseProgram { program_id } => {
@@ -2001,11 +2191,15 @@ impl CUDADevice {
 pub(crate) struct CudaPartition {
     pub(crate) cmds: Vec<Cmd>,
     pub(crate) deaths: Vec<Vec<OpId>>,
-    /// Execution lane per command. All zeros today: every launch submits on
-    /// streams[0] and serializes. When multi-stream lands, the assignment
-    /// flows through this vector (same shape as OpenCL) with no viz-side
-    /// changes — `Plan::lanes` already reads it.
+    /// Execution lane per command (static stream assignment, slot
+    /// affinity mirroring OpenCL queues). All zeros while every launch
+    /// submitted on streams[0]; real values once multi-stream lands.
     pub(crate) queues: Vec<usize>,
+    /// Cross-stream producer-command edges per command (producer indices
+    /// into this partition's cmds). Replay turns them into event
+    /// record/waits by array index. Same-stream launches need no edge:
+    /// the in-order stream is the ordering guarantee.
+    pub(crate) waits: Vec<Vec<usize>>,
     pub(crate) dev: u16,
     graph: Mutex<Option<CudaGraph>>,
 }
@@ -2026,9 +2220,97 @@ impl CUDADevice {
                 deaths[idx].push(slot);
             }
         }
-        // Lane per command (all stream 0 today); see `queues` field docs.
-        let queues = vec![0usize; cmds.len()];
-        CudaPartition { cmds, deaths, queues, dev, graph: Mutex::new(None) }
+        // Static stream assignment (slot affinity), mirroring OpenCL queues:
+        // a launch joins its read-slots' stream when they agree (the RAW
+        // wait disappears); stream-disjoint chains spread round-robin so
+        // independent launches overlap on different streams. Same-stream
+        // launches need no edge: the in-order stream is the ordering
+        // guarantee. Cross-stream RAW/WAR/WAW become explicit
+        // producer-command edges; replay turns them into event
+        // record/waits by array index. Bound inputs (no producing command
+        // here) need no edge: the opening drain of every replay proves
+        // the previous partition complete.
+        //
+        // Aliases are transparent: tracking is keyed by canonical slot
+        // (union-find over rebinds), so readers of an alias order against
+        // the base's writer. Allocation stays worker-side (best-fit reuse
+        // of chunks freed by earlier replays only — fenced by the opening
+        // drain — so no reuse edges are needed here).
+        let nq = super::config().cuda.queues.unwrap_or(8).max(1);
+        let mut slot_queue: Map<OpId, usize> = Map::default();
+        let mut parent: Map<OpId, OpId> = Map::default();
+        let canon = |mut slot: OpId, parent: &Map<OpId, OpId>| -> OpId {
+            while let Some(&p) = parent.get(&slot) {
+                slot = p;
+            }
+            slot
+        };
+        let mut writer: Map<OpId, (usize, usize)> = Map::default();
+        let mut readers: Map<OpId, Vec<(usize, usize)>> = Map::default();
+        let mut round_robin = 0usize;
+        let mut assign: Vec<usize> = Vec::with_capacity(cmds.len());
+        let mut waits: Vec<Vec<usize>> = Vec::with_capacity(cmds.len());
+        for (idx, cmd) in cmds.iter().enumerate() {
+            match cmd {
+                Cmd::Launch { args, outputs: defs, .. } => {
+                    let mut qs: Vec<usize> = Vec::new();
+                    for slot in args {
+                        if let Some(&q) = slot_queue.get(slot)
+                            && !qs.contains(&q)
+                        {
+                            qs.push(q);
+                        }
+                    }
+                    let queue = qs.first().copied().unwrap_or_else(|| {
+                        let q = round_robin % nq;
+                        round_robin += 1;
+                        q
+                    });
+                    let mut edges: Vec<usize> = Vec::new();
+                    let edge = |producer: usize, queue_of: usize, queue: usize, edges: &mut Vec<usize>| {
+                        if queue_of != queue && producer < idx && !edges.contains(&producer) {
+                            edges.push(producer);
+                        }
+                    };
+                    for slot in args {
+                        let root = canon(*slot, &parent);
+                        if let Some(&(w, wq)) = writer.get(&root) {
+                            edge(w, wq, queue, &mut edges);
+                        }
+                        readers.entry(root).or_default().push((idx, queue));
+                    }
+                    for (slot, _, _) in defs {
+                        let root = canon(*slot, &parent);
+                        if let Some(&(w, wq)) = writer.get(&root) {
+                            edge(w, wq, queue, &mut edges);
+                        }
+                        if let Some(rs) = readers.get(&root) {
+                            for &(r, rq) in rs {
+                                edge(r, rq, queue, &mut edges);
+                            }
+                        }
+                        writer.insert(root, (idx, queue));
+                        readers.insert(root, Vec::new());
+                        slot_queue.insert(*slot, queue);
+                    }
+                    edges.sort_unstable();
+                    waits.push(edges);
+                    assign.push(queue);
+                }
+                Cmd::Alias { class, to } => {
+                    // Zero-cost rebind: no executable, no stream traffic, no
+                    // edges. Union the slots so later tracking sees one value.
+                    let root = canon(*to, &parent);
+                    parent.insert(*class, root);
+                    let queue = slot_queue.get(to).copied().unwrap_or(0);
+                    assign.push(queue);
+                    waits.push(Vec::new());
+                    slot_queue.insert(*class, queue);
+                }
+                Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
+            }
+        }
+        CudaPartition { cmds, deaths, queues: assign, waits, dev, graph: Mutex::new(None) }
     }
 
     /// Copy executing a transfer into this device's pool: host uploads go
@@ -2114,7 +2396,15 @@ impl CudaPartition {
             context: "cuda worker hung up".into(),
         };
         dev.tx
-            .send(CUDACommand::Replay { cmds: self.cmds.clone(), bound, vars: vars_vec, graph: cached, reply })
+            .send(CUDACommand::Replay {
+                cmds: self.cmds.clone(),
+                bound,
+                vars: vars_vec,
+                queues: self.queues.clone(),
+                waits: self.waits.clone(),
+                graph: cached,
+                reply,
+            })
             .map_err(dead)?;
         let res = reply_rx.recv().map_err(dead_rx)??;
         if let Some(id) = res.graph {
@@ -2745,6 +3035,14 @@ struct CUgraphExec_st {
 type CUgraphExec = *mut CUgraphExec_st;
 /// Capture mode for `cuStreamBeginCapture` (driver value, global capture).
 type CUstreamCaptureMode = c_uint;
+/// Stream creation flag disabling the legacy blocking semantics: work on
+/// non-blocking streams never implicitly orders against other streams —
+/// every cross-stream dependency is an explicit event edge from the
+/// schedule. Blocking (flag 0) streams carry implicit legacy sync that
+/// stream capture cannot represent (`CUDA_ERROR_STREAM_CAPTURE_ISOLATION`
+/// on the first cross-stream wait), and serialize all cross-stream work
+/// even outside capture.
+const CU_STREAM_NON_BLOCKING: c_uint = 1;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 struct CUgraphNode_st {
@@ -3128,5 +3426,32 @@ impl nvrtcResult {
         } else {
             Err(BackendError { status, context: format!("{self:?}").into() })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Static stream assignment: disjoint launches spread round-robin
+    /// across streams; a launch joining one producer's stream records an
+    /// explicit edge only for producers on other streams (same-stream
+    /// launches need no edge: FIFO orders them).
+    #[test]
+    fn schedule_spreads_streams() {
+        let nq = crate::backend::config().cuda.queues.unwrap_or(8).max(1);
+        let launch = |id: u32, args: Vec<usize>, defs: Vec<usize>| Cmd::Launch {
+            program: ProgramId { dev: Dev::Cuda(0), program_id: DeviceProgramId(id) },
+            args: args.into_iter().map(OpId::from).collect(),
+            outputs: defs.into_iter().map(|d| (OpId::from(d), DType::F32, vec![PlanDim::Const(4)])).collect(),
+        };
+        let cmds = vec![
+            launch(0, vec![10], vec![1]),
+            launch(1, vec![11], vec![2]),
+            launch(2, vec![1, 2], vec![3]),
+        ];
+        let part = CUDADevice::schedule(cmds, &Set::default(), Set::default(), 0);
+        assert_eq!(part.queues, vec![0, 1 % nq, 0]);
+        assert_eq!(part.waits, vec![Vec::new(), Vec::new(), vec![1]]);
     }
 }
