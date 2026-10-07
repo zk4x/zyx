@@ -13,15 +13,7 @@ use super::{Target, VizData};
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Response, Server};
 
-/// Serve the visualizer until process exit.
-pub(super) fn spawn(data: Arc<Mutex<VizData>>) {
-    std::thread::Builder::new()
-        .name("zyx-viz".to_string())
-        .spawn(move || run(data))
-        .expect("failed to spawn zyx-viz server thread");
-}
-
-fn run(data: Arc<Mutex<VizData>>) {
+pub(super) fn run(data: Arc<Mutex<VizData>>) {
     let server = match Server::http("0.0.0.0:4242") {
         Ok(server) => server,
         Err(e) => {
@@ -137,9 +129,10 @@ fn graph_json(g: &super::GraphViz, lanes: &crate::Map<crate::backend::ProgramId,
         })
         .collect();
     let lane_of = |k: &Option<super::KernelCapture>| match k {
-        // Every replayed launch records its lane; a missing entry means the
-        // harvest site was skipped for this plan — fail loudly, not silently 0.
-        Some(cap) => lanes.get(&cap.program).copied().expect("viz lane missing for captured program").to_string(),
+        // Every replayed launch records its lane; a missing entry means the lane
+        // was captured before it was recorded (multi-stream snapshot→replay window),
+        // so default to 0 instead of panicking and taking the viz site down.
+        Some(cap) => lanes.get(&cap.program).copied().unwrap_or(0).to_string(),
         None => "null".to_string(),
     };
     let lane_list: Vec<String> = g.kernels.iter().map(lane_of).collect();

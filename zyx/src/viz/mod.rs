@@ -95,7 +95,13 @@ impl Viz {
         self.inner
             .get_or_init(|| {
                 let data = Arc::new(Mutex::new(VizData { graphs: Vec::new(), staged: Map::default(), lanes: Map::default() }));
-                server::spawn(Arc::clone(&data));
+                {
+                    let data = Arc::clone(&data);
+                    std::thread::Builder::new()
+                        .name("zyx-viz".to_string())
+                        .spawn(move || server::run(data))
+                        .expect("failed to spawn zyx-viz server thread");
+                };
                 data
             })
             .clone()
