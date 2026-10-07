@@ -375,6 +375,11 @@ pub enum Op {
     /// CSE shares them. Void leaf, no operands. Boxed so `Op` keeps its
     /// 24-byte budget (mirrors `Op::Kernel`).
     GPU(Box<GPUOp>),
+    /// SPIR-V payload shared by Vulkan/wgpu: compiled word stream plus
+    /// SPIR-V-specific annotations. Pure value: equal contents compare
+    /// equal so CSE shares them. Void leaf, no operands. Boxed so `Op`
+    /// keeps its 24-byte budget (mirrors `Op::GPU`).
+    Spirv(Box<SpirvOp>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -393,6 +398,14 @@ pub enum GPUOp {
     /// Head-order `ParamKind` per kernel param (reads vs writes split
     /// and arity check at launch). Boxed to keep `Op` in budget.
     Params(Box<[ParamKind]>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// SPIR-V backend meta op: compiled module plus SPIR-V-specific
+/// annotations. Lives inside [`Op::Spirv`].
+pub enum SpirvOp {
+    /// Compiled SPIR-V word stream. Boxed to keep `Op` in budget.
+    WordBytes(Box<[u32]>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -636,6 +649,7 @@ impl Op {
             Op::Pad { .. } => 35,
             Op::Narrow { .. } => 36,
             Op::GPU(_) => 37,
+            Op::Spirv(_) => 38,
         }
     }
 }
@@ -671,6 +685,7 @@ impl PartialEq for Op {
             ) => ad == bd && al == bl && at == bt && a == ba && ab == bb && ac == bc,
             (Op::TT(a), Op::TT(b)) => a == b,
             (Op::GPU(a), Op::GPU(b)) => a == b,
+            (Op::Spirv(a), Op::Spirv(b)) => a == b,
             (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => aa == ba && ao == bo,
             (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
                 a == b && ar == br && aa == ba
@@ -776,6 +791,7 @@ impl Hash for Op {
             }
             Op::TT(t) => t.hash(state),
             Op::GPU(g) => g.hash(state),
+            Op::Spirv(s) => s.hash(state),
             Op::Asm { asm, ops } => {
                 asm.hash(state);
                 ops.hash(state);
@@ -1245,6 +1261,7 @@ impl Op {
             Op::Source(_) | Op::Program { .. } | Op::Kernel(_) | Op::GPU(_) => {
                 vec![]
             }
+            Op::Spirv(_) => vec![],
         }
         .into_iter()
     }
@@ -1261,6 +1278,7 @@ impl Op {
             | Op::EndLoop
             | Op::Barrier => vec![],
             Op::Contiguous { x, .. } => vec![x],
+            Op::Spirv(_) => vec![],
             Op::ToDevice { x, .. } => vec![x],
             Op::After { x, dep } => vec![x, dep],
             Op::Param { shape, .. } => {

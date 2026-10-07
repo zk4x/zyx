@@ -41,6 +41,7 @@ impl Kernel {
                 Op::Asm { .. }
                 | Op::Source { .. }
                 | Op::GPU { .. }
+                | Op::Spirv { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }

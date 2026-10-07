@@ -26,7 +26,7 @@ use crate::kernel::{BOp, IDX_T, RangeKind, UOp};
 use crate::slab::SlabId;
 use crate::{
     BLUE, BOLD, CYAN, DType, GREEN, GREY, MAGENTA, Map, ORANGE, RED, RESET, YELLOW,
-    kernel::{GPUOp, Kernel, Op, OpId, TTOp},
+    kernel::{GPUOp, Kernel, Op, OpId, SpirvOp, TTOp},
     shape::Dim,
 };
 use std::fmt::{Display, Formatter};
@@ -519,6 +519,11 @@ impl Display for Kernel {
                     }
                     GPUOp::Params(params) => {
                         writeln!(f, "{indent}params={params:?}").unwrap();
+                    }
+                },
+                Op::Spirv(ref spirv) => match spirv.as_ref() {
+                    SpirvOp::WordBytes(words) => {
+                        writeln!(f, "{indent}spirv_words={}", words.len()).unwrap();
                     }
                 },
             }

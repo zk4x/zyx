@@ -116,6 +116,7 @@ impl Kernel {
                     // kernel IR at this (pre-render) stage.
                     Op::Source(_)
                     | Op::GPU(_)
+                    | Op::Spirv(_)
                     | Op::After { .. }
                     | Op::ToDevice { .. }
                     | Op::Contiguous { .. }
@@ -613,6 +614,7 @@ impl Kernel {
                 Op::Barrier => {}
                 Op::Source(_)
                 | Op::GPU(_)
+                | Op::Spirv(_)
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }

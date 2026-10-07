@@ -30,6 +30,9 @@ impl Kernel {
         match self.dev {
             Dev::Cuda(_) => self.render_cuda(),
             Dev::OpenCL(_) => self.render_opencl(),
+            Dev::Vulkan(_) => self.render_spirv(),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(_) => self.render_spirv(),
             dev => todo!("render: backend {dev:?} not yet implemented"),
         }
     }

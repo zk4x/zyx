@@ -1155,6 +1155,7 @@ impl Graph {
             }
             Op::Source(_)
             | Op::GPU(_)
+            | Op::Spirv(_)
             | Op::Storage { .. }
             | Op::GEP { .. }
             | Op::Load { .. }
@@ -1348,6 +1349,7 @@ impl Graph {
             Op::Storage { .. }
             | Op::Source(_)
             | Op::GPU(_)
+            | Op::Spirv(_)
             | Op::GEP { .. }
             | Op::Load { .. }
             | Op::Copy { .. }
@@ -1419,6 +1421,7 @@ impl Graph {
                 | Op::Contiguous { .. }
                 | Op::Source(_)
                 | Op::GPU(_)
+                | Op::Spirv(_)
                 | Op::Program { .. }
                 | Op::Kernel { .. } => return None,
             }
@@ -1742,6 +1745,7 @@ impl Runtime {
                     | Op::Contiguous { .. }
                     | Op::Source(_)
                     | Op::GPU(_)
+                    | Op::Spirv(_)
                     | Op::Program { .. }
                     | Op::Kernel(_) => {
                         unreachable!("promote_to_graph: eager kernel op {oid:?}")
@@ -1881,6 +1885,7 @@ impl Runtime {
                                     | Op::Contiguous { .. }
                                     | Op::Source(_)
                                     | Op::GPU(_)
+                                    | Op::Spirv(_)
                                     | Op::Program { .. }
                                     | Op::Kernel(_) => {
                                         unreachable!("promote_to_graph: dim op {entry:?} in param shape stack")

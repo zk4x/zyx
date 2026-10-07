@@ -95,6 +95,7 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::Source(_) => todo!(),
                 Op::GPU(_) => todo!(),
+                Op::Spirv(_) => todo!(),
                 Op::Range { kind: scope, .. } => {
                     let RangeKind::Group(len) = scope else {
                         return Err(BackendError {

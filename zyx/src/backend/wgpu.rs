@@ -1,11 +1,11 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use super::{BackendError, ChunkId, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Pool, Shard, gws_from_kernel};
+use super::{BackendError, ChunkId, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Placement, Pool};
 use crate::{
     DType, Set,
     backend::{DTypeCapability, DeviceProgramId},
-    kernel::{Kernel, Op, ParamKind, RangeKind},
+    kernel::{GPUOp, Kernel, Op, ParamKind, SpirvOp},
     shape::Dim,
     slab::Slab,
 };
@@ -119,7 +119,6 @@ const MICRO_BATCH_WINDOW: usize = 100;
 #[allow(dead_code)]
 pub(super) struct WGPUProgram {
     name: String,
-    arg_ro_flags: Vec<bool>,
     shader: ShaderModule,
     pipeline: ComputePipeline,
     bind_group_layout: BindGroupLayout,
@@ -415,57 +414,47 @@ impl WGPUDevice {
         self.dev_info.compute
     }
 
-    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let mut lws = [1u64; 3];
-        let mut op_id = kernel.head;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("compile did not finish in 10000 steps");
-            }
-            if let Op::Range { axis, kind: scope } = kernel.ops[op_id].op {
-                match scope {
-                    RangeKind::Group(_) => {}
-                    RangeKind::Local(len) => lws[axis as usize] = u64::from(len),
-                    // A warp is a view over a local range — adds no threads.
-                    RangeKind::Warp(_) => {}
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
+    pub fn compile(&mut self, kernel: &Kernel, _debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
+        // Debugging TBD: render takes no debug flag, so SPIR-V disassembly
+        // is off here.
+        let rendered = kernel.render()?;
+        let mut order = rendered.ops_in_order();
+        let Some(GPUOp::Params(params)) = order.next().and_then(Op::as_gpu) else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "head op is not Params".into() });
+        };
+        let Some(GPUOp::Grid(gws)) = order.next().and_then(Op::as_gpu) else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "second op is not Grid".into() });
+        };
+        let Some(GPUOp::LocalWorkSize(lws)) = order.next().and_then(Op::as_gpu) else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "third op is not LocalWorkSize".into() });
+        };
+        let Some(Op::Spirv(spirv)) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Spirv".into() });
+        };
+        // Single-variant enum: irrefutable today, and adding a variant
+        // breaks this `let` at compile time, forcing decode handling.
+        let SpirvOp::WordBytes(words) = spirv.as_ref();
+        let lws: [u32; 3] = *lws;
 
-        let spirv_words = kernel.generate_spirv(debug_asm)?;
+        let spirv_words = words.to_vec();
 
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::SpirV(std::borrow::Cow::Owned(spirv_words)),
         });
 
-        if lws.iter().product::<u64>() > u64::from(self.dev_info.max_local_threads) {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
-        }
-
         let name = format!("k_lws_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
 
-        // Read only flags
-        let mut arg_ro_flags = Vec::new();
-        let mut op_id = kernel.head;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("compile did not finish in 10000 steps");
-            }
-            if let &Op::Param { kind, .. } = kernel.at(op_id)
-                && matches!(kind, ParamKind::Global | ParamKind::GlobalMut)
-            {
-                arg_ro_flags.push(kind == ParamKind::Global);
-            }
-            op_id = kernel.next_op(op_id);
-        }
-        let bg_layout_entries: Vec<wgpu::BindGroupLayoutEntry> = arg_ro_flags
+        // Bind-group layout straight from the descriptor's `Params`: only
+        // buffer params bind (read-only unless `GlobalMut`); `Variable`
+        // params are push-constant/specialization traffic, not bindings.
+        let bg_layout_entries: Vec<wgpu::BindGroupLayoutEntry> = params
             .iter()
+            .filter_map(|kind| match kind {
+                ParamKind::Global => Some(true),
+                ParamKind::GlobalMut => Some(false),
+                ParamKind::Variable => None,
+            })
             .enumerate()
             .map(|(bind_id, ro)| wgpu::BindGroupLayoutEntry {
                 binding: u32::try_from(bind_id).unwrap(),
@@ -473,7 +462,7 @@ impl WGPUDevice {
                 ty: wgpu::BindingType::Buffer {
                     has_dynamic_offset: false,
                     min_binding_size: None,
-                    ty: wgpu::BufferBindingType::Storage { read_only: *ro },
+                    ty: wgpu::BufferBindingType::Storage { read_only: ro },
                 },
                 count: None,
             })
@@ -497,14 +486,77 @@ impl WGPUDevice {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         });
 
-        let gws = gws_from_kernel(kernel, &self.dev_info.max_global_work_dims)?;
-        let id = self.programs.push(WGPUProgram { name, arg_ro_flags, shader: shader_module, pipeline, bind_group_layout, gws });
+        let gws = gws.to_vec();
+        let id = self.programs.push(WGPUProgram { name, shader: shader_module, pipeline, bind_group_layout, gws });
 
         Ok(id)
     }
 
     pub fn release(&mut self, program_id: DeviceProgramId) {
         self.programs.remove(program_id);
+    }
+
+    /// Staged copy into this device's pool, mirroring Vulkan: every source
+    /// lands in a host staging chunk first, then `queue.write_buffer` moves
+    /// it into the destination buffer. `&mut` (unlike Vulkan's `&self`):
+    /// the pending micro-batch window must flush before the staging read,
+    /// or the read races unsubmitted launches.
+    pub fn copy(&mut self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
+        debug_assert!(bytes >= 0, "WGPU copy of negative bytes");
+        let [src_shard] = &src.shards[..] else {
+            todo!("WGPU copy of multi-shard source placement")
+        };
+        let [dst_shard] = &dst.shards[..] else {
+            todo!("WGPU copy of multi-shard destination placement")
+        };
+        debug_assert_eq!(dst_shard.pool, self.memory_pool, "WGPU copy destination is not on this device");
+        self.flush_window()?;
+        let stage = Pool::Host.allocate(bytes)?;
+        let host = super::host::pool();
+        let mut hpool = super::lock(Pool::Host, host);
+        let stage_ptr = hpool.buffer_ptr_mut(stage);
+        let n = bytes as usize;
+        let stage_slice = unsafe { std::slice::from_raw_parts_mut(stage_ptr, n) };
+        match src_shard.pool {
+            p if p == self.memory_pool => {
+                let Pool::WGPU(id) = p else {
+                    unreachable!("WGPU copy source pool is not WGPU")
+                };
+                super::lock(self.memory_pool, pool(id)?).pool_to_host(src_shard.chunk, stage_slice)?;
+            }
+            Pool::Host => {
+                let src_bytes = hpool.get_buffer(src_shard.chunk);
+                debug_assert!(src_bytes.len() >= n, "WGPU copy source host buffer is short");
+                unsafe { std::ptr::copy_nonoverlapping(src_bytes.as_ptr(), stage_ptr, n) };
+            }
+            #[cfg(unix)]
+            Pool::Disk => {
+                // Straight from the file mapping into the staging chunk.
+                // The chunk stays mapped across the memcpy (released
+                // caller-side with the plan's deaths).
+                let disk = super::disk::pool();
+                let dpool = super::lock(Pool::Disk, disk);
+                let (ptr, extent) = dpool.mapped_ptr(src_shard.chunk);
+                let m = bytes.min(extent);
+                debug_assert!(m >= 0, "WGPU copy mapped extent is negative");
+                unsafe { std::ptr::copy_nonoverlapping(ptr, stage_ptr, m as usize) };
+            }
+            #[cfg(windows)]
+            Pool::Disk => todo!("WGPU copy from disk on windows"),
+            p => {
+                // Other device pools read back through their own ordered path.
+                p.pool_to_host(src_shard.chunk, stage_slice)?;
+            }
+        }
+        let Pool::WGPU(id) = dst_shard.pool else {
+            unreachable!("WGPU copy destination pool is not WGPU")
+        };
+        let dst_pool = super::lock(self.memory_pool, pool(id)?);
+        self.queue.write_buffer(&dst_pool.buffers[dst_shard.chunk].buffer, 0, stage_slice);
+        // Staging is caller-owned: release it through the held guard
+        // (Pool::release would re-lock the held host pool).
+        hpool.release(stage);
+        Ok(())
     }
 
     /// Fire-and-forget launch: appended to the micro-batch window; the whole

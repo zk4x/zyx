@@ -54,6 +54,7 @@ impl Kernel {
                 Op::Reshape { .. }
                 | Op::Source(_)
                 | Op::GPU(_)
+                | Op::Spirv(_)
                 | Op::Pad { .. }
                 | Op::Permute { .. }
                 | Op::Expand { .. }
@@ -151,6 +152,7 @@ impl Kernel {
                 | Op::Reduce { .. }
                 | Op::Source(_)
                 | Op::GPU(_)
+                | Op::Spirv(_)
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }

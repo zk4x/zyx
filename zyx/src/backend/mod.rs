@@ -232,7 +232,7 @@ impl CmdQueue {
                         #[cfg(feature = "tenstorrent")]
                         Pool::TT(id) => Dev::TT(id),
                         #[cfg(feature = "wgpu")]
-                        Pool::WGPU(_) => todo!("schedule copy into {dst_pool:?}"),
+                        Pool::WGPU(id) => Dev::WGPU(id),
                     };
                     let free_src = !suffix[end].contains(&src) && !outputs.contains(&src);
                     partitions.push(PlanPartition::Copy {
@@ -437,8 +437,10 @@ impl Plan {
                                 unreachable!("replay copy into Auto: copies always name a concrete pool")
                             }
                             #[cfg(feature = "wgpu")]
-                            Dev::WGPU(_) => {
-                                unreachable!("replay copy into WGPU: schedule todos on WGPU copies first")
+                            Dev::WGPU(id) => {
+                                let device = wgpu::device(*id)?;
+                                let mut dev = dlock(Dev::WGPU(*id), &device);
+                                dev.copy(&src_placed, &placed, bytes)?;
                             }
                         }
                         if op.free_src {

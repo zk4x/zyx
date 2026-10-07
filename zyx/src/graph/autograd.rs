@@ -404,6 +404,7 @@ impl Runtime {
                 Op::Kernel { .. } => todo!("backward through custom kernel"),
                 Op::Source { .. }
                 | Op::GPU { .. }
+                | Op::Spirv { .. }
                 | Op::Storage { .. }
                 | Op::GEP { .. }
                 | Op::Load { .. }

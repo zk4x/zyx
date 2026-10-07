@@ -6,11 +6,12 @@
 
 use crate::{
     DType, Map,
-    backend::gws_from_kernel,
+    backend::{GwsDim, gws_from_kernel},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
+    kernel::{BOp, GPUOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SpirvOp, UOp},
     shape::Dim,
+    slab::Slab,
 };
 use std::hash::BuildHasherDefault;
 
@@ -414,6 +415,65 @@ fn elem_stride(dt: DType) -> usize {
 }
 
 impl Kernel {
+    pub(super) fn render_spirv(&self) -> Result<Kernel, BackendError> {
+        // Max over local ranges per axis, mirroring generate_spirv's Pass 1
+        // exactly (including the axis guard) so the entry-point name derived
+        // there matches the `name` rebuilt at launch from this `lws`.
+        let mut lws = [1u32; 3];
+        let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
+        while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("render_spirv did not finish in 10000 steps");
+            }
+            if let Op::Range { axis, kind: RangeKind::Local(len) } = self.ops[op_id].op
+                && axis < 3
+            {
+                lws[axis as usize] = lws[axis as usize].max(len);
+            }
+            op_id = self.next_op(op_id);
+        }
+        if lws.iter().map(|&x| u64::from(x)).product::<u64>() > u64::from(self.dev_info().max_local_threads) {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
+        }
+        // Debugging TBD: render takes no debug flag, so codegen-side
+        // disassembly is off here. `SPIRV_DUMP` is deleted.
+        let words = self.generate_spirv(false)?;
+        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
+        if gws_vec.len() > 3 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("spirv render: grid rank {} exceeds 3D", gws_vec.len()).into(),
+            });
+        }
+        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            gws[i] = g;
+        }
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let mut rendered = Kernel {
+            ops: Slab::new(),
+            head: OpId::NULL,
+            tail: OpId::NULL,
+            dev: self.dev,
+            dev_info: self.dev_info.clone(),
+            shape_cache: Map::default(),
+        };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
+        rendered.push_back(Op::Spirv(Box::new(SpirvOp::WordBytes(words.into_boxed_slice()))));
+        Ok(rendered)
+    }
+
     /// Compile kernel to SPIR-V binary.
     pub fn generate_spirv(&self, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
         use OpCode::*;
@@ -1137,6 +1197,7 @@ impl Kernel {
                 match self.ops[op_id].op {
                     Op::Source(_) => todo!(),
                     Op::GPU(_) => todo!(),
+                    Op::Spirv(_) => todo!(),
                     Op::TT { .. }
                     | Op::Expand { .. }
                     | Op::Permute { .. }
@@ -1748,11 +1809,6 @@ impl Kernel {
 
         if debug_asm {
             debug_print(&asm.words);
-        }
-
-        if let Ok(path) = std::env::var("SPIRV_DUMP") {
-            let bytes: Vec<u8> = asm.words.iter().flat_map(|w| w.to_le_bytes()).collect();
-            let _ = std::fs::write(&path, &bytes);
         }
 
         Ok(asm.words)
