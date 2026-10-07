@@ -403,6 +403,7 @@ impl Runtime {
                 Op::Program { .. } => todo!("backward through custom kernel"),
                 Op::Kernel { .. } => todo!("backward through custom kernel"),
                 Op::Source { .. }
+                | Op::GPU { .. }
                 | Op::Storage { .. }
                 | Op::GEP { .. }
                 | Op::Load { .. }

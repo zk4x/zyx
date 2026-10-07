@@ -53,6 +53,7 @@ impl Kernel {
             let depth = match self.ops[op_id].op {
                 Op::Reshape { .. }
                 | Op::Source(_)
+                | Op::GPU(_)
                 | Op::Pad { .. }
                 | Op::Permute { .. }
                 | Op::Expand { .. }
@@ -149,6 +150,7 @@ impl Kernel {
                 | Op::Narrow { .. }
                 | Op::Reduce { .. }
                 | Op::Source(_)
+                | Op::GPU(_)
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }

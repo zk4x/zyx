@@ -958,7 +958,11 @@ impl TTDevice {
     }
 
     pub fn free_compute(&self) -> u128 {
-        self.device_info.compute
+        // Zero until TT codegen covers the full op/grid space: Dev::Auto
+        // ranks by free_compute, and an auto-selected TT device fails
+        // compilation (e.g. grid axis restrictions) where C/CUDA succeed.
+        // Explicit Dev::TT is unaffected.
+        0
     }
 
     #[allow(unused_must_use)]

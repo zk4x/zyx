@@ -40,6 +40,7 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::Asm { .. }
                 | Op::Source { .. }
+                | Op::GPU { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }

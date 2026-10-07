@@ -370,6 +370,20 @@ pub enum Op {
     // Backend specific extensions
     /// TT
     TT(TTOp),
+    /// GPU launch configuration shared by all GPU backends (CUDA, HIP,
+    /// OpenCL, Vulkan, ...). Pure value: equal contents compare equal so
+    /// CSE shares them. Void leaf, no operands.
+    GPU(GPUOp),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// GPU backend meta op: launch configuration shared by all GPU backends.
+/// Lives inside [`Op::GPU`].
+pub enum GPUOp {
+    /// Local work size: work-items per work-group (OpenCL/Vulkan) /
+    /// threads per block (CUDA/HIP), x/y/z. Concrete by codegen time;
+    /// validated against device limits at launch.
+    LocalWorkSize([u32; 3]),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -604,6 +618,7 @@ impl Op {
             Op::Flip { .. } => 34,
             Op::Pad { .. } => 35,
             Op::Narrow { .. } => 36,
+            Op::GPU(_) => 37,
         }
     }
 }
@@ -638,6 +653,7 @@ impl PartialEq for Op {
                 Op::Wmma { dims: bd, layout: bl, dtype: bt, a: ba, b: bb, c: bc },
             ) => ad == bd && al == bl && at == bt && a == ba && ab == bb && ac == bc,
             (Op::TT(a), Op::TT(b)) => a == b,
+            (Op::GPU(a), Op::GPU(b)) => a == b,
             (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => aa == ba && ao == bo,
             (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
                 a == b && ar == br && aa == ba
@@ -742,6 +758,7 @@ impl Hash for Op {
                 c.hash(state);
             }
             Op::TT(t) => t.hash(state),
+            Op::GPU(g) => g.hash(state),
             Op::Asm { asm, ops } => {
                 asm.hash(state);
                 ops.hash(state);
@@ -1208,7 +1225,7 @@ impl Op {
             Op::After { x, dep } => vec![*x, *dep],
             Op::ToDevice { x, .. } => vec![*x],
             Op::Contiguous { x } => vec![*x],
-            Op::Source(_) | Op::Program { .. } | Op::Kernel(_) => {
+            Op::Source(_) | Op::Program { .. } | Op::Kernel(_) | Op::GPU(_) => {
                 vec![]
             }
         }
@@ -1221,6 +1238,7 @@ impl Op {
             Op::Kernel(_)
             | Op::Program { .. }
             | Op::Source(_)
+            | Op::GPU(_)
             | Op::Const { .. }
             | Op::Storage { .. }
             | Op::EndLoop

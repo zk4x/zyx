@@ -207,6 +207,7 @@ impl Kernel {
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute) => {}
                 Op::Source(_)
+                | Op::GPU(_)
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }

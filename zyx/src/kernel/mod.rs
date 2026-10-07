@@ -98,7 +98,7 @@ pub use crate::backend::{Dev, DeviceInfo};
 pub use crate::error::BackendError;
 pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
-pub use ops::{BOp, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, TTOp, TileDim};
+pub use ops::{BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, TTOp, TileDim};
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, DtypeClass, Pat, VExpr};
 
@@ -318,6 +318,7 @@ impl Kernel {
             }
             match self.ops[op_id].op {
                 Op::Source(_)
+                | Op::GPU(_)
                 | Op::Reshape { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
@@ -509,7 +510,7 @@ impl Kernel {
     pub(crate) fn layout(&self, mut op_id: OpId) -> MemLayout {
         for _ in 0..10000 {
             match self.ops[op_id].op {
-                Op::Source(_) | Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => return MemLayout::Scalar,
+                Op::Source(_) | Op::GPU(_) | Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => return MemLayout::Scalar,
                 Op::Range { .. } => return MemLayout::Scalar,
                 Op::Cast { x, .. } | Op::Bitcast { x, .. } => op_id = x,
                 Op::Load { src, .. } => op_id = src,
@@ -590,6 +591,7 @@ impl Kernel {
         for _ in 0..10000 {
             match self.ops[op_id].op {
                 Op::Source(_) => todo!(),
+                Op::GPU(_) => todo!(),
                 Op::Const(c) => return c.dtype(),
                 Op::Param { dtype, .. } => return dtype,
                 Op::Storage { dtype, .. } => return dtype,

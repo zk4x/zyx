@@ -112,8 +112,10 @@ impl Kernel {
                     | Op::Unary { .. }
                     | Op::Binary { .. }
                     | Op::Stack { .. } => {}
-                    // Graph-only ops must never reach kernel IR.
+                    // Graph-only and post-render ops must never reach
+                    // kernel IR at this (pre-render) stage.
                     Op::Source(_)
+                    | Op::GPU(_)
                     | Op::After { .. }
                     | Op::ToDevice { .. }
                     | Op::Contiguous { .. }
@@ -610,6 +612,7 @@ impl Kernel {
                 }
                 Op::Barrier => {}
                 Op::Source(_)
+                | Op::GPU(_)
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }

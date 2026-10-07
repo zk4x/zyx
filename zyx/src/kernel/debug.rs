@@ -26,7 +26,7 @@ use crate::kernel::{BOp, IDX_T, RangeKind, UOp};
 use crate::slab::SlabId;
 use crate::{
     BLUE, BOLD, CYAN, DType, GREEN, GREY, MAGENTA, Map, ORANGE, RED, RESET, YELLOW,
-    kernel::{Kernel, Op, OpId, TTOp},
+    kernel::{GPUOp, Kernel, Op, OpId, TTOp},
     shape::Dim,
 };
 use std::fmt::{Display, Formatter};
@@ -509,6 +509,9 @@ impl Display for Kernel {
                 }
                 Op::Source(ref src) => {
                     writeln!(f, "{}", src.as_str()).unwrap();
+                }
+                Op::GPU(GPUOp::LocalWorkSize(size)) => {
+                    writeln!(f, "{indent}local_work_size=[{}, {}, {}]", size[0], size[1], size[2]).unwrap();
                 }
             }
             op_id = self.ops[op_id].next;

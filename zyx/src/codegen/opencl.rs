@@ -65,6 +65,7 @@ impl Kernel {
             }
             match self.ops[op_id].op {
                 Op::Source(_) => todo!(),
+                Op::GPU(_) => todo!(),
                 Op::TT { .. }
                 | Op::Reduce { .. }
                 | Op::Expand { .. }
