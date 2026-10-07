@@ -58,7 +58,6 @@ impl Kernel {
         let mut has_loops = false;
         let mut id_map = Map::default();
         let mut max_id = OpId::ZERO;
-        let colorless = colorless || std::env::var("AGENT").is_ok_and(|v| v == "1");
         let (bold, blue, cyan, green, grey, magenta, orange, red, reset, yellow) = if colorless {
             ("", "", "", "", "", "", "", "", "", "")
         } else {
@@ -559,8 +558,21 @@ impl Kernel {
     }
 }
 
+pub(crate) struct KernelDebug<'a> {
+    pub(crate) kernel: &'a Kernel,
+    pub(crate) colorless: bool,
+}
+
+impl<'a> std::fmt::Display for KernelDebug<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.kernel.format(f, self.colorless)
+    }
+}
+
 impl Display for Kernel {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.format(f, false)
+        // Auto-infer colorless: `AGENT=1` disables it, and so does non-terminal stdout.
+        let colorless = std::env::var("AGENT").is_ok_and(|v| v == "1") || !std::io::IsTerminal::is_terminal(&std::io::stdout());
+        self.format(f, colorless)
     }
 }

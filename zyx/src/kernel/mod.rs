@@ -116,7 +116,7 @@ pub mod autotune;
 mod coarsen;
 mod cost;
 mod custom;
-mod debug;
+pub(crate) mod debug;
 mod fold_constants;
 mod fold_loops;
 mod fuse;

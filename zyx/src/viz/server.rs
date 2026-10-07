@@ -10,6 +10,7 @@
 //! - `/api/graph/<id>`      — JSON plan structure of one graph
 //! - `/api/kernel/<g>/<k>/<stage>` — sched | ir | asm?target=<target>
 use super::{Target, VizData};
+use crate::kernel::debug::KernelDebug;
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Response, Server};
 
@@ -95,8 +96,8 @@ fn route(data: &Arc<Mutex<VizData>>, path: &str, query: Option<&str>) -> Respons
         };
 
         let body = match stage {
-            "sched" => cap.sched_kernel.to_string(),
-            "ir" => super::derive_optimized(&cap).to_string(),
+            "sched" => format!("{}", KernelDebug { kernel: &cap.sched_kernel, colorless: true }),
+            "ir" => format!("{}", KernelDebug { kernel: &super::derive_optimized(&cap), colorless: true }),
             "asm" => {
                 let target =
                     query.and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("target="))).and_then(Target::from_str);
