@@ -3,11 +3,14 @@
 
 use crate::{
     DType, Map,
-    backend::gws_from_kernel,
+    backend::{GwsDim, gws_from_kernel},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
+    kernel::{
+        BOp, GPUOp, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, UOp,
+    },
     scalar::{bf16, f16},
+    slab::Slab,
 };
 use std::hash::BuildHasherDefault;
 
@@ -119,6 +122,59 @@ fn mma_helper(dims: MMADims, layout: MMALayout, dtype: MMADType) -> String {
 }
 
 impl Kernel {
+    pub(super) fn render_cuda(&self) -> Result<Kernel, BackendError> {
+        let mut lws = [1u32; 3];
+        let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
+        while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("render_cuda did not finish in 10000 steps");
+            }
+            if let Op::Range { axis, kind: RangeKind::Local(len) } = self.ops[op_id].op {
+                lws[axis as usize] = len;
+            }
+            op_id = self.next_op(op_id);
+        }
+        if lws.iter().map(|&x| u64::from(x)).product::<u64>() > u64::from(self.dev_info().max_local_threads) {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
+        }
+        let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
+        let source = self.generate_cuda(&name)?;
+        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
+        if gws_vec.len() > 3 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("CUDA render: grid rank {} exceeds 3D", gws_vec.len()).into(),
+            });
+        }
+        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            gws[i] = g;
+        }
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let mut rendered = Kernel {
+            ops: Slab::new(),
+            head: OpId::NULL,
+            tail: OpId::NULL,
+            dev: self.dev,
+            dev_info: self.dev_info.clone(),
+            shape_cache: Map::default(),
+        };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
+        rendered.push_back(Op::Source(SourceBlock(source.into_boxed_str())));
+        Ok(rendered)
+    }
+
     /// Compile kernel to CUDA C++ source code.
     pub fn generate_cuda(&self, name: &str) -> Result<String, BackendError> {
         use std::fmt::Write;

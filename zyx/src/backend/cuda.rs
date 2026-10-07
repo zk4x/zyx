@@ -117,7 +117,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::Graph,
-    kernel::{Kernel, MMADType, MMADims, Op, OpId, ParamKind, RangeKind},
+    kernel::{GPUOp, Kernel, MMADType, MMADims, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -208,7 +208,7 @@ pub(super) enum CUDAProgram {
     Module {
         module: CUmodule,
         function: CUfunction,
-        lws: Vec<Dim>,
+        lws: [u32; 3],
         gws: Vec<GwsDim>,
         /// Per-`Param` kinds in head order, used at submission to split launch
         /// args into reads (`Global`) and writes (`GlobalMut`).
@@ -357,7 +357,7 @@ enum CUDACommand {
     /// Export the device pointer, context and in-flight barrier events of a
     /// buffer so another device's worker can copy from it (peer-copy source side).
     Compile {
-        lws: Vec<Dim>,
+        lws: [u32; 3],
         gws: Vec<GwsDim>,
         /// Per-`Param` kinds in head order, used at submission to split launch
         /// args into reads (`Global`) and writes (`GlobalMut`).
@@ -1161,14 +1161,7 @@ fn spawn_worker(
                                         context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
                                     });
                                 }
-                                Ok((
-                                    [gx as u32, gy as u32, gz as u32],
-                                    [
-                                        u32::try_from(lws.first().copied().unwrap_or(1)).unwrap(),
-                                        u32::try_from(lws.get(1).copied().unwrap_or(1)).unwrap(),
-                                        u32::try_from(lws.get(2).copied().unwrap_or(1)).unwrap(),
-                                    ],
-                                ))
+                                Ok(([gx as u32, gy as u32, gz as u32], [lws[0], lws[1], lws[2]]))
                             };
                         // cuDNN programs rebuild their variant pack per
                         // launch already — partitions holding one are
@@ -1761,21 +1754,135 @@ impl CUDADevice {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let (lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
-        //let (lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
-        let gws = gws_from_kernel(kernel, &self.dev_info.max_global_work_dims)?;
-        // Collect per-Param kinds in head order — used by the submission path
-        // to split launch args into reads (Global) and writes (GlobalMut).
-        let mut params = Vec::new();
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = kernel.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = kernel.next_op(op_id);
+        let rendered = kernel.render()?;
+        let mut order = rendered.ops_in_order();
+        let Some(GPUOp::Params(params)) = order.next().and_then(Op::as_gpu) else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "head op is not Params".into() });
+        };
+        let Some(GPUOp::Grid(gws)) = order.next().and_then(Op::as_gpu) else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "second op is not Grid".into() });
+        };
+        let Some(GPUOp::LocalWorkSize(lws)) = order.next().and_then(Op::as_gpu) else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "third op is not LocalWorkSize".into() });
+        };
+        let Some(Op::Source(source)) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Source".into() });
+        };
+        let lws: [u32; 3] = *lws;
+        let mut name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
+        let source = source.as_str().to_string();
+        if debug_asm {
+            println!();
+            println!("{source}");
         }
+
+        let cudartc_paths = [
+            "/usr/local/cuda/lib64/libnvrtc.so",
+            "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
+            "/opt/cuda/lib64/libnvrtc.so",
+            "/opt/cuda/targets/x86_64-linux/lib/libnvrtc.so",
+            "/lib/x86_64-linux-gnu/libnvrtc.so",
+            "/usr/lib/libnvrtc.so",
+            "/usr/lib64/libnvrtc.so",
+        ];
+        let cudartc = cudartc_paths.iter().find_map(|&path| unsafe { Library::new(path) }.ok());
+        let Some(cudartc) = cudartc else {
+            return Err(BackendError { status: ErrorStatus::Initialization, context: "[CUDA] libnvrtc.so not found.".into() });
+        };
+        let nvrtcCreateProgram: unsafe extern "C" fn(
+            *mut nvrtcProgram,
+            *const c_char,
+            *const c_char,
+            c_int,
+            *const *const c_char,
+            *const *const c_char,
+        ) -> nvrtcResult = *unsafe { cudartc.get(b"nvrtcCreateProgram\0") }.unwrap();
+        let nvrtcCompileProgram: unsafe extern "C" fn(nvrtcProgram, c_int, *const *const c_char) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcCompileProgram\0") }.unwrap();
+        let nvrtcGetPTXSize: unsafe extern "C" fn(nvrtcProgram, *mut usize) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcGetPTXSize\0") }.unwrap();
+        let nvrtcGetPTX: unsafe extern "C" fn(nvrtcProgram, *mut c_char) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcGetPTX\0") }.unwrap();
+        let nvrtcGetProgramLogSize: unsafe extern "C" fn(nvrtcProgram, *mut usize) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcGetProgramLogSize\0") }.unwrap();
+        let nvrtcGetProgramLog: unsafe extern "C" fn(nvrtcProgram, *mut c_char) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcGetProgramLog\0") }.unwrap();
+        let nvrtcDestroyProgram: unsafe extern "C" fn(*mut nvrtcProgram) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
+
+        let mut program = ptr::null_mut();
+        unsafe {
+            nvrtcCreateProgram(
+                &raw mut program,
+                source.as_ptr().cast(),
+                name.as_ptr().cast(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        }
+        .check(ErrorStatus::KernelCompilation)?;
+
+        let mut opts = vec![
+            "--use_fast_math".into(),
+            format!("--gpu-architecture=compute_{}{}", self.compute_capability[0], self.compute_capability[1]),
+        ];
+
+        let include_paths = [
+            "/usr/include",
+            "/usr/local/cuda/include",
+            "/opt/cuda/targets/x86_64-linux/include",
+        ];
+        let mut include_path: Option<PathBuf> = None;
+        for path in include_paths {
+            let mut path_buf = PathBuf::from(path);
+            path_buf.push("cuda_fp16.h");
+            if path_buf.exists() {
+                include_path = Some(PathBuf::from(path));
+                break;
+            }
+        }
+        if include_path.is_none() {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "[cuda] cuda_fp16.h not found".into() });
+        }
+
+        if let Some(path) = include_path {
+            let path = format!("--include-path={}", path.display());
+            opts.push(path);
+        }
+        // Because rust
+        let opts_cstrings: Vec<CString> = opts.iter().map(|s| CString::new(s.as_str()).unwrap()).collect();
+
+        let opts: Vec<*const i8> = opts_cstrings.iter().map(|c| c.as_ptr()).collect();
+
+        if let Err(e) =
+            unsafe { nvrtcCompileProgram(program, opts.len() as i32, opts.as_ptr()) }.check(ErrorStatus::KernelCompilation)
+        {
+            println!("[CUDA] compilation error {e:?}");
+            let mut program_log_size: usize = 0;
+            unsafe { nvrtcGetProgramLogSize(program, &raw mut program_log_size) }.check(ErrorStatus::KernelCompilation)?;
+            let mut program_log_vec: Vec<u8> = vec![0; program_log_size + 1];
+            unsafe { nvrtcGetProgramLog(program, program_log_vec.as_mut_ptr().cast()) }.check(ErrorStatus::KernelCompilation)?;
+            println!("[CUDA] {}", String::from_utf8_lossy(&program_log_vec));
+        }
+        let mut ptx_size: usize = 0;
+        unsafe { nvrtcGetPTXSize(program, &raw mut ptx_size) }.check(ErrorStatus::KernelCompilation)?;
+        let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
+        unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr().cast()) }.check(ErrorStatus::KernelCompilation)?;
+        unsafe { nvrtcDestroyProgram(&raw mut program) }.check(ErrorStatus::KernelCompilation)?;
+
+        name += "\0";
         let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::Compile { lws, gws, params, name, ptx, reply }).unwrap();
+        self.tx
+            .send(CUDACommand::Compile {
+                lws,
+                gws: gws.to_vec(),
+                params: params.to_vec(),
+                name: name.into_boxed_str(),
+                ptx: ptx_vec,
+                reply,
+            })
+            .unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -2087,9 +2194,9 @@ fn submit_launch(
                     gx,
                     gy,
                     gz,
-                    u32::try_from(lws.first().copied().unwrap_or(1)).unwrap(),
-                    u32::try_from(lws.get(1).copied().unwrap_or(1)).unwrap(),
-                    u32::try_from(lws.get(2).copied().unwrap_or(1)).unwrap(),
+                    lws[0],
+                    lws[1],
+                    lws[2],
                     0,
                     stream,
                     kernel_params.as_mut_ptr(),
@@ -2951,140 +3058,6 @@ impl CUDAStatus {
 }
 
 impl CUDADevice {
-    #[allow(unused)]
-    pub fn compile_cuda(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
-        let mut lws = vec![1; 3];
-        let mut op_id = kernel.head;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("compile_cuda did not finish in 10000 steps");
-            }
-            if let Op::Range { axis, kind: scope } = kernel.ops[op_id].op {
-                match scope {
-                    RangeKind::Group(_) => {}
-                    RangeKind::Local(len) => lws[axis as usize] = i64::from(len),
-                    // A warp is a view over a local range — adds no threads.
-                    RangeKind::Warp(_) => {}
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
-
-        if lws.iter().product::<i64>() > self.dev_info.max_local_threads as i64 {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
-        }
-
-        // --- Codegen ---
-        let mut name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
-
-        let source = kernel.generate_cuda(&name)?;
-
-        if debug_asm {
-            println!();
-            println!("{source}");
-        }
-
-        let cudartc_paths = [
-            "/usr/local/cuda/lib64/libnvrtc.so",
-            "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
-            "/opt/cuda/lib64/libnvrtc.so",
-            "/opt/cuda/targets/x86_64-linux/lib/libnvrtc.so",
-            "/lib/x86_64-linux-gnu/libnvrtc.so",
-            "/usr/lib/libnvrtc.so",
-            "/usr/lib64/libnvrtc.so",
-        ];
-        let cudartc = cudartc_paths.iter().find_map(|&path| unsafe { Library::new(path) }.ok());
-        let Some(cudartc) = cudartc else {
-            return Err(BackendError { status: ErrorStatus::Initialization, context: "[CUDA] libnvrtc.so not found.".into() });
-        };
-        let nvrtcCreateProgram: unsafe extern "C" fn(
-            *mut nvrtcProgram,
-            *const c_char,
-            *const c_char,
-            c_int,
-            *const *const c_char,
-            *const *const c_char,
-        ) -> nvrtcResult = *unsafe { cudartc.get(b"nvrtcCreateProgram\0") }.unwrap();
-        let nvrtcCompileProgram: unsafe extern "C" fn(nvrtcProgram, c_int, *const *const c_char) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcCompileProgram\0") }.unwrap();
-        let nvrtcGetPTXSize: unsafe extern "C" fn(nvrtcProgram, *mut usize) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetPTXSize\0") }.unwrap();
-        let nvrtcGetPTX: unsafe extern "C" fn(nvrtcProgram, *mut c_char) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetPTX\0") }.unwrap();
-        let nvrtcGetProgramLogSize: unsafe extern "C" fn(nvrtcProgram, *mut usize) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetProgramLogSize\0") }.unwrap();
-        let nvrtcGetProgramLog: unsafe extern "C" fn(nvrtcProgram, *mut c_char) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetProgramLog\0") }.unwrap();
-        let nvrtcDestroyProgram: unsafe extern "C" fn(*mut nvrtcProgram) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
-
-        let mut program = ptr::null_mut();
-        unsafe {
-            nvrtcCreateProgram(
-                &raw mut program,
-                source.as_ptr().cast(),
-                name.as_ptr().cast(),
-                0,
-                ptr::null_mut(),
-                ptr::null_mut(),
-            )
-        }
-        .check(ErrorStatus::KernelCompilation)?;
-
-        let mut opts = vec![
-            "--use_fast_math".into(),
-            format!("--gpu-architecture=compute_{}{}", self.compute_capability[0], self.compute_capability[1]),
-        ];
-
-        let include_paths = [
-            "/usr/include",
-            "/usr/local/cuda/include",
-            "/opt/cuda/targets/x86_64-linux/include",
-        ];
-        let mut include_path: Option<PathBuf> = None;
-        for path in include_paths {
-            let mut path_buf = PathBuf::from(path);
-            path_buf.push("cuda_fp16.h");
-            if path_buf.exists() {
-                include_path = Some(PathBuf::from(path));
-                break;
-            }
-        }
-        if include_path.is_none() {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "[cuda] cuda_fp16.h not found".into() });
-        }
-
-        if let Some(path) = include_path {
-            let path = format!("--include-path={}", path.display());
-            opts.push(path);
-        }
-        // Because rust
-        let opts_cstrings: Vec<CString> = opts.iter().map(|s| CString::new(s.as_str()).unwrap()).collect();
-
-        let opts: Vec<*const i8> = opts_cstrings.iter().map(|c| c.as_ptr()).collect();
-
-        if let Err(e) =
-            unsafe { nvrtcCompileProgram(program, opts.len() as i32, opts.as_ptr()) }.check(ErrorStatus::KernelCompilation)
-        {
-            println!("[CUDA] compilation error {e:?}");
-            let mut program_log_size: usize = 0;
-            unsafe { nvrtcGetProgramLogSize(program, &raw mut program_log_size) }.check(ErrorStatus::KernelCompilation)?;
-            let mut program_log_vec: Vec<u8> = vec![0; program_log_size + 1];
-            unsafe { nvrtcGetProgramLog(program, program_log_vec.as_mut_ptr().cast()) }.check(ErrorStatus::KernelCompilation)?;
-            println!("[CUDA] {}", String::from_utf8_lossy(&program_log_vec));
-        }
-        let mut ptx_size: usize = 0;
-        unsafe { nvrtcGetPTXSize(program, &raw mut ptx_size) }.check(ErrorStatus::KernelCompilation)?;
-        let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
-        unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr().cast()) }.check(ErrorStatus::KernelCompilation)?;
-        unsafe { nvrtcDestroyProgram(&raw mut program) }.check(ErrorStatus::KernelCompilation)?;
-
-        name += "\0";
-        Ok((lws, name.into_boxed_str(), ptx_vec))
-    }
-
     pub fn compile_ptx(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;

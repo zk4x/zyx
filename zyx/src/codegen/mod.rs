@@ -28,6 +28,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         match self.dev {
+            Dev::Cuda(_) => self.render_cuda(),
             Dev::OpenCL(_) => self.render_opencl(),
             dev => todo!("render: backend {dev:?} not yet implemented"),
         }
