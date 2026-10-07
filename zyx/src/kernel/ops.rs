@@ -413,6 +413,45 @@ pub enum SpirvOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One circular-buffer entry of a rendered Tenstorrent descriptor:
+/// the runtime CB config triple the shim consumes per CB, in CB index
+/// order. A struct (not a tuple) so every field stays named at the
+/// shim call site.
+pub struct TTCbConfig {
+    /// TT data format code.
+    pub format: u32,
+    /// Tile size in bytes.
+    pub tile_bytes: u32,
+    /// Tile count.
+    pub num_tiles: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// Rendered Tenstorrent descriptor tables: everything backend `compile`
+/// needs beyond the three section sources, computed once at render when
+/// the full lowered kernel is still available. Counts (not dtype vecs):
+/// launch only ever reads vector lengths. Lives inside
+/// [`TTOp::ProgramDesc`], boxed to keep `Op` in budget.
+pub struct TTProgramDesc {
+    /// Global head-order ordinals of the reader section params.
+    pub reader_params: Box<[u32]>,
+    /// Global head-order ordinals of the compute section params.
+    pub compute_params: Box<[u32]>,
+    /// Global head-order ordinals of the writer section params.
+    pub writer_params: Box<[u32]>,
+    /// Total param count (all kinds, global head order).
+    pub n_params: u32,
+    /// Global param count (kernel inputs).
+    pub n_inputs: u32,
+    /// GlobalMut param count (kernel outputs).
+    pub n_outputs: u32,
+    /// Runtime CB config per CB, in CB index order.
+    pub cb_config: Box<[TTCbConfig]>,
+    /// True iff the kernel touches F32 tiles (32-bit DST mode).
+    pub fp32: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// Tenstorrent backend op: section markers, DST locks, CB sync effects,
 /// and lowered LLK compute calls. Lives inside [`Op::TT`].
 pub enum TTOp {
@@ -534,6 +573,21 @@ pub enum TTOp {
     /// TT section split: end of the compute section. Same effect
     /// rules as [`TTOp::EndReader`].
     EndCompute,
+    /// Rendered descriptor tables ([`TTProgramDesc`]): the per-section
+    /// param ordinals, param/input/output counts, CB config, and DST
+    /// mode, decoded positionally by backend `compile`. Operand-free
+    /// effect like [`TTOp::EndReader`]: a DCE root, never CSE'd or
+    /// LICM-hoisted, program-ordered by scheduling. Inserted only by
+    /// render — tables are a lowering decision. Boxed to keep `Op` in
+    /// budget.
+    ProgramDesc(Box<TTProgramDesc>),
+    /// Rendered tensix grid: one owned group-length expression per
+    /// axis, fixed 2D (missing axes are `Const(1)`); more than two
+    /// group axes is a render-time error. Lowered once at render from
+    /// the `Group` ranges; the launcher evaluates each against the
+    /// launch args. Operand-free effect like [`TTOp::EndReader`].
+    /// Boxed to keep `Op` in budget.
+    TensixGrid(Box<[GwsDim; 2]>),
     // -- TT LLK calls: opaque effect templates, excluded from CSE --
     /// TT LLK call template (`copy_tile({0}, 0, 0);`, ...). The LLK
     /// software wrappers are not hardware ops, so they live here as
@@ -1258,7 +1312,9 @@ impl Op {
             | Op::TT(TTOp::NocWriteBarrier)
             | Op::TT(TTOp::ReduceUninit)
             | Op::TT(TTOp::EndReader)
-            | Op::TT(TTOp::EndCompute) => vec![],
+            | Op::TT(TTOp::EndCompute)
+            | Op::TT(TTOp::ProgramDesc(_))
+            | Op::TT(TTOp::TensixGrid(_)) => vec![],
             Op::After { x, dep } => vec![*x, *dep],
             Op::ToDevice { x, .. } => vec![*x],
             Op::Contiguous { x } => vec![*x],
@@ -1327,7 +1383,9 @@ impl Op {
             | Op::TT(TTOp::NocWriteBarrier)
             | Op::TT(TTOp::ReduceUninit)
             | Op::TT(TTOp::EndReader)
-            | Op::TT(TTOp::EndCompute) => vec![],
+            | Op::TT(TTOp::EndCompute)
+            | Op::TT(TTOp::ProgramDesc(_))
+            | Op::TT(TTOp::TensixGrid(_)) => vec![],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().collect(),
             Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],

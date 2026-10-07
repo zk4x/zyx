@@ -237,7 +237,9 @@ impl Kernel {
                         | TTOp::NocWriteBarrier
                         | TTOp::ReduceUninit
                         | TTOp::EndReader
-                        | TTOp::EndCompute => {}
+                        | TTOp::EndCompute
+                        | TTOp::ProgramDesc(_)
+                        | TTOp::TensixGrid(_) => {}
                     },
                     Op::Source(_) | Op::GPU(_) | Op::Spirv(_) => todo!(),
                     Op::Barrier | Op::EndLoop => {}
@@ -313,6 +315,8 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
+                | Op::TT(TTOp::ProgramDesc(_))
+                | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::LLK { .. })
                 | Op::TT(TTOp::LLKReduce { .. })
                 | Op::TT(TTOp::LLKBcast { .. })

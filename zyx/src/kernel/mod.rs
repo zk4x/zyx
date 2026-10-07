@@ -98,7 +98,9 @@ pub use crate::backend::{Dev, DeviceInfo};
 pub use crate::error::BackendError;
 pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
-pub use ops::{BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, SourceBlock, SpirvOp, TTOp, TileDim};
+pub use ops::{
+    BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, SourceBlock, SpirvOp, TTCbConfig, TTOp, TTProgramDesc, TileDim,
+};
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, DtypeClass, Pat, VExpr};
 
@@ -497,7 +499,9 @@ impl Kernel {
                 | Op::TT(TTOp::NocWriteBarrier)
                 | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
-                | Op::TT(TTOp::EndCompute) => {}
+                | Op::TT(TTOp::EndCompute)
+                | Op::TT(TTOp::ProgramDesc(_))
+                | Op::TT(TTOp::TensixGrid(_)) => {}
             }
             op_id = self.next_op(op_id);
         }
@@ -569,7 +573,9 @@ impl Kernel {
                 | Op::TT(TTOp::NocWriteBarrier)
                 | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
-                | Op::TT(TTOp::EndCompute) => todo!(),
+                | Op::TT(TTOp::EndCompute)
+                | Op::TT(TTOp::ProgramDesc(_))
+                | Op::TT(TTOp::TensixGrid(_)) => todo!(),
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
@@ -646,7 +652,9 @@ impl Kernel {
                 | Op::TT(TTOp::NocWriteBarrier)
                 | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
-                | Op::TT(TTOp::EndCompute) => todo!(),
+                | Op::TT(TTOp::EndCompute)
+                | Op::TT(TTOp::ProgramDesc(_))
+                | Op::TT(TTOp::TensixGrid(_)) => todo!(),
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })

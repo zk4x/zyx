@@ -92,6 +92,8 @@ impl Kernel {
                     | Op::TT(TTOp::ReduceUninit)
                     | Op::TT(TTOp::EndReader)
                     | Op::TT(TTOp::EndCompute)
+                    | Op::TT(TTOp::ProgramDesc(_))
+                    | Op::TT(TTOp::TensixGrid(_))
                     | Op::TT(TTOp::LLK { .. })
                     | Op::TT(TTOp::LLKReduce { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
@@ -405,7 +407,9 @@ impl Kernel {
                 | Op::TT(TTOp::NocWriteBarrier)
                 | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
-                | Op::TT(TTOp::EndCompute) => {}
+                | Op::TT(TTOp::EndCompute)
+                | Op::TT(TTOp::ProgramDesc(_))
+                | Op::TT(TTOp::TensixGrid(_)) => {}
                 Op::Unary { x, .. }
                 | Op::Permute { x, .. }
                 | Op::Pad { x, .. }

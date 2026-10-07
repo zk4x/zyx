@@ -31,6 +31,8 @@ impl Kernel {
             Dev::C => self.render_c(),
             Dev::Cuda(_) => self.render_cuda(),
             Dev::OpenCL(_) => self.render_opencl(),
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(_) => self.render_tt(),
             Dev::Vulkan(_) => self.render_spirv(),
             #[cfg(feature = "wgpu")]
             Dev::WGPU(_) => self.render_spirv(),

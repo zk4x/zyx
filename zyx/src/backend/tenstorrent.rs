@@ -24,13 +24,13 @@
 // Rust holds only opaque `*mut c_void` handles; all C++ objects stay in
 // the `tt_runtime_shim` (`extern "C"` facade, exceptions never cross).
 
-use super::{ChunkId, Cmd, Dev, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Placement, Pool, Shard, gws_from_kernel};
+use super::{ChunkId, Cmd, Dev, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Placement, Pool, Shard};
 use crate::{
     DType, Map, Set,
     backend::DTypeCapability,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::OpId,
+    kernel::{GPUOp, Op, OpId, TTOp},
     shape::Dim,
     slab::Slab,
 };
@@ -930,8 +930,10 @@ impl TTMemoryPool {
 struct TTProgram {
     /// Opaque shim id (per-device program cache index).
     shim: u32,
-    input_dtypes: Vec<DType>,
-    output_dtypes: Vec<DType>,
+    /// Global param count (kernel inputs). Launch reads the count only.
+    n_inputs: u32,
+    /// GlobalMut param count (kernel outputs). Launch reads the count only.
+    n_outputs: u32,
     /// Group-range lengths in axis order (gws): Const resolved at compile,
     /// Param(ordinal) resolved from the launch args.
     gws: Vec<GwsDim>,
@@ -967,16 +969,38 @@ impl TTDevice {
 
     #[allow(unused_must_use)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        // CB ids, section params, param ordinals, and input/output dtypes
-        // are calculated only in `Kernel::generate_tenstorrent` (single
-        // point); the backend consumes the returned tables. What stays
-        // here is launch-side assembly: the group-grid walk, the runtime
-        // CB config, and the program compile call.
-        let program = kernel.generate_tenstorrent()?;
-        let param_len = program.n_params as usize;
-        let input_dtypes = &program.input_dtypes;
-        let output_dtypes = &program.output_dtypes;
-        let cb_config = &program.cb_config;
+        // Render to descriptor; decode head positions. CB ids, section
+        // params, param ordinals, and io counts arrive in the descriptor
+        // tables, computed once at render when the lowered kernel is
+        // available. What stays here is launch-side assembly: the
+        // decoded grid, the runtime CB config split, and the program
+        // compile call.
+        let rendered = kernel.render()?;
+        let mut order = rendered.ops_in_order();
+        let Some(Op::TT(TTOp::ProgramDesc(desc))) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "head op is not ProgramDesc".into() });
+        };
+        let Some(GPUOp::Params(_params)) = order.next().and_then(Op::as_gpu) else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "second op is not Params".into() });
+        };
+        let Some(Op::TT(TTOp::TensixGrid(grid))) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "third op is not TensixGrid".into() });
+        };
+        let Some(Op::Source(reader)) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Source".into() });
+        };
+        let Some(Op::TT(TTOp::EndReader)) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fifth op is not EndReader".into() });
+        };
+        let Some(Op::Source(compute)) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "sixth op is not Source".into() });
+        };
+        let Some(Op::TT(TTOp::EndCompute)) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "seventh op is not EndCompute".into() });
+        };
+        let Some(Op::Source(writer)) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "eighth op is not Source".into() });
+        };
 
         // Per-section params (0 = reader, 1 = compute, 2 = writer): the
         // ordinals of the params each section's stores depend on, in
@@ -989,19 +1013,19 @@ impl TTDevice {
         // Global|Variable-then-GlobalMut layout; see
         // `Kernel::generate_tenstorrent` and `tt_runtime_shim.cpp`
         // `section_rt_args` for the consumption side.
-        let n_params = param_len as u32;
-        // Group grid via the shared helper (same as CUDA/OpenCL/wgpu/HIP):
-        // axis-ordered, full dim expressions, const lengths validated
-        // against the device max. Param-backed lengths resolve at launch
-        // from the Variable arg.
-        let gws = gws_from_kernel(kernel, &self.device_info.max_global_work_dims)?;
+        let n_params = desc.n_params;
+        // Tensix grid from the descriptor (rank <= 2 enforced at
+        // render): axis-ordered, full dim expressions, const lengths
+        // validated against the device max. Param-backed lengths
+        // resolve at launch from the Variable arg.
+        let gws: Vec<GwsDim> = grid.to_vec();
 
-        let reader = program.reader_src.as_bytes();
-        let reader_params = program.reader_params.as_slice();
-        let compute = program.compute_src.as_bytes();
-        let compute_params = program.compute_params.as_slice();
-        let writer = program.writer_src.as_bytes();
-        let writer_params = program.writer_params.as_slice();
+        let reader = reader.as_str().as_bytes();
+        let reader_params: &[u32] = &desc.reader_params;
+        let compute = compute.as_str().as_bytes();
+        let compute_params: &[u32] = &desc.compute_params;
+        let writer = writer.as_str().as_bytes();
+        let writer_params: &[u32] = &desc.writer_params;
         if debug_asm {
             eprintln!("[tenstorrent] reader:\n{}", String::from_utf8_lossy(reader));
             eprintln!("[tenstorrent] compute:\n{}", String::from_utf8_lossy(compute));
@@ -1011,7 +1035,7 @@ impl TTDevice {
         // DST geometry follows the codegen mode: fp32 iff the kernel
         // touches F32 tiles (any F32 tile in DST, per the typecast
         // header).
-        let fp32_dest_acc_en = program.fp32;
+        let fp32_dest_acc_en = desc.fp32;
 
         // Snapshot the grid for the launch-time bounds check (dynamic
         // sizes only; const sizes already failed at compile above).
@@ -1027,10 +1051,10 @@ impl TTDevice {
             })?,
         ];
 
-        let cb_indices: Vec<u32> = (0..cb_config.len() as u32).collect();
-        let cb_formats: Vec<u32> = cb_config.iter().map(|c| c.0).collect();
-        let cb_tile_bytes: Vec<u32> = cb_config.iter().map(|c| c.1).collect();
-        let cb_num_tiles: Vec<u32> = cb_config.iter().map(|c| c.2).collect();
+        let cb_indices: Vec<u32> = (0..desc.cb_config.len() as u32).collect();
+        let cb_formats: Vec<u32> = desc.cb_config.iter().map(|c| c.format).collect();
+        let cb_tile_bytes: Vec<u32> = desc.cb_config.iter().map(|c| c.tile_bytes).collect();
+        let cb_num_tiles: Vec<u32> = desc.cb_config.iter().map(|c| c.num_tiles).collect();
         let shim = self.worker.compile(
             reader,
             compute,
@@ -1045,13 +1069,7 @@ impl TTDevice {
             n_params,
             fp32_dest_acc_en,
         )?;
-        Ok(self.programs.push(TTProgram {
-            shim,
-            input_dtypes: input_dtypes.clone(),
-            output_dtypes: output_dtypes.clone(),
-            gws,
-            max_grid,
-        }))
+        Ok(self.programs.push(TTProgram { shim, n_inputs: desc.n_inputs, n_outputs: desc.n_outputs, gws, max_grid }))
     }
 
     pub fn release(&mut self, program_id: DeviceProgramId) {
@@ -1075,8 +1093,8 @@ impl TTDevice {
         };
         let shim = prog.shim;
 
-        let n_inputs = prog.input_dtypes.len();
-        let n_outputs = prog.output_dtypes.len();
+        let n_inputs = prog.n_inputs as usize;
+        let n_outputs = prog.n_outputs as usize;
 
         // One arg per param, head order: Global + Variable interleaved,
         // GlobalMut at the tail. Kinds are derivable from the args themselves:

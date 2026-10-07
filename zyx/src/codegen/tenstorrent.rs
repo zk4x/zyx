@@ -22,10 +22,16 @@
 use crate::DType;
 use crate::Map;
 use crate::Set;
+#[cfg(feature = "tenstorrent")]
+use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TTOp, TileDim, UOp};
+#[cfg(feature = "tenstorrent")]
+use crate::kernel::{GPUOp, SourceBlock, TTCbConfig, TTProgramDesc};
 use crate::scalar::{bf16, f16};
+#[cfg(feature = "tenstorrent")]
+use crate::slab::Slab;
 
 /// DRAM page size in bytes.
 pub(crate) const TT_DRAM_PAGE_BYTES: u32 = 4096;
@@ -80,6 +86,75 @@ pub struct TTProgram {
 }
 
 impl Kernel {
+    /// Tenstorrent render: lower to a descriptor-only kernel — head
+    /// order `ProgramDesc`, `Params`, `TensixGrid`, then the three
+    /// section sources separated by the existing `EndReader` /
+    /// `EndCompute` markers. Lowering + emission runs once here via
+    /// `generate_tenstorrent` (which verifies the lowered IR);
+    /// backend `compile` only decodes positions and drives the shim.
+    /// The unlowered ops are consumed, never carried. Every kernel
+    /// goes through here, including hand-built custom kernels (raw IR
+    /// lowers exactly once; kernels already holding a `Source` pass
+    /// through untouched in `render` and never reach this).
+    #[cfg(feature = "tenstorrent")]
+    pub(super) fn render_tt(&self) -> Result<Kernel, BackendError> {
+        let program = self.generate_tenstorrent()?;
+        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
+        if gws_vec.len() > 2 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tenstorrent render: grid rank {} exceeds 2D", gws_vec.len()).into(),
+            });
+        }
+        let mut grid = [GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            grid[i] = g;
+        }
+        // Param head order is lowering-invariant: the TT passes only
+        // append effect ops at the tail and never create, remove, or
+        // replace Param ops — so the pre-lowering order matches the
+        // ordinals `generate_tenstorrent` numbered post-lowering.
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let desc = TTProgramDesc {
+            reader_params: program.reader_params.into_boxed_slice(),
+            compute_params: program.compute_params.into_boxed_slice(),
+            writer_params: program.writer_params.into_boxed_slice(),
+            n_params: program.n_params,
+            n_inputs: program.input_dtypes.len() as u32,
+            n_outputs: program.output_dtypes.len() as u32,
+            cb_config: program
+                .cb_config
+                .into_iter()
+                .map(|(format, tile_bytes, num_tiles)| TTCbConfig { format, tile_bytes, num_tiles })
+                .collect(),
+            fp32: program.fp32,
+        };
+        let mut rendered = Kernel {
+            ops: Slab::new(),
+            head: OpId::NULL,
+            tail: OpId::NULL,
+            dev: self.dev,
+            dev_info: self.dev_info.clone(),
+            shape_cache: Map::default(),
+        };
+        rendered.push_back(Op::TT(TTOp::ProgramDesc(Box::new(desc))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
+        rendered.push_back(Op::Source(SourceBlock(program.reader_src.into_boxed_str())));
+        rendered.push_back(Op::TT(TTOp::EndReader));
+        rendered.push_back(Op::Source(SourceBlock(program.compute_src.into_boxed_str())));
+        rendered.push_back(Op::TT(TTOp::EndCompute));
+        rendered.push_back(Op::Source(SourceBlock(program.writer_src.into_boxed_str())));
+        Ok(rendered)
+    }
+
     /// Full TTIR codegen: run the kernel TT passes, then emit three
     /// RISC-V section sources plus the launch tables. The passes run on
     /// a clone of this kernel (the caller's IR is untouched); emission

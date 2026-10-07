@@ -535,6 +535,8 @@ impl Kernel {
                     | Op::TT(TTOp::ReduceUninit)
                     | Op::TT(TTOp::EndReader)
                     | Op::TT(TTOp::EndCompute)
+                    | Op::TT(TTOp::ProgramDesc(_))
+                    | Op::TT(TTOp::TensixGrid(_))
                     | Op::TT(TTOp::LLK { .. })
                     | Op::TT(TTOp::LLKReduce { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
@@ -655,7 +657,9 @@ impl Kernel {
                 | &mut Op::TT(TTOp::NocWriteBarrier)
                 | &mut Op::TT(TTOp::ReduceUninit)
                 | &mut Op::TT(TTOp::EndReader)
-                | &mut Op::TT(TTOp::EndCompute) => {
+                | &mut Op::TT(TTOp::EndCompute)
+                | &mut Op::TT(TTOp::ProgramDesc(_))
+                | &mut Op::TT(TTOp::TensixGrid(_)) => {
                     // Operand-free effects: nothing to remap, never dedup.
                 }
                 &mut Op::TT(TTOp::LLK { .. }) => {

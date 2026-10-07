@@ -184,6 +184,24 @@ impl Display for Kernel {
                 Op::TT(TTOp::EndReader) => {
                     writeln!(f, "{indent}{blue}end_reader{reset}").unwrap();
                 }
+                Op::TT(TTOp::ProgramDesc(ref desc)) => {
+                    writeln!(
+                        f,
+                        "{indent}{blue}program_desc{reset} reader:{} compute:{} writer:{} params:{} in:{} out:{} cbs:{} fp32:{}",
+                        desc.reader_params.len(),
+                        desc.compute_params.len(),
+                        desc.writer_params.len(),
+                        desc.n_params,
+                        desc.n_inputs,
+                        desc.n_outputs,
+                        desc.cb_config.len(),
+                        desc.fp32,
+                    )
+                    .unwrap();
+                }
+                Op::TT(TTOp::TensixGrid(ref grid)) => {
+                    writeln!(f, "{indent}{blue}tensix_grid{reset} {grid:?}").unwrap();
+                }
                 Op::TT(TTOp::EndCompute) => {
                     writeln!(f, "{indent}{blue}end_compute{reset}").unwrap();
                 }
