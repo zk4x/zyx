@@ -2444,3 +2444,54 @@ fn run_tt_unary(
 fn tenstorrent_exp_bf16() -> Result<(), ZyxError> {
     run_tt_unary("tenstorrent_exp_bf16", DType::BF16, 3e-2, tt_range(), |x: f32| x.exp(), |k: &mut Kernel, x: OpId| k.exp(x))
 }
+
+/// Indexed global→circular probe: every 5th element of a row-major
+/// [1,160] vector is loaded by computed address and published into the
+/// CB, one element per iteration. Compute and writer stay whole-tile.
+#[test]
+fn tenstorrent_indexed_global_to_circular() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+
+    let ca = k.circular_storage(DType::F16, 1);
+    let cout = k.circular_storage(DType::F16, 1);
+
+    let _g = k.group_range(0, 1);
+
+    // Reader: indexed scalar loads from DRAM, stored into the CB.
+    k.loop_over(32, |k, i| {
+        let idx = k.mad(i, 5, 0);
+        let v = k.load(a, idx);
+        k.store(ca, v, i);
+    });
+    k.tt_end_reader();
+    let va = k.load_circular(ca, 0);
+    k.store_circular(cout, va, 0);
+    k.tt_end_compute();
+    k.copy_circular_to_global(cout, 0, out, 0);
+
+    k.verify();
+    let compiled = k.compile()?;
+    // Row-major, deliberately NOT tilized. F16-exact steps.
+    let data: Vec<f32> = (0..160).map(|j| (j % 64) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(data.clone(), [1, 160])?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[1, 32]])?;
+
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
+    assert_eq!(z.len(), 32);
+    let mut bad = 0;
+    for i in 0..32 {
+        let expected = data[5 * i];
+        if (z[i] - expected).abs() >= 3e-2 {
+            if bad < 10 {
+                println!("z[{i}] = {}, expected {expected}", z[i]);
+            }
+            bad += 1;
+        }
+    }
+    println!("indexed global-to-circular bad: {bad} / 32");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
