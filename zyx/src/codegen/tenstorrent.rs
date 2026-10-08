@@ -162,12 +162,13 @@ impl Kernel {
         let mut k = self.clone();
         // Lowering order: fused LLK claiming (sigmoid/silu composites
         // become opaque calls), storage (compute ops become LLK calls over
-        // bare storages, broadcast fusion), locks, engine-config
-        // inits + startup + reduce cones, CB sync, pop placement +
-        // FIFO check. Render consumes the result 1:1.
+        // bare storages, broadcast fusion), locks, duplicate-publish
+        // elimination, engine-config inits + startup + reduce cones, CB
+        // sync, pop placement + FIFO check. Render consumes the result 1:1.
         k.tt_fuse_llks();
         k.tt_storage();
         k.tt_lock_dst();
+        k.tt_dedup_pushes();
         k.tt_init_math()?;
         k.tt_sync_cbs();
         k.tt_place_pops();

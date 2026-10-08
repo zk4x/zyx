@@ -15,7 +15,7 @@
 //! `tt_sync_cbs`) is already here from slice 1.
 //!
 //! Pass pipeline order: `tt_fuse_llks` → `tt_storage` → `tt_lock_dst`
-//! → `tt_init_math` → `tt_sync_cbs` → `tt_place_pops`, then `verify`. The passes are
+//! → `tt_dedup_pushes` → `tt_init_math` → `tt_sync_cbs` → `tt_place_pops`, then `verify`. The passes are
 //! public so external pass authors can reuse or replace stages.
 //! Calling them out of order is a loud panic, never silent corruption.
 
@@ -26,6 +26,7 @@ use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Pat;
 use crate::kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, TTOp, TileDim, UOp};
+use crate::shape::Dim;
 use crate::types::{TinyString, TinyVec};
 
 impl Kernel {
@@ -619,6 +620,237 @@ impl Kernel {
         self.verify();
     }
 
+    /// Duplicate-publish elimination: drop a repeated identical publish
+    /// (`Copy` of one global tile into one circular slot) together with
+    /// its CSE-orphaned duplicate front load, so one pushed page serves
+    /// all uses with one wait/pop pair downstream.
+    ///
+    /// Per circular buffer + slot index, with all copies carrying
+    /// identical data: `C` publish copies, `L` live loads, `D` dead
+    /// loads. When `C >= 2`, `L >= 1` and `C == L + D`, every pushed
+    /// page but `L` only feeds a dead load — remove the newest `D`
+    /// copies and all `D` dead loads together. Push/wait/pop balance is
+    /// preserved by construction (one unit removed on each side);
+    /// anything else (loops, distinct pages or data, multiple live
+    /// loads without dead ones, unpaired dead loads) is left in place,
+    /// which is the current passing behavior.
+    ///
+    /// All matching is exact-`OpId` identity plus resolved constant
+    /// slot indices; unresolvable indices never match, and any
+    /// CB-touching op between duplicate copies (or an opaque `Asm`)
+    /// drops the group. No new helpers: the predicate is inline below.
+    pub fn tt_dedup_pushes(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("tt_dedup_pushes");
+        // Positional push/load pairing breaks under loops: skip the
+        // whole pass rather than reason trip counts here.
+        let mut scan = self.head;
+        while !scan.is_null() {
+            if matches!(self.at(scan), Op::Loop { .. } | Op::EndLoop) {
+                return;
+            }
+            scan = self.next_op(scan);
+        }
+        // Order index for gap scans, plus the linear user map.
+        let mut order: Vec<OpId> = Vec::new();
+        let mut pos_of: Map<OpId, usize> = Map::default();
+        scan = self.head;
+        while !scan.is_null() {
+            pos_of.insert(scan, order.len());
+            order.push(scan);
+            scan = self.next_op(scan);
+        }
+        let mut users: Map<OpId, Vec<OpId>> = Map::default();
+        for &id in &order {
+            for p in self.at(id).parameters() {
+                if !p.is_null() {
+                    users.entry(p).or_default().push(id);
+                }
+            }
+        }
+        // Circular base of a GEP, if it names one.
+        let circ_base = |kernel: &Kernel, gep: OpId| -> Option<OpId> {
+            if let Op::GEP { x, .. } = kernel.at(gep) {
+                if matches!(kernel.at(*x), Op::Storage { scope: MemScope::Circular, .. }) {
+                    return Some(*x);
+                }
+            }
+            None
+        };
+        // Resolved slot index of a GEP; unresolvable never matches.
+        let slot_of = |kernel: &Kernel, gep: OpId| -> Option<Dim> {
+            if let Op::GEP { index, .. } = kernel.at(gep) {
+                return kernel.resolve_const(*index).and_then(|c| c.as_dim());
+            }
+            None
+        };
+        // Whether an op moves pages of `cb` (gap dirtiness). SSA and
+        // marker ops are inert; user `Asm` and anything unlisted are
+        // opaque and invalidate.
+        let touches = |kernel: &Kernel, id: OpId, cb: OpId| -> bool {
+            let load_cb = |load: OpId| -> bool {
+                if let Op::Load { src } = kernel.at(load) {
+                    return circ_base(kernel, *src) == Some(cb);
+                }
+                false
+            };
+            match kernel.at(id) {
+                Op::Copy { src, dst } => circ_base(kernel, *src) == Some(cb) || circ_base(kernel, *dst) == Some(cb),
+                Op::Load { src } => circ_base(kernel, *src) == Some(cb),
+                Op::Store { dst, .. } => circ_base(kernel, *dst) == Some(cb),
+                Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().any(|o| {
+                    !o.is_null()
+                        && (matches!(kernel.at(o), Op::Storage { scope: MemScope::Circular, .. } if o == cb)
+                            || load_cb(o))
+                }),
+                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, x, scaler, .. }) => {
+                    *cb_in == cb || *cb_sc == cb || load_cb(*x) || load_cb(*scaler)
+                }
+                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
+                    *cb_a == cb || *cb_b == cb || load_cb(*mx) || load_cb(*plain)
+                }
+                Op::TT(
+                    TTOp::MatmulTile { .. }
+                    | TTOp::TransposeTile { .. }
+                    | TTOp::ReduceTile { .. }
+                    | TTOp::BroadcastTile { .. }
+                    | TTOp::ReserveBack { .. }
+                    | TTOp::PushBack { .. }
+                    | TTOp::WaitFront { .. }
+                    | TTOp::PopFront { .. },
+                ) => true,
+                Op::Const(_)
+                | Op::Param { .. }
+                | Op::Storage { .. }
+                | Op::GEP { .. }
+                | Op::Range { .. }
+                | Op::Unary { .. }
+                | Op::Binary { .. }
+                | Op::Cast { .. }
+                | Op::Bitcast { .. }
+                | Op::TT(TTOp::EndReader)
+                | Op::TT(TTOp::EndCompute)
+                | Op::TT(TTOp::MathLock)
+                | Op::TT(TTOp::MathUnlock)
+                | Op::TT(TTOp::PackLock)
+                | Op::TT(TTOp::PackUnlock)
+                | Op::TT(TTOp::NocReadBarrier)
+                | Op::TT(TTOp::NocWriteBarrier)
+                | Op::TT(TTOp::ReduceUninit) => false,
+                _ => true,
+            }
+        };
+        // Publish copies: (cb, slot, src) with positions, slot resolved.
+        // Loads: (cb, slot, src) with positions. Unresolvable slots and
+        // non-publish copies never enter the maps.
+        let mut pubs: Vec<(OpId, Dim, OpId, usize, OpId)> = Vec::new();
+        let mut loads: Vec<(OpId, Dim, OpId, usize, OpId)> = Vec::new();
+        for &id in &order {
+            match self.at(id) {
+                Op::Copy { src, dst } => {
+                    let src_circ = circ_base(self, *src).is_some();
+                    if src_circ {
+                        continue;
+                    }
+                    let (Some(cb), Some(slot)) = (circ_base(self, *dst), slot_of(self, *dst)) else {
+                        continue;
+                    };
+                    // Source must be an address (a GEP), not a bare op:
+                    // bare sources have no slot identity to match on.
+                    if !matches!(self.at(*src), Op::GEP { .. }) {
+                        continue;
+                    }
+                    pubs.push((cb, slot, *src, pos_of[&id], id));
+                }
+                Op::Load { src } => {
+                    let (Some(cb), Some(slot)) = (circ_base(self, *src), slot_of(self, *src)) else {
+                        continue;
+                    };
+                    loads.push((cb, slot, *src, pos_of[&id], id));
+                }
+                _ => {}
+            }
+        }
+        // Bucket keys present in the publishes.
+        let mut keys: Vec<(OpId, Dim)> = Vec::new();
+        for (cb, slot, _, _, _) in &pubs {
+            if !keys.iter().any(|(c, s)| c == cb && s == slot) {
+                keys.push((*cb, slot.clone()));
+            }
+        }
+        let mut removals: Vec<OpId> = Vec::new();
+        for (cb, slot) in keys {
+            // One data source per slot: ambiguous pages never match.
+            let mut data: Vec<OpId> = Vec::new();
+            for (_, _, src, _, _) in pubs.iter().filter(|(c, s, _, _, _)| c == &cb && s == &slot) {
+                if !data.contains(src) {
+                    data.push(*src);
+                }
+            }
+            if data.len() != 1 {
+                continue;
+            }
+            // One address node per slot on the consume side.
+            let mut addrs: Vec<OpId> = Vec::new();
+            for (_, _, src, _, _) in loads.iter().filter(|(c, s, _, _, _)| c == &cb && s == &slot) {
+                if !addrs.contains(src) {
+                    addrs.push(*src);
+                }
+            }
+            if addrs.len() != 1 {
+                continue;
+            }
+            let mut copies: Vec<(usize, OpId)> =
+                pubs.iter().filter(|(c, s, _, _, _)| c == &cb && s == &slot).map(|(_, _, _, p, id)| (*p, *id)).collect();
+            copies.sort();
+            let live = loads
+                .iter()
+                .filter(|(c, s, _, _, _)| c == &cb && s == &slot)
+                .filter(|(_, _, _, _, id)| users.contains_key(id))
+                .count();
+            let dead: Vec<OpId> = loads
+                .iter()
+                .filter(|(c, s, _, _, _)| c == &cb && s == &slot)
+                .filter(|(_, _, _, _, id)| !users.contains_key(id))
+                .map(|(_, _, _, _, id)| *id)
+                .collect();
+            let (c, l, d) = (copies.len(), live, dead.len());
+            if c < 2 || l < 1 || c != l + d {
+                continue;
+            }
+            // Gap dirtiness: any CB-touching op (or opaque Asm) strictly
+            // between consecutive duplicate copies drops the bucket.
+            let mut clean = true;
+            for w in copies.windows(2) {
+                for &mid in &order[w[0].0 + 1..w[1].0] {
+                    if touches(self, mid, cb) {
+                        clean = false;
+                        break;
+                    }
+                }
+                if !clean {
+                    break;
+                }
+            }
+            if !clean {
+                continue;
+            }
+            // Keep the earliest `l` copies; drop the rest with the dead loads.
+            for (_, id) in copies.iter().skip(l) {
+                removals.push(*id);
+            }
+            removals.extend(dead);
+        }
+        for id in removals {
+            self.remove_op(id);
+        }
+        // No CSE/DCE tail here: removals only delete exact-duplicate
+        // copies and dead loads whose nodes stay alive via the kept
+        // twins, so no orphans can result. DCE must also not run after
+        // `tt_storage`: its walk has no NULL guard and the storage
+        // templates (e.g. transpose) carry NULL operands.
+        self.verify();
+    }
     /// CB sync insertion: wrap every CB traffic op with straight-line
     /// single-tile syncs (`n = 1`; hoisted batches land with batching).
     /// Direction reads off which copy side is circular:
@@ -943,11 +1175,18 @@ impl Kernel {
                         && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
                     {
                         match users.get(&op_id) {
-                            // Dead load: no SSA consumer reads. Either an
-                            // LLK consumes it through provenance (waited
-                            // at the call, see below) or it is a drain
-                            // pop (popped by `tt_place_pops`).
-                            None => {}
+                            // Dead load: no SSA consumer reads. Provenance
+                            // feeders always have their LLK as a user
+                            // (LLK ops are parameters), so a truly dead
+                            // load is a drain: `tt_place_pops` pops it at
+                            // itself, which needs a matching wait here
+                            // (same predicate as the drain-pop arm,
+                            // batched excluded).
+                            None => {
+                                if !batched_read.contains(&op_id) {
+                                    self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
+                                }
+                            }
                             Some(use_list) => {
                                 for &u in use_list {
                                     let ok = match &self.ops[u].op {
