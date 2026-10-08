@@ -558,11 +558,13 @@ impl Kernel {
     }
 }
 
+#[cfg(feature = "viz")]
 pub(crate) struct KernelDebug<'a> {
     pub(crate) kernel: &'a Kernel,
     pub(crate) colorless: bool,
 }
 
+#[cfg(feature = "viz")]
 impl<'a> std::fmt::Display for KernelDebug<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.kernel.format(f, self.colorless)
