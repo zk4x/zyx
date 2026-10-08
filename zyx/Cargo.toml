@@ -61,7 +61,7 @@ crate-type = ["lib"]
 
 [features]
 default = [
-    "viz",
+    #"viz",
     #"tenstorrent",
     #"wgpu",
     #"py",

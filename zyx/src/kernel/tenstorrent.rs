@@ -1208,18 +1208,14 @@ impl Kernel {
                         && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
                     {
                         match users.get(&op_id) {
-                            // Dead load: no SSA consumer reads. Provenance
-                            // feeders always have their LLK as a user
-                            // (LLK ops are parameters), so a truly dead
-                            // load is a drain: `tt_place_pops` pops it at
-                            // itself, which needs a matching wait here
-                            // (same predicate as the drain-pop arm,
-                            // batched excluded).
-                            None => {
-                                if !batched_read.contains(&op_id) {
-                                    self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
-                                }
-                            }
+                            // Dead load: no SSA consumer reads. The drain pop
+                            // consumes an already-waited page (fifo count,
+                            // not push-wait-pop pairs); a dead load draws
+                            // no wait of its own. Merge-orphaned dead loads
+                            // (provenance twin fused, never-deduped copy
+                            // kept by the c<=l guard) otherwise break the
+                            // push-wait balance with waits no push feeds.
+                            None => {}
                             Some(use_list) => {
                                 for &u in use_list {
                                     let ok = match &self.ops[u].op {
@@ -2122,6 +2118,17 @@ impl Kernel {
             walk = self.next_op(walk);
         }
 
+        // First WaitFront per CB: dead-load drain anchor (see below).
+        let mut first_wait: Map<OpId, OpId> = Map::default();
+        let mut deferred_drains: Vec<(OpId, OpId)> = Vec::new();
+        walk = self.head;
+        while !walk.is_null() {
+            if let Op::TT(TTOp::WaitFront { cb, .. }) = self.ops[walk].op {
+                first_wait.entry(cb).or_insert(walk);
+            }
+            walk = self.next_op(walk);
+        }
+
         // Last same-section non-LLK, non-marker consumer per load.
         let mut last_use: Map<OpId, OpId> = Map::default();
         for (load, us) in users.iter() {
@@ -2232,7 +2239,12 @@ impl Kernel {
                     }
                 }
             }
-            // Dead-load drain pops land at the load itself.
+            // Dead-load drain pops anchor after the CB's first wait, not
+            // at the dead load: the orphan sits in the load preamble,
+            // before any wait has fired, so a pop there starves. The
+            // first wait has just made a page available that no pop can
+            // yet have consumed. A CB with no wait keeps the old
+            // at-load pop (fifo stays the loud guard for that shape).
             if matches!(self.ops[op_id].op, Op::Load { .. }) && !users.contains_key(&op_id) && !batched_read.contains(&op_id) {
                 let Op::Load { src } = self.ops[op_id].op else {
                     unreachable!("tt_place_pops: dead op is a Load");
@@ -2240,7 +2252,10 @@ impl Kernel {
                 if let Op::GEP { x: cb, .. } = self.ops[src].op
                     && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
                 {
-                    pops.push(cb);
+                    match first_wait.get(&cb) {
+                        Some(wait) => deferred_drains.push((*wait, cb)),
+                        None => pops.push(cb),
+                    }
                 }
             }
             for cb in pops {
@@ -2250,6 +2265,9 @@ impl Kernel {
         }
         if remaining.values().any(|r| *r != 0) {
             panic!("tt_place_pops: partially consumed pages at end of stream");
+        }
+        for (wait, cb) in deferred_drains {
+            self.insert_after(wait, Op::TT(TTOp::PopFront { cb, n: 1 }));
         }
 
         // Bracket pops for indexed windows: one PopFront of the whole
