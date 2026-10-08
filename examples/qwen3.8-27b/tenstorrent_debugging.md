@@ -150,7 +150,7 @@ auto p_out1 = TensorAccessor(args_out1, out1, 2048);
 
 ## 2026-09-10 — bits step run output
 
-- Command (agent-run, board reset untouched): `AGENT=1 TT_METAL_ROOT=/home/x/Dev/cpp/tt-metal cargo test -p qwen3-8-27b --test pad pad_passthrough_tt_run -- --nocapture` from `examples/`.
+- Command (agent-run, board reset untouched): `AGENT=1 TT_METAL_RUNTIME_ROOT=/home/x/Dev/cpp/tt-metal cargo test -p qwen3-8-27b --test pad pad_passthrough_tt_run -- --nocapture` from `examples/`.
 - `roundtrip bad: 0 / 81920`. Host tilize/untilize/pool path exact.
 - `compile_program`: `n_cbs=2`, `n_params=2`, reader 1 param, compute 0, writer 1. Out alloc: `size=327688 tile_bytes=2048` (160 tiles * 2048 = 327680, +8 header).
 - `run`: `gd0=1,gd1=1, src0=0, dst0=1`. `reader_rt: 1048704 0 0 reader_ct: 2 4096`. `writer_rt: 1142912 0 0 writer_ct: 2 4096`.

@@ -61,7 +61,7 @@ struct TTBackend {
 /// tt-metal's own handlers: it registers after theirs).
 fn init_global() -> TTGlobal {
     let shim = load_shim();
-    let (backend, exit) = initialize_backend(&shim);
+    let (backend, exit) = initialize_backend();
     unsafe {
         libc::atexit(tt_atexit_shutdown);
     }
@@ -77,10 +77,10 @@ fn shim() -> &'static Shim {
 /// Builds pools + devices together in one pass and publishes the combined
 /// table. Runs once. The exit sender is `Some` exactly when devices were
 /// created (nothing to tear down otherwise).
-fn initialize_backend(shim: &Shim) -> (TTBackend, Option<Sender<LifeMsg>>) {
+fn initialize_backend() -> (TTBackend, Option<Sender<LifeMsg>>) {
     let config = super::config();
     let debug_dev = super::debug_backends();
-    let (pools, exit) = ensure_pool_table(shim, &config.tenstorrent, debug_dev).expect("tenstorrent: pool table init failed");
+    let (pools, exit) = ensure_pool_table(&config.tenstorrent, debug_dev).expect("tenstorrent: pool table init failed");
     let mut devices = Vec::with_capacity(pools.len());
     for (idx, pool) in pools.iter().enumerate() {
         let pool_id = Pool::TT(u16::try_from(idx).expect("So many Tenstorrent devices..."));
@@ -124,19 +124,50 @@ struct NewDevice {
 // dereferenced in Rust. Same discipline as `TTBuffer`.
 unsafe impl Send for NewDevice {}
 
-/// Spawn the lifecycle thread: loads its own engine binding, creates each
-/// requested device in order, reports handles + grids over a oneshot, then
-/// parks until the exit hook signals. Destroy + context teardown run here
-/// (see the module header for why they cannot run on the exiting thread).
-/// Teardown runs even when a close reported an error; failures print loudly
-/// instead of hanging process exit.
-fn spawn_lifecycle(ids: Vec<i32>) -> Result<(Vec<NewDevice>, Sender<LifeMsg>), BackendError> {
+/// Spawn the lifecycle thread: loads its own engine binding, makes the
+/// process's first tt-metal call here (`num_devices` creates the
+/// MetalContext singleton), then creates each requested device, reports
+/// over a oneshot, and parks until the exit hook signals. First call, chip
+/// start, destroy, and context teardown all share this thread — UMD's
+/// CHIP_IN_USE mutex is owned by the creating thread, so splitting init
+/// across threads aborts at teardown. With no devices the thread reports
+/// empty and exits (exit sender dropped: nothing to tear down).
+fn spawn_lifecycle(want: Option<Vec<i32>>) -> Result<(Vec<NewDevice>, Option<Sender<LifeMsg>>), BackendError> {
     // Own binding (same shipped file, refcounted dlopen): lifecycle calls
     // run on this thread against this handle. Op sites use the global one.
     let shim = load_shim();
     let (init_tx, init_rx) = channel();
     let (exit_tx, exit_rx) = channel();
     thread::spawn(move || {
+        // First tt-metal call in the process (see doc above); the spawning
+        // thread makes none.
+        let n_devices = unsafe { (shim.num_devices)() };
+        if n_devices < 0 {
+            let _ = init_tx.send(Err(cpp_err(&shim, ErrorStatus::Initialization)));
+            return;
+        }
+        // Explicit ids are validated loudly; None means every visible device.
+        // Zero visible devices is not an error: the backend contributes
+        // nothing, like a missing CUDA/HIP driver.
+        let ids: Vec<i32> = match &want {
+            Some(want) => {
+                for id in want {
+                    if *id < 0 || *id >= n_devices {
+                        let _ = init_tx.send(Err(BackendError {
+                            status: ErrorStatus::Initialization,
+                            context: format!("tenstorrent device id {id} out of range (0..{n_devices})").into(),
+                        }));
+                        return;
+                    }
+                }
+                want.clone()
+            }
+            None => (0..n_devices).collect(),
+        };
+        if ids.is_empty() {
+            let _ = init_tx.send(Ok(Vec::new()));
+            return;
+        }
         let mut devs = Vec::with_capacity(ids.len());
         for id in ids {
             let dev = unsafe { (shim.create_device)(id) };
@@ -177,7 +208,10 @@ fn spawn_lifecycle(ids: Vec<i32>) -> Result<(Vec<NewDevice>, Sender<LifeMsg>), B
             status: ErrorStatus::Initialization,
             context: "tenstorrent lifecycle thread exited during init".into(),
         })??;
-    Ok((devs, exit_tx))
+    // An empty report means the thread created nothing and exited (its exit
+    // receiver dropped): no teardown to own.
+    let exit = if devs.is_empty() { None } else { Some(exit_tx) };
+    Ok((devs, exit))
 }
 
 /// Translate the shim's thread-local error string into a `BackendError`.
@@ -255,7 +289,7 @@ struct Shim {
 }
 
 /// Load the engine binding. Panics loudly (never a silent fallback) when
-/// the shipped cdylib is absent — rebuild zyx with TT_METAL_ROOT set.
+/// the shipped cdylib is absent — rebuild zyx with TT_METAL_RUNTIME_ROOT set.
 fn load_shim() -> Shim {
     // Ship dir mirror of zyx/build.rs: XDG config dir. Keep in sync.
     let config_base = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
@@ -264,7 +298,7 @@ fn load_shim() -> Shim {
     });
     let path = format!("{config_base}/zyx/{}", env!("ZYX_TT_SHIM"));
     let lib = unsafe { libloading::Library::new(&path) }
-        .unwrap_or_else(|e| panic!("tenstorrent: cannot load TT shim {path}: {e}; rebuild zyx with TT_METAL_ROOT set"));
+        .unwrap_or_else(|e| panic!("tenstorrent: cannot load TT shim {path}: {e}; rebuild zyx with TT_METAL_RUNTIME_ROOT set"));
     macro_rules! bind {
         ($name:literal, $ty:ty) => {
             *unsafe { lib.get::<$ty>(concat!($name, "\0").as_bytes()) }
@@ -451,7 +485,6 @@ pub struct TTMemoryPool {
 unsafe impl Send for TTMemoryPool {}
 
 fn ensure_pool_table(
-    shim: &Shim,
     config: &TTConfig,
     debug_dev: bool,
 ) -> Result<(Vec<Mutex<TTMemoryPool>>, Option<Sender<LifeMsg>>), BackendError> {
@@ -466,33 +499,10 @@ fn ensure_pool_table(
         return Ok((pools, None));
     }
 
-    let n_devices = unsafe { (shim.num_devices)() };
-    if n_devices < 0 {
-        return Err(cpp_err(shim, ErrorStatus::Initialization));
-    }
-    // Explicit ids are validated loudly; None means every visible device.
-    // Zero visible devices is not an error: the backend contributes nothing,
-    // like a missing CUDA/HIP driver.
-    let ids: Vec<i32> = match &config.device_ids {
-        Some(want) => {
-            for id in want {
-                if *id < 0 || *id >= n_devices {
-                    return Err(BackendError {
-                        status: ErrorStatus::Initialization,
-                        context: format!("tenstorrent device id {id} out of range (0..{n_devices})").into(),
-                    });
-                }
-            }
-            want.clone()
-        }
-        None => (0..n_devices).collect(),
-    };
-    if ids.is_empty() {
-        return Ok((pools, None));
-    }
-
-    // One lifecycle thread creates every device and owns destroy + teardown.
-    let (devs, exit) = spawn_lifecycle(ids)?;
+    // The lifecycle thread makes the process's first tt-metal call and owns
+    // create/destroy/teardown on one thread (see `spawn_lifecycle`); this
+    // thread makes none.
+    let (devs, exit) = spawn_lifecycle(config.device_ids.clone())?;
     let dram_bytes = detect_dram_bytes();
 
     // F8E5M2 has no Blackhole DataFormat: not a capable dtype, codegen rejects it.
@@ -535,7 +545,7 @@ fn ensure_pool_table(
         }));
     }
 
-    Ok((pools, Some(exit)))
+    Ok((pools, exit))
 }
 
 pub(super) fn device(id: u16) -> Result<&'static Mutex<TTDevice>, BackendError> {

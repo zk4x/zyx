@@ -41,7 +41,7 @@ cd zyx && AGENT=1 cargo test --doc
 cd zyx && cargo fmt
 ```
 
-- Tenstorrent: `TT_METAL_ROOT=/home/x/Dev/cpp/tt-metal cargo build --features tenstorrent`
+- Tenstorrent: `TT_METAL_RUNTIME_ROOT=/home/x/Dev/cpp/tt-metal cargo build --features tenstorrent`
 - **TT simulator** (no silicon required): the runtime process inherits the env, so export these before any `cargo test --features tenstorrent`:
   ```
   export TT_METAL_SIMULATOR=~/Dev/cpp/tt-sim/libttsim_bh.so   # .so must share a dir with soc_descriptor.yaml

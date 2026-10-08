@@ -129,14 +129,7 @@ extern "C" int32_t num_devices() {
 extern "C" void* create_device(int32_t device_id) {
     DeviceHandle* h = new DeviceHandle;
     catch_and_set([&] {
-        // tt-metal needs its root (kernels, fw) when creating a device.
-        // Keep the old runtime-exe behavior: fall back to the compile-time
-        // TT_METAL_ROOT when the env is unset.
-        if (!getenv("TT_METAL_RUNTIME_ROOT")) {
-#ifdef TT_METAL_ROOT_DEFAULT
-            setenv("TT_METAL_RUNTIME_ROOT", TT_METAL_ROOT_DEFAULT, 0);
-#endif
-        }
+
         h->device = MeshDevice::create_unit_mesh(device_id);
         h->cq = &h->device->mesh_command_queue();
     });

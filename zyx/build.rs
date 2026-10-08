@@ -7,29 +7,29 @@ fn main() {
         return;
     }
 
-    let tt_metal_root = std::env::var("TT_METAL_ROOT").unwrap_or_else(|_| {
+    let tt_metal_runtime_root = std::env::var("TT_METAL_RUNTIME_ROOT").unwrap_or_else(|_| {
         panic!(
             "\n\n\
-             TT_METAL_ROOT is not set.\n\
-             To build the Tenstorrent backend, point TT_METAL_ROOT at your tt-metal checkout:\n\
-               export TT_METAL_ROOT=$HOME/path-to-tt-metal\n\
+             TT_METAL_RUNTIME_ROOT is not set.\n\
+             To build the Tenstorrent backend, point TT_METAL_RUNTIME_ROOT at your tt-metal checkout:\n\
+               export TT_METAL_RUNTIME_ROOT=$HOME/path-to-tt-metal\n\
              \n\
              Without it, the C++ shim (tt_runtime_shim) cannot be compiled.\n"
         );
     });
 
-    let build_dir = std::path::PathBuf::from(&tt_metal_root).join("build_Release");
+    let build_dir = std::path::PathBuf::from(&tt_metal_runtime_root).join("build_Release");
     let lib_dir = build_dir.join("lib");
 
     // Find the spdlog CPM cache directory for bundled fmt headers
-    let cpm_spdlog = std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("spdlog");
-    let cpm_fmt = std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("fmt");
+    let cpm_spdlog = std::path::PathBuf::from(&tt_metal_runtime_root).join(".cpmcache").join("spdlog");
+    let cpm_fmt = std::path::PathBuf::from(&tt_metal_runtime_root).join(".cpmcache").join("fmt");
     let cpm_caches = [
         cpm_spdlog,
         cpm_fmt,
-        std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("nlohmann_json"),
-        std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("tt-logger"),
-        std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("enchantum"),
+        std::path::PathBuf::from(&tt_metal_runtime_root).join(".cpmcache").join("nlohmann_json"),
+        std::path::PathBuf::from(&tt_metal_runtime_root).join(".cpmcache").join("tt-logger"),
+        std::path::PathBuf::from(&tt_metal_runtime_root).join(".cpmcache").join("enchantum"),
     ];
     let cpm_include = cpm_caches.iter().filter_map(|cache| {
         std::fs::read_dir(cache).ok().and_then(|mut it| {
@@ -64,23 +64,23 @@ fn main() {
     cmd.arg("-DFMT_HEADER_ONLY");
 
     // Include paths (same layout as the former runtime exe build).
-    cmd.arg(format!("-I{tt_metal_root}"));
-    cmd.arg(format!("-I{tt_metal_root}/tt_metal"));
-    cmd.arg(format!("-I{tt_metal_root}/tt_metal/include"));
+    cmd.arg(format!("-I{tt_metal_runtime_root}"));
+    cmd.arg(format!("-I{tt_metal_runtime_root}/tt_metal"));
+    cmd.arg(format!("-I{tt_metal_runtime_root}/tt_metal/include"));
     cmd.arg(format!("-I{}", build_dir.join("include").display()));
-    cmd.arg(format!("-I{tt_metal_root}/tt_metal/api"));
-    cmd.arg(format!("-I{tt_metal_root}/tt_metal/api/tt-metalium"));
-    cmd.arg(format!("-I{tt_metal_root}/tt_metal/third_party/umd/device/api"));
-    cmd.arg(format!("-I{tt_metal_root}/tt_stl"));
-    cmd.arg(format!("-I{tt_metal_root}/tt_metal/hostdevcommon/api"));
-    cmd.arg(format!("-I{tt_metal_root}/tt_metal/hw/inc"));
-    cmd.arg(format!("-I{tt_metal_root}/src"));
+    cmd.arg(format!("-I{tt_metal_runtime_root}/tt_metal/api"));
+    cmd.arg(format!("-I{tt_metal_runtime_root}/tt_metal/api/tt-metalium"));
+    cmd.arg(format!("-I{tt_metal_runtime_root}/tt_metal/third_party/umd/device/api"));
+    cmd.arg(format!("-I{tt_metal_runtime_root}/tt_stl"));
+    cmd.arg(format!("-I{tt_metal_runtime_root}/tt_metal/hostdevcommon/api"));
+    cmd.arg(format!("-I{tt_metal_runtime_root}/tt_metal/hw/inc"));
+    cmd.arg(format!("-I{tt_metal_runtime_root}/src"));
     for include in cpm_include {
         cmd.arg(format!("-I{}", include.display()));
     }
 
-    // Compile-time default for TT_METAL_ROOT (used by the shim for setenv).
-    cmd.arg(format!("-DTT_METAL_ROOT_DEFAULT=\"{tt_metal_root}\""));
+    // Compile-time default for TT_METAL_RUNTIME_ROOT (used by the shim for setenv).
+    cmd.arg(format!("-DTT_METAL_RUNTIME_ROOT_DEFAULT=\"{tt_metal_runtime_root}\""));
 
     cmd.arg("-c").arg("-o").arg(&shim_obj).arg(&shim_src);
 
@@ -96,9 +96,9 @@ fn main() {
     // no loader path of their own. The cdylib's own link is fully owned
     // here (rpath included), which is what makes that work.
     //
-    // Filename hash inputs: shim sources + TT_METAL_ROOT + zyx version, so
+    // Filename hash inputs: shim sources + TT_METAL_RUNTIME_ROOT + zyx version, so
     // any of those changing ships a fresh file (stale shims never shadow).
-    // cargo reruns this script when the shim sources or TT_METAL_ROOT
+    // cargo reruns this script when the shim sources or TT_METAL_RUNTIME_ROOT
     // change; an explicit existence check covers a wiped ship dir.
     // Link flags (v0.75 layout: tt_metal/tt_stl/umd/fmt/spdlog all in separate dirs)
     let lib_dirs = [
@@ -116,7 +116,7 @@ fn main() {
         let mut h = DefaultHasher::new();
         std::fs::read(&shim_src).expect("read shim src").hash(&mut h);
         std::fs::read(&shim_hdr).expect("read shim hdr").hash(&mut h);
-        tt_metal_root.hash(&mut h);
+        tt_metal_runtime_root.hash(&mut h);
         std::env::var("CARGO_PKG_VERSION").unwrap_or_default().hash(&mut h);
         format!("{:016x}", h.finish())
     };
@@ -151,7 +151,7 @@ fn main() {
     }
     println!("cargo:rerun-if-changed={}", shim_src.display());
     println!("cargo:rerun-if-changed={}", shim_hdr.display());
-    println!("cargo:rerun-if-env-changed=TT_METAL_ROOT");
+    println!("cargo:rerun-if-env-changed=TT_METAL_RUNTIME_ROOT");
     // Expected shim filename, baked into the rlib; the backend resolves
     // $HOME/.config/zyx/<this> at device init. Owning-crate-only env, no
     // downstream propagation involved.
