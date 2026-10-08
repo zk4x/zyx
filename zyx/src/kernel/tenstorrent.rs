@@ -456,6 +456,16 @@ impl Kernel {
                         .filter(|c| **c != op_id)
                         .all(|c| users.get(c).map(|us| us.iter().all(|u| cone.contains(u))).unwrap_or(true));
                     if feeder_ok && inners_ok {
+                        // Quick gate: the fused unary renders its feeder
+                        // via `operand_slot` (Load or slotted value
+                        // only). A call-op feeder (e.g. exp over a fused
+                        // broadcast) is unrenderable — leave it unfused
+                        // for the general lowering. Sigmoid/silu keep
+                        // their existing shapes.
+                        if call == "exp_tile({0});" && !matches!(self.at(feeder), Op::Load { .. }) {
+                            op_id = next;
+                            continue;
+                        }
                         self.insert_before(op_id, Op::Asm { asm: TinyString::new(init), ops: TinyVec::new(&[]) });
                         self.ops[op_id].op = Op::TT(TTOp::LLK { asm: TinyString::new(call), ops: TinyVec::new(&[feeder]) });
                     }
