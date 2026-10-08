@@ -2445,54 +2445,137 @@ fn tenstorrent_exp_bf16() -> Result<(), ZyxError> {
     run_tt_unary("tenstorrent_exp_bf16", DType::BF16, 3e-2, tt_range(), |x: f32| x.exp(), |k: &mut Kernel, x: OpId| k.exp(x))
 }
 
-/// Indexed global→circular probe: every 5th element of a row-major
-/// [1,5120] vector is loaded by computed address and stored into the
-/// CB — 1024 elements, exactly one full page. Compute and writer stay
-/// whole-tile.
+/// Transfer-size probe: 512 F16 vectors of 2 elements (4 bytes each) at
+/// CONTIGUOUS bases, one CB page; compute and writer stay whole-tile.
+/// Isolates transfer SIZE from indexing: green here means 4-byte NOC
+/// reads work and any stride-5 failure is address-side.
 #[test]
-fn tenstorrent_indexed_global_to_circular() -> Result<(), ZyxError> {
+fn tenstorrent_indexed_4byte_reads() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
     let out = k.param_mut(DType::F16);
-
     let ca = k.circular_storage(DType::F16, 1);
     let cout = k.circular_storage(DType::F16, 1);
-
     let _g = k.group_range(0, 1);
-
-    // Reader: indexed scalar loads from DRAM, stored into the CB.
-    k.loop_over(1024, |k, i| {
-        let idx = k.mad(i, 5, 0);
-        let v = k.load(a, idx);
-        k.store(ca, v, i);
+    k.loop_over(512, |k, i| {
+        let base = k.mad(i, 2, 0);
+        let dst = k.mad(i, 2, 0);
+        k.load_global_to_cb_vector(a, base, ca, dst, 2);
     });
     k.tt_end_reader();
     let va = k.load_cb(ca, 0);
     k.store_cb(cout, va, 0);
     k.tt_end_compute();
     k.store_cb_to_global(cout, 0, out, 0);
-
     k.verify();
     let compiled = k.compile()?;
-    // Row-major, deliberately NOT tilized. F16-exact steps.
-    let data: Vec<f32> = (0..5120).map(|j| (j % 64) as f32 * 0.0625).collect();
-    let a_t = Tensor::from_vec(data.clone(), [1, 5120])?.cast(DType::F16).to(Dev::TT(0))?;
+    let data: Vec<f32> = (0..1024).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(data.clone(), [1, 1024])?.cast(DType::F16).to(Dev::TT(0))?;
     let out_bufs = compiled.forward(&[&a_t], vec![[1, 1024]])?;
-
     let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
     assert_eq!(z.len(), 1024);
     let mut bad = 0;
-    for i in 0..1024 {
-        let expected = data[5 * i];
-        if (z[i] - expected).abs() >= 3e-2 {
+    for (i, (&v, &e)) in z.iter().zip(data.iter()).enumerate() {
+        if (v - e).abs() >= 3e-2 {
             if bad < 10 {
-                println!("z[{i}] = {}, expected {expected}", z[i]);
+                println!("z[{i}] = {v}, expected {e}");
             }
             bad += 1;
         }
     }
-    println!("indexed global-to-circular bad: {bad} / 1024");
+    println!("4byte reads bad: {bad} / 1024");
     assert_eq!(bad, 0);
+    Ok(())
+}
 
+/// Row-vector probe: 32 F16 vectors of 32 elements at row-strided bases
+/// (`base = i*160` into row-major [32,160]), packed back-to-back into one
+/// CB page; compute and writer stay whole-tile. Exercises indexed VECTOR
+/// publish through the vector `Copy` tally.
+#[test]
+fn tenstorrent_indexed_row_vectors() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+    let ca = k.circular_storage(DType::F16, 1);
+    let cout = k.circular_storage(DType::F16, 1);
+    let _g = k.group_range(0, 1);
+    k.loop_over(32, |k, i| {
+        let base = k.mad(i, 160, 0);
+        let dst = k.mad(i, 32, 0);
+        k.load_global_to_cb_vector(a, base, ca, dst, 32);
+    });
+    k.tt_end_reader();
+    let va = k.load_cb(ca, 0);
+    k.store_cb(cout, va, 0);
+    k.tt_end_compute();
+    k.store_cb_to_global(cout, 0, out, 0);
+    k.verify();
+    let compiled = k.compile()?;
+    let data: Vec<f32> = (0..32 * 160).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(data.clone(), [32, 160])?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[1, 1024]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for j in 0..32 {
+        for e in 0..32 {
+            let expected = data[j * 160 + e];
+            if (z[j * 32 + e] - expected).abs() >= 3e-2 {
+                if bad < 10 {
+                    println!("z[{}] = {}, expected {expected}", j * 32 + e, z[j * 32 + e]);
+                }
+                bad += 1;
+            }
+        }
+    }
+    println!("row vectors bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Lane-group probe: 128 F16 vectors of 8 elements at strided bases
+/// (`base = i*40` into [1,5120]), packed into one CB page; compute and
+/// writer stay whole-tile. Sub-row granularity through the vector path —
+/// same vector `Copy` tally as the row probe above.
+#[test]
+fn tenstorrent_indexed_lane_vectors() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+    let ca = k.circular_storage(DType::F16, 1);
+    let cout = k.circular_storage(DType::F16, 1);
+    let _g = k.group_range(0, 1);
+    k.loop_over(128, |k, i| {
+        let base = k.mad(i, 40, 0);
+        let dst = k.mad(i, 8, 0);
+        k.load_global_to_cb_vector(a, base, ca, dst, 8);
+    });
+    k.tt_end_reader();
+    let va = k.load_cb(ca, 0);
+    k.store_cb(cout, va, 0);
+    k.tt_end_compute();
+    k.store_cb_to_global(cout, 0, out, 0);
+    k.verify();
+    let compiled = k.compile()?;
+    let data: Vec<f32> = (0..5120).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(data.clone(), [1, 5120])?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[1, 1024]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for j in 0..128 {
+        for e in 0..8 {
+            let expected = data[j * 40 + e];
+            if (z[j * 8 + e] - expected).abs() >= 3e-2 {
+                if bad < 10 {
+                    println!("z[{}] = {}, expected {expected}", j * 8 + e, z[j * 8 + e]);
+                }
+                bad += 1;
+            }
+        }
+    }
+    println!("lane vectors bad: {bad} / 1024");
+    assert_eq!(bad, 0);
     Ok(())
 }

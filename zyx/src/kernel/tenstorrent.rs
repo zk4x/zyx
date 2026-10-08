@@ -1150,18 +1150,22 @@ impl Kernel {
             scan = self.next_op(scan);
         }
 
-        // Scalar publish tally: scalar `Store`s into a Circular
-        // buffer fill pages element-wise (1024 elements per page,
-        // every dtype). A section run totaling an exact multiple
-        // of 1024 publishes whole pages like tile publishes: one
-        // `ReserveBack` ahead of the run, one `PushBack` past it.
-        // Runs anchor outside the outermost const-trip loop
-        // (per-trip syncs would multiply the count); straight-line
-        // stores merge per section. Partial pages and anything
-        // under symbolic/conditional loops stay unpublished — a
-        // consumer wait then fails loudly downstream, which is
-        // correct: an unknowable or incomplete fill cannot satisfy
-        // a tile wait.
+        // Unified publish tally: every sub-page publish counts
+        // ELEMENTS per (section, cb, run anchor) — scalar `Store`s
+        // (1 element) and vector `Copy`s (`size` elements) through
+        // one normalized arm below. Whole-page traffic (tile copies,
+        // tile pack stores) never tallies: one page per execution
+        // streams per-op inline below, trip by trip through small
+        // CBs, where a hoisted multi-page reserve would deadlock. A
+        // section run totaling an exact multiple of 1024 publishes
+        // whole pages like tile publishes: one `ReserveBack` ahead
+        // of the run, one `PushBack` past it. Runs anchor outside
+        // the outermost const-trip loop (per-trip syncs would
+        // multiply the count); straight-line stores merge per
+        // section. Partial pages and anything under
+        // symbolic/conditional loops stay unpublished — a consumer
+        // wait then fails loudly downstream, which is correct: an
+        // unknowable or incomplete fill cannot satisfy a tile wait.
         {
             enum CountFrame {
                 Trip { op: OpId, trips: u64 },
@@ -1202,12 +1206,43 @@ impl Kernel {
                         Some(CountFrame::Other) => uncountable -= 1,
                         None => panic!("tt_sync_cbs: EndLoop without Loop at {scan:?}"),
                     },
-                    Op::Store { src: x, dst } => {
-                        if uncountable == 0
-                            && self.is_circular_gep(dst)
-                            && matches!(self.layout(x), MemLayout::Scalar)
-                        {
-                            let cb = self.tt_storage_of(dst);
+                    Op::Store { .. } | Op::Copy { .. } => {
+                        // Elements published per execution, if this op
+                        // is a sub-page publish into a Circular buffer:
+                        // scalar stores write 1 element, vector copies
+                        // `size`. Whole-page traffic matches neither
+                        // (tile layouts) and streams inline below.
+                        let published: Option<(OpId, u64)> = match self.ops[scan].op {
+                            Op::Store { src: x, dst } if uncountable == 0 && self.is_circular_gep(dst) => {
+                                match self.layout(x) {
+                                    MemLayout::Scalar => Some((self.tt_storage_of(dst), 1)),
+                                    _ => None,
+                                }
+                            }
+                            Op::Copy { src, dst } if uncountable == 0 => {
+                                let src_is_cb = match self.ops[src].op {
+                                    Op::GEP { x, .. } => {
+                                        matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. })
+                                    }
+                                    _ => false,
+                                };
+                                match self.ops[dst].op {
+                                    Op::GEP { x: d, .. }
+                                        if matches!(self.ops[d].op, Op::Storage { scope: MemScope::Circular, .. })
+                                            && !src_is_cb =>
+                                    {
+                                        match self.layout(dst) {
+                                            MemLayout::Vector(size) => Some((d, size as u64)),
+                                            _ => None,
+                                        }
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some((cb, units)) = published {
+                            let elems = mult * units;
                             match stack.iter().find_map(|f| match f {
                                 CountFrame::Trip { op, .. } => Some(*op),
                                 CountFrame::Other => None,
@@ -1232,8 +1267,8 @@ impl Kernel {
                                     if !end.is_null() {
                                         tallies
                                             .entry((section, cb, loop_op))
-                                            .and_modify(|e| e.1 += mult)
-                                            .or_insert((end, mult));
+                                            .and_modify(|e| e.1 += elems)
+                                            .or_insert((end, elems));
                                     }
                                 }
                                 None => {
@@ -1241,9 +1276,9 @@ impl Kernel {
                                         .entry((section, cb, OpId::NULL))
                                         .and_modify(|e| {
                                             e.0 = scan;
-                                            e.1 += 1;
+                                            e.1 += elems;
                                         })
-                                        .or_insert((scan, 1));
+                                        .or_insert((scan, elems));
                                 }
                             }
                         }
@@ -1290,10 +1325,19 @@ impl Kernel {
                     match (src_cb, dst_cb) {
                         (None, None) => {}
                         (None, Some(cb)) => {
-                            self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb, n: 1 }));
-                            self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
+                            // Vector publishes tally element-wise above
+                            // (exact page multiples publish); the per-op
+                            // publish here would over-count. Partial pages
+                            // stay unpublished (loud downstream).
+                            if !matches!(self.layout(dst), MemLayout::Vector(_)) {
+                                self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb, n: 1 }));
+                                self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
+                            }
                         }
                         (Some(cb), None) => {
+                            if matches!(self.layout(src), MemLayout::Vector(_)) {
+                                panic!("tt_sync_cbs: vector drain {op_id:?} has no sync support");
+                            }
                             // Indexed-window reads carry no per-trip
                             // wait: the bracket wait covers the window.
                             if !batched_read.contains(&op_id) {
