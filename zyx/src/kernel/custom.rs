@@ -402,7 +402,7 @@ impl Kernel {
     }
 
     /// Load a standard 32 x 32 circular tile from `src` at `index`.
-    pub fn load_circular(&mut self, src: OpId, index: impl IntoOp) -> OpId {
+    pub fn load_cb(&mut self, src: OpId, index: impl IntoOp) -> OpId {
         debug_assert!(
             matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }),
             "load_circular: src {src} is not a Circular storage"
@@ -458,7 +458,7 @@ impl Kernel {
     }
 
     /// Store a standard 32 x 32 circular tile `x` to `dst` at `index`.
-    pub fn store_circular(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
+    pub fn store_cb(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
         debug_assert!(
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
             "store_circular: dst {dst} is not a Circular storage"
@@ -493,7 +493,7 @@ impl Kernel {
     /// load+store: `tt_sync_cbs` wraps it with reserve/push, and a
     /// circular load feeding a store is a lowering bug under its
     /// strict load rule.
-    pub fn copy_global_to_circular(&mut self, src: OpId, src_idx: impl IntoOp, dst: OpId, dst_idx: impl IntoOp) -> OpId {
+    pub fn load_global_to_cb(&mut self, src: OpId, src_idx: impl IntoOp, dst: OpId, dst_idx: impl IntoOp) -> OpId {
         debug_assert!(
             matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global, .. } | Op::Param { kind: ParamKind::GlobalMut, .. }),
             "copy_global_to_circular: src {src} is not a DRAM param"
@@ -515,7 +515,7 @@ impl Kernel {
     /// `src_idx` addresses the CB slot, `dst_idx` DRAM. Same
     /// `Copy`-only traffic rule as
     /// [`Kernel::copy_global_to_circular`].
-    pub fn copy_circular_to_global(&mut self, src: OpId, src_idx: impl IntoOp, dst: OpId, dst_idx: impl IntoOp) -> OpId {
+    pub fn store_cb_to_global(&mut self, src: OpId, src_idx: impl IntoOp, dst: OpId, dst_idx: impl IntoOp) -> OpId {
         debug_assert!(
             matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }),
             "copy_circular_to_global: src {src} is not a Circular storage"

@@ -895,6 +895,10 @@ impl Kernel {
     ///   (the copy packs into `dst`, like a pack store).
     /// A pack `Store` (tile value into a Circular buffer) reserves
     /// before and pushes after, mirroring the old `TilePack` rule.
+    /// Scalar `Store`s into a Circular buffer fill pages
+    /// element-wise (1024 per page): a section run totaling an
+    /// exact page multiple publishes whole pages (reserve ahead,
+    /// push past); partial or uncountable fills stay unpublished.
     /// A circular `Load` is the compute-consume read (the kernel Load IS
     /// the CB read; codegen bundles read+consume, so its wait sits at the
     /// consumer — here it sits before the Load): `WaitFront` immediately
@@ -1144,6 +1148,122 @@ impl Kernel {
             batched.entry((loop_op, cb)).or_insert(total);
             batched_read.insert(read_op);
             scan = self.next_op(scan);
+        }
+
+        // Scalar publish tally: scalar `Store`s into a Circular
+        // buffer fill pages element-wise (1024 elements per page,
+        // every dtype). A section run totaling an exact multiple
+        // of 1024 publishes whole pages like tile publishes: one
+        // `ReserveBack` ahead of the run, one `PushBack` past it.
+        // Runs anchor outside the outermost const-trip loop
+        // (per-trip syncs would multiply the count); straight-line
+        // stores merge per section. Partial pages and anything
+        // under symbolic/conditional loops stay unpublished — a
+        // consumer wait then fails loudly downstream, which is
+        // correct: an unknowable or incomplete fill cannot satisfy
+        // a tile wait.
+        {
+            enum CountFrame {
+                Trip { op: OpId, trips: u64 },
+                Other,
+            }
+            let mut stack: Vec<CountFrame> = Vec::new();
+            let mut mult: u64 = 1;
+            let mut uncountable: u32 = 0;
+            let mut section = 0u8;
+            // (section, cb, anchor-before) -> (anchor-after, elements).
+            // Straight-line runs share the NULL anchor per section.
+            let mut tallies: Map<(u8, OpId, OpId), (OpId, u64)> = Map::default();
+            let mut scan = self.head;
+            while !scan.is_null() {
+                match self.ops[scan].op {
+                    Op::TT(TTOp::EndReader) => section = 1,
+                    Op::TT(TTOp::EndCompute) => section = 2,
+                    Op::Loop { len } => match self.at(len) {
+                        Op::Const(c) => {
+                            match c.as_dim().and_then(|t| u64::try_from(t).ok()).filter(|t| *t > 0) {
+                                Some(t) => {
+                                    mult *= t;
+                                    stack.push(CountFrame::Trip { op: scan, trips: t });
+                                }
+                                None => {
+                                    uncountable += 1;
+                                    stack.push(CountFrame::Other);
+                                }
+                            }
+                        }
+                        _ => {
+                            uncountable += 1;
+                            stack.push(CountFrame::Other);
+                        }
+                    },
+                    Op::EndLoop => match stack.pop() {
+                        Some(CountFrame::Trip { trips, .. }) => mult /= trips,
+                        Some(CountFrame::Other) => uncountable -= 1,
+                        None => panic!("tt_sync_cbs: EndLoop without Loop at {scan:?}"),
+                    },
+                    Op::Store { src: x, dst } => {
+                        if uncountable == 0
+                            && self.is_circular_gep(dst)
+                            && matches!(self.layout(x), MemLayout::Scalar)
+                        {
+                            let cb = self.tt_storage_of(dst);
+                            match stack.iter().find_map(|f| match f {
+                                CountFrame::Trip { op, .. } => Some(*op),
+                                CountFrame::Other => None,
+                            }) {
+                                Some(loop_op) => {
+                                    // Matching EndLoop of the anchor.
+                                    let mut end = self.next_op(loop_op);
+                                    let mut depth = 0u32;
+                                    while !end.is_null() {
+                                        match self.ops[end].op {
+                                            Op::Loop { .. } => depth += 1,
+                                            Op::EndLoop => {
+                                                if depth == 0 {
+                                                    break;
+                                                }
+                                                depth -= 1;
+                                            }
+                                            _ => {}
+                                        }
+                                        end = self.next_op(end);
+                                    }
+                                    if !end.is_null() {
+                                        tallies
+                                            .entry((section, cb, loop_op))
+                                            .and_modify(|e| e.1 += mult)
+                                            .or_insert((end, mult));
+                                    }
+                                }
+                                None => {
+                                    tallies
+                                        .entry((section, cb, OpId::NULL))
+                                        .and_modify(|e| {
+                                            e.0 = scan;
+                                            e.1 += 1;
+                                        })
+                                        .or_insert((scan, 1));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                scan = self.next_op(scan);
+            }
+            for ((_, cb, before), (after, elems)) in tallies {
+                if elems % 1024 != 0 {
+                    continue;
+                }
+                let pages = elems / 1024;
+                if pages == 0 || pages > 255 {
+                    continue;
+                }
+                let n = pages as u8;
+                self.insert_before(before, Op::TT(TTOp::ReserveBack { cb, n }));
+                self.insert_after(after, Op::TT(TTOp::PushBack { cb, n }));
+            }
         }
 
         let mut op_id = self.head;

@@ -241,13 +241,13 @@ fn run_tt_unary(
 
     let _g = k.group_range(0, 1);
 
-    k.copy_global_to_circular(a, 0, ca, 0);
+    k.load_global_to_cb(a, 0, ca, 0);
     k.tt_end_reader();
-    let va = k.load_circular(ca, 0);
+    let va = k.load_cb(ca, 0);
     let v = op(&mut k, va);
-    k.store_circular(cout, v, 0);
+    k.store_cb(cout, v, 0);
     k.tt_end_compute();
-    k.copy_circular_to_global(cout, 0, out, 0);
+    k.store_cb_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -292,15 +292,15 @@ fn run_tt_binary(
 
     let _g = k.group_range(0, 1);
 
-    k.copy_global_to_circular(a, 0, ca, 0);
-    k.copy_global_to_circular(b, 0, cb, 0);
+    k.load_global_to_cb(a, 0, ca, 0);
+    k.load_global_to_cb(b, 0, cb, 0);
     k.tt_end_reader();
-    let va = k.load_circular(ca, 0);
-    let vb = k.load_circular(cb, 0);
+    let va = k.load_cb(ca, 0);
+    let vb = k.load_cb(cb, 0);
     let v = op(&mut k, va, vb);
-    k.store_circular(cout, v, 0);
+    k.store_cb(cout, v, 0);
     k.tt_end_compute();
-    k.copy_circular_to_global(cout, 0, out, 0);
+    k.store_cb_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -376,13 +376,13 @@ fn run_tt_cast(
 
     let _g = k.group_range(0, 1);
 
-    k.copy_global_to_circular(a, 0, ca, 0);
+    k.load_global_to_cb(a, 0, ca, 0);
     k.tt_end_reader();
-    let va = k.load_circular(ca, 0);
+    let va = k.load_cb(ca, 0);
     let v = k.cast(va, out_dtype);
-    k.store_circular(cout, v, 0);
+    k.store_cb(cout, v, 0);
     k.tt_end_compute();
-    k.copy_circular_to_global(cout, 0, out, 0);
+    k.store_cb_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -448,20 +448,20 @@ fn elementwise_golden_kernel() -> Result<(), ZyxError> {
     let tbase = k.mad(g, tile_elems, zero);
 
     // ---- Reader part: whole-tile DRAM -> CB transfers ----
-    k.copy_global_to_circular(x, tbase, cx, zero);
-    k.copy_global_to_circular(y, tbase, cy, zero);
+    k.load_global_to_cb(x, tbase, cx, zero);
+    k.load_global_to_cb(y, tbase, cy, zero);
     k.tt_end_reader();
 
     // ---- Compute part: z = x + sin(y), faces natively ----
-    let ta = k.load_circular(cx, zero);
-    let tb = k.load_circular(cy, zero);
+    let ta = k.load_cb(cx, zero);
+    let tb = k.load_cb(cy, zero);
     let ts = k.sin(tb);
     let tc = k.add(ta, ts);
-    k.store_circular(cz, tc, zero);
+    k.store_cb(cz, tc, zero);
 
     // ---- Writer part: whole-tile CB -> DRAM transfer ----
     k.tt_end_compute();
-    k.copy_circular_to_global(cz, zero, z, tbase);
+    k.store_cb_to_global(cz, zero, z, tbase);
 
     k.verify();
     k.debug();
@@ -535,18 +535,18 @@ fn tenstorrent_nine_page_read() -> Result<(), ZyxError> {
     let zero = k.const_idx(0);
     let tbase = k.mad(g, tile_elems, zero);
 
-    k.copy_global_to_circular(x, tbase, cx, zero);
-    k.copy_global_to_circular(y, tbase, cy, zero);
+    k.load_global_to_cb(x, tbase, cx, zero);
+    k.load_global_to_cb(y, tbase, cy, zero);
     k.tt_end_reader();
 
-    let ta = k.load_circular(cx, zero);
-    let tb = k.load_circular(cy, zero);
+    let ta = k.load_cb(cx, zero);
+    let tb = k.load_cb(cy, zero);
     let ts = k.sin(tb);
     let tc = k.add(ta, ts);
-    k.store_circular(cz, tc, zero);
+    k.store_cb(cz, tc, zero);
 
     k.tt_end_compute();
-    k.copy_circular_to_global(cz, zero, z, tbase);
+    k.store_cb_to_global(cz, zero, z, tbase);
 
     k.verify();
     let compiled = k.compile()?;
@@ -607,7 +607,7 @@ fn tenstorrent_copy() -> Result<(), ZyxError> {
 
     k.loop_over(4, |k, ki| {
         let tbase = k.mad(ki, 1024, 0);
-        k.copy_global_to_circular(x, tbase, cin, 0);
+        k.load_global_to_cb(x, tbase, cin, 0);
     });
     k.tt_end_reader();
     k.loop_over(4, |k, _ki| {
@@ -616,7 +616,7 @@ fn tenstorrent_copy() -> Result<(), ZyxError> {
     k.tt_end_compute();
     k.loop_over(4, |k, ki| {
         let tbase = k.mad(ki, 1024, 0);
-        k.copy_circular_to_global(cout, 0, out, tbase);
+        k.store_cb_to_global(cout, 0, out, tbase);
     });
 
     k.verify();
@@ -669,13 +669,13 @@ fn tenstorrent_pad_move() -> Result<(), ZyxError> {
 
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
-        k.copy_global_to_circular(x, tbase, cdata, zero);
+        k.load_global_to_cb(x, tbase, cdata, zero);
     });
     k.tt_end_reader();
     k.tt_end_compute();
     k.loop_over(cwt, |k, ki| {
         let tbase = k.mad(ki, c1024, zero);
-        k.copy_circular_to_global(cdata, zero, out, tbase);
+        k.store_cb_to_global(cdata, zero, out, tbase);
     });
 
     k.verify();
@@ -715,10 +715,10 @@ fn tenstorrent_pad_move_f8() -> Result<(), ZyxError> {
     let _g = k.group_range(0, 1);
     let zero = k.const_idx(0);
 
-    k.copy_global_to_circular(x, zero, cdata, zero);
+    k.load_global_to_cb(x, zero, cdata, zero);
     k.tt_end_reader();
     k.tt_end_compute();
-    k.copy_circular_to_global(cdata, zero, out, zero);
+    k.store_cb_to_global(cdata, zero, out, zero);
 
     k.verify();
     let compiled = k.compile()?;
@@ -758,10 +758,10 @@ fn tenstorrent_pad_move_u8() -> Result<(), ZyxError> {
     let _g = k.group_range(0, 1);
     let zero = k.const_idx(0);
 
-    k.copy_global_to_circular(x, zero, cdata, zero);
+    k.load_global_to_cb(x, zero, cdata, zero);
     k.tt_end_reader();
     k.tt_end_compute();
-    k.copy_circular_to_global(cdata, zero, out, zero);
+    k.store_cb_to_global(cdata, zero, out, zero);
 
     k.verify();
     let compiled = k.compile()?;
@@ -807,14 +807,14 @@ fn tenstorrent_copy_f8_xfmt() -> Result<(), ZyxError> {
     let _g = k.group_range(0, 1);
     let zero = k.const_idx(0);
 
-    k.copy_global_to_circular(a, zero, ca, zero);
-    k.copy_global_to_circular(b, zero, cb, zero);
+    k.load_global_to_cb(a, zero, ca, zero);
+    k.load_global_to_cb(b, zero, cb, zero);
     k.tt_end_reader();
     k.copy_circular_to_circular(ca, zero, c1, zero);
     k.copy_circular_to_circular(cb, zero, c2, zero);
     k.tt_end_compute();
-    k.copy_circular_to_global(c1, zero, out1, zero);
-    k.copy_circular_to_global(c2, zero, out2, zero);
+    k.store_cb_to_global(c1, zero, out1, zero);
+    k.store_cb_to_global(c2, zero, out2, zero);
 
     k.verify();
     let compiled = k.compile()?;
@@ -870,11 +870,11 @@ fn tenstorrent_copy_f8() -> Result<(), ZyxError> {
     let _g = k.group_range(0, 1);
     let zero = k.const_idx(0);
 
-    k.copy_global_to_circular(a, zero, ca, zero);
+    k.load_global_to_cb(a, zero, ca, zero);
     k.tt_end_reader();
     k.copy_circular_to_circular(ca, zero, cout, zero);
     k.tt_end_compute();
-    k.copy_circular_to_global(cout, zero, out, zero);
+    k.store_cb_to_global(cout, zero, out, zero);
 
     k.verify();
     let compiled = k.compile()?;
@@ -916,8 +916,8 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     // Reader: stream WT input tiles + scaler tiles (LLK-mandated ones).
     k.loop_over(4, |k, ki| {
         let tbase = k.mad(ki, 1024, 0);
-        k.copy_global_to_circular(x, tbase, cin, 0);
-        k.copy_global_to_circular(s, 0, csc, 0);
+        k.load_global_to_cb(x, tbase, cin, 0);
+        k.load_global_to_cb(s, 0, csc, 0);
     });
     k.tt_end_reader();
 
@@ -927,19 +927,19 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     // pure SSA threading, no traffic.
     let acc = k.storage(DType::F16, MemScope::Register, 1024);
     k.loop_over(4, |k, _ki| {
-        let va = k.load_circular(cin, 0);
-        let vs = k.load_circular(csc, 0);
+        let va = k.load_cb(cin, 0);
+        let vs = k.load_cb(csc, 0);
         let av = k.load_register_tile(acc, 0);
         let f = k.reduce_tile(va, vs, av, BOp::Max, TileDim::Col);
         k.store_register_tile(acc, f, 0);
     });
     let f = k.load_register_tile(acc, 0);
-    k.store_circular(cout, f, 0);
+    k.store_cb(cout, f, 0);
     k.tt_end_compute();
 
     // Writer: drain the single output tile.
     k.loop_over(1, |k, _ki| {
-        k.copy_circular_to_global(cout, 0, out, 0);
+        k.store_cb_to_global(cout, 0, out, 0);
     });
 
     k.verify();
@@ -991,13 +991,13 @@ fn tenstorrent_transpose_tile() -> Result<(), ZyxError> {
 
     let _g = k.group_range(0, 1);
 
-    k.copy_global_to_circular(x, 0, cin, 0);
+    k.load_global_to_cb(x, 0, cin, 0);
     k.tt_end_reader();
-    let va = k.load_circular(cin, 0);
+    let va = k.load_cb(cin, 0);
     let t = k.transpose_tile(va);
-    k.store_circular(cout, t, 0);
+    k.store_cb(cout, t, 0);
     k.tt_end_compute();
-    k.copy_circular_to_global(cout, 0, out, 0);
+    k.store_cb_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1044,18 +1044,18 @@ fn tenstorrent_eltwise_exp_sfpu() -> Result<(), ZyxError> {
 
     k.loop_over(WT, |k, ki| {
         let tbase = k.mad(ki, 1024, 0);
-        k.copy_global_to_circular(x, tbase, cin, 0);
+        k.load_global_to_cb(x, tbase, cin, 0);
     });
     k.tt_end_reader();
     k.loop_over(WT, |k, _ki| {
-        let va = k.load_circular(cin, 0);
+        let va = k.load_cb(cin, 0);
         let ve = k.exp(va);
-        k.store_circular(cout, ve, 0);
+        k.store_cb(cout, ve, 0);
     });
     k.tt_end_compute();
     k.loop_over(WT, |k, ki| {
         let tbase = k.mad(ki, 1024, 0);
-        k.copy_circular_to_global(cout, 0, out, tbase);
+        k.store_cb_to_global(cout, 0, out, tbase);
     });
 
     k.verify();
@@ -1098,15 +1098,15 @@ fn tenstorrent_eltwise_add() -> Result<(), ZyxError> {
 
     let _g = k.group_range(0, 1);
 
-    k.copy_global_to_circular(a, 0, ca, 0);
-    k.copy_global_to_circular(b, 0, cb, 0);
+    k.load_global_to_cb(a, 0, ca, 0);
+    k.load_global_to_cb(b, 0, cb, 0);
     k.tt_end_reader();
-    let va = k.load_circular(ca, 0);
-    let vb = k.load_circular(cb, 0);
+    let va = k.load_cb(ca, 0);
+    let vb = k.load_cb(cb, 0);
     let s = k.add(va, vb);
-    k.store_circular(cout, s, 0);
+    k.store_cb(cout, s, 0);
     k.tt_end_compute();
-    k.copy_circular_to_global(cout, 0, out, 0);
+    k.store_cb_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -1158,10 +1158,10 @@ fn tenstorrent_matmul_single_core() -> Result<(), ZyxError> {
             k.loop_over(2, |k, kti| {
                 let at = k.mad(mti, 2, kti);
                 let abase = k.mad(at, 1024, 0);
-                k.copy_global_to_circular(a, abase, ca, 0);
+                k.load_global_to_cb(a, abase, ca, 0);
                 let bt = k.mad(kti, 2, nti);
                 let bbase = k.mad(bt, 1024, 0);
-                k.copy_global_to_circular(b, bbase, cb, 0);
+                k.load_global_to_cb(b, bbase, cb, 0);
             });
         });
     });
@@ -1171,14 +1171,14 @@ fn tenstorrent_matmul_single_core() -> Result<(), ZyxError> {
         k.loop_over(2, |k, _nti| {
             let acc = k.storage(DType::F32, MemScope::Register, 1024);
             k.loop_over(2, |k, _kti| {
-                let va = k.load_circular(ca, 0);
-                let vb = k.load_circular(cb, 0);
+                let va = k.load_cb(ca, 0);
+                let vb = k.load_cb(cb, 0);
                 let av = k.load_register_tile(acc, 0);
                 let f = k.matmul_tile(va, vb, av);
                 k.store_register_tile(acc, f, 0);
             });
             let f = k.load_register_tile(acc, 0);
-            k.store_circular(cout, f, 0);
+            k.store_cb(cout, f, 0);
         });
     });
     k.tt_end_compute();
@@ -1187,7 +1187,7 @@ fn tenstorrent_matmul_single_core() -> Result<(), ZyxError> {
         k.loop_over(2, |k, nti| {
             let ot = k.mad(mti, 2, nti);
             let obase = k.mad(ot, 1024, 0);
-            k.copy_circular_to_global(cout, 0, out, obase);
+            k.store_cb_to_global(cout, 0, out, obase);
         });
     });
 
@@ -1251,10 +1251,10 @@ fn tenstorrent_matmul_bf16_acc() -> Result<(), ZyxError> {
             k.loop_over(2, |k, kti| {
                 let at = k.mad(mti, 2, kti);
                 let abase = k.mad(at, 1024, 0);
-                k.copy_global_to_circular(a, abase, ca, 0);
+                k.load_global_to_cb(a, abase, ca, 0);
                 let bt = k.mad(kti, 2, nti);
                 let bbase = k.mad(bt, 1024, 0);
-                k.copy_global_to_circular(b, bbase, cb, 0);
+                k.load_global_to_cb(b, bbase, cb, 0);
             });
         });
     });
@@ -1264,14 +1264,14 @@ fn tenstorrent_matmul_bf16_acc() -> Result<(), ZyxError> {
         k.loop_over(2, |k, _nti| {
             let acc = k.storage(DType::BF16, MemScope::Register, 1024);
             k.loop_over(2, |k, _kti| {
-                let va = k.load_circular(ca, 0);
-                let vb = k.load_circular(cb, 0);
+                let va = k.load_cb(ca, 0);
+                let vb = k.load_cb(cb, 0);
                 let av = k.load_register_tile(acc, 0);
                 let f = k.matmul_tile(va, vb, av);
                 k.store_register_tile(acc, f, 0);
             });
             let f = k.load_register_tile(acc, 0);
-            k.store_circular(cout, f, 0);
+            k.store_cb(cout, f, 0);
         });
     });
     k.tt_end_compute();
@@ -1280,7 +1280,7 @@ fn tenstorrent_matmul_bf16_acc() -> Result<(), ZyxError> {
         k.loop_over(2, |k, nti| {
             let ot = k.mad(mti, 2, nti);
             let obase = k.mad(ot, 1024, 0);
-            k.copy_circular_to_global(cout, 0, out, obase);
+            k.store_cb_to_global(cout, 0, out, obase);
         });
     });
 
@@ -2365,13 +2365,13 @@ fn run_tt_shift_const(
 
     let _g = k.group_range(0, 1);
 
-    k.copy_global_to_circular(a, 0, ca, 0);
+    k.load_global_to_cb(a, 0, ca, 0);
     k.tt_end_reader();
-    let va = k.load_circular(ca, 0);
+    let va = k.load_cb(ca, 0);
     let v = op(&mut k, va, amt);
-    k.store_circular(cout, v, 0);
+    k.store_cb(cout, v, 0);
     k.tt_end_compute();
-    k.copy_circular_to_global(cout, 0, out, 0);
+    k.store_cb_to_global(cout, 0, out, 0);
 
     k.verify();
     let compiled = k.compile()?;
@@ -2628,18 +2628,18 @@ fn tenstorrent_broadcast_row_add() -> Result<(), ZyxError> {
 
     k.loop_over(1, |k, _mti| {
         k.loop_over(1, |k, _nti| {
-            k.copy_global_to_circular(a, 0, ca, 0);
+            k.load_global_to_cb(a, 0, ca, 0);
         });
     });
-    k.copy_global_to_circular(bias, 0, cb, 0);
+    k.load_global_to_cb(bias, 0, cb, 0);
     k.tt_end_reader();
     k.loop_over(1, |k, _mti| {
         k.loop_over(1, |k, _nti| {
-            let va = k.load_circular(ca, 0);
-            let vb = k.load_circular(cb, 0);
+            let va = k.load_cb(ca, 0);
+            let vb = k.load_cb(cb, 0);
             let b = k.broadcast_tile(vb, TileDim::Row);
             let f = k.add(va, b);
-            k.store_circular(cout, f, 0);
+            k.store_cb(cout, f, 0);
         });
     });
     k.tt_end_compute();
@@ -2647,7 +2647,7 @@ fn tenstorrent_broadcast_row_add() -> Result<(), ZyxError> {
         k.loop_over(1, |k, nti| {
             let ot = k.mad(mti, 1, nti);
             let obase = k.mad(ot, 1024, 0);
-            k.copy_circular_to_global(cout, 0, out, obase);
+            k.store_cb_to_global(cout, 0, out, obase);
         });
     });
 

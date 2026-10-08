@@ -22,13 +22,13 @@ fn lock_dst_wraps_math_and_pack() {
     let cout = k.storage(DType::F32, MemScope::Circular, 1024);
     let zero = k.const_val(0i64);
     k.tt_end_reader();
-    let va = k.load_circular(cb_a, zero);
-    let vb = k.load_circular(cb_b, zero);
+    let va = k.load_cb(cb_a, zero);
+    let vb = k.load_cb(cb_b, zero);
     let av = k.load_register_tile(acc, zero);
     let f = k.matmul_tile(va, vb, av);
     k.store_register_tile(acc, f, zero);
     let out = k.load_register_tile(acc, zero);
-    k.store_circular(cout, out, zero);
+    k.store_cb(cout, out, zero);
     k.tt_end_compute();
     k.tt_lock_dst();
 
@@ -67,15 +67,15 @@ fn sync_cbs_wraps_cb_traffic() {
     let cout = k.storage(DType::F32, MemScope::Circular, 1024);
     let acc = k.storage(DType::F32, MemScope::Register, 1);
     let zero = k.const_val(0i64);
-    let pub_a = k.copy_global_to_circular(a, zero, ca, zero);
+    let pub_a = k.load_global_to_cb(a, zero, ca, zero);
     k.tt_end_reader();
-    let va = k.load_circular(ca, zero);
-    let vb = k.load_circular(cb, zero);
+    let va = k.load_cb(ca, zero);
+    let vb = k.load_cb(cb, zero);
     let av = k.load_register_tile(acc, zero);
     let f = k.matmul_tile(va, vb, av);
     k.store_register_tile(acc, f, zero);
     k.tt_end_compute();
-    let drain = k.copy_circular_to_global(cout, zero, out, zero);
+    let drain = k.store_cb_to_global(cout, zero, out, zero);
     k.tt_sync_cbs();
 
     let mut order: Vec<OpId> = Vec::new();
@@ -112,17 +112,17 @@ fn storage_lowering_rewrites_matmul_and_reduce() {
     let cout = k.storage(DType::F32, MemScope::Circular, 1024);
     let zero = k.const_val(0i64);
     k.tt_end_reader();
-    let va = k.load_circular(cb_a, zero);
-    let vb = k.load_circular(cb_b, zero);
+    let va = k.load_cb(cb_a, zero);
+    let vb = k.load_cb(cb_b, zero);
     let av = k.load_register_tile(acc, zero);
     let f = k.matmul_tile(va, vb, av);
-    let vs = k.load_circular(csc, zero);
+    let vs = k.load_cb(csc, zero);
     let r = k.reduce_tile(va, vs, av, BOp::Max, TileDim::Col);
     // Pack drain: the Register slot is read out and stored to a
     // CB. The matmul/reduce results are effect ops after
     // lowering (no SSA value to thread).
     let out = k.load_register_tile(acc, zero);
-    k.store_circular(cout, out, zero);
+    k.store_cb(cout, out, zero);
     k.tt_end_compute();
     k.tt_storage();
 
