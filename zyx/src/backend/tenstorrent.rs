@@ -42,16 +42,32 @@ use std::thread;
 
 // ── Global state ──────────────────────────────────────────────────────────────
 
+// The single backend global: pools + devices. One `OnceLock` runs
+// `init_global` exactly once — concurrent threads block until it returns
+// and reuse the tables. Without the Once, two threads can both spawn a
+// device worker and race the same device's init (deadlock).
+struct TTGlobal {
+    backend: TTBackend,
+}
+static TT: OnceLock<TTGlobal> = OnceLock::new();
+
 /// Pools and their devices, built together by [`initialize_backend`].
 struct TTBackend {
     pools: Vec<Mutex<TTMemoryPool>>,
     devices: Vec<Mutex<TTDevice>>,
 }
-/// One-shot backend init: `get_or_init` runs [`initialize_backend`]
-/// exactly once — concurrent threads block until it returns and
-/// reuse its tables. Without the Once, two threads can both spawn a
-/// device worker and race the same device's init (deadlock).
-static TT_BACKEND: OnceLock<TTBackend> = OnceLock::new();
+
+/// The single backend initializer: pools + devices, then the atexit hook
+/// (registered once, runs before tt-metal's own handlers since it registers
+/// after theirs). Device workers load their own shim binding (see `spawn`)
+/// — the global never touches the engine.
+fn init_global() -> TTGlobal {
+    let backend = initialize_backend();
+    unsafe {
+        libc::atexit(tt_atexit_shutdown);
+    }
+    TTGlobal { backend }
+}
 
 /// The single backend initializer: builds pools + devices together in
 /// one pass and publishes the combined table. Runs once.
@@ -180,9 +196,9 @@ pub(crate) struct RuntimeWorker {
 /// Translate the shim's thread-local error string into a `BackendError` of the
 /// given status. Must run on the same thread that made the failing shim call
 /// (the worker thread); every call site below upholds this.
-fn cpp_err(status: ErrorStatus) -> BackendError {
+fn cpp_err(shim: &Shim, status: ErrorStatus) -> BackendError {
     let mut buf = [0i8; 2048];
-    let n = unsafe { get_last_error(buf.as_mut_ptr(), buf.len() as c_int) };
+    let n = unsafe { (shim.get_last_error)(buf.as_mut_ptr(), buf.len() as c_int) };
     let context = if n > 0 {
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(buf.as_ptr() as *const u8, n as usize)) }.to_string()
     } else {
@@ -191,72 +207,155 @@ fn cpp_err(status: ErrorStatus) -> BackendError {
     BackendError { status, context: context.into_boxed_str() }
 }
 
-// FFI declarations of the tt-metal shim (see `tt_runtime_shim.h`).
-unsafe extern "C" {
-    fn get_last_error(out: *mut i8, out_len: c_int) -> c_int;
-    fn has_error() -> bool;
-    fn create_device() -> *mut c_void;
-    fn destroy_device(dev: *mut c_void);
-    fn teardown_metal();
-    fn get_grid_size(dev: *mut c_void, rows: *mut u32, cols: *mut u32);
-    fn alloc_buffer(dev: *mut c_void, size: u64, tile_bytes: u64) -> *mut c_void;
-    fn free_buffer(dev: *mut c_void, buf: *mut c_void);
-    fn write_buffer(dev: *mut c_void, buf: *mut c_void, src: *const c_void, len: u64);
-    fn read_buffer(dev: *mut c_void, buf: *mut c_void, dst: *mut c_void, len: u64);
-    fn compile_program(
-        dev: *mut c_void,
-        reader_src: *const u8,
-        reader_src_len: usize,
-        compute_src: *const u8,
-        compute_src_len: usize,
-        writer_src: *const u8,
-        writer_src_len: usize,
-        cb_indices: *const u32,
-        cb_formats: *const u32,
-        cb_tile_bytes: *const u32,
-        cb_num_tiles: *const u32,
-        n_cbs: usize,
-        reader_params: *const u32,
-        n_reader_params: usize,
-        compute_params: *const u32,
-        n_compute_params: usize,
-        writer_params: *const u32,
-        n_writer_params: usize,
-        n_params: u32,
-        fp32_dest_acc_en: bool,
-    ) -> u32;
-    fn run_program(
-        dev: *mut c_void,
-        prog: u32,
-        src_buffers: *const *mut c_void,
-        n_src: usize,
-        dst_buffers: *const *mut c_void,
-        n_dst: usize,
-        grid_rows: u32,
-        grid_cols: u32,
-        var_ordinals: *const u32,
-        var_values: *const u32,
-        n_vars: usize,
-    ) -> bool;
-    fn destroy_program(dev: *mut c_void, prog: u32);
+// The tt-metal shim (`tt_runtime_shim.h`) is a cdylib shipped by zyx's
+// build script under `$HOME/.config/zyx/` (versioned filename baked in as
+// `ZYX_TT_SHIM`). It is dlopened here at first device use — user binaries
+// therefore carry no tt-metal link dependency at all and need no loader
+// path of their own. Same C ABI, same process, same calls as a static
+// link; only the loading moved. Signatures mirror the header exactly.
+struct Shim {
+    _lib: libloading::Library,
+    get_last_error: unsafe extern "C" fn(*mut i8, c_int) -> c_int,
+    has_error: unsafe extern "C" fn() -> bool,
+    create_device: unsafe extern "C" fn() -> *mut c_void,
+    destroy_device: unsafe extern "C" fn(*mut c_void),
+    teardown_metal: unsafe extern "C" fn(),
+    get_grid_size: unsafe extern "C" fn(*mut c_void, *mut u32, *mut u32),
+    alloc_buffer: unsafe extern "C" fn(*mut c_void, u64, u64) -> *mut c_void,
+    free_buffer: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    write_buffer: unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_void, u64),
+    read_buffer: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, u64),
+    compile_program: unsafe extern "C" fn(
+        *mut c_void,
+        *const u8,
+        usize,
+        *const u8,
+        usize,
+        *const u8,
+        usize,
+        *const u32,
+        *const u32,
+        *const u32,
+        *const u32,
+        usize,
+        *const u32,
+        usize,
+        *const u32,
+        usize,
+        *const u32,
+        usize,
+        u32,
+        bool,
+    ) -> u32,
+    run_program: unsafe extern "C" fn(
+        *mut c_void,
+        u32,
+        *const *mut c_void,
+        usize,
+        *const *mut c_void,
+        usize,
+        u32,
+        u32,
+        *const u32,
+        *const u32,
+        usize,
+    ) -> bool,
+    destroy_program: unsafe extern "C" fn(*mut c_void, u32),
 }
 
-/// Exit-time sender registry + atexit hook.
+/// Load the engine binding. Each device worker calls this once at thread
+/// start and owns the result for the thread's lifetime — every shim call
+/// in this file runs on a worker thread, so no sharing primitive is
+/// needed. Panics loudly (never a silent fallback) when the shipped cdylib
+/// is absent — rebuild zyx with TT_METAL_ROOT set.
+fn load_shim() -> Shim {
+    // Ship dir mirror of zyx/build.rs: XDG config dir. Keep in sync.
+    let config_base = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").expect("tenstorrent: neither XDG_CONFIG_HOME nor HOME is set");
+        format!("{home}/.config")
+    });
+    let path = format!("{config_base}/zyx/{}", env!("ZYX_TT_SHIM"));
+    let lib = unsafe { libloading::Library::new(&path) }
+        .unwrap_or_else(|e| panic!("tenstorrent: cannot load TT shim {path}: {e}; rebuild zyx with TT_METAL_ROOT set"));
+    macro_rules! bind {
+        ($name:literal, $ty:ty) => {
+            *unsafe { lib.get::<$ty>(concat!($name, "\0").as_bytes()) }
+                .unwrap_or_else(|e| panic!("tenstorrent: shim {path} lacks symbol {}: {e}", $name))
+        };
+    }
+    Shim {
+        get_last_error: bind!("get_last_error", unsafe extern "C" fn(*mut i8, c_int) -> c_int),
+        has_error: bind!("has_error", unsafe extern "C" fn() -> bool),
+        create_device: bind!("create_device", unsafe extern "C" fn() -> *mut c_void),
+        destroy_device: bind!("destroy_device", unsafe extern "C" fn(*mut c_void)),
+        teardown_metal: bind!("teardown_metal", unsafe extern "C" fn()),
+        get_grid_size: bind!("get_grid_size", unsafe extern "C" fn(*mut c_void, *mut u32, *mut u32)),
+        alloc_buffer: bind!("alloc_buffer", unsafe extern "C" fn(*mut c_void, u64, u64) -> *mut c_void),
+        free_buffer: bind!("free_buffer", unsafe extern "C" fn(*mut c_void, *mut c_void)),
+        write_buffer: bind!("write_buffer", unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_void, u64)),
+        read_buffer: bind!("read_buffer", unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, u64)),
+        compile_program: bind!(
+            "compile_program",
+            unsafe extern "C" fn(
+                *mut c_void,
+                *const u8,
+                usize,
+                *const u8,
+                usize,
+                *const u8,
+                usize,
+                *const u32,
+                *const u32,
+                *const u32,
+                *const u32,
+                usize,
+                *const u32,
+                usize,
+                *const u32,
+                usize,
+                *const u32,
+                usize,
+                u32,
+                bool,
+            ) -> u32
+        ),
+        run_program: bind!(
+            "run_program",
+            unsafe extern "C" fn(
+                *mut c_void,
+                u32,
+                *const *mut c_void,
+                usize,
+                *const *mut c_void,
+                usize,
+                u32,
+                u32,
+                *const u32,
+                *const u32,
+                usize,
+            ) -> bool
+        ),
+        destroy_program: bind!("destroy_program", unsafe extern "C" fn(*mut c_void, u32)),
+        _lib: lib,
+    }
+}
+
+/// Exit-time shutdown hook.
 ///
 /// `static` items never drop, so the worker's `destroy_device` would never
 /// run before tt-metal's own exit handlers tear down `MetalContext` (SIGABRT
-/// via `close_device` throwing from a destructor). Each spawned worker
-/// pushes a `Sender` clone here; the single `atexit` entry below drains the
-/// registry at process end and shuts every worker down first (LIFO: this
-/// hook registers after tt-metal's, so it runs before theirs). The handler
-/// never panics and never waits unboundedly — a wedged device must not hang
-/// process exit.
-static EXIT_SENDERS: std::sync::Mutex<Vec<Sender<Command>>> = std::sync::Mutex::new(Vec::new());
-static EXIT_HOOK: OnceLock<()> = OnceLock::new();
-
+/// via `close_device` throwing from a destructor). The single `atexit` entry
+/// registered by `init_global` walks the pool table at process end and shuts
+/// every worker down first (LIFO: this hook registers after tt-metal's, so
+/// it runs before theirs). No registry: every worker is reachable through
+/// its pool. The handler never panics and never waits unboundedly — a wedged
+/// device must not hang process exit.
 extern "C" fn tt_atexit_shutdown() {
-    let senders = EXIT_SENDERS.lock().map(|mut v| core::mem::take(&mut *v)).unwrap_or_default();
-    for sender in &senders {
+    let Some(g) = TT.get() else { return };
+    for pool in &g.backend.pools {
+        let Ok(guard) = pool.lock() else { continue };
+        let sender = guard.worker.sender.as_ref().clone();
+        drop(guard);
         let (tx, rx) = channel();
         if sender.send(Command::Shutdown { reply: tx }).is_err() {
             continue;
@@ -286,9 +385,10 @@ impl RuntimeWorker {
 
         let worker_tx = tx.clone();
         thread::spawn(move || {
-            let dev = unsafe { create_device() };
+            let shim = load_shim();
+            let dev = unsafe { (shim.create_device)() };
             if dev.is_null() {
-                let err = cpp_err(ErrorStatus::Initialization);
+                let err = cpp_err(&shim, ErrorStatus::Initialization);
                 let _ = init_tx.send(Err(err));
                 return;
             }
@@ -308,7 +408,7 @@ impl RuntimeWorker {
                     // this the open MeshDevice outlives MetalContext and
                     // close_device throws from a destructor (SIGABRT).
                     Err(_) => {
-                        unsafe { destroy_device(worker.dev) };
+                        unsafe { (shim.destroy_device)(worker.dev) };
                         break 'work_thread_loop;
                     }
                 };
@@ -317,9 +417,9 @@ impl RuntimeWorker {
                     Command::Grid { reply } => {
                         let mut rows = 0u32;
                         let mut cols = 0u32;
-                        unsafe { get_grid_size(worker.dev, &raw mut rows, &raw mut cols) };
-                        if unsafe { has_error() } {
-                            reply.send(Err(cpp_err(ErrorStatus::Initialization))).ok();
+                        unsafe { (shim.get_grid_size)(worker.dev, &raw mut rows, &raw mut cols) };
+                        if unsafe { (shim.has_error)() } {
+                            reply.send(Err(cpp_err(&shim, ErrorStatus::Initialization))).ok();
                         } else {
                             reply.send(Ok((rows, cols))).ok();
                         }
@@ -327,9 +427,9 @@ impl RuntimeWorker {
                     }
 
                     Command::Allocate { bytes, chunk_id, reply } => {
-                        let handle = unsafe { alloc_buffer(worker.dev, bytes, 2048) };
+                        let handle = unsafe { (shim.alloc_buffer)(worker.dev, bytes, 2048) };
                         if handle.is_null() {
-                            reply.send(Err(cpp_err(ErrorStatus::MemoryAllocation))).ok();
+                            reply.send(Err(cpp_err(&shim, ErrorStatus::MemoryAllocation))).ok();
                             continue 'work_thread_loop;
                         }
                         let n_pages = (bytes + 4095) / 4096;
@@ -341,7 +441,7 @@ impl RuntimeWorker {
 
                     Command::Free { buffer_id, handle, reply } => {
                         if worker.buffers.remove(&buffer_id).is_some() {
-                            unsafe { free_buffer(worker.dev, handle) };
+                            unsafe { (shim.free_buffer)(worker.dev, handle) };
                         }
                         reply.send(()).ok();
                         continue 'work_thread_loop;
@@ -366,9 +466,9 @@ impl RuntimeWorker {
                                 .ok();
                             continue 'work_thread_loop;
                         }
-                        unsafe { write_buffer(worker.dev, handle, src.as_ptr() as *const c_void, src.len() as u64) };
-                        if unsafe { has_error() } {
-                            reply.send(Err(cpp_err(ErrorStatus::MemoryCopyH2P))).ok();
+                        unsafe { (shim.write_buffer)(worker.dev, handle, src.as_ptr() as *const c_void, src.len() as u64) };
+                        if unsafe { (shim.has_error)() } {
+                            reply.send(Err(cpp_err(&shim, ErrorStatus::MemoryCopyH2P))).ok();
                         } else {
                             reply.send(Ok(())).ok();
                         }
@@ -386,9 +486,9 @@ impl RuntimeWorker {
                             continue 'work_thread_loop;
                         };
                         let cap = dst_len.min(entry.size as usize);
-                        unsafe { read_buffer(worker.dev, handle, dst as *mut c_void, cap as u64) };
-                        if unsafe { has_error() } {
-                            reply.send(Err(cpp_err(ErrorStatus::MemoryCopyP2H))).ok();
+                        unsafe { (shim.read_buffer)(worker.dev, handle, dst as *mut c_void, cap as u64) };
+                        if unsafe { (shim.has_error)() } {
+                            reply.send(Err(cpp_err(&shim, ErrorStatus::MemoryCopyP2H))).ok();
                         } else {
                             reply.send(Ok(cap)).ok();
                         }
@@ -411,7 +511,7 @@ impl RuntimeWorker {
                         reply,
                     } => {
                         let prog = unsafe {
-                            compile_program(
+                            (shim.compile_program)(
                                 worker.dev,
                                 reader_src.as_ptr(),
                                 reader_src.len(),
@@ -435,7 +535,7 @@ impl RuntimeWorker {
                             )
                         };
                         if prog == u32::MAX {
-                            reply.send(Err(cpp_err(ErrorStatus::KernelCompilation))).ok();
+                            reply.send(Err(cpp_err(&shim, ErrorStatus::KernelCompilation))).ok();
                         } else {
                             reply.send(Ok(prog)).ok();
                         }
@@ -446,7 +546,7 @@ impl RuntimeWorker {
                         let ok = unsafe {
                             let ordinals = vars.iter().map(|(o, _)| *o).collect::<Vec<u32>>();
                             let values = vars.iter().map(|(_, v)| *v).collect::<Vec<u32>>();
-                            run_program(
+                            (shim.run_program)(
                                 worker.dev,
                                 program,
                                 src_handles.as_ptr(),
@@ -461,7 +561,7 @@ impl RuntimeWorker {
                             )
                         };
                         if !ok {
-                            reply.send(Err(cpp_err(ErrorStatus::KernelLaunch))).ok();
+                            reply.send(Err(cpp_err(&shim, ErrorStatus::KernelLaunch))).ok();
                         } else {
                             reply.send(Ok(())).ok();
                         }
@@ -469,7 +569,7 @@ impl RuntimeWorker {
                     }
 
                     Command::DestroyProgram { program, reply } => {
-                        unsafe { destroy_program(worker.dev, program) };
+                        unsafe { (shim.destroy_program)(worker.dev, program) };
                         reply.send(Ok(())).ok();
                         continue 'work_thread_loop;
                     }
@@ -481,13 +581,13 @@ impl RuntimeWorker {
                         // its owning thread). Teardown runs even if the
                         // device close reported an error; failures are
                         // reported loudly instead of hanging process exit.
-                        unsafe { destroy_device(worker.dev) };
-                        if unsafe { has_error() } {
-                            eprintln!("tenstorrent worker: {}", cpp_err(ErrorStatus::Initialization).context);
+                        unsafe { (shim.destroy_device)(worker.dev) };
+                        if unsafe { (shim.has_error)() } {
+                            eprintln!("tenstorrent worker: {}", cpp_err(&shim, ErrorStatus::Initialization).context);
                         }
-                        unsafe { teardown_metal() };
-                        if unsafe { has_error() } {
-                            eprintln!("tenstorrent worker: {}", cpp_err(ErrorStatus::Initialization).context);
+                        unsafe { (shim.teardown_metal)() };
+                        if unsafe { (shim.has_error)() } {
+                            eprintln!("tenstorrent worker: {}", cpp_err(&shim, ErrorStatus::Initialization).context);
                         }
                         reply.send(()).ok();
                         break 'work_thread_loop;
@@ -502,16 +602,6 @@ impl RuntimeWorker {
             status: ErrorStatus::Initialization,
             context: "tenstorrent worker exited during init".into(),
         })??;
-
-        // Register the exit hook once per process and enlist this worker.
-        // From here on the worker is shut down at process end, before
-        // tt-metal's own handlers run.
-        if let Ok(mut senders) = EXIT_SENDERS.lock() {
-            senders.push(worker_tx.as_ref().clone());
-        }
-        EXIT_HOOK.get_or_init(|| unsafe {
-            libc::atexit(tt_atexit_shutdown);
-        });
 
         Ok(RuntimeWorker { sender: worker_tx })
     }
@@ -723,8 +813,8 @@ unsafe impl Sync for TTBuffer {}
 // ---------------------------------------------------------------------------
 
 fn backend() -> Result<(&'static Vec<Mutex<TTMemoryPool>>, &'static Vec<Mutex<TTDevice>>), BackendError> {
-    let b = TT_BACKEND.get_or_init(initialize_backend);
-    Ok((&b.pools, &b.devices))
+    let g = TT.get_or_init(init_global);
+    Ok((&g.backend.pools, &g.backend.devices))
 }
 
 pub(super) fn pool(id: u16) -> Result<&'static Mutex<TTMemoryPool>, BackendError> {

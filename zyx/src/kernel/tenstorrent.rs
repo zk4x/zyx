@@ -710,8 +710,7 @@ impl Kernel {
                 Op::Store { dst, .. } => circ_base(kernel, *dst) == Some(cb),
                 Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().any(|o| {
                     !o.is_null()
-                        && (matches!(kernel.at(o), Op::Storage { scope: MemScope::Circular, .. } if o == cb)
-                            || load_cb(o))
+                        && (matches!(kernel.at(o), Op::Storage { scope: MemScope::Circular, .. } if o == cb) || load_cb(o))
                 }),
                 Op::TT(TTOp::LLKReduce { cb_in, cb_sc, x, scaler, .. }) => {
                     *cb_in == cb || *cb_sc == cb || load_cb(*x) || load_cb(*scaler)

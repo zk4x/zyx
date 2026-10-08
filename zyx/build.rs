@@ -59,6 +59,7 @@ fn main() {
     // needed for the shim TU itself).
     let mut cmd = std::process::Command::new("g++");
     cmd.arg("-std=c++20").arg("-Wall").arg("-Wextra").arg("-O3");
+    cmd.arg("-fPIC");
     cmd.arg("-Wno-deprecated-declarations");
     cmd.arg("-DFMT_HEADER_ONLY");
 
@@ -88,18 +89,17 @@ fn main() {
     });
     assert!(status.success(), "g++ shim build failed");
 
-    // Archive into a static library in OUT_DIR so rustc links it.
-    let out_dir = std::env::var("OUT_DIR").unwrap();
-    let lib = std::path::PathBuf::from(&out_dir).join("libzyx_tt_runtime_shim.a");
-    let ar_status = std::process::Command::new("ar").arg("rcs").arg(&lib).arg(&shim_obj).status().expect("ar failed");
-    assert!(ar_status.success(), "ar shim archive failed");
-
-    // Link the static shim plus the shared tt-metal libraries it depends on.
-    println!("cargo:rerun-if-changed={}", shim_src.display());
-    println!("cargo:rerun-if-changed={}", src_dir.join("tt_runtime_shim.h").display());
-    println!("cargo:rustc-link-search=native={out_dir}");
-    println!("cargo:rustc-link-lib=zyx_tt_runtime_shim");
-
+    // Link the shim as a versioned cdylib and ship it to a persistent
+    // dir. The Rust backend dlopens it at device init (see backend/
+    // tenstorrent.rs) instead of linking tt-metal into every downstream
+    // binary — so user binaries carry no tt-metal NEEDED entries and need
+    // no loader path of their own. The cdylib's own link is fully owned
+    // here (rpath included), which is what makes that work.
+    //
+    // Filename hash inputs: shim sources + TT_METAL_ROOT + zyx version, so
+    // any of those changing ships a fresh file (stale shims never shadow).
+    // cargo reruns this script when the shim sources or TT_METAL_ROOT
+    // change; an explicit existence check covers a wiped ship dir.
     // Link flags (v0.75 layout: tt_metal/tt_stl/umd/fmt/spdlog all in separate dirs)
     let lib_dirs = [
         lib_dir.clone(),
@@ -109,20 +109,51 @@ fn main() {
         build_dir.join("_deps/fmt-build"),
         build_dir.join("_deps/spdlog-build"),
     ];
-    for dir in &lib_dirs {
-        println!("cargo:rustc-link-search=native={}", dir.display());
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+    let shim_hdr = src_dir.join("tt_runtime_shim.h");
+    let hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        std::fs::read(&shim_src).expect("read shim src").hash(&mut h);
+        std::fs::read(&shim_hdr).expect("read shim hdr").hash(&mut h);
+        tt_metal_root.hash(&mut h);
+        std::env::var("CARGO_PKG_VERSION").unwrap_or_default().hash(&mut h);
+        format!("{:016x}", h.finish())
+    };
+    let shim_name = format!("libzyx_tt_shim-{hash}.so");
+    // Ship dir: the XDG config dir (XDG_CONFIG_HOME, else ~/.config).
+    // Mirrored in backend/tenstorrent.rs; keep in sync.
+    let config_base = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| {
+            panic!("\n\nNeither XDG_CONFIG_HOME nor HOME is set; zyx ships the TT shim under the XDG config dir.\n")
+        });
+        format!("{home}/.config")
+    });
+    let ship_dir = std::path::PathBuf::from(config_base).join("zyx");
+    std::fs::create_dir_all(&ship_dir).expect("create ship dir");
+    let shipped = ship_dir.join(&shim_name);
+    if !shipped.is_file() {
+        let tmp = ship_dir.join(format!(".{shim_name}.tmp"));
+        let mut link = std::process::Command::new("g++");
+        link.arg("-shared").arg("-O2");
+        link.arg("-o").arg(&tmp).arg(&shim_obj);
+        for dir in &lib_dirs {
+            link.arg(format!("-L{}", dir.display()));
+        }
+        link.arg("-ltt_metal").arg("-ltt-umd").arg("-ltt_stl").arg("-lfmt").arg("-lspdlog");
+        for dir in &lib_dirs {
+            link.arg(format!("-Wl,-rpath,{}", dir.display()));
+        }
+        link.arg("-static-libstdc++").arg("-static-libgcc");
+        let status = link.status().unwrap_or_else(|e| panic!("failed to invoke g++ for shim cdylib: {e}"));
+        assert!(status.success(), "g++ shim cdylib link failed");
+        std::fs::rename(&tmp, &shipped).expect("ship shim cdylib");
     }
-    println!("cargo:rustc-link-lib=tt_metal");
-    println!("cargo:rustc-link-lib=tt-umd");
-    println!("cargo:rustc-link-lib=tt_stl");
-    println!("cargo:rustc-link-lib=fmt");
-    println!("cargo:rustc-link-lib=spdlog");
-
-    // The static shim is a C++ TU referenced from the Rust rlib; its objects
-    // pull in C++ runtime symbols that the Rust link otherwise never resolves.
-    println!("cargo:rustc-link-lib=dylib=stdc++");
-    println!("cargo:rustc-link-lib=dylib=gcc_s");
-    println!("cargo:rustc-link-arg=-static-libstdc++");
-    println!("cargo:rustc-link-arg=-static-libgcc");
+    println!("cargo:rerun-if-changed={}", shim_src.display());
+    println!("cargo:rerun-if-changed={}", shim_hdr.display());
+    println!("cargo:rerun-if-env-changed=TT_METAL_ROOT");
+    // Expected shim filename, baked into the rlib; the backend resolves
+    // $HOME/.config/zyx/<this> at device init. Owning-crate-only env, no
+    // downstream propagation involved.
+    println!("cargo:rustc-env=ZYX_TT_SHIM={shim_name}");
 }
