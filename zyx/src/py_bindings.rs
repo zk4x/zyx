@@ -1299,6 +1299,17 @@ impl Tensor {
         self.flip(to_ax(axes))
     }
 
+    #[must_use]
+    #[pyo3(name = "tilize")]
+    pub fn tilize_py(&self) -> Result<Tensor, ZyxError> {
+        self.tilize()
+    }
+
+    #[pyo3(name = "untilize")]
+    pub fn untilize_py(&self, rows: i64, cols: i64) -> Result<Tensor, ZyxError> {
+        self.untilize(rows, cols)
+    }
+
     #[pyo3(name = "flatten", signature = (start_dim=0, end_dim=-1))]
     pub fn flatten_py(&self, start_dim: Axis, end_dim: Axis) -> Result<Tensor, ZyxError> {
         self.flatten(start_dim..=end_dim)
