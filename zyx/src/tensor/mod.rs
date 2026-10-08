@@ -10,7 +10,7 @@
 use crate::backend::DTypeCapability;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
-use crate::kernel::{BOp, UOp};
+use crate::kernel::{BOp, IDX_T, UOp};
 use crate::runtime::{ResolvedDim, TensorData};
 use crate::scalar::{Float, Scalar};
 use crate::scalar::{bf16, f8e4m3, f8e5m2, f16};
@@ -1529,8 +1529,8 @@ impl Tensor {
     /// Returns a shape error if the axis is out of range or the padding is invalid.
     #[track_caller]
     pub fn pad_zeros_axis(&self, axis: UAxis, lp: Tensor, len: Tensor) -> Result<Tensor, ZyxError> {
-        let lp = lp.cast_to_dim();
-        let len = len.cast_to_dim();
+        let lp = lp.cast(IDX_T);
+        let len = len.cast(IDX_T);
         let mut rt = RT.lock();
         debug_assert_eq!(rt.dtype(lp.id), DType::I64, "pad_zeros_axis lp must have dtype IDX_T (i64)");
         debug_assert_eq!(rt.dtype(len.id), DType::I64, "pad_zeros_axis len must have dtype IDX_T (i64)");
@@ -1667,21 +1667,9 @@ impl Tensor {
         Ok(t0 + ones.pad_zeros(padding)?.where_(zeros, value)?)
     }
 
-    /// Casts a single shape/dim/padding tensor to `IDX_T` (`i64`).
-    ///
-    /// Shape and padding tensors must be `IDX_T`; user-supplied integer literals
-    /// infer as `i32`, so this normalizes them before they enter the runtime.
-    fn cast_to_dim(&self) -> Tensor {
-        if RT.lock().dtype(self.id) == DType::I64 {
-            self.clone()
-        } else {
-            self.cast(DType::I64)
-        }
-    }
-
     /// Collects a shape iterator into `Tensor`s, casting each to `IDX_T`.
     fn cast_to_shape(shape: impl IntoIterator<Item = impl Into<Tensor>>) -> Vec<Tensor> {
-        shape.into_iter().map(|x| x.into().cast_to_dim()).collect()
+        shape.into_iter().map(|x| x.into().cast(IDX_T)).collect()
     }
 
     /// Reshape this tensor to the given shape while preserving its total

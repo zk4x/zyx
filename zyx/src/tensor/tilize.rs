@@ -19,7 +19,12 @@
 //! Both ops need concrete dims (pad amounts and split sizes are constants)
 //! and rank >= 2.
 
-use crate::{RT, Tensor, ZyxError, dtype::Constant, dtype::DType, shape::UAxis};
+use crate::{
+    RT, Tensor, ZyxError,
+    dtype::{Constant, DType},
+    kernel::IDX_T,
+    shape::UAxis,
+};
 
 impl Tensor {
     /// Permutes the last two dims into Tenstorrent tilized face order,
@@ -47,8 +52,8 @@ impl Tensor {
         if rank < 2 {
             return Err(ZyxError::shape_error(format!("tilize needs rank >= 2, got {rank}").into()));
         }
-        let rows = shape[rank - 2].cast_to_dim();
-        let cols = shape[rank - 1].cast_to_dim();
+        let rows = shape[rank - 2].cast(IDX_T);
+        let cols = shape[rank - 1].cast(IDX_T);
         // Dims always resolve (Const/Variable leaves carry values); these
         // asserts document that pad inputs are valid by construction.
         for (name, d) in [("rows", &rows), ("cols", &cols)] {
@@ -125,8 +130,8 @@ impl Tensor {
         if rank < 2 {
             return Err(ZyxError::shape_error(format!("untilize needs rank >= 2, got {rank}").into()));
         }
-        let prt = shape[rank - 2].cast_to_dim();
-        let pct = shape[rank - 1].cast_to_dim();
+        let prt = shape[rank - 2].cast(IDX_T);
+        let pct = shape[rank - 1].cast(IDX_T);
         // Dims always resolve; when they do, wrong user input is a real
         // error here (not a panic). Unresolvable dims skip this and defer
         // to realize time, where narrow fails loudly on the same violation.
