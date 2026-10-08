@@ -844,11 +844,11 @@ impl Kernel {
         for id in removals {
             self.remove_op(id);
         }
-        // No CSE/DCE tail here: removals only delete exact-duplicate
-        // copies and dead loads whose nodes stay alive via the kept
-        // twins, so no orphans can result. DCE must also not run after
-        // `tt_storage`: its walk has no NULL guard and the storage
-        // templates (e.g. transpose) carry NULL operands.
+        // DCE runs after `tt_storage`: `Op::parameters` skips NULL LLK
+        // operands, so the reachability walk cannot hit them. No CSE:
+        // removals only delete exact-duplicate copies and dead loads
+        // whose nodes stay alive via the kept twins.
+        self.dead_code_elimination();
         self.verify();
     }
     /// CB sync insertion: wrap every CB traffic op with straight-line

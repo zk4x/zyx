@@ -1307,7 +1307,7 @@ impl Op {
             &Op::Binary { x, y, .. } => vec![x, y],
             &Op::Load { src } => vec![src],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
-            Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().collect(),
+            Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().filter(|o| !o.is_null()).collect(),
             &Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
             &Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
             Op::Stack { ops } => ops.iter().copied().collect(),
@@ -1404,7 +1404,7 @@ impl Op {
             | Op::TT(TTOp::ProgramDesc(_))
             | Op::TT(TTOp::TensixGrid(_)) => vec![],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
-            Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().collect(),
+            Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().filter(|o| !o.is_null()).collect(),
             Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
             Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
         }
