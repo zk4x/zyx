@@ -2488,6 +2488,56 @@ fn tenstorrent_indexed_4byte_reads() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// Out-of-order probe: 512 F16 vectors of 2 elements (4 bytes each) at
+/// STRIDED bases (`base = i*10` into a 5120-element row), packed
+/// back-to-back into one CB page. Same transfer size as
+/// `tenstorrent_indexed_4byte_reads`, only the addresses are
+/// non-contiguous: green here means 4-byte NOC reads work out of order
+/// and any scalar stride-5 failure is the scalar render path, not the
+/// address pattern.
+#[test]
+fn tenstorrent_indexed_ooo_4byte_reads() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+    let ca = k.circular_storage(DType::F16, 1);
+    let cout = k.circular_storage(DType::F16, 1);
+    let _g = k.group_range(0, 1);
+    k.loop_over(512, |k, i| {
+        let base = k.mad(i, 10, 0);
+        let dst = k.mad(i, 2, 0);
+        k.load_global_to_cb_vector(a, base, ca, dst, 2);
+    });
+    k.tt_end_reader();
+    let va = k.load_cb(ca, 0);
+    k.store_cb(cout, va, 0);
+    k.tt_end_compute();
+    k.store_cb_to_global(cout, 0, out, 0);
+    k.verify();
+    let compiled = k.compile()?;
+    let data: Vec<f32> = (0..5120).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(data.clone(), [1, 5120])?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[1, 1024]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for i in 0..512 {
+        for e in 0..2 {
+            let v = z[i * 2 + e];
+            let exp = data[i * 10 + e];
+            if (v - exp).abs() >= 3e-2 {
+                if bad < 10 {
+                    println!("z[{}] = {v}, expected {exp}", i * 2 + e);
+                }
+                bad += 1;
+            }
+        }
+    }
+    println!("ooo 4byte reads bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
 /// Row-vector probe: 32 F16 vectors of 32 elements at row-strided bases
 /// (`base = i*160` into row-major [32,160]), packed back-to-back into one
 /// CB page; compute and writer stay whole-tile. Exercises indexed VECTOR
