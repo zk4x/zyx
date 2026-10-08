@@ -1301,7 +1301,9 @@ impl Kernel {
                                     // LLK reads CBs/storage slots directly.
                                     Op::TT(TTOp::LLK { asm, .. }) => {
                                         let text = asm.as_str();
-                                        text.starts_with("sigmoid_tile(") || text.starts_with("silu_tile(")
+                                        text.starts_with("sigmoid_tile(")
+                                            || text.starts_with("silu_tile(")
+                                            || text.starts_with("exp_tile(")
                                     }
                                     _ => false,
                                 }
