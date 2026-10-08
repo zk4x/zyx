@@ -29,10 +29,15 @@ bool has_error();
 // Device lifecycle: opaque device handle (owns MeshDevice + program cache).
 // ---------------------------------------------------------------------------
 
-/// Create a unit-mesh device (device id 0). Returns NULL and records an
-/// error on failure. The returned handle is owned by the caller and must be
-/// destroyed with `destroy_device`.
-void* create_device();
+/// Number of user-visible devices (0 when no hardware is present).
+/// Records an error and returns -1 on failure.
+int32_t num_devices();
+
+/// Create a unit-mesh device for the given device id (0-based, less than
+/// `num_devices`). Returns NULL and records an error on failure. The
+/// returned handle is owned by the caller and must be destroyed with
+/// `destroy_device`.
+void* create_device(int32_t device_id);
 
 /// Close the device and release all cached programs.
 void destroy_device(void* dev);

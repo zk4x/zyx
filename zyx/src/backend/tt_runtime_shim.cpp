@@ -43,7 +43,7 @@ static uint64_t round_up_pages(uint64_t size) {
 }
 
 // Thread-local error: every tt-metal call is wrapped so exceptions never
-// cross the FFI boundary. Each worker thread reads its own error on the
+// cross the FFI boundary. Each calling thread reads its own error on the
 // same thread immediately after the call.
 static thread_local std::string s_last_error;
 
@@ -118,7 +118,15 @@ struct BufferHandle {
 // Device lifecycle
 // ---------------------------------------------------------------------------
 
-extern "C" void* create_device() {
+extern "C" int32_t num_devices() {
+    int32_t n = -1;
+    catch_and_set([&] {
+        n = static_cast<int32_t>(GetNumAvailableDevices());
+    });
+    return n;
+}
+
+extern "C" void* create_device(int32_t device_id) {
     DeviceHandle* h = new DeviceHandle;
     catch_and_set([&] {
         // tt-metal needs its root (kernels, fw) when creating a device.
@@ -129,7 +137,7 @@ extern "C" void* create_device() {
             setenv("TT_METAL_RUNTIME_ROOT", TT_METAL_ROOT_DEFAULT, 0);
 #endif
         }
-        h->device = MeshDevice::create_unit_mesh(0);
+        h->device = MeshDevice::create_unit_mesh(device_id);
         h->cq = &h->device->mesh_command_queue();
     });
     if (has_error()) {
