@@ -63,7 +63,7 @@ fn init_global() -> TTGlobal {
     let shim = load_shim();
     let (backend, exit) = initialize_backend();
     unsafe {
-        libc::atexit(tt_atexit_shutdown);
+        atexit(Some(tt_atexit_shutdown));
     }
     TTGlobal { backend, shim, exit }
 }
@@ -363,6 +363,10 @@ fn load_shim() -> Shim {
     }
 }
 
+// Process exit hook (libc atexit, declared directly — no libc crate).
+unsafe extern "C" {
+    fn atexit(cb: Option<unsafe extern "C" fn()>) -> c_int;
+}
 /// Exit-time shutdown hook: signals the lifecycle thread (which destroys
 /// every device and tears the context down before tt-metal's own handlers
 /// run — LIFO registration) and bounds the wait. `static`s never drop, so

@@ -40,9 +40,6 @@ libloading = { version = "0.9.0", default-features = false, features = ["std"] }
 # nanoserde is used to read backend config
 nanoserde = { version = "0.2.1", default-features = false, features = ["std", "binary", "json"] }
 
-# libc is used by tenstorrent backend for mmap/munmap
-libc = { version = "0.2", default-features = false, optional = true }
-
 # Lot of dependencies from wgpu, probably just don't use that
 wgpu = { version = "29.0.1", default-features = false, features = ["vulkan", "metal", "dx12", "spirv", "gles"], optional = true } # MIT or Apache 2.0
 pollster = { version = "0.4.0", default-features = false, optional = true } # MIT or Apache 2.0
@@ -69,9 +66,8 @@ default = [
     #"debug_tensor_op",
 ]
 
-# Enables C/Clang CPU backend
 # Enables tenstorrent backend (Blackhole)
-tenstorrent = ["dep:libc"]
+tenstorrent = []
 
 # Enables wgpu backend
 wgpu = ["dep:wgpu", "dep:pollster"]
