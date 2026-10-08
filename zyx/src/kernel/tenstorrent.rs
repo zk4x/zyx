@@ -461,6 +461,12 @@ impl Kernel {
                 }
                 op_id = next;
             }
+            // Prune orphaned inners before the next pattern: a fused
+            // bigger cone leaves its inner chain structurally linked,
+            // and the smaller pattern would otherwise match it and
+            // fuse a second traffic event for the same page.
+            self.common_subexpression_elimination();
+            self.dead_code_elimination();
         }
         // Prune the orphaned inner ops: downstream sync accounting
         // counts structural users, and a dead inner left in place
