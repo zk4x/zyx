@@ -32,6 +32,7 @@ use crate::{
 
 mod autograd;
 mod kernelizer;
+mod tenstorrent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GraphId(pub u16);
