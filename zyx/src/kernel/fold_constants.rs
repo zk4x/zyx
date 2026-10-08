@@ -596,6 +596,17 @@ impl Kernel {
         stored_stack.push(Set::with_capacity_and_hasher(10, BuildHasherDefault::default()));
 
         let mut remaps = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
+        // Base buffer of every address: writers insert buffer references
+        // (GEP or bare Storage), loads consult their GEP and its base, so
+        // a write through either spelling blocks the merge.
+        let mut gep_base: Map<OpId, OpId> = Map::default();
+        let mut scan_base = self.head;
+        while !scan_base.is_null() {
+            if let Op::GEP { x, .. } = self.at(scan_base) {
+                gep_base.insert(scan_base, *x);
+            }
+            scan_base = self.next_op(scan_base);
+        }
         let mut op_id = self.head;
         while !op_id.is_null() {
             match &mut self.ops[op_id].op {
@@ -608,49 +619,16 @@ impl Kernel {
                     stack.pop();
                     stored_stack.pop();
                 }
-                &mut Op::Store { .. } | &mut Op::Copy { .. } => {
-                    // Effect-only movement: track the written location like a
-                    // store, never dedup (two identical movements are two
-                    // traffic events). Operands remap first: unlike Storage
-                    // destinations, GEP destinations dedup, and a stale
-                    // tracking id would let later Loads CSE across this write.
-                    let op = &mut self.ops[op_id].op;
-                    for param in op.parameters_mut() {
-                        if let Some(&new_id) = remaps.get(param) {
-                            *param = new_id;
-                        }
-                    }
-                    let dst = match op {
-                        Op::Store { dst, .. } | Op::Copy { dst, .. } => *dst,
-                        _ => unreachable!(),
-                    };
-                    stored_stack.last_mut().unwrap().insert(dst);
-                }
-                &mut Op::TT(TTOp::ReserveBack { .. })
+                &mut Op::Store { .. }
+                | &mut Op::Copy { .. }
+                | &mut Op::TT(TTOp::ReserveBack { .. })
                 | &mut Op::TT(TTOp::PushBack { .. })
                 | &mut Op::TT(TTOp::WaitFront { .. })
-                | &mut Op::TT(TTOp::PopFront { .. }) => {
-                    // Effect-only CB sync: remap the buffer first, never
-                    // dedup (two identical syncs are two traffic events).
-                    // The CB tracks like a written location; GEP-keyed
-                    // loads never match a bare Storage id, so the insert
-                    // is bookkeeping only.
-                    let op = &mut self.ops[op_id].op;
-                    for param in op.parameters_mut() {
-                        if let Some(&new_id) = remaps.get(param) {
-                            *param = new_id;
-                        }
-                    }
-                    let cb = match op {
-                        Op::TT(TTOp::ReserveBack { cb, .. })
-                        | Op::TT(TTOp::PushBack { cb, .. })
-                        | Op::TT(TTOp::WaitFront { cb, .. })
-                        | Op::TT(TTOp::PopFront { cb, .. }) => *cb,
-                        _ => unreachable!(),
-                    };
-                    stored_stack.last_mut().unwrap().insert(cb);
-                }
-                &mut Op::TT(TTOp::MathLock)
+                | &mut Op::TT(TTOp::PopFront { .. })
+                | &mut Op::TT(TTOp::LLK { .. })
+                | &mut Op::TT(TTOp::LLKReduce { .. })
+                | &mut Op::TT(TTOp::LLKBcast { .. })
+                | &mut Op::TT(TTOp::MathLock)
                 | &mut Op::TT(TTOp::MathUnlock)
                 | &mut Op::TT(TTOp::PackLock)
                 | &mut Op::TT(TTOp::PackUnlock)
@@ -661,34 +639,11 @@ impl Kernel {
                 | &mut Op::TT(TTOp::EndCompute)
                 | &mut Op::TT(TTOp::ProgramDesc(_))
                 | &mut Op::TT(TTOp::TensixGrid(_)) => {
-                    // Operand-free effects: nothing to remap, never dedup.
-                }
-                &mut Op::TT(TTOp::LLK { .. }) => {
-                    // Opaque LLK call: remap the operands first, never
-                    // dedup (two identical calls are two traffic
-                    // events). Operand CBs track like written locations
-                    // — pack writes its CB, so loads must not CSE
-                    // across the call. Index operands track harmlessly
-                    // (no load source is ever an index id).
-                    let op = &mut self.ops[op_id].op;
-                    for param in op.parameters_mut() {
-                        if let Some(&new_id) = remaps.get(param) {
-                            *param = new_id;
-                        }
-                    }
-                    let ops = match op {
-                        Op::TT(TTOp::LLK { ops, .. }) => ops,
-                        _ => unreachable!(),
-                    };
-                    for &x in ops.iter() {
-                        stored_stack.last_mut().unwrap().insert(x);
-                    }
-                }
-                &mut Op::TT(TTOp::LLKReduce { .. }) | &mut Op::TT(TTOp::LLKBcast { .. }) => {
-                    // Lowered structured call: same opaque rules as LLK
-                    // (remap operands, never dedup, operands track like
-                    // written locations). Fields stand in for the LLK
-                    // ops vector (same operand set, no NULL slot).
+                    // Effect ops never participate in CSE: remap operands,
+                    // never dedup (two identical effects are two traffic
+                    // events). Only buffer references (GEP or Storage
+                    // operands) invalidate load merging; values, consts
+                    // and indices are not addresses.
                     let op = &mut self.ops[op_id].op;
                     for param in op.parameters_mut() {
                         if let Some(&new_id) = remaps.get(param) {
@@ -697,7 +652,9 @@ impl Kernel {
                     }
                     let params: Vec<OpId> = op.parameters().collect();
                     for &x in params.iter() {
-                        stored_stack.last_mut().unwrap().insert(x);
+                        if matches!(self.at(x), Op::GEP { .. } | Op::Storage { .. }) {
+                            stored_stack.last_mut().unwrap().insert(x);
+                        }
                     }
                 }
                 op => {
@@ -712,11 +669,18 @@ impl Kernel {
                         }
                     }
 
-                    // For Load ops, check if there's a store to the same src
+                    // For Load ops, check a write to the same address: the
+                    // GEP and its base buffer both count (writers spell
+                    // either). Two reads of one address uninterrupted
+                    // dedup; read-write-read blocks the second read.
                     let can_cse = if let Op::Load { src, .. } = op {
-                        if stored_stack.iter().rev().any(|x| x.contains(src)) {
+                        let base_hit = gep_base.get(src).is_some_and(|b| stored_stack.iter().rev().any(|x| x.contains(b)));
+                        if stored_stack.iter().rev().any(|x| x.contains(src)) || base_hit {
                             for x in stored_stack.iter_mut() {
                                 x.remove(src);
+                                if let Some(b) = gep_base.get(src) {
+                                    x.remove(b);
+                                }
                             }
                             false
                         } else {

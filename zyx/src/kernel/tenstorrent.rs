@@ -630,20 +630,20 @@ impl Kernel {
         self.verify();
     }
 
-    /// Duplicate-publish elimination: drop a repeated identical publish
-    /// (`Copy` of one global tile into one circular slot) together with
-    /// its CSE-orphaned duplicate front load, so one pushed page serves
-    /// all uses with one wait/pop pair downstream.
+    /// Duplicate-publish elimination: drop repeated identical publishes
+    /// (`Copy` of one global tile into one circular slot) beyond what
+    /// the consuming waits need, so pushed pages match waits/pops.
     ///
     /// Per circular buffer + slot index, with all copies carrying
-    /// identical data: `C` publish copies, `L` live loads, `D` dead
-    /// loads. When `C >= 2`, `L >= 1` and `C == L + D`, every pushed
-    /// page but `L` only feeds a dead load — remove the newest `D`
-    /// copies and all `D` dead loads together. Push/wait/pop balance is
-    /// preserved by construction (one unit removed on each side);
-    /// anything else (loops, distinct pages or data, multiple live
-    /// loads without dead ones, unpaired dead loads) is left in place,
-    /// which is the current passing behavior.
+    /// identical data: `C` publish copies, `W` predicted waits (one per
+    /// live load with a non-LLK, non-marker user, plus one per
+    /// LLK-structured call consuming a bucket load — sync's exact wait
+    /// rules; dead loads draw none). When `C > W`, keep the earliest
+    /// `W` copies and drop the rest with the dead loads. Push/wait/pop
+    /// balance is preserved by construction; anything else (loops,
+    /// distinct pages or data, fills sufficing for the waits) is left
+    /// in place — dead loads included, since a dead load is some kept
+    /// fill's drain pop.
     ///
     /// All matching is exact-`OpId` identity plus resolved constant
     /// slot indices; unresolvable indices never match, and any
@@ -813,19 +813,42 @@ impl Kernel {
             let mut copies: Vec<(usize, OpId)> =
                 pubs.iter().filter(|(c, s, _, _, _)| c == &cb && s == &slot).map(|(_, _, _, p, id)| (*p, *id)).collect();
             copies.sort();
-            let live = loads
-                .iter()
-                .filter(|(c, s, _, _, _)| c == &cb && s == &slot)
-                .filter(|(_, _, _, _, id)| users.contains_key(id))
-                .count();
+            // Predicted waits for this slot: each live load with a
+            // non-LLK, non-marker user draws one load-wait, and each
+            // LLK-structured call draws one wait per consumed bucket
+            // load (sync waits every provenance CB per call; markers
+            // are transparent, dead loads draw none). Fills must match
+            // waits, so keep one copy per predicted wait.
+            let mut load_waits = 0usize;
+            let mut call_waits = 0usize;
+            for (_, _, _, _, id) in loads.iter().filter(|(c, s, _, _, _)| c == &cb && s == &slot) {
+                let Some(us) = users.get(id) else { continue };
+                let mut draws_load_wait = false;
+                for u in us {
+                    match self.at(*u) {
+                        Op::TT(TTOp::LLK { .. } | TTOp::LLKReduce { .. } | TTOp::LLKBcast { .. }) => {
+                            call_waits += 1;
+                        }
+                        Op::TT(TTOp::BroadcastTile { .. }) => {}
+                        _ => {
+                            draws_load_wait = true;
+                        }
+                    }
+                }
+                if draws_load_wait {
+                    load_waits += 1;
+                }
+            }
             let dead: Vec<OpId> = loads
                 .iter()
                 .filter(|(c, s, _, _, _)| c == &cb && s == &slot)
                 .filter(|(_, _, _, _, id)| !users.contains_key(id))
                 .map(|(_, _, _, _, id)| *id)
                 .collect();
-            let (c, l, d) = (copies.len(), live, dead.len());
-            if c < 2 || l < 1 || c != l + d {
+            let (c, l) = (copies.len(), load_waits + call_waits);
+            // Fills suffice: leave copies AND dead loads in place (a
+            // dead load is some kept fill's drain pop).
+            if c < 2 || l >= c {
                 continue;
             }
             // Gap dirtiness: any CB-touching op (or opaque Asm) strictly
