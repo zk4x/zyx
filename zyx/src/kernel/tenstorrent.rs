@@ -222,6 +222,184 @@ impl Kernel {
         // writer pass's marker.
     }
 
+    /// Writer insertion: every tile `Store` into a DRAM param becomes
+    /// a CB push, drained by a `Copy` in a writer section closed by
+    /// `EndCompute`.
+    ///
+    /// Same contract as [`Kernel::tt_add_reader`] (TT-only, no
+    /// `Loop`s, pure index cones validated before mutating, one
+    /// indexed slot per `Store`, one CB per DRAM param). New ops
+    /// append at the tail: `EndCompute`, then per store the cloned
+    /// index cone and the drain `Copy`. The compute-side CB `GEP`
+    /// goes right before its store. If no `EndReader` is present
+    /// (store-only kernel, reader was a no-op) one is inserted
+    /// before the first store — an empty reader section. Stores
+    /// already targeting a CB are skipped.
+    pub fn tt_add_writer(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        for (_, x) in self.iter_unordered() {
+            if let Op::Loop { .. } = x {
+                return;
+            }
+        }
+        // Collect tiled DRAM stores in head order; any other DRAM
+        // traffic bails the pass.
+        let mut stores: Vec<(OpId, OpId, OpId, OpId)> = Vec::new();
+        let mut id = self.head;
+        for _ in 0..10_000 {
+            if id.is_null() {
+                break;
+            }
+            match self.ops[id].op {
+                Op::Load { src } => {
+                    if let Op::GEP { x: base, layout, .. } = self.ops[src].op {
+                        if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
+                            && layout != (MemLayout::Tile { x: 32, y: 32, stride: 32 })
+                        {
+                            return;
+                        }
+                    }
+                }
+                Op::Store { dst, src } => {
+                    if let Op::GEP { x: base, index: off, layout } = self.ops[dst].op {
+                        if matches!(self.ops[base].op, Op::Storage { .. }) {
+                            // Already lowered; the writer pass owns nothing here.
+                        } else if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
+                            if layout != (MemLayout::Tile { x: 32, y: 32, stride: 32 }) {
+                                return;
+                            }
+                            stores.push((id, base, off, src));
+                        } else {
+                            return;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            id = self.ops[id].next;
+        }
+        if stores.is_empty() {
+            return;
+        }
+        // Validate every index cone before mutating.
+        for (_, _, off, _) in stores.iter() {
+            let mut stack = vec![*off];
+            for _ in 0..10_000 {
+                let Some(n) = stack.pop() else { break };
+                match self.ops[n].op {
+                    Op::Const(..) | Op::Range { .. } | Op::Param { .. } => {}
+                    Op::Binary { x, y, .. } => {
+                        stack.push(x);
+                        stack.push(y);
+                    }
+                    _ => return,
+                }
+            }
+        }
+        let first = stores[0].0;
+        // Empty reader section for store-only kernels.
+        let mut scan = self.head;
+        let mut has_reader = false;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            if matches!(self.ops[scan].op, Op::TT(TTOp::EndReader)) {
+                has_reader = true;
+                break;
+            }
+            scan = self.ops[scan].next;
+        }
+        if !has_reader {
+            // A tiled DRAM load without a reader section means the
+            // reader bailed: don't paper over it.
+            let mut scan = self.head;
+            for _ in 0..10_000 {
+                if scan.is_null() {
+                    break;
+                }
+                if let Op::Load { src } = self.ops[scan].op {
+                    if let Op::GEP { x: base, layout, .. } = self.ops[src].op {
+                        if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
+                            && layout == (MemLayout::Tile { x: 32, y: 32, stride: 32 })
+                        {
+                            return;
+                        }
+                    }
+                }
+                scan = self.ops[scan].next;
+            }
+            self.insert_before(first, Op::TT(TTOp::EndReader));
+        }
+        // One CB per DRAM param, in first-store order.
+        let mut cbs: Vec<(OpId, DType, i64)> = Vec::new();
+        for (_, base, _, _) in stores.iter() {
+            if let Some(entry) = cbs.iter_mut().find(|(b, _, _)| *b == *base) {
+                entry.2 += 1;
+            } else {
+                let Op::Param { dtype, .. } = self.ops[*base].op else { return };
+                cbs.push((*base, dtype, 1));
+            }
+        }
+        let mut cb_of: Map<OpId, OpId> = Map::default();
+        let mut slot_of: Map<OpId, i64> = Map::default();
+        for (base, dtype, ntiles) in cbs.iter() {
+            let cb = self.insert_before(first, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 });
+            cb_of.insert(*base, cb);
+            slot_of.insert(*base, 0);
+        }
+        // Compute-side rewrites in head order; drains append at the tail.
+        let mut memo: Map<OpId, OpId> = Map::default();
+        self.push_back(Op::TT(TTOp::EndCompute));
+        let tile = MemLayout::Tile { x: 32, y: 32, stride: 32 };
+        for (store, base, off, _) in stores.iter() {
+            let slot = slot_of[base];
+            slot_of.insert(*base, slot + 1);
+            let cb = cb_of[base];
+            let slot_c = self.insert_const_idx_before(*store, slot);
+            let g = self.insert_before(*store, Op::GEP { x: cb, index: slot_c, layout: tile });
+            let Op::Store { src: v, .. } = self.ops[*store].op else { return };
+            self.ops[*store].op = Op::Store { dst: g, src: v };
+            // Drain cone cloned at the tail (everything dominates it).
+            let mut stack = vec![(*off, false)];
+            for _ in 0..10_000 {
+                let Some((n, expanded)) = stack.pop() else { break };
+                if memo.contains_key(&n) {
+                    continue;
+                }
+                match self.ops[n].op {
+                    Op::Range { .. } | Op::Param { .. } => {
+                        memo.insert(n, n);
+                    }
+                    Op::Const(c) => {
+                        let id = self.push_back(Op::Const(c));
+                        memo.insert(n, id);
+                    }
+                    Op::Binary { x, y, bop } => {
+                        if !expanded {
+                            stack.push((n, true));
+                            stack.push((x, false));
+                            stack.push((y, false));
+                        } else {
+                            let nx = memo[&x];
+                            let ny = memo[&y];
+                            let id = self.push_back(Op::Binary { x: nx, y: ny, bop });
+                            memo.insert(n, id);
+                        }
+                    }
+                    _ => unreachable!("tt_add_writer: cone validated pure"),
+                }
+            }
+            let cloned_off = memo[off];
+            let s = self.push_back(Op::GEP { x: cb, index: slot_c, layout: tile });
+            let d = self.push_back(Op::GEP { x: *base, index: cloned_off, layout: tile });
+            self.push_back(Op::Copy { src: s, dst: d });
+        }
+        self.verify();
+    }
+
     /// DST lock constructor: `tile_regs_acquire()`.
     pub fn tt_math_lock(&mut self) -> OpId {
         self.push_back(Op::TT(TTOp::MathLock))

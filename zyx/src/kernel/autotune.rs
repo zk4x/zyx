@@ -91,7 +91,7 @@ impl Kernel {
         self.common_subexpression_elimination();
         self.instruction_schedule();
         self.dead_code_elimination();
-        //self.device_epilogue();
+        self.device_epilogue();
     }
 
     /// Device specific epilogue
@@ -100,12 +100,13 @@ impl Kernel {
         if dev_info.tenstorrent {
             self.tt_tile();
             self.tt_add_reader();
+            self.tt_add_writer();
 
-            self.default_epilogue();
-            self.default_epilogue();
+            self.common_subexpression_elimination();
+            self.dead_code_elimination();
 
-            self.debug();
-            panic!();
+            //self.debug();
+            //panic!();
         }
     }
 

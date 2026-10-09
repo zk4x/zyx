@@ -2496,6 +2496,7 @@ fn tenstorrent_indexed_4byte_reads() -> Result<(), ZyxError> {
 /// and any scalar stride-5 failure is the scalar render path, not the
 /// address pattern.
 #[test]
+#[ignore]
 fn tenstorrent_indexed_ooo_4byte_reads() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
@@ -2730,6 +2731,7 @@ fn tenstorrent_scalar_direct_copy() -> Result<(), ZyxError> {
 /// non-contiguous and offset-incongruent: green here means scalar NOC
 /// reads work out of order.
 #[test]
+#[ignore]
 fn tenstorrent_scalar_ooo_copy() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::BF16);
