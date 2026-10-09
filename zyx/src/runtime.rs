@@ -275,18 +275,17 @@ impl SlabId for KernelId {
     }
 }
 
-/// A dimension resolved for merge-compatibility checking (see
+/// A dimension resolved for target-shape construction (see
 /// [`Runtime::resolve_shape_without_variables`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolvedDim {
-    /// Concrete dimension: the expression contains no variables, so its
-    /// value is a compile-time constant.
+    /// Concrete dimension: the expression contains no variables.
     Static(Dim),
-    /// Symbolic dimension: identified by the ROOT dim expression.
-    /// Two dims are provably equal ONLY if they are structurally identical
-    /// (same [`ExprId`] — hashconsing makes this canonical): different
-    /// expressions over equal-valued variables are NOT proof (a variable
-    /// node is immutable, but a later step may use a different node).
+    /// Symbolic dimension: identified by the ROOT dim expression, so the
+    /// target shape can propagate the same dim tensor downstream. This is a
+    /// selection carrier, NOT a proof gate: equality is decided on folded
+    /// values (variables are const-backed and always fold), never on
+    /// expression identity.
     Symbolic(ExprId),
 }
 
@@ -1578,21 +1577,17 @@ impl Runtime {
             println!("  -> eager: tid={tid}, kid={kid:?}, op_id={op_id:?}");
             Ok(tid)
         } else {
-            // Merge-time shape-compatibility rule: non-scalar operands must be
-            // PROVABLY equal — per dim, the same constant or the SAME symbolic
-            // dim tensor. A variable dim that only agrees with the other side
-            // by its currently bound value is not proof (the slot may change
-            // before launch), so the merge is rejected with an error. Code
-            // with dynamic shapes must propagate the same dim tensor into
-            // both operands' shapes (e.g. llama propagating the kv-cache len).
-            let sx = self.resolve_shape_without_variables(x);
-            let sy = self.resolve_shape_without_variables(y);
+            // Merge-time shape-compatibility rule: non-scalar operands must have
+            // EQUAL folded shapes. Dim expressions always fold — variables are
+            // const-backed (immutable, hash-consed nodes; launch binds the
+            // node's own value), so a variable is "don't bake this in", never
+            // "unknown". There is no unprovable-broadcast category: a genuine
+            // value mismatch below is a real bug and fails loudly.
+            let sx = self.resolve_shape(x);
+            let sy = self.resolve_shape(y);
             if !sx.is_empty() && !sy.is_empty() && sx != sy {
                 return Err(ZyxError::shape_error(
-                    format!(
-                        "binary: cannot prove operand shapes are equal: {sx:?} vs {sy:?} — a symbolic dim must be the same dim tensor in both operands, or concrete in both"
-                    )
-                    .into(),
+                    format!("binary: operand shapes differ: {sx:?} vs {sy:?}").into(),
                 ));
             }
             let shape_id = result_shape(self, x, y);
@@ -2894,23 +2889,9 @@ impl Runtime {
         if dst_shape != src_shape {
             return Err(ZyxError::shape_error(format!("assign shape mismatch: dst={dst_shape:?}, src={src_shape:?}").into()));
         }
-        // Merge-time shape-compatibility rule (same as `binary`): dst and src
-        // must be PROVABLY equal shapes — per dim, the same constant or the
-        // SAME symbolic dim tensor. A variable dim that only agrees with the
-        // other side by its currently bound value is not proof (the slot may
-        // change before launch), so the assign is rejected with an error.
-        // Dynamic-shape code must propagate the same dim tensor into both
-        // operands' shapes (e.g. llama propagating the kv-cache len).
-        let dst_syms = self.resolve_shape_without_variables(dst);
-        let src_syms = self.resolve_shape_without_variables(src);
-        if !dst_syms.is_empty() && !src_syms.is_empty() && dst_syms != src_syms {
-            return Err(ZyxError::shape_error(
-                format!(
-                    "assign: cannot prove dst and src shapes are equal: {dst_syms:?} vs {src_syms:?} — a symbolic dim must be the same dim tensor in both operands, or concrete in both"
-                )
-                .into(),
-            ));
-        }
+        // Merge-time compatibility is the folded-shape check above: dim
+        // expressions always fold (variables are const-backed), so there is
+        // no second, stricter identity check here.
         match self.tensors[dst] {
             TensorData::Graph { class_id: dst_cid, graph_id, .. }
             | TensorData::GraphLeaf { class_id: dst_cid, graph_id, .. }

@@ -52,7 +52,7 @@ fn kv_cache_narrow_assign_symbolic() -> Result<(), ZyxError> {
     let start = Tensor::variable(0i64);
     let len = Tensor::variable(2i64);
     // len is the shared dynamic dim: k's shape AND the narrow use the same
-    // dim tensor, so the assign's provability check passes.
+    // dim tensor, so both sides fold to the same value at assign time.
     let k = Tensor::randn([Tensor::from(1), Tensor::from(8), len.clone(), Tensor::from(128)], DType::F32)?;
     let k_assign = k.squeeze([0]).transpose(0, 1).unwrap();
     // Invalid: the cache's zeros kernel is a pure const fill with no backing
@@ -64,8 +64,8 @@ fn kv_cache_narrow_assign_symbolic() -> Result<(), ZyxError> {
     );
     // Happy path: materialize the base, then assign writes through the view
     // into the cache itself. The len variable is the SHARED dim tensor of
-    // both k's shape and the narrow — assign requires provably equal shapes
-    // (same dim tensor in both operands, or concrete in both).
+    // both k's shape and the narrow — assign compares folded shapes, and
+    // both sides fold to the same value.
     let cache = cache.contiguous()?;
     cache.narrow(0, start.clone(), len.clone())?.assign(&k_assign).unwrap();
     // The assigned slice must land inside the cache: sum differs from zero and

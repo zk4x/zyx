@@ -329,29 +329,19 @@ impl Runtime {
             .collect()
     }
 
-    /// A dimension resolved for merge-compatibility checking (see
+    /// A dimension resolved for target-shape construction (see
     /// [`Runtime::resolve_shape_without_variables`]).
     /// Shape of tensor `x` with variable-backed dims left symbolic: a dim
     /// whose expression tree contains any [`TensorData::Variable`] resolves
     /// to [`ResolvedDim::Symbolic`] (its root dim tensor), everything else
     /// evaluates to [`ResolvedDim::Static`]. Unlike `resolve_shape`, variable
-    /// slots are never read — this is the PROVABILITY view of a shape: what
-    /// can be checked for equality without depending on the variable's
-    /// current bound value.
+    /// slots are never read — the caller keeps the dim tensor so the target
+    /// shape stays symbolic downstream.
     ///
-    /// Used by the merge-time compatibility checks in `binary` and `assign`:
-    /// two shapes may only merge if every dim is provably equal — same
-    /// constant, or the SAME symbolic dim tensor in both operands. If only
-    /// the bound values agree, the merge is rejected with an error instead.
-    ///
-    /// TODO: the same-TensorId identity rule is a conservative proxy for
-    /// algebraic equality of dim expressions. A factored normal form (split
-    /// each dim expr into a multiset of irreducible atoms — every additive
-    /// subexpression is one atom, constants folded — then cancel numerator
-    /// against denominator atoms) would make e.g. `numel / divisor` Div nodes
-    /// provably equal to the original symbolic dim, without requiring
-    /// construction sites to preserve the exact same TensorId (see the `-1`
-    /// inference in `Tensor::reshape` and llama's `repeat_kv`).
+    /// Used by `Tensor::broadcast` to pick the target dim tensors. This is
+    /// NOT a proof gate: compatibility is decided on folded values (dim
+    /// expressions always fold — a variable is const-backed, never unknown),
+    /// never on expression identity.
     pub(crate) fn resolve_shape_without_variables(&self, x: TensorId) -> Vec<ResolvedDim> {
         let mut dims = Vec::new();
         let mut memo = Map::default();

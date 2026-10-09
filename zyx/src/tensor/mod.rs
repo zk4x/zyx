@@ -2736,9 +2736,9 @@ impl Tensor {
         // The drop decision needs concrete values (`d != 1` must hold to
         // remove an axis), but the KEPT dims must be propagated SYMBOLICALLY
         // from the dim-expression tensors — rebuilding them from resolved
-        // `Dim`s would bake variable-backed dims into fresh constants and
-        // break symbolic-dim consumers downstream (e.g. assign's provability
-        // check, which requires the same dim tensor in both operands).
+        // `Dim`s would bake variable-backed dims into fresh constants,
+        // cutting downstream consumers off the shared variable handle
+        // (they would replay a const instead of the variable arg).
         let resolved = self.resolve_shape();
         let symbolic = self.shape();
         let mut naxes = Vec::new();
@@ -3776,8 +3776,11 @@ impl Tensor {
         // `resolve_shape_without_variables` classifies every axis as
         // - Static(1) vs anything -> the other side's dim tensor
         // - Static vs Static -> max (equality checked above)
-        // - Symbolic(t) vs Symbolic(t) -> t
-        // - Symbolic vs Static(n != 1) -> unprovable -> error
+        // - Symbolic vs Symbolic -> the left side's dim tensor (folded values
+        //   are already proven compatible above; a variable is const-backed,
+        //   never unknown, so differing expressions are not an error)
+        // - Symbolic vs Static(n != 1) -> the symbolic side's dim tensor
+        //   (folded values already agree; the check defers nothing)
         let (rdx, rdy) = {
             let rt = RT.lock();
             (rt.resolve_shape_without_variables(x.id), rt.resolve_shape_without_variables(y.id))
@@ -3816,23 +3819,16 @@ impl Tensor {
                         dtensor(&sdy, i, rank).expect("static dim has a dim tensor").clone()
                     }
                 }
-                (ResolvedDim::Symbolic(ta), ResolvedDim::Symbolic(tb)) => {
-                    if ta == tb {
-                        dtensor(&sdx, i, rank).expect("symbolic dim has a dim tensor").clone()
-                    } else {
-                        return Err(ZyxError::shape_error(
-                            format!(
-                                "cannot broadcast two different symbolic dims against each other: {x_shape:?} vs {y_shape:?}"
-                            )
-                            .into(),
-                        ));
-                    }
+                (ResolvedDim::Symbolic(_), ResolvedDim::Symbolic(_)) => {
+                    // Different dim expressions with equal folded values
+                    // (compatibility proven by the concrete check above).
+                    // Propagate the left side's dim tensor.
+                    dtensor(&sdx, i, rank).expect("symbolic dim has a dim tensor").clone()
                 }
                 (ResolvedDim::Symbolic(_), ResolvedDim::Static(_)) => {
-                    // Symbolic vs static (non-1): compatible by assumption
-                    // (torch's guard semantics — the check defers to
-                    // execution, which fails loudly if the values differ).
-                    // The symbolic side provides the target dim.
+                    // Symbolic vs static (non-1): folded values already agree
+                    // (checked above). The symbolic side provides the target
+                    // dim, keeping the shape symbolic downstream.
                     dtensor(&sdx, i, rank).expect("symbolic dim has a dim tensor").clone()
                 }
                 (ResolvedDim::Static(_), ResolvedDim::Symbolic(_)) => {
