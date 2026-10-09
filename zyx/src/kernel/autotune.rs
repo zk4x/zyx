@@ -91,10 +91,15 @@ impl Kernel {
         self.common_subexpression_elimination();
         self.instruction_schedule();
         self.dead_code_elimination();
+        //self.device_epilogue();
+    }
+
+    /// Device specific epilogue
+    pub fn device_epilogue(&mut self) {
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
-            // TT tiling lives in kernel/tenstorrent.rs (tt_* port); the old
-            // opt_tenstorrent_tile is deleted. Unfinished path still traps.
+            self.tt_tile();
+
             self.common_subexpression_elimination();
             self.instruction_schedule();
             self.dead_code_elimination();
@@ -505,13 +510,17 @@ impl NoSearch {
         args: &[LaunchArg],
     ) -> Result<(Kernel, DeviceProgramId, u64), ZyxError> {
         seed.linearize();
+        // TT tiling first: scalar row-major traffic becomes tile traffic
+        // (tt_tile gates on the TT device itself, other devices skip).
         // Readability passes (relative order mirrors `default_epilogue`).
-        // Proven innocent: the defect reproduces without them.
+        seed.tt_tile();
         for _ in 0..3 {
             seed.default_epilogue();
         }
 
+        seed.device_epilogue();
         seed.dead_code_elimination();
+
         let debug = crate::debug_mask();
         let program_id = seed.dev.compile(&seed, debug.asm())?;
         // Warmup + single timed launch, mirroring `launch_with_timings`.

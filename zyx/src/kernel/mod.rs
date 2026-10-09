@@ -132,6 +132,7 @@ mod pat;
 mod predict_cost;
 mod split_loops;
 mod tenstorrent;
+mod tiling;
 mod unroll_loops;
 mod vectorize;
 mod verify;
@@ -527,7 +528,16 @@ impl Kernel {
                 Op::GEP { layout, .. } => return layout,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Unary { x, .. } => op_id = x,
-                Op::Binary { x, .. } => op_id = x,
+                Op::Binary { x, y, .. } => {
+                    // A tile lane on either side tiles the result (scalar
+                    // lanes are implicit-broadcast immediates downstream);
+                    // otherwise the x side decides, as before.
+                    let ly = self.layout(y);
+                    if matches!(ly, MemLayout::Tile { .. }) {
+                        return ly;
+                    }
+                    op_id = x;
+                }
                 Op::Wmma { dims, .. } => match dims {
                     MMADims::m8n8k16 => return MemLayout::Vector(2),
                     MMADims::m16n8k8 => return MemLayout::Vector(4),
@@ -1587,7 +1597,9 @@ impl Kernel {
                             (Op::Const(c), Op::Range { .. }) => {
                                 indices.insert(y, (index_len_of(&self.ops[y].op), c.as_dim().unwrap() * scale));
                             }
-                            _ => {}
+                            _ => {
+                                todo!("get_strides: Mul of non-(range, const) at {param:?}");
+                            }
                         }
                     }
                     if bop == BOp::BitShiftLeft {
@@ -1619,6 +1631,8 @@ impl Kernel {
                             _ => {
                                 if let Op::Const(c) = self.ops[y].op {
                                     params.push((x, scale * (1i64 << c.as_dim().unwrap())));
+                                } else {
+                                    todo!("get_strides: shift of non-const amount at {param:?}");
                                 }
                             }
                         }
