@@ -25,7 +25,7 @@ use crate::Set;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Pat;
-use crate::kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, TTOp, TileDim, UOp};
+use crate::kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, TTOp, TileDim, UOp};
 use crate::shape::Dim;
 use crate::types::{TinyString, TinyVec};
 
@@ -84,6 +84,142 @@ impl Kernel {
     /// placement rules as [`Kernel::tt_end_reader`].
     pub fn tt_end_compute(&mut self) -> OpId {
         self.push_back(Op::TT(TTOp::EndCompute))
+    }
+
+    /// Reader insertion: every tile `Load` over a DRAM param becomes a
+    /// CB pop, with a `Copy` publishing the tile in a reader section
+    /// closed by one `EndReader`.
+    ///
+    /// Runs on the [`Kernel::tt_tile`] output shape: no `Loop` ops
+    /// (groups are grid coords, hoisting reader index math before the
+    /// first load is sound), tiled DRAM traffic only. Bails (no-op)
+    /// on anything else — a half-rewritten kernel is worse than none,
+    /// so cones validate before anything mutates.
+    ///
+    /// Shape per load: the DRAM index cone (pure `Const`/`Binary`
+    /// arithmetic over `Range`/`Param` leaves) is cloned before the
+    /// anchor (the first tiled load); a `Copy` publishes
+    /// `param[cloned_off]` into the param's CB at the load's own slot
+    /// (indexed both sides, one slot per `Load` — duplicate pushes of
+    /// one tile, the softmax pattern); the load's GEP is repointed at
+    /// the CB slot. One CB per DRAM param, sized in tiles at the end.
+    /// Stores are untouched (the writer pass owns them).
+    pub fn tt_add_reader(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        for (_, x) in self.iter_unordered() {
+            if let Op::Loop { .. } = x {
+                return;
+            }
+        }
+        // Collect tiled DRAM loads in head order; any other DRAM
+        // traffic bails the pass.
+        let mut loads: Vec<(OpId, OpId, OpId)> = Vec::new();
+        let mut id = self.head;
+        for _ in 0..10_000 {
+            if id.is_null() {
+                break;
+            }
+            if let Op::Load { src } = self.ops[id].op {
+                if let Op::GEP { x: base, index: off, layout } = self.ops[src].op {
+                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
+                        if layout != (MemLayout::Tile { x: 32, y: 32, stride: 32 }) {
+                            return;
+                        }
+                        loads.push((id, base, off));
+                    }
+                }
+            }
+            id = self.ops[id].next;
+        }
+        if loads.is_empty() {
+            return;
+        }
+        // Validate every index cone: Const/Binary over Range/Param
+        // leaves only. Anything else (traffic, storage, control)
+        // cannot hoist.
+        for (_, _, off) in loads.iter() {
+            let mut stack = vec![*off];
+            for _ in 0..10_000 {
+                let Some(n) = stack.pop() else { break };
+                match self.ops[n].op {
+                    Op::Const(..) | Op::Range { .. } | Op::Param { .. } => {}
+                    Op::Binary { x, y, .. } => {
+                        stack.push(x);
+                        stack.push(y);
+                    }
+                    _ => return,
+                }
+            }
+        }
+        let anchor = loads[0].0;
+        // One CB per DRAM param, in first-load order; slots counted up front.
+        let mut cbs: Vec<(OpId, DType, i64)> = Vec::new();
+        for (_, base, _) in loads.iter() {
+            if let Some(entry) = cbs.iter_mut().find(|(b, _, _)| *b == *base) {
+                entry.2 += 1;
+            } else {
+                let Op::Param { dtype, .. } = self.ops[*base].op else { return };
+                cbs.push((*base, dtype, 1));
+            }
+        }
+        let mut cb_of: Map<OpId, OpId> = Map::default();
+        let mut slot_of: Map<OpId, i64> = Map::default();
+        for (base, dtype, ntiles) in cbs.iter() {
+            let cb = self.insert_before(anchor, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 });
+            cb_of.insert(*base, cb);
+            slot_of.insert(*base, 0);
+        }
+        // Clone memo shared across loads: shared index math clones once.
+        let mut memo: Map<OpId, OpId> = Map::default();
+        for (load, base, off) in loads.iter() {
+            // Post-order clone of the index cone before the anchor.
+            let mut stack = vec![(*off, false)];
+            for _ in 0..10_000 {
+                let Some((n, expanded)) = stack.pop() else { break };
+                if memo.contains_key(&n) {
+                    continue;
+                }
+                match self.ops[n].op {
+                    Op::Range { .. } | Op::Param { .. } => {
+                        memo.insert(n, n);
+                    }
+                    Op::Const(c) => {
+                        let id = self.insert_before(anchor, Op::Const(c));
+                        memo.insert(n, id);
+                    }
+                    Op::Binary { x, y, bop } => {
+                        if !expanded {
+                            stack.push((n, true));
+                            stack.push((x, false));
+                            stack.push((y, false));
+                        } else {
+                            let nx = memo[&x];
+                            let ny = memo[&y];
+                            let id = self.insert_before(anchor, Op::Binary { x: nx, y: ny, bop });
+                            memo.insert(n, id);
+                        }
+                    }
+                    _ => unreachable!("tt_add_reader: cone validated pure"),
+                }
+            }
+            let slot = slot_of[base];
+            slot_of.insert(*base, slot + 1);
+            let cb = cb_of[base];
+            let cloned_off = memo[off];
+            let slot_c = self.insert_const_idx_before(anchor, slot);
+            let tile = MemLayout::Tile { x: 32, y: 32, stride: 32 };
+            let s = self.insert_before(anchor, Op::GEP { x: *base, index: cloned_off, layout: tile });
+            let d = self.insert_before(anchor, Op::GEP { x: cb, index: slot_c, layout: tile });
+            self.insert_before(anchor, Op::Copy { src: s, dst: d });
+            let g = self.insert_before(anchor, Op::GEP { x: cb, index: slot_c, layout: tile });
+            self.ops[*load].op = Op::Load { src: g };
+        }
+        self.insert_before(anchor, Op::TT(TTOp::EndReader));
+        // No verify(): the kernel is mid-pipeline by design — verify
+        // demands exactly [EndReader, EndCompute] and EndCompute is the
+        // writer pass's marker.
     }
 
     /// DST lock constructor: `tile_regs_acquire()`.

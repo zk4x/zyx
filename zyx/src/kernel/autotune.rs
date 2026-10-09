@@ -99,10 +99,11 @@ impl Kernel {
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
             self.tt_tile();
+            self.tt_add_reader();
 
-            self.common_subexpression_elimination();
-            self.instruction_schedule();
-            self.dead_code_elimination();
+            self.default_epilogue();
+            self.default_epilogue();
+
             self.debug();
             panic!();
         }
