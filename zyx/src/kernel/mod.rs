@@ -1995,12 +1995,21 @@ impl Kernel {
                 continue;
             }
             match &self.ops[param].op {
-                Op::Binary { .. } | Op::Unary { .. } | Op::Reduce { .. } => {
+                Op::Binary { .. } | Op::Unary { .. } => {
                     has_compute = true;
                     params.extend(self.ops[param].op.parameters());
                 }
                 Op::Param { .. } => has_param = true,
                 Op::Const(_) => {}
+                // Shape/bound edges carry dim math, not data: walking
+                // them mistakes symbolic shape expressions (Binary/Cast
+                // over dims) for compute and force-stores pure movement
+                // chains at every broadcast.
+                Op::Reshape { x, .. } | Op::Expand { x, .. } | Op::Narrow { x, .. } => params.push(*x),
+                Op::Reduce { x, .. } => {
+                    has_compute = true;
+                    params.push(*x);
+                }
                 _ => params.extend(self.ops[param].op.parameters()),
             }
         }

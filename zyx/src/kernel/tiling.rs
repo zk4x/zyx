@@ -108,6 +108,7 @@ impl Kernel {
     }
 }
 
+#[cfg(feature = "tenstorrent")]
 #[cfg(test)]
 mod tests {
     use super::Kernel;

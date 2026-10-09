@@ -1,3 +1,5 @@
+#![cfg(feature = "tenstorrent")]
+
 use zyx::{DType, Dev, Scalar, Tensor, ZyxError, bf16};
 
 #[test]
@@ -30,6 +32,15 @@ fn sigmoid() -> Result<(), ZyxError> {
     println!("sigmoid bad: {bad} / 1024");
     assert_eq!(bad, 0);
 
+    Ok(())
+}
+
+#[test]
+fn matmul_2() -> Result<(), ZyxError> {
+    let x = Tensor::rand([10, 20], DType::BF16)?;
+    let y = Tensor::rand([20, 12], DType::BF16)?;
+    let z = x.matmul(&y)?;
+    println!("{z}");
     Ok(())
 }
 

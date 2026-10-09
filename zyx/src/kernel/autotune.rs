@@ -98,15 +98,15 @@ impl Kernel {
     pub fn device_epilogue(&mut self) {
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
+            self.debug();
+            panic!();
+
             self.tt_tile();
             self.tt_add_reader();
             self.tt_add_writer();
 
             self.common_subexpression_elimination();
             self.dead_code_elimination();
-
-            //self.debug();
-            //panic!();
         }
     }
 

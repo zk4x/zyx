@@ -2141,6 +2141,12 @@ impl Runtime {
             "reshape element count mismatch"
         );
 
+        // Identity reshape is just a clone: no kernel, no op. Same
+        // convention as permute's identity-axes early return.
+        if self.resolve_shape(x) == self.resolve_symbolic_dims(shape_expr) {
+            self.retain(x);
+            return Ok(x);
+        }
         let dtype = self.dtype(x);
 
         // Normalize: a slab-side value reshaped by a graph-side shape joins
@@ -2190,7 +2196,6 @@ impl Runtime {
                 // view-only reshape. The view retains x, so x (the owner)
                 // outlives all its views and deallocates the buffer on death.
                 if let Some(buf) = self.leaf_buffer(x) {
-                    let dtype = self.dtype(x);
                     self.retain(x);
                     // The view shares the owner's placement: the `Arc` clone
                     // is the retain (no pool-level refcount anymore), so a
