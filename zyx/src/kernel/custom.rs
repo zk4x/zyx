@@ -561,6 +561,37 @@ impl Kernel {
         self.push_back(Op::Copy { src: s, dst: d })
     }
 
+    /// Copy a single scalar from a DRAM param into a
+    /// `MemScope::Circular` storage (reader publish). Both ends are
+    /// `GEP`s with their own index: `src_idx` addresses the DRAM
+    /// element, `dst_idx` the CB element. Same `Copy`-only traffic
+    /// rule as [`Kernel::load_global_to_cb`]. Direct small NOC read,
+    /// no index checks (CUDA-style — dynamic shapes make them
+    /// impossible): correct iff the runtime addresses are 64-byte
+    /// congruent.
+    pub fn load_global_to_cb_scalar(
+        &mut self,
+        src: OpId,
+        src_idx: impl IntoOp,
+        dst: OpId,
+        dst_idx: impl IntoOp,
+    ) -> OpId {
+        debug_assert!(
+            matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global, .. } | Op::Param { kind: ParamKind::GlobalMut, .. }),
+            "load_global_to_cb_scalar: src {src} is not a DRAM param"
+        );
+        debug_assert!(
+            matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
+            "load_global_to_cb_scalar: dst {dst} is not a Circular storage"
+        );
+        let layout = MemLayout::Scalar;
+        let src_idx = src_idx.into_op(self);
+        let dst_idx = dst_idx.into_op(self);
+        let s = self.push_back(Op::GEP { x: src, index: src_idx, layout });
+        let d = self.push_back(Op::GEP { x: dst, index: dst_idx, layout });
+        self.push_back(Op::Copy { src: s, dst: d })
+    }
+
     /// Copy a vector of `size` elements from a `MemScope::Circular`
     /// storage into a DRAM (`GlobalMut`) param (writer drain).
     /// `src_idx` addresses CB elements, `dst_idx` DRAM elements.

@@ -1209,9 +1209,10 @@ impl Kernel {
                     Op::Store { .. } | Op::Copy { .. } => {
                         // Elements published per execution, if this op
                         // is a sub-page publish into a Circular buffer:
-                        // scalar stores write 1 element, vector copies
-                        // `size`. Whole-page traffic matches neither
-                        // (tile layouts) and streams inline below.
+                        // scalar stores and scalar copies write 1
+                        // element, vector copies `size`. Whole-page
+                        // traffic matches neither (tile layouts) and
+                        // streams inline below.
                         let published: Option<(OpId, u64)> = match self.ops[scan].op {
                             Op::Store { src: x, dst } if uncountable == 0 && self.is_circular_gep(dst) => {
                                 match self.layout(x) {
@@ -1233,7 +1234,8 @@ impl Kernel {
                                     {
                                         match self.layout(dst) {
                                             MemLayout::Vector(size) => Some((d, size as u64)),
-                                            _ => None,
+                                            MemLayout::Scalar => Some((d, 1)),
+                                            MemLayout::Tile { .. } => None,
                                         }
                                     }
                                     _ => None,
@@ -1325,11 +1327,14 @@ impl Kernel {
                     match (src_cb, dst_cb) {
                         (None, None) => {}
                         (None, Some(cb)) => {
-                            // Vector publishes tally element-wise above
-                            // (exact page multiples publish); the per-op
-                            // publish here would over-count. Partial pages
-                            // stay unpublished (loud downstream).
-                            if !matches!(self.layout(dst), MemLayout::Vector(_)) {
+                            // Vector and scalar publishes tally
+                            // element-wise above (exact page multiples
+                            // publish); the per-op publish here would
+                            // over-count. Partial pages stay
+                            // unpublished (loud downstream).
+                            let tallied = matches!(self.layout(dst), MemLayout::Vector(_))
+                                || matches!(self.layout(dst), MemLayout::Scalar);
+                            if !tallied {
                                 self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb, n: 1 }));
                                 self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
                             }
@@ -2458,6 +2463,78 @@ impl Kernel {
                 panic!("tt_place_pops: batch loop {loop_op:?} has no EndLoop");
             }
             self.insert_after(end, Op::TT(TTOp::PopFront { cb, n: total as u8 }));
+        }
+
+        // Pop-relative rebase (consume-side addressing): Metal
+        // advances a CB's read pointer on every PopFront, so
+        // Load-src and Copy-src GEP indices past pops address
+        // pop-relative pages. Rebase const indices by popped
+        // pages (x1024 elems). Copy-dst (reserve-relative) and
+        // Store-dst (push-relative) GEPs are other traffic and
+        // stay, as does the whole reader section (no pops there).
+        // Loop-varying indices stay: bracket windows hold the
+        // pointer still mid-loop, so only const indices rebase.
+        // A shared GEP is cloned, never mutated in place.
+        let mut popped: Map<OpId, u64> = Map::default();
+        section = 0;
+        scan = self.head;
+        while !scan.is_null() {
+            let next = self.next_op(scan);
+            match self.ops[scan].op {
+                Op::TT(TTOp::EndReader) => section = 1,
+                Op::TT(TTOp::EndCompute) => section = 2,
+                Op::TT(TTOp::PopFront { cb, n }) => {
+                    if section != 0 {
+                        *popped.entry(cb).or_insert(0) += u64::from(n);
+                    }
+                }
+                _ => {}
+            }
+            if section != 0 {
+                let read_src = match self.ops[scan].op {
+                    Op::Load { src } => Some(src),
+                    Op::Copy { src, .. } => Some(src),
+                    _ => None,
+                };
+                if let Some(gep) = read_src
+                    && let Op::GEP { x: base, index, layout } = self.ops[gep].op
+                    && matches!(self.ops[base].op, Op::Storage { scope: MemScope::Circular, .. })
+                    && popped.get(&base).copied().unwrap_or(0) > 0
+                {
+                    let pages = popped[&base];
+                    let dim = self
+                        .resolve_const(index)
+                        .and_then(|c| c.as_dim())
+                        .unwrap_or_else(|| panic!("tt_place_pops: rebase of non-const CB index at {scan:?}"));
+                    if dim < 0 {
+                        panic!("tt_place_pops: negative CB index at {scan:?}");
+                    }
+                    let rebased = (dim as u64).checked_sub(pages * 1024).unwrap_or_else(|| {
+                        panic!("tt_place_pops: rebase underflows CB{base:?} at {scan:?}")
+                    });
+                    if rebased != dim as u64 {
+                        let nc = self.insert_const_idx_before(gep, rebased as i64);
+                        let shared = users.get(&gep).is_some_and(|us| us.len() > 1);
+                        if shared {
+                            let ng = self.insert_before(scan, Op::GEP { x: base, index: nc, layout });
+                            if matches!(self.ops[scan].op, Op::Copy { .. }) {
+                                let Op::Copy { src, .. } = &mut self.ops[scan].op else {
+                                    unreachable!("tt_place_pops: rebase src vanished")
+                                };
+                                *src = ng;
+                            } else {
+                                let Op::Load { src } = &mut self.ops[scan].op else {
+                                    unreachable!("tt_place_pops: rebase src vanished")
+                                };
+                                *src = ng;
+                            }
+                        } else {
+                            self.ops[gep].op = Op::GEP { x: base, index: nc, layout };
+                        }
+                    }
+                }
+            }
+            scan = next;
         }
 
         self.tt_fifo_check();

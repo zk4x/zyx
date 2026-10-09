@@ -1123,7 +1123,7 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
             let (bytes, stride) = match sec.k.layout(dst) {
                 MemLayout::Tile { .. } => (tile_bytes, tile_bytes),
                 MemLayout::Vector(size) => ((size as u32) * eb, eb),
-                layout => return Err(sec.err(format!("publish {id:?} has {layout:?} layout, not a tile or vector"))),
+                MemLayout::Scalar => (eb, eb),
             };
             let slot = cb_slot_expr(sec, dst, stride)?;
             let noc = sec.transfer;
@@ -1150,7 +1150,9 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
             let idx = sec.expr(didx)?;
             let eb = elem_bytes(sec.k, param)?;
             let bytes = tt_tile_bytes(cb_dtype(sec.k, src_storage)?)?;
-            let slot = cb_slot_expr(sec, src, bytes)?;
+            // Drain GEP indices are element-unit (like the publish
+            // side), so the slot stride is `eb`, not tile bytes.
+            let slot = cb_slot_expr(sec, src, eb)?;
             let noc = sec.transfer;
             sec.transfer += 1;
             sec.out.push_str(&format!(
@@ -1410,59 +1412,13 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
     };
     match sec.k.at(*base) {
         Op::Storage { scope: MemScope::Circular, .. } => {
-            // Scalar element write (indexed global→CB): the value
-            // must be a DRAM-loaded scalar. Sub-word NOC reads return
-            // corrupt data on silicon, so this issues one 4-byte aligned
-            // NOC read into a RISC-V scratch word and the reader extracts
-            // the element in C++ (exact bit move through unsigned types,
-            // no FP ops). The aligned word never crosses a DRAM page (4
-            // divides the 4096-byte page). Reader only — compute/writer
-            // cores issue no DRAM reads.
+            // Scalar stores into a Circular buffer are rejected:
+            // DRAM-CB movement is Copy-only, use
+            // load_global_to_cb_scalar.
             if matches!(sec.k.layout(x), MemLayout::Scalar) {
-                if sec.section != 0 {
-                    return Err(sec.err(format!("scalar CB store {id:?} outside the reader")));
-                }
-                let Op::Load { src: g } = sec.k.at(x) else {
-                    return Err(sec.err(format!("scalar CB store {id:?} value is not a load")));
-                };
-                let Op::GEP { x: param, index: sidx, .. } = sec.k.at(*g) else {
-                    return Err(sec.err(format!("scalar CB store {id:?} load is not indexed")));
-                };
-                if !matches!(sec.k.at(*param), Op::Param { .. }) {
-                    return Err(sec.err(format!("scalar CB store {id:?} loads outside DRAM")));
-                }
-                let eb = elem_bytes(sec.k, *param)?;
-                if eb > 4 {
-                    return Err(sec.err(format!("scalar CB store {id:?} element is {eb} bytes, only <=4 supported")));
-                }
-                let ord = sec.ord_of(*param)?;
-                let idx = sec.expr(*sidx)?;
-                let dcb = sec.cb_num(*base)?;
-                let dst_idx = match sec.k.at(dst) {
-                    Op::GEP { index, .. } => sec.expr(*index)?,
-                    _ => return Err(sec.err(format!("scalar CB store {dst:?} dst is not a GEP"))),
-                };
-                let noc = sec.transfer;
-                sec.transfer += 1;
-                let (ctype, mask) = match eb {
-                    1 => ("uint8_t", "0xFFu"),
-                    2 => ("uint16_t", "0xFFFFu"),
-                    _ => ("uint32_t", "0xFFFFFFFFu"),
-                };
-                sec.out.push_str(&format!("{}uint32_t baddr{noc} = (uint32_t)((( {idx} )*{eb}));\n", sec.indent));
-                sec.out.push_str(&format!(
-                    "{}uint64_t rnoc{noc} = p{ord}.get_noc_addr((baddr{noc} & ~3u)/{page}, (baddr{noc} & ~3u)%{page});\n",
-                    sec.indent,
-                    page = TT_DRAM_PAGE_BYTES
-                ));
-                sec.out.push_str(&format!("{}volatile uint32_t w{noc};\n", sec.indent));
-                sec.out.push_str(&format!("{}noc_async_read(rnoc{noc}, (uint32_t)&w{noc}, 4);\n", sec.indent));
-                sec.out.push_str(&format!("{}noc_async_read_barrier();\n", sec.indent));
-                sec.out.push_str(&format!(
-                    "{}((volatile {ctype}*)cb{dcb}.get_write_ptr())[{dst_idx}] = ({ctype})((w{noc} >> ((baddr{noc} & 3u)*8u)) & {mask});\n",
-                    sec.indent
-                ));
-                return Ok(());
+                return Err(sec.err(format!(
+                    "scalar CB store {id:?}: DRAM-CB movement is Copy-only, use load_global_to_cb_scalar"
+                )));
             }
             let dcb = sec.cb_num(*base)?;
             let slot = sec.slot_of(x)?;

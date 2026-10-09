@@ -2496,7 +2496,6 @@ fn tenstorrent_indexed_4byte_reads() -> Result<(), ZyxError> {
 /// and any scalar stride-5 failure is the scalar render path, not the
 /// address pattern.
 #[test]
-#[ignore]
 fn tenstorrent_indexed_ooo_4byte_reads() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let a = k.param(DType::F16);
@@ -2540,6 +2539,55 @@ fn tenstorrent_indexed_ooo_4byte_reads() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// Out-of-order vec4 probe: 512 F16 vectors of 4 elements (8 bytes each)
+/// at STRIDED but CONGRUENT bases (`base = i*36`, so `(36-4)*2*i = 64i`
+/// keeps `(src&63)==(dst&63)` every trip), packed back-to-back into two
+/// CB pages; compute and writer stay whole-tile.
+#[test]
+fn tenstorrent_indexed_ooo_vec4_reads() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::F16);
+    let out = k.param_mut(DType::F16);
+    let ca = k.circular_storage(DType::F16, 2);
+    let cout = k.circular_storage(DType::F16, 2);
+    let _g = k.group_range(0, 1);
+    k.loop_over(512, |k, i| {
+        let base = k.mad(i, 36, 0);
+        let dst = k.mad(i, 4, 0);
+        k.load_global_to_cb_vector(a, base, ca, dst, 4);
+    });
+    k.tt_end_reader();
+    let va = k.load_cb(ca, 0);
+    k.store_cb(cout, va, 0);
+    let vb = k.load_cb(ca, 1024);
+    k.store_cb(cout, vb, 1024);
+    k.tt_end_compute();
+    k.store_cb_to_global(cout, 0, out, 0);
+    k.store_cb_to_global(cout, 1024, out, 1024);
+    k.verify();
+    let compiled = k.compile()?;
+    let data: Vec<f32> = (0..18436).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(data.clone(), [1, 18436])?.cast(DType::F16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[1, 2048]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
+    assert_eq!(z.len(), 2048);
+    let mut bad = 0;
+    for i in 0..512 {
+        for e in 0..4 {
+            let v = z[i * 4 + e];
+            let exp = data[i * 36 + e];
+            if (v - exp).abs() >= 3e-2 {
+                if bad < 10 {
+                    println!("z[{}] = {v}, expected {exp}", i * 4 + e);
+                }
+                bad += 1;
+            }
+        }
+    }
+    println!("ooo vec4 reads bad: {bad} / 2048");
+    assert_eq!(bad, 0);
+    Ok(())
+}
 /// Row-vector probe: 32 F16 vectors of 32 elements at row-strided bases
 /// (`base = i*160` into row-major [32,160]), packed back-to-back into one
 /// CB page; compute and writer stay whole-tile. Exercises indexed VECTOR
@@ -2628,6 +2676,94 @@ fn tenstorrent_indexed_lane_vectors() -> Result<(), ZyxError> {
         }
     }
     println!("lane vectors bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Scalar direct-copy probe: 1024 scalar copies at MIRROR addresses
+/// (`src = dst = i`) through `load_global_to_cb_scalar`, packed into one
+/// CB page; compute and writer stay whole-tile. Direct small NOC reads,
+/// no index checks (CUDA-style): mirror addresses keep every transfer
+/// offset-congruent. Strided user addresses are the user's responsibility.
+#[test]
+fn tenstorrent_scalar_direct_copy() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::BF16);
+    let out = k.param_mut(DType::BF16);
+    let ca = k.circular_storage(DType::BF16, 1);
+    let cout = k.circular_storage(DType::BF16, 1);
+    let _g = k.group_range(0, 1);
+    k.loop_over(1024, |k, i| {
+        k.load_global_to_cb_scalar(a, i, ca, i);
+    });
+    k.tt_end_reader();
+    let va = k.load_cb(ca, 0);
+    k.store_cb(cout, va, 0);
+    k.tt_end_compute();
+    k.store_cb_to_global(cout, 0, out, 0);
+    k.verify();
+    let compiled = k.compile()?;
+    let data: Vec<f32> = (0..1024).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(data.clone(), [1, 1024])?.cast(DType::BF16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[1, 1024]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for (p, (&v, &e)) in z.iter().zip(data.iter()).enumerate() {
+        if (v - e).abs() >= 3e-2 {
+            if bad < 10 {
+                println!("z[{p}] = {v}, expected {e}");
+            }
+            bad += 1;
+        }
+    }
+    println!("scalar direct-copy bad: {bad} / 1024");
+    assert_eq!(bad, 0);
+    Ok(())
+}
+
+/// Scalar out-of-order probe: 1024 scalar copies at STRIDED sources
+/// (`src = i*10` into a 10240-element row, `dst = i`) through
+/// `load_global_to_cb_scalar`, packed into one CB page; compute and
+/// writer stay whole-tile. Same transfer size as
+/// `tenstorrent_scalar_direct_copy`, only the source addresses are
+/// non-contiguous and offset-incongruent: green here means scalar NOC
+/// reads work out of order.
+#[test]
+fn tenstorrent_scalar_ooo_copy() -> Result<(), ZyxError> {
+    let mut k = Kernel::new(Dev::TT(0));
+    let a = k.param(DType::BF16);
+    let out = k.param_mut(DType::BF16);
+    let ca = k.circular_storage(DType::BF16, 1);
+    let cout = k.circular_storage(DType::BF16, 1);
+    let _g = k.group_range(0, 1);
+    k.loop_over(1024, |k, i| {
+        let src = k.mad(i, 10, 0);
+        k.load_global_to_cb_scalar(a, src, ca, i);
+    });
+    k.tt_end_reader();
+    let va = k.load_cb(ca, 0);
+    k.store_cb(cout, va, 0);
+    k.tt_end_compute();
+    k.store_cb_to_global(cout, 0, out, 0);
+    k.verify();
+    let compiled = k.compile()?;
+    let data: Vec<f32> = (0..10240).map(|j| (j % 32) as f32 * 0.0625).collect();
+    let a_t = Tensor::from_vec(data.clone(), [1, 10240])?.cast(DType::BF16).to(Dev::TT(0))?;
+    let out_bufs = compiled.forward(&[&a_t], vec![[1, 1024]])?;
+    let z: Vec<f32> = out_bufs[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
+    assert_eq!(z.len(), 1024);
+    let mut bad = 0;
+    for i in 0..1024 {
+        let expected = data[i * 10];
+        if (z[i] - expected).abs() >= 3e-2 {
+            if bad < 10 {
+                println!("z[{i}] = {}, expected {expected}", z[i]);
+            }
+            bad += 1;
+        }
+    }
+    println!("scalar ooo-copy bad: {bad} / 1024");
     assert_eq!(bad, 0);
     Ok(())
 }
