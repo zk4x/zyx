@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b6821f4c.js";
+            window.path_to_searchindex_js = "searchindex-b69ee546.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-58fb2f25.js"></script>
@@ -176,26 +176,27 @@
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
 <p>This book documents the internals of zyx — a machine learning library and compiler.</p>
-<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> — but only inside a <code>Tape</code> scope. Outside a tape, there is no graph: ops go directly to the kernelizer. Inside a <code>Tape</code>, the graph is shared between computation and autograd, eliminating duplication and keeping the implementation lean — tensors are only 4 bytes and the graph uses ~20 op types.</p>
 <h2 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who This is For</a></h2>
-<p>This book is for developers who want to understand how zyx works under the hood: the architecture decisions, the optimization passes, the backend system, and how pieces fit together.</p>
+<p>This book is for developers who want to understand how zyx works under the hood, namely the architecture decisions.</p>
 <h2 id="two-execution-modes"><a class="header" href="#two-execution-modes">Two Execution Modes</a></h2>
 <p>Zyx operates in two modes:</p>
 <ul>
 <li>
-<p><strong>Eager-ish (default)</strong>: Tensor operations fuse into kernels as you write them. When no more fusion is possible, the kernel executes immediately. No separate realize step. Ideal for one-off work like data preprocessing and initialization.</p>
+<p><strong>Eager (default)</strong>: Tensor operations fuse into kernels as you write them. When no more fusion is beneficial (based on a heuristic), the kernel executes immediately. No separate realize step. Ideal for one-off work like data preprocessing and initialization.</p>
 </li>
 <li>
-<p><strong>Tape</strong>: Wrap loops in a <code>Tape</code> to enable lazy graph building, autograd, and complex optimization (egraph-based fusion comparison, device allocation search, plan caching across structurally identical iterations). Think of it as <code>torch.compile</code>, but less strict. Kernel caching (compiled program reuse) is shared across both modes.</p>
+<p><strong>Tape</strong>: Wrap loops in a <code>Tape</code> to enable lazy graph building, autograd, and complex optimization (egraph-based fusion comparison, device allocation search, plan caching across structurally identical iterations). Think of it as <code>torch.compile</code>, but less strict. Kernels are shared across both modes.</p>
 </li>
 </ul>
 <h2 id="the-architecture-at-a-glance"><a class="header" href="#the-architecture-at-a-glance">The Architecture at a Glance</a></h2>
 <p>Every tensor operation creates a graph op. What happens next depends on the mode:</p>
-<p><strong>Eager-ish (default) — direct fusion, no graph:</strong></p>
-<pre><code class="language-text">Tensor op ──► append to kernel ──► compile + execute (if fusion not possible)
+<p><strong>Eager — direct fusion, no graph:</strong></p>
+<pre><code class="language-text">Tensor op ──► append to kernel ──► compile + execute
 </code></pre>
-<p>Each op is appended directly to the kernel that produced its inputs. When a new op can’t fuse (different device, incompatible data flow), the pending kernel compiles and executes. No graph, no separate realize step.</p>
+<p>Each op is appended directly to the kernel that produced its inputs. When a new op isn’t fused, the pending kernel compiles and executes. No graph, no separate realize step. Everything is automated and runs in the background, user can’t really observe it and shouldn’t care about it.</p>
+<p>In eager mode, the fusion heuristic is conservative, won’t overfuse as to not break the premise of the eager mode.</p>
 <p><strong>Tape — lazy graph, egraph exploration:</strong></p>
+<p>Tape is used for repeated computation. The opset and kernels are the same, it’s just when you use tape, you tell zyx that you are fine with being explicit (manual realize) and deferred (computation-wise) while you want to reap benefits of more optimizations (which comes from better fusion due to deferred computtation) as well as autograd. Additionally zyx takes this as a signal that it can take more time optimizing the DAG (directed acyclic graph) of tensor ops.</p>
 <pre><code class="language-text">Tensor op ──► graph op (accumulates) ──► Autograd (reverse-mode on same graph)
                                   │
                                   ▼
@@ -209,20 +210,7 @@
                     Kernel IR ──► Opt ──► Codegen ──► Execute
 </code></pre>
 <p>Inside a tape, graph ops accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph ops — the tape prevents their deletion so the backward pass can traverse them.</p>
-<h2 id="why-this-design"><a class="header" href="#why-this-design">Why This Design</a></h2>
-<p>Most deep learning libraries use two separate graphs:</p>
-<ol>
-<li>A compute graph for eager execution</li>
-<li>An autograd graph for backpropagation</li>
-</ol>
-<p>Zyx uses <strong>one graph</strong> for both. This means:</p>
-<ul>
-<li>The autograd system doesn’t need its own graph infrastructure — it reuses the same ops</li>
-<li>Kernel fusion works across operation boundaries without special handling</li>
-<li>The implementation is debuggable (one graph to inspect, not two)</li>
-<li>Memory overhead is minimal: tensor handles are <code>u32</code> (4 bytes)</li>
-</ul>
-<p>The trade-off in tape mode is that evaluation is lazy — you must call <code>realize()</code> to trigger computation (dropping the tape only cleans up graph state — no computation is performed). But this laziness enables optimizations that eager execution cannot: egraph exploration of fusion variants, device allocation search, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is appropriate for one-off ops. Kernel caching (compiled program reuse) is shared across both modes.</p>
+<p>The trade-off in tape mode is that evaluation is lazy — you must call <code>realize()</code> to trigger computation. But this laziness enables optimizations that eager execution cannot do: autograd without allocation of unnecessary intermediaries (there is no “save for backward”), egraph exploration of fusion variants, device allocation search, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is basically the “numpy” mode. But you still get to run on all the devices and you get minimalistic fusion too, so for example matmul + relu will be just one kernel, as it should be.</p>
 
                     </main>
 

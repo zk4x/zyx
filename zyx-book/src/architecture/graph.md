@@ -1,6 +1,6 @@
 # The Graph
 
-The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites and optimization. Inside a `Tape`, every operation builds an `Op` in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.
+The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites, autograd, fusion and device placement and movement decisions. Inside a `Tape`, every operation builds an `Op` in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.
 
 ## Data Structure
 
@@ -46,12 +46,15 @@ enum Op {
     After { x: OpId, dep: OpId },
     ToDevice { x: OpId, device: Dev, time: u64 },
     Contiguous { x: OpId },
-    Kernel { inputs: OpId, outputs: OpId, info: Box<(ProgramId, u64)> },
-    Custom(Box<CustomKernel>),
+    Program { inputs: OpId, outputs: OpId, info: Box<(ProgramId, u64)> },
+    Kernel(Box<CustomKernel>),
+    ...
 }
 ```
 
-All inputs reference `OpId` rather than `TensorId` — ops operate on equivalence classes, not specific tensors. View ops (`Reshape`, `Expand`, `Permute`, `Pad`, `Flip`, `Narrow`) are per-axis and stackable; `Stack` builds vectors; `Bitcast` reinterprets bits without value conversion; `After` orders side-effecting ops; `Contiguous` materializes a layout; `Custom` wraps opaque custom kernels.
+All inputs reference `OpId` — ops operate on equivalence classes. View ops (`Reshape`, `Expand`, `Permute`, `Pad`, `Flip`, `Narrow`) are per-axis and stackable; `Stack` builds vectors; `Bitcast` reinterprets bits without value conversion; `After` orders side-effecting ops; `Contiguous` materializes a layout; `Custom` wraps opaque custom kernels.
+
+The reason to use `OpId` instead of `TensorId` is to get cannonicalization for free.
 
 ## Lifecycle with Tape
 
@@ -68,4 +71,4 @@ There is no cost model: each fusion variant is individually autotuned, and `Grap
 
 ## Graph Size
 
-The graph is designed to stay small. Tensor handles are `u32` (4 bytes), so 10,000 handles cost ~40 kB. When the tape is dropped, the graph shrinks back to baseline.
+The graph is designed to stay small. Tensor handles are `u32` (4 bytes), so 10,000 handles cost ~40 kB. Op is 32 bytes, so 10k ops costs 320kB. When the tape is dropped, the graph is deleted, so there is no more memory being eaten by anything. So there is no gc and no refcounting inside graph, it's append only for the most part and deleted as a whole (arena style).

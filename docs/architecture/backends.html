@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
+            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -175,7 +175,7 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="backend-system"><a class="header" href="#backend-system">Backend System</a></h1>
-<p>Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (feature gates aside), and selected at runtime through a lightweight <code>Copy</code> handle.</p>
+<p>Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (feature gates for WGPU and TT), and selected at runtime through a lightweight <code>Copy</code> handle.</p>
 <h2 id="dev--device-handle-and-selector"><a class="header" href="#dev--device-handle-and-selector"><code>Dev</code> — Device Handle and Selector</a></h2>
 <p>There is no <code>dyn Backend</code> and no device ids separate from the devices: <code>Dev</code> is both the selector and the handle — a <code>Copy</code> enum naming the backend plus the hardware ordinal.</p>
 <pre><code class="language-rust ignore">pub enum Dev {
@@ -212,7 +212,7 @@
 }</code></pre>
 <p>Each variant owns its globals — one <code>Mutex&lt;pool&gt;</code> per ordinal (<code>Host</code> is a <code>OnceLock&lt;Mutex&lt;_&gt;&gt;</code>, <code>Disk</code> is a const <code>Mutex</code> with no <code>OnceLock</code> at all, the rest are <code>OnceLock&lt;Vec&lt;Mutex&lt;_&gt;&gt;&gt;</code> with one <code>Mutex&lt;()&gt;</code> per backend serializing first construction where it matters — cheap backends have no init lock). All globals live at the top of each <code>backend/*.rs</code> file, so the process-wide state is visible before any logic. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.</p>
 <h2 id="lazy-initialization"><a class="header" href="#lazy-initialization">Lazy Initialization</a></h2>
-<p>There is no upfront backend-initialization phase. <code>Dev::all()</code> triggers lazy init of every backend; backends that are configured out, whose driver is missing, or whose hardware is absent contribute nothing to the returned list. This keeps startup free and makes device discovery idempotent:</p>
+<p>There is no upfront backend-initialization phase. <code>Dev::all()</code> triggers lazy init of every backend; backends that are configured out, whose driver is missing, or whose hardware is absent contribute nothing to the returned list. This keeps startup free and makes device discovery idempotent. By default, zyx will search for all devices and use the fastest for the computations. If only one device is accessed by manually using Tensor::to(Dev), then only that device is initialized and other devices are left uninitiaized. So initialization is lazy and happens at the latest possible moment.</p>
 <pre><code class="language-rust ignore">impl Dev {
     pub fn all() -&gt; Vec&lt;Dev&gt; {
         // C, CBLAS: single devices, included if init succeeds.
@@ -223,9 +223,8 @@
 <h2 id="device-api"><a class="header" href="#device-api">Device API</a></h2>
 <p>Every backend implements the same surface, dispatched by the enum:</p>
 <pre><code class="language-rust ignore">pub fn compile(self, kernel: &amp;Kernel, debug_asm: bool) -&gt; Result&lt;DeviceProgramId, BackendError&gt;;
-pub fn launch(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -&gt; Result&lt;(), BackendError&gt;;
 pub fn launch_timed(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -&gt; Result&lt;u64, BackendError&gt;;</code></pre>
-<p>plus pool operations (<code>alloc</code>, <code>free</code>, <code>retain</code>/<code>release</code>, <code>pool_to_host</code>, <code>pool_to_pool</code>) and <code>info()</code>. One backend-specific concept lives in the shared API: <strong><code>GwsDim</code></strong> — the per-axis global work size. Each gws dim is a <code>Group</code> index length, either a constant or a <code>Param</code>-backed dynamic length resolved from launch args; how it maps to a launch grid (CUDA grid, OpenCL global size, …) is each backend’s own business, derived from its <code>Op::Range</code> ops at compile time.</p>
+<p>plus pool operations (<code>alloc</code>, <code>free</code>, <code>release</code>, <code>pool_to_host</code>, <code>copy</code>) and <code>info()</code>. One backend-specific concept lives in the shared API: <strong><code>GwsDim</code></strong> — the per-axis global work size. Each gws dim is a <code>Group</code> index length, either a constant or a <code>Param</code>-backed dynamic length resolved from launch args; how it maps to a launch grid (CUDA grid, OpenCL global size, …) is each backend’s own business, derived from its <code>Op::Range</code> ops at compile time.</p>
 <h2 id="codegen-mostly-trivial-by-construction"><a class="header" href="#codegen-mostly-trivial-by-construction">Codegen: Mostly Trivial, by Construction</a></h2>
 <p>For most backends, codegen is a straight line: deSSA, then one linear pass over the kernel IR emitting target code. This is not an accident — the kernel IR is optimized until nothing searchable remains (see <a href="./codegen.html#the-search-test-which-ir-holds-an-op">the search test</a>): everything the autotuner could enumerate over has already been decided, measured, and frozen before codegen runs.</p>
 <p>What is left for a backend is exactly the <strong>non-searchable, non-SSA residue</strong>: registers, sync and placement concerns, launch-argument conventions, format configs — machine-shaped facts the value-level IR cannot and should not express. For simple targets that residue is small enough to absorb into the single lowering pass. For hardware whose compute model needs explicit physical state (Tenstorrent: three RISC-V threads, CB FIFOs, DST locks, SFPU LREGs), the residue becomes its own typed physical IR — see <a href="./codegen.html">Codegen and the Physical IR</a>.</p>

@@ -23,7 +23,7 @@ The runtime reads `$XDG_CONFIG_HOME/zyx/config.json` (or `~/.config/zyx/config.j
 
 | Config | Effect |
 |--------|--------|
-| `"c": { "enabled": true }` | Enable CPU backend (off by default) |
+| `"c": { "enabled": true }` | Enable CPU backend |
 | `"cuda": { "device_ids": [] }` | Disable all CUDA devices |
 | `"opencl": { "platform_ids": [] }` | Disable all OpenCL |
 
@@ -43,7 +43,7 @@ Set `ZYX_DEBUG` as a bitmask:
 | 32 | Launch + memory movement |
 | 64 | Alloc/dealloc |
 | 128 | Kernel compilation |
-| 256 | Autotune exploration |
+| 256 | Autotune no search |
 
 ```bash
 ZYX_DEBUG=8 cargo run     # print kernel IR

@@ -52,8 +52,8 @@ The graph opset was taken from tinygrad, with changes to make it even smaller. T
 | `After` | Ordering for side-effecting ops |
 | `ToDevice` | Move data between devices |
 | `Contiguous` | Materialize a layout |
-| `Kernel` | A compiled kernel boundary |
-| `Custom` | An opaque custom kernel |
+| `Program` | A compiled program/kernel |
+| `Kernel` | An opaque custom kernel |
 
 Tensor handles are `u32` (4 bytes) into the slab. Still small enough that 10,000 handles cost ~40 kB.
 
@@ -125,7 +125,7 @@ The scheduler picks a device based on free memory and compute capacity. Cross-de
 | 32 | Launch + memory movement |
 | 64 | Alloc/dealloc |
 | 128 | Kernel compilation |
-| 256 | Autotune exploration |
+| 256 | Disable autotune search |
 
 ## Key Design Decisions
 

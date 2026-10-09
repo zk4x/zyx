@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
+            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -176,8 +176,7 @@
                     <main>
                         <h1 id="autograd"><a class="header" href="#autograd">Autograd</a></h1>
 <p>Zyx implements automatic differentiation through an explicit <code>Tape</code>. Unlike other frameworks, there is no separate autograd graph — it uses the <strong>same graph</strong> as computation.</p>
-<h2 id="the-key-insight"><a class="header" href="#the-key-insight">The Key Insight</a></h2>
-<p>In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx’s tape keeps all graph ops alive until <code>realize()</code> or drop, and simply prevents their deletion until gradients are computed.</p>
+<p>In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx’s tape keeps all graph ops alive until <code>realize()</code> or drop. That is zyx keeps all ops, with each of the ops taking 32 bytes. Purely symbolic, no allocation, no computation. Even the ops themselves rarely allocate, which means you get very fast graph retracing for validity checks (measured llama retracing with some 7k tensor ops at sub 1ms per forward pass). As you might have noticed by the op count, these ops are highly granular, there is no matmul.</p>
 <h2 id="tape-api"><a class="header" href="#tape-api">Tape API</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
 </span><span class="boring">use zyx::{DType, Tape, Tensor, ZyxError};
@@ -192,8 +191,8 @@ let grads = tape.gradient(&amp;z, vec![&amp;x, &amp;y]);
 // grads[1] = gradient of z w.r.t. y
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<h2 id="no-requires_grad"><a class="header" href="#no-requires_grad">No “requires_grad”</a></h2>
-<p>There’s no <code>requires_grad</code> flag on tensors. The tape records the entire graph; when you call <code>gradient()</code>, you specify which tensors you want gradients for:</p>
+<h2 id="no-requires_grad-no-torchno_grad"><a class="header" href="#no-requires_grad-no-torchno_grad">No “requires_grad”, no “torch.no_grad()”</a></h2>
+<p>There’s no <code>requires_grad</code> flag on tensors. The tape records the entire graph; when you call <code>gradient()</code>, you specify which tensors you want gradients for. There is no no_grad either. Everthing recorded on the tape is differentiable (ofc. excluding mathematically non-diff ops). The point is that autograd is just a pass that reads the graph and appends new nodes to it. The ops appended are the same variants as the ones in the forward pass, which makes optimization and fusion across forward/backward easy and it also means the graph is endlessly differentiable and higher order derivatives are supported naturally.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
 </span><span class="boring">use zyx::{DType, Tape, Tensor, ZyxError};
 </span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
@@ -221,7 +220,7 @@ let h = tape.gradient(&amp;g[0], vec![&amp;x]);  // second derivative</code></pr
 <li><strong>Memory behavior is uniform</strong> — graph ops accumulate until <code>realize()</code> or drop, whether they came from forward ops or backward ops.</li>
 </ul>
 <h2 id="memory-efficiency"><a class="header" href="#memory-efficiency">Memory Efficiency</a></h2>
-<p>Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only <code>TensorId</code> values — not the actual data. When the tape is dropped, all tape-preserved ops are released.</p>
+<p>Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only <code>TensorId</code> (u32) values — not the actual data. When the tape is dropped, all tape-preserved ops are released.</p>
 
                     </main>
 

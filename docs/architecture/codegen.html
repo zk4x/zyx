@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
+            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -198,46 +198,6 @@
 <p>The search test decides where an <em>op</em> lives; the subject test decides where a <em>pass</em> lives.</p>
 <h2 id="straight-codegen-is-the-default"><a class="header" href="#straight-codegen-is-the-default">Straight Codegen Is the Default</a></h2>
 <p>For most backends (C, CUDA, OpenCL, Vulkan, HIP, WGPU), codegen is trivial by design: deSSA, then one linear pass over the kernel IR emitting target code. No further optimizations, no backend-specific lowering. The hard work happened in the optimization passes; the IR was deliberately shaped so backends stay thin.</p>
-<h2 id="ttir--the-tenstorrent-physical-ir"><a class="header" href="#ttir--the-tenstorrent-physical-ir">TTIR — the Tenstorrent Physical IR</a></h2>
-<p>The Tenstorrent (Wormhole) compute model — three RISC-V threads (reader, math, writer), circular buffers with FIFO semantics, DST tile slots with lock/commit protocol, SFPU LREGs, unpacker/packer format state — cannot be expressed as a straight per-op lowering. The legacy codegen fused lowering, scheduling, and text emission into one walk with emergent state machines (CB accounting, init placement, format trackers). TTIR makes that state explicit: a typed, ordered, physical instruction stream that passes rewrite and a verifier checks, so invalid programs never reach the JIT.</p>
-<h3 id="representation"><a class="header" href="#representation">Representation</a></h3>
-<p>One program = one <code>Vec&lt;TTOp&gt;</code> covering all three RISC-V kernel sources. Section boundaries are ops in the stream:</p>
-<pre><code class="language-text">[reader ops] EndReader [compute ops] EndCompute [writer ops] EndWriter
-</code></pre>
-<ul>
-<li>The barriers that today exist only as scan positions become first-class ops; verify walks one stream and checks cross-section facts (CB push/pop totals settled at each boundary).</li>
-<li>The renderer splits at the markers — one stream in, three kernel files out.</li>
-<li>Ids are typed and distinct — <code>VId</code> (virtual, kernel <code>OpId</code>s at lowering), <code>LRegId</code> (SFPU LREGs), <code>DstId</code> (DST slots), <code>VarId</code> (scalar C registers), <code>CBId</code> (circular buffers) — so misuse is a compile error in the IR’s own definitions.</li>
-<li>Not SSA: value ops carry their target (<code>z: OpId</code>); SSA-ness holds as an asserted invariant (single definition, in order) only until a pass rewrites it.</li>
-<li>Every variant carries a <strong>static signature</strong> — which CB it moves (produce/consume, n tiles), DST lock effects, arg reads, which thread executes it. <code>CopyTile</code> and its <code>Unpacr</code> expansion carry the same signature, so swapping between levels is sound by construction.</li>
-<li>No catch-all <code>Raw(String)</code> variant. Every line the backend emits is an enum variant; anything opaque is an explicit variant (including inline assembly with a typed operand list).</li>
-</ul>
-<h3 id="pipeline"><a class="header" href="#pipeline">Pipeline</a></h3>
-<p>Fixed order, one pass per concern, each pass TT-specific:</p>
-<ol>
-<li><strong>Convert + materialize</strong> — 1:1 kernel IR → TTOp, then duplicate cross-section values per section (each section is a separate kernel with its own registers and runtime args; arg ordinals stay global; CBs are one hardware object and never duplicated). SSA dedups globally, physical duplicates locally.</li>
-<li><strong>Sync insertion</strong> — <code>ReserveBack</code>/<code>WaitFront</code>/<code>PushBack</code>/<code>PopFront</code> per traffic op.</li>
-<li><strong>Lock insertion</strong> — <code>Acquire</code> placed directly at the LICM position (preheader of the outermost loop containing a pack): the lowering derives the same placement kernel LICM would compute, because the TTIR stream mirrors kernel loop structure 1:1. No effect ops enter the kernel IR for this — the placement is derivable, so there is nothing to search over.</li>
-<li><strong>Reconfig/init insertion</strong> — naive full reconfig before every copy/pack; correctness first, redundancy is safe.</li>
-<li><strong>Hoist + dedup</strong> — adjacent same-config reconfigs collapse; effect ops hoist out of constant-trip loops with trip-count accounting (FIFO depth × trip). Runs on the fully-placed stream: place first, then clean.</li>
-<li><strong>Regalloc + coalesce</strong> — late; linear scan over the linear stream, producing in-place forms.</li>
-<li><strong>Verify</strong> — structural: budgets per id class, CB balance and traffic correspondence, lock pairing, section termination, and the materialization invariant (every value consumed in a section is defined in that section).</li>
-<li><strong>Render</strong> — a table walk, not synthesis.</li>
-</ol>
-<p>Each pass rebuilds the stream (drain → push), states which phase it expects (all-virtual → mixed → all-physical), and fails loudly at the exact op it cannot place. Verify guards the composition: whatever the passes did, the final stream must be launchable.</p>
-<h3 id="why-no-effect-ops-in-the-kernel-ir"><a class="header" href="#why-no-effect-ops-in-the-kernel-ir">Why no effect ops in the kernel IR</a></h3>
-<p>Hoisting the math lock out of the tile loop looks like a job for kernel LICM. It isn’t: the acquire is operand-free, so LICM would trivially hoist it maximally every time — the result is a fixed, derivable position, and the lowering can place the acquire exactly there at insertion time. Adding an effect op to the SSA IR would instead mean auditing CSE (which must never merge two identical acquires straddling a release), DCE, and every restructuring pass — new machinery in the shared IR for zero searchable freedom. Effects whose placement genuinely interacts with state (FIFO trips × loop trip counts, format configs with adjacency) are expressed in TTIR, where the hardware semantics live.</p>
-<h3 id="what-the-physical-ir-is-not-for"><a class="header" href="#what-the-physical-ir-is-not-for">What the physical IR is not for</a></h3>
-<ul>
-<li>No SSA machinery of any kind (subject test).</li>
-<li>No fused-composite matching: at instruction level the chain <em>is</em> the fusion — exp/add/reciprocal sequences share LREGs inside one walk, and the register allocator subsumes the containment analysis. There is no dedicated <code>elu</code> op and none is needed: the decomposition is the only spelling, and it is the fast path.</li>
-<li>No scalar optimization: kernel IR folds all scalar SSA work before lowering; scalar variants render dumbly.</li>
-<li>No restructuring: restructuring is a search dimension, and search lives in the kernel IR.</li>
-</ul>
-<h3 id="migration"><a class="header" href="#migration">Migration</a></h3>
-<p>The high-level variants are pure abbreviations — macros over lower-level variants with identical signatures. A variant like <code>BinaryTileAdd</code> emits today’s output; when its decomposition into raw instructions is proven, the variant is deleted and nothing is lost. Rust’s exhaustive matches make deletion a compile event that walks through every site, so a half-removed variant cannot exist. The differential test does the proving: the pre- and post-deletion streams must render identically for the whole test corpus. The variant set is the migration ledger — the distance to “no LLK” is countable at any moment by listing the remaining high-level variants.</p>
-<h3 id="other-backends"><a class="header" href="#other-backends">Other backends</a></h3>
-<p>Each backend gets its own physical IR if and when it needs one. The differences between machines are structural (SIMT warps and shared-memory barriers vs FIFOs and DST locks), so a shared physical IR would degenerate into a lowest-common-denominator enum that expresses neither honestly. What <em>is</em> shared: the kernel IR above the boundary, the backend-facing input contract (linear SSA, epilogue-cleaned, arg ordering), and the methodology (typed variants, signature table, phase invariants, rebuild-per-pass, verify, render, differential gate). If two backend physical IRs later converge on the same variants for a machine-independent concept, a shared sub-IR can be extracted then — convergence-discovered unification is sound; designed-upfront unification is a layer nobody asked for.</p>
 
                     </main>
 

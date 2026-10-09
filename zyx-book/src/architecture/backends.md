@@ -1,6 +1,6 @@
 # Backend System
 
-Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (feature gates aside), and selected at runtime through a lightweight `Copy` handle.
+Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (feature gates for WGPU and TT), and selected at runtime through a lightweight `Copy` handle.
 
 ## `Dev` — Device Handle and Selector
 
@@ -51,7 +51,7 @@ Each variant owns its globals — one `Mutex<pool>` per ordinal (`Host` is a `On
 
 ## Lazy Initialization
 
-There is no upfront backend-initialization phase. `Dev::all()` triggers lazy init of every backend; backends that are configured out, whose driver is missing, or whose hardware is absent contribute nothing to the returned list. This keeps startup free and makes device discovery idempotent:
+There is no upfront backend-initialization phase. `Dev::all()` triggers lazy init of every backend; backends that are configured out, whose driver is missing, or whose hardware is absent contribute nothing to the returned list. This keeps startup free and makes device discovery idempotent. By default, zyx will search for all devices and use the fastest for the computations. If only one device is accessed by manually using Tensor::to(Dev), then only that device is initialized and other devices are left uninitiaized. So initialization is lazy and happens at the latest possible moment.
 
 ```rust,ignore
 impl Dev {
@@ -70,11 +70,10 @@ Every backend implements the same surface, dispatched by the enum:
 
 ```rust,ignore
 pub fn compile(self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError>;
-pub fn launch(self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<(), BackendError>;
 pub fn launch_timed(self, program_id: DeviceProgramId, args: &[LaunchArg]) -> Result<u64, BackendError>;
 ```
 
-plus pool operations (`alloc`, `free`, `retain`/`release`, `pool_to_host`, `pool_to_pool`) and `info()`. One backend-specific concept lives in the shared API: **`GwsDim`** — the per-axis global work size. Each gws dim is a `Group` index length, either a constant or a `Param`-backed dynamic length resolved from launch args; how it maps to a launch grid (CUDA grid, OpenCL global size, ...) is each backend's own business, derived from its `Op::Range` ops at compile time.
+plus pool operations (`alloc`, `free`, `release`, `pool_to_host`, `copy`) and `info()`. One backend-specific concept lives in the shared API: **`GwsDim`** — the per-axis global work size. Each gws dim is a `Group` index length, either a constant or a `Param`-backed dynamic length resolved from launch args; how it maps to a launch grid (CUDA grid, OpenCL global size, ...) is each backend's own business, derived from its `Op::Range` ops at compile time.
 
 ## Codegen: Mostly Trivial, by Construction
 

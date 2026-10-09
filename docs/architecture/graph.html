@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
+            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -175,7 +175,7 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-graph"><a class="header" href="#the-graph">The Graph</a></h1>
-<p>The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites and optimization. Inside a <code>Tape</code>, every operation builds an <code>Op</code> in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.</p>
+<p>The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites, autograd, fusion and device placement and movement decisions. Inside a <code>Tape</code>, every operation builds an <code>Op</code> in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.</p>
 <h2 id="data-structure"><a class="header" href="#data-structure">Data Structure</a></h2>
 <p>The graph is stored in the <code>Runtime</code>:</p>
 <pre><code class="language-rust ignore">pub struct Graph {
@@ -210,10 +210,12 @@
     After { x: OpId, dep: OpId },
     ToDevice { x: OpId, device: Dev, time: u64 },
     Contiguous { x: OpId },
-    Kernel { inputs: OpId, outputs: OpId, info: Box&lt;(ProgramId, u64)&gt; },
-    Custom(Box&lt;CustomKernel&gt;),
+    Program { inputs: OpId, outputs: OpId, info: Box&lt;(ProgramId, u64)&gt; },
+    Kernel(Box&lt;CustomKernel&gt;),
+    ...
 }</code></pre>
-<p>All inputs reference <code>OpId</code> rather than <code>TensorId</code> — ops operate on equivalence classes, not specific tensors. View ops (<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code>) are per-axis and stackable; <code>Stack</code> builds vectors; <code>Bitcast</code> reinterprets bits without value conversion; <code>After</code> orders side-effecting ops; <code>Contiguous</code> materializes a layout; <code>Custom</code> wraps opaque custom kernels.</p>
+<p>All inputs reference <code>OpId</code> — ops operate on equivalence classes. View ops (<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code>) are per-axis and stackable; <code>Stack</code> builds vectors; <code>Bitcast</code> reinterprets bits without value conversion; <code>After</code> orders side-effecting ops; <code>Contiguous</code> materializes a layout; <code>Custom</code> wraps opaque custom kernels.</p>
+<p>The reason to use <code>OpId</code> instead of <code>TensorId</code> is to get cannonicalization for free.</p>
 <h2 id="lifecycle-with-tape"><a class="header" href="#lifecycle-with-tape">Lifecycle with Tape</a></h2>
 <p>There is no graph outside a tape — ops are fused directly into kernels.</p>
 <p>Inside a tape, ops accumulate until <code>Tape::realize()</code> or drop. The graph supports rewrites that produce equivalent forms of a computation:</p>
@@ -225,7 +227,7 @@
 </ul>
 <p>There is no cost model: each fusion variant is individually autotuned, and <code>Graph::extract</code> picks by measured timing. Realized ops that the tape references are preserved for autograd; unreferenced ops are released.</p>
 <h2 id="graph-size"><a class="header" href="#graph-size">Graph Size</a></h2>
-<p>The graph is designed to stay small. Tensor handles are <code>u32</code> (4 bytes), so 10,000 handles cost ~40 kB. When the tape is dropped, the graph shrinks back to baseline.</p>
+<p>The graph is designed to stay small. Tensor handles are <code>u32</code> (4 bytes), so 10,000 handles cost ~40 kB. Op is 32 bytes, so 10k ops costs 320kB. When the tape is dropped, the graph is deleted, so there is no more memory being eaten by anything. So there is no gc and no refcounting inside graph, it’s append only for the most part and deleted as a whole (arena style).</p>
 
                     </main>
 

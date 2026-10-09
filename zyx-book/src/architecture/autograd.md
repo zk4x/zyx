@@ -2,9 +2,7 @@
 
 Zyx implements automatic differentiation through an explicit `Tape`. Unlike other frameworks, there is no separate autograd graph — it uses the **same graph** as computation.
 
-## The Key Insight
-
-In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx's tape keeps all graph ops alive until `realize()` or drop, and simply prevents their deletion until gradients are computed.
+In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx's tape keeps all graph ops alive until `realize()` or drop. That is zyx keeps all ops, with each of the ops taking 32 bytes. Purely symbolic, no allocation, no computation. Even the ops themselves rarely allocate, which means you get very fast graph retracing for validity checks (measured llama retracing with some 7k tensor ops at sub 1ms per forward pass). As you might have noticed by the op count, these ops are highly granular, there is no matmul.
 
 ## Tape API
 
@@ -24,9 +22,9 @@ let grads = tape.gradient(&z, vec![&x, &y]);
 # }
 ```
 
-## No "requires_grad"
+## No "requires_grad", no "torch.no_grad()"
 
-There's no `requires_grad` flag on tensors. The tape records the entire graph; when you call `gradient()`, you specify which tensors you want gradients for:
+There's no `requires_grad` flag on tensors. The tape records the entire graph; when you call `gradient()`, you specify which tensors you want gradients for. There is no no_grad either. Everthing recorded on the tape is differentiable (ofc. excluding mathematically non-diff ops). The point is that autograd is just a pass that reads the graph and appends new nodes to it. The ops appended are the same variants as the ones in the forward pass, which makes optimization and fusion across forward/backward easy and it also means the graph is endlessly differentiable and higher order derivatives are supported naturally.
 
 ```rust
 # extern crate zyx;
@@ -65,4 +63,4 @@ Many properties of the autograd system fall out of this fact:
 
 ## Memory Efficiency
 
-Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only `TensorId` values — not the actual data. When the tape is dropped, all tape-preserved ops are released.
+Inside a tape, intermediate tensors needed for backpropagation are not held in memory until realize time. The tape stores only `TensorId` (u32) values — not the actual data. When the tape is dropped, all tape-preserved ops are released.

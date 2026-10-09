@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b6821f4c.js";
+            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -178,25 +178,25 @@
 <p>The kernel IR is the intermediate representation used for all computation kernels. It is a doubly-linked list of 32-byte <code>OpNode</code>s stored in an arena (the <code>Slab</code> allocator).</p>
 <h2 id="data-structure"><a class="header" href="#data-structure">Data Structure</a></h2>
 <pre><code class="language-rust ignore">pub struct Kernel {
-    pub ops: Slab&lt;OpId, OpNode&gt;,
+    pub ops: Slab&lt;OpId, OpLinked&gt;,
     pub head: OpId,
     pub tail: OpId,
     // ...
 }
 
-pub struct OpNode {
+pub struct OpLinked {
     pub prev: OpId,  // u32
     pub next: OpId,  // u32
     pub op: Op,      // 24 bytes (enum + payload)
 }</code></pre>
 <p>The <code>Slab&lt;OpId, OpNode&gt;</code> is a <code>Vec&lt;OpNode&gt;</code> with a free-list. <code>OpId</code> is a <code>u32</code> index — random access is O(1).</p>
-<h2 id="unfolding"><a class="header" href="#unfolding">Unfolding</a></h2>
-<p>Before linearization, view ops (<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Flip</code>, <code>Pad</code>, <code>Narrow</code>) are represented directly as <code>Op</code> variants. They are unfolded into index arithmetic during the linearization pass — after unfolding, all ops are fixed-size inline entries in the arena — no <code>Box</code>, no vtables, no per-op indirection.</p>
-<p>The IR is in SSA form, except for <code>Loop</code>, <code>If</code>, and <code>Define</code> ops (which can carry mutable state).</p>
+<h2 id="linearization"><a class="header" href="#linearization">Linearization</a></h2>
+<p>Before linearization, view ops (<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Flip</code>, <code>Pad</code>, <code>Narrow</code>) are represented directly as <code>Op</code> variants. They are unfolded into index arithmetic during the linearization pass — after linearization, all ops are fixed-size inline entries in the arena — no <code>Box</code>, no vtables, no per-op indirection.</p>
+<p>The IR is in SSA form, except for <code>Loop</code>, <code>Param</code>, and <code>Storage</code> ops (which can carry mutable state).</p>
 <h2 id="op-variants"><a class="header" href="#op-variants">Op Variants</a></h2>
 <h3 id="parameters"><a class="header" href="#parameters">Parameters</a></h3>
 <pre><code class="language-rust ignore">Op::Param { dtype, kind: ParamKind, shape: OpId }
-// ParamKind::Variable — scalar launch argument (e.g. dynamic dim, IDX_T)
+// ParamKind::Variable — scalar launch argument (e.g. dynamic dim)
 // ParamKind::Global / GlobalMut — read-only / read-write buffer argument</code></pre>
 <h3 id="arithmetic"><a class="header" href="#arithmetic">Arithmetic</a></h3>
 <pre><code class="language-rust ignore">Op::Cast { x: OpId, dtype: DType }
@@ -222,13 +222,12 @@ Op::Barrier</code></pre>
 <pre><code class="language-rust ignore">Op::Range { axis, kind: RangeKind }  // Group / Local / Scalar
 Op::Index { vec: OpId, idx }         // select a value from a Stack</code></pre>
 <h3 id="hardware-accelerators--tiles"><a class="header" href="#hardware-accelerators--tiles">Hardware Accelerators / Tiles</a></h3>
-<pre><code class="language-rust ignore">Op::Wmma { dims, layout, dtype, a, b, c }
-Op::ReduceTile { x, .. }
-Op::MatmulTile { a, b, .. }
-Op::TransposeTile { x, .. }
-Op::BroadcastTile { x, .. }</code></pre>
+<pre><code class="language-rust ignore">Op::Wmma { dims, layout, dtype, a, b, c }</code></pre>
 <h3 id="backend-specific"><a class="header" href="#backend-specific">Backend-Specific</a></h3>
-<pre><code class="language-rust ignore">Op::Asm { .. }  // inline assembly for backends with JIT asm (e.g. Tenstorrent)</code></pre>
+<pre><code class="language-rust ignore">Op::Asm { .. }  // inline assembly for backends with JIT asm (e.g. Tenstorrent)
+Op::GPU { .. }
+Op::TT { .. }
+Op::PTX { .. }</code></pre>
 <h3 id="view-ops"><a class="header" href="#view-ops">View Ops</a></h3>
 <pre><code class="language-rust ignore">Op::Reshape { x: OpId, shape: OpId }
 Op::Expand { x: OpId, shape: OpId }

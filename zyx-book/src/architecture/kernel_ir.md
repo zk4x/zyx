@@ -6,13 +6,13 @@ The kernel IR is the intermediate representation used for all computation kernel
 
 ```rust,ignore
 pub struct Kernel {
-    pub ops: Slab<OpId, OpNode>,
+    pub ops: Slab<OpId, OpLinked>,
     pub head: OpId,
     pub tail: OpId,
     // ...
 }
 
-pub struct OpNode {
+pub struct OpLinked {
     pub prev: OpId,  // u32
     pub next: OpId,  // u32
     pub op: Op,      // 24 bytes (enum + payload)
@@ -21,18 +21,18 @@ pub struct OpNode {
 
 The `Slab<OpId, OpNode>` is a `Vec<OpNode>` with a free-list. `OpId` is a `u32` index — random access is O(1).
 
-## Unfolding
+## Linearization
 
-Before linearization, view ops (`Reshape`, `Expand`, `Permute`, `Flip`, `Pad`, `Narrow`) are represented directly as `Op` variants. They are unfolded into index arithmetic during the linearization pass — after unfolding, all ops are fixed-size inline entries in the arena — no `Box`, no vtables, no per-op indirection.
+Before linearization, view ops (`Reshape`, `Expand`, `Permute`, `Flip`, `Pad`, `Narrow`) are represented directly as `Op` variants. They are unfolded into index arithmetic during the linearization pass — after linearization, all ops are fixed-size inline entries in the arena — no `Box`, no vtables, no per-op indirection.
 
-The IR is in SSA form, except for `Loop`, `If`, and `Define` ops (which can carry mutable state).
+The IR is in SSA form, except for `Loop`, `Param`, and `Storage` ops (which can carry mutable state).
 
 ## Op Variants
 
 ### Parameters
 ```rust,ignore
 Op::Param { dtype, kind: ParamKind, shape: OpId }
-// ParamKind::Variable — scalar launch argument (e.g. dynamic dim, IDX_T)
+// ParamKind::Variable — scalar launch argument (e.g. dynamic dim)
 // ParamKind::Global / GlobalMut — read-only / read-write buffer argument
 ```
 
@@ -75,15 +75,14 @@ Op::Index { vec: OpId, idx }         // select a value from a Stack
 ### Hardware Accelerators / Tiles
 ```rust,ignore
 Op::Wmma { dims, layout, dtype, a, b, c }
-Op::ReduceTile { x, .. }
-Op::MatmulTile { a, b, .. }
-Op::TransposeTile { x, .. }
-Op::BroadcastTile { x, .. }
 ```
 
 ### Backend-Specific
 ```rust,ignore
 Op::Asm { .. }  // inline assembly for backends with JIT asm (e.g. Tenstorrent)
+Op::GPU { .. }
+Op::TT { .. }
+Op::PTX { .. }
 ```
 
 ### View Ops
