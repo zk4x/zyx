@@ -567,9 +567,22 @@ impl Graph {
         println!("  E-Graph");
         println!("{}", line);
         for cid in self.ops.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
-            let shape_str = format!("{:?}", self.shape(cid));
-            let dtype_str = format!("{:?}", self.dtype(cid));
-            println!("Class {:?} shape={} dtype={}", cid, shape_str, dtype_str);
+            // A Custom node's self-headed class holds no value (each output
+            // lives in its own Index-accessor class) — shape/dtype of the
+            // constructor row itself is a category error that fails loudly
+            // in shape()/dtype(), so print the output descriptors instead.
+            if let Op::Kernel(inner) = &self.ops[cid].op {
+                let outs: Vec<String> = inner
+                    .outputs
+                    .iter()
+                    .map(|(c, s, d)| format!("{c:?}: shape={:?} dtype={d:?}", self.dims(*s)))
+                    .collect();
+                println!("Class {:?} Custom outputs=[{}]", cid, outs.join(", "));
+            } else {
+                let shape_str = format!("{:?}", self.shape(cid));
+                let dtype_str = format!("{:?}", self.dtype(cid));
+                println!("Class {:?} shape={} dtype={}", cid, shape_str, dtype_str);
+            }
             for nid in self.class_nodes(cid) {
                 let inputs: Vec<OpId> = self.ops[nid].op.parameters().collect();
                 let name = match self.ops[nid].op {

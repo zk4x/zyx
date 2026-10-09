@@ -69,6 +69,8 @@ pub(crate) struct CPartition {
 }
 
 impl CPartition {
+    /// TODO: There is a bug - Arc<Plamecement> on Drop locks mutex, causing deadlock.
+    /// Solution - create Arc<Placement> only for final outputs and not for intermediaries during replay.
     pub(crate) fn replay(
         &self,
         dev: &mut CDevice,
@@ -78,6 +80,7 @@ impl CPartition {
         let host = super::host::pool();
         let mut pool = super::lock(Pool::Host, host);
         for (idx, cmd) in self.cmds.iter().enumerate() {
+            //println!("{idx} -> {cmd:?}");
             match cmd {
                 Cmd::Launch { program, args, outputs } => {
                     debug_assert_eq!(program.dev, Dev::C, "C partition holds a non-C program");
