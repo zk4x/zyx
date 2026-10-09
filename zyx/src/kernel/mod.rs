@@ -1166,6 +1166,54 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. } | Op::TT(TTOp::ReduceTile { .. })))
     }
 
+    /// Unpacks a shape descriptor (a `Stack` of dims or a bare dim op,
+    /// as stored in `Param { shape }`, `Reshape { shape }`,
+    /// `Expand { shape }`) into its dimension op ids.
+    ///
+    /// Each returned entry is the op computing that dim's length. A
+    /// dynamic (runtime-known only) dim length is [`OpId::NULL`]: rank is
+    /// always statically known, individual lengths may not be. An empty
+    /// vec means a scalar (rank 0).
+    ///
+    /// A Param as a shape descriptor is a shape *tensor*: scalar
+    /// (`shape == NULL`) → one dynamic dim; 1d vector → one dynamic dim
+    /// per element, loaded element-wise from the param. Higher rank is
+    /// invalid. Shape tensors must be [`IDX_T`].
+    ///
+    /// Cast wrappers around dim expressions are looked through
+    /// (recurse — nested casts and any other descriptor ops inside are
+    /// handled by their own arms). Never fold: lengths may be dynamic.
+    pub(crate) fn shape_descriptor(&mut self, id: OpId) -> Vec<OpId> {
+        if id.is_null() {
+            return Vec::new();
+        }
+        let (shape, dtype) = match self.ops[id].op.clone() {
+            Op::Stack { ops } => return ops.into_vec(),
+            // A bare Const is a single concrete dim length.
+            Op::Const(_) => return vec![id],
+            // A scalar dim *expression* (over consts, params or loads)
+            // computes its own single dim length.
+            Op::Unary { .. } | Op::Binary { .. } | Op::Load { .. } => return vec![id],
+            Op::Cast { x, .. } => return self.shape_descriptor(x),
+            Op::Param { shape, dtype, .. } => (shape, dtype),
+            ref op => todo!("shape_ids: invalid shape descriptor {op:?}"),
+        };
+        debug_assert!(dtype == IDX_T, "shape tensor must be {IDX_T:?}, got {dtype:?}");
+        // A scalar shape tensor (shape == NULL) IS its single dim: the
+        // param op itself is the length (a variable is its value — no
+        // load). Only a 1-d shape tensor needs element-wise loads.
+        if shape.is_null() {
+            return vec![id];
+        }
+        let rank = self.shape(shape).len();
+        debug_assert!(rank <= 1, "shape_ids: param shape descriptor must be 0d or 1d, got rank {rank}");
+        let mut dims = Vec::with_capacity(rank);
+        for i in 0..rank {
+            dims.push(self.push_back(Op::Index { vec: id, idx: i }));
+        }
+        dims
+    }
+
     /// Tensor shape of the value produced by `op_id`, as per-dimension op
     /// ids. Symbolic walk over existing ops with a per-op memo (shared
     /// sub-DAGs are re-entered by many parents; re-walking them is
@@ -1183,48 +1231,6 @@ impl Kernel {
         }
         if let Some(cached) = self.shape_cache.get(&op_id) {
             return cached.clone();
-        }
-        // Unpacks a shape descriptor (a `Stack` of dims or a bare `Const`
-        // dim, as stored in `Param { shape }`, `Reshape { shape }`,
-        // `Expand { shape }`) into its dimension op ids.
-        //
-        // Each returned entry is the op computing that dim's length. A
-        // dynamic (runtime-known only) dim length is [`OpId::NULL`]: rank is
-        // always statically known, individual lengths may not be. An empty
-        // vec means a scalar (rank 0).
-        //
-        // A Param as a shape descriptor is a shape *tensor*: scalar
-        // (`shape == NULL`) → one dynamic dim; 1d vector → one dynamic dim
-        // per element, loaded element-wise from the param. Higher rank is
-        // invalid. Shape tensors must be [`IDX_T`].
-        fn descriptor(k: &mut Kernel, id: OpId) -> Vec<OpId> {
-            if id.is_null() {
-                return Vec::new();
-            }
-            let (shape, dtype) = match k.ops[id].op {
-                Op::Stack { ref ops } => return ops.to_vec(),
-                // A bare Const is a single concrete dim length.
-                Op::Const(_) => return vec![id],
-                // A scalar dim *expression* (over consts, params or loads)
-                // computes its own single dim length.
-                Op::Unary { .. } | Op::Binary { .. } | Op::Load { .. } => return vec![id],
-                Op::Param { shape, dtype, .. } => (shape, dtype),
-                ref op => todo!("shape_ids: invalid shape descriptor {op:?}"),
-            };
-            debug_assert!(dtype == IDX_T, "shape tensor must be {IDX_T:?}, got {dtype:?}");
-            // A scalar shape tensor (shape == NULL) IS its single dim: the
-            // param op itself is the length (a variable is its value — no
-            // load). Only a 1-d shape tensor needs element-wise loads.
-            if shape.is_null() {
-                return vec![id];
-            }
-            let rank = k.shape(shape).len();
-            debug_assert!(rank <= 1, "shape_ids: param shape descriptor must be 0d or 1d, got rank {rank}");
-            let mut dims = Vec::with_capacity(rank);
-            for i in 0..rank {
-                dims.push(k.push_back(Op::Index { vec: id, idx: i }));
-            }
-            dims
         }
         let root = op_id;
         let mut stack = vec![op_id];
@@ -1244,7 +1250,7 @@ impl Kernel {
                     visited.insert(op_id, vec![]);
                 }
                 Op::Param { shape, .. } => {
-                    visited.insert(op_id, descriptor(self, shape));
+                    visited.insert(op_id, self.shape_descriptor(shape));
                 }
                 // Direct access of a stack op: it is a rank-1+ tensor whose
                 // leading dim is the element count (emitted as a const).
@@ -1260,7 +1266,7 @@ impl Kernel {
                     }
                 }
                 Op::Reshape { shape, .. } | Op::Expand { shape, .. } => {
-                    visited.insert(op_id, descriptor(self, shape));
+                    visited.insert(op_id, self.shape_descriptor(shape));
                 }
                 Op::Permute { x, ref axes } => match visited.get(&x) {
                     Some(dims) => {

@@ -789,16 +789,7 @@ impl Kernel {
                     // and is treated as non-broadcast (identity), the safe
                     // default. No concrete shape() lookup is required.
                     let x_shape = self.shape_ids(x);
-                    let shape = match &self.ops[shape].op {
-                        Op::Stack { ops } => ops.to_vec(),
-                        // Bare descriptor: a single dim value (const,
-                        // runtime-loaded scalar, or a dim *expression*
-                        // over them) — mirrors `shape_ids`'s `descriptor`.
-                        Op::Const(_) | Op::Param { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Load { .. } => {
-                            vec![shape]
-                        }
-                        op => todo!("invalid shape descriptor {op:?}"),
-                    };
+                    let shape = self.shape_descriptor(shape);
                     // New leading axes are prepended broadcasts; the input axes
                     // align to the tail of the output shape. A broadcast input
                     // axis reads a single constant element (index 0 over an
