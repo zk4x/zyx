@@ -144,6 +144,10 @@ pub enum Pat {
     /// Matches a constant whose `as_dim` value equals this bound. The
     /// in-pattern form of a `const_dim(id) == Some(v)` value guard.
     DimEq(Dim),
+    /// Matches a group index definition (`Op::Range`).
+    Range,
+    /// Matches a loop index definition (`Op::Loop`).
+    Loop,
     /// Value equality between two [`VExpr`]s (bound dims, constants, shifts).
     /// Evaluated after the structural match; overflow evaluates to no-match.
     /// Compose trailing in `all()`, after the binders: `all([pat, Pat::eq('d', VExpr::shl(1, 'k'))])`.
@@ -692,6 +696,8 @@ impl Kernel {
             Pat::Float(n) => matches!(self.at(id), Op::Const(c) if const_eq_float(*c, *n)),
             Pat::DimLt(n) => matches!(self.at(id), Op::Const(c) if c.as_dim().is_some_and(|k| k < *n)),
             Pat::DimEq(n) => matches!(self.at(id), Op::Const(c) if c.as_dim() == Some(*n)),
+            Pat::Range => matches!(self.at(id), Op::Range { .. }),
+            Pat::Loop => matches!(self.at(id), Op::Loop { .. }),
             Pat::Eq { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x == y),
             Pat::Ne { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x != y),
             Pat::Lt { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x < y),

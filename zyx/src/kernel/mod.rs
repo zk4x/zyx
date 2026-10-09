@@ -515,42 +515,64 @@ impl Kernel {
     }
 
     /// Resolve the layout of an operation's result by walking the IR.
-    pub(crate) fn layout(&self, mut op_id: OpId) -> MemLayout {
+    pub(crate) fn layout(&self, op_id: OpId) -> MemLayout {
+        let mut visited = Set::default();
+        // LIFO with x pushed last: the x spine drains first, so the
+        // first terminal popped is the x-chain answer. A Tile found
+        // anywhere later still wins by immediate return. Each op
+        // visited once — linear, no recursion.
+        let mut stack = vec![op_id];
+        let mut answer = None;
         for _ in 0..10000 {
-            match self.ops[op_id].op {
+            let Some(s) = stack.pop() else { break };
+            if !visited.insert(s) {
+                continue;
+            }
+            match self.ops[s].op {
                 Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) | Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => {
-                    return MemLayout::Scalar;
-                }
-                Op::Range { .. } => return MemLayout::Scalar,
-                Op::Cast { x, .. } | Op::Bitcast { x, .. } => op_id = x,
-                Op::Load { src, .. } => op_id = src,
-                Op::Copy { src, .. } => op_id = src,
-                Op::GEP { layout, .. } => return layout,
-                Op::Store { src: x, .. } => op_id = x,
-                Op::Unary { x, .. } => op_id = x,
-                Op::Binary { x, y, .. } => {
-                    // A tile lane on either side tiles the result (scalar
-                    // lanes are implicit-broadcast immediates downstream);
-                    // otherwise the x side decides, as before.
-                    let ly = self.layout(y);
-                    if matches!(ly, MemLayout::Tile { .. }) {
-                        return ly;
+                    if answer.is_none() {
+                        answer = Some(MemLayout::Scalar);
                     }
-                    op_id = x;
                 }
-                Op::Wmma { dims, .. } => match dims {
-                    MMADims::m8n8k16 => return MemLayout::Vector(2),
-                    MMADims::m16n8k8 => return MemLayout::Vector(4),
-                    MMADims::m16n8k16 => return MemLayout::Vector(4),
-                    MMADims::m32n8k16 => return MemLayout::Vector(8),
-                    MMADims::m8n32k16 => return MemLayout::Vector(8),
-                    MMADims::m8n8k32 => return MemLayout::Vector(2),
-                    MMADims::m8n8k128 => return MemLayout::Vector(2),
-                },
-                Op::TT(TTOp::MatmulTile { acc, .. }) => op_id = acc,
-                Op::TT(TTOp::TransposeTile { x }) => op_id = x,
+                Op::Range { .. } => {
+                    if answer.is_none() {
+                        answer = Some(MemLayout::Scalar);
+                    }
+                }
+                Op::Cast { x, .. } | Op::Bitcast { x, .. } => stack.push(x),
+                Op::Load { src, .. } => stack.push(src),
+                Op::Copy { src, .. } => stack.push(src),
+                Op::GEP { layout: t @ MemLayout::Tile { .. }, .. } => return t,
+                Op::GEP { layout, .. } => {
+                    if answer.is_none() {
+                        answer = Some(layout);
+                    }
+                }
+                Op::Store { src: x, .. } => stack.push(x),
+                Op::Unary { x, .. } => stack.push(x),
+                Op::Binary { x, y, .. } => {
+                    stack.push(y);
+                    stack.push(x);
+                }
+                Op::Wmma { dims, .. } => {
+                    if answer.is_none() {
+                        answer = Some(match dims {
+                            MMADims::m8n8k16 => MemLayout::Vector(2),
+                            MMADims::m16n8k8 => MemLayout::Vector(4),
+                            MMADims::m16n8k16 => MemLayout::Vector(4),
+                            MMADims::m32n8k16 => MemLayout::Vector(8),
+                            MMADims::m8n32k16 => MemLayout::Vector(8),
+                            MMADims::m8n8k32 => MemLayout::Vector(2),
+                            MMADims::m8n8k128 => MemLayout::Vector(2),
+                        });
+                    }
+                }
+                Op::TT(TTOp::MatmulTile { acc, .. }) => stack.push(acc),
+                Op::TT(TTOp::TransposeTile { x }) => stack.push(x),
                 Op::Stack { ref ops } => {
-                    return MemLayout::Vector(ops.len().try_into().unwrap());
+                    if answer.is_none() {
+                        answer = Some(MemLayout::Vector(ops.len().try_into().unwrap()));
+                    }
                 }
                 Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
                     // Fused storage templates (matmul/reduce/transpose/
@@ -566,16 +588,27 @@ impl Kernel {
                         // inits like `exp_tile_init();`): it produces no
                         // value, so it has no tile-ness. Scalar keeps
                         // every tile-seeking consumer off it.
-                        return MemLayout::Scalar;
+                        if answer.is_none() {
+                            answer = Some(MemLayout::Scalar);
+                        }
+                    } else {
+                        stack.push(ops[0]);
                     }
-                    op_id = ops[0]
                 }
                 // Index extracts a single lane: a scalar, not the vec layout.
-                Op::Index { .. } => return MemLayout::Scalar,
-                Op::Reduce { x, .. } => op_id = x,
-                Op::TT(TTOp::ReduceTile { acc, .. }) => op_id = acc,
-                Op::TT(TTOp::BroadcastTile { x, .. }) => op_id = x,
-                Op::EndLoop | Op::Loop { .. } => return MemLayout::Scalar,
+                Op::Index { .. } => {
+                    if answer.is_none() {
+                        answer = Some(MemLayout::Scalar);
+                    }
+                }
+                Op::Reduce { x, .. } => stack.push(x),
+                Op::TT(TTOp::ReduceTile { acc, .. }) => stack.push(acc),
+                Op::TT(TTOp::BroadcastTile { x, .. }) => stack.push(x),
+                Op::EndLoop | Op::Loop { .. } => {
+                    if answer.is_none() {
+                        answer = Some(MemLayout::Scalar);
+                    }
+                }
                 Op::Barrier
                 | Op::TT(TTOp::MathLock)
                 | Op::TT(TTOp::MathUnlock)
@@ -600,10 +633,10 @@ impl Kernel {
                 | Op::Permute { x, .. }
                 | Op::Flip { x, .. }
                 | Op::Pad { x, .. }
-                | Op::Narrow { x, .. } => op_id = x,
+                | Op::Narrow { x, .. } => stack.push(x),
             }
         }
-        panic!("layout not found for too long time");
+        answer.expect("layout: empty cone")
     }
 
     /// Resolve the dtype of an operation's result by walking the IR.
@@ -1537,115 +1570,71 @@ impl Kernel {
         let index_len_of = |op: &Op| -> Dim {
             match op {
                 Op::Range { kind, .. } => match kind {
-                    // Dynamic dims are `-1`; autotune substitutes 42 (see `alloc_buffers`).
-                    RangeKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap_or(42),
+                    RangeKind::Group(len) => {
+                        let Some(v) = self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim) else {
+                            todo!("get_strides: dynamic group len")
+                        };
+                        v
+                    }
                     RangeKind::Local(len) => i64::from(*len),
                     RangeKind::Warp(_) => i64::from(self.dev_info().warp_size),
                 },
+                Op::Loop { len, .. } => {
+                    let Some(v) = self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim) else {
+                        todo!("get_strides: dynamic loop bound")
+                    };
+                    v
+                }
                 _ => unreachable!(),
             }
         };
+        let idx = || Pat::all([Pat::bind('r'), Pat::any([Pat::Range, Pat::Loop])]);
 
         let mut params = vec![(index, 1i64)];
         let mut indices = Map::default();
 
         for _ in 0..10_000 {
             let Some((param, scale)) = params.pop() else { break };
-            match self.ops[param].op {
-                Op::Binary { x, y, bop } => {
-                    if bop == BOp::Add {
-                        if let Op::Loop { len, .. } = self.ops[x].op {
-                            indices.insert(x, (self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(), 1));
-                            params.push((y, scale));
-                        } else if let Op::Range { .. } = self.ops[x].op {
-                            indices.insert(x, (index_len_of(&self.ops[x].op), 1));
-                            params.push((y, scale));
-                        } else if let Op::Loop { len, .. } = self.ops[y].op {
-                            indices.insert(y, (self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(), 1));
-                            params.push((x, scale));
-                        } else if let Op::Range { .. } = self.ops[y].op {
-                            indices.insert(y, (index_len_of(&self.ops[y].op), 1));
-                            params.push((x, scale));
-                        } else {
-                            params.push((x, scale));
-                            params.push((y, scale));
-                        }
-                    }
-                    if bop == BOp::Mul {
-                        match (&self.ops[x].op, &self.ops[y].op) {
-                            (Op::Loop { len, .. }, Op::Const(c)) => {
-                                indices.insert(
-                                    x,
-                                    (
-                                        self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                                        c.as_dim().unwrap() * scale,
-                                    ),
-                                );
-                            }
-                            (Op::Const(c), Op::Loop { len, .. }) => {
-                                indices.insert(
-                                    y,
-                                    (
-                                        self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                                        c.as_dim().unwrap() * scale,
-                                    ),
-                                );
-                            }
-                            (Op::Range { .. }, Op::Const(c)) => {
-                                indices.insert(x, (index_len_of(&self.ops[x].op), c.as_dim().unwrap() * scale));
-                            }
-                            (Op::Const(c), Op::Range { .. }) => {
-                                indices.insert(y, (index_len_of(&self.ops[y].op), c.as_dim().unwrap() * scale));
-                            }
-                            _ => {
-                                todo!("get_strides: Mul of non-(range, const) at {param:?}");
-                            }
-                        }
-                    }
-                    if bop == BOp::BitShiftLeft {
-                        match (&self.ops[x].op, &self.ops[y].op) {
-                            (Op::Loop { len, .. }, Op::Const(c)) => {
-                                indices.insert(
-                                    x,
-                                    (
-                                        self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                                        (1i64 << c.as_dim().unwrap()) * scale,
-                                    ),
-                                );
-                            }
-                            (Op::Range { .. }, Op::Const(c)) => {
-                                indices.insert(x, (index_len_of(&self.ops[x].op), (1i64 << c.as_dim().unwrap()) * scale));
-                            }
-                            (Op::Const(c), Op::Range { .. }) => {
-                                indices.insert(y, (index_len_of(&self.ops[y].op), (1i64 << c.as_dim().unwrap()) * scale));
-                            }
-                            (Op::Const(c), Op::Loop { len, .. }) => {
-                                indices.insert(
-                                    y,
-                                    (
-                                        self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                                        (1i64 << c.as_dim().unwrap()) * scale,
-                                    ),
-                                );
-                            }
-                            _ => {
-                                if let Op::Const(c) = self.ops[y].op {
-                                    params.push((x, scale * (1i64 << c.as_dim().unwrap())));
-                                } else {
-                                    todo!("get_strides: shift of non-const amount at {param:?}");
-                                }
-                            }
-                        }
-                    }
-                }
-                Op::Const(c) => {
-                    indices
-                        .entry(OpId::NULL)
-                        .and_modify(|(_, v)| *v += c.as_dim().unwrap() * scale)
-                        .or_insert((0, c.as_dim().unwrap() * scale));
-                }
-                _ => {}
+            // Const leaf folds into the NULL offset.
+            if self.match_pat(param, Pat::Const).is_some() {
+                let Op::Const(c) = self.at(param) else { unreachable!() };
+                indices
+                    .entry(OpId::NULL)
+                    .and_modify(|(_, v)| *v += c.as_dim().unwrap() * scale)
+                    .or_insert((0, c.as_dim().unwrap() * scale));
+                continue;
             }
+            // Add with an index operand: stride 1, descend the rest.
+            if let Some(m) = self.match_pat(param, Pat::binary(BOp::Add, idx(), Pat::bind('s'))) {
+                indices.insert(m.op('r'), (index_len_of(self.at(m.op('r'))), 1));
+                params.push((m.op('s'), scale));
+                continue;
+            }
+            // Plain add descends both sides.
+            if let Some(m) = self.match_pat(param, Pat::binary(BOp::Add, Pat::bind('a'), Pat::bind('b'))) {
+                params.push((m.op('a'), scale));
+                params.push((m.op('b'), scale));
+                continue;
+            }
+            // Index times const: stride folds the factor in.
+            if let Some(m) = self.match_pat(param, Pat::binary(BOp::Mul, idx(), Pat::bind_const('k'))) {
+                let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
+                indices.insert(m.op('r'), (index_len_of(self.at(m.op('r'))), c.as_dim().unwrap() * scale));
+                continue;
+            }
+            // Shifted index records 2^k; any other shifted expr descends.
+            if let Some(m) = self.match_pat(param, Pat::binary(BOp::BitShiftLeft, idx(), Pat::bind_const('k'))) {
+                let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
+                indices.insert(m.op('r'), (index_len_of(self.at(m.op('r'))), (1i64 << c.as_dim().unwrap()) * scale));
+                continue;
+            }
+            if let Some(m) = self.match_pat(param, Pat::binary(BOp::BitShiftLeft, Pat::bind('e'), Pat::bind('k'))) {
+                if let Op::Const(c) = self.at(m.op('k')) {
+                    params.push((m.op('e'), scale * (1i64 << c.as_dim().unwrap())));
+                }
+                continue;
+            }
+            // Anything else carries no stride info.
         }
         if !params.is_empty() {
             panic!("get_strides did not finish in 10000 steps");

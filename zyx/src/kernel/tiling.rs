@@ -8,6 +8,7 @@ use super::{BOp, Kernel, MemLayout, Op, OpId, ParamKind, RangeKind};
 use crate::shape::Dim;
 
 impl Kernel {
+    /// Tenstorrent tiling pass
     pub fn tt_tile(&mut self) {
         if !self.device_info().tenstorrent {
             return;
@@ -95,7 +96,7 @@ impl Kernel {
             self.ops[*gep].op = Op::GEP { x: base, index: offset, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
         }
 
-        for (op, len) in axes.iter() {
+        for (op, ..) in axes.iter() {
             let Op::Range { axis, kind: RangeKind::Group(len_op) } = self.ops[*op].op else {
                 return;
             };
