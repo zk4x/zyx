@@ -1588,7 +1588,14 @@ impl Kernel {
                 _ => unreachable!(),
             }
         };
-        let idx = || Pat::all([Pat::bind('r'), Pat::any([Pat::Range, Pat::Loop])]);
+        // Patterns built once per call, matched by reference: no
+        // allocation on the per-node path below.
+        let range_or_loop = Pat::any([Pat::Range, Pat::Loop]);
+        let add_idx = Pat::binary(BOp::Add, Pat::all([Pat::bind('r'), range_or_loop.clone()]), Pat::bind('s'));
+        let add = Pat::binary(BOp::Add, Pat::bind('a'), Pat::bind('b'));
+        let mul_idx = Pat::binary(BOp::Mul, Pat::all([Pat::bind('r'), range_or_loop.clone()]), Pat::bind_const('k'));
+        let shl_idx = Pat::binary(BOp::BitShiftLeft, Pat::all([Pat::bind('r'), range_or_loop]), Pat::bind_const('k'));
+        let shl = Pat::binary(BOp::BitShiftLeft, Pat::bind('e'), Pat::bind_const('k'));
 
         let mut params = vec![(index, 1i64)];
         let mut indices = Map::default();
@@ -1605,30 +1612,30 @@ impl Kernel {
                 continue;
             }
             // Add with an index operand: stride 1, descend the rest.
-            if let Some(m) = self.match_pat(param, Pat::binary(BOp::Add, idx(), Pat::bind('s'))) {
+            if let Some(m) = self.match_pat(param, &add_idx) {
                 indices.insert(m.op('r'), (index_len_of(self.at(m.op('r'))), 1));
                 params.push((m.op('s'), scale));
                 continue;
             }
             // Plain add descends both sides.
-            if let Some(m) = self.match_pat(param, Pat::binary(BOp::Add, Pat::bind('a'), Pat::bind('b'))) {
+            if let Some(m) = self.match_pat(param, &add) {
                 params.push((m.op('a'), scale));
                 params.push((m.op('b'), scale));
                 continue;
             }
             // Index times const: stride folds the factor in.
-            if let Some(m) = self.match_pat(param, Pat::binary(BOp::Mul, idx(), Pat::bind_const('k'))) {
+            if let Some(m) = self.match_pat(param, &mul_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
                 indices.insert(m.op('r'), (index_len_of(self.at(m.op('r'))), c.as_dim().unwrap() * scale));
                 continue;
             }
             // Shifted index records 2^k; any other shifted expr descends.
-            if let Some(m) = self.match_pat(param, Pat::binary(BOp::BitShiftLeft, idx(), Pat::bind_const('k'))) {
+            if let Some(m) = self.match_pat(param, &shl_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
                 indices.insert(m.op('r'), (index_len_of(self.at(m.op('r'))), (1i64 << c.as_dim().unwrap()) * scale));
                 continue;
             }
-            if let Some(m) = self.match_pat(param, Pat::binary(BOp::BitShiftLeft, Pat::bind('e'), Pat::bind('k'))) {
+            if let Some(m) = self.match_pat(param, &shl) {
                 if let Op::Const(c) = self.at(m.op('k')) {
                     params.push((m.op('e'), scale * (1i64 << c.as_dim().unwrap())));
                 }
