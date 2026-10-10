@@ -71,12 +71,15 @@ pub(crate) struct CPartition {
 impl CPartition {
     /// Replay allocates unbound defs on the fly and drops dead slots per
     /// the lists. Slots dying mid-replay are intermediaries: their chunks
-    /// stay bare in a replay-local map and are released explicitly through
-    /// the held pool guard. Wrapping them in Arc<Placement> would run
-    /// Placement::drop (which re-locks the Host pool mutex) while this
-    /// guard is held — self-deadlock on a non-reentrant mutex. Only final
-    /// outputs (live past replay) become Arc<Placement>; their drops run
-    /// after the guard is released.
+    /// stay bare in a replay-local map and are released explicitly. Only
+    /// final outputs (live past replay) become Arc<Placement>.
+    ///
+    /// The Host pool guard is never held across arg use, launches, or
+    /// death drops — it is acquired per use below. Any Arc drop (a
+    /// cross-partition sole-owner Arc dying here, an overwritten alias)
+    /// therefore re-locks the pool mutex freely instead of self-deadlocking
+    /// on the non-reentrant mutex (Placement::drop releases each shard
+    /// through Pool::release, which locks).
     pub(crate) fn replay(
         &self,
         dev: &mut CDevice,
@@ -84,7 +87,6 @@ impl CPartition {
         vars: &Map<OpId, Constant>,
     ) -> Result<(), BackendError> {
         let host = super::host::pool();
-        let mut pool = super::lock(Pool::Host, host);
         let dying: Set<OpId> = self.deaths.iter().flatten().copied().collect();
         let mut local: Map<OpId, ChunkId> = Map::default();
         for (idx, cmd) in self.cmds.iter().enumerate() {
@@ -92,42 +94,50 @@ impl CPartition {
             match cmd {
                 Cmd::Launch { program, args, outputs } => {
                     debug_assert_eq!(program.dev, Dev::C, "C partition holds a non-C program");
-                    for (slot, dtype, dims) in outputs {
-                        if resolved.contains_key(slot) || local.contains_key(slot) {
-                            continue;
-                        }
-                        let bytes = dims.iter().map(|d| d.eval(vars)).fold(dtype.bit_size() as i64 / 8, |a, b| a * b);
-                        debug_assert!(bytes >= 0, "C replay allocated negative bytes");
-                        let chunk = pool.allocate(bytes)?;
-                        if dying.contains(slot) {
-                            local.insert(*slot, chunk);
-                        } else {
-                            resolved.insert(
-                                *slot,
-                                Arc::new(Placement {
-                                    shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: bytes as usize }],
-                                }),
-                            );
+                    {
+                        let mut pool = super::lock(Pool::Host, host);
+                        for (slot, dtype, dims) in outputs {
+                            if resolved.contains_key(slot) || local.contains_key(slot) {
+                                continue;
+                            }
+                            let bytes = dims.iter().map(|d| d.eval(vars)).fold(dtype.bit_size() as i64 / 8, |a, b| a * b);
+                            debug_assert!(bytes >= 0, "C replay allocated negative bytes");
+                            let chunk = pool.allocate(bytes)?;
+                            if dying.contains(slot) {
+                                local.insert(*slot, chunk);
+                            } else {
+                                resolved.insert(
+                                    *slot,
+                                    Arc::new(Placement {
+                                        shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: bytes as usize }],
+                                    }),
+                                );
+                            }
                         }
                     }
                     // Resolve args to pointers. Variables are not stored
                     // anywhere — the value is copied into a local byte box
-                    // here, so the kernel reads it by pointer.
+                    // here, so the kernel reads it by pointer. The raw
+                    // pointers outlive the scoped guard: chunks stay owned
+                    // until their death below, and chunk addresses are stable.
                     let mut var_boxes: Vec<Box<[u8]>> = Vec::new();
                     let mut ptrs: Vec<*mut u8> = Vec::with_capacity(args.len());
-                    for arg in args {
-                        if let Some(placement) = resolved.get(arg) {
-                            let [shard] = &placement.shards[..] else {
-                                todo!("multi-shard slot in C launch")
-                            };
-                            ptrs.push(host_ptr(&mut pool, shard.chunk, shard.offset));
-                        } else if let Some(chunk) = local.get(arg) {
-                            ptrs.push(host_ptr(&mut pool, *chunk, 0));
-                        } else if let Some(constant) = vars.get(arg) {
-                            var_boxes.push(constant.to_le_bytes().into_boxed_slice());
-                            ptrs.push(var_boxes.last_mut().unwrap().as_mut_ptr());
-                        } else {
-                            panic!("C replay: launch arg {arg:?} is neither placed nor bound");
+                    {
+                        let mut pool = super::lock(Pool::Host, host);
+                        for arg in args {
+                            if let Some(placement) = resolved.get(arg) {
+                                let [shard] = &placement.shards[..] else {
+                                    todo!("multi-shard slot in C launch")
+                                };
+                                ptrs.push(host_ptr(&mut pool, shard.chunk, shard.offset));
+                            } else if let Some(chunk) = local.get(arg) {
+                                ptrs.push(host_ptr(&mut pool, *chunk, 0));
+                            } else if let Some(constant) = vars.get(arg) {
+                                var_boxes.push(constant.to_le_bytes().into_boxed_slice());
+                                ptrs.push(var_boxes.last_mut().unwrap().as_mut_ptr());
+                            } else {
+                                panic!("C replay: launch arg {arg:?} is neither placed nor bound");
+                            }
                         }
                     }
                     let program_ref = &dev.programs[program.program_id];
@@ -153,16 +163,13 @@ impl CPartition {
                 Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
             }
             for dead in &self.deaths[idx] {
-                // Intermediaries release explicitly through the held guard
-                // (no re-lock); anything else drops an Arc clone whose last
-                // owner lives outside replay (leaf buffers, alias targets).
+                // No pool guard is held here, so every drop re-locks freely:
+                // intermediaries release explicitly, Arc drops (including a
+                // cross-partition sole-owner Arc dying in this partition)
+                // run Placement::drop through Pool::release.
                 if let Some(chunk) = local.remove(dead) {
-                    pool.release(chunk);
+                    super::lock(Pool::Host, host).release(chunk);
                 } else {
-                    debug_assert!(
-                        resolved.get(dead).map_or(true, |p| Arc::strong_count(p) > 1),
-                        "C replay: dying slot {dead:?} would run Placement::drop under the held pool guard"
-                    );
                     resolved.remove(dead);
                 }
             }

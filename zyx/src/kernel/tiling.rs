@@ -63,7 +63,7 @@ impl Kernel {
             if !matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
                 return;
             }
-            let strides = self.get_strides(index);
+            let Some(strides) = self.get_strides(index) else { return };
             if strides.get(&OpId::NULL).is_some_and(|(_, off)| *off != 0) {
                 return;
             }

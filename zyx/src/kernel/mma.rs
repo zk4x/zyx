@@ -126,7 +126,7 @@ impl Kernel {
         let &GEP { x: acc_id, index: store_idx, layout: MemLayout::Scalar } = self.at(store_gep) else {
             return None;
         };
-        let (c_base_index, c_offset) = self.index_base_and_offset(store_idx, k_loop_id);
+        let Some((c_base_index, c_offset)) = self.index_base_and_offset(store_idx, k_loop_id) else { return None };
         if c_base_index.keys().any(|k| !k.is_null()) {
             return None;
         } // Accumulator does not have a base index
@@ -164,7 +164,7 @@ impl Kernel {
             let Storage { dtype: a_dtype, .. } = self.ops[a].op else {
                 unreachable!()
             };
-            let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
+            let Some((a_base_index, a_offset)) = self.index_base_and_offset(index, k_loop_id) else { return None };
             let &Load { src: b_gep } = self.at(y) else {
                 return None;
             };
@@ -174,7 +174,7 @@ impl Kernel {
             let Storage { dtype: b_dtype, .. } = self.ops[b].op else {
                 unreachable!()
             };
-            let (b_base_index, b_offset) = self.index_base_and_offset(index, k_loop_id);
+            let Some((b_base_index, b_offset)) = self.index_base_and_offset(index, k_loop_id) else { return None };
 
             Some(MMAStore {
                 store_id,
@@ -205,7 +205,7 @@ impl Kernel {
             let Storage { dtype: a_dtype, .. } = self.ops[a].op else {
                 unreachable!()
             };
-            let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
+            let Some((a_base_index, a_offset)) = self.index_base_and_offset(index, k_loop_id) else { return None };
             let &Load { src: b_gep } = self.at(y) else {
                 return None;
             };
@@ -215,7 +215,7 @@ impl Kernel {
             let Storage { dtype: b_dtype, .. } = self.ops[b].op else {
                 unreachable!()
             };
-            let (b_base_index, b_offset) = self.index_base_and_offset(index, k_loop_id);
+            let Some((b_base_index, b_offset)) = self.index_base_and_offset(index, k_loop_id) else { return None };
 
             Some(MMAStore {
                 store_id,
@@ -234,12 +234,12 @@ impl Kernel {
         }
     }
 
-    fn index_base_and_offset(&self, index: OpId, k_loop_id: OpId) -> (Map<OpId, Dim>, Dim) {
+    fn index_base_and_offset(&self, index: OpId, k_loop_id: OpId) -> Option<(Map<OpId, Dim>, Dim)> {
         //println!("Getting base index and offset of index={index}");
         //println!("{:?}", self.get_indices(index));
 
         let mut offset: Dim = 0;
-        let indices = self.get_strides(index);
+        let indices = self.get_strides(index)?;
         let mut new_indices = Map::default();
         for (loop_id, (_d, st)) in indices {
             if loop_id.is_null() {
@@ -249,7 +249,7 @@ impl Kernel {
             }
         }
 
-        (new_indices, offset)
+        Some((new_indices, offset))
     }
 
     fn write_mma_op(&mut self, stores: &[MMAStore], k_loop_id: OpId) {

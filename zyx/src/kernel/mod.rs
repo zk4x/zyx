@@ -1570,27 +1570,20 @@ impl Kernel {
     /// Get index loop ids, dimensions and strides.
     ///
     /// Returns `loop_id` -> (dimension, stride) where NULL means unknown stride.
-    pub(crate) fn get_strides(&self, index: OpId) -> Map<OpId, (Dim, Dim)> {
+    /// Returns `None` when a group length or loop bound is dynamic (a `Param`
+    /// variable with no constant value): there is no concrete dim to report.
+    /// Callers must bail (not optimize) on `None`, mirroring `resolve_const`.
+    pub(crate) fn get_strides(&self, index: OpId) -> Option<Map<OpId, (Dim, Dim)>> {
         //println!("Get index {index}");
 
-        let index_len_of = |op: &Op| -> Dim {
+        let index_len_of = |op: &Op| -> Option<Dim> {
             match op {
                 Op::Range { kind, .. } => match kind {
-                    RangeKind::Group(len) => {
-                        let Some(v) = self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim) else {
-                            todo!("get_strides: dynamic group len")
-                        };
-                        v
-                    }
-                    RangeKind::Local(len) => i64::from(*len),
-                    RangeKind::Warp(_) => i64::from(self.dev_info().warp_size),
+                    RangeKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim),
+                    RangeKind::Local(len) => Some(i64::from(*len)),
+                    RangeKind::Warp(_) => Some(i64::from(self.dev_info().warp_size)),
                 },
-                Op::Loop { len, .. } => {
-                    let Some(v) = self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim) else {
-                        todo!("get_strides: dynamic loop bound")
-                    };
-                    v
-                }
+                Op::Loop { len, .. } => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim),
                 _ => unreachable!(),
             }
         };
@@ -1619,7 +1612,8 @@ impl Kernel {
             }
             // Add with an index operand: stride 1, descend the rest.
             if let Some(m) = self.match_pat(param, &add_idx) {
-                indices.insert(m.op('r'), (index_len_of(self.at(m.op('r'))), 1));
+                let Some(d) = index_len_of(self.at(m.op('r'))) else { return None };
+                indices.insert(m.op('r'), (d, 1));
                 params.push((m.op('s'), scale));
                 continue;
             }
@@ -1632,13 +1626,15 @@ impl Kernel {
             // Index times const: stride folds the factor in.
             if let Some(m) = self.match_pat(param, &mul_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
-                indices.insert(m.op('r'), (index_len_of(self.at(m.op('r'))), c.as_dim().unwrap() * scale));
+                let Some(d) = index_len_of(self.at(m.op('r'))) else { return None };
+                indices.insert(m.op('r'), (d, c.as_dim().unwrap() * scale));
                 continue;
             }
             // Shifted index records 2^k; any other shifted expr descends.
             if let Some(m) = self.match_pat(param, &shl_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
-                indices.insert(m.op('r'), (index_len_of(self.at(m.op('r'))), (1i64 << c.as_dim().unwrap()) * scale));
+                let Some(d) = index_len_of(self.at(m.op('r'))) else { return None };
+                indices.insert(m.op('r'), (d, (1i64 << c.as_dim().unwrap()) * scale));
                 continue;
             }
             if let Some(m) = self.match_pat(param, &shl) {
@@ -1653,7 +1649,7 @@ impl Kernel {
             panic!("get_strides did not finish in 10000 steps");
         }
 
-        indices
+        Some(indices)
     }
 
     /// Fully resolve a kernel-shape value (an `OpId`) down to a constant dim.

@@ -415,7 +415,7 @@ impl Kernel {
                             let n_bits = total_elements * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_load_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
-                            let strides = self.get_strides(index);
+                            let strides = self.get_strides(index).unwrap_or_default();
                             let stride = strides
                                 .iter()
                                 .find_map(|(oid, (_, st))| {
@@ -451,7 +451,7 @@ impl Kernel {
                         MemScope::Local | MemScope::Circular => {
                             let n_bits = total_elements * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_load_bits[1] += n_bits;
-                            let strides = self.get_strides(index);
+                            let strides = self.get_strides(index).unwrap_or_default();
                             let stride = strides
                                 .iter()
                                 .find_map(|(oid, (_, st))| {
@@ -509,7 +509,7 @@ impl Kernel {
                             let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_store_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
-                            let strides = self.get_strides(index);
+                            let strides = self.get_strides(index).unwrap_or_default();
                             let stride = strides
                                 .iter()
                                 .find_map(|(oid, (_, st))| {
@@ -545,7 +545,7 @@ impl Kernel {
                         MemScope::Local | MemScope::Circular => {
                             let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_store_bits[1] += n_bits;
-                            let strides = self.get_strides(index);
+                            let strides = self.get_strides(index).unwrap_or_default();
                             let stride = strides
                                 .iter()
                                 .find_map(|(oid, (_, st))| {

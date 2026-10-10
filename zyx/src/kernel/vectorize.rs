@@ -96,12 +96,12 @@ impl Kernel {
                     continue;
                 }
 
-                loads.sort_unstable_by_key(|x| self.get_strides(x.index).len());
+                loads.sort_unstable_by_key(|x| self.get_strides(x.index).map_or(0, |s| s.len()));
 
                 let mut base_index = None;
                 let mut offset_order: Vec<Dim> = Vec::new();
                 let vec_len = loads.len() as Dim;
-                for (base_idx, (_, vl)) in self.get_strides(loads[0].index) {
+                for (base_idx, (_, vl)) in self.get_strides(loads[0].index).unwrap_or_default() {
                     if !(vl == vec_len || (base_idx.is_null() && vl == 0)) {
                         continue;
                     }
@@ -109,7 +109,7 @@ impl Kernel {
                     offset_order.clear();
 
                     if loads[1..].iter().all(|x| {
-                        let strides = self.get_strides(x.index);
+                        let Some(strides) = self.get_strides(x.index) else { return false };
                         if base_idx.is_null() {
                             strides.iter().any(|(&idx, (_, st))| {
                                 let found = idx.is_null() && offsets.remove(st);
@@ -191,12 +191,12 @@ impl Kernel {
                     continue;
                 }
 
-                stores.sort_unstable_by_key(|x| self.get_strides(x.index).len());
+                stores.sort_unstable_by_key(|x| self.get_strides(x.index).map_or(0, |s| s.len()));
 
                 let mut base_index = None;
                 let mut offset_order: Vec<Dim> = Vec::new();
                 let vec_len = stores.len() as Dim;
-                for (base_idx, (_, vl)) in self.get_strides(stores[0].index) {
+                for (base_idx, (_, vl)) in self.get_strides(stores[0].index).unwrap_or_default() {
                     if !(vl == vec_len || (base_idx.is_null() && vl == 0)) {
                         continue;
                     }
@@ -204,7 +204,7 @@ impl Kernel {
                     offset_order.clear();
 
                     if stores[1..].iter().all(|x| {
-                        let strides = self.get_strides(x.index);
+                        let Some(strides) = self.get_strides(x.index) else { return false };
                         if base_idx.is_null() {
                             strides.iter().any(|(&idx, (_, st))| {
                                 let found = idx.is_null() && offsets.remove(st);
