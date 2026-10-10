@@ -69,8 +69,14 @@ pub(crate) struct CPartition {
 }
 
 impl CPartition {
-    /// TODO: There is a bug - Arc<Plamecement> on Drop locks mutex, causing deadlock.
-    /// Solution - create Arc<Placement> only for final outputs and not for intermediaries during replay.
+    /// Replay allocates unbound defs on the fly and drops dead slots per
+    /// the lists. Slots dying mid-replay are intermediaries: their chunks
+    /// stay bare in a replay-local map and are released explicitly through
+    /// the held pool guard. Wrapping them in Arc<Placement> would run
+    /// Placement::drop (which re-locks the Host pool mutex) while this
+    /// guard is held — self-deadlock on a non-reentrant mutex. Only final
+    /// outputs (live past replay) become Arc<Placement>; their drops run
+    /// after the guard is released.
     pub(crate) fn replay(
         &self,
         dev: &mut CDevice,
@@ -79,24 +85,30 @@ impl CPartition {
     ) -> Result<(), BackendError> {
         let host = super::host::pool();
         let mut pool = super::lock(Pool::Host, host);
+        let dying: Set<OpId> = self.deaths.iter().flatten().copied().collect();
+        let mut local: Map<OpId, ChunkId> = Map::default();
         for (idx, cmd) in self.cmds.iter().enumerate() {
             //println!("{idx} -> {cmd:?}");
             match cmd {
                 Cmd::Launch { program, args, outputs } => {
                     debug_assert_eq!(program.dev, Dev::C, "C partition holds a non-C program");
                     for (slot, dtype, dims) in outputs {
-                        if resolved.contains_key(slot) {
+                        if resolved.contains_key(slot) || local.contains_key(slot) {
                             continue;
                         }
                         let bytes = dims.iter().map(|d| d.eval(vars)).fold(dtype.bit_size() as i64 / 8, |a, b| a * b);
                         debug_assert!(bytes >= 0, "C replay allocated negative bytes");
                         let chunk = pool.allocate(bytes)?;
-                        resolved.insert(
-                            *slot,
-                            Arc::new(Placement {
-                                shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: bytes as usize }],
-                            }),
-                        );
+                        if dying.contains(slot) {
+                            local.insert(*slot, chunk);
+                        } else {
+                            resolved.insert(
+                                *slot,
+                                Arc::new(Placement {
+                                    shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: bytes as usize }],
+                                }),
+                            );
+                        }
                     }
                     // Resolve args to pointers. Variables are not stored
                     // anywhere — the value is copied into a local byte box
@@ -109,6 +121,8 @@ impl CPartition {
                                 todo!("multi-shard slot in C launch")
                             };
                             ptrs.push(host_ptr(&mut pool, shard.chunk, shard.offset));
+                        } else if let Some(chunk) = local.get(arg) {
+                            ptrs.push(host_ptr(&mut pool, *chunk, 0));
                         } else if let Some(constant) = vars.get(arg) {
                             var_boxes.push(constant.to_le_bytes().into_boxed_slice());
                             ptrs.push(var_boxes.last_mut().unwrap().as_mut_ptr());
@@ -139,7 +153,18 @@ impl CPartition {
                 Cmd::Copy { .. } => unreachable!("copies are Copy partitions, never device runs"),
             }
             for dead in &self.deaths[idx] {
-                resolved.remove(dead);
+                // Intermediaries release explicitly through the held guard
+                // (no re-lock); anything else drops an Arc clone whose last
+                // owner lives outside replay (leaf buffers, alias targets).
+                if let Some(chunk) = local.remove(dead) {
+                    pool.release(chunk);
+                } else {
+                    debug_assert!(
+                        resolved.get(dead).map_or(true, |p| Arc::strong_count(p) > 1),
+                        "C replay: dying slot {dead:?} would run Placement::drop under the held pool guard"
+                    );
+                    resolved.remove(dead);
+                }
             }
         }
         Ok(())
