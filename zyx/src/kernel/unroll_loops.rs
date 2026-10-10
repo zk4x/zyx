@@ -85,6 +85,8 @@ impl Kernel {
                     RangeKind::Local(len) => *len == 1,
                     // A warp is a view over a local range — never a removable len-1 index.
                     RangeKind::Warp(_) => false,
+                    // An unroll range is lanes, not an index — never a removable len-1 index.
+                    RangeKind::Unroll(_) => false,
                 },
                 _ => false,
             };

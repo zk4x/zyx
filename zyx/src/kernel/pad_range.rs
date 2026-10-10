@@ -48,6 +48,8 @@ impl Optimization for PadIndex {
             RangeKind::Local(len) => i64::from(len),
             // opt_pad_index never collects warp factors (warp views can't be padded).
             RangeKind::Warp(_) => unreachable!("PadIndex never collects warp factors"),
+            // opt_pad_index never collects unroll factors (lane counts can't be padded).
+            RangeKind::Unroll(_) => unreachable!("PadIndex never collects unroll factors"),
         };
         let pad_len = (pad_to - current_len % pad_to) % pad_to;
         if pad_len > 0 {
@@ -94,6 +96,9 @@ impl Kernel {
             }
             RangeKind::Warp(_) => {
                 panic!("pad_range: cannot pad a warp view; pad its underlying local range instead")
+            }
+            RangeKind::Unroll(_) => {
+                panic!("pad_range: cannot pad an unroll range; pad its underlying group range instead")
             }
         };
         self.ops[gidx_id].op = Op::Range { axis, kind: new_kind };
@@ -284,6 +289,8 @@ impl Kernel {
                     RangeKind::Local(len) => Dim::from(len),
                     // Warp views can't be padded — skip them entirely.
                     RangeKind::Warp(_) => continue,
+                    // Unroll widths are exact lane counts — skip them entirely.
+                    RangeKind::Unroll(_) => continue,
                 };
                 for pad_to in [8, 16, 32] {
                     if len % pad_to as Dim != 0 {

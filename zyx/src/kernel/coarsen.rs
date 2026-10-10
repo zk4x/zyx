@@ -23,9 +23,8 @@ use std::collections::BTreeMap;
 
 use super::autotune::Optimization;
 use crate::{
-    Map, Set,
     dtype::Constant,
-    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, RangeKind},
+    kernel::{BOp, Kernel, MemScope, Op, OpId, RangeKind},
     shape::Dim,
 };
 

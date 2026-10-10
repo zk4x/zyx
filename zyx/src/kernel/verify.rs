@@ -587,6 +587,16 @@ impl Kernel {
                                 }
                             }
                         }
+                        RangeKind::Unroll(width) => {
+                            // Lanes share their short group's axis by
+                            // construction; they claim no ownership. Zero
+                            // width is malformed.
+                            if width == 0 {
+                                println!("index={op_id} is an unroll range with zero width");
+                                self.debug();
+                                panic!();
+                            }
+                        }
                     }
                     dtypes.insert(op_id, IDX_T);
                 }
@@ -783,6 +793,8 @@ impl Kernel {
                         RangeKind::Local(len) => Some(i64::from(len)),
                         // A warp's value is the lane id: bounded by the warp size.
                         RangeKind::Warp(_) => Some(i64::from(self.dev_info().warp_size)),
+                        // An unroll range's value is the lane id: bounded by the width.
+                        RangeKind::Unroll(width) => Some(i64::from(width)),
                     };
                     // An unresolved (dynamic) group length is UNKNOWN: no bounds
                     // must be fabricated for it. A huge sentinel here would wrap

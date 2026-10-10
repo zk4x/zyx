@@ -448,6 +448,7 @@ impl Kernel {
                             let warp_size = self.dev_info().warp_size;
                             (format!("idx{lidx} % {warp_size}"), i64::from(warp_size) - 1)
                         }
+                        RangeKind::Unroll(_) => unreachable!("should've been removed by devectorization"),
                     };
                     _ = writeln!(
                         source,

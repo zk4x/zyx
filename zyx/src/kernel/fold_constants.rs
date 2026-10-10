@@ -764,6 +764,8 @@ impl Kernel {
                     RangeKind::Group(len) => self.resolve_const(len).is_some() || matches!(self.at(len), Op::Param { .. }),
                     RangeKind::Warp(_) => true,
                     RangeKind::Local(_) => true,
+                    // Unroll widths are immediates — trivially hoistable.
+                    RangeKind::Unroll(_) => true,
                 };
                 if hoistable {
                     self.move_op_after(op_id, start);

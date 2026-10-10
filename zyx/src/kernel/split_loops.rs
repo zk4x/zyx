@@ -197,6 +197,11 @@ impl Kernel {
                             ok = false;
                             break;
                         }
+                        // Unroll lanes are never split.
+                        RangeKind::Unroll(_) => {
+                            ok = false;
+                            break;
+                        }
                     },
                     _ => unreachable!("split can be only index or loop"),
                 }
@@ -214,6 +219,7 @@ impl Kernel {
                             }
                             RangeKind::Local(l) => debug_assert_eq!(l as Dim, dim),
                             RangeKind::Warp(_) => unreachable!("warp dims are never split"),
+                            RangeKind::Unroll(_) => unreachable!("unroll dims are never split"),
                         }
                     }
                     Op::Loop { len, .. } => {
@@ -247,6 +253,7 @@ impl Kernel {
                     RangeKind::Group(len) => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
                     RangeKind::Local(len) => st *= i64::from(*len),
                     RangeKind::Warp(_) => unreachable!("warp dims are never split"),
+                    RangeKind::Unroll(_) => unreachable!("unroll dims are never split"),
                 },
                 _ => unreachable!("split can be only index or loop"),
             }

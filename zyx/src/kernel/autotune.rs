@@ -91,11 +91,14 @@ impl Kernel {
         self.common_subexpression_elimination();
         self.instruction_schedule();
         self.dead_code_elimination();
-        self.device_epilogue();
     }
 
     /// Device specific epilogue
     pub fn device_epilogue(&mut self) {
+        // Ungated: unfold leftover unroll lanes back to scalar statements.
+        // Every transport backend only accepts scalar IR (codegens gate
+        // `RangeKind::Unroll` with unreachable).
+        self.devectorize_unroll();
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
             self.debug();
@@ -454,6 +457,9 @@ impl BeamSearch {
             for opt_seq in &items {
                 let mut kernel = base.clone();
                 apply_seq(&mut kernel, opt_seq, optimizations, &epilogue);
+                // Hardware lowering runs once here, right before timed
+                // launches — never inside the search loop above.
+                kernel.device_epilogue();
                 if launched.insert(kernel.get_hash()) {
                     if debug.ir() {
                         kernel.debug();

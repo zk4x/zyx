@@ -179,6 +179,8 @@ impl Kernel {
                     RangeKind::Local(len) => Some(len as Dim),
                     // Warp views are never merged — bail out (kernel stays untouched).
                     RangeKind::Warp(_) => None,
+                    // Unroll lanes are never merged — bail out (kernel stays untouched).
+                    RangeKind::Unroll(_) => None,
                 };
                 let Some(len) = len else { return };
                 acc *= len;
@@ -211,6 +213,7 @@ impl Kernel {
             RangeKind::Group(_) => RangeKind::Group(self.insert_before(first_id.unwrap(), Op::Const(Constant::idx(acc)))),
             RangeKind::Local(_) => RangeKind::Local(acc as u32),
             RangeKind::Warp(_) => unreachable!("warp ranges are never merged (bail-out above)"),
+            RangeKind::Unroll(_) => unreachable!("unroll ranges are never merged (bail-out above)"),
         };
         let mut x = self.insert_before(first_id.unwrap(), Op::Range { axis, kind });
 
