@@ -1033,25 +1033,19 @@ impl Kernel {
         self.push_back(Op::TT(TTOp::TransposeTile { x }))
     }
 
-    /// Hardware tile reduce: folds tile `x` into accumulator tile `acc`
-    /// with `rop`, returning the new accumulator value (explicit SSA
-    /// threading). `scaler` is the LLK-mandated scale tile (ones when
-    /// unused). On TT (`reduce_tile`) the result tile carries the
-    /// values in its first row, rest zeros/unchanged.
-    pub fn reduce_tile(&mut self, x: OpId, scaler: OpId, acc: OpId, rop: BOp, kind: TileDim) -> OpId {
+    /// Hardware tile reduce: pure SSA over input tile `x` with `rop`,
+    /// returning the reduced tile. On TT (`reduce_tile`) the result
+    /// tile carries the values in its first row, rest zeros (packer
+    /// masks; closed by `ReduceUninit`). Scaling, when needed, is a
+    /// separate mul over the result, fused later (`tt_fuse_llks` wires
+    /// its CB as the LLK scale input). `x` is any tile-layout value;
+    /// CB attachment is the transport passes' job, never the builder's.
+    pub fn reduce_tile(&mut self, x: OpId, rop: BOp, kind: TileDim) -> OpId {
         debug_assert!(
-            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
-            "reduce_tile: x {x} is not a load_circular tile"
+            matches!(self.layout(x), MemLayout::Tile { .. }),
+            "reduce_tile: x {x} is not a tile value"
         );
-        debug_assert!(
-            matches!(self.ops[scaler].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
-            "reduce_tile: scaler {scaler} is not a load_circular tile"
-        );
-        debug_assert!(
-            matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Register, .. }))),
-            "reduce_tile: acc {acc} is not a load_register_tile tile"
-        );
-        self.push_back(Op::TT(TTOp::ReduceTile { x, scaler, acc, rop, kind }))
+        self.push_back(Op::TT(TTOp::ReduceTile { x, rop, kind }))
     }
 
     /// Marker: tile `x` (a `load_circular` tile) is consumed with

@@ -1741,10 +1741,8 @@ impl Runtime {
                         stack.push(*dst);
                         stack.push(*src);
                     }
-                    Op::TT(TTOp::ReduceTile { x, scaler, acc, .. }) => {
+                    Op::TT(TTOp::ReduceTile { x, .. }) => {
                         stack.push(*x);
-                        stack.push(*scaler);
-                        stack.push(*acc);
                     }
                     Op::EndLoop
                     | Op::Barrier

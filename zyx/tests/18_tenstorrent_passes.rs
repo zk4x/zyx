@@ -96,19 +96,49 @@ fn sync_cbs_wraps_cb_traffic() {
     assert_eq!(pos(wd) + 1, pos(drain), "wait sits immediately before the drain copy");
 }
 
-/// `tt_storage` rewrites the SSA tile-compute ops to opaque
-/// `LLK` call templates over the bare `Storage`s already in
-/// the IR. The matmul op becomes `matmul_tiles({0}, {1}, 0, 0, {2})`
-/// over its two CB storages and the register slot; the reduce op
-/// becomes `reduce_tile<{op},{dim}>({0}, {1}, 0, 0, {2})` over
-/// input CB, scaler CB, register slot.
+/// Pure-SSA `ReduceTile`: `x = load CB` then `r = reduce_tile(x)` with
+/// no acc/scaler operands. Accumulation is explicit SSA (store the
+/// result, reload it); scale, when needed, is a separate mul over the
+/// result, claimed later by `tt_fuse_llks`.
 #[test]
-fn storage_lowering_rewrites_matmul_and_reduce() {
+fn pure_reduce_tile_threading() {
+    let mut k = Kernel::new(Dev::Auto);
+    let cb_a = k.storage(DType::F32, MemScope::Circular, 1024);
+    let acc = k.storage(DType::F32, MemScope::Register, 1);
+    let cout = k.storage(DType::F32, MemScope::Circular, 1024);
+    let zero = k.const_val(0i64);
+    k.tt_end_reader();
+    let va = k.load_cb(cb_a, zero);
+    let r = k.reduce_tile(va, BOp::Max, TileDim::Col);
+    k.store_register_tile(acc, r, zero);
+    let out = k.load_register_tile(acc, zero);
+    k.store_cb(cout, out, zero);
+    k.tt_end_compute();
+    k.verify();
+    k.tt_lock_dst();
+
+    let mut ops: Vec<Op> = Vec::new();
+    let mut op_id = k.head;
+    while !op_id.is_null() {
+        ops.push(k.at(op_id).clone());
+        op_id = k.next_op(op_id);
+    }
+    assert_eq!(ops.iter().filter(|op| matches!(op, Op::TT(TTOp::MathLock))).count(), 1);
+    assert_eq!(ops.iter().filter(|op| matches!(op, Op::TT(TTOp::MathUnlock))).count(), 1);
+    assert_eq!(ops.iter().filter(|op| matches!(op, Op::TT(TTOp::PackLock))).count(), 1);
+    assert_eq!(ops.iter().filter(|op| matches!(op, Op::TT(TTOp::PackUnlock))).count(), 1);
+}
+
+/// `tt_storage` rewrites the SSA tile-compute matmul to an opaque
+/// `LLK` call template over the bare `Storage`s already in the IR.
+/// (Reduce lowering waits on `tt_fuse_llks` scale wiring, so no
+/// reduce op appears here.)
+#[test]
+fn storage_lowering_rewrites_matmul() {
     let mut k = Kernel::new(Dev::Auto);
     let cb_a = k.storage(DType::F32, MemScope::Circular, 1024);
     let cb_b = k.storage(DType::F32, MemScope::Circular, 1024);
     let acc = k.storage(DType::F32, MemScope::Register, 1);
-    let csc = k.storage(DType::F32, MemScope::Circular, 1024);
     let cout = k.storage(DType::F32, MemScope::Circular, 1024);
     let zero = k.const_val(0i64);
     k.tt_end_reader();
@@ -116,32 +146,21 @@ fn storage_lowering_rewrites_matmul_and_reduce() {
     let vb = k.load_cb(cb_b, zero);
     let av = k.load_register_tile(acc, zero);
     let f = k.matmul_tile(va, vb, av);
-    let vs = k.load_cb(csc, zero);
-    let r = k.reduce_tile(va, vs, av, BOp::Max, TileDim::Col);
     // Pack drain: the Register slot is read out and stored to a
-    // CB. The matmul/reduce results are effect ops after
-    // lowering (no SSA value to thread).
+    // CB. The matmul result is an effect op after lowering
+    // (no SSA value to thread).
     let out = k.load_register_tile(acc, zero);
     k.store_cb(cout, out, zero);
     k.tt_end_compute();
     k.tt_storage();
 
     let matmul = k.at(f);
-    let reduce = k.at(r);
     match matmul {
         Op::TT(TTOp::LLK { asm, ops }) => {
             assert_eq!(asm.as_str(), "matmul_tiles({0}, {1}, 0, 0, {2});");
             assert_eq!(ops.as_slice(), &[cb_a, cb_b, acc, va, vb]);
         }
         other => panic!("matmul not lowered to LLK, got {other:?}"),
-    }
-    match reduce {
-        Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, x, scaler }) => {
-            assert!(matches!(rop, BOp::Max));
-            assert!(matches!(kind, TileDim::Col));
-            assert_eq!((*cb_in, *cb_sc, *slot, *x, *scaler), (cb_a, csc, acc, va, vs));
-        }
-        other => panic!("reduce not lowered to LLKReduce, got {other:?}"),
     }
     // No SSA tile-compute ops survive.
     let mut leftover = 0;

@@ -97,15 +97,13 @@ impl Kernel {
                     )
                     .unwrap();
                 }
-                Op::TT(TTOp::ReduceTile { x, scaler, acc, rop, .. }) => {
-                    let dtype = dtypes.get(&acc).copied().unwrap_or(DType::U8);
+                Op::TT(TTOp::ReduceTile { x, rop, .. }) => {
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
-                    let scaler = id_map[&scaler];
-                    let acc = id_map[&acc];
                     writeln!(
                         f,
-                        "{indent}r{out_id}: {dtype}{grey}: {dtype}{reset} = {red}reduce_tile_{}{reset} r{x}, r{scaler}, r{acc}",
+                        "{indent}r{out_id}: {dtype}{grey}: {dtype}{reset} = {red}reduce_tile_{}{reset} r{x}",
                         match rop {
                             BOp::Add => "sum",
                             BOp::Max => "max",

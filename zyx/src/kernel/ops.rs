@@ -469,20 +469,14 @@ pub struct TTProgramDesc {
 /// Tenstorrent backend op: section markers, DST locks, CB sync effects,
 /// and lowered LLK compute calls. Lives inside [`Op::TT`].
 pub enum TTOp {
-    /// Hardware reduce_tile: folds tile `x` into accumulator tile `acc`
-    /// with `rop` (TT: `reduce_tile` accumulates into the acc CB directly;
-    /// the result tile carries values in its first row). `scaler` is the
-    /// LLK-mandated scale tile (ones when unused, e.g. MAX): an explicit
-    /// operand so its CB traffic balances like everything else. Explicit
-    /// `acc` keeps the accumulation in SSA dataflow instead of a fold
-    /// marker.
+    /// Hardware tile reduce with `rop`: pure SSA over input tile `x`,
+    /// returning the reduced tile (TT: `reduce_tile`; the result tile
+    /// carries values in its first row, rest zeros by the packer masks).
+    /// Scaling, when needed, is a separate mul over the result, fused
+    /// later (`tt_fuse_llks` wires its CB as the LLK scale input).
     ReduceTile {
         /// Input tile.
         x: OpId,
-        /// LLK-mandated scale tile (ones when unused).
-        scaler: OpId,
-        /// Accumulator tile.
-        acc: OpId,
         /// Reduce op.
         rop: BOp,
         /// Reduce dimension.
@@ -1316,7 +1310,7 @@ impl Op {
             &Op::TT(TTOp::MatmulTile { x, y, acc }) => vec![x, y, acc],
             &Op::TT(TTOp::TransposeTile { x }) => vec![x],
             &Op::TT(TTOp::BroadcastTile { x, .. }) => vec![x],
-            &Op::TT(TTOp::ReduceTile { x, acc, scaler, .. }) => vec![x, acc, scaler],
+            &Op::TT(TTOp::ReduceTile { x, .. }) => vec![x],
             &Op::TT(TTOp::ReserveBack { cb, .. })
             | &Op::TT(TTOp::PushBack { cb, .. })
             | &Op::TT(TTOp::WaitFront { cb, .. })
@@ -1385,7 +1379,7 @@ impl Op {
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::TT(TTOp::MatmulTile { x, y, acc }) => vec![x, y, acc],
-            Op::TT(TTOp::ReduceTile { x, acc, scaler, .. }) => vec![x, acc, scaler],
+            Op::TT(TTOp::ReduceTile { x, .. }) => vec![x],
             Op::TT(TTOp::TransposeTile { x }) => vec![x],
             Op::TT(TTOp::BroadcastTile { x, .. }) => vec![x],
             Op::TT(TTOp::ReserveBack { cb, .. })

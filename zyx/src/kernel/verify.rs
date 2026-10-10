@@ -265,11 +265,9 @@ impl Kernel {
                         stack.pop();
                     }
                 }
-                Op::TT(TTOp::ReduceTile { x, scaler, acc, .. }) => {
+                Op::TT(TTOp::ReduceTile { x, .. }) => {
                     check(op_id, x, &stack);
-                    check(op_id, scaler, &stack);
-                    check(op_id, acc, &stack);
-                    dtypes.insert(op_id, dtypes[&acc]);
+                    dtypes.insert(op_id, dtypes[&x]);
                 }
                 Op::TT(TTOp::MatmulTile { x, y, acc }) => {
                     check(op_id, x, &stack);

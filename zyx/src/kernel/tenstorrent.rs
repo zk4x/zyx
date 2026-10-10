@@ -859,26 +859,13 @@ impl Kernel {
                     );
                     (TinyString::new("matmul_tiles({0}, {1}, 0, 0, {2});"), TinyVec::new(&[cb_a, cb_b, slot, *x, *y]))
                 }
-                Op::TT(TTOp::ReduceTile { x, scaler, acc, rop, kind }) => {
+                Op::TT(TTOp::ReduceTile { x, .. }) => {
                     let cb_in = self.tt_storage_of(*x);
-                    let cb_sc = self.tt_storage_of(*scaler);
-                    let slot = self.tt_storage_of(*acc);
                     debug_assert!(
                         matches!(self.at(cb_in), Op::Storage { scope: MemScope::Circular, .. }),
                         "tt_storage: reduce input {cb_in:?} is not a Circular storage"
                     );
-                    debug_assert!(
-                        matches!(self.at(cb_sc), Op::Storage { scope: MemScope::Circular, .. }),
-                        "tt_storage: reduce scaler {cb_sc:?} is not a Circular storage"
-                    );
-                    debug_assert!(
-                        matches!(self.at(slot), Op::Storage { scope: MemScope::Register, .. }),
-                        "tt_storage: reduce acc {slot:?} is not a Register slot"
-                    );
-                    self.ops[op_id].op =
-                        Op::TT(TTOp::LLKReduce { rop: *rop, kind: *kind, cb_in, cb_sc, slot, x: *x, scaler: *scaler });
-                    op_id = next;
-                    continue;
+                    todo!("tt_storage: pure ReduceTile has no scale operand; fuse_llks must wire the scale mul's CB as cb_sc first (ones source for the unscaled case undecided)");
                 }
                 Op::TT(TTOp::TransposeTile { x }) => {
                     let cb = self.tt_storage_of(*x);
@@ -3032,7 +3019,7 @@ impl Kernel {
             Op::Store { dst, .. } => self.tt_storage_of(*dst),
             Op::GEP { x, .. } => self.tt_storage_of(*x),
             Op::Storage { .. } | Op::Param { .. } => op_id,
-            Op::TT(TTOp::MatmulTile { acc, .. }) | Op::TT(TTOp::ReduceTile { acc, .. }) => self.tt_storage_of(*acc),
+            Op::TT(TTOp::MatmulTile { acc, .. }) => self.tt_storage_of(*acc),
             Op::TT(TTOp::BroadcastTile { x, .. }) => self.tt_storage_of(*x),
             Op::TT(TTOp::LLK { ops, .. }) => {
                 let mut slot = None;

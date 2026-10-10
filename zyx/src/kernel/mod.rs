@@ -602,7 +602,7 @@ impl Kernel {
                     }
                 }
                 Op::Reduce { x, .. } => stack.push(x),
-                Op::TT(TTOp::ReduceTile { acc, .. }) => stack.push(acc),
+                Op::TT(TTOp::ReduceTile { x, .. }) => stack.push(x),
                 Op::TT(TTOp::BroadcastTile { x, .. }) => stack.push(x),
                 Op::EndLoop | Op::Loop { .. } => {
                     if answer.is_none() {
@@ -686,7 +686,7 @@ impl Kernel {
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
-                Op::TT(TTOp::ReduceTile { acc, .. }) => op_id = acc,
+                Op::TT(TTOp::ReduceTile { x, .. }) => op_id = x,
                 Op::TT(TTOp::BroadcastTile { x, .. }) => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return IDX_T,
                 Op::Barrier

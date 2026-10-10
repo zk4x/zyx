@@ -179,11 +179,9 @@ impl Kernel {
                         }
                     }
                     Op::TT(ref ttop) => match ttop {
-                        TTOp::ReduceTile { x, scaler, acc, .. } => {
-                            dtypes.insert(op_id, dtypes[acc]);
+                        TTOp::ReduceTile { x, .. } => {
+                            dtypes.insert(op_id, dtypes[x]);
                             *rcs.entry(*x).or_insert(0) += 1;
-                            *rcs.entry(*scaler).or_insert(0) += 1;
-                            *rcs.entry(*acc).or_insert(0) += 1;
                         }
                         TTOp::MatmulTile { x, y, acc } => {
                             dtypes.insert(op_id, dtypes[acc]);

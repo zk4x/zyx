@@ -176,10 +176,8 @@ impl Kernel {
                 | Op::Reduce { x, .. } => {
                     add_param!(x)
                 }
-                Op::TT(TTOp::ReduceTile { x, scaler, acc, .. }) => {
+                Op::TT(TTOp::ReduceTile { x, .. }) => {
                     add_param!(x);
-                    add_param!(scaler);
-                    add_param!(acc);
                 }
                 Op::TT(TTOp::MatmulTile { x, y, acc }) => {
                     add_param!(x);

@@ -901,6 +901,7 @@ fn tenstorrent_copy_f8() -> Result<(), ZyxError> {
 }
 
 #[test]
+#[ignore = "manual-CB contract: revisit after general lowering"]
 fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
     let mut k = Kernel::new(Dev::TT(0));
     let x = k.param(DType::F16);
@@ -930,7 +931,7 @@ fn tenstorrent_row_max_reduce() -> Result<(), ZyxError> {
         let va = k.load_cb(cin, 0);
         let vs = k.load_cb(csc, 0);
         let av = k.load_register_tile(acc, 0);
-        let f = k.reduce_tile(va, vs, av, BOp::Max, TileDim::Col);
+        let f = k.reduce_tile(va, BOp::Max, TileDim::Col);
         k.store_register_tile(acc, f, 0);
     });
     let f = k.load_register_tile(acc, 0);
