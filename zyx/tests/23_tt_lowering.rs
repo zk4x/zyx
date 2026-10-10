@@ -36,15 +36,6 @@ fn sigmoid() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn matmul_2() -> Result<(), ZyxError> {
-    let x = Tensor::rand([10, 20], DType::BF16)?;
-    let y = Tensor::rand([20, 12], DType::BF16)?;
-    let z = x.matmul(&y)?;
-    println!("{z}");
-    Ok(())
-}
-
-#[test]
 fn matmul() -> Result<(), ZyxError> {
     let x = Tensor::rand([10, 20], DType::BF16)?;
     let y = Tensor::rand([20, 12], DType::BF16)?;
