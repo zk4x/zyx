@@ -444,17 +444,18 @@ impl Tape {
         debug_assert!(rt.graphs.contains_id(graph_id));
         rt.debug_assert_pre_realize(graph_id);
 
+        let leaf_classes = rt.graphs[graph_id].leaf_classes.clone();
         let output_set: BTreeSet<OpId> = outputs.iter().map(|x| x.0).collect();
         let cache_key = rt.plan_cache_key(graph_id, &output_set);
 
         if rt.plan_cache.contains_key(&cache_key) {
-            return Ok(FrozenTape { cache_key, graph_id, outputs });
+            return Ok(FrozenTape { cache_key, leaf_classes, outputs });
         }
 
         let plan = rt.compile_graph(graph_id, &output_set)?;
         rt.plan_cache.insert(cache_key, plan);
 
-        Ok(FrozenTape { cache_key, graph_id, outputs })
+        Ok(FrozenTape { cache_key, leaf_classes, outputs })
     }
 }
 
@@ -462,7 +463,10 @@ impl Tape {
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct FrozenTape {
     cache_key: u64,
-    graph_id: GraphId,
+    // Leaf classes in discovery order: replay zips inputs against these.
+    // Plain ids, no graph reference — the graph is gone by replay time
+    // (freeze consumes the tape and Tape::drop tears the graph down).
+    leaf_classes: Vec<OpId>,
     outputs: Vec<(OpId, Vec<Dim>, DType)>,
 }
 
@@ -470,11 +474,10 @@ impl FrozenTape {
     /// Replay the tape
     pub fn replay<'a>(&self, inputs: impl IntoIterator<Item = &'a Tensor>) -> Result<Vec<Tensor>, ZyxError> {
         let mut rt = RT.lock();
-        let graph_id = self.graph_id;
 
         let mut class_buf: Map<OpId, Arc<Placement>> = Map::default();
         let mut class_vars: Map<OpId, Constant> = Map::default();
-        for (tensor, &cid) in inputs.into_iter().zip(rt.graphs[graph_id].leaf_classes.iter()) {
+        for (tensor, &cid) in inputs.into_iter().zip(self.leaf_classes.iter()) {
             if let Some(buf) = rt.leaf_buffer(tensor.id) {
                 class_buf.insert(cid, buf);
             } else {
