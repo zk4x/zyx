@@ -117,6 +117,7 @@ mod coarsen;
 mod cost;
 mod custom;
 pub(crate) mod debug;
+mod devectorize;
 mod fold_constants;
 mod fold_loops;
 mod fuse;

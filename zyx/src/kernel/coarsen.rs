@@ -140,9 +140,12 @@ impl Kernel {
         Box::new(ThreadCoarse { factors })
     }
 
-    /// Thread coarsening and register blocking optimization.
-    ///
-    /// Coarsens threads and applies register blocking for tiled reductions.
+    /// Thread coarsening by range split: divide a group range by `factor`
+    /// into a short group plus an unroll range of lanes, with no body
+    /// duplication. Every old user of the group index now varies per
+    /// lane automatically; Register storages grow by the lane count
+    /// with one slot per lane. Unmatched lanes unfold back to scalar
+    /// statements in a later devectorize pass.
     pub fn coarsen(&mut self, gidx_id: OpId, factor: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("thread_coarse");
@@ -156,31 +159,23 @@ impl Kernel {
 
         //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
 
-        // === Some checks when we just cannot upcast === //
-
-        // We cannot upcast if the kernel is already vectorized
-        // Also let's not upcast kernel with barriers for now
-        if self.ops.values().any(|node| match node.op {
-            Op::Load { src } => match self.ops[src].op {
-                Op::GEP { layout, .. } => layout != MemLayout::Scalar,
-                _ => false,
-            },
-            Op::Store { dst, .. } => match self.ops[dst].op {
-                Op::GEP { layout, .. } => layout != MemLayout::Scalar,
-                _ => false,
-            },
-            Op::Copy { src, dst } => {
-                !matches!(self.ops[src].op, Op::GEP { layout: MemLayout::Scalar, .. })
-                    || !matches!(self.ops[dst].op, Op::GEP { layout: MemLayout::Scalar, .. })
+        // Validate before mutating: every GEP over a Register storage
+        // must have a constant index (lane-assignable below). Anything
+        // else → return with the kernel untouched.
+        let mut acc_storages: Vec<OpId> = Vec::new();
+        let mut acc_geps: Vec<(OpId, OpId)> = Vec::new();
+        for (op, x) in self.iter_unordered() {
+            if matches!(x, Op::Storage { scope: MemScope::Register, .. }) {
+                acc_storages.push(op);
             }
-            Op::Barrier => true,
-            _ => false,
-        }) {
-            return;
-        }
-
-        if self.ops.len().0 as Dim * factor as Dim > 10000 {
-            return;
+            if let Op::GEP { x: base, index, .. } = x {
+                if matches!(self.at(*base), Op::Storage { scope: MemScope::Register, .. }) {
+                    if self.resolve_const(*index).and_then(|c| c.as_dim()).is_none() {
+                        return;
+                    }
+                    acc_geps.push((op, *index));
+                }
+            }
         }
 
         // First skip ops that don't need duplication
@@ -203,140 +198,38 @@ impl Kernel {
         // Create constant for factor
         let const_factor = self.insert_before(gidx_id, Op::Const(Constant::idx(factor)));
 
-        // Create index offsets
-        let mut offsets = Vec::with_capacity((factor - 1) as usize);
-        for i in 1..factor {
-            offsets.push(self.insert_before(gidx_id, Op::Const(Constant::idx(i))));
-        }
-
-        // For remapping parameters
-        let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
-
-        // Group index now split into multiple indices with constant offsets
+        // Split the group index into a short group plus an unroll range:
+        // gidx := short * factor + unroll. The body is NOT duplicated;
+        // every old user of gidx now varies per lane automatically.
+        // (Unroll widths are small coarsen factors, always fitting u16.)
+        debug_assert!(factor <= u16::MAX as u64, "coarsen: factor exceeds unroll range width");
         let new_len = self.insert_const_idx_before(gidx_id, len / factor as Dim);
-        let x = self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Group(new_len) });
-        self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
-        let mut ids = Vec::with_capacity((factor - 1) as usize);
-        let mut id = gidx_id;
-        for &offset in &offsets {
-            id = self.insert_after(id, Op::Binary { x: gidx_id, y: offset, bop: BOp::Add });
-            ids.push(id);
-        }
-        remaps.insert(gidx_id, ids);
+        let short = self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Group(new_len) });
+        let unroll =
+            self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Unroll(factor as u16) });
+        let base = self.insert_before(gidx_id, Op::Binary { x: short, y: const_factor, bop: BOp::Mul });
+        self.ops[gidx_id].op = Op::Binary { x: base, y: unroll, bop: BOp::Add };
 
-        // Now loop over remaining ops and duplicate as needed
-        let mut accumulator_storages = Set::default();
-        while !op_id.is_null() {
-            let next_op_id = self.next_op(op_id);
-            match self.ops[op_id].op {
-                Op::Storage { scope: MemScope::Register, ref mut len, .. } => {
-                    *len *= factor as Dim;
-                    accumulator_storages.insert(op_id);
-                }
-                Op::Range { .. } | Op::Loop { .. } | Op::EndLoop | Op::Barrier => {}
-                Op::Store { dst, src: x } => {
-                    let mut ids = Vec::with_capacity((factor - 1) as usize);
-                    let mut id = op_id;
-                    let Op::GEP { x: buf, index, layout } = self.ops[dst].op else {
-                        todo!("coarsen: Store dst is not a GEP");
-                    };
-                    if accumulator_storages.contains(&buf) {
-                        for i in 0..(factor - 1) as usize {
-                            let mut x = x;
-                            if let Some(remap) = remaps.get(&x) {
-                                x = remap[i];
-                            }
-                            let xy = self.insert_before(id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                            let index = self.insert_before(id, Op::Binary { x: xy, y: offsets[i], bop: BOp::Add });
-                            let gep = self.insert_before(id, Op::GEP { x: buf, index, layout });
-                            id = self.insert_after(gep, Op::Store { dst: gep, src: x });
-                            ids.push(id);
-                        }
-                        let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                        let gep = self.insert_before(op_id, Op::GEP { x: buf, index, layout });
-                        self.ops[op_id].op = Op::Store { dst: gep, src: x };
-                    } else {
-                        for i in 0..(factor - 1) as usize {
-                            let mut x = x;
-                            if let Some(remap) = remaps.get(&x) {
-                                x = remap[i];
-                            }
-                            let mut dst = dst;
-                            if let Some(remap) = remaps.get(&dst) {
-                                dst = remap[i];
-                            }
-                            id = self.insert_after(id, Op::Store { dst, src: x });
-                            ids.push(id);
-                        }
-                    }
-                    remaps.insert(op_id, ids);
-                }
-                Op::Load { src } => {
-                    let mut ids = Vec::with_capacity((factor - 1) as usize);
-                    let mut id = op_id;
-                    let Op::GEP { x: buf, index, layout } = self.ops[src].op else {
-                        todo!("coarsen: Load src is not a GEP");
-                    };
-                    if accumulator_storages.contains(&buf) {
-                        for &offset in &offsets {
-                            let xy = self.insert_before(id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                            let index = self.insert_before(id, Op::Binary { x: xy, y: offset, bop: BOp::Add });
-                            let gep = self.insert_before(id, Op::GEP { x: buf, index, layout });
-                            id = self.insert_after(gep, Op::Load { src: gep });
-                            ids.push(id);
-                        }
-                        let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                        let gep = self.insert_before(op_id, Op::GEP { x: buf, index, layout });
-                        self.ops[op_id].op = Op::Load { src: gep };
-                    } else {
-                        for i in 0..(factor - 1) as usize {
-                            let mut src = src;
-                            if let Some(remap) = remaps.get(&src) {
-                                src = remap[i];
-                            }
-                            id = self.insert_after(id, Op::Load { src });
-                            ids.push(id);
-                        }
-                    }
-                    remaps.insert(op_id, ids);
-                }
-                Op::Copy { src, dst } => {
-                    let mut ids = Vec::with_capacity((factor - 1) as usize);
-                    let mut id = op_id;
-                    for i in 0..(factor - 1) as usize {
-                        let mut src = src;
-                        if let Some(remap) = remaps.get(&src) {
-                            src = remap[i];
-                        }
-                        let mut dst = dst;
-                        if let Some(remap) = remaps.get(&dst) {
-                            dst = remap[i];
-                        }
-                        id = self.insert_after(id, Op::Copy { src, dst });
-                        ids.push(id);
-                    }
-                    remaps.insert(op_id, ids);
-                }
-                ref op => {
-                    let op = op.clone();
-                    let mut ids = Vec::with_capacity((factor - 1) as usize);
-                    let mut id = op_id;
-                    for i in 0..(factor - 1) as usize {
-                        let mut op = op.clone();
-                        // Reindex the op
-                        for param in op.parameters_mut() {
-                            if let Some(remap) = remaps.get(param) {
-                                *param = remap[i];
-                            }
-                        }
-                        id = self.insert_after(id, op);
-                        ids.push(id);
-                    }
-                    // Store which remaps will be used in the future
-                    remaps.insert(op_id, ids);
-                }
+        // Grow every Register storage by the lane count and point
+        // constant acc indices at the unroll range (one slot per lane:
+        // const 0 becomes the bare lane, anything else c becomes
+        // c * factor + unroll). Validation above guarantees constness.
+        for storage in &acc_storages {
+            if let Op::Storage { ref mut len, .. } = self.ops[*storage].op {
+                *len *= factor as Dim;
             }
-            op_id = next_op_id;
+        }
+        for (gep, index) in acc_geps {
+            let lane = if self.resolve_const(index).and_then(|c| c.as_dim()) == Some(0) {
+                unroll
+            } else {
+                let base =
+                    self.insert_before(gep, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                self.insert_before(gep, Op::Binary { x: base, y: unroll, bop: BOp::Add })
+            };
+            if let Op::GEP { index: slot, .. } = &mut self.ops[gep].op {
+                *slot = lane;
+            }
         }
 
         self.verify();
