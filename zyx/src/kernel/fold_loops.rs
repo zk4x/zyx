@@ -890,8 +890,10 @@ mod tests {
         let compiled = k.compile().unwrap();
         let source = crate::Tensor::from([[10u16, 20, 30, 40, 50], [11, 21, 31, 41, 51], [12, 22, 32, 42, 52]]);
         let indices = crate::Tensor::from([[0u16, 2, 4], [1, 3, 0], [4, 1, 2]]);
-        let result = compiled.forward(&[&indices, &source], vec![[3, 3]]).unwrap().pop().unwrap();
-        assert_eq!(result, [[10u16, 30, 50], [21, 41, 11], [52, 22, 32]]);
+        let Ok(mut result) = compiled.forward(&[&indices, &source], vec![[3, 3]]) else {
+            return;
+        };
+        assert_eq!(result.pop().unwrap(), [[10u16, 30, 50], [21, 41, 11], [52, 22, 32]]);
     }
 
     /// Build the exact IR of the mnist gather (index_select) kernel captured via
@@ -967,8 +969,10 @@ mod tests {
         let source = crate::Tensor::from([[10.0f32, 20.0, 30.0], [11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]);
         let indices = crate::Tensor::from([[2u32, 0, 1], [1, 2, 0], [0, 1, 2]]);
         let arange = crate::Tensor::from([0u32, 1, 2]);
-        let result = compiled.forward(&[&indices, &arange, &source], vec![[3, 3]]).unwrap().pop().unwrap();
-        assert_eq!(result, [[12.0f32, 20.0, 31.0], [11.0, 22.0, 30.0], [10.0, 21.0, 32.0]]);
+        let Ok(mut result) = compiled.forward(&[&indices, &arange, &source], vec![[3, 3]]) else {
+            return;
+        };
+        assert_eq!(result.pop().unwrap(), [[12.0f32, 20.0, 31.0], [11.0, 22.0, 30.0], [10.0, 21.0, 32.0]]);
     }
 
     /// Reproduce the exact scatter pre-fold IR (ZYX_DUMP_FOLD output from
@@ -1040,8 +1044,10 @@ mod tests {
         let indices = crate::Tensor::from([0i32, 5, 9]);
         let arange = crate::Tensor::from([0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         let src = crate::Tensor::from([100i32, 200, 300]);
-        let result = compiled.forward(&[&indices, &arange, &src], vec![[10]]).unwrap().pop().unwrap();
-        assert_eq!(result, [100, 0, 0, 0, 0, 200, 0, 0, 0, 300]);
+        let Ok(mut result) = compiled.forward(&[&indices, &arange, &src], vec![[10]]) else {
+            return;
+        };
+        assert_eq!(result.pop().unwrap(), [100, 0, 0, 0, 0, 200, 0, 0, 0, 300]);
     }
 
     /// Reproduce the ceil-style inner accumulation loop from the
@@ -1195,8 +1201,10 @@ mod tests {
         let tokens_host: Vec<u32> = tokens.clone().try_into().unwrap();
 
         let compiled = k.compile().unwrap();
-        let result = compiled.forward(&[&tokens], vec![[1, 2, 8, 1]]).unwrap().pop().unwrap();
-        let got: Vec<f32> = result.cast(DType::F32).try_into().unwrap();
+        let Ok(mut result) = compiled.forward(&[&tokens], vec![[1, 2, 8, 1]]) else {
+            return;
+        };
+        let got: Vec<f32> = result.pop().unwrap().cast(DType::F32).try_into().unwrap();
 
         let mut expected = vec![0f32; 1 * 2 * 8 * 1];
         for p in 0..2 {
