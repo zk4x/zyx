@@ -162,6 +162,12 @@ impl Tape {
     }
 
     #[staticmethod]
+    #[pyo3(name = "empty")]
+    pub fn py_empty() -> Self {
+        Tape::empty()
+    }
+
+    #[staticmethod]
     #[pyo3(name = "new")]
     pub fn py_new_with_params(params: &Bound<'_, PyAny>) -> PyResult<Self> {
         let tensors = extract_tensor_list(params)?;
