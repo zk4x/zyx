@@ -151,7 +151,17 @@ impl Graph {
                         vec![x]
                     }
                     Op::Binary { x, y, .. } => vec![x, y],
-                    Op::Store { dst, dst_idx, src, bytes } => vec![dst, dst_idx, src, bytes],
+                    Op::Store { dst, dst_idx, src, bytes } => {
+                        // Whole-view stores have null idx/bytes; scalar
+                        // element stores have null bytes only.
+                        if dst_idx.is_null() {
+                            vec![dst, src]
+                        } else if bytes.is_null() {
+                            vec![dst, dst_idx, src]
+                        } else {
+                            vec![dst, dst_idx, src, bytes]
+                        }
+                    }
                     Op::After { x, dep } => vec![x, dep],
                     Op::ToDevice { x, .. } | Op::Contiguous { x, .. } => vec![x],
                     // For Index over a Stack the vec edge is shape metadata

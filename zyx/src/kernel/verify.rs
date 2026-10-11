@@ -221,10 +221,16 @@ impl Kernel {
                     match self.at(dst) {
                         // Pre-linearize whole-view write: no index or bytes.
                         Op::Param { .. } => {
-                            debug_assert!(
-                                dst_idx.is_null() && bytes.is_null(),
-                                "store={op_id} whole-view dst with indexed bytes"
-                            );
+                            if dst_idx.is_null() {
+                                // Pre-linearize write to a bare Param,
+                                // whole view: no index, no bytes.
+                                debug_assert!(bytes.is_null());
+                            } else {
+                                // Post-linearize element write into a
+                                // global-mut Param: index required, scalar.
+                                debug_assert_eq!(dtypes[&dst_idx], IDX_T, "store index must be {IDX_T}");
+                                check(op_id, dst_idx, &stack);
+                            }
                         }
                         Op::Storage { .. } => {
                             if !params.contains_key(&dst) && !storages.contains_key(&dst) {
@@ -243,9 +249,13 @@ impl Kernel {
                                 "store={op_id} layout bytes={bytes:?} does not match src {x} layout {:?}",
                                 self.layout(x)
                             );
+                            debug_assert!(!dst_idx.is_null(), "storage store without index");
                             debug_assert_eq!(dtypes[&dst_idx], IDX_T, "store index must be {IDX_T}");
                             check(op_id, dst_idx, &stack);
-                            check(op_id, bytes, &stack);
+                            if !bytes.is_null() {
+                                // bytes=null means an unvectorized scalar store.
+                                check(op_id, bytes, &stack);
+                            }
                         }
                         _ => {
                             println!("store={op_id} dst is not a Param or Storage");
@@ -518,10 +528,14 @@ impl Kernel {
                         self.debug();
                         panic!();
                     }
-                    debug_assert_eq!(dtypes[&index], IDX_T);
+                    debug_assert_eq!(dtypes[&index], IDX_T, "load index must be {IDX_T}");
                     check(op_id, src, &stack);
                     check(op_id, index, &stack);
-                    check(op_id, bytes, &stack);
+                    if !bytes.is_null() {
+                        // bytes=null means an unvectorized scalar load:
+                        // it names no width op.
+                        check(op_id, bytes, &stack);
+                    }
                     dtypes.insert(op_id, dtypes[&src]);
                 }
                 Op::Copy { src, src_idx, dst, dst_idx, bytes } => {

@@ -1316,9 +1316,11 @@ impl Op {
             // Param); only dst_idx and bytes can be null, src_idx and
             // bytes are null exactly when a load is a whole view.
             &Op::Store { dst, dst_idx, src, bytes } => {
+                debug_assert!(!dst_idx.is_null() || bytes.is_null());
                 if dst_idx.is_null() {
-                    debug_assert!(bytes.is_null());
                     vec![dst, src]
+                } else if bytes.is_null() {
+                    vec![dst, dst_idx, src]
                 } else {
                     vec![dst, dst_idx, src, bytes]
                 }
@@ -1408,9 +1410,11 @@ impl Op {
             Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![x, reduce_axis],
             Op::Store { dst, dst_idx, src: x, bytes } => {
+                debug_assert!(!dst_idx.is_null() || bytes.is_null());
                 if dst_idx.is_null() {
-                    debug_assert!(bytes.is_null());
                     vec![dst, x]
+                } else if bytes.is_null() {
+                    vec![dst, dst_idx, x]
                 } else {
                     vec![dst, dst_idx, x, bytes]
                 }

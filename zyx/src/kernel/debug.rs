@@ -274,12 +274,29 @@ impl Kernel {
                     let src = id_map.get(&src).copied().unwrap_or(src);
                     let src_idx = id_map.get(&src_idx).copied().unwrap_or(src_idx);
                     let (lb, ub) = bounds.get(&src_idx).copied().unwrap_or((0, 0));
-                    writeln!(
-                        f,
-                        "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} r{src}[r{src_idx} @ {}]    // {lb}..={ub}",
-                        self.bytes_layout(bytes)
-                    )
-                    .unwrap();
+                    match self.bytes_layout(bytes) {
+                        crate::kernel::MemLayout::Scalar => {
+                            writeln!(
+                                f,
+                                "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} r{src}[r{src_idx}]    // {lb}..={ub}",
+                            )
+                            .unwrap();
+                        }
+                        crate::kernel::MemLayout::Vector(len) => {
+                            writeln!(
+                                f,
+                                "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} vec{len} r{src}[r{src_idx}]    // {lb}..={ub}",
+                            )
+                            .unwrap();
+                        }
+                        crate::kernel::MemLayout::Tile { x, y, .. } => {
+                            writeln!(
+                                f,
+                                "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} tile {x}x{y} r{src}[r{src_idx}]    // {lb}..={ub}",
+                            )
+                            .unwrap();
+                        }
+                    }
                 }
                 Op::Store { dst, dst_idx, src: x, bytes } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
@@ -302,11 +319,7 @@ impl Kernel {
                     let dst = id_map.get(&dst).copied().unwrap_or(dst);
                     let dst_idx = id_map.get(&dst_idx).copied().unwrap_or(dst_idx);
                     let layout = self.bytes_layout(bytes);
-                    writeln!(
-                        f,
-                        "{indent}r{dst}[r{dst_idx} @ {layout}] = r{src}[r{src_idx}]    // {red}copy{reset}"
-                    )
-                    .unwrap();
+                    writeln!(f, "{indent}r{dst}[r{dst_idx} @ {layout}] = r{src}[r{src_idx}]    // {red}copy{reset}").unwrap();
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);

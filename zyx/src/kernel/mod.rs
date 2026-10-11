@@ -348,23 +348,31 @@ impl Kernel {
                 Op::Storage { dtype, .. } => {
                     dtypes.insert(op_id, (dtype, MemLayout::Scalar));
                 }
-                Op::Load { src, .. } => {
+                Op::Load { src, src_idx, .. } => {
                     dtypes.insert(op_id, dtypes[&src]);
+                    // Load consumes both the buffer read and the position
+                    // it reads at (GEP-and-load both counted before).
+                    *rcs.entry(src).or_insert(0) += 1;
+                    *rcs.entry(src_idx).or_insert(0) += 1;
                 }
                 Op::Store { dst, dst_idx, src: x, bytes } => {
                     // Post-linearize the shape rides on the store itself
                     // (`bytes`); pre-linearize whole-view stores are
-                    // Scalar by form (null bytes).
+                    // Scalar by form (null bytes: no width operand
+                    // exists to consume).
                     let layout = self.bytes_layout(bytes);
                     debug_assert_eq!(dtypes[&x].1, layout);
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(dst_idx).or_insert(0) += 1;
-                    *rcs.entry(bytes).or_insert(0) += 1;
+                    if !bytes.is_null() {
+                        *rcs.entry(bytes).or_insert(0) += 1;
+                    }
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
                     dtypes.insert(op_id, dtypes[&src]);
+                    *rcs.entry(src).or_insert(0) += 1;
                     for &o in &[src_idx, dst, dst_idx, bytes] {
                         if !o.is_null() {
                             *rcs.entry(o).or_insert(0) += 1;

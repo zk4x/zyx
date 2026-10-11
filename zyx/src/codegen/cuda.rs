@@ -309,7 +309,10 @@ impl Kernel {
                     let layout = self.bytes_layout(bytes);
                     if rcs.contains_key(&op_id) {
                         let dtype = dtypes[&op_id];
-                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    let rcount = rcs
+                        .get(&op_id)
+                        .unwrap_or_else(|| panic!("rcs missing for binary {op_id}: {:?}", self.ops[op_id].op));
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, *rcount, loop_id);
                         if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
                             _ = writeln!(source, "{indent}r{reg} = p{x};");
                         } else {
