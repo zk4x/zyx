@@ -163,23 +163,57 @@ impl Kernel {
             return;
         }
 
+        // One unroll per axis: same-axis ranges denote the same value
+        // stream (blockIdx.x used twice is still one value), so splitting
+        // an axis that already hosts lanes would alias them (U*16+U covers
+        // 16 elements, not 256). Refuse with the kernel untouched.
+        let occupied =
+            self.iter_unordered().any(|(_, x)| matches!(x, Op::Range { axis: a, kind: RangeKind::Unroll(_) } if *a == axis));
+        if occupied {
+            return;
+        }
+
         //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
 
-        // Validate before mutating: every GEP over a Register storage
-        // must have a constant index (lane-assignable below). Anything
-        // else → return with the kernel untouched.
-        let mut acc_storages: Vec<OpId> = Vec::new();
-        let mut acc_geps: Vec<(OpId, OpId)> = Vec::new();
+        // Validate before mutating: collect on-chip scratch (Register
+        // and Local) for lane-slotting below. A global store whose
+        // address does not vary with the split range cannot take
+        // per-lane values (extra lanes have no sound output address),
+        // so that refuses.
+        let mut scratch_storages: Vec<OpId> = Vec::new();
+        let mut scratch_geps: Vec<(OpId, OpId)> = Vec::new();
         for (op, x) in self.iter_unordered() {
-            if matches!(x, Op::Storage { scope: MemScope::Register, .. }) {
-                acc_storages.push(op);
+            if matches!(x, Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) {
+                scratch_storages.push(op);
             }
             if let Op::GEP { x: base, index, .. } = x {
-                if matches!(self.at(*base), Op::Storage { scope: MemScope::Register, .. }) {
-                    if self.resolve_const(*index).and_then(|c| c.as_dim()).is_none() {
-                        return;
+                if matches!(self.at(*base), Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) {
+                    scratch_geps.push((op, *index));
+                }
+            }
+            if let Op::Store { dst, .. } = x {
+                if let Op::GEP { x: base, index, .. } = self.at(*dst) {
+                    if matches!(self.at(*base), Op::Storage { scope: MemScope::Global, .. }) {
+                        // Inline subtree walk (no helper fn): does the
+                        // store address mention the split range?
+                        let mut mentions = false;
+                        let mut stack = vec![*index];
+                        let mut seen: Vec<OpId> = Vec::new();
+                        while let Some(id) = stack.pop() {
+                            if id == gidx_id {
+                                mentions = true;
+                                break;
+                            }
+                            if seen.contains(&id) {
+                                continue;
+                            }
+                            seen.push(id);
+                            stack.extend(self.at(id).parameters());
+                        }
+                        if !mentions {
+                            return;
+                        }
                     }
-                    acc_geps.push((op, *index));
                 }
             }
         }
@@ -215,21 +249,54 @@ impl Kernel {
         let base = self.insert_before(gidx_id, Op::Binary { x: short, y: const_factor, bop: BOp::Mul });
         self.ops[gidx_id].op = Op::Binary { x: base, y: unroll, bop: BOp::Add };
 
-        // Grow every Register storage by the lane count and point
-        // constant acc indices at the unroll range (one slot per lane:
-        // const 0 becomes the bare lane, anything else c becomes
-        // c * factor + unroll). Validation above guarantees constness.
-        for storage in &acc_storages {
+        // Grow every scratch storage by the lane count (one slot per
+        // lane) and remap its indices: const 0 becomes the bare lane,
+        // const c becomes c * factor + unroll, a dynamic index already
+        // varying with the split range is left alone, anything else
+        // becomes idx * factor + unroll. The wrap is value-injective,
+        // so uniformly applied readers/writers stay consistent; without
+        // it coarsened lanes would share scratch addresses (proven
+        // clobber: four lane accs stored to one local slot, three
+        // lost). Barriers stay block-wide and correct; tree reductions
+        // over these slots are duplicated per lane by devectorize
+        // (their indices now mention the unroll range), each lane
+        // reducing its own slots.
+        for storage in &scratch_storages {
             if let Op::Storage { ref mut len, .. } = self.ops[*storage].op {
                 *len *= factor as Dim;
             }
         }
-        for (gep, index) in acc_geps {
-            let lane = if self.resolve_const(index).and_then(|c| c.as_dim()) == Some(0) {
-                unroll
-            } else {
-                let base = self.insert_before(gep, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                self.insert_before(gep, Op::Binary { x: base, y: unroll, bop: BOp::Add })
+        for (gep, index) in scratch_geps {
+            // Inline subtree walk (no helper fn): does the scratch
+            // address already vary with the split range?
+            let lane = match self.resolve_const(index).and_then(|c| c.as_dim()) {
+                Some(0) => unroll,
+                Some(_) => {
+                    let base = self.insert_before(gep, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                    self.insert_before(gep, Op::Binary { x: base, y: unroll, bop: BOp::Add })
+                }
+                None => {
+                    let mut mentions = false;
+                    let mut stack = vec![index];
+                    let mut seen: Vec<OpId> = Vec::new();
+                    while let Some(id) = stack.pop() {
+                        if id == gidx_id {
+                            mentions = true;
+                            break;
+                        }
+                        if seen.contains(&id) {
+                            continue;
+                        }
+                        seen.push(id);
+                        stack.extend(self.at(id).parameters());
+                    }
+                    if mentions {
+                        index
+                    } else {
+                        let base = self.insert_before(gep, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                        self.insert_before(gep, Op::Binary { x: base, y: unroll, bop: BOp::Add })
+                    }
+                }
             };
             if let Op::GEP { index: slot, .. } = &mut self.ops[gep].op {
                 *slot = lane;

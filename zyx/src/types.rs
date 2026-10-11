@@ -177,10 +177,16 @@ impl DeBin for TinyString {
 // through iter_mut(). Use iter_mut() for in-place updates.
 // ============================================================
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TinyVec<T: Copy> {
     ptr: NonNull<u8>,
     _marker: PhantomData<T>,
+}
+
+impl<T: Copy + std::fmt::Debug> std::fmt::Debug for TinyVec<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
 }
 
 // SAFETY:
