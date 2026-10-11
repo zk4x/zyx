@@ -122,7 +122,6 @@ impl Kernel {
                 | Op::Copy { .. }
                 | Op::Const(_)
                 | Op::Storage { .. } => loop_depth,
-                Op::GEP { x, index, .. } => loop_dep[&x].max(loop_dep[&index]),
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -221,7 +220,6 @@ impl Kernel {
                 | Op::Param { .. }
                 | Op::Storage { .. }
                 | Op::Wmma { .. } => loop_depth,
-                Op::GEP { x, index, .. } => loop_dep[x].max(loop_dep[index]),
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);

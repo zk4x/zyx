@@ -19,7 +19,7 @@
 use crate::{
     Map,
     dtype::Constant,
-    kernel::{Kernel, MemLayout, MemScope, Op, OpId, RangeKind},
+    kernel::{Kernel, MemScope, Op, OpId, RangeKind},
 };
 
 impl Kernel {
@@ -59,21 +59,12 @@ impl Kernel {
         let factor = width as u64;
 
         // Same guard as the old duplicating coarsen: refuse vectorized
-        // kernels (non-scalar GEP layouts). Barriers stay single and
+        // kernels (non-scalar access bytes). Barriers stay single and
         // ordered — lane ops duplicate on their own side of them.
         if self.ops.values().any(|node| match node.op {
-            Op::Load { src } => match self.ops[src].op {
-                Op::GEP { layout, .. } => layout != MemLayout::Scalar,
-                _ => false,
-            },
-            Op::Store { dst, .. } => match self.ops[dst].op {
-                Op::GEP { layout, .. } => layout != MemLayout::Scalar,
-                _ => false,
-            },
-            Op::Copy { src, dst } => {
-                !matches!(self.ops[src].op, Op::GEP { layout: MemLayout::Scalar, .. })
-                    || !matches!(self.ops[dst].op, Op::GEP { layout: MemLayout::Scalar, .. })
-            }
+            Op::Load { bytes, .. } => !bytes.is_null(),
+            Op::Store { bytes, .. } => !bytes.is_null(),
+            Op::Copy { bytes, .. } => !bytes.is_null(),
             _ => false,
         }) {
             return false;

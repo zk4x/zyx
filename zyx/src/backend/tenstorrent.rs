@@ -187,7 +187,9 @@ fn spawn_lifecycle(want: Option<Vec<i32>>) -> Result<(Vec<NewDevice>, Option<Sen
         }
         // Init takes a copy; the thread keeps its set for teardown.
         let _ = init_tx.send(Ok(devs.clone()));
-        let Ok(LifeMsg::Shutdown { done }) = exit_rx.recv() else { return };
+        let Ok(LifeMsg::Shutdown { done }) = exit_rx.recv() else {
+            return;
+        };
         for d in &devs {
             unsafe { (shim.destroy_device)(d.dev) };
             if unsafe { (shim.has_error)() } {
@@ -202,12 +204,10 @@ fn spawn_lifecycle(want: Option<Vec<i32>>) -> Result<(Vec<NewDevice>, Option<Sen
     });
 
     // Fail loudly here (not lazily on first alloc) when init fails.
-    let devs = init_rx
-        .recv()
-        .map_err(|_| BackendError {
-            status: ErrorStatus::Initialization,
-            context: "tenstorrent lifecycle thread exited during init".into(),
-        })??;
+    let devs = init_rx.recv().map_err(|_| BackendError {
+        status: ErrorStatus::Initialization,
+        context: "tenstorrent lifecycle thread exited during init".into(),
+    })??;
     // An empty report means the thread created nothing and exited (its exit
     // receiver dropped): no teardown to own.
     let exit = if devs.is_empty() { None } else { Some(exit_tx) };
@@ -860,8 +860,14 @@ impl TTDevice {
         if args.len() < n_inputs + n_outputs {
             return Err(BackendError {
                 status: ErrorStatus::KernelLaunch,
-                context: format!("expected {} args ({} inputs + {} outputs), got {}", n_inputs + n_outputs, n_inputs, n_outputs, args.len())
-                    .into(),
+                context: format!(
+                    "expected {} args ({} inputs + {} outputs), got {}",
+                    n_inputs + n_outputs,
+                    n_inputs,
+                    n_outputs,
+                    args.len()
+                )
+                .into(),
             });
         }
         let n_params = args.len();
@@ -928,8 +934,11 @@ impl TTDevice {
             if grid_dims[axis] > prog.max_grid[axis] {
                 return Err(BackendError {
                     status: ErrorStatus::KernelLaunch,
-                    context: format!("tenstorrent grid axis {axis} size {} exceeds device grid {}", grid_dims[axis], prog.max_grid[axis])
-                        .into(),
+                    context: format!(
+                        "tenstorrent grid axis {axis} size {} exceeds device grid {}",
+                        grid_dims[axis], prog.max_grid[axis]
+                    )
+                    .into(),
                 });
             }
         }

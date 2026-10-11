@@ -126,23 +126,29 @@ impl Kernel {
                         *rcs.entry(b).or_insert(0) += 1;
                         *rcs.entry(c).or_insert(0) += 1;
                     }
-                    Op::Load { src } => {
+                    Op::Load { src, .. } => {
                         dtypes.insert(op_id, dtypes[&src]);
                     }
-                    Op::Store { dst, src: x } => {
+                    Op::Store { dst, dst_idx, src: x, bytes } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(dst).or_insert(0) += 1;
+                        if !dst_idx.is_null() {
+                            *rcs.entry(dst_idx).or_insert(0) += 1;
+                        }
+                        if !bytes.is_null() {
+                            *rcs.entry(bytes).or_insert(0) += 1;
+                        }
                         *rcs.entry(x).or_insert(0) += 1;
                     }
-                    Op::Copy { src, dst } => {
+                    Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
                         dtypes.insert(op_id, dtypes[&src]);
                         *rcs.entry(src).or_insert(0) += 1;
                         *rcs.entry(dst).or_insert(0) += 1;
-                    }
-                    Op::GEP { x, index, layout } => {
-                        dtypes.insert(op_id, (dtypes[&x].0, layout));
-                        *rcs.entry(x).or_insert(0) += 1;
-                        *rcs.entry(index).or_insert(0) += 1;
+                        for &o in &[src_idx, dst_idx, bytes] {
+                            if !o.is_null() {
+                                *rcs.entry(o).or_insert(0) += 1;
+                            }
+                        }
                     }
                     Op::Cast { x, dtype } => {
                         dtypes.insert(op_id, (dtype, dtypes[&x].1));
@@ -282,7 +288,6 @@ impl Kernel {
                 Op::Asm { ref ops, .. } => !ops.is_empty(),
                 Op::Storage { scope: MemScope::Register, .. } => true,
                 Op::Load { .. }
-                | Op::GEP { .. }
                 | Op::Cast { .. }
                 | Op::Bitcast { .. }
                 | Op::Unary { .. }
@@ -382,7 +387,6 @@ impl Kernel {
                 Op::Const(_)
                 | Op::Param { .. }
                 | Op::Storage { .. }
-                | Op::GEP { .. }
                 | Op::Index { .. }
                 | Op::Stack { .. }
                 | Op::Expand { .. }
@@ -394,14 +398,8 @@ impl Kernel {
                 | Op::Reduce { .. }
                 | Op::TT { .. }
                 | Op::Asm { .. } => {}
-                Op::Load { src } => {
-                    // The GEP carries the location triple; the rest of this
-                    // arm is unchanged from the inline-triple form.
-                    let (buf, index, layout) = match self.ops[src].op {
-                        Op::GEP { x, index, layout } => (x, index, layout),
-                        _ => todo!("cost: Load src must be a GEP"),
-                    };
-                    let src = buf;
+                Op::Load { src, src_idx: index, bytes } => {
+                    let layout = self.bytes_layout(bytes);
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
@@ -487,16 +485,8 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, .. } => {
-                    // Pre-linearize whole-view stores name the Param
-                    // directly (Scalar layout, NULL index — the old inline
-                    // form exactly); post-linearize the GEP carries the triple.
-                    let (buf, index, layout) = match self.ops[dst].op {
-                        Op::GEP { x, index, layout } => (x, index, layout),
-                        Op::Param { .. } => (dst, OpId::NULL, MemLayout::Scalar),
-                        _ => todo!("cost: Store dst must be a GEP or Param"),
-                    };
-                    let dst = buf;
+                Op::Store { dst, dst_idx: index, bytes, .. } => {
+                    let layout = self.bytes_layout(bytes);
                     wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
@@ -581,7 +571,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Copy { src, dst } => {
+                Op::Copy { src, dst, bytes, .. } => {
                     // A copy reads once through src and writes once through
                     // dst: account read bits to the src scope, write bits to
                     // the dst scope, at single-transfer weight. No stride
@@ -591,13 +581,10 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 2;
                     }
-                    for (gep, is_read) in [(src, true), (dst, false)] {
-                        let (buf, layout) = match self.ops[gep].op {
-                            Op::GEP { x, layout, .. } => (x, layout),
-                            _ => todo!("cost: Copy side must be a GEP"),
-                        };
-                        let bits = loop_mult * layout.n_elements() * dtypes[&gep].0.bit_size() as i64;
-                        let slot = match mem_scope(&self.ops[buf].op) {
+                    let layout = self.bytes_layout(bytes);
+                    for (side, is_read) in [(src, true), (dst, false)] {
+                        let bits = loop_mult * layout.n_elements() * dtypes[&side].0.bit_size() as i64;
+                        let slot = match mem_scope(&self.ops[side].op) {
                             MemScope::Global => 0,
                             MemScope::Local | MemScope::Circular => 1,
                             MemScope::Register => 2,

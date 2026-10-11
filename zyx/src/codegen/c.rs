@@ -78,7 +78,10 @@ impl Kernel {
             while !op_id.is_null() {
                 steps_op_id += 1;
                 if steps_op_id > 50_000 {
-                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_c: kernel exceeds 50000 op render limit".into() });
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "generate_c: kernel exceeds 50000 op render limit".into(),
+                    });
                 }
                 match self.ops[op_id].op {
                     Op::Range { kind: scope, .. } => {
@@ -135,7 +138,10 @@ impl Kernel {
         while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 50_000 {
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_c: kernel exceeds 50000 op render limit".into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "generate_c: kernel exceeds 50000 op render limit".into(),
+                });
             }
             match self.ops[op_id].op {
                 Op::Source(_) => todo!(),
@@ -192,10 +198,8 @@ impl Kernel {
                 Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
-                Op::Load { src } => {
-                    let Op::GEP { x, index, layout } = self.ops[src].op else {
-                        todo!("C codegen: Load src must be GEP");
-                    };
+                Op::Load { src: x, src_idx, bytes } => {
+                    let layout = self.bytes_layout(bytes);
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
@@ -206,7 +210,7 @@ impl Kernel {
                                 _ => _ = writeln!(source, "{indent}r{reg} = p{x};"),
                             }
                         } else {
-                            let idx = get_var_addr(index, &constants, &indices, &reg_map, &var_params)?;
+                            let idx = get_var_addr(src_idx, &constants, &indices, &reg_map, &var_params)?;
                             match layout {
                                 MemLayout::Scalar => match dtypes[&x].0 {
                                     DType::F16 => {
@@ -265,11 +269,9 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, src } => {
-                    let Op::GEP { x: dst_buf, index, layout } = self.ops[dst].op else {
-                        todo!("C codegen: Store dst non-GEP (whole-view)");
-                    };
-                    let idx = get_var_addr(index, &constants, &indices, &reg_map, &var_params)?;
+                Op::Store { dst: dst_buf, dst_idx, src, bytes } => {
+                    let layout = self.bytes_layout(bytes);
+                    let idx = get_var_addr(dst_idx, &constants, &indices, &reg_map, &var_params)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     match layout {
                         MemLayout::Scalar => match dtypes[&dst_buf].0 {
@@ -503,9 +505,6 @@ impl Kernel {
                 }
                 Op::Barrier => {}
                 Op::Asm { .. } => todo!(),
-                Op::GEP { .. } => {
-                    // Address is composed at the Load/Store/Copy use site from the GEP operands; nothing to emit.
-                }
                 Op::Copy { .. } => {
                     todo!("Copy lowering for C (tenstorrent phase)");
                 }

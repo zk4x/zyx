@@ -448,19 +448,17 @@ impl<'a> TtSection<'a> {
         if let Some(s) = self.slots.get(&v) {
             return Ok(*s);
         }
-        if let Op::Load { src } = self.k.at(v) {
-            if let Op::GEP { x: base, .. } = self.k.at(*src) {
-                match self.k.at(*base) {
-                    Op::Storage { scope: MemScope::Circular, .. } => {
-                        let cb = self.cbs.get(base).copied().ok_or_else(|| self.err(format!("CB {base:?} has no number")))?;
-                        let s = self.fresh_slot()?;
-                        self.out.push_str(&format!("{}copy_tile({cb}, 0, {s});\n", self.indent));
-                        self.slots.insert(v, s);
-                        return Ok(s);
-                    }
-                    Op::Storage { scope: MemScope::Register, .. } => return self.reg_slot(*base),
-                    _ => {}
+        if let Op::Load { src, .. } = self.k.at(v) {
+            match self.k.at(*src) {
+                Op::Storage { scope: MemScope::Circular, .. } => {
+                    let cb = self.cbs.get(src).copied().ok_or_else(|| self.err(format!("CB {src:?} has no number")))?;
+                    let s = self.fresh_slot()?;
+                    self.out.push_str(&format!("{}copy_tile({cb}, 0, {s});\n", self.indent));
+                    self.slots.insert(v, s);
+                    return Ok(s);
                 }
+                Op::Storage { scope: MemScope::Register, .. } => return self.reg_slot(*src),
+                _ => {}
             }
         }
         Err(self.err(format!("{v:?} is not a CB or live tile")))
@@ -476,11 +474,9 @@ impl<'a> TtSection<'a> {
         if let Some(s) = self.slots.get(&v) {
             return Ok(*s);
         }
-        if let Op::Load { src } = self.k.at(v) {
-            if let Op::GEP { x: base, .. } = self.k.at(*src) {
-                if matches!(self.k.at(*base), Op::Storage { scope: MemScope::Register, .. }) {
-                    return self.reg_slot(*base);
-                }
+        if let Op::Load { src, .. } = self.k.at(v) {
+            if matches!(self.k.at(*src), Op::Storage { scope: MemScope::Register, .. }) {
+                return self.reg_slot(*src);
             }
         }
         Err(self.err(format!("{v:?} has no tile slot")))
@@ -520,15 +516,11 @@ impl<'a> TtSection<'a> {
                 Op::Storage { scope: MemScope::Register, .. } => self.reg_slot(o)?,
                 Op::Load { .. } => {
                     let chained = self.k.at(o);
-                    if let Op::Load { src } = chained {
-                        if let Op::GEP { x: base, .. } = self.k.at(*src) {
-                            if matches!(self.k.at(*base), Op::Storage { scope: MemScope::Circular, .. }) {
-                                self.cbs.get(base).copied().ok_or_else(|| self.err(format!("CB {base:?} has no number")))?
-                            } else if matches!(self.k.at(*base), Op::Storage { scope: MemScope::Register, .. }) {
-                                self.reg_slot(*base)?
-                            } else {
-                                return Err(self.err(format!("asm operand {o:?} is not a CB or live tile")));
-                            }
+                    if let Op::Load { src, .. } = chained {
+                        if matches!(self.k.at(*src), Op::Storage { scope: MemScope::Circular, .. }) {
+                            self.cbs.get(src).copied().ok_or_else(|| self.err(format!("CB {src:?} has no number")))?
+                        } else if matches!(self.k.at(*src), Op::Storage { scope: MemScope::Register, .. }) {
+                            self.reg_slot(*src)?
                         } else {
                             return Err(self.err(format!("asm operand {o:?} is not a CB or live tile")));
                         }
@@ -558,7 +550,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
     let mut loop_stack: Vec<OpId> = Vec::new();
     for id in ops.iter().copied() {
         match sec.k.at(id) {
-            Op::Const { .. } | Op::Param { .. } | Op::Storage { .. } | Op::GEP { .. } => {}
+            Op::Const { .. } | Op::Param { .. } | Op::Storage { .. } => {}
             Op::Range { kind, .. } => match kind {
                 RangeKind::Group(_) => {}
                 _ => return Err(sec.err(format!("range {id:?} is not a group range"))),
@@ -582,9 +574,9 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.indent.pop();
                 sec.indent.pop();
             }
-            Op::Copy { src, dst } => render_copy(sec, id, *src, *dst)?,
-            Op::Load { src } => render_load(sec, id, *src)?,
-            Op::Store { src: x, dst } => render_store(sec, id, *x, *dst)?,
+            Op::Copy { src, src_idx, dst, dst_idx, bytes } => render_copy(sec, id, *src, *src_idx, *dst, *dst_idx, *bytes)?,
+            Op::Load { src, bytes, .. } => render_load(sec, id, *src, *bytes)?,
+            Op::Store { src: x, dst, dst_idx, bytes } => render_store(sec, id, *x, *dst, *dst_idx)?,
             Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } => {
                 if matches!(sec.k.layout(id), MemLayout::Tile { .. }) {
                     render_tile_op(sec, id)?;
@@ -821,7 +813,7 @@ fn render(
 
     // Per-section params: transitive data deps of section traffic
     // and compute, head order. Seeds are effect/structure ops only —
-    // bare definitions (params, storages, consts, GEPs) seed nothing;
+    // bare definitions (params, storages, consts) seed nothing;
     // they join through their users.
     let mut params: [Vec<OpId>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for s in 0..3 {
@@ -829,7 +821,7 @@ fn render(
         let mut stack: Vec<OpId> = sections[s]
             .iter()
             .copied()
-            .filter(|id| !matches!(k.at(*id), Op::Param { .. } | Op::Storage { .. } | Op::Const { .. } | Op::GEP { .. }))
+            .filter(|id| !matches!(k.at(*id), Op::Param { .. } | Op::Storage { .. } | Op::Const { .. }))
             .collect();
         while let Some(id) = stack.pop() {
             if id.is_null() || !seen.insert(id) {
@@ -905,7 +897,7 @@ fn render(
         let mut stack: Vec<OpId> = sections[s]
             .iter()
             .copied()
-            .filter(|id| !matches!(k.at(*id), Op::Param { .. } | Op::Storage { .. } | Op::Const { .. } | Op::GEP { .. }))
+            .filter(|id| !matches!(k.at(*id), Op::Param { .. } | Op::Storage { .. } | Op::Const { .. }))
             .collect();
         while let Some(id) = stack.pop() {
             if id.is_null() || !reachable.insert(id) {
@@ -1102,7 +1094,15 @@ fn render(
 /// (`p<ord>`); arg reads use section positions. CB→CB moves never
 /// reach here (`tt_storage` canonicalizes them to load+store); the
 /// arm below is defensive only.
-fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<(), BackendError> {
+fn render_copy(
+    sec: &mut TtSection,
+    id: OpId,
+    src: OpId,
+    src_idx: OpId,
+    dst: OpId,
+    dst_idx: OpId,
+    bytes: OpId,
+) -> Result<(), BackendError> {
     let src_cb = circular_base(sec.k, src)?;
     let dst_cb = circular_base(sec.k, dst)?;
     match (src_cb, dst_cb) {
@@ -1112,20 +1112,20 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
                 return Err(sec.err(format!("publish {id:?} outside the reader")));
             }
             let dcb = sec.cb_num(dst_storage)?;
-            let (param, sidx) = dram_side(sec.k, src)?;
+            let (param, sidx) = dram_side(sec.k, src, src_idx)?;
             let ord = sec.ord_of(param)?;
             let idx = sec.expr(sidx)?;
             let eb = elem_bytes(sec.k, param)?;
             // Tile publishes move whole tiles; vector publishes move
-            // `size` elements at the element stride. Anything else on a
-            // CB-side GEP is malformed traffic.
+            // `size` elements at the element stride. Anything else is
+            // malformed traffic.
             let tile_bytes = tt_tile_bytes(cb_dtype(sec.k, dst_storage)?)?;
-            let (bytes, stride) = match sec.k.layout(dst) {
+            let (bytes, stride) = match sec.k.bytes_layout(bytes) {
                 MemLayout::Tile { .. } => (tile_bytes, tile_bytes),
                 MemLayout::Vector(size) => ((size as u32) * eb, eb),
                 MemLayout::Scalar => (eb, eb),
             };
-            let slot = cb_slot_expr(sec, dst, stride)?;
+            let slot = cb_slot_expr(sec, dst_idx, stride)?;
             let noc = sec.transfer;
             sec.transfer += 1;
             sec.out.push_str(&format!(
@@ -1141,18 +1141,18 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
             if sec.section != 2 {
                 return Err(sec.err(format!("drain {id:?} outside the writer")));
             }
-            if matches!(sec.k.layout(src), MemLayout::Vector(_)) {
+            if matches!(sec.k.bytes_layout(bytes), MemLayout::Vector(_)) {
                 return Err(sec.err(format!("vector drain {id:?} is not supported")));
             }
             let scb = sec.cb_num(src_storage)?;
-            let (param, didx) = dram_side(sec.k, dst)?;
+            let (param, didx) = dram_side(sec.k, dst, dst_idx)?;
             let ord = sec.ord_of(param)?;
             let idx = sec.expr(didx)?;
             let eb = elem_bytes(sec.k, param)?;
             let bytes = tt_tile_bytes(cb_dtype(sec.k, src_storage)?)?;
-            // Drain GEP indices are element-unit (like the publish
-            // side), so the slot stride is `eb`, not tile bytes.
-            let slot = cb_slot_expr(sec, src, eb)?;
+            // Drain indices are element-unit (like the publish side), so
+            // the slot stride is `eb`, not tile bytes.
+            let slot = cb_slot_expr(sec, src_idx, eb)?;
             let noc = sec.transfer;
             sec.transfer += 1;
             sec.out.push_str(&format!(
@@ -1168,7 +1168,7 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
             if sec.section != 1 {
                 return Err(sec.err(format!("CB→CB copy {id:?} outside the compute section")));
             }
-            if matches!(sec.k.layout(src), MemLayout::Vector(_)) {
+            if matches!(sec.k.bytes_layout(bytes), MemLayout::Vector(_)) {
                 return Err(sec.err(format!("vector CB→CB copy {id:?} is not supported")));
             }
             let scb = sec.cb_num(src_storage)?;
@@ -1181,28 +1181,21 @@ fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, dst: OpId) -> Result<()
     }
 }
 
-/// The Circular storage under a traffic `GEP` (`None` = DRAM side).
-fn circular_base(k: &Kernel, gep: OpId) -> Result<Option<OpId>, BackendError> {
-    match k.at(gep) {
-        Op::GEP { x, .. } => {
-            if matches!(k.at(*x), Op::Storage { scope: MemScope::Circular, .. }) {
-                Ok(Some(*x))
-            } else {
-                Ok(None)
-            }
-        }
-        _ => Err(tt_err(format!("tenstorrent: copy side {gep:?} is not a GEP"))),
+/// The Circular storage under a traffic `Copy` side (`None` = DRAM
+/// side): the side IS the base param/storage now.
+fn circular_base(k: &Kernel, side: OpId) -> Result<Option<OpId>, BackendError> {
+    if matches!(k.at(side), Op::Storage { scope: MemScope::Circular, .. }) {
+        Ok(Some(side))
+    } else {
+        Ok(None)
     }
 }
 
-/// The DRAM param + tile index under a traffic `GEP`.
-fn dram_side(k: &Kernel, gep: OpId) -> Result<(OpId, OpId), BackendError> {
-    match k.at(gep) {
-        Op::GEP { x, index, .. } => match k.at(*x) {
-            Op::Param { .. } => Ok((*x, *index)),
-            _ => Err(tt_err(format!("tenstorrent: copy DRAM side {gep:?} is not a param"))),
-        },
-        _ => Err(tt_err(format!("tenstorrent: copy side {gep:?} is not a GEP"))),
+/// The DRAM param + tile index of a traffic `Copy` side.
+fn dram_side(k: &Kernel, side: OpId, index: OpId) -> Result<(OpId, OpId), BackendError> {
+    match k.at(side) {
+        Op::Param { .. } => Ok((side, index)),
+        _ => Err(tt_err(format!("tenstorrent: copy DRAM side {side:?} is not a param"))),
     }
 }
 
@@ -1359,11 +1352,9 @@ fn shift_tmpl(dtype: DType) -> Result<&'static str, BackendError> {
 /// other load emits nothing: SSA consumers copy at their own use
 /// (`operand_slot`), LLK provenance loads are sync accounting, dead
 /// loads are pops only.
-fn render_load(sec: &mut TtSection, id: OpId, src: OpId) -> Result<(), BackendError> {
-    let Op::GEP { x: base, .. } = sec.k.at(src) else {
-        return Err(sec.err(format!("load {id:?} src is not a GEP")));
-    };
-    if !matches!(sec.k.at(*base), Op::Storage { scope: MemScope::Circular, .. }) {
+fn render_load(sec: &mut TtSection, id: OpId, src: OpId, bytes: OpId) -> Result<(), BackendError> {
+    let _: MemLayout = sec.k.bytes_layout(bytes);
+    if !matches!(sec.k.at(src), Op::Storage { scope: MemScope::Circular, .. }) {
         return Ok(());
     }
     let all_pack = match sec.users.get(&id) {
@@ -1378,7 +1369,7 @@ fn render_load(sec: &mut TtSection, id: OpId, src: OpId) -> Result<(), BackendEr
     if !all_pack {
         return Ok(());
     }
-    let cb = sec.cb_num(*base)?;
+    let cb = sec.cb_num(src)?;
     let s = sec.fresh_slot()?;
     sec.out.push_str(&format!("{}copy_tile({cb}, 0, {s});\n", sec.indent));
     sec.slots.insert(id, s);
@@ -1394,40 +1385,40 @@ fn render_load(sec: &mut TtSection, id: OpId, src: OpId) -> Result<(), BackendEr
 /// malformed pack traffic.
 /// CB pointer offsets (`cb_slot_expr`): empty for slot 0 (the old
 /// unbatched form), ` + (<expr>)*<bytes>` otherwise.
-fn cb_slot_expr(sec: &TtSection, gep: OpId, bytes: u32) -> Result<String, BackendError> {
-    match sec.k.at(gep) {
-        Op::GEP { index, .. } => match sec.k.at(*index) {
-            Op::Const(c) => match c.as_dim() {
-                Some(0) => Ok(String::new()),
-                _ => Ok(format!(" + ({})*{bytes}", sec.expr(*index)?)),
-            },
-            _ => Ok(format!(" + ({})*{bytes}", sec.expr(*index)?)),
+fn cb_slot_expr(sec: &TtSection, idx: OpId, bytes: u32) -> Result<String, BackendError> {
+    match sec.k.at(idx) {
+        Op::Const(c) => match c.as_dim() {
+            Some(0) => Ok(String::new()),
+            _ => Ok(format!(" + ({})*{bytes}", sec.expr(idx)?)),
         },
-        _ => Err(sec.err(format!("{gep:?} is not a GEP"))),
+        _ => Ok(format!(" + ({})*{bytes}", sec.expr(idx)?)),
     }
 }
-fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(), BackendError> {
-    let Op::GEP { x: base, .. } = sec.k.at(dst) else {
-        return Err(sec.err(format!("store {id:?} dst is not a GEP")));
-    };
-    match sec.k.at(*base) {
+fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId, dst_idx: OpId) -> Result<(), BackendError> {
+    match sec.k.at(dst) {
         Op::Storage { scope: MemScope::Circular, .. } => {
             // Scalar stores into a Circular buffer are rejected:
             // DRAM-CB movement is Copy-only, use
             // load_global_to_cb_scalar.
-            if matches!(sec.k.layout(x), MemLayout::Scalar) {
-                return Err(sec.err(format!(
-                    "scalar CB store {id:?}: DRAM-CB movement is Copy-only, use load_global_to_cb_scalar"
-                )));
+            if let Op::Load { bytes, .. } = sec.k.at(x) {
+                if matches!(sec.k.bytes_layout(*bytes), MemLayout::Scalar) {
+                    return Err(
+                        sec.err(format!("scalar CB store {id:?}: DRAM-CB movement is Copy-only, use load_global_to_cb_scalar"))
+                    );
+                }
+            } else if matches!(sec.k.layout(x), MemLayout::Scalar) {
+                return Err(
+                    sec.err(format!("scalar CB store {id:?}: DRAM-CB movement is Copy-only, use load_global_to_cb_scalar"))
+                );
             }
-            let dcb = sec.cb_num(*base)?;
+            let dcb = sec.cb_num(dst)?;
             let slot = sec.slot_of(x)?;
             sec.out.push_str(&format!("{}pack_tile({slot}, {dcb});\n", sec.indent));
             Ok(())
         }
         Op::Storage { scope: MemScope::Register, .. } => {
             let slot = sec.slot_of(x)?;
-            sec.slots.insert(*base, slot);
+            sec.slots.insert(dst, slot);
             Ok(())
         }
         _ => Err(sec.err(format!("store {id:?} dst is not a buffer"))),

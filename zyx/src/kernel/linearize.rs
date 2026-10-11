@@ -83,19 +83,19 @@ use std::collections::BinaryHeap;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind},
+    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind},
     shape::{Dim, UAxis},
 };
 
 impl Kernel {
     /// Has this kernel already been through [`Self::linearize`]?
     ///
-    /// A pre-linearize kernel stores whole views (store to a bare `Param`
-    /// or to a movement view over one, e.g. an eager assign through a
-    /// `Narrow`); linearization wraps every store destination in a
-    /// [`Op::GEP`]. This is the same early-return condition `linearize` uses.
+    /// A pre-linearize kernel stores whole views (null index, store to a
+    /// bare `Param` or to a movement view over one, e.g. an eager assign
+    /// through a `Narrow`); linearization computes every store's flat
+    /// index. This is the same early-return condition `linearize` uses.
     pub fn is_linearized(&self) -> bool {
-        !self.ops.values().any(|n| matches!(n.op, Op::Store { dst, .. } if !matches!(self.ops[dst].op, Op::GEP { .. })))
+        !self.ops.values().any(|n| matches!(n.op, Op::Store { dst_idx, .. } if dst_idx.is_null()))
     }
 
     /// Unfold movement operations into index-based operations
@@ -105,7 +105,7 @@ impl Kernel {
     // TODO Currently it only works if each param has a single move op chain.
     // Make it also work with move op chains when each param is accessed by multiple move ops.
     pub fn linearize(&mut self) {
-        if !self.ops.values().any(|n| matches!(n.op, Op::Store { dst, .. } if !matches!(self.ops[dst].op, Op::GEP { .. }))) {
+        if !self.ops.values().any(|n| matches!(n.op, Op::Store { dst_idx, .. } if dst_idx.is_null())) {
             return;
         }
 
@@ -542,11 +542,11 @@ impl Kernel {
                                 matches!(self.ops[dst].op, Op::Param { .. }),
                                 "linearize write path: store dst must still be the bare Param"
                             );
-                            let gep = self.push_back(Op::GEP { x: dst, index: write_index, layout: MemLayout::Scalar });
-                            let Op::Store { dst, .. } = &mut self.ops[store_id].op else {
+                            let Op::Store { dst: d, dst_idx, .. } = &mut self.ops[store_id].op else {
                                 unreachable!()
                             };
-                            *dst = gep;
+                            *d = dst;
+                            *dst_idx = write_index;
                         }
                         ParamKind::Variable => {
                             let view = views.remove(&op_id).unwrap();
@@ -627,7 +627,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, src } => {
+                Op::Store { dst, src, .. } => {
                     // The store writes its dst op's whole view. Loop lengths come
                     // from the dst op's own shape — NOT the terminal Param's shape:
                     // a crop (`pad lp<0`) or narrow between the Param and the store
@@ -1254,17 +1254,14 @@ impl Kernel {
         for op_id in ops {
             let operands: Vec<OpId> = match self.ops[op_id].op {
                 Op::Binary { x, y, .. } => vec![x, y],
-                Op::Load { src } | Op::Store { dst: src, .. } => {
-                    let index = match self.ops[src].op {
-                        Op::GEP { index, .. } => index,
-                        _ => continue,
-                    };
-                    if self.dtype(index) == IDX_T {
+                Op::Load { src_idx: index, .. } | Op::Store { dst_idx: index, .. } => {
+                    if index.is_null() || self.dtype(index) == IDX_T {
                         continue;
                     }
                     let cast = self.insert_before(op_id, Op::Cast { x: index, dtype: IDX_T });
-                    match &mut self.ops[src].op {
-                        Op::GEP { index, .. } => *index = cast,
+                    match &mut self.ops[op_id].op {
+                        Op::Load { src_idx, .. } => *src_idx = cast,
+                        Op::Store { dst_idx, .. } => *dst_idx = cast,
                         _ => unreachable!(),
                     }
                     continue;
@@ -1342,20 +1339,15 @@ impl Kernel {
                 }),
             );
             let acc = self.insert_before(loop_id, Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1 });
-            let init_gep = self.insert_before(loop_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
-            self.insert_before(loop_id, Op::Store { dst: init_gep, src: acc_init });
+            self.insert_before(loop_id, Op::Store { dst: acc, dst_idx: zero, src: acc_init, bytes: OpId::NULL });
 
             // Accumulate inside the loop, then close it, then read the result.
-            // Fresh GEPs per insertion point: GEPs are scope-bound, unlike
-            // the shared `zero` const.
-            let load_gep = self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
-            let load_acc = self.insert_before(op_id, Op::Load { src: load_gep });
+            // The shared `zero` const serves every insertion point.
+            let load_acc = self.insert_before(op_id, Op::Load { src: acc, src_idx: zero, bytes: OpId::NULL });
             let bin_acc = self.insert_before(op_id, Op::Binary { x, y: load_acc, bop: rop });
-            let store_gep = self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
-            self.insert_before(op_id, Op::Store { dst: store_gep, src: bin_acc });
+            self.insert_before(op_id, Op::Store { dst: acc, dst_idx: zero, src: bin_acc, bytes: OpId::NULL });
             self.insert_before(op_id, Op::EndLoop);
-            let out_gep = self.insert_before(op_id, Op::GEP { x: acc, index: zero, layout: MemLayout::Scalar });
-            self.ops[op_id].op = Op::Load { src: out_gep };
+            self.ops[op_id].op = Op::Load { src: acc, src_idx: zero, bytes: OpId::NULL };
         }
     }
 }

@@ -416,7 +416,10 @@ impl Kernel {
         while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 50_000 {
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_ptx: kernel exceeds 50000 op render limit".into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "generate_ptx: kernel exceeds 50000 op render limit".into(),
+                });
             }
             if let Op::Range { axis, kind: scope } = self.ops[op_id].op {
                 match scope {
@@ -439,7 +442,10 @@ impl Kernel {
         while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 50_000 {
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_ptx: kernel exceeds 50000 op render limit".into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "generate_ptx: kernel exceeds 50000 op render limit".into(),
+                });
             }
             // Kernel arguments are Op::Param defines, flat head order —
             // the same order the backend passes `args` at launch.
@@ -469,7 +475,10 @@ impl Kernel {
         while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 50_000 {
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_ptx: kernel exceeds 50000 op render limit".into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "generate_ptx: kernel exceeds 50000 op render limit".into(),
+                });
             }
             match self.ops[op_id].op {
                 Op::Param { kind, .. } => match kind {
@@ -542,16 +551,14 @@ impl Kernel {
                     };
                     _ = writeln!(comp.body, "{}mov.{ptx_dtype} %r{reg}, {};", comp.indent, constant.ptx());
                 }
-                Op::Load { src } => {
-                    let Op::GEP { x: buf, index, layout } = self.ops[src].op else {
-                        todo!("PTX codegen: Load src must be GEP");
-                    };
+                Op::Load { src: buf, src_idx, bytes } => {
+                    let layout = self.bytes_layout(bytes);
                     let dtype = dtypes[&buf].0;
                     match comp.get_scope(self, buf) {
                         MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            let idx = comp.get_var_addr(index);
+                            let idx = comp.get_var_addr(src_idx);
                             let offset = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
                             let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             if IDX_T == DType::U64 {
@@ -567,7 +574,7 @@ impl Kernel {
                             comp.emit_load(layout, dtype, reg, "global")?;
                         }
                         MemScope::Local => {
-                            let idx = comp.get_var_addr(index);
+                            let idx = comp.get_var_addr(src_idx);
                             let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{buf};", comp.indent);
@@ -583,7 +590,7 @@ impl Kernel {
                             comp.emit_load(layout, dtype, reg, "shared")?;
                         }
                         MemScope::Register => {
-                            let idx = comp.get_var_addr(index);
+                            let idx = comp.get_var_addr(src_idx);
                             let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{buf};", comp.indent);
@@ -600,10 +607,8 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, src: x } => {
-                    let Op::GEP { x: dst_buf, index, layout } = self.ops[dst].op else {
-                        todo!("PTX codegen: Store dst non-GEP (whole-view)");
-                    };
+                Op::Store { dst: dst_buf, dst_idx, src: x, bytes } => {
+                    let layout = self.bytes_layout(bytes);
                     let dtype = dtypes[&x].0;
                     let byte_shift = (dtype.bit_size() / 8).ilog2();
                     let offset = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
@@ -612,7 +617,7 @@ impl Kernel {
                         MemScope::Global => {
                             if dtype == DType::Bool {
                                 let gstu = comp.new_reg(DType::U32, MemLayout::Scalar, 1);
-                                let idx = comp.get_var_addr(index);
+                                let idx = comp.get_var_addr(dst_idx);
                                 let x = comp.get_var(x);
                                 _ = writeln!(comp.body, "{}selp.u32 %r{gstu}, 1, 0, %r{x};", comp.indent);
                                 if IDX_T == DType::U64 {
@@ -626,7 +631,7 @@ impl Kernel {
                                 _ = writeln!(comp.body, "{}st.global.u8 [%address], %r{gstu};", comp.indent);
                                 comp.release_reg(gstu);
                             } else {
-                                let idx = comp.get_var_addr(index);
+                                let idx = comp.get_var_addr(dst_idx);
                                 let x = comp.get_var(x);
                                 if IDX_T == DType::U64 {
                                     if offset != idx {
@@ -641,7 +646,7 @@ impl Kernel {
                             }
                         }
                         MemScope::Local => {
-                            let idx = comp.get_var_addr(index);
+                            let idx = comp.get_var_addr(dst_idx);
                             let x = comp.get_var(x);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst_buf};", comp.indent);
@@ -657,7 +662,7 @@ impl Kernel {
                             comp.emit_store_space(layout, dtype, x, "shared")?;
                         }
                         MemScope::Register => {
-                            let idx = comp.get_var_addr(index);
+                            let idx = comp.get_var_addr(dst_idx);
                             let x = comp.get_var(x);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst_buf};", comp.indent);
@@ -919,9 +924,6 @@ impl Kernel {
                     comp.release_reg(b01);
                 }
                 Op::Asm { .. } => todo!("PTX: inline asm not implemented"),
-                Op::GEP { .. } => {
-                    // Address is composed at the Load/Store/Copy use site from the GEP operands; nothing to emit.
-                }
                 Op::Copy { .. } => {
                     todo!("Copy lowering for PTX (tenstorrent phase)");
                 }
@@ -943,7 +945,10 @@ impl Kernel {
         while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 50_000 {
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_ptx: kernel exceeds 50000 op render limit".into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "generate_ptx: kernel exceeds 50000 op render limit".into(),
+                });
             }
             if matches!(self.ops[op_id].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
                 _ = writeln!(comp.header, "{}.reg .u64 %p{op_id};", comp.indent);

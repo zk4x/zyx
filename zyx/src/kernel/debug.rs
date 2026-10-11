@@ -268,37 +268,45 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {magenta}{value}{reset}").unwrap();
                 }
-                Op::GEP { x, index, layout } => {
-                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                Op::Load { src, src_idx, bytes } => {
+                    let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                    let x = id_map.get(&x).copied().unwrap_or(x);
-                    let index = id_map.get(&index).copied().unwrap_or(index);
+                    let src = id_map.get(&src).copied().unwrap_or(src);
+                    let src_idx = id_map.get(&src_idx).copied().unwrap_or(src_idx);
+                    let (lb, ub) = bounds.get(&src_idx).copied().unwrap_or((0, 0));
                     writeln!(
                         f,
-                        "{indent}r{out_id}{grey}: {dtype}{reset} = {red}r{x}{reset}[r{index} @ {layout}]    // {lb}..={ub} {green}gep{reset}"
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} r{src}[r{src_idx} @ {}]    // {lb}..={ub}",
+                        self.bytes_layout(bytes)
                     )
                     .unwrap();
                 }
-                Op::Load { src } => {
-                    let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
-                    dtypes.insert(op_id, dtype);
-                    let src = id_map.get(&src).copied().unwrap_or(src);
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} r{src}").unwrap();
-                }
-                Op::Store { dst, src: x } => {
+                Op::Store { dst, dst_idx, src: x, bytes } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let dst = id_map.get(&dst).copied().unwrap_or(dst);
+                    let dst_idx = id_map.get(&dst_idx).copied().unwrap_or(dst_idx);
                     let x = id_map.get(&x).copied().unwrap_or(x);
-                    writeln!(f, "{indent}{red}store{reset} r{dst} = r{x}").unwrap();
+                    let idx_txt = if dst_idx.is_null() {
+                        String::new()
+                    } else {
+                        format!("[r{dst_idx} @ {}]", self.bytes_layout(bytes))
+                    };
+                    writeln!(f, "{indent}{red}store{reset} r{dst}{idx_txt} = r{x}").unwrap();
                 }
-                Op::Copy { src, dst } => {
+                Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
                     let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let src = id_map.get(&src).copied().unwrap_or(src);
+                    let src_idx = id_map.get(&src_idx).copied().unwrap_or(src_idx);
                     let dst = id_map.get(&dst).copied().unwrap_or(dst);
-                    writeln!(f, "{indent}r{dst} = r{src}    // {red}copy{reset}").unwrap();
+                    let dst_idx = id_map.get(&dst_idx).copied().unwrap_or(dst_idx);
+                    let layout = self.bytes_layout(bytes);
+                    writeln!(
+                        f,
+                        "{indent}r{dst}[r{dst_idx} @ {layout}] = r{src}[r{src_idx}]    // {red}copy{reset}"
+                    )
+                    .unwrap();
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);

@@ -121,14 +121,12 @@ impl Kernel {
             if id.is_null() {
                 break;
             }
-            if let Op::Load { src } = self.ops[id].op {
-                if let Op::GEP { x: base, index: off, layout } = self.ops[src].op {
-                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
-                        if layout != (MemLayout::Tile { x: 32, y: 32, stride: 32 }) {
-                            return;
-                        }
-                        loads.push((id, base, off));
+            if let Op::Load { src: base, src_idx: off, bytes } = self.ops[id].op {
+                if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
+                    if self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32, stride: 32 }) {
+                        return;
                     }
+                    loads.push((id, base, off));
                 }
             }
             id = self.ops[id].next;
@@ -209,12 +207,9 @@ impl Kernel {
             let cb = cb_of[base];
             let cloned_off = memo[off];
             let slot_c = self.insert_const_idx_before(anchor, slot);
-            let tile = MemLayout::Tile { x: 32, y: 32, stride: 32 };
-            let s = self.insert_before(anchor, Op::GEP { x: *base, index: cloned_off, layout: tile });
-            let d = self.insert_before(anchor, Op::GEP { x: cb, index: slot_c, layout: tile });
-            self.insert_before(anchor, Op::Copy { src: s, dst: d });
-            let g = self.insert_before(anchor, Op::GEP { x: cb, index: slot_c, layout: tile });
-            self.ops[*load].op = Op::Load { src: g };
+            let bytes = self.block_bytes(&[32, 32]);
+            self.insert_before(anchor, Op::Copy { src: *base, src_idx: cloned_off, dst: cb, dst_idx: slot_c, bytes });
+            self.ops[*load].op = Op::Load { src: cb, src_idx: slot_c, bytes };
         }
         self.insert_before(anchor, Op::TT(TTOp::EndReader));
         // No verify(): the kernel is mid-pipeline by design — verify
@@ -253,27 +248,23 @@ impl Kernel {
                 break;
             }
             match self.ops[id].op {
-                Op::Load { src } => {
-                    if let Op::GEP { x: base, layout, .. } = self.ops[src].op {
-                        if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
-                            && layout != (MemLayout::Tile { x: 32, y: 32, stride: 32 })
-                        {
-                            return;
-                        }
+                Op::Load { src: base, bytes, .. } => {
+                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
+                        && self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32, stride: 32 })
+                    {
+                        return;
                     }
                 }
-                Op::Store { dst, src } => {
-                    if let Op::GEP { x: base, index: off, layout } = self.ops[dst].op {
-                        if matches!(self.ops[base].op, Op::Storage { .. }) {
-                            // Already lowered; the writer pass owns nothing here.
-                        } else if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
-                            if layout != (MemLayout::Tile { x: 32, y: 32, stride: 32 }) {
-                                return;
-                            }
-                            stores.push((id, base, off, src));
-                        } else {
+                Op::Store { dst: base, dst_idx: off, src, bytes } => {
+                    if matches!(self.ops[base].op, Op::Storage { .. }) {
+                        // Already lowered; the writer pass owns nothing here.
+                    } else if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
+                        if self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32, stride: 32 }) {
                             return;
                         }
+                        stores.push((id, base, off, src));
+                    } else {
+                        return;
                     }
                 }
                 _ => {}
@@ -320,13 +311,11 @@ impl Kernel {
                 if scan.is_null() {
                     break;
                 }
-                if let Op::Load { src } = self.ops[scan].op {
-                    if let Op::GEP { x: base, layout, .. } = self.ops[src].op {
-                        if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
-                            && layout == (MemLayout::Tile { x: 32, y: 32, stride: 32 })
-                        {
-                            return;
-                        }
+                if let Op::Load { src: base, bytes, .. } = self.ops[scan].op {
+                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
+                        && self.bytes_layout(bytes) == (MemLayout::Tile { x: 32, y: 32, stride: 32 })
+                    {
+                        return;
                     }
                 }
                 scan = self.ops[scan].next;
@@ -353,15 +342,16 @@ impl Kernel {
         // Compute-side rewrites in head order; drains append at the tail.
         let mut memo: Map<OpId, OpId> = Map::default();
         self.push_back(Op::TT(TTOp::EndCompute));
-        let tile = MemLayout::Tile { x: 32, y: 32, stride: 32 };
         for (store, base, off, _) in stores.iter() {
             let slot = slot_of[base];
             slot_of.insert(*base, slot + 1);
             let cb = cb_of[base];
             let slot_c = self.insert_const_idx_before(*store, slot);
-            let g = self.insert_before(*store, Op::GEP { x: cb, index: slot_c, layout: tile });
-            let Op::Store { src: v, .. } = self.ops[*store].op else { return };
-            self.ops[*store].op = Op::Store { dst: g, src: v };
+            let bytes = self.block_bytes(&[32, 32]);
+            let Op::Store { src: v, .. } = self.ops[*store].op else {
+                return;
+            };
+            self.ops[*store].op = Op::Store { dst: cb, dst_idx: slot_c, src: v, bytes };
             // Drain cone cloned at the tail (everything dominates it).
             let mut stack = vec![(*off, false)];
             for _ in 0..250_000 {
@@ -393,9 +383,7 @@ impl Kernel {
                 }
             }
             let cloned_off = memo[off];
-            let s = self.push_back(Op::GEP { x: cb, index: slot_c, layout: tile });
-            let d = self.push_back(Op::GEP { x: *base, index: cloned_off, layout: tile });
-            self.push_back(Op::Copy { src: s, dst: d });
+            self.push_back(Op::Copy { src: cb, src_idx: slot_c, dst: *base, dst_idx: cloned_off, bytes });
         }
         self.verify();
     }
@@ -489,15 +477,13 @@ impl Kernel {
             // at its own position (render copies there) — it is MATH
             // work like any other unpack. Markers are invisible (the
             // fused call consumes through provenance).
-            if let Op::Load { src } = op {
-                if let Op::GEP { x: base, .. } = kernel.at(*src) {
-                    if matches!(kernel.at(*base), Op::Storage { scope: MemScope::Circular, .. }) {
-                        if let Some(us) = users.get(&id) {
-                            return us.iter().all(|u| {
-                                matches!(kernel.at(*u), Op::TT(TTOp::BroadcastTile { .. }))
-                                    || matches!(kernel.at(*u), Op::Store { src: x, .. } if *x == id)
-                            }) && us.iter().any(|u| matches!(kernel.at(*u), Op::Store { .. }));
-                        }
+            if let Op::Load { src, .. } = op {
+                if matches!(kernel.at(*src), Op::Storage { scope: MemScope::Circular, .. }) {
+                    if let Some(us) = users.get(&id) {
+                        return us.iter().all(|u| {
+                            matches!(kernel.at(*u), Op::TT(TTOp::BroadcastTile { .. }))
+                                || matches!(kernel.at(*u), Op::Store { src: x, .. } if *x == id)
+                        }) && us.iter().any(|u| matches!(kernel.at(*u), Op::Store { .. }));
                     }
                 }
                 return false;
@@ -514,11 +500,9 @@ impl Kernel {
         // (Register slot, circular load, or SSA/LLK/Asm tile result).
         // The drain empties DST into a CB.
         let is_pack = |kernel: &Kernel, id: OpId| {
-            if let Op::Store { src: x, dst } = kernel.at(id) {
-                if let Op::GEP { x: g, .. } = kernel.at(*dst) {
-                    if matches!(kernel.at(*g), Op::Storage { scope: MemScope::Circular, .. }) {
-                        return matches!(kernel.layout(*x), MemLayout::Tile { .. });
-                    }
+            if let Op::Store { src: x, dst, .. } = kernel.at(id) {
+                if matches!(kernel.at(*dst), Op::Storage { scope: MemScope::Circular, .. }) {
+                    return matches!(kernel.layout(*x), MemLayout::Tile { .. });
                 }
             }
             false
@@ -832,10 +816,10 @@ impl Kernel {
             // (unpack needs MATH-open, pack needs PACK-open), while the
             // split form lowers each half under its own cone like
             // every other pack. Same CBs, same indices, same traffic.
-            if let Op::Copy { src, dst } = self.ops[op_id].op {
-                if self.is_circular_gep(src) && self.is_circular_gep(dst) {
-                    let load = self.insert_before(op_id, Op::Load { src });
-                    self.ops[op_id].op = Op::Store { dst, src: load };
+            if let Op::Copy { src, src_idx, dst, dst_idx, bytes } = self.ops[op_id].op {
+                if self.is_circular_base(src) && self.is_circular_base(dst) {
+                    let load = self.insert_before(op_id, Op::Load { src, src_idx, bytes });
+                    self.ops[op_id].op = Op::Store { dst, dst_idx, src: load, bytes };
                     op_id = next;
                     continue;
                 }
@@ -865,7 +849,9 @@ impl Kernel {
                         matches!(self.at(cb_in), Op::Storage { scope: MemScope::Circular, .. }),
                         "tt_storage: reduce input {cb_in:?} is not a Circular storage"
                     );
-                    todo!("tt_storage: pure ReduceTile has no scale operand; fuse_llks must wire the scale mul's CB as cb_sc first (ones source for the unscaled case undecided)");
+                    todo!(
+                        "tt_storage: pure ReduceTile has no scale operand; fuse_llks must wire the scale mul's CB as cb_sc first (ones source for the unscaled case undecided)"
+                    );
                 }
                 Op::TT(TTOp::TransposeTile { x }) => {
                     let cb = self.tt_storage_of(*x);
@@ -979,36 +965,31 @@ impl Kernel {
                 }
             }
         }
-        // Circular base of a GEP, if it names one.
-        let circ_base = |kernel: &Kernel, gep: OpId| -> Option<OpId> {
-            if let Op::GEP { x, .. } = kernel.at(gep) {
-                if matches!(kernel.at(*x), Op::Storage { scope: MemScope::Circular, .. }) {
-                    return Some(*x);
-                }
+        // Circular base of a Copy side (the base names its storage
+        // directly), if it is one.
+        let circ_base = |kernel: &Kernel, side: OpId| -> Option<OpId> {
+            if matches!(kernel.at(side), Op::Storage { scope: MemScope::Circular, .. }) {
+                return Some(side);
             }
             None
         };
-        // Resolved slot index of a GEP; unresolvable never matches.
-        let slot_of = |kernel: &Kernel, gep: OpId| -> Option<Dim> {
-            if let Op::GEP { index, .. } = kernel.at(gep) {
-                return kernel.resolve_const(*index).and_then(|c| c.as_dim());
-            }
-            None
-        };
+        // Resolved slot index of an access; unresolvable never matches.
+        let slot_of_index =
+            |kernel: &Kernel, index: OpId| -> Option<Dim> { kernel.resolve_const(index).and_then(|c| c.as_dim()) };
         // Whether an op moves pages of `cb` (gap dirtiness). SSA and
         // marker ops are inert; user `Asm` and anything unlisted are
         // opaque and invalidate.
         let touches = |kernel: &Kernel, id: OpId, cb: OpId| -> bool {
             let load_cb = |load: OpId| -> bool {
-                if let Op::Load { src } = kernel.at(load) {
-                    return circ_base(kernel, *src) == Some(cb);
+                if let Op::Load { src, .. } = kernel.at(load) {
+                    return *src == cb;
                 }
                 false
             };
             match kernel.at(id) {
-                Op::Copy { src, dst } => circ_base(kernel, *src) == Some(cb) || circ_base(kernel, *dst) == Some(cb),
-                Op::Load { src } => circ_base(kernel, *src) == Some(cb),
-                Op::Store { dst, .. } => circ_base(kernel, *dst) == Some(cb),
+                Op::Copy { src, dst, .. } => *src == cb || *dst == cb,
+                Op::Load { src, .. } => *src == cb,
+                Op::Store { dst, .. } => *dst == cb,
                 Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().any(|o| {
                     !o.is_null()
                         && (matches!(kernel.at(o), Op::Storage { scope: MemScope::Circular, .. } if o == cb) || load_cb(o))
@@ -1032,7 +1013,6 @@ impl Kernel {
                 Op::Const(_)
                 | Op::Param { .. }
                 | Op::Storage { .. }
-                | Op::GEP { .. }
                 | Op::Range { .. }
                 | Op::Unary { .. }
                 | Op::Binary { .. }
@@ -1053,65 +1033,65 @@ impl Kernel {
         // Publish copies: (cb, slot, src) with positions, slot resolved.
         // Loads: (cb, slot, src) with positions. Unresolvable slots and
         // non-publish copies never enter the maps.
-        let mut pubs: Vec<(OpId, Dim, OpId, usize, OpId)> = Vec::new();
-        let mut loads: Vec<(OpId, Dim, OpId, usize, OpId)> = Vec::new();
+        let mut pubs: Vec<(OpId, Dim, OpId, OpId, usize, OpId)> = Vec::new();
+        let mut loads: Vec<(OpId, Dim, OpId, OpId, usize, OpId)> = Vec::new();
         for &id in &order {
             match self.at(id) {
-                Op::Copy { src, dst } => {
-                    let src_circ = circ_base(self, *src).is_some();
-                    if src_circ {
+                Op::Copy { src, src_idx, dst, dst_idx, .. } => {
+                    if circ_base(self, *src).is_some() {
                         continue;
                     }
-                    let (Some(cb), Some(slot)) = (circ_base(self, *dst), slot_of(self, *dst)) else {
+                    let (Some(cb), Some(slot)) = (circ_base(self, *dst), slot_of_index(self, *dst_idx)) else {
                         continue;
                     };
-                    // Source must be an address (a GEP), not a bare op:
-                    // bare sources have no slot identity to match on.
-                    if !matches!(self.at(*src), Op::GEP { .. }) {
+                    // Data identity: one DRAM base (Param) as the source;
+                    // anything else (a value op) has no page identity.
+                    if !matches!(self.at(*src), Op::Param { .. } | Op::Storage { .. }) {
                         continue;
                     }
-                    pubs.push((cb, slot, *src, pos_of[&id], id));
+                    pubs.push((cb, slot, *src, *src_idx, pos_of[&id], id));
                 }
-                Op::Load { src } => {
-                    let (Some(cb), Some(slot)) = (circ_base(self, *src), slot_of(self, *src)) else {
+                Op::Load { src, src_idx, .. } => {
+                    let (Some(cb), Some(slot)) = (circ_base(self, *src), slot_of_index(self, *src_idx)) else {
                         continue;
                     };
-                    loads.push((cb, slot, *src, pos_of[&id], id));
+                    loads.push((cb, slot, *src, *src_idx, pos_of[&id], id));
                 }
                 _ => {}
             }
         }
         // Bucket keys present in the publishes.
         let mut keys: Vec<(OpId, Dim)> = Vec::new();
-        for (cb, slot, _, _, _) in &pubs {
+        for (cb, slot, _, _, _, _) in &pubs {
             if !keys.iter().any(|(c, s)| c == cb && s == slot) {
                 keys.push((*cb, slot.clone()));
             }
         }
         let mut removals: Vec<OpId> = Vec::new();
         for (cb, slot) in keys {
-            // One data source per slot: ambiguous pages never match.
-            let mut data: Vec<OpId> = Vec::new();
-            for (_, _, src, _, _) in pubs.iter().filter(|(c, s, _, _, _)| c == &cb && s == &slot) {
-                if !data.contains(src) {
-                    data.push(*src);
+            // One (base, index) pair per slot: ambiguous pages never
+            // match.
+            let mut data: Vec<(OpId, OpId)> = Vec::new();
+            for (_, _, src, src_idx, _, _) in pubs.iter().filter(|(c, s, _, _, _, _)| c == &cb && s == &slot) {
+                if !data.contains(&(*src, *src_idx)) {
+                    data.push((*src, *src_idx));
                 }
             }
             if data.len() != 1 {
                 continue;
             }
-            // One address node per slot on the consume side.
-            let mut addrs: Vec<OpId> = Vec::new();
-            for (_, _, src, _, _) in loads.iter().filter(|(c, s, _, _, _)| c == &cb && s == &slot) {
-                if !addrs.contains(src) {
-                    addrs.push(*src);
+            // One address pair per slot on the consume side.
+            let mut addrs: Vec<(OpId, OpId)> = Vec::new();
+            for (_, _, src, src_idx, _, _) in loads.iter().filter(|(c, s, _, _, _, _)| c == &cb && s == &slot) {
+                if !addrs.contains(&(*src, *src_idx)) {
+                    addrs.push((*src, *src_idx));
                 }
             }
             if addrs.len() != 1 {
                 continue;
             }
             let mut copies: Vec<(usize, OpId)> =
-                pubs.iter().filter(|(c, s, _, _, _)| c == &cb && s == &slot).map(|(_, _, _, p, id)| (*p, *id)).collect();
+                pubs.iter().filter(|(c, s, _, _, _, _)| c == &cb && s == &slot).map(|(_, _, _, _, p, id)| (*p, *id)).collect();
             copies.sort();
             // Predicted waits for this slot: each live load with a
             // non-LLK, non-marker user draws one load-wait, and each
@@ -1121,7 +1101,7 @@ impl Kernel {
             // waits, so keep one copy per predicted wait.
             let mut load_waits = 0usize;
             let mut call_waits = 0usize;
-            for (_, _, _, _, id) in loads.iter().filter(|(c, s, _, _, _)| c == &cb && s == &slot) {
+            for (_, _, _, _, _, id) in loads.iter().filter(|(c, s, _, _, _, _)| c == &cb && s == &slot) {
                 let Some(us) = users.get(id) else { continue };
                 let mut draws_load_wait = false;
                 for u in us {
@@ -1141,9 +1121,9 @@ impl Kernel {
             }
             let dead: Vec<OpId> = loads
                 .iter()
-                .filter(|(c, s, _, _, _)| c == &cb && s == &slot)
-                .filter(|(_, _, _, _, id)| !users.contains_key(id))
-                .map(|(_, _, _, _, id)| *id)
+                .filter(|(c, s, _, _, _, _)| c == &cb && s == &slot)
+                .filter(|(_, _, _, _, _, id)| !users.contains_key(id))
+                .map(|(_, _, _, _, _, id)| *id)
                 .collect();
             let (c, l) = (copies.len(), load_waits + call_waits);
             // Fills suffice: leave copies AND dead loads in place (a
@@ -1244,24 +1224,16 @@ impl Kernel {
         scan = self.head;
         while !scan.is_null() {
             let (read_op, gep_index, cb) = match self.ops[scan].op {
-                Op::Load { src } => match self.ops[src].op {
-                    Op::GEP { x: cb, index, .. } if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) => {
-                        (scan, index, cb)
-                    }
-                    _ => {
-                        scan = self.next_op(scan);
-                        continue;
-                    }
-                },
-                Op::Copy { src, .. } => match self.ops[src].op {
-                    Op::GEP { x: cb, index, .. } if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) => {
-                        (scan, index, cb)
-                    }
-                    _ => {
-                        scan = self.next_op(scan);
-                        continue;
-                    }
-                },
+                Op::Load { src: cb, src_idx: index, .. }
+                    if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
+                {
+                    (scan, index, cb)
+                }
+                Op::Copy { src: cb, src_idx: index, .. }
+                    if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
+                {
+                    (scan, index, cb)
+                }
                 _ => {
                     scan = self.next_op(scan);
                     continue;
@@ -1334,11 +1306,8 @@ impl Kernel {
                 match self.ops[cur].op {
                     Op::Loop { .. } => depth += 1,
                     Op::EndLoop => depth -= 1,
-                    Op::Load { src } => {
-                        if let Op::GEP { x: c, index, .. } = self.ops[src].op
-                            && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. })
-                            && c == cb
-                        {
+                    Op::Load { src: c, src_idx: index, .. } => {
+                        if c == cb {
                             let indexed = self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
                             let ok_users = users.get(&cur).is_some_and(|us| {
                                 us.iter().all(|u| match &self.ops[*u].op {
@@ -1361,31 +1330,14 @@ impl Kernel {
                         }
                     }
                     Op::Store { dst, .. } => {
-                        if let Op::GEP { x: c, .. } = self.ops[dst].op
-                            && c == cb
-                            && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. })
-                        {
+                        if dst == cb {
                             held = false;
                             break;
                         }
                     }
-                    Op::Copy { src, dst } => {
-                        let src_hit = match self.ops[src].op {
-                            Op::GEP { x: c, index, .. }
-                                if c == cb && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                            {
-                                Some(index)
-                            }
-                            _ => None,
-                        };
-                        let dst_hit = match self.ops[dst].op {
-                            Op::GEP { x: c, .. }
-                                if c == cb && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                            {
-                                Some(c)
-                            }
-                            _ => None,
-                        };
+                    Op::Copy { src, src_idx: index, dst, .. } => {
+                        let src_hit = if src == cb { Some(index) } else { None };
+                        let dst_hit = if dst == cb { Some(dst) } else { None };
                         match (src_hit, dst_hit) {
                             (None, None) => {}
                             (Some(index), None) => {
@@ -1409,8 +1361,7 @@ impl Kernel {
                             if o.is_null() {
                                 continue;
                             }
-                            if let Op::Load { src } = self.ops[o].op
-                                && let Op::GEP { x: c, .. } = self.ops[src].op
+                            if let Op::Load { src: c, .. } = self.ops[o].op
                                 && c == cb
                             {
                                 feeds = true;
@@ -1485,18 +1436,16 @@ impl Kernel {
                     Op::TT(TTOp::EndReader) => section = 1,
                     Op::TT(TTOp::EndCompute) => section = 2,
                     Op::Loop { len } => match self.at(len) {
-                        Op::Const(c) => {
-                            match c.as_dim().and_then(|t| u64::try_from(t).ok()).filter(|t| *t > 0) {
-                                Some(t) => {
-                                    mult *= t;
-                                    stack.push(CountFrame::Trip { op: scan, trips: t });
-                                }
-                                None => {
-                                    uncountable += 1;
-                                    stack.push(CountFrame::Other);
-                                }
+                        Op::Const(c) => match c.as_dim().and_then(|t| u64::try_from(t).ok()).filter(|t| *t > 0) {
+                            Some(t) => {
+                                mult *= t;
+                                stack.push(CountFrame::Trip { op: scan, trips: t });
                             }
-                        }
+                            None => {
+                                uncountable += 1;
+                                stack.push(CountFrame::Other);
+                            }
+                        },
                         _ => {
                             uncountable += 1;
                             stack.push(CountFrame::Other);
@@ -1515,31 +1464,22 @@ impl Kernel {
                         // traffic matches neither (tile layouts) and
                         // streams inline below.
                         let published: Option<(OpId, u64)> = match self.ops[scan].op {
-                            Op::Store { src: x, dst } if uncountable == 0 && self.is_circular_gep(dst) => {
+                            Op::Store { src: x, dst, .. } if uncountable == 0 && self.is_circular_base(dst) => {
                                 match self.layout(x) {
-                                    MemLayout::Scalar => Some((self.tt_storage_of(dst), 1)),
+                                    MemLayout::Scalar => Some((dst, 1)),
                                     _ => None,
                                 }
                             }
-                            Op::Copy { src, dst } if uncountable == 0 => {
-                                let src_is_cb = match self.ops[src].op {
-                                    Op::GEP { x, .. } => {
-                                        matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. })
+                            Op::Copy { src, dst, bytes, .. } if uncountable == 0 => {
+                                let src_is_cb = matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. });
+                                if matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }) && !src_is_cb {
+                                    match self.bytes_layout(bytes) {
+                                        MemLayout::Vector(size) => Some((dst, size as u64)),
+                                        MemLayout::Scalar => Some((dst, 1)),
+                                        MemLayout::Tile { .. } => None,
                                     }
-                                    _ => false,
-                                };
-                                match self.ops[dst].op {
-                                    Op::GEP { x: d, .. }
-                                        if matches!(self.ops[d].op, Op::Storage { scope: MemScope::Circular, .. })
-                                            && !src_is_cb =>
-                                    {
-                                        match self.layout(dst) {
-                                            MemLayout::Vector(size) => Some((d, size as u64)),
-                                            MemLayout::Scalar => Some((d, 1)),
-                                            MemLayout::Tile { .. } => None,
-                                        }
-                                    }
-                                    _ => None,
+                                } else {
+                                    None
                                 }
                             }
                             _ => None,
@@ -1608,23 +1548,9 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Copy { src, dst } => {
-                    let src_cb = match self.ops[src].op {
-                        Op::GEP { x, .. } if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }) => Some(x),
-                        Op::GEP { .. } => None,
-                        Op::Storage { scope: MemScope::Circular, .. } => {
-                            panic!("tt_sync_cbs: copy src {src:?} names a Circular storage directly, must go through a GEP")
-                        }
-                        _ => None,
-                    };
-                    let dst_cb = match self.ops[dst].op {
-                        Op::GEP { x, .. } if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }) => Some(x),
-                        Op::GEP { .. } => None,
-                        Op::Storage { scope: MemScope::Circular, .. } => {
-                            panic!("tt_sync_cbs: copy dst {dst:?} names a Circular storage directly, must go through a GEP")
-                        }
-                        _ => None,
-                    };
+                Op::Copy { src, dst, .. } => {
+                    let src_cb = if self.is_circular_base(src) { Some(src) } else { None };
+                    let dst_cb = if self.is_circular_base(dst) { Some(dst) } else { None };
                     match (src_cb, dst_cb) {
                         (None, None) => {}
                         (None, Some(cb)) => {
@@ -1633,8 +1559,8 @@ impl Kernel {
                             // publish); the per-op publish here would
                             // over-count. Partial pages stay
                             // unpublished (loud downstream).
-                            let tallied = matches!(self.layout(dst), MemLayout::Vector(_))
-                                || matches!(self.layout(dst), MemLayout::Scalar);
+                            let tallied =
+                                matches!(self.layout(dst), MemLayout::Vector(_)) || matches!(self.layout(dst), MemLayout::Scalar);
                             if !tallied {
                                 self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb, n: 1 }));
                                 self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
@@ -1657,25 +1583,23 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { src: x, dst } => {
+                Op::Store { src: x, dst, .. } => {
                     // Pack store: a tile value into a Circular buffer
                     // reserves a back slot and pushes it, like a publish.
                     // A `Const` src is a fill, not a pack — left alone
                     // (render rejects it loudly).
-                    if self.is_circular_gep(dst) && matches!(self.layout(x), MemLayout::Tile { .. }) {
+                    if self.is_circular_base(dst) && matches!(self.layout(x), MemLayout::Tile { .. }) {
                         self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb: self.tt_storage_of(dst), n: 1 }));
                         let cb = self.tt_storage_of(dst);
                         self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
                     }
                 }
-                Op::Load { src } => {
+                Op::Load { src, .. } => {
                     // Non-CB reads are not sync business. Circularity gates
                     // the whole arm as a nested `if` — a `continue` here
                     // would skip the cursor advance at the loop bottom and
                     // spin forever.
-                    if let Op::GEP { x: cb, .. } = self.ops[src].op
-                        && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
-                    {
+                    if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }) {
                         match users.get(&op_id) {
                             // Dead load: no SSA consumer reads. The drain pop
                             // consumes an already-waited page (fifo count,
@@ -1728,7 +1652,7 @@ impl Kernel {
                                     )
                                 });
                                 if !fused_only && !batched_read.contains(&op_id) {
-                                    self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
+                                    self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb: src, n: 1 }));
                                 }
                             }
                         }
@@ -1746,12 +1670,10 @@ impl Kernel {
                         if !matches!(self.ops[o].op, Op::Load { .. }) {
                             continue;
                         }
-                        let Op::Load { src } = self.ops[o].op else {
+                        let Op::Load { src: cb, .. } = self.ops[o].op else {
                             unreachable!("tt_sync_cbs: provenance is a Load");
                         };
-                        if let Op::GEP { x: cb, .. } = self.ops[src].op
-                            && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
-                        {
+                        if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) {
                             wait_cbs.push(cb);
                         }
                     }
@@ -1841,12 +1763,10 @@ impl Kernel {
                     end_reader = Some(scan);
                 }
                 Op::TT(TTOp::EndCompute) => in_compute = false,
-                Op::Load { src } if in_compute => {
-                    if let Op::GEP { x: cb, .. } = self.ops[*src].op
-                        && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
-                        && !startup_loads.contains(&cb)
+                Op::Load { src, .. } if in_compute => {
+                    if matches!(self.ops[*src].op, Op::Storage { scope: MemScope::Circular, .. }) && !startup_loads.contains(src)
                     {
-                        startup_loads.push(cb);
+                        startup_loads.push(*src);
                     }
                 }
                 op if in_compute && first_pack.is_none() => {
@@ -1913,8 +1833,8 @@ impl Kernel {
                 let bad = match &self.ops[op_id].op {
                     Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => true,
                     Op::Store { .. } => self.tt_pack_store_cb(op_id).is_some(),
-                    Op::Load { src } => {
-                        matches!(self.ops[*src].op, Op::GEP { x, .. } if matches!(self.ops[x].op, Op::Storage { scope: MemScope::Circular, .. }))
+                    Op::Load { src, .. } => {
+                        matches!(self.ops[*src].op, Op::Storage { scope: MemScope::Circular, .. })
                     }
                     op => {
                         matches!(op, Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Asm { .. })
@@ -1967,12 +1887,9 @@ impl Kernel {
                     InitAction::CastInit(self.dtype(x), dtype)
                 }
                 Op::Bitcast { .. } => InitAction::None,
-                Op::Copy { src, dst } => {
-                    if self.is_circular_gep(*src) && self.is_circular_gep(*dst) {
-                        let Op::GEP { x: dcb, .. } = self.ops[*dst].op else {
-                            unreachable!("tt_init_math: CB copy dst is a GEP");
-                        };
-                        InitAction::PackReconfig(dcb)
+                Op::Copy { src, dst, .. } => {
+                    if self.is_circular_base(*src) && self.is_circular_base(*dst) {
+                        InitAction::PackReconfig(*dst)
                     } else {
                         InitAction::None
                     }
@@ -2011,7 +1928,7 @@ impl Kernel {
             // contributor is already marked when its consumer arrives.
             if let Some(acc) = pending_acc {
                 let threads = match &self.ops[op_id].op {
-                    Op::Load { src } => matches!(self.ops[*src].op, Op::GEP { x, .. } if x == acc),
+                    Op::Load { src, .. } => *src == acc,
                     Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => acc_values.contains(x),
                     Op::Binary { x, y, .. } => acc_values.contains(x) || acc_values.contains(y),
                     Op::TT(TTOp::BroadcastTile { x, .. }) => acc_values.contains(x),
@@ -2029,9 +1946,8 @@ impl Kernel {
             // site in walk (hence runtime) order. Other fused consumers
             // (LLK provenance positions read straight from the CB,
             // user Asm, markers) and dead loads need none.
-            if let Op::Load { src } = self.ops[op_id].op {
-                if let Op::GEP { x: cb, .. } = self.ops[src].op
-                    && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
+            if let Op::Load { src, .. } = self.ops[op_id].op {
+                if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })
                     && users.get(&op_id).is_some_and(|us| {
                         us.iter().any(|u| {
                             matches!(self.ops[*u].op, Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. })
@@ -2055,6 +1971,7 @@ impl Kernel {
                 {
                     // Copy unpack init: same shapes as the `tt_copy_init`
                     // ctors (which push back — wrong end for a pass).
+                    let cb = src;
                     match unpack_src {
                         Some(prev) if prev == cb => {
                             self.insert_before(
@@ -2355,24 +2272,16 @@ impl Kernel {
         scan = self.head;
         while !scan.is_null() {
             let (read_op, gep_index, cb) = match self.ops[scan].op {
-                Op::Load { src } => match self.ops[src].op {
-                    Op::GEP { x: cb, index, .. } if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) => {
-                        (scan, index, cb)
-                    }
-                    _ => {
-                        scan = self.next_op(scan);
-                        continue;
-                    }
-                },
-                Op::Copy { src, .. } => match self.ops[src].op {
-                    Op::GEP { x: cb, index, .. } if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) => {
-                        (scan, index, cb)
-                    }
-                    _ => {
-                        scan = self.next_op(scan);
-                        continue;
-                    }
-                },
+                Op::Load { src: cb, src_idx: index, .. }
+                    if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
+                {
+                    (scan, index, cb)
+                }
+                Op::Copy { src: cb, src_idx: index, .. }
+                    if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) =>
+                {
+                    (scan, index, cb)
+                }
                 _ => {
                     scan = self.next_op(scan);
                     continue;
@@ -2445,11 +2354,8 @@ impl Kernel {
                 match self.ops[cur].op {
                     Op::Loop { .. } => depth += 1,
                     Op::EndLoop => depth -= 1,
-                    Op::Load { src } => {
-                        if let Op::GEP { x: c, index, .. } = self.ops[src].op
-                            && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. })
-                            && c == cb
-                        {
+                    Op::Load { src: c, src_idx: index, .. } => {
+                        if c == cb {
                             let indexed = self.resolve_const(index).and_then(|c| c.as_dim()) != Some(0);
                             let ok_users = users.get(&cur).is_some_and(|us| {
                                 us.iter().all(|u| match &self.ops[*u].op {
@@ -2472,31 +2378,14 @@ impl Kernel {
                         }
                     }
                     Op::Store { dst, .. } => {
-                        if let Op::GEP { x: c, .. } = self.ops[dst].op
-                            && c == cb
-                            && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. })
-                        {
+                        if dst == cb {
                             held = false;
                             break;
                         }
                     }
-                    Op::Copy { src, dst } => {
-                        let src_hit = match self.ops[src].op {
-                            Op::GEP { x: c, index, .. }
-                                if c == cb && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                            {
-                                Some(index)
-                            }
-                            _ => None,
-                        };
-                        let dst_hit = match self.ops[dst].op {
-                            Op::GEP { x: c, .. }
-                                if c == cb && matches!(self.ops[c].op, Op::Storage { scope: MemScope::Circular, .. }) =>
-                            {
-                                Some(c)
-                            }
-                            _ => None,
-                        };
+                    Op::Copy { src, src_idx: index, dst, .. } => {
+                        let src_hit = if src == cb { Some(index) } else { None };
+                        let dst_hit = if dst == cb { Some(dst) } else { None };
                         match (src_hit, dst_hit) {
                             (None, None) => {}
                             (Some(index), None) => {
@@ -2520,8 +2409,7 @@ impl Kernel {
                             if o.is_null() {
                                 continue;
                             }
-                            if let Op::Load { src } = self.ops[o].op
-                                && let Op::GEP { x: c, .. } = self.ops[src].op
+                            if let Op::Load { src: c, .. } = self.ops[o].op
                                 && c == cb
                             {
                                 feeds = true;
@@ -2574,12 +2462,10 @@ impl Kernel {
                     if o.is_null() || !matches!(self.ops[o].op, Op::Load { .. }) {
                         continue;
                     }
-                    let Op::Load { src } = self.ops[o].op else {
+                    let Op::Load { src: cb, .. } = self.ops[o].op else {
                         unreachable!("tt_place_pops: provenance is a Load");
                     };
-                    if let Op::GEP { x: cb, .. } = self.ops[src].op
-                        && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
-                    {
+                    if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) {
                         *remaining.entry((cb, o)).or_insert(0) += 1;
                     }
                 }
@@ -2642,15 +2528,13 @@ impl Kernel {
             let mut pops: Vec<OpId> = Vec::new();
             match self.ops[op_id].op {
                 Op::Copy { src, .. } => {
-                    if let Op::GEP { x: cb, .. } = self.ops[src].op
-                        && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
-                    {
+                    if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }) {
                         if !in_compute {
                             // Writer drain (reader never holds a
                             // circular src — its copies publish).
                             // A CB→CB move outside compute cannot
                             // unpack — malformed.
-                            let is_drain = matches!(self.ops[op_id].op, Op::Copy { dst, .. } if !self.is_circular_gep(dst));
+                            let is_drain = matches!(self.ops[op_id].op, Op::Copy { dst, .. } if !self.is_circular_base(dst));
                             if !is_drain {
                                 panic!("tt_place_pops: CB→CB copy {op_id:?} outside the compute section");
                             }
@@ -2658,7 +2542,7 @@ impl Kernel {
                         // Indexed-window reads carry no per-trip pop:
                         // the bracket pop covers the window.
                         if !batched_read.contains(&op_id) {
-                            pops.push(cb);
+                            pops.push(src);
                         }
                     }
                 }
@@ -2669,15 +2553,12 @@ impl Kernel {
                         if o.is_null() || !matches!(self.ops[o].op, Op::Load { .. }) {
                             continue;
                         }
-                        let Op::Load { src } = self.ops[o].op else {
+                        let Op::Load { src, .. } = self.ops[o].op else {
                             unreachable!("tt_place_pops: provenance is a Load");
                         };
-                        if let Op::GEP { x: cb, .. } = self.ops[src].op
-                            && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
-                            && !seen.contains(&cb)
-                        {
-                            seen.push(cb);
-                            cbs.push((cb, o));
+                        if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }) && !seen.contains(&src) {
+                            seen.push(src);
+                            cbs.push((src, o));
                         }
                     }
                     for (cb, load) in cbs {
@@ -2698,13 +2579,11 @@ impl Kernel {
             // SSA last-use pops landing here.
             for (load, user) in last_use.iter() {
                 if *user == op_id && !batched_read.contains(load) {
-                    let Op::Load { src } = self.ops[*load].op else {
+                    let Op::Load { src, .. } = self.ops[*load].op else {
                         unreachable!("tt_place_pops: last-use of a Load");
                     };
-                    if let Op::GEP { x: cb, .. } = self.ops[src].op
-                        && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
-                    {
-                        pops.push(cb);
+                    if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }) {
+                        pops.push(src);
                     }
                 }
             }
@@ -2715,15 +2594,13 @@ impl Kernel {
             // yet have consumed. A CB with no wait keeps the old
             // at-load pop (fifo stays the loud guard for that shape).
             if matches!(self.ops[op_id].op, Op::Load { .. }) && !users.contains_key(&op_id) && !batched_read.contains(&op_id) {
-                let Op::Load { src } = self.ops[op_id].op else {
+                let Op::Load { src, .. } = self.ops[op_id].op else {
                     unreachable!("tt_place_pops: dead op is a Load");
                 };
-                if let Op::GEP { x: cb, .. } = self.ops[src].op
-                    && matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. })
-                {
-                    match first_wait.get(&cb) {
-                        Some(wait) => deferred_drains.push((*wait, cb)),
-                        None => pops.push(cb),
+                if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }) {
+                    match first_wait.get(&src) {
+                        Some(wait) => deferred_drains.push((*wait, src)),
+                        None => pops.push(src),
                     }
                 }
             }
@@ -2791,14 +2668,9 @@ impl Kernel {
                 }
                 _ => {}
             }
+            let op = self.ops[scan].clone().op;
             if section != 0 {
-                let read_src = match self.ops[scan].op {
-                    Op::Load { src } => Some(src),
-                    Op::Copy { src, .. } => Some(src),
-                    _ => None,
-                };
-                if let Some(gep) = read_src
-                    && let Op::GEP { x: base, index, layout } = self.ops[gep].op
+                if let Op::Load { src: base, src_idx: index, .. } | Op::Copy { src: base, src_idx: index, .. } = op
                     && matches!(self.ops[base].op, Op::Storage { scope: MemScope::Circular, .. })
                     && popped.get(&base).copied().unwrap_or(0) > 0
                 {
@@ -2810,27 +2682,15 @@ impl Kernel {
                     if dim < 0 {
                         panic!("tt_place_pops: negative CB index at {scan:?}");
                     }
-                    let rebased = (dim as u64).checked_sub(pages * 1024).unwrap_or_else(|| {
-                        panic!("tt_place_pops: rebase underflows CB{base:?} at {scan:?}")
-                    });
+                    let rebased = (dim as u64)
+                        .checked_sub(pages * 1024)
+                        .unwrap_or_else(|| panic!("tt_place_pops: rebase underflows CB{base:?} at {scan:?}"));
                     if rebased != dim as u64 {
-                        let nc = self.insert_const_idx_before(gep, rebased as i64);
-                        let shared = users.get(&gep).is_some_and(|us| us.len() > 1);
-                        if shared {
-                            let ng = self.insert_before(scan, Op::GEP { x: base, index: nc, layout });
-                            if matches!(self.ops[scan].op, Op::Copy { .. }) {
-                                let Op::Copy { src, .. } = &mut self.ops[scan].op else {
-                                    unreachable!("tt_place_pops: rebase src vanished")
-                                };
-                                *src = ng;
-                            } else {
-                                let Op::Load { src } = &mut self.ops[scan].op else {
-                                    unreachable!("tt_place_pops: rebase src vanished")
-                                };
-                                *src = ng;
-                            }
-                        } else {
-                            self.ops[gep].op = Op::GEP { x: base, index: nc, layout };
+                        let nc = self.insert_const_idx_before(scan, rebased as i64);
+                        match &mut self.ops[scan].op {
+                            Op::Load { src_idx, .. } => *src_idx = nc,
+                            Op::Copy { src_idx, .. } => *src_idx = nc,
+                            _ => unreachable!("tt_place_pops: rebase src vanished"),
                         }
                     }
                 }
@@ -3017,7 +2877,6 @@ impl Kernel {
         match self.at(op_id) {
             Op::Load { src, .. } | Op::Copy { src, .. } => self.tt_storage_of(*src),
             Op::Store { dst, .. } => self.tt_storage_of(*dst),
-            Op::GEP { x, .. } => self.tt_storage_of(*x),
             Op::Storage { .. } | Op::Param { .. } => op_id,
             Op::TT(TTOp::MatmulTile { acc, .. }) => self.tt_storage_of(*acc),
             Op::TT(TTOp::BroadcastTile { x, .. }) => self.tt_storage_of(*x),
@@ -3044,26 +2903,20 @@ impl Kernel {
     /// into a Circular buffer (shared by `tt_lock_dst`, `tt_sync_cbs`
     /// accounting, and `tt_init_math` — single source of truth).
     fn tt_pack_store_cb(&self, id: OpId) -> Option<OpId> {
-        if let Op::Store { src: x, dst } = self.at(id) {
-            if let Op::GEP { x: g, .. } = self.at(*dst) {
-                if matches!(self.at(*g), Op::Storage { scope: MemScope::Circular, .. })
-                    && matches!(self.layout(*x), MemLayout::Tile { .. })
-                {
-                    return Some(*g);
-                }
+        if let Op::Store { src: x, dst, .. } = self.at(id) {
+            if matches!(self.at(*dst), Op::Storage { scope: MemScope::Circular, .. })
+                && matches!(self.layout(*x), MemLayout::Tile { .. })
+            {
+                return Some(*dst);
             }
         }
         None
     }
 
-    /// True iff `id` is a `GEP` over a Circular storage (a CB slot
-    /// address, either side of a traffic `Copy`).
-    fn is_circular_gep(&self, id: OpId) -> bool {
-        if let Op::GEP { x, .. } = self.at(id) {
-            matches!(self.at(*x), Op::Storage { scope: MemScope::Circular, .. })
-        } else {
-            false
-        }
+    /// True iff `id` is a Circular storage base of a traffic access
+    /// (a CB side of a Copy or the dst of a pack store).
+    fn is_circular_base(&self, id: OpId) -> bool {
+        matches!(self.at(id), Op::Storage { scope: MemScope::Circular, .. })
     }
 
     /// Validate a scalar binary lane at init time (old scalar rule): int

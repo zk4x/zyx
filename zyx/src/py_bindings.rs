@@ -1209,7 +1209,8 @@ impl Tensor {
                     // list of (left, right) pairs
                     let mut out = Vec::with_capacity(list.len());
                     for item in list.iter() {
-                        let pair: (i64, i64) = item.extract().map_err(|_| ZyxError::ParseError("pad: expected (left, right) pairs".into()))?;
+                        let pair: (i64, i64) =
+                            item.extract().map_err(|_| ZyxError::ParseError("pad: expected (left, right) pairs".into()))?;
                         out.push(pair);
                     }
                     out

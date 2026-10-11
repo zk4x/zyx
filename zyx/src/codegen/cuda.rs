@@ -130,7 +130,10 @@ impl Kernel {
         while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 50_000 {
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "render_cuda: kernel exceeds 50000 op render limit".into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "render_cuda: kernel exceeds 50000 op render limit".into(),
+                });
             }
             if let Op::Range { axis, kind: RangeKind::Local(len) } = self.ops[op_id].op {
                 lws[axis as usize] = len;
@@ -200,7 +203,10 @@ impl Kernel {
         while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 50_000 {
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_cuda: kernel exceeds 50000 op render limit".into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "generate_cuda: kernel exceeds 50000 op render limit".into(),
+                });
             }
             let op = &self.ops[op_id].op;
             if let &Op::Param { dtype, kind, .. } = op {
@@ -246,7 +252,10 @@ impl Kernel {
         while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 50_000 {
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_cuda: kernel exceeds 50000 op render limit".into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "generate_cuda: kernel exceeds 50000 op render limit".into(),
+                });
             }
             match self.ops[op_id].op {
                 Op::Source(_) => todo!(),
@@ -270,9 +279,6 @@ impl Kernel {
                         status: ErrorStatus::KernelCompilation,
                         context: "CUDA codegen: unexpected kernel op (should be unfolded)".into(),
                     });
-                }
-                Op::GEP { .. } => {
-                    // Address is composed at the Load/Store/Copy use site from the GEP operands; nothing to emit.
                 }
                 Op::Copy { .. } => {
                     todo!("Copy lowering for CUDA (tenstorrent phase)");
@@ -299,17 +305,15 @@ impl Kernel {
                     MemScope::Register => _ = writeln!(source, "{indent}{} p{op_id}[{len}];", dtype.cu()),
                     _ => unreachable!("cuda supports only local and register scopes"),
                 },
-                Op::Load { src } => {
-                    let Op::GEP { x, index, layout } = self.ops[src].op else {
-                        todo!("CUDA codegen: Load src must be GEP");
-                    };
+                Op::Load { src: x, src_idx, bytes } => {
+                    let layout = self.bytes_layout(bytes);
                     if rcs.contains_key(&op_id) {
                         let dtype = dtypes[&op_id];
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                         if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
                             _ = writeln!(source, "{indent}r{reg} = p{x};");
                         } else {
-                            let idx = get_var_addr(index, &constants, &indices, &reg_map, loop_id, &var_params)?;
+                            let idx = get_var_addr(src_idx, &constants, &indices, &reg_map, loop_id, &var_params)?;
                             match layout {
                                 MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];"),
                                 MemLayout::Vector(len) => {
@@ -324,12 +328,10 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, src } => {
-                    let Op::GEP { x: dst_buf, index, layout } = self.ops[dst].op else {
-                        todo!("CUDA codegen: Store dst non-GEP (whole-view)");
-                    };
+                Op::Store { dst: dst_buf, dst_idx, src, bytes } => {
+                    let layout = self.bytes_layout(bytes);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let idx = get_var_addr(index, &constants, &indices, &reg_map, loop_id, &var_params)?;
+                    let idx = get_var_addr(dst_idx, &constants, &indices, &reg_map, loop_id, &var_params)?;
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {

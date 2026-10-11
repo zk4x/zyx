@@ -425,7 +425,10 @@ impl Kernel {
         while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 50_000 {
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "render_spirv: kernel exceeds 50000 op render limit".into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "render_spirv: kernel exceeds 50000 op render limit".into(),
+                });
             }
             if let Op::Range { axis, kind: RangeKind::Local(len) } = self.ops[op_id].op
                 && axis < 3
@@ -469,7 +472,10 @@ impl Kernel {
         while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 50_000 {
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "render_spirv: kernel exceeds 50000 op render limit".into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "render_spirv: kernel exceeds 50000 op render limit".into(),
+                });
             }
             if let Op::Param { dtype, kind: ParamKind::Variable, .. } = self.at(op_id) {
                 let storage_bits = if *dtype == DType::Bool { 32 } else { dtype.bit_size() };
@@ -525,7 +531,10 @@ impl Kernel {
             while !op_id.is_null() {
                 steps_op_id += 1;
                 if steps_op_id > 50_000 {
-                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_spirv: kernel exceeds 50000 op render limit".into() });
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "generate_spirv: kernel exceeds 50000 op render limit".into(),
+                    });
                 }
                 if let Op::Param { dtype: DType::Bool, kind, .. } = self.at(op_id)
                     && matches!(kind, ParamKind::Global | ParamKind::GlobalMut)
@@ -546,7 +555,10 @@ impl Kernel {
             while !op_id.is_null() {
                 steps_op_id += 1;
                 if steps_op_id > 50_000 {
-                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_spirv: kernel exceeds 50000 op render limit".into() });
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "generate_spirv: kernel exceeds 50000 op render limit".into(),
+                    });
                 }
                 if let Op::Storage { dtype: DType::BF16, .. } = self.at(op_id) {
                     found = true;
@@ -777,7 +789,10 @@ impl Kernel {
             while !op_id.is_null() {
                 steps_op_id += 1;
                 if steps_op_id > 50_000 {
-                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_spirv: kernel exceeds 50000 op render limit".into() });
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "generate_spirv: kernel exceeds 50000 op render limit".into(),
+                    });
                 }
                 match self.at(op_id) {
                     Op::Const(c) => {
@@ -1084,7 +1099,10 @@ impl Kernel {
             while !op_id.is_null() {
                 steps_op_id += 1;
                 if steps_op_id > 50_000 {
-                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_spirv: kernel exceeds 50000 op render limit".into() });
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "generate_spirv: kernel exceeds 50000 op render limit".into(),
+                    });
                 }
                 if let &Op::Range { .. } = self.at(op_id) {
                     found = true;
@@ -1221,7 +1239,10 @@ impl Kernel {
             while !op_id.is_null() {
                 steps_op_id += 1;
                 if steps_op_id > 50_000 {
-                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_spirv: kernel exceeds 50000 op render limit".into() });
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "generate_spirv: kernel exceeds 50000 op render limit".into(),
+                    });
                 }
                 match self.ops[op_id].op {
                     Op::Source(_) => todo!(),
@@ -1304,10 +1325,13 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::GEP { x, index, layout } => {
-                        // GEP produces the element access pointer via OpAccessChain; Load/Store consume it.
+                    Op::Copy { .. } => {
+                        todo!("Copy lowering for SPIR-V (tenstorrent phase)");
+                    }
+                    Op::Load { src: x, src_idx: index, bytes } => {
+                        let layout = self.bytes_layout(bytes);
                         if matches!(layout, MemLayout::Vector(_) | MemLayout::Tile { .. }) {
-                            todo!("SPIR-V GEP vector/tile layout (tenstorrent phase)");
+                            todo!("SPIR-V Load vector/tile via bytes (tenstorrent phase)");
                         }
                         let elem_dt = dtypes[&x].0;
                         let (base_ptr, element_ptr_type, is_storage_buffer, push_member) =
@@ -1334,7 +1358,7 @@ impl Kernel {
                             } else {
                                 return Err(BackendError {
                                     status: ErrorStatus::KernelCompilation,
-                                    context: "SPIR-V: GEP from unknown variable".into(),
+                                    context: "SPIR-V: Load from unknown variable".into(),
                                 });
                             };
                         let access = asm.id();
@@ -1342,29 +1366,15 @@ impl Kernel {
                             let index_id = spv_values[&index];
                             asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, const_u32_0, index_id]);
                         } else if let Some(member_const) = push_member {
-                            // Push-constant scalar variable: member access ignores the GEP index.
+                            // Push-constant scalar variable: member access ignores the index.
                             asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, member_const]);
                         } else {
                             let index_id = spv_values[&index];
                             asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, index_id]);
                         }
-                        spv_values.insert(op_id, access);
-                    }
-                    Op::Copy { .. } => {
-                        todo!("Copy lowering for SPIR-V (tenstorrent phase)");
-                    }
-                    Op::Load { src } => {
-                        let Op::GEP { x, index: _, layout } = self.ops[src].op else {
-                            todo!("SPIR-V: Load src must be GEP");
-                        };
-                        if matches!(layout, MemLayout::Vector(_) | MemLayout::Tile { .. }) {
-                            todo!("SPIR-V Load vector/tile via GEP (tenstorrent phase)");
-                        }
                         let (load_dt, _) = dtypes[&op_id];
                         let result_type =
                             layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, load_dt, layout);
-                        // Scalar path consumes the GEP access pointer emitted by the Op::GEP arm.
-                        let access = spv_values[&src];
                         let is_local = matches!(self.at(x), &Op::Storage { scope: MemScope::Local, .. });
                         let is_bool_buf = bool_buffers.contains(&x) && !is_local;
                         let loaded = asm.id();
@@ -1389,19 +1399,48 @@ impl Kernel {
                             spv_values.insert(op_id, loaded);
                         }
                     }
-                    Op::Store { dst, src: x } => {
-                        let Op::GEP { x: dst_buf, index: _, layout } = self.ops[dst].op else {
-                            todo!("SPIR-V: Store dst must be GEP");
-                        };
+                    Op::Store { dst: dst_buf, dst_idx: index, src: x, bytes } => {
+                        let layout = self.bytes_layout(bytes);
                         if matches!(layout, MemLayout::Vector(_) | MemLayout::Tile { .. }) {
-                            todo!("SPIR-V Store vector/tile via GEP (tenstorrent phase)");
+                            todo!("SPIR-V Store vector/tile via bytes (tenstorrent phase)");
                         }
                         if variable_members.contains_key(&dst_buf) {
                             todo!("SPIR-V Store to push-constant Variable (tenstorrent phase)");
                         }
                         let val_id = spv_values[&x];
-                        // Scalar path consumes the GEP access pointer emitted by the Op::GEP arm.
-                        let access = spv_values[&dst];
+                        // Compose the element access pointer inline.
+                        let elem_dt = dtypes[&dst_buf].0;
+                        let (base_ptr, element_ptr_type, is_storage_buffer, _push_member) = if let Some(&var_id) =
+                            spv_variables.get(&dst_buf)
+                        {
+                            let is_local = matches!(self.at(dst_buf), &Op::Storage { scope: MemScope::Local, .. });
+                            let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
+                            let is_bool_dst = bool_buffers.contains(&dst_buf) && !is_local;
+                            let storage_type = if is_bool_dst {
+                                u8_id.unwrap()
+                            } else {
+                                push_dtype(&mut asm, &mut type_cache, &mut type_entries, elem_dt)
+                            };
+                            let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, storage_type);
+                            (var_id, elem_ptr, !is_local, None::<u32>)
+                        } else if let Some(&var_id) = reg_vars.get(&dst_buf) {
+                            let scalar_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, elem_dt);
+                            let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, scalar_type);
+                            (var_id, elem_ptr, false, None::<u32>)
+                        } else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "SPIR-V: Store to unknown variable".into(),
+                            });
+                        };
+                        let access = asm.id();
+                        if is_storage_buffer {
+                            let index_id = spv_values[&index];
+                            asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, const_u32_0, index_id]);
+                        } else {
+                            let index_id = spv_values[&index];
+                            asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, index_id]);
+                        }
                         let is_local = matches!(self.at(dst_buf), &Op::Storage { scope: MemScope::Local, .. });
                         let is_bool_dst = bool_buffers.contains(&dst_buf) && !is_local;
                         let store_val = if is_bool_dst {

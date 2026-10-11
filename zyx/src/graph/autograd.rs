@@ -387,7 +387,7 @@ impl Runtime {
                 Op::Contiguous { x } => {
                     accum_grad(self, graph_id, &mut grads, x, grad);
                 }
-                Op::Store { dst: _, src } => {
+                Op::Store { src, .. } => {
                     accum_grad(self, graph_id, &mut grads, src, grad);
                 }
                 Op::After { x, .. } => {
@@ -407,7 +407,6 @@ impl Runtime {
                 | Op::Spirv { .. }
                 | Op::PTX { .. }
                 | Op::Storage { .. }
-                | Op::GEP { .. }
                 | Op::Load { .. }
                 | Op::Copy { .. }
                 | Op::Range { .. }

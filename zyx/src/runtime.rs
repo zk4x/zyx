@@ -1586,9 +1586,7 @@ impl Runtime {
             let sx = self.resolve_shape(x);
             let sy = self.resolve_shape(y);
             if !sx.is_empty() && !sy.is_empty() && sx != sy {
-                return Err(ZyxError::shape_error(
-                    format!("binary: operand shapes differ: {sx:?} vs {sy:?}").into(),
-                ));
+                return Err(ZyxError::shape_error(format!("binary: operand shapes differ: {sx:?} vs {sy:?}").into()));
             }
             let shape_id = result_shape(self, x, y);
             // The result shares the operand's shape expression; take our own
@@ -2958,7 +2956,8 @@ impl Runtime {
                         unreachable!("{:?}", self.tensors[src])
                     }
                 };
-                let assign_cid = self.push_op(graph_id, Op::Store { dst: dst_cid, src: src_cid });
+                let assign_cid =
+                    self.push_op(graph_id, Op::Store { dst: dst_cid, dst_idx: OpId::NULL, src: src_cid, bytes: OpId::NULL });
                 let leaf_class = self.push_op(graph_id, Op::After { x: dst_leaf_cid, dep: assign_cid });
                 let dst_class = self.push_op(graph_id, Op::After { x: dst_cid, dep: assign_cid });
                 for (tid, class_id) in [(dst_leaf, leaf_class), (dst, dst_class)] {
@@ -3028,7 +3027,12 @@ impl Runtime {
                 shape: dst_shape_op,
                 cons_id: 0,
             });
-            self.kernels[kernel_id].kernel.push_back(Op::Store { dst: mut_param, src: src_op });
+            self.kernels[kernel_id].kernel.push_back(Op::Store {
+                dst: mut_param,
+                dst_idx: OpId::NULL,
+                src: src_op,
+                bytes: OpId::NULL,
+            });
             self.kernels[kernel_id].stores.push(dst);
             // dst becomes pending: the store kernel owns the value now, mutating
             // the kept buffer in place — nothing is released. Materialize
@@ -3276,7 +3280,7 @@ impl Runtime {
 
         let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
         // Store src's value into dst's base buffer through the replayed chain.
-        self.kernels[src_kid].kernel.push_back(Op::Store { dst: dst_op, src: src_op });
+        self.kernels[src_kid].kernel.push_back(Op::Store { dst: dst_op, dst_idx: OpId::NULL, src: src_op, bytes: OpId::NULL });
         debug_assert!(
             matches!(self.tensors[dst_org], TensorData::Leaf { .. } | TensorData::PendingLeaf { .. }),
             "assign: dst base {dst_org} is not a leaf/pending leaf"
@@ -3627,13 +3631,13 @@ impl Runtime {
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
             let store_shape_id = self.kernels[kid].kernel.stack_shape_dims(op_id);
-            let dst_id = self.kernels[kid].kernel.push_back(Op::Param {
+            let dst = self.kernels[kid].kernel.push_back(Op::Param {
                 dtype,
                 kind: ParamKind::GlobalMut,
                 shape: store_shape_id,
                 cons_id: 0,
             });
-            self.kernels[kid].kernel.push_back(Op::Store { dst: dst_id, src: op_id });
+            self.kernels[kid].kernel.push_back(Op::Store { dst, dst_idx: OpId::NULL, src: op_id, bytes: OpId::NULL });
             self.kernels[kid].stores.push(x);
             kid
         } else {

@@ -155,11 +155,13 @@ impl Kernel {
             let mut count = 0usize;
             macro_rules! add_param {
                 ($p:expr) => {{
-                    count += 1;
-                    let j = idx[$p.0 as usize];
-                    if j != usize::MAX {
-                        edges.push((j, i));
-                        in_degree[i] += 1;
+                    if !$p.is_null() {
+                        count += 1;
+                        let j = idx[$p.0 as usize];
+                        if j != usize::MAX {
+                            edges.push((j, i));
+                            in_degree[i] += 1;
+                        }
                     }
                 }};
             }
@@ -228,20 +230,23 @@ impl Kernel {
                     // Unroll widths are immediates — no length operand to add.
                     RangeKind::Unroll(_) => {}
                 },
-                Op::Store { dst, src: x } => {
+                Op::Store { dst, dst_idx, src: x, bytes } => {
                     add_param!(dst);
+                    add_param!(dst_idx);
                     add_param!(x);
+                    add_param!(bytes);
                 }
-                Op::Copy { src, dst } => {
+                Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
                     add_param!(src);
+                    add_param!(src_idx);
                     add_param!(dst);
+                    add_param!(dst_idx);
+                    add_param!(bytes);
                 }
-                Op::Load { src } => {
+                Op::Load { src, src_idx, bytes } => {
                     add_param!(src);
-                }
-                Op::GEP { x, index, .. } => {
-                    add_param!(x);
-                    add_param!(index);
+                    add_param!(src_idx);
+                    add_param!(bytes);
                 }
                 Op::Loop { len, .. } => add_param!(len),
                 Op::Wmma { a, b, c, .. } => {
@@ -278,37 +283,24 @@ impl Kernel {
         }
 
         // Loads, stores, and copies to the same buffer keep their relative
-        // order. Locations are GEPs (or bare Params pre-linearize): group
-        // by the addressed buffer, not the GEP id, or same-buffer traffic
-        // through different GEPs could reorder across FIFO accounting.
+        // order. Locations name their buffer directly now: group by the
+        // addressed buffer, or same-buffer traffic through different
+        // accesses could reorder across FIFO accounting.
         let mut by_memory_target: Map<OpId, Vec<usize>> = Map::default();
         for (i, &id) in rest.iter().enumerate() {
             match self.at(id) {
                 Op::Load { src, .. } => {
-                    let buf = match self.at(*src) {
-                        Op::GEP { x, .. } => *x,
-                        _ => *src,
-                    };
-                    by_memory_target.entry(buf).or_default().push(i);
+                    by_memory_target.entry(*src).or_default().push(i);
                 }
                 Op::Store { dst, .. } => {
-                    let buf = match self.at(*dst) {
-                        Op::GEP { x, .. } => *x,
-                        _ => *dst,
-                    };
-                    by_memory_target.entry(buf).or_default().push(i);
+                    by_memory_target.entry(*dst).or_default().push(i);
                 }
-                Op::Copy { src, dst } => {
-                    for &side in &[src, dst] {
-                        let buf = match self.at(*side) {
-                            Op::GEP { x, .. } => *x,
-                            _ => *side,
-                        };
-                        by_memory_target.entry(buf).or_default().push(i);
-                    }
+                Op::Copy { src, dst, .. } => {
+                    by_memory_target.entry(*src).or_default().push(i);
+                    by_memory_target.entry(*dst).or_default().push(i);
                 }
-                // CB sync ops name their buffer directly (no GEP): same
-                // FIFO group as the CB's loads/stores/copies, or sync
+                // CB sync ops name their buffer directly: same FIFO group
+                // as the CB's loads/stores/copies, or sync
                 // could reorder across the traffic it guards.
                 Op::TT(TTOp::ReserveBack { cb, .. })
                 | Op::TT(TTOp::PushBack { cb, .. })
@@ -488,12 +480,8 @@ impl Kernel {
                         open_stack.pop();
                     }
                     Op::Store { dst, .. } | Op::Copy { dst, .. } => {
-                        // Writes address a GEP (or a bare Param
-                        // pre-linearize): track the buffer, not the GEP.
-                        let buf = match self.at(*dst) {
-                            Op::GEP { x, .. } => *x,
-                            _ => *dst,
-                        };
+                        // Writes name their buffer directly.
+                        let buf = *dst;
                         for &opener in &open_stack {
                             let bound = (opener, closer_of[&opener]);
                             let loops = storage_loops.entry(buf).or_default();
@@ -514,10 +502,7 @@ impl Kernel {
                 continue;
             }
             let Op::Load { src, .. } = self.at(rest[i]) else { continue };
-            let buf = match self.at(*src) {
-                Op::GEP { x, .. } => *x,
-                _ => *src,
-            };
+            let buf = *src;
             let Some(loops) = storage_loops.get(&buf) else { continue };
             for &(opener, closer) in loops {
                 if opener < i && i < closer {
@@ -540,16 +525,12 @@ impl Kernel {
             if !load[i] {
                 continue;
             }
-            // A load from Circular storage is a FIFO pop (see above): chase
-            // the load's GEP to the buffer. A copy reading from Circular
+            // A load from Circular storage is a FIFO pop (see above):
+            // the base names the buffer. A copy reading from Circular
             // pops the same way and pins identically.
-            let src = match self.at(rest[i]) {
+            let buf = match self.at(rest[i]) {
                 Op::Load { src, .. } | Op::Copy { src, .. } => *src,
                 _ => continue,
-            };
-            let buf = match self.at(src) {
-                Op::GEP { x, .. } => *x,
-                _ => src,
             };
             if !matches!(self.at(buf), Op::Storage { scope: MemScope::Circular, .. }) {
                 continue;

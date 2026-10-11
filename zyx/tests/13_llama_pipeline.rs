@@ -632,7 +632,8 @@ fn llama_forward_two_tape_split() -> Result<(), ZyxError> {
             let mut scores = [0.0f32; ST_SEQ];
             for j in 0..ST_SEQ {
                 scores[j] = if j <= i {
-                    (0..ST_HD).map(|p| q_ref[i * ST_D + head * ST_HD + p] * k_ref[j * ST_D + head * ST_HD + p]).sum::<f32>() * scale
+                    (0..ST_HD).map(|p| q_ref[i * ST_D + head * ST_HD + p] * k_ref[j * ST_D + head * ST_HD + p]).sum::<f32>()
+                        * scale
                 } else {
                     f32::NEG_INFINITY
                 };
@@ -737,7 +738,8 @@ fn kernel6_scores_repro() -> Result<(), ZyxError> {
         for i in 0..ST_SEQ {
             let mut mx = f32::NEG_INFINITY;
             for j in 0..ST_SEQ {
-                let sc = (0..ST_HD).map(|p| q_ref[i * ST_D + head * ST_HD + p] * k_ref[j * ST_D + head * ST_HD + p]).sum::<f32>() * scale
+                let sc = (0..ST_HD).map(|p| q_ref[i * ST_D + head * ST_HD + p] * k_ref[j * ST_D + head * ST_HD + p]).sum::<f32>()
+                    * scale
                     + if j <= i { 0.0 } else { f32::NEG_INFINITY };
                 exp_scores[head * ST_SEQ * ST_SEQ + i * ST_SEQ + j] = sc;
                 mx = mx.max(sc);
@@ -811,7 +813,8 @@ fn kernel11_ctx_repro() -> Result<(), ZyxError> {
             let mut scores = [0.0f32; ST_SEQ];
             for j in 0..ST_SEQ {
                 scores[j] = if j <= i {
-                    (0..ST_HD).map(|p| q_ref[i * ST_D + head * ST_HD + p] * k_ref[j * ST_D + head * ST_HD + p]).sum::<f32>() * scale
+                    (0..ST_HD).map(|p| q_ref[i * ST_D + head * ST_HD + p] * k_ref[j * ST_D + head * ST_HD + p]).sum::<f32>()
+                        * scale
                 } else {
                     f32::NEG_INFINITY
                 };

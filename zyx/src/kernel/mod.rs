@@ -348,31 +348,28 @@ impl Kernel {
                 Op::Storage { dtype, .. } => {
                     dtypes.insert(op_id, (dtype, MemLayout::Scalar));
                 }
-                Op::Load { src } => {
+                Op::Load { src, .. } => {
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Store { dst, src: x } => {
-                    // Post-linearize the layout lives on the dst GEP;
-                    // pre-linearize whole-view stores are Scalar by form.
-                    let layout = match self.ops[dst].op {
-                        Op::GEP { layout, .. } => layout,
-                        Op::Param { .. } => MemLayout::Scalar,
-                        _ => todo!("compute_dtypes_and_rcs: Store dst must be a GEP or Param"),
-                    };
+                Op::Store { dst, dst_idx, src: x, bytes } => {
+                    // Post-linearize the shape rides on the store itself
+                    // (`bytes`); pre-linearize whole-view stores are
+                    // Scalar by form (null bytes).
+                    let layout = self.bytes_layout(bytes);
                     debug_assert_eq!(dtypes[&x].1, layout);
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(dst).or_insert(0) += 1;
+                    *rcs.entry(dst_idx).or_insert(0) += 1;
+                    *rcs.entry(bytes).or_insert(0) += 1;
                     *rcs.entry(x).or_insert(0) += 1;
                 }
-                Op::Copy { src, dst } => {
+                Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
                     dtypes.insert(op_id, dtypes[&src]);
-                    *rcs.entry(src).or_insert(0) += 1;
-                    *rcs.entry(dst).or_insert(0) += 1;
-                }
-                Op::GEP { x, index, layout } => {
-                    dtypes.insert(op_id, (dtypes[&x].0, layout));
-                    *rcs.entry(x).or_insert(0) += 1;
-                    *rcs.entry(index).or_insert(0) += 1;
+                    for &o in &[src_idx, dst, dst_idx, bytes] {
+                        if !o.is_null() {
+                            *rcs.entry(o).or_insert(0) += 1;
+                        }
+                    }
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, (dtype, dtypes[&x].1));
@@ -515,6 +512,37 @@ impl Kernel {
         (dtypes, rcs)
     }
 
+    /// Interpret an access's `bytes` operand as a [`MemLayout`]: null =
+    /// one scalar element, resolved integer `w` = contiguous vector of
+    /// `w`, `Stack` of resolved integers = contiguous tile ([`Dim`]s
+    /// along each axis; strides implied by the reverse-product rule).
+    /// Shapes deeper than 2 are unsupported while `MemLayout` only has a
+    /// 2D `Tile` variant.
+    pub(crate) fn bytes_layout(&self, bytes: OpId) -> MemLayout {
+        if bytes.is_null() {
+            return MemLayout::Scalar;
+        }
+        if let Op::Stack { ops } = &self.ops[bytes].op {
+            let dims: Vec<Dim> = ops
+                .iter()
+                .map(|&d| self.resolve_const(d).and_then(Constant::as_dim).expect("bytes: tile dim is not a constant"))
+                .collect();
+            match dims.len() {
+                1 => return MemLayout::Vector(dims[0].try_into().expect("bytes: vector length overflows u16")),
+                2 => {
+                    return MemLayout::Tile {
+                        x: dims[0].try_into().expect("bytes: tile width overflows u16"),
+                        y: dims[1].try_into().expect("bytes: tile height overflows u16"),
+                        stride: dims[0].try_into().expect("bytes: tile stride overflows u32"),
+                    };
+                }
+                _ => todo!("bytes: tile depth {} unsupported (MemLayout::Tile is 2D)", dims.len()),
+            }
+        }
+        let w = self.resolve_const(bytes).and_then(Constant::as_dim).expect("bytes: access width is not a constant");
+        MemLayout::Vector(w.try_into().expect("bytes: vector length overflows u16"))
+    }
+
     /// Resolve the layout of an operation's result by walking the IR.
     pub(crate) fn layout(&self, op_id: OpId) -> MemLayout {
         let mut visited = Set::default();
@@ -541,13 +569,25 @@ impl Kernel {
                     }
                 }
                 Op::Cast { x, .. } | Op::Bitcast { x, .. } => stack.push(x),
-                Op::Load { src, .. } => stack.push(src),
-                Op::Copy { src, .. } => stack.push(src),
-                Op::GEP { layout: t @ MemLayout::Tile { .. }, .. } => return t,
-                Op::GEP { layout, .. } => {
+                Op::Load { src, bytes, .. } => {
+                    let layout = self.bytes_layout(bytes);
+                    if let MemLayout::Tile { .. } = layout {
+                        return layout;
+                    }
                     if answer.is_none() {
                         answer = Some(layout);
                     }
+                    stack.push(src)
+                }
+                Op::Copy { src, bytes, .. } => {
+                    let layout = self.bytes_layout(bytes);
+                    if let MemLayout::Tile { .. } = layout {
+                        return layout;
+                    }
+                    if answer.is_none() {
+                        answer = Some(layout);
+                    }
+                    stack.push(src)
                 }
                 Op::Store { src: x, .. } => stack.push(x),
                 Op::Unary { x, .. } => stack.push(x),
@@ -657,7 +697,6 @@ impl Kernel {
                 Op::Range { .. } => return IDX_T,
                 Op::Load { src, .. } => op_id = src,
                 Op::Copy { src, .. } => op_id = src,
-                Op::GEP { x, .. } => op_id = x,
                 Op::Unary { x, .. } => op_id = x,
                 Op::Binary { x, bop, .. } => {
                     if bop.returns_bool() {
@@ -1138,25 +1177,16 @@ impl Kernel {
                     // `load_register_tile` assert Tile { 32, 32, 32 }).
                     flops = flops.saturating_add(2 * 32 * 32 * 32 * mult);
                 }
-                Op::Load { src, .. } => {
-                    if let Op::GEP { x, layout, .. } = &self.ops[*src].op
-                        && let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*x].op
-                    {
-                        let bytes = (dtype.bit_size() as u64 / 8) * layout.n_elements() as u64;
-                        read = read.saturating_add(bytes.saturating_mul(mult));
+                Op::Load { src, bytes, .. } => {
+                    if let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*src].op {
+                        let n_bytes = (dtype.bit_size() as u64 / 8) * self.bytes_layout(*bytes).n_elements() as u64;
+                        read = read.saturating_add(n_bytes.saturating_mul(mult));
                     }
                 }
-                Op::Store { dst, .. } => {
-                    let (buf, layout) = match &self.ops[*dst].op {
-                        Op::GEP { x, layout, .. } => (*x, *layout),
-                        // Pre-linearize whole-view stores name the Param
-                        // directly (Scalar layout, the old inline form).
-                        Op::Param { .. } => (*dst, MemLayout::Scalar),
-                        _ => (*dst, MemLayout::Scalar),
-                    };
-                    if let Op::Param { kind: ParamKind::GlobalMut, dtype, .. } = &self.ops[buf].op {
-                        let bytes = (dtype.bit_size() as u64 / 8) * layout.n_elements() as u64;
-                        write = write.saturating_add(bytes.saturating_mul(mult));
+                Op::Store { dst, bytes, .. } => {
+                    if let Op::Param { kind: ParamKind::GlobalMut, dtype, .. } = &self.ops[*dst].op {
+                        let n_bytes = (dtype.bit_size() as u64 / 8) * self.bytes_layout(*bytes).n_elements() as u64;
+                        write = write.saturating_add(n_bytes.saturating_mul(mult));
                     }
                 }
                 _ => {}
@@ -1331,8 +1361,13 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::Load { src: x, .. }
-                | Op::Store { src: x, .. }
+                Op::Load { bytes, .. } if bytes.is_null() => {
+                    visited.insert(op_id, vec![]);
+                }
+                // A scalar access (null `bytes`) loads one element: a
+                // scalar value; multi-element accesses have no shape (same
+                // as the old vector/tile GEPs, which had none either).
+                Op::Store { src: x, .. }
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
@@ -1365,13 +1400,6 @@ impl Kernel {
                 }
                 // Group/loop indices and scalar storages are scalar values.
                 Op::Range { .. } | Op::Loop { .. } => {
-                    visited.insert(op_id, vec![]);
-                }
-                // A GEP names one element under its layout: scalar
-                // locations are scalar values; vector/tile locations have
-                // no shape (same as the old multi-element buffers, which
-                // had none either).
-                Op::GEP { layout, .. } if layout == MemLayout::Scalar => {
                     visited.insert(op_id, vec![]);
                 }
                 Op::Storage { len, .. } if len == 1 => {
@@ -1509,8 +1537,13 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::Load { src: x, .. }
-                | Op::Store { src: x, .. }
+                Op::Load { bytes, .. } if bytes.is_null() => {
+                    visited.insert(id, vec![]);
+                }
+                // A scalar access (null `bytes`) loads one element: a
+                // scalar value; multi-element accesses have no shape (same
+                // as the old vector/tile GEPs, which had none either).
+                Op::Store { src: x, .. }
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
@@ -1546,9 +1579,9 @@ impl Kernel {
                 Op::Range { .. } | Op::Loop { .. } => {
                     visited.insert(id, vec![]);
                 }
-                // A GEP names one element under its layout: scalar
-                // locations are scalar values (see shape_ids above).
-                Op::GEP { layout, .. } if layout == MemLayout::Scalar => {
+                // A scalar access (null `bytes`) loads one element: a
+                // scalar value (see shape_ids above).
+                Op::Load { bytes, .. } if bytes.is_null() => {
                     visited.insert(id, vec![]);
                 }
                 Op::Storage { len, .. } if len == 1 => {
@@ -1619,7 +1652,9 @@ impl Kernel {
             }
             // Add with an index operand: stride 1, descend the rest.
             if let Some(m) = self.match_pat(param, &add_idx) {
-                let Some(d) = index_len_of(self.at(m.op('r'))) else { return None };
+                let Some(d) = index_len_of(self.at(m.op('r'))) else {
+                    return None;
+                };
                 indices.insert(m.op('r'), (d, 1));
                 params.push((m.op('s'), scale));
                 continue;
@@ -1633,14 +1668,18 @@ impl Kernel {
             // Index times const: stride folds the factor in.
             if let Some(m) = self.match_pat(param, &mul_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
-                let Some(d) = index_len_of(self.at(m.op('r'))) else { return None };
+                let Some(d) = index_len_of(self.at(m.op('r'))) else {
+                    return None;
+                };
                 indices.insert(m.op('r'), (d, c.as_dim().unwrap() * scale));
                 continue;
             }
             // Shifted index records 2^k; any other shifted expr descends.
             if let Some(m) = self.match_pat(param, &shl_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
-                let Some(d) = index_len_of(self.at(m.op('r'))) else { return None };
+                let Some(d) = index_len_of(self.at(m.op('r'))) else {
+                    return None;
+                };
                 indices.insert(m.op('r'), (d, (1i64 << c.as_dim().unwrap()) * scale));
                 continue;
             }

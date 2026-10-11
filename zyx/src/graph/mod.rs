@@ -515,9 +515,9 @@ impl Graph {
                     }
                 }
             }
-            if let Op::Store { dst, src } = &self.ops[nid].op {
-                for p in [dst, src] {
-                    if !kdeps.contains(p) {
+            if let Op::Store { dst, dst_idx, src, bytes } = &self.ops[nid].op {
+                for p in [dst, dst_idx, src, bytes] {
+                    if !p.is_null() && !kdeps.contains(p) {
                         kdeps.push(*p);
                     }
                 }
@@ -572,11 +572,8 @@ impl Graph {
             // constructor row itself is a category error that fails loudly
             // in shape()/dtype(), so print the output descriptors instead.
             if let Op::Kernel(inner) = &self.ops[cid].op {
-                let outs: Vec<String> = inner
-                    .outputs
-                    .iter()
-                    .map(|(c, s, d)| format!("{c:?}: shape={:?} dtype={d:?}", self.dims(*s)))
-                    .collect();
+                let outs: Vec<String> =
+                    inner.outputs.iter().map(|(c, s, d)| format!("{c:?}: shape={:?} dtype={d:?}", self.dims(*s))).collect();
                 println!("Class {:?} Custom outputs=[{}]", cid, outs.join(", "));
             } else {
                 let shape_str = format!("{:?}", self.shape(cid));
@@ -1172,7 +1169,6 @@ impl Graph {
             | Op::Spirv(_)
             | Op::PTX(_)
             | Op::Storage { .. }
-            | Op::GEP { .. }
             | Op::Load { .. }
             | Op::Copy { .. }
             | Op::Range { .. }
@@ -1366,7 +1362,6 @@ impl Graph {
             | Op::GPU(_)
             | Op::Spirv(_)
             | Op::PTX(_)
-            | Op::GEP { .. }
             | Op::Load { .. }
             | Op::Copy { .. }
             | Op::Range { .. }
@@ -1421,7 +1416,6 @@ impl Graph {
                 | Op::Stack { .. }
                 | Op::Reduce { .. }
                 | Op::Storage { .. }
-                | Op::GEP { .. }
                 | Op::Load { .. }
                 | Op::Copy { .. }
                 | Op::Store { .. }
@@ -1737,9 +1731,15 @@ impl Runtime {
                         stack.push(*x);
                     }
                     Op::Stack { ops } => stack.extend(ops.iter().copied()),
-                    Op::Store { dst, src } => {
+                    Op::Store { dst, dst_idx, src, bytes } => {
                         stack.push(*dst);
+                        if !dst_idx.is_null() {
+                            stack.push(*dst_idx);
+                        }
                         stack.push(*src);
+                        if !bytes.is_null() {
+                            stack.push(*bytes);
+                        }
                     }
                     Op::TT(TTOp::ReduceTile { x, .. }) => {
                         stack.push(*x);
@@ -1748,7 +1748,6 @@ impl Runtime {
                     | Op::Barrier
                     | Op::Range { .. }
                     | Op::Loop { .. }
-                    | Op::GEP { .. }
                     | Op::Load { .. }
                     | Op::Copy { .. }
                     | Op::Asm { .. }
@@ -1889,7 +1888,6 @@ impl Runtime {
                                     | Op::Narrow { .. }
                                     | Op::Reduce { .. }
                                     | Op::Store { .. }
-                                    | Op::GEP { .. }
                                     | Op::Load { .. }
                                     | Op::Copy { .. }
                                     | Op::Asm { .. }

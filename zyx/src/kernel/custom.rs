@@ -386,19 +386,27 @@ impl Kernel {
     /// Load from `src` at `index` (scalar layout: one element).
     pub fn load(&mut self, src: OpId, index: impl IntoOp) -> OpId {
         let index = index.into_op(self);
-        self.load_op(src, index, MemLayout::Scalar)
+        self.load_op(src, index, OpId::NULL)
     }
 
     /// Load a vector of `size` elements from `src` at `index`.
     pub fn load_vector(&mut self, src: OpId, index: impl IntoOp, size: u16) -> OpId {
         let index = index.into_op(self);
-        self.load_op(src, index, MemLayout::Vector(size))
+        let bytes = self.push_back(Op::Const(Constant::new(size)));
+        self.load_op(src, index, bytes)
     }
 
-    /// Load an `x` × `y` tile with `stride` from `src` at `index`.
-    pub fn load_tile(&mut self, src: OpId, index: impl IntoOp, x: u16, y: u16, stride: u32) -> OpId {
+    /// Load an `x` × `y` contiguous tile from `src` at `index` (strides
+    /// implied by the reverse-product rule).
+    pub fn load_tile(&mut self, src: OpId, index: impl IntoOp, x: u16, y: u16) -> OpId {
         let index = index.into_op(self);
-        self.load_op(src, index, MemLayout::Tile { x, y, stride })
+        self.load_block(src, index, &[Dim::from(x), Dim::from(y)])
+    }
+
+    /// Load a shape-`block` contiguous tile from `src` at `index`.
+    fn load_block(&mut self, src: OpId, index: OpId, block: &[Dim]) -> OpId {
+        let bytes = self.block_bytes(block);
+        self.load_op(src, index, bytes)
     }
 
     /// Load a standard 32 x 32 circular tile from `src` at `index`.
@@ -407,7 +415,7 @@ impl Kernel {
             matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }),
             "load_circular: src {src} is not a Circular storage"
         );
-        self.load_tile(src, index, 32, 32, 32)
+        self.load_tile(src, index, 32, 32)
     }
 
     /// Load a standard 32 x 32 tile from a `MemScope::Register` acc
@@ -417,7 +425,7 @@ impl Kernel {
             matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. }),
             "load_register_tile: src {src} is not a Register storage"
         );
-        self.load_tile(src, index, 32, 32, 32)
+        self.load_tile(src, index, 32, 32)
     }
 
     /// Load a standard 32 x 32 tile from a DRAM (`Global`/`GlobalMut`)
@@ -427,34 +435,41 @@ impl Kernel {
             matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global, .. } | Op::Param { kind: ParamKind::GlobalMut, .. }),
             "load_global_tile: src {src} is not a DRAM param"
         );
-        self.load_tile(src, index, 32, 32, 32)
+        self.load_tile(src, index, 32, 32)
     }
 
-    fn load_op(&mut self, src: OpId, index: OpId, layout: MemLayout) -> OpId {
+    fn load_op(&mut self, src: OpId, index: OpId, bytes: OpId) -> OpId {
         debug_assert!(
             matches!(self.ops[src].op, Op::Param { .. } | Op::Storage { .. }),
-            "load_op: src {src} must be a Param or Storage (GEP target)"
+            "load_op: src {src} must be a Param or Storage (access base)"
         );
-        let gep = self.push_back(Op::GEP { x: src, index, layout });
-        self.push_back(Op::Load { src: gep })
+        self.push_back(Op::Load { src, src_idx: index, bytes })
     }
 
     /// Store `x` to `dst` at `index` (scalar layout: one element).
     pub fn store(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
         let index = index.into_op(self);
-        self.store_op(dst, x, index, MemLayout::Scalar)
+        self.store_op(dst, x, index, OpId::NULL)
     }
 
     /// Store a vector of `size` elements to `dst` at `index`.
     pub fn store_vector(&mut self, dst: OpId, x: OpId, index: impl IntoOp, size: u16) {
         let index = index.into_op(self);
-        self.store_op(dst, x, index, MemLayout::Vector(size))
+        let bytes = self.push_back(Op::Const(Constant::new(size)));
+        self.store_op(dst, x, index, bytes)
     }
 
-    /// Store an `x` × `y` tile with `stride` to `dst` at `index`.
-    pub fn store_tile(&mut self, dst: OpId, x: OpId, index: impl IntoOp, x_size: u16, y_size: u16, stride: u32) {
+    /// Store an `x` × `y` contiguous tile to `dst` at `index` (strides
+    /// implied by the reverse-product rule).
+    pub fn store_tile(&mut self, dst: OpId, x: OpId, index: impl IntoOp, x_size: u16, y_size: u16) {
         let index = index.into_op(self);
-        self.store_op(dst, x, index, MemLayout::Tile { x: x_size, y: y_size, stride })
+        self.store_block(dst, x, index, &[Dim::from(x_size), Dim::from(y_size)])
+    }
+
+    /// Store a shape-`block` contiguous tile to `dst` at `index`.
+    fn store_block(&mut self, dst: OpId, x: OpId, index: OpId, block: &[Dim]) {
+        let bytes = self.block_bytes(block);
+        self.store_op(dst, x, index, bytes)
     }
 
     /// Store a standard 32 x 32 circular tile `x` to `dst` at `index`.
@@ -463,7 +478,7 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
             "store_circular: dst {dst} is not a Circular storage"
         );
-        self.store_tile(dst, x, index, 32, 32, 32)
+        self.store_tile(dst, x, index, 32, 32)
     }
 
     /// Store a standard 32 x 32 tile `x` to a `MemScope::Register` acc
@@ -473,7 +488,7 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. }),
             "store_register_tile: dst {dst} is not a Register storage"
         );
-        self.store_tile(dst, x, index, 32, 32, 32)
+        self.store_tile(dst, x, index, 32, 32)
     }
 
     /// Store a standard 32 x 32 tile `x` to a DRAM (`GlobalMut`) param
@@ -483,12 +498,12 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. }),
             "store_global_tile: dst {dst} is not a GlobalMut param"
         );
-        self.store_tile(dst, x, index, 32, 32, 32)
+        self.store_tile(dst, x, index, 32, 32)
     }
 
     /// Copy a standard 32 x 32 tile from a DRAM param into a
     /// `MemScope::Circular` storage (reader publish). Both ends are
-    /// `GEP`s with their own index: `src_idx` addresses DRAM,
+    /// `src_idx` addresses DRAM,
     /// `dst_idx` the CB slot. DRAM↔CB traffic is a `Copy`, never
     /// load+store: `tt_sync_cbs` wraps it with reserve/push, and a
     /// circular load feeding a store is a lowering bug under its
@@ -502,12 +517,10 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
             "copy_global_to_circular: dst {dst} is not a Circular storage"
         );
-        let layout = MemLayout::Tile { x: 32, y: 32, stride: 32 };
+        let bytes = self.block_bytes(&[32, 32]);
         let src_idx = src_idx.into_op(self);
         let dst_idx = dst_idx.into_op(self);
-        let s = self.push_back(Op::GEP { x: src, index: src_idx, layout });
-        let d = self.push_back(Op::GEP { x: dst, index: dst_idx, layout });
-        self.push_back(Op::Copy { src: s, dst: d })
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
     }
 
     /// Copy a standard 32 x 32 tile from a `MemScope::Circular`
@@ -524,19 +537,16 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. }),
             "copy_circular_to_global: dst {dst} is not a GlobalMut param"
         );
-        let layout = MemLayout::Tile { x: 32, y: 32, stride: 32 };
+        let bytes = self.block_bytes(&[32, 32]);
         let src_idx = src_idx.into_op(self);
         let dst_idx = dst_idx.into_op(self);
-        let s = self.push_back(Op::GEP { x: src, index: src_idx, layout });
-        let d = self.push_back(Op::GEP { x: dst, index: dst_idx, layout });
-        self.push_back(Op::Copy { src: s, dst: d })
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
     }
 
     /// Copy a vector of `size` elements from a DRAM param into a
-    /// `MemScope::Circular` storage (reader publish). Both ends are
-    /// `GEP`s with their own index: `src_idx` addresses DRAM
-    /// elements, `dst_idx` CB elements. Same `Copy`-only traffic
-    /// rule as [`Kernel::load_global_to_cb`].
+    /// `MemScope::Circular` storage (reader publish). `src_idx`
+    /// addresses DRAM elements, `dst_idx` CB elements. Same `Copy`-only
+    /// traffic rule as [`Kernel::load_global_to_cb`].
     pub fn load_global_to_cb_vector(
         &mut self,
         src: OpId,
@@ -553,29 +563,20 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
             "load_global_to_cb_vector: dst {dst} is not a Circular storage"
         );
-        let layout = MemLayout::Vector(size);
+        let bytes = self.block_bytes(&[Dim::from(size)]);
         let src_idx = src_idx.into_op(self);
         let dst_idx = dst_idx.into_op(self);
-        let s = self.push_back(Op::GEP { x: src, index: src_idx, layout });
-        let d = self.push_back(Op::GEP { x: dst, index: dst_idx, layout });
-        self.push_back(Op::Copy { src: s, dst: d })
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
     }
 
     /// Copy a single scalar from a DRAM param into a
-    /// `MemScope::Circular` storage (reader publish). Both ends are
-    /// `GEP`s with their own index: `src_idx` addresses the DRAM
-    /// element, `dst_idx` the CB element. Same `Copy`-only traffic
-    /// rule as [`Kernel::load_global_to_cb`]. Direct small NOC read,
-    /// no index checks (CUDA-style — dynamic shapes make them
-    /// impossible): correct iff the runtime addresses are 64-byte
-    /// congruent.
-    pub fn load_global_to_cb_scalar(
-        &mut self,
-        src: OpId,
-        src_idx: impl IntoOp,
-        dst: OpId,
-        dst_idx: impl IntoOp,
-    ) -> OpId {
+    /// `MemScope::Circular` storage (reader publish). `src_idx`
+    /// addresses the DRAM element, `dst_idx` the CB element. Same
+    /// `Copy`-only traffic rule as [`Kernel::load_global_to_cb`].
+    /// Direct small NOC read, no index checks (CUDA-style — dynamic
+    /// shapes make them impossible): correct iff the runtime addresses
+    /// are 64-byte congruent.
+    pub fn load_global_to_cb_scalar(&mut self, src: OpId, src_idx: impl IntoOp, dst: OpId, dst_idx: impl IntoOp) -> OpId {
         debug_assert!(
             matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global, .. } | Op::Param { kind: ParamKind::GlobalMut, .. }),
             "load_global_to_cb_scalar: src {src} is not a DRAM param"
@@ -584,12 +585,10 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
             "load_global_to_cb_scalar: dst {dst} is not a Circular storage"
         );
-        let layout = MemLayout::Scalar;
+        let bytes = OpId::NULL;
         let src_idx = src_idx.into_op(self);
         let dst_idx = dst_idx.into_op(self);
-        let s = self.push_back(Op::GEP { x: src, index: src_idx, layout });
-        let d = self.push_back(Op::GEP { x: dst, index: dst_idx, layout });
-        self.push_back(Op::Copy { src: s, dst: d })
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
     }
 
     /// Copy a vector of `size` elements from a `MemScope::Circular`
@@ -613,12 +612,10 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. }),
             "store_cb_to_global_vector: dst {dst} is not a GlobalMut param"
         );
-        let layout = MemLayout::Vector(size);
+        let bytes = self.block_bytes(&[Dim::from(size)]);
         let src_idx = src_idx.into_op(self);
         let dst_idx = dst_idx.into_op(self);
-        let s = self.push_back(Op::GEP { x: src, index: src_idx, layout });
-        let d = self.push_back(Op::GEP { x: dst, index: dst_idx, layout });
-        self.push_back(Op::Copy { src: s, dst: d })
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
     }
 
     /// Copy a standard 32 x 32 tile between two `MemScope::Circular`
@@ -635,21 +632,35 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
             "copy_circular_to_circular: dst {dst} is not a Circular storage"
         );
-        let layout = MemLayout::Tile { x: 32, y: 32, stride: 32 };
+        let bytes = self.block_bytes(&[32, 32]);
         let src_idx = src_idx.into_op(self);
         let dst_idx = dst_idx.into_op(self);
-        let s = self.push_back(Op::GEP { x: src, index: src_idx, layout });
-        let d = self.push_back(Op::GEP { x: dst, index: dst_idx, layout });
-        self.push_back(Op::Copy { src: s, dst: d })
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
     }
 
-    fn store_op(&mut self, dst: OpId, x: OpId, index: OpId, layout: MemLayout) {
+    fn store_op(&mut self, dst: OpId, x: OpId, index: OpId, bytes: OpId) {
         debug_assert!(
             matches!(self.ops[dst].op, Op::Param { .. } | Op::Storage { .. }),
-            "store_op: dst {dst} must be a Param or Storage (GEP target)"
+            "store_op: dst {dst} must be a Param or Storage (access base)"
         );
-        let gep = self.push_back(Op::GEP { x: dst, index, layout });
-        self.push_back(Op::Store { dst: gep, src: x });
+        self.push_back(Op::Store { dst, dst_idx: index, src: x, bytes });
+    }
+
+    /// Build the `bytes` operand for a contiguous access of `block`
+    /// elements per axis: null for one scalar element, a resolved
+    /// integer for a 1D block, a `Stack` of resolved integers otherwise.
+    pub(crate) fn block_bytes(&mut self, block: &[Dim]) -> OpId {
+        match block {
+            [] => OpId::NULL,
+            [one] => {
+                debug_assert_ne!(*one, 0, "block_bytes: 0-sized block");
+                self.push_back(Op::Const(Constant::new(*one as u16)))
+            }
+            dims => {
+                let ops: Vec<OpId> = dims.iter().map(|&d| self.push_back(Op::Const(Constant::new(d as u16)))).collect();
+                self.push_back(Op::Stack { ops: ops.try_into().unwrap() })
+            }
+        }
     }
 
     /// Emit a loop over `len`, call `f` to build the body (the closure
@@ -1008,15 +1019,15 @@ impl Kernel {
     /// and cannot consume DST registers.
     pub fn matmul_tile(&mut self, x: OpId, y: OpId, acc: OpId) -> OpId {
         debug_assert!(
-            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
             "matmul_tile: x {x} is not a load_circular tile"
         );
         debug_assert!(
-            matches!(self.ops[y].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
+            matches!(self.ops[y].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
             "matmul_tile: y {y} is not a load_circular tile"
         );
         debug_assert!(
-            matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Register, .. }))),
+            matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })),
             "matmul_tile: acc {acc} is not a load_register_tile tile"
         );
         self.push_back(Op::TT(TTOp::MatmulTile { x, y, acc }))
@@ -1027,7 +1038,7 @@ impl Kernel {
     /// DST register.
     pub fn transpose_tile(&mut self, x: OpId) -> OpId {
         debug_assert!(
-            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
             "transpose_tile: x {x} is not a load_circular tile"
         );
         self.push_back(Op::TT(TTOp::TransposeTile { x }))
@@ -1041,10 +1052,7 @@ impl Kernel {
     /// its CB as the LLK scale input). `x` is any tile-layout value;
     /// CB attachment is the transport passes' job, never the builder's.
     pub fn reduce_tile(&mut self, x: OpId, rop: BOp, kind: TileDim) -> OpId {
-        debug_assert!(
-            matches!(self.layout(x), MemLayout::Tile { .. }),
-            "reduce_tile: x {x} is not a tile value"
-        );
+        debug_assert!(matches!(self.layout(x), MemLayout::Tile { .. }), "reduce_tile: x {x} is not a tile value");
         self.push_back(Op::TT(TTOp::ReduceTile { x, rop, kind }))
     }
 
@@ -1053,7 +1061,7 @@ impl Kernel {
     /// fused broadcast form. Carries no traffic itself; forwards `x`.
     pub fn broadcast_tile(&mut self, x: OpId, kind: TileDim) -> OpId {
         debug_assert!(
-            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::GEP { x: g, .. } if matches!(self.ops[g].op, Op::Storage { scope: MemScope::Circular, .. }))),
+            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
             "broadcast_tile: x {x} is not a load_circular tile"
         );
         self.push_back(Op::TT(TTOp::BroadcastTile { x, kind }))
@@ -2342,9 +2350,13 @@ impl Kernel {
             let layout = kernel.layout(v_transformed);
             match layout {
                 MemLayout::Vector(n) => {
-                    kernel.store_op(shared.storage, v_transformed, s_idx, MemLayout::Vector(n));
+                    let bytes = kernel.block_bytes(&[Dim::from(n)]);
+                    kernel.store_op(shared.storage, v_transformed, s_idx, bytes);
                 }
-                _ => {
+                MemLayout::Scalar => {
+                    kernel.store(shared.storage, v_transformed, s_idx);
+                }
+                MemLayout::Tile { .. } => {
                     kernel.store(shared.storage, v_transformed, s_idx);
                 }
             }
@@ -2438,18 +2450,18 @@ impl Kernel {
         if tile_ok {
             // Tile path (TT 32×32): one CB tile, matmul_tile for rotate_half
             let idx0 = self.const_idx(0);
-            let x_tile = self.load_tile(x.src, idx0, 32, 32, 32);
-            let cos_tile = self.load_tile(cos.src, idx0, 32, 32, 32);
-            let sin_tile = self.load_tile(sin.src, idx0, 32, 32, 32);
-            let trans_tile = self.load_tile(trans.src, idx0, 32, 32, 32);
+            let x_tile = self.load_tile(x.src, idx0, 32, 32);
+            let cos_tile = self.load_tile(cos.src, idx0, 32, 32);
+            let sin_tile = self.load_tile(sin.src, idx0, 32, 32);
+            let trans_tile = self.load_tile(trans.src, idx0, 32, 32);
             // Pure (non-accumulating) matmul: seed the explicit acc with zeros.
             let zero_acc_storage = self.zeros(x.dtype, 1024);
-            let zero_acc = self.load_tile(zero_acc_storage, idx0, 32, 32, 32);
+            let zero_acc = self.load_tile(zero_acc_storage, idx0, 32, 32);
             let rot = self.matmul_tile(x_tile, trans_tile, zero_acc);
             let y1 = self.mul(x_tile, cos_tile);
             let y2 = self.mul(rot, sin_tile);
             let y = self.add(y1, y2);
-            self.store_tile(out.src, y, idx0, 32, 32, 32);
+            self.store_tile(out.src, y, idx0, 32, 32);
         } else if wmma_ok {
             // Tensor-core path (CUDA 16×8 fragments): e.g. 32×32 -> 2×4, 16×16 -> 1×2, etc.
             let acc_rot = self.acc([tile_m, tile_n], x.dtype);

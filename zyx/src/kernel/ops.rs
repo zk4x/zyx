@@ -153,56 +153,54 @@ pub enum Op {
         /// Element count.
         len: Dim,
     },
-    /// Get-element-pointer: names one addressable location — `index` into
-    /// `x` under `layout`. `x` is always an [`Op::Param`] or [`Op::Storage`];
-    /// `index` is arbitrary index arithmetic (an [`OpId` like any other
-    /// value, shared freely between the GEPs that use it). This is the one
-    /// and only pointer type in the IR (there are no pointer dtypes):
-    /// [`Op::Load`] reads through it, [`Op::Store`] writes through it, and
-    /// [`Op::Copy`] moves between two of them. `dtype` of a GEP is the
-    /// dtype of `x`. Pure address math, so GEPs CSE like values and hoist
-    /// like values; only `Kernel::linearize` introduces them
-    /// (it wraps every store destination and load source). Follows LLVM's
-    /// `getelementptr` split: the location lives here, the access width
-    /// stays here too (unlike LLVM, where it rides on the load/store).
-    GEP {
-        /// Base: always an [`Op::Param`] or [`Op::Storage`].
-        x: OpId,
-        /// Index arithmetic into `x`.
-        index: OpId,
-        /// Layout the index addresses.
-        layout: MemLayout,
-    },
-    /// Store an SSA value through an addressed location: `dst` is an
-    /// [`Op::GEP`], `src` is the SSA value. Hard rule: Store is
-    /// SSA→GEP (never GEP→GEP — that is [`Op::Copy`]). Effect-only:
+    /// Store an SSA value through an addressed location: `dst` is a
+    /// [`Op::Param`] or [`Op::Storage`], `dst_idx` is arbitrary index
+    /// arithmetic into it. Hard rule: Store is SSA→memory (never
+    /// memory→memory within a kernel — that is [`Op::Copy`]). Effect-only:
     /// produces no SSA value, is a DCE root, is never CSE'd or
     /// LICM-hoisted.
     Store {
-        /// Destination location ([`Op::GEP`]).
+        /// Destination base ([`Op::Param`] or [`Op::Storage`]).
         dst: OpId,
+        /// Index arithmetic into `dst`.
+        dst_idx: OpId,
         /// SSA value to store.
         src: OpId,
+        /// Access shape in elements: null = one scalar, `Const(n)` =
+        /// contiguous vector of n, `Stack` of consts = contiguous
+        /// multi-dim tile (strides implied by the reverse-product rule;
+        /// a GENUINELY strided access is spelled as separate scalar
+        /// accesses sharing index arithmetic, never as shaped bytes).
+        bytes: OpId,
     },
-    /// Load an addressed location into an SSA value: `src` is an
-    /// [`Op::GEP`]. Hard rule: Load is GEP→SSA (the location stays in
-    /// the GEP; only the value enters SSA).
+    /// Load an addressed location into an SSA value. Hard rule: Load is
+    /// memory→SSA (the location stays in memory-space; only the value
+    /// enters SSA).
     Load {
-        /// Source location ([`Op::GEP`]).
+        /// Source base ([`Op::Param`] or [`Op::Storage`]).
         src: OpId,
+        /// Index arithmetic into `src`.
+        src_idx: OpId,
+        /// Access shape in elements (see [`Op::Store::bytes`]).
+        bytes: OpId,
     },
     /// Copy between addressed locations: moves the value at `src` to `dst`.
-    /// Hard rule: Copy is GEP→GEP — both operands are [`Op::GEP`]s
-    /// (post-linearize only), never SSA values and never bare
-    /// [`Op::Param`]/[`Op::Storage`]. Effect-only
+    /// Hard rule: both bases are [`Op::Param`]/[`Op::Storage`]s
+    /// (post-linearize only), never SSA values. Effect-only
     /// like [`Op::Store`]: produces no SSA value, is a DCE root, is never
     /// CSE'd or LICM-hoisted. General: any backend may lower it (TT tile
     /// moves, CUDA DRAM-to-shared staging, ...).
     Copy {
-        /// Source location ([`Op::GEP`]).
+        /// Source base ([`Op::Param`] or [`Op::Storage`]).
         src: OpId,
-        /// Destination location ([`Op::GEP`]).
+        /// Index arithmetic into `src`.
+        src_idx: OpId,
+        /// Destination base ([`Op::Param`] or [`Op::Storage`]).
         dst: OpId,
+        /// Index arithmetic into `dst`.
+        dst_idx: OpId,
+        /// Access shape in elements (see [`Op::Store::bytes`]).
+        bytes: OpId,
     },
     // Like loop, but for dimensions always executed in parallel
     /// A dimension always executed in parallel (never a trip-counted loop).
@@ -320,7 +318,7 @@ pub enum Op {
     // Graph-only ops (former `Node` variants). They never appear in ordered
     // kernels: every kernel-side match arms them with `todo!()`.
     // NOTE: there is no `Assign` variant: graph assigns lower to a
-    // whole-view `Op::Store` (bare `Param` dst, no GEP — `linearize` wraps
+    // whole-view `Op::Store` (bare `Param` dst, null bytes — `linearize`
     // it later).
     /// Ordering edge: `x` may not run before `dep` completes.
     After {
@@ -514,7 +512,8 @@ pub enum TTOp {
     /// no SSA value, is a DCE root, is never CSE'd or LICM-hoisted.
     /// `cb` is the bare [`Op::Storage`] (whole-buffer op, like a
     /// pre-linearize whole-view store — a reserve addresses no single
-    /// location, so no [`Op::GEP`]). Inserted by `tt_sync_cbs`, never
+    /// location — a reserve addresses no single location like a
+    /// pre-linearize whole-view store). Inserted by `tt_sync_cbs`, never
     /// by user builders directly (use `Kernel::tt_reserve_back`).
     ReserveBack {
         /// Circular buffer.
@@ -692,7 +691,6 @@ impl Op {
             Op::Store { .. } => 8,
             Op::Load { .. } => 9,
             Op::Copy { .. } => 13,
-            Op::GEP { .. } => 14,
             Op::Range { .. } => 10,
             Op::Loop { .. } => 11,
             Op::EndLoop => 12,
@@ -737,10 +735,17 @@ impl PartialEq for Op {
             (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
                 ad == bd && as_ == bs && al == bl
             }
-            (Op::Store { dst: ad, src: as_ }, Op::Store { dst: bd, src: bs }) => ad == bd && as_ == bs,
-            (Op::Load { src: a }, Op::Load { src: b }) => a == b,
-            (Op::Copy { src: as_, dst: ad }, Op::Copy { src: bs, dst: bd }) => as_ == bs && ad == bd,
-            (Op::GEP { x: a, index: ai, layout: al }, Op::GEP { x: b, index: bi, layout: bl }) => a == b && ai == bi && al == bl,
+            (
+                Op::Store { dst: ad, dst_idx: adi, src: as_, bytes: ab },
+                Op::Store { dst: bd, dst_idx: bdi, src: bs, bytes: bb },
+            ) => ad == bd && adi == bdi && as_ == bs && ab == bb,
+            (Op::Load { src: a, src_idx: ai, bytes: ab }, Op::Load { src: b, src_idx: bi, bytes: bb }) => {
+                a == b && ai == bi && ab == bb
+            }
+            (
+                Op::Copy { src: as_, src_idx: asi, dst: ad, dst_idx: adi, bytes: ab },
+                Op::Copy { src: bs, src_idx: bsi, dst: bd, dst_idx: bdi, bytes: bb },
+            ) => as_ == bs && asi == bsi && ad == bd && adi == bdi && ab == bb,
             (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => aa == ba && ak == bk,
             (Op::Loop { len: a }, Op::Loop { len: b }) => a == b,
             (Op::EndLoop, Op::EndLoop) => true,
@@ -823,21 +828,23 @@ impl Hash for Op {
                 scope.hash(state);
                 len.hash(state);
             }
-            Op::Store { dst, src } => {
+            Op::Store { dst, dst_idx, src, bytes } => {
                 dst.hash(state);
+                dst_idx.hash(state);
                 src.hash(state);
+                bytes.hash(state);
             }
-            Op::Load { src } => {
+            Op::Load { src, src_idx, bytes } => {
                 src.hash(state);
+                src_idx.hash(state);
+                bytes.hash(state);
             }
-            Op::Copy { src, dst } => {
+            Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
                 src.hash(state);
+                src_idx.hash(state);
                 dst.hash(state);
-            }
-            Op::GEP { x, index, layout } => {
-                x.hash(state);
-                index.hash(state);
-                layout.hash(state);
+                dst_idx.hash(state);
+                bytes.hash(state);
             }
             Op::Range { axis, kind } => {
                 axis.hash(state);
@@ -946,10 +953,17 @@ impl Ord for Op {
             (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
                 (ad, as_, al).cmp(&(bd, bs, bl))
             }
-            (Op::Store { dst: ad, src: as_ }, Op::Store { dst: bd, src: bs }) => (ad, as_).cmp(&(bd, bs)),
-            (Op::Load { src: a }, Op::Load { src: b }) => a.cmp(b),
-            (Op::Copy { src: as_, dst: ad }, Op::Copy { src: bs, dst: bd }) => (as_, ad).cmp(&(bs, bd)),
-            (Op::GEP { x: a, index: ai, layout: al }, Op::GEP { x: b, index: bi, layout: bl }) => (a, ai, al).cmp(&(b, bi, bl)),
+            (
+                Op::Store { dst: ad, dst_idx: adi, src: as_, bytes: ab },
+                Op::Store { dst: bd, dst_idx: bdi, src: bs, bytes: bb },
+            ) => (ad, adi, as_, ab).cmp(&(bd, bdi, bs, bb)),
+            (Op::Load { src: a, src_idx: ai, bytes: ab }, Op::Load { src: b, src_idx: bi, bytes: bb }) => {
+                (a, ai, ab).cmp(&(b, bi, bb))
+            }
+            (
+                Op::Copy { src: as_, src_idx: asi, dst: ad, dst_idx: adi, bytes: ab },
+                Op::Copy { src: bs, src_idx: bsi, dst: bd, dst_idx: bdi, bytes: bb },
+            ) => (as_, asi, ad, adi, ab).cmp(&(bs, bsi, bd, bdi, bb)),
             (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => (aa, ak).cmp(&(ba, bk)),
             (Op::Loop { len: a }, Op::Loop { len: b }) => a.cmp(b),
             (Op::EndLoop, Op::EndLoop) | (Op::Barrier, Op::Barrier) => std::cmp::Ordering::Equal,
@@ -1296,14 +1310,35 @@ impl Op {
             &Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             &Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
-            &Op::Store { dst, src } => vec![dst, src],
-            &Op::Copy { src, dst } => vec![src, dst],
-            &Op::GEP { x, index, .. } => vec![x, index],
+            // dst/src are NEVER null (whole-view stores spell the bare
+            // Param); only dst_idx and bytes can be null.
+            // dst/src are NEVER null (whole-view stores spell the bare
+            // Param); only dst_idx and bytes can be null, src_idx and
+            // bytes are null exactly when a load is a whole view.
+            &Op::Store { dst, dst_idx, src, bytes } => {
+                if dst_idx.is_null() {
+                    debug_assert!(bytes.is_null());
+                    vec![dst, src]
+                } else {
+                    vec![dst, dst_idx, src, bytes]
+                }
+            }
+            &Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+                debug_assert!(!src_idx.is_null());
+                vec![src, src_idx, dst, dst_idx, bytes]
+            }
             Op::Cast { x, .. } => vec![*x],
             Op::Bitcast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             &Op::Binary { x, y, .. } => vec![x, y],
-            &Op::Load { src } => vec![src],
+            // src_idx is NEVER null: every load names its element.
+            &Op::Load { src, src_idx, bytes } => {
+                if bytes.is_null() {
+                    vec![src, src_idx]
+                } else {
+                    vec![src, src_idx, bytes]
+                }
+            }
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().filter(|o| !o.is_null()).collect(),
             &Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
@@ -1372,14 +1407,30 @@ impl Op {
             Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![x, reduce_axis],
-            Op::Store { dst, src: x } => vec![dst, x],
-            Op::Copy { src, dst } => vec![src, dst],
-            Op::GEP { x, index, .. } => vec![x, index],
+            Op::Store { dst, dst_idx, src: x, bytes } => {
+                if dst_idx.is_null() {
+                    debug_assert!(bytes.is_null());
+                    vec![dst, x]
+                } else {
+                    vec![dst, dst_idx, x, bytes]
+                }
+            }
+            Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+                debug_assert!(!src_idx.is_null());
+                vec![src, src_idx, dst, dst_idx, bytes]
+            }
             Op::Cast { x, .. } => vec![x],
             Op::Bitcast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],
             Op::Binary { x, y, .. } => vec![x, y],
-            Op::Load { src } => vec![src],
+            // src_idx is NEVER null: every load names its element.
+            Op::Load { src, src_idx, bytes } => {
+                if bytes.is_null() {
+                    vec![src, src_idx]
+                } else {
+                    vec![src, src_idx, bytes]
+                }
+            }
             Op::Stack { ops } => ops.iter_mut().collect(),
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],

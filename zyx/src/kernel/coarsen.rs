@@ -181,38 +181,53 @@ impl Kernel {
         // per-lane values (extra lanes have no sound output address),
         // so that refuses.
         let mut scratch_storages: Vec<OpId> = Vec::new();
-        let mut scratch_geps: Vec<(OpId, OpId)> = Vec::new();
+        // Scratch accesses by side: (access op, index operand, is-dst-side).
+        let mut scratch_accesses: Vec<(OpId, OpId, bool)> = Vec::new();
         for (op, x) in self.iter_unordered() {
             if matches!(x, Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) {
                 scratch_storages.push(op);
             }
-            if let Op::GEP { x: base, index, .. } = x {
-                if matches!(self.at(*base), Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) {
-                    scratch_geps.push((op, *index));
+            match x {
+                Op::Load { src, src_idx, .. }
+                    if matches!(self.at(*src), Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) =>
+                {
+                    scratch_accesses.push((op, *src_idx, false));
                 }
+                Op::Store { dst, dst_idx, .. }
+                    if matches!(self.at(*dst), Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) =>
+                {
+                    scratch_accesses.push((op, *dst_idx, true));
+                }
+                Op::Copy { src, src_idx, dst, dst_idx, .. } => {
+                    if matches!(self.at(*src), Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) {
+                        scratch_accesses.push((op, *src_idx, false));
+                    }
+                    if matches!(self.at(*dst), Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) {
+                        scratch_accesses.push((op, *dst_idx, true));
+                    }
+                }
+                _ => {}
             }
-            if let Op::Store { dst, .. } = x {
-                if let Op::GEP { x: base, index, .. } = self.at(*dst) {
-                    if matches!(self.at(*base), Op::Storage { scope: MemScope::Global, .. }) {
-                        // Inline subtree walk (no helper fn): does the
-                        // store address mention the split range?
-                        let mut mentions = false;
-                        let mut stack = vec![*index];
-                        let mut seen: Vec<OpId> = Vec::new();
-                        while let Some(id) = stack.pop() {
-                            if id == gidx_id {
-                                mentions = true;
-                                break;
-                            }
-                            if seen.contains(&id) {
-                                continue;
-                            }
-                            seen.push(id);
-                            stack.extend(self.at(id).parameters());
+            if let Op::Store { dst, dst_idx, .. } = x {
+                if matches!(self.at(*dst), Op::Storage { scope: MemScope::Global, .. }) {
+                    // Inline subtree walk (no helper fn): does the
+                    // store address mention the split range?
+                    let mut mentions = false;
+                    let mut stack = vec![*dst_idx];
+                    let mut seen: Vec<OpId> = Vec::new();
+                    while let Some(id) = stack.pop() {
+                        if id == gidx_id {
+                            mentions = true;
+                            break;
                         }
-                        if !mentions {
-                            return;
+                        if seen.contains(&id) {
+                            continue;
                         }
+                        seen.push(id);
+                        stack.extend(self.at(id).parameters());
+                    }
+                    if !mentions {
+                        return;
                     }
                 }
             }
@@ -266,14 +281,14 @@ impl Kernel {
                 *len *= factor as Dim;
             }
         }
-        for (gep, index) in scratch_geps {
+        for (acc, index, is_dst) in scratch_accesses {
             // Inline subtree walk (no helper fn): does the scratch
             // address already vary with the split range?
             let lane = match self.resolve_const(index).and_then(|c| c.as_dim()) {
                 Some(0) => unroll,
                 Some(_) => {
-                    let base = self.insert_before(gep, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                    self.insert_before(gep, Op::Binary { x: base, y: unroll, bop: BOp::Add })
+                    let base = self.insert_before(acc, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                    self.insert_before(acc, Op::Binary { x: base, y: unroll, bop: BOp::Add })
                 }
                 None => {
                     let mut mentions = false;
@@ -293,13 +308,17 @@ impl Kernel {
                     if mentions {
                         index
                     } else {
-                        let base = self.insert_before(gep, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                        self.insert_before(gep, Op::Binary { x: base, y: unroll, bop: BOp::Add })
+                        let base = self.insert_before(acc, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                        self.insert_before(acc, Op::Binary { x: base, y: unroll, bop: BOp::Add })
                     }
                 }
             };
-            if let Op::GEP { index: slot, .. } = &mut self.ops[gep].op {
-                *slot = lane;
+            match (&mut self.ops[acc].op, is_dst) {
+                (Op::Load { src_idx: slot, .. }, false) => *slot = lane,
+                (Op::Store { dst_idx: slot, .. }, true) => *slot = lane,
+                (Op::Copy { src_idx: slot, .. }, false) => *slot = lane,
+                (Op::Copy { dst_idx: slot, .. }, true) => *slot = lane,
+                _ => unreachable!("coarsen: scratch access vanished mid-rewrite"),
             }
         }
 
