@@ -195,7 +195,7 @@ impl Kernel {
                         if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
                             _ = writeln!(source, "{indent}r{reg} = p{x};");
                         } else {
-                            let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                            let idx = get_var_addr(index, &constants, &indices, &reg_map)?;
                             match layout {
                                 MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];"),
                                 MemLayout::Vector(len) => {
@@ -214,7 +214,7 @@ impl Kernel {
                     let Op::GEP { x: dst_buf, index, layout } = self.ops[dst].op else {
                         todo!("OpenCL codegen: Store dst non-GEP (whole-view)");
                     };
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let idx = get_var_addr(index, &constants, &indices, &reg_map)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};"),
@@ -578,6 +578,33 @@ fn get_var(
         if registers[*reg].2 == loop_level {
             registers[*reg].1 -= 1;
         }
+        Ok(format!("r{reg}"))
+    } else {
+        Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("OpenCL codegen: variable {op_id} not found").into(),
+        })
+    }
+}
+
+/// Like [`get_var`], but for address composition only (GEP index operands at
+/// load/store sites): the returned C expression is written inline as
+/// `p{buf}[{expr}]` and the index op's register must NOT be decremented.
+/// One address gep is routinely shared by several load/store users
+/// (accumulator pattern), and a "consumed per read" account would underflow
+/// on the second user. The index op's register instead stays live for the
+/// whole kernel.
+fn get_var_addr(
+    op_id: OpId,
+    constants: &Map<OpId, Constant>,
+    indices: &Map<OpId, u8>,
+    reg_map: &Map<OpId, usize>,
+) -> Result<String, BackendError> {
+    if let Some(c) = constants.get(&op_id) {
+        Ok(c.ocl())
+    } else if let Some(id) = indices.get(&op_id) {
+        Ok(format!("idx{id}"))
+    } else if let Some(reg) = reg_map.get(&op_id) {
         Ok(format!("r{reg}"))
     } else {
         Err(BackendError {

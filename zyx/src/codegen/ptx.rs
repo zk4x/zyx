@@ -281,6 +281,17 @@ impl Compiler {
         r
     }
 
+    /// Like [`Compiler::get_var`], but for address composition only (GEP index
+    /// operands at load/store sites): the returned register indexes the inline
+    /// address expression and the index op's register must NOT be decremented.
+    /// One address gep is routinely shared by several load/store users
+    /// (accumulator pattern), and a "consumed per read" account would underflow
+    /// on the second user. The index op's register instead stays live for the
+    /// whole kernel.
+    fn get_var_addr(&mut self, x: OpId) -> u16 {
+        self.var_map[&x]
+    }
+
     /// Physical register indices of an operand's components. A Stack groups
     /// already-mapped scalar registers; a Vector-layout op owns consecutive
     /// registers from its base.
@@ -540,7 +551,7 @@ impl Kernel {
                         MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            let idx = comp.get_var(index);
+                            let idx = comp.get_var_addr(index);
                             let offset = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
                             let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             if IDX_T == DType::U64 {
@@ -556,7 +567,7 @@ impl Kernel {
                             comp.emit_load(layout, dtype, reg, "global")?;
                         }
                         MemScope::Local => {
-                            let idx = comp.get_var(index);
+                            let idx = comp.get_var_addr(index);
                             let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{buf};", comp.indent);
@@ -572,7 +583,7 @@ impl Kernel {
                             comp.emit_load(layout, dtype, reg, "shared")?;
                         }
                         MemScope::Register => {
-                            let idx = comp.get_var(index);
+                            let idx = comp.get_var_addr(index);
                             let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{buf};", comp.indent);
@@ -601,7 +612,7 @@ impl Kernel {
                         MemScope::Global => {
                             if dtype == DType::Bool {
                                 let gstu = comp.new_reg(DType::U32, MemLayout::Scalar, 1);
-                                let idx = comp.get_var(index);
+                                let idx = comp.get_var_addr(index);
                                 let x = comp.get_var(x);
                                 _ = writeln!(comp.body, "{}selp.u32 %r{gstu}, 1, 0, %r{x};", comp.indent);
                                 if IDX_T == DType::U64 {
@@ -615,7 +626,7 @@ impl Kernel {
                                 _ = writeln!(comp.body, "{}st.global.u8 [%address], %r{gstu};", comp.indent);
                                 comp.release_reg(gstu);
                             } else {
-                                let idx = comp.get_var(index);
+                                let idx = comp.get_var_addr(index);
                                 let x = comp.get_var(x);
                                 if IDX_T == DType::U64 {
                                     if offset != idx {
@@ -630,7 +641,7 @@ impl Kernel {
                             }
                         }
                         MemScope::Local => {
-                            let idx = comp.get_var(index);
+                            let idx = comp.get_var_addr(index);
                             let x = comp.get_var(x);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst_buf};", comp.indent);
@@ -646,7 +657,7 @@ impl Kernel {
                             comp.emit_store_space(layout, dtype, x, "shared")?;
                         }
                         MemScope::Register => {
-                            let idx = comp.get_var(index);
+                            let idx = comp.get_var_addr(index);
                             let x = comp.get_var(x);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst_buf};", comp.indent);
