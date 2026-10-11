@@ -98,7 +98,6 @@ impl Kernel {
         // Ungated: unfold leftover unroll lanes back to scalar statements.
         // Every transport backend only accepts scalar IR (codegens gate
         // `RangeKind::Unroll` with unreachable).
-        self.devectorize_unroll();
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
             self.debug();
@@ -113,6 +112,7 @@ impl Kernel {
             self.debug();
             panic!();
         }
+        self.devectorize_unroll();
     }
 
     /// Get a hash of the kernel for deduplication during autotuning.

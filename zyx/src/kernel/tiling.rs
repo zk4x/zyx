@@ -8,9 +8,10 @@ use super::{Kernel, Op, OpId, RangeKind};
 
 impl Kernel {
     /// Tenstorrent tiling pass, first cut: reshape only, no tile ops yet.
-    /// Coarsens every group range by 4 and tree-unrolls every counted
-    /// loop by 4, so per-thread work becomes explicit 4-wide bundles
-    /// (4x4x4 contraction units for two-group mac loops). Matching
+    /// Unrolls every counted loop with constant length divisible by 32
+    /// into explicit 32-wide bundles, then coarsens every group range by
+    /// 32, so per-thread work becomes explicit 32-wide bundles (32x32
+    /// contraction units for the tile op pattern matcher). Matching
     /// bundles into tile ops lands in later cuts.
     pub fn tt_tile(&mut self) {
         if !self.device_info().tenstorrent {
@@ -27,28 +28,32 @@ impl Kernel {
         let mut loops: Vec<OpId> = Vec::new();
         for (op, x) in self.iter_unordered() {
             if let Op::Loop { len, .. } = x {
-                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 4 == 0) {
+                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
                     loops.push(op);
                 }
             }
         }
         for l in loops {
-            self.unroll_tree_reduce(l, 4);
+            self.unroll_tree_reduce(l, 32);
         }
         // Then coarsen every group range with constant length divisible
-        // by 4. Anything else (symbolic, indivisible) is skipped, never
+        // by 32. Anything else (symbolic, indivisible) is skipped, never
         // fatal.
         let mut groups: Vec<OpId> = Vec::new();
         for (op, x) in self.iter_unordered() {
             if let Op::Range { kind: RangeKind::Group(len), .. } = x {
-                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 4 == 0) {
+                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
                     groups.push(op);
                 }
             }
         }
         for g in groups {
-            self.coarsen(g, 4);
+            self.coarsen(g, 32);
         }
+
+        self.default_epilogue();
+        self.default_epilogue();
+
         self.verify();
     }
 }
