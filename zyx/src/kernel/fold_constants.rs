@@ -347,6 +347,54 @@ impl Kernel {
             unreachable!()
         };
         let mut latest_stores = vec![OpId::NULL; *len as usize];
+
+        // All-or-nothing: bail if any access over this storage can't be
+        // folded below (non-const index, non-scalar layout, copies, or
+        // any other use) — otherwise the survivors dangle.
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match *self.at(op_id) {
+                Op::Store { dst, .. } => {
+                    let (buf, index, layout) = match self.at(dst) {
+                        &Op::GEP { x, index, layout } => (x, Some(index), Some(layout)),
+                        _ => (dst, None, None),
+                    };
+                    if buf == storage_id
+                        && (layout != Some(MemLayout::Scalar)
+                            || index.is_none_or(|i| !matches!(self.at(i), Op::Const(_))))
+                    {
+                        return;
+                    }
+                }
+                Op::Load { src } => {
+                    if let &Op::GEP { x, index, .. } = self.at(src)
+                        && x == storage_id
+                        && !matches!(self.at(index), Op::Const(_))
+                    {
+                        return;
+                    }
+                }
+                Op::Copy { src, dst } => {
+                    for gep in [src, dst] {
+                        if let &Op::GEP { x, .. } = self.at(gep)
+                            && x == storage_id
+                        {
+                            return;
+                        }
+                    }
+                }
+                // GEPs over the storage are fine: their fate follows
+                // their consumers, gated above.
+                Op::GEP { .. } => {}
+                ref op => {
+                    if op.parameters().any(|p| p == storage_id) {
+                        return;
+                    }
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+
         self.remove_op(storage_id);
 
         let mut remaps = Map::default();
