@@ -659,21 +659,29 @@ impl Kernel {
                 op => {
                     let mut remove_op = false;
 
-                    // Remap a Load's base before the stored-location check:
-                    // bases dedup and a stale base id would miss its
-                    // invalidating store and CSE across it.
-                    if let Op::Load { src, .. } = op {
-                        if let Some(&new_id) = remaps.get(src) {
-                            *src = new_id;
-                        }
-                    }
-
-                    // For Load ops, check a write to the same address: the
+                    // For Load ops: remap the base before the
+                    // stored-location check (bases dedup and a stale base
+                    // id would miss its invalidating store and CSE across
+                    // it), then check a write to the same address. The
                     // base buffer counts (writers spell it directly now).
                     // Two reads of one buffer uninterrupted dedup;
                     // read-write-read blocks the second read.
                     let can_cse = if let Op::Load { src, .. } = op {
+                        if let Some(&new_id) = remaps.get(src) {
+                            *src = new_id;
+                        }
                         if stored_stack.iter().rev().any(|x| x.contains(src)) {
+                            // The buffer was written since earlier loads were
+                            // pooled. Dropping markers alone only blocks the
+                            // FIRST read-after-write; later reads would pool
+                            // with the pre-write entries again and read
+                            // stale values across the store. Purge the
+                            // buffer's pre-write pool entries instead, so
+                            // subsequent reads-after-write pool only with
+                            // other post-write reads.
+                            for level in stack.iter_mut() {
+                                level.retain(|o, _| !matches!(o, Op::Load { src: base, .. } if *base == *src));
+                            }
                             for x in stored_stack.iter_mut() {
                                 x.remove(src);
                             }
