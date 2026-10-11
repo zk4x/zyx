@@ -30,8 +30,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("render_opencl did not finish in 10000 steps");
+            if steps_op_id > 50_000 {
+                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "render_opencl: kernel exceeds 50000 op render limit".into() });
             }
             if let Op::Range { axis, kind: RangeKind::Local(len) } = self.ops[op_id].op {
                 lws[axis as usize] = len;
@@ -86,8 +86,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("generate_opencl did not finish in 10000 steps");
+            if steps_op_id > 50_000 {
+                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_opencl: kernel exceeds 50000 op render limit".into() });
             }
             let op = self.at(op_id);
             if let &Op::Param { dtype, kind, .. } = op {
@@ -121,8 +121,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("generate_opencl did not finish in 10000 steps");
+            if steps_op_id > 50_000 {
+                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_opencl: kernel exceeds 50000 op render limit".into() });
             }
             match self.ops[op_id].op {
                 Op::Source(_) => todo!(),

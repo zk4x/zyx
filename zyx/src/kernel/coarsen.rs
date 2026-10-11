@@ -156,6 +156,13 @@ impl Kernel {
         };
         debug_assert!(len % factor as Dim == 0);
 
+        // Tiled backends match lanes into tiles; other backends would
+        // devectorize into scalar IR past the codegen render limit.
+        let tiled = self.dev_info.as_ref().is_some_and(|d| d.tenstorrent);
+        if !tiled && len as u64 * factor > 5_000 {
+            return;
+        }
+
         //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
 
         // Validate before mutating: every GEP over a Register storage
@@ -204,8 +211,7 @@ impl Kernel {
         debug_assert!(factor <= u16::MAX as u64, "coarsen: factor exceeds unroll range width");
         let new_len = self.insert_const_idx_before(gidx_id, len / factor as Dim);
         let short = self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Group(new_len) });
-        let unroll =
-            self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Unroll(factor as u16) });
+        let unroll = self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Unroll(factor as u16) });
         let base = self.insert_before(gidx_id, Op::Binary { x: short, y: const_factor, bop: BOp::Mul });
         self.ops[gidx_id].op = Op::Binary { x: base, y: unroll, bop: BOp::Add };
 
@@ -222,8 +228,7 @@ impl Kernel {
             let lane = if self.resolve_const(index).and_then(|c| c.as_dim()) == Some(0) {
                 unroll
             } else {
-                let base =
-                    self.insert_before(gep, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                let base = self.insert_before(gep, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
                 self.insert_before(gep, Op::Binary { x: base, y: unroll, bop: BOp::Add })
             };
             if let Op::GEP { index: slot, .. } = &mut self.ops[gep].op {

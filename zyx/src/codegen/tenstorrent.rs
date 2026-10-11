@@ -181,7 +181,7 @@ impl Kernel {
         let mut input_dtypes: Vec<DType> = Vec::new();
         let mut output_dtypes: Vec<DType> = Vec::new();
         let mut scan = k.head;
-        for _ in 0..10_000 {
+        for _ in 0..50_000 {
             if scan.is_null() {
                 break;
             }
@@ -199,7 +199,7 @@ impl Kernel {
         if !scan.is_null() {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
-                context: "tenstorrent: param scan did not finish in 10000 steps".into(),
+                context: "tenstorrent: param scan did not finish in 50000 steps".into(),
             });
         }
 
@@ -209,7 +209,7 @@ impl Kernel {
         let mut cbs: Map<OpId, u32> = Map::default();
         let mut cb_order: Vec<OpId> = Vec::new();
         let mut scan = k.head;
-        for _ in 0..10_000 {
+        for _ in 0..50_000 {
             if scan.is_null() {
                 break;
             }

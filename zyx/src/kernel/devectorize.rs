@@ -20,7 +20,6 @@ use crate::{
     Map,
     dtype::Constant,
     kernel::{Kernel, MemLayout, MemScope, Op, OpId, RangeKind},
-    shape::Dim,
 };
 
 impl Kernel {
@@ -44,15 +43,16 @@ impl Kernel {
     /// Unfold a single unroll range: duplicate every lane-varying op once
     /// per lane with the range remapped to that lane's constant, rewrite
     /// the originals in place as lane 0, then remove the range. Returns
-    /// false when the guards refuse (kernel left untouched).
+    /// false when the vectorized-layout guard refuses (kernel untouched).
     fn devectorize_unroll_one(&mut self, unroll_id: OpId) -> bool {
         let Op::Range { kind: RangeKind::Unroll(width), .. } = self.ops[unroll_id].op else {
             unreachable!("devectorize: not an unroll range")
         };
         let factor = width as u64;
 
-        // Same guards as the old duplicating coarsen: refuse vectorized
-        // kernels (non-scalar GEP layouts) and barriers.
+        // Same guard as the old duplicating coarsen: refuse vectorized
+        // kernels (non-scalar GEP layouts). Barriers stay single and
+        // ordered — lane ops duplicate on their own side of them.
         if self.ops.values().any(|node| match node.op {
             Op::Load { src } => match self.ops[src].op {
                 Op::GEP { layout, .. } => layout != MemLayout::Scalar,
@@ -66,13 +66,8 @@ impl Kernel {
                 !matches!(self.ops[src].op, Op::GEP { layout: MemLayout::Scalar, .. })
                     || !matches!(self.ops[dst].op, Op::GEP { layout: MemLayout::Scalar, .. })
             }
-            Op::Barrier => true,
             _ => false,
         }) {
-            return false;
-        }
-
-        if self.ops.len().0 as Dim * factor as Dim > 10000 {
             return false;
         }
 

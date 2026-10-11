@@ -404,8 +404,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("generate_ptx did not finish in 10000 steps");
+            if steps_op_id > 50_000 {
+                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_ptx: kernel exceeds 50000 op render limit".into() });
             }
             if let Op::Range { axis, kind: scope } = self.ops[op_id].op {
                 match scope {
@@ -427,8 +427,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("generate_ptx did not finish in 10000 steps");
+            if steps_op_id > 50_000 {
+                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_ptx: kernel exceeds 50000 op render limit".into() });
             }
             // Kernel arguments are Op::Param defines, flat head order —
             // the same order the backend passes `args` at launch.
@@ -457,8 +457,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("generate_ptx did not finish in 10000 steps");
+            if steps_op_id > 50_000 {
+                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_ptx: kernel exceeds 50000 op render limit".into() });
             }
             match self.ops[op_id].op {
                 Op::Param { kind, .. } => match kind {
@@ -931,8 +931,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("generate_ptx did not finish in 10000 steps");
+            if steps_op_id > 50_000 {
+                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_ptx: kernel exceeds 50000 op render limit".into() });
             }
             if matches!(self.ops[op_id].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
                 _ = writeln!(comp.header, "{}.reg .u64 %p{op_id};", comp.indent);

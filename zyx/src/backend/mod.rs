@@ -1216,8 +1216,8 @@ pub(crate) fn gws_from_kernel(kernel: &Kernel, max_grid_dims: &[Dim]) -> Result<
     let mut steps_op_id = 0usize;
     while !op_id.is_null() {
         steps_op_id += 1;
-        if steps_op_id > 10_000 {
-            panic!("gws_from_kernel did not finish in 10000 steps");
+        if steps_op_id > 250_000 {
+            panic!("gws_from_kernel did not finish in 250000 steps");
         }
         if let Op::Range { axis, kind: RangeKind::Group(len) } = kernel.ops[op_id].op {
             let gdim = conv(kernel, len, &param_ordinal);

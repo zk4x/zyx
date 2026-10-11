@@ -77,8 +77,8 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 10_000 {
-                    panic!("generate_c did not finish in 10000 steps");
+                if steps_op_id > 50_000 {
+                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_c: kernel exceeds 50000 op render limit".into() });
                 }
                 match self.ops[op_id].op {
                     Op::Range { kind: scope, .. } => {
@@ -134,8 +134,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("generate_c did not finish in 10000 steps");
+            if steps_op_id > 50_000 {
+                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_c: kernel exceeds 50000 op render limit".into() });
             }
             match self.ops[op_id].op {
                 Op::Source(_) => todo!(),

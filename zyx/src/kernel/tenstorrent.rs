@@ -117,7 +117,7 @@ impl Kernel {
         // traffic bails the pass.
         let mut loads: Vec<(OpId, OpId, OpId)> = Vec::new();
         let mut id = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             if id.is_null() {
                 break;
             }
@@ -141,7 +141,7 @@ impl Kernel {
         // cannot hoist.
         for (_, _, off) in loads.iter() {
             let mut stack = vec![*off];
-            for _ in 0..10_000 {
+            for _ in 0..250_000 {
                 let Some(n) = stack.pop() else { break };
                 match self.ops[n].op {
                     Op::Const(..) | Op::Range { .. } | Op::Param { .. } => {}
@@ -176,7 +176,7 @@ impl Kernel {
         for (load, base, off) in loads.iter() {
             // Post-order clone of the index cone before the anchor.
             let mut stack = vec![(*off, false)];
-            for _ in 0..10_000 {
+            for _ in 0..250_000 {
                 let Some((n, expanded)) = stack.pop() else { break };
                 if memo.contains_key(&n) {
                     continue;
@@ -248,7 +248,7 @@ impl Kernel {
         // traffic bails the pass.
         let mut stores: Vec<(OpId, OpId, OpId, OpId)> = Vec::new();
         let mut id = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             if id.is_null() {
                 break;
             }
@@ -286,7 +286,7 @@ impl Kernel {
         // Validate every index cone before mutating.
         for (_, _, off, _) in stores.iter() {
             let mut stack = vec![*off];
-            for _ in 0..10_000 {
+            for _ in 0..250_000 {
                 let Some(n) = stack.pop() else { break };
                 match self.ops[n].op {
                     Op::Const(..) | Op::Range { .. } | Op::Param { .. } => {}
@@ -302,7 +302,7 @@ impl Kernel {
         // Empty reader section for store-only kernels.
         let mut scan = self.head;
         let mut has_reader = false;
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             if scan.is_null() {
                 break;
             }
@@ -316,7 +316,7 @@ impl Kernel {
             // A tiled DRAM load without a reader section means the
             // reader bailed: don't paper over it.
             let mut scan = self.head;
-            for _ in 0..10_000 {
+            for _ in 0..250_000 {
                 if scan.is_null() {
                     break;
                 }
@@ -364,7 +364,7 @@ impl Kernel {
             self.ops[*store].op = Op::Store { dst: g, src: v };
             // Drain cone cloned at the tail (everything dominates it).
             let mut stack = vec![(*off, false)];
-            for _ in 0..10_000 {
+            for _ in 0..250_000 {
                 let Some((n, expanded)) = stack.pop() else { break };
                 if memo.contains_key(&n) {
                     continue;

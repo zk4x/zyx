@@ -424,8 +424,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("render_spirv did not finish in 10000 steps");
+            if steps_op_id > 50_000 {
+                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "render_spirv: kernel exceeds 50000 op render limit".into() });
             }
             if let Op::Range { axis, kind: RangeKind::Local(len) } = self.ops[op_id].op
                 && axis < 3
@@ -468,8 +468,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 10_000 {
-                panic!("render_spirv did not finish in 10000 steps");
+            if steps_op_id > 50_000 {
+                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "render_spirv: kernel exceeds 50000 op render limit".into() });
             }
             if let Op::Param { dtype, kind: ParamKind::Variable, .. } = self.at(op_id) {
                 let storage_bits = if *dtype == DType::Bool { 32 } else { dtype.bit_size() };
@@ -524,8 +524,8 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 10_000 {
-                    panic!("generate_spirv did not finish in 10000 steps");
+                if steps_op_id > 50_000 {
+                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_spirv: kernel exceeds 50000 op render limit".into() });
                 }
                 if let Op::Param { dtype: DType::Bool, kind, .. } = self.at(op_id)
                     && matches!(kind, ParamKind::Global | ParamKind::GlobalMut)
@@ -545,8 +545,8 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 10_000 {
-                    panic!("generate_spirv did not finish in 10000 steps");
+                if steps_op_id > 50_000 {
+                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_spirv: kernel exceeds 50000 op render limit".into() });
                 }
                 if let Op::Storage { dtype: DType::BF16, .. } = self.at(op_id) {
                     found = true;
@@ -776,8 +776,8 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 10_000 {
-                    panic!("generate_spirv did not finish in 10000 steps");
+                if steps_op_id > 50_000 {
+                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_spirv: kernel exceeds 50000 op render limit".into() });
                 }
                 match self.at(op_id) {
                     Op::Const(c) => {
@@ -1083,8 +1083,8 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 10_000 {
-                    panic!("generate_spirv did not finish in 10000 steps");
+                if steps_op_id > 50_000 {
+                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_spirv: kernel exceeds 50000 op render limit".into() });
                 }
                 if let &Op::Range { .. } = self.at(op_id) {
                     found = true;
@@ -1220,8 +1220,8 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 10_000 {
-                    panic!("generate_spirv did not finish in 10000 steps");
+                if steps_op_id > 50_000 {
+                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "generate_spirv: kernel exceeds 50000 op render limit".into() });
                 }
                 match self.ops[op_id].op {
                     Op::Source(_) => todo!(),

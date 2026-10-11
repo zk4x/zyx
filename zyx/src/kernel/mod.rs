@@ -317,7 +317,7 @@ impl Kernel {
         let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         let mut op_id = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             if op_id.is_null() {
                 break;
             }
@@ -510,7 +510,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         if !op_id.is_null() {
-            panic!("compute_dtypes_and_rcs did not finish in 10000 steps");
+            panic!("compute_dtypes_and_rcs did not finish in 250000 steps");
         }
         (dtypes, rcs)
     }
@@ -524,7 +524,7 @@ impl Kernel {
         // visited once — linear, no recursion.
         let mut stack = vec![op_id];
         let mut answer = None;
-        for _ in 0..10000 {
+        for _ in 0..250000 {
             let Some(s) = stack.pop() else { break };
             if !visited.insert(s) {
                 continue;
@@ -643,7 +643,7 @@ impl Kernel {
     /// Resolve the dtype of an operation's result by walking the IR.
     pub(crate) fn dtype(&self, mut op_id: OpId) -> DType {
         //println!("getting dtype of id: {op_id:?}'");
-        for _ in 0..10000 {
+        for _ in 0..250000 {
             match self.ops[op_id].op {
                 Op::Source(_) => todo!(),
                 Op::GPU(_) => todo!(),
@@ -910,7 +910,7 @@ impl Kernel {
             }
         }
         if !stack.is_empty() {
-            panic!("remove_unused_chain did not finish in 10000 steps");
+            panic!("remove_unused_chain did not finish in 250000 steps");
         }
 
         let mut live: Set<OpId> = Set::default();
@@ -926,7 +926,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         if !op_id.is_null() {
-            panic!("remove_unused_chain did not finish in 10000 steps");
+            panic!("remove_unused_chain did not finish in 250000 steps");
         }
         for _ in 0..30_000 {
             let Some(op) = stack.pop() else { break };
@@ -935,7 +935,7 @@ impl Kernel {
             }
         }
         if !stack.is_empty() {
-            panic!("remove_unused_chain did not finish in 10000 steps");
+            panic!("remove_unused_chain did not finish in 250000 steps");
         }
 
         // Collect input (ro) Param OpIds in op order (before removal). These are
@@ -956,7 +956,7 @@ impl Kernel {
                 id = self.next_op(id);
             }
             if !id.is_null() {
-                panic!("remove_unused_chain did not finish in 10000 steps");
+                panic!("remove_unused_chain did not finish in 250000 steps");
             }
             ops
         };
@@ -974,7 +974,7 @@ impl Kernel {
             op_id = next;
         }
         if !op_id.is_null() {
-            panic!("remove_unused_chain did not finish in 10000 steps");
+            panic!("remove_unused_chain did not finish in 250000 steps");
         }
 
         // Keep only loads whose corresponding input Param was not removed.
@@ -992,7 +992,7 @@ impl Kernel {
     pub(crate) fn name(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
         let mut op_id = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             if op_id.is_null() {
                 break;
             }
@@ -1053,7 +1053,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         if !op_id.is_null() {
-            panic!("name did not finish in 10000 steps");
+            panic!("name did not finish in 250000 steps");
         }
         parts.dedup();
         if parts.is_empty() {
@@ -1240,7 +1240,7 @@ impl Kernel {
         let root = op_id;
         let mut stack = vec![op_id];
         let mut visited: Map<OpId, Vec<OpId>> = Map::default();
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             let Some(op_id) = stack.pop() else {
                 let shape = visited.remove(&op_id).unwrap();
                 self.shape_cache.insert(root, shape.clone());
@@ -1380,7 +1380,7 @@ impl Kernel {
                 ref op => todo!("shape_ids of {op:?}"),
             }
         }
-        panic!("shape_ids did not resolve in 10000 steps");
+        panic!("shape_ids did not resolve in 250000 steps");
     }
 
     /// Numeric tensor shape of the value produced by `op_id`: each dim
@@ -1409,7 +1409,7 @@ impl Kernel {
         }
         let mut stack = vec![op_id];
         let mut visited: Map<OpId, Vec<Dim>> = Map::default();
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             let Some(id) = stack.pop() else {
                 return visited[&op_id].clone();
             };
@@ -1557,7 +1557,7 @@ impl Kernel {
                 ref op => todo!("shape of {op:?}"),
             }
         }
-        panic!("shape did not resolve in 10000 steps");
+        panic!("shape did not resolve in 250000 steps");
     }
 
     /// Builds a single shape-descriptor op for the value produced by
@@ -1606,7 +1606,7 @@ impl Kernel {
         let mut params = vec![(index, 1i64)];
         let mut indices = Map::default();
 
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             let Some((param, scale)) = params.pop() else { break };
             // Const leaf folds into the NULL offset.
             if self.match_pat(param, Pat::Const).is_some() {
@@ -1653,7 +1653,7 @@ impl Kernel {
             // Anything else carries no stride info.
         }
         if !params.is_empty() {
-            panic!("get_strides did not finish in 10000 steps");
+            panic!("get_strides did not finish in 250000 steps");
         }
 
         Some(indices)
@@ -1677,7 +1677,7 @@ impl Kernel {
         let mut seen: Set<OpId> = Set::default();
         let mut order: Vec<OpId> = Vec::new();
         let mut stack = vec![(op_id, false)];
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             let Some((id, emit)) = stack.pop() else { break };
             if id.is_null() {
                 continue;
@@ -1710,7 +1710,7 @@ impl Kernel {
             }
         }
         if !stack.is_empty() {
-            panic!("resolve_const did not finish in 10000 steps");
+            panic!("resolve_const did not finish in 250000 steps");
         }
 
         let mut values: Map<OpId, Option<Constant>> = Map::default();
@@ -1761,7 +1761,7 @@ impl Kernel {
     /// silent fold).
     pub(crate) fn is_const(&self, id: OpId) -> bool {
         let mut stack = vec![id];
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             let Some(cur) = stack.pop() else {
                 return true;
             };
@@ -1775,7 +1775,7 @@ impl Kernel {
                 _ => return false,
             }
         }
-        panic!("is_const did not finish in 10000 steps");
+        panic!("is_const did not finish in 250000 steps");
     }
 
     /// Remap slab indices from x to y
@@ -1842,14 +1842,14 @@ impl Kernel {
         // Walk 1: from root_op
         let mut root_required = Set::default();
         let mut stack = vec![root_op];
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             let Some(op) = stack.pop() else { break };
             if root_required.insert(op) {
                 stack.extend(self.at(op).parameters());
             }
         }
         if !stack.is_empty() {
-            panic!("duplicate_subkernel did not finish in 10000 steps");
+            panic!("duplicate_subkernel did not finish in 250000 steps");
         }
 
         // Partition loads: the fresh kernel receives the caller's `loads`
@@ -1860,7 +1860,7 @@ impl Kernel {
         let mut new_loads: Vec<T> = Vec::new();
         let mut load_idx = 0;
         let mut oid = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             if oid.is_null() {
                 break;
             }
@@ -1882,7 +1882,7 @@ impl Kernel {
             oid = self.next_op(oid);
         }
         if !oid.is_null() {
-            panic!("duplicate_subkernel did not finish in 10000 steps");
+            panic!("duplicate_subkernel did not finish in 250000 steps");
         }
 
         let mut new_kernel = Self {
@@ -1897,7 +1897,7 @@ impl Kernel {
             Map::with_capacity_and_hasher(root_required.len(), core::hash::BuildHasherDefault::default());
         let mut new_root_op = OpId::NULL;
         let mut old_id = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             if old_id.is_null() {
                 break;
             }
@@ -1913,7 +1913,7 @@ impl Kernel {
             old_id = self.next_op(old_id);
         }
         if !old_id.is_null() {
-            panic!("duplicate_subkernel did not finish in 10000 steps");
+            panic!("duplicate_subkernel did not finish in 250000 steps");
         }
 
         (new_kernel, new_root_op, new_loads)
@@ -1963,7 +1963,7 @@ impl Kernel {
         let mut params = vec![x];
         let mut found = false;
         let mut seen: Set<OpId> = Set::default();
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             let Some(param) = params.pop() else { break };
             if !seen.insert(param) {
                 continue;
@@ -1976,13 +1976,13 @@ impl Kernel {
             params.extend(self.ops[param].op.parameters());
         }
         if !found && !params.is_empty() {
-            panic!("is_preceded_by_reduce did not finish in 10000 steps");
+            panic!("is_preceded_by_reduce did not finish in 250000 steps");
         }
         //if params.is_empty() { return false; }
         //println!("Found reduce at {params:?}");
         // If there is a load (non constant reduce) or multiple reduces, return true
         let mut seen: Set<OpId> = Set::default();
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             let Some(param) = params.pop() else { break };
             if !seen.insert(param) {
                 continue;
@@ -1993,7 +1993,7 @@ impl Kernel {
             params.extend(self.ops[param].op.parameters());
         }
         if !params.is_empty() {
-            panic!("is_preceded_by_reduce did not finish in 10000 steps");
+            panic!("is_preceded_by_reduce did not finish in 250000 steps");
         }
         false
     }
@@ -2002,7 +2002,7 @@ impl Kernel {
         let mut params = vec![x];
         let mut seen: Set<OpId> = Set::default();
         let (mut has_compute, mut has_param) = (false, false);
-        for _ in 0..10_000 {
+        for _ in 0..250_000 {
             let Some(param) = params.pop() else { break };
             if !seen.insert(param) {
                 continue;
@@ -2027,7 +2027,7 @@ impl Kernel {
             }
         }
         if !params.is_empty() {
-            panic!("is_preceded_by_compute did not finish in 10000 steps");
+            panic!("is_preceded_by_compute did not finish in 250000 steps");
         }
         has_compute && has_param
     }
