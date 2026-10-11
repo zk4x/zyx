@@ -72,6 +72,7 @@ impl Kernel {
                     | Op::Loop { .. }
                     | Op::EndLoop
                     | Op::Index { .. }
+                    | Op::VecReduce { .. }
                     | Op::Barrier
                     | Op::Wmma { .. }
                     | Op::TT(TTOp::ReduceTile { .. })
@@ -495,6 +496,17 @@ impl Kernel {
                 Op::Index { vec, .. } => {
                     let dtype = dtypes[&vec];
                     dtypes.insert(op_id, dtype);
+                }
+                Op::VecReduce { x, bop: _ } => {
+                    check(op_id, x, &stack);
+                    // Reduce input must be a vector value; the result is
+                    // one scalar of the element dtype.
+                    debug_assert!(
+                        matches!(self.layout(x), MemLayout::Vector(_)),
+                        "VecReduce operand {x} must be a vector, got {:?}",
+                        self.layout(x)
+                    );
+                    dtypes.insert(op_id, dtypes[&x]);
                 }
                 Op::Wmma { c, a, b, .. } => {
                     let dtype = dtypes[&c];

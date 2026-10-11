@@ -140,6 +140,7 @@ impl Kernel {
                 Op::PTX(_) => todo!(),
                 Op::TT { .. }
                 | Op::Reduce { .. }
+                | Op::VecReduce { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }

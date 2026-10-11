@@ -111,6 +111,11 @@ impl Kernel {
                         dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
                         *rcs.entry(vec).or_insert(0) += 1;
                     }
+                    Op::VecReduce { x, bop: _ } => {
+                        let (dtype, _) = dtypes[&x];
+                        dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
                     Op::Const(x) => {
                         dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                     }
@@ -294,6 +299,7 @@ impl Kernel {
                 | Op::Binary { .. }
                 | Op::Stack { .. }
                 | Op::Wmma { .. }
+                | Op::VecReduce { .. }
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::MatmulTile { .. })
                 | Op::TT(TTOp::TransposeTile { .. })
@@ -383,6 +389,11 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
                     }
+                }
+                // One horizontal reduce instruction per invocation.
+                Op::VecReduce { .. } => {
+                    wi_ops += loop_mult;
+                    wi_compute_ops += loop_mult;
                 }
                 Op::Const(_)
                 | Op::Param { .. }

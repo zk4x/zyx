@@ -344,6 +344,14 @@ pub enum Op {
         x: OpId,
     },
 
+    /// Reduces a vec into single scalar
+    VecReduce {
+        /// Vector value to reduce (any op with a `Vector(n)` layout).
+        x: OpId,
+        /// Associative fold op over lanes.
+        bop: BOp,
+    },
+
     /// Program source block
     Source(SourceBlock),
     /// A compiled kernel boundary: `info` is the owning program and measured
@@ -715,6 +723,9 @@ impl Op {
             Op::GPU(_) => 37,
             Op::Spirv(_) => 38,
             Op::PTX(_) => 39,
+            // Appended past every existing discriminant: inserting an
+            // in-declaration-order number would reorder existing variants.
+            Op::VecReduce { .. } => 40,
         }
     }
 }
@@ -782,6 +793,7 @@ impl PartialEq for Op {
             (Op::Narrow { x: a, axis: aa, start: as_, len: al }, Op::Narrow { x: b, axis: ba, start: bs, len: bl }) => {
                 a == b && aa == ba && as_ == bs && al == bl
             }
+            (Op::VecReduce { x: a, bop: ab }, Op::VecReduce { x: b, bop: bb }) => a == b && ab == bb,
             // Different variants are never equal (Hash carries no
             // discriminant, so cross-variant collisions land here).
             _ => false,
@@ -886,6 +898,10 @@ impl Hash for Op {
                 device.hash(state);
             }
             Op::Contiguous { x } => x.hash(state),
+            Op::VecReduce { x, bop } => {
+                x.hash(state);
+                bop.hash(state);
+            }
             Op::Program { inputs, outputs, info } => {
                 inputs.hash(state);
                 outputs.hash(state);
@@ -1310,6 +1326,7 @@ impl Op {
             &Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             &Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
+            Op::VecReduce { x, bop: _ } => vec![*x],
             // dst/src are NEVER null (whole-view stores spell the bare
             // Param); only dst_idx and bytes can be null.
             // dst/src are NEVER null (whole-view stores spell the bare
@@ -1436,6 +1453,7 @@ impl Op {
                 }
             }
             Op::Stack { ops } => ops.iter_mut().collect(),
+            Op::VecReduce { x, bop: _ } => vec![x],
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::TT(TTOp::MatmulTile { x, y, acc }) => vec![x, y, acc],

@@ -133,6 +133,22 @@ impl Kernel {
                     let x = id_map[&x];
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}broadcast_tile_{kind:?}{reset} r{x}").unwrap();
                 }
+                Op::VecReduce { x, bop } => {
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map[&x];
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {red}vec_reduce_{}{reset} r{x}",
+                        match bop {
+                            BOp::Add => "sum",
+                            BOp::Max => "max",
+                            BOp::Mul => "prod",
+                            _ => unreachable!(),
+                        },
+                    )
+                    .unwrap();
+                }
                 Op::TT(TTOp::ReserveBack { cb, n }) => {
                     let dtype = dtypes.get(&cb).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);

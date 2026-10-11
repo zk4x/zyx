@@ -391,6 +391,18 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
+                Op::VecReduce { x, bop: _ } => {
+                    // Reduce consumes a vector value (its stack holds
+                    // Vector(n) lanes) and produces one scalar.
+                    debug_assert!(
+                        matches!(dtypes[&x].1, MemLayout::Vector(_)),
+                        "VecReduce operand {x} must have vector layout, got {:?}",
+                        dtypes[&x].1
+                    );
+                    let (dtype, _) = dtypes[&x];
+                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                    *rcs.entry(x).or_insert(0) += 1;
+                }
                 Op::TT(TTOp::BroadcastTile { x, .. }) => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
@@ -577,6 +589,14 @@ impl Kernel {
                     }
                 }
                 Op::Cast { x, .. } | Op::Bitcast { x, .. } => stack.push(x),
+                // Reduce collapses the vector value into a scalar: the
+                // result's layout is scalar, the vec operand is not part
+                // of the reduced value's materialization.
+                Op::VecReduce { x: _, .. } => {
+                    if answer.is_none() {
+                        answer = Some(MemLayout::Scalar);
+                    }
+                }
                 Op::Load { src, bytes, .. } => {
                     let layout = self.bytes_layout(bytes);
                     if let MemLayout::Tile { .. } = layout {
@@ -706,6 +726,8 @@ impl Kernel {
                 Op::Load { src, .. } => op_id = src,
                 Op::Copy { src, .. } => op_id = src,
                 Op::Unary { x, .. } => op_id = x,
+                // Reducing a vec yields one scalar of the element dtype.
+                Op::VecReduce { x, .. } => op_id = x,
                 Op::Binary { x, bop, .. } => {
                     if bop.returns_bool() {
                         return DType::Bool;

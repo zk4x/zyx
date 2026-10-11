@@ -1257,6 +1257,7 @@ impl Kernel {
                     | Op::Reshape { .. }
                     | Op::Pad { .. }
                     | Op::Reduce { .. }
+                    | Op::VecReduce { .. }
                     | Op::Wmma { .. }
                     | Op::After { .. }
                     | Op::ToDevice { .. }

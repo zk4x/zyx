@@ -188,6 +188,7 @@ impl Kernel {
                 }
                 Op::TT(TTOp::TransposeTile { x }) => add_param!(x),
                 Op::TT(TTOp::BroadcastTile { x, .. }) => add_param!(x),
+                Op::VecReduce { x, bop: _ } => add_param!(x),
                 Op::TT(TTOp::ReserveBack { cb, .. })
                 | Op::TT(TTOp::PushBack { cb, .. })
                 | Op::TT(TTOp::WaitFront { cb, .. })

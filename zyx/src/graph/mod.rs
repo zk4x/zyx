@@ -1177,6 +1177,7 @@ impl Graph {
             | Op::Barrier
             | Op::Wmma { .. }
             | Op::TT { .. }
+            | Op::VecReduce { .. }
             | Op::Asm { .. } => unreachable!("shape: kernel-internal op never appears in graph classes"),
         }
     }
@@ -1370,6 +1371,7 @@ impl Graph {
             | Op::Barrier
             | Op::Wmma { .. }
             | Op::TT { .. }
+            | Op::VecReduce { .. }
             | Op::Asm { .. } => unreachable!("dtype: kernel-internal op never appears in graph classes"),
         }
     }
@@ -1425,6 +1427,7 @@ impl Graph {
                 | Op::Barrier
                 | Op::Wmma { .. }
                 | Op::TT(_)
+                | Op::VecReduce { .. }
                 | Op::Asm { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }
@@ -1754,6 +1757,7 @@ impl Runtime {
                     | Op::Index { .. }
                     | Op::Wmma { .. }
                     | Op::TT { .. }
+                    | Op::VecReduce { .. }
                     | Op::After { .. }
                     | Op::ToDevice { .. }
                     | Op::Contiguous { .. }
@@ -1894,6 +1898,7 @@ impl Runtime {
                                     | Op::Index { .. }
                                     | Op::Wmma { .. }
                                     | Op::TT { .. }
+                                    | Op::VecReduce { .. }
                                     | Op::After { .. }
                                     | Op::ToDevice { .. }
                                     | Op::Contiguous { .. }
