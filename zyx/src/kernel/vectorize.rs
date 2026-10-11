@@ -4,7 +4,6 @@
 use super::autotune::Optimization;
 use crate::{
     DType, Map, Set,
-    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, UOp},
     shape::Dim,
@@ -47,12 +46,11 @@ struct StoreInfo {
 }
 
 impl Kernel {
-    /// Make the `Vectorize` optimization.
-    pub fn opt_vectorize(&self, dev_info: &DeviceInfo) -> Box<dyn Optimization> {
-        Box::new(Vectorize {
-            supported_lens: dev_info.supported_vec_lens.clone(),
-            vectorize_ops: !dev_info.supported_vec_lens.is_empty(),
-        })
+    /// Make the `Vectorize` optimization. Reads the bound device's
+    /// supported vector widths itself.
+    pub fn opt_vectorize(&self) -> Box<dyn Optimization> {
+        let dev_info = self.dev_info();
+        Box::new(Vectorize { supported_lens: dev_info.supported_vec_lens.clone(), vectorize_ops: !dev_info.supported_vec_lens.is_empty() })
     }
 
     /// Vectorize loads.

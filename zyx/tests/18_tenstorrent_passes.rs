@@ -4,6 +4,7 @@
 //! Tenstorrent kernel passes, exercised as external pass authors would:
 //! build IR with the public kernel API, run one pass, inspect the result
 //! through `head`/`at`/`next_op`. No device needed.
+#![cfg(feature = "tenstorrent")]
 
 use zyx::DType;
 use zyx::kernel::{BOp, Dev, Kernel, MemScope, Op, OpId, TTOp, TileDim};
