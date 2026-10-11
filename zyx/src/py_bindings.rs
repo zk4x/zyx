@@ -1190,11 +1190,45 @@ impl Tensor {
         self.rpad_zeros(pairs)
     }
 
+    /// torch.nn.functional.pad-style: padding is a flat int list of
+    /// (left, right) pairs starting from the last dim, or a list of
+    /// (left, right) pairs. value is a scalar or 0-d tensor (cast to self dtype).
     #[pyo3(name = "pad")]
-    pub fn pad_py(&self, padding: &Bound<'_, PyList>, value: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
-        let items: Vec<i64> = padding.into_iter().map(|d| d.extract().expect("padding must be integers")).collect();
-        let pairs: Vec<(i64, i64)> = items.chunks(2).map(|c| (c[0], c[1])).collect();
+    pub fn pad_py(&self, padding: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        let pairs: Vec<(i64, i64)> = if let Ok(list) = padding.cast::<PyList>() {
+            if list.is_empty() {
+                Vec::new()
+            } else if let Ok(first) = list.get_item(0) {
+                if first.cast::<PyTuple>().is_ok() || first.cast::<PyList>().is_ok() {
+                    // list of (left, right) pairs
+                    let mut out = Vec::with_capacity(list.len());
+                    for item in list.iter() {
+                        let pair: (i64, i64) = item.extract().map_err(|_| ZyxError::ParseError("pad: expected (left, right) pairs".into()))?;
+                        out.push(pair);
+                    }
+                    out
+                } else {
+                    let items: Vec<i64> = list
+                        .into_iter()
+                        .map(|d| d.extract().map_err(|_| ZyxError::ParseError("pad: padding must be integers".into())))
+                        .collect::<Result<_, _>>()?;
+                    items.chunks(2).map(|c| (c[0], c[1])).collect()
+                }
+            } else {
+                Vec::new()
+            }
+        } else if let Ok(tuple) = padding.cast::<PyTuple>() {
+            let items: Vec<i64> = tuple
+                .iter()
+                .map(|d| d.extract().map_err(|_| ZyxError::ParseError("pad: padding must be integers".into())))
+                .collect::<Result<_, _>>()?;
+            items.chunks(2).map(|c| (c[0], c[1])).collect()
+        } else {
+            return Err(ZyxError::ParseError("pad: padding must be list or tuple".into()));
+        };
+        let dtype = self.dtype();
         let value = extract_tensor_or_scalar(value).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
+        let value = value.cast(dtype);
         self.pad(pairs, value)
     }
 
