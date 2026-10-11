@@ -309,7 +309,7 @@ impl Kernel {
                         if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
                             _ = writeln!(source, "{indent}r{reg} = p{x};");
                         } else {
-                            let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                            let idx = get_var_addr(index, &constants, &indices, &reg_map, loop_id, &var_params)?;
                             match layout {
                                 MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];"),
                                 MemLayout::Vector(len) => {
@@ -329,7 +329,7 @@ impl Kernel {
                         todo!("CUDA codegen: Store dst non-GEP (whole-view)");
                     };
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let idx = get_var_addr(index, &constants, &indices, &reg_map, loop_id, &var_params)?;
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
@@ -706,6 +706,40 @@ fn get_var(
     }
 }
 
+/// Like [`get_var`], but for address composition only (GEP index operands at
+/// load/store sites): the returned C expression is written inline as
+/// `p{buf}[{expr}]` and the index op's register must NOT be decremented.
+/// One address gep is routinely shared by several load/store users
+/// (accumulator pattern: store / in-loop load + store / final load), and a
+/// "consumed per read" account would underflow on the second user. The
+/// index op's register instead stays live for the whole kernel; the GEP arm
+/// in `compute_dtypes_and_rcs` still counts its operands once (flat) for
+/// consistency with the rest of the accounting.
+#[allow(clippy::too_many_arguments)]
+fn get_var_addr(
+    op_id: OpId,
+    constants: &Map<OpId, Constant>,
+    indices: &Map<OpId, u8>,
+    reg_map: &Map<OpId, usize>,
+    loop_level: u8,
+    var_params: &Map<OpId, DType>,
+) -> Result<String, BackendError> {
+    if var_params.contains_key(&op_id) {
+        Ok(format!("p{op_id}"))
+    } else if let Some(c) = constants.get(&op_id) {
+        Ok(c.cu())
+    } else if let Some(id) = indices.get(&op_id) {
+        Ok(format!("idx{id}"))
+    } else if let Some(reg) = reg_map.get(&op_id) {
+        let _ = loop_level;
+        Ok(format!("r{reg}"))
+    } else {
+        Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("CUDA codegen: variable {op_id} not found").into(),
+        })
+    }
+}
 impl DType {
     pub(super) fn cu(&self) -> &'static str {
         match self {

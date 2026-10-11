@@ -26,6 +26,11 @@ impl Kernel {
     /// Unfold every used `RangeKind::Unroll` range into one scalar statement
     /// per lane. Unused ranges are removed. Runs in the device epilogue,
     /// after tile matching, before reader/writer publishing.
+    ///
+    /// The unfolding creates fresh copies for each lane; nothing runs after
+    /// this pass, so the folded duplicates must be cleaned here: constant
+    /// folding turns per-lane index expressions into literals, CSE merges
+    /// the identical forms, DCE removes what is dead.
     pub fn devectorize_unroll(&mut self) {
         for _ in 0..10000 {
             let found =
@@ -37,6 +42,9 @@ impl Kernel {
                 break;
             }
         }
+        self.constant_folding();
+        self.common_subexpression_elimination();
+        self.dead_code_elimination();
         self.verify();
     }
 
