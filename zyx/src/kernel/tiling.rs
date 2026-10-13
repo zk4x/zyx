@@ -41,6 +41,11 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
+        if std::env::var("ZYX_TILE_TRACE").is_ok() {
+            eprintln!("=== tt_tile: after unroll+v1 ===");
+            self.debug();
+        }
+
         // Bundle scalar work into vectors (loads, stores, then ops)
         // BEFORE coarsening: coarsen duplicates vectorized bodies per
         // lane, materializing one vector load per lane for the tile
@@ -68,11 +73,6 @@ impl Kernel {
         }
 
         self.default_epilogue();
-        self.default_epilogue();
-
-        // Vectorize AGAIN: coarsening duplicated the vectorized body,
-        // one vector load per row; the tile former stacks them now.
-        let vectorize = self.opt_vectorize();
         vectorize.apply(self, 0);
 
         self.tt_form_reduce_tiles();
@@ -94,7 +94,7 @@ impl Kernel {
     /// becomes an Index lane of row 0. Dead chains die in DCE.
     pub fn tt_form_reduce_tiles(&mut self) {
         let pat = Pat::vecreduce(Pat::index(Pat::bind('t'), 'r'), 'o');
-        for g in self.match_cover(&pat, &[32]) {
+        for g in self.match_cover(&pat, &['t', 'o'], &[32]) {
             let t = g.bindings.op('t');
             // Tile-shaped source of any kind; lane coverage below ties
             // the lanes to it.
@@ -131,36 +131,56 @@ impl Kernel {
 mod tests {
     use super::Kernel;
     use crate::dtype::DType;
-    use crate::kernel::{Dev, Op, RangeKind};
+    use crate::kernel::{Dev, Op};
 
     #[test]
-    fn tt_tile_2d() {
+    fn tt_form_reduce_tiles_pipeline_shape() {
+        // The post-pipeline state that must fire: tile load + f32 cast +
+        // 32 vec_reduce_sum over Index row lanes of the cast, stacked,
+        // cast back, stored.
+        use crate::kernel::{BOp, TTOp};
         let mut k = Kernel::new(Dev::TT(0));
-        let a = k.param(DType::BF16);
-        let o = k.param_mut(DType::BF16);
-        let rows = k.const_idx(32);
-        let cols = k.const_idx(256);
-        let gr = k.group_range(0, rows);
-        let gc = k.group_range(1, cols);
-        let stride = k.mul(gr, cols);
-        let idx = k.add(gc, stride);
-        let v = k.load(a, idx);
-        let n = k.neg(v);
-        k.store(o, n, idx);
-        k.tt_tile();
-        // First cut only canonicalizes: groups /4, traffic still scalar.
-        // (coarsen rewrites the group op itself into `gidx * 4`, so find
-        // the shortened ranges by axis.)
-        let mut lens: [Option<i64>; 2] = [None, None];
+        let r46 = k.param(DType::BF16);
+        let r17 = k.param_mut(DType::BF16);
+        let r25 = k.const_idx(0);
+        let tload = k.load_tile(r46, r25, 32, 32);
+        let r164 = k.cast(tload, DType::F32);
+        let mut sums = Vec::new();
+        for r in 0..32usize {
+            let lane = k.push_back(crate::kernel::Op::Index { vec: r164, idx: r });
+            let vopr = k.push_back(crate::kernel::Op::VecReduce { x: lane, bop: BOp::Add });
+            sums.push(vopr);
+        }
+        let sstack = k.stack(&sums);
+        let r636 = k.cast(sstack, DType::BF16);
+        k.store_vector(r17, r636, r25, 32);
+
+        k.tt_form_reduce_tiles();
+
+        let mut rts = 0;
+        let mut vreduces = 0;
         let mut id = k.head;
         while !id.is_null() {
-            if let Op::Range { axis, kind: RangeKind::Group(len) } = k.at(id).clone() {
-                lens[axis as usize] = k.resolve_const(len).and_then(|c| c.as_dim());
+            match k.at(id) {
+                Op::TT(TTOp::ReduceTile { .. }) => rts += 1,
+                Op::VecReduce { .. } => vreduces += 1,
+                _ => {}
             }
             id = k.next_op(id);
         }
-        assert_eq!(lens, [Some(8), Some(64)]);
-        assert!(k.shape(v).is_empty());
-        assert!(k.shape(n).is_empty());
+        assert_eq!(rts, 1, "one ReduceTile formed");
+        assert_eq!(vreduces, 0, "vec_reduces absorbed");
+        // Every former reduce root became an Index lane of the reduce
+        // tile's row 0.
+        for s in &sums {
+            match k.at(*s) {
+                Op::Index { vec, idx } => {
+                    assert!(!vec.is_null());
+                    assert_eq!(k.shape(*s).len(), 0);
+                    let _ = idx;
+                }
+                op => panic!("reduce root not an Index lane: {op:?}"),
+            }
+        }
     }
 }

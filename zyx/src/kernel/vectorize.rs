@@ -3,9 +3,9 @@
 
 use super::autotune::Optimization;
 use crate::{
-    Map, Set,
+    Set,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, Pat},
+    kernel::{Bindings, BOp, CoverGroup, Kernel, Op, OpId, Pat},
     shape::Dim,
 };
 
@@ -39,17 +39,13 @@ impl Optimization for Vectorize {
     }
 }
 
-#[derive(Debug)]
-struct LoadInfo {
-    id: OpId,
-    index: OpId,
-}
-
-#[derive(Debug)]
-struct StoreInfo {
-    id: OpId,
-    index: OpId,
-    x: OpId,
+/// Compute-op head for one cover call of [`Kernel::vectorize_ops_forward`].
+#[derive(Clone, Copy)]
+enum FwdKind {
+    Unary,
+    Cast,
+    Bitcast,
+    Binary,
 }
 
 impl Kernel {
@@ -71,265 +67,166 @@ impl Kernel {
     /// contiguous outer offsets into a single higher-rank load + Index
     /// lanes. Each round re-scans, so earlier rounds' loads group again
     /// deeper. `supported_lens` is the list of group sizes the target
-    /// device supports (applies at every rank).
+    /// device supports (applies at every rank). Grouping is two cover
+    /// matches: range-factored affine index (`Range*const + const`) and
+    /// absolute const index.
     /// TODO for now this function ignores aliasing of stores and loads.
     pub fn vectorize_loads(&mut self, supported_lens: &[u8], level: u8) {
         for round in 1..=level {
             let rank = (round - 1) as usize;
-            let mut op_id = self.head;
-            // Map: (src, elem width-shape) -> LoadInfo
-            let mut loads: Vec<Map<(OpId, Vec<Dim>), Vec<LoadInfo>>> = Vec::new();
-            loads.push(Map::default());
-            while !op_id.is_null() {
-                match self.ops[op_id].op {
-                    Op::Loop { .. } => {
-                        loads.push(Map::default());
-                    }
-                    Op::Load { src, src_idx: index, bytes } => {
-                        let elem: Option<Vec<Dim>> = if bytes.is_null() {
-                            Some(Vec::new())
-                        } else if let Op::Stack { ref ops } = self.ops[bytes].op {
-                            ops.iter().map(|&d| self.resolve_const(d).and_then(Constant::as_dim)).collect()
-                        } else {
-                            self.resolve_const(bytes).and_then(Constant::as_dim).map(|w| vec![w])
-                        };
-                        if let Some(elem) = elem
-                            && elem.len() == rank
-                        {
-                            loads
-                                .last_mut()
-                                .unwrap()
-                                .entry((src, elem))
-                                .or_default()
-                                .push(LoadInfo { id: op_id, index });
-                        }
-                    }
-                    Op::EndLoop => {
-                        let scope = loads.pop().expect("vectorize: scope stack underflow");
-                        self.verify_and_apply_vectorization(scope, supported_lens);
-                    }
-                    _ => {}
-                }
-
-                op_id = self.next_op(op_id);
+            self.normalize_bare_lane0();
+            let affine = Pat::load(
+                Pat::bind('s'),
+                Pat::all([Pat::bind('i'), Pat::binary(BOp::Add, Pat::bind('b'), Pat::bind_const('o'))]),
+            );
+            for g in self.match_cover(&affine, &['s', 'b'], supported_lens) {
+                self.apply_load_cover(&g, rank);
             }
-
-            let scope = loads.pop().expect("vectorize: scope stack underflow");
-            self.verify_and_apply_vectorization(scope, supported_lens);
+            let absolute = Pat::load(Pat::bind('s'), Pat::all([Pat::bind('i'), Pat::bind_const('o')]));
+            for g in self.match_cover(&absolute, &['s'], supported_lens) {
+                self.apply_load_cover(&g, rank);
+            }
         }
     }
 
-    /// Group one scope's loads by (src, elem shape): same width, same
-    /// shared base, outer offsets covering exactly `{0, step, ...}` get
-    /// one higher-rank load (`[n] + elem` descriptor) with every member
-    /// rewritten to an `Index` lane in place. The caller pops one loop
-    /// scope and passes it.
-    fn verify_and_apply_vectorization(
-        &mut self,
-        loads: Map<(OpId, Vec<Dim>), Vec<LoadInfo>>,
-        supported_lens: &[u8],
-    ) {
-        for ((src, elem), loads) in loads {
-            let n = loads.len();
-            if n >= 256 || !supported_lens.contains(&(n as u8)) {
-                continue;
-            }
-            // Offset step = one element's footprint; degenerate
-            // (zero/negative) widths never group.
-            let step: Dim = elem.iter().product();
-            if step < 1 {
-                continue;
-            }
-            // Per-member const offset (consts fold into the NULL
-            // stride) + shared base pattern (everything else must
-            // match exactly across members).
-            let mut offs: Vec<(OpId, OpId, Dim)> = Vec::with_capacity(n);
-            let mut prev: Option<Vec<(OpId, (Dim, Dim))>> = None;
-            let mut ok = true;
-            for load in &loads {
-                let Some(strides) = self.get_strides(load.index) else {
-                    ok = false;
-                    break;
+    /// Lane-0 members materialize as the bare range-factored base
+    /// (their `Add(base, 0)` folded): rewrite them into the add form so
+    /// one pattern covers every member.
+    fn normalize_bare_lane0(&mut self) {
+        let bare = Pat::load(
+            Pat::bind('s'),
+            Pat::all([Pat::bind('i'), Pat::binary(BOp::Mul, Pat::all([Pat::bind('b'), Pat::Range]), Pat::bind_const('k'))]),
+        );
+        let mut id = self.head;
+        while !id.is_null() {
+            if let Some(m) = self.match_pat(id, &bare) {
+                let bytes = match self.at(id) {
+                    Op::Load { bytes, .. } => *bytes,
+                    _ => {
+                        unreachable!("bare: load pattern root is a load")
+                    }
                 };
-                let off = strides.get(&OpId::NULL).map(|(_, v)| *v).unwrap_or(0);
-                let mut base: Vec<(OpId, (Dim, Dim))> =
-                    strides.iter().filter(|(id, _)| !id.is_null()).map(|(id, v)| (*id, *v)).collect();
-                base.sort();
-                if prev.as_ref().is_some_and(|p| *p != base) {
-                    ok = false;
-                    break;
-                }
-                prev = Some(base);
-                offs.push((load.id, load.index, off));
+                let zero = self.insert_before(id, Op::Const(Constant::new::<i64>(0)));
+                let norm = self.insert_before(id, Op::Binary { x: m.op('i'), y: zero, bop: BOp::Add });
+                self.ops[id].op = Op::Load { src: m.op('s'), src_idx: norm, bytes };
             }
-            if !ok {
-                continue;
+            id = self.next_op(id);
+        }
+    }
+
+    /// Lane-sorted (lane, root, binding-index) of one cover group.
+    fn cover_pairs(g: &CoverGroup) -> Vec<(i64, OpId, usize)> {
+        let mut pairs: Vec<(i64, OpId, usize)> =
+            g.roots.iter().copied().zip(g.lanes.iter().copied()).enumerate().map(|(k, (root, lane))| (lane, root, k)).collect();
+        pairs.sort_by_key(|(lane, _, _)| *lane);
+        pairs
+    }
+
+    /// One cover group of loads sharing (src, base): the roots' shape
+    /// gates the round's rank and its footprint is the lane stride; the
+    /// members get one higher-rank load (`[n] + elem` descriptor) and
+    /// are rewritten to `Index` lanes in place. The anchor index is the
+    /// smallest lane member's index. (`g.elem` shape agreement and lane
+    /// progression are cover facts.)
+    fn apply_load_cover(&mut self, g: &CoverGroup, rank: usize) {
+        if g.elem.len() != rank || g.stride != g.elem.iter().product::<Dim>() || g.stride < 1 {
+            return;
+        }
+        let pairs = Self::cover_pairs(g);
+        let src = g.bindings.op('s');
+        let base_root = pairs[0].1;
+        let base_index = g.roots_bindings[pairs[0].2].op('i');
+        let n = pairs.len();
+        let cn = self
+            .insert_before(base_root, Op::Const(Constant::new::<u16>(n.try_into().expect("vectorize: group overflows u16"))));
+        let bytes = if g.elem.is_empty() {
+            cn
+        } else {
+            let mut dims: Vec<OpId> = Vec::with_capacity(g.elem.len() + 1);
+            dims.push(cn);
+            for &d in &g.elem {
+                let c = self.insert_before(
+                    base_root,
+                    Op::Const(Constant::new::<u16>(d.try_into().expect("vectorize: width overflows u16"))),
+                );
+                dims.push(c);
             }
-            offs.sort_by_key(|(_, _, off)| *off);
-            if offs.iter().map(|(_, _, off)| *off).ne((0..(n as Dim)).map(|i| i * step)) {
-                continue;
-            }
-            // Form the higher-rank load before the offset-0 member;
-            // every member becomes its lane.
-            let (base_id, base_index, _) = offs[0];
-            let cn = self.insert_before(base_id, Op::Const(Constant::new::<u16>(n.try_into().expect("vectorize: group overflows u16"))));
-            let bytes = if elem.is_empty() {
-                cn
-            } else {
-                let mut ops: Vec<OpId> = Vec::with_capacity(elem.len() + 1);
-                ops.push(cn);
-                for &d in &elem {
-                    ops.push(self.insert_before(
-                        base_id,
-                        Op::Const(Constant::new::<u16>(d.try_into().expect("vectorize: width overflows u16"))),
-                    ));
-                }
-                self.insert_before(base_id, Op::Stack { ops: ops.into_boxed_slice() })
-            };
-            let tload = self.insert_before(base_id, Op::Load { src, src_idx: base_index, bytes });
-            for (row, (id, _, _)) in offs.iter().enumerate() {
-                self.ops[*id].op = Op::Index { vec: tload, idx: row };
-            }
+            self.insert_before(base_root, Op::Stack { ops: dims.into_boxed_slice() })
+        };
+        let tload = self.insert_before(base_root, Op::Load { src, src_idx: base_index, bytes });
+        for (row, (_, id, _)) in pairs.iter().enumerate() {
+            self.ops[*id].op = Op::Index { vec: tload, idx: row };
         }
     }
 
     /// Vectorize stores, general over rank (mirror of
     /// [`Self::vectorize_loads`]): round r groups stored values of
     /// shape-rank r-1 sharing one base with contiguous outer offsets
-    /// into a single higher-rank store. `supported_lens` is the list
-    /// of group sizes the target device supports (applies at every
-    /// rank).
+    /// into a single higher-rank store, values stacked per lane. Stored
+    /// values ride the per-root bindings.
     pub fn vectorize_stores(&mut self, supported_lens: &[u8], level: u8) {
         for round in 1..=level {
             let rank = (round - 1) as usize;
-            let mut op_id = self.head;
-            // Map: (dst, elem width-shape) -> StoreInfo
-            let mut stores: Vec<Map<(OpId, Vec<Dim>), Vec<StoreInfo>>> = Vec::new();
-            stores.push(Map::default());
-            while !op_id.is_null() {
-                match self.ops[op_id].op {
-                    Op::Loop { .. } => {
-                        stores.push(Map::default());
-                    }
-                    Op::Store { dst, dst_idx: index, src: x, bytes } => {
-                        let elem: Option<Vec<Dim>> = if bytes.is_null() {
-                            Some(Vec::new())
-                        } else if let Op::Stack { ref ops } = self.ops[bytes].op {
-                            ops.iter().map(|&d| self.resolve_const(d).and_then(Constant::as_dim)).collect()
-                        } else {
-                            self.resolve_const(bytes).and_then(Constant::as_dim).map(|w| vec![w])
-                        };
-                        if let Some(elem) = elem
-                            && elem.len() == rank
-                        {
-                            stores
-                                .last_mut()
-                                .unwrap()
-                                .entry((dst, elem))
-                                .or_default()
-                                .push(StoreInfo { id: op_id, index, x });
-                        }
-                    }
-                    Op::EndLoop => {
-                        let scope = stores.pop().expect("vectorize: scope stack underflow");
-                        self.verify_and_apply_store_vectorization(scope, supported_lens);
-                    }
-                    _ => {}
-                }
-
-                op_id = self.next_op(op_id);
+            let affine = Pat::store(
+                Pat::bind('d'),
+                Pat::all([Pat::bind('i'), Pat::binary(BOp::Add, Pat::bind('b'), Pat::bind_const('o'))]),
+                Pat::bind('x'),
+            );
+            for g in self.match_cover(&affine, &['d', 'b'], supported_lens) {
+                self.apply_store_cover(&g, rank);
             }
-
-            let scope = stores.pop().expect("vectorize: scope stack underflow");
-            self.verify_and_apply_store_vectorization(scope, supported_lens);
+            let absolute = Pat::store(Pat::bind('d'), Pat::all([Pat::bind('i'), Pat::bind_const('o')]), Pat::bind('x'));
+            for g in self.match_cover(&absolute, &['d'], supported_lens) {
+                self.apply_store_cover(&g, rank);
+            }
         }
     }
 
-    /// Group one scope's stores by (dst, elem shape): same width, same
-    /// shared base, outer offsets covering exactly `{0, step, ...}`
-    /// get one higher-rank store (`[n] + elem` descriptor) with the
-    /// values stacked per offset. Stored values must already be
-    /// declared: the stack goes after the last member store. The
-    /// caller pops one loop scope and passes it.
-    fn verify_and_apply_store_vectorization(
-        &mut self,
-        stores: Map<(OpId, Vec<Dim>), Vec<StoreInfo>>,
-        supported_lens: &[u8],
-    ) {
-        for ((dst, elem), stores) in stores {
-            let n = stores.len();
-            if n >= 256 || !supported_lens.contains(&(n as u8)) {
-                continue;
+    /// One cover group of stores sharing (dst, base): roots' shape and
+    /// lane stride per the mirror. Values come off the per-root
+    /// bindings; the stack goes after the last member store so all
+    /// values are declared.
+    fn apply_store_cover(&mut self, g: &CoverGroup, rank: usize) {
+        if g.elem.len() != rank || g.stride != g.elem.iter().product::<Dim>() || g.stride < 1 {
+            return;
+        }
+        let pairs = Self::cover_pairs(g);
+        let dst = g.bindings.op('d');
+        let n = pairs.len();
+        // Values stacked at the lane order; the stack goes after the
+        // last member so all values are declared.
+        let mut ops = vec![OpId::NULL; n].into_boxed_slice();
+        for (row, (_, _, k)) in pairs.iter().enumerate() {
+            ops[row] = g.roots_bindings[*k].op('x');
+        }
+        let mut last_id = pairs[0].1;
+        let mut cur = pairs[0].1;
+        while !cur.is_null() {
+            if pairs.iter().any(|(_, id, _)| *id == cur) {
+                last_id = cur;
             }
-            let step: Dim = elem.iter().product();
-            if step < 1 {
-                continue;
+            cur = self.next_op(cur);
+        }
+        let vstore = self.insert_after(last_id, Op::Stack { ops });
+        let mut prev = vstore;
+        prev = self.insert_after(prev, Op::Const(Constant::new::<u16>(n.try_into().expect("vectorize: group overflows u16"))));
+        let bytes = if g.elem.is_empty() {
+            prev
+        } else {
+            let cn = prev;
+            let mut dims: Vec<OpId> = Vec::with_capacity(g.elem.len() + 1);
+            dims.push(cn);
+            for &d in &g.elem {
+                let c = self.insert_after(prev, Op::Const(Constant::new::<u16>(d.try_into().expect("vectorize: width overflows u16"))));
+                dims.push(c);
+                prev = c;
             }
-            let mut offs: Vec<(OpId, OpId, OpId, Dim)> = Vec::with_capacity(n);
-            let mut prev: Option<Vec<(OpId, (Dim, Dim))>> = None;
-            let mut ok = true;
-            for store in &stores {
-                let Some(strides) = self.get_strides(store.index) else {
-                    ok = false;
-                    break;
-                };
-                let off = strides.get(&OpId::NULL).map(|(_, v)| *v).unwrap_or(0);
-                let mut base: Vec<(OpId, (Dim, Dim))> =
-                    strides.iter().filter(|(id, _)| !id.is_null()).map(|(id, v)| (*id, *v)).collect();
-                base.sort();
-                if prev.as_ref().is_some_and(|p| *p != base) {
-                    ok = false;
-                    break;
-                }
-                prev = Some(base);
-                offs.push((store.id, store.index, store.x, off));
-            }
-            if !ok {
-                continue;
-            }
-            offs.sort_by_key(|(_, _, _, off)| *off);
-            if offs.iter().map(|(_, _, _, off)| *off).ne((0..(n as Dim)).map(|i| i * step)) {
-                continue;
-            }
-            // Values stacked at row = off/step; the stack goes
-            // after the last member so all values are declared.
-            let mut ops = vec![OpId::NULL; n].into_boxed_slice();
-            for (_, _, x, off) in &offs {
-                ops[(off / step) as usize] = *x;
-            }
-            let ids: Set<OpId> = offs.iter().map(|(id, _, _, _)| *id).collect();
-            let mut last_id = offs[0].0;
-            let mut cur = offs[0].0;
-            while !cur.is_null() {
-                if ids.contains(&cur) {
-                    last_id = cur;
-                }
-                cur = self.next_op(cur);
-            }
-            let vstore = self.insert_after(last_id, Op::Stack { ops });
-            let mut prev = vstore;
-            prev = self.insert_after(prev, Op::Const(Constant::new::<u16>(n.try_into().expect("vectorize: group overflows u16"))));
-            let bytes = if elem.is_empty() {
-                prev
-            } else {
-                let cn = prev;
-                let mut dims: Vec<OpId> = Vec::with_capacity(elem.len() + 1);
-                dims.push(cn);
-                for &d in &elem {
-                    let c = self.insert_after(
-                        prev,
-                        Op::Const(Constant::new::<u16>(d.try_into().expect("vectorize: width overflows u16"))),
-                    );
-                    dims.push(c);
-                    prev = c;
-                }
-                self.insert_after(prev, Op::Stack { ops: dims.into_boxed_slice() })
-            };
-            let (_, base_index, _, _) = offs[0];
-            self.insert_after(bytes, Op::Store { dst, dst_idx: base_index, src: vstore, bytes });
-            for (id, _, _, _) in &offs {
-                self.remove_op(*id);
-            }
+            self.insert_after(prev, Op::Stack { ops: dims.into_boxed_slice() })
+        };
+        let base_index = g.roots_bindings[pairs[0].2].op('i');
+        self.insert_after(bytes, Op::Store { dst, dst_idx: base_index, src: vstore, bytes });
+        for (_, id, _) in &pairs {
+            self.remove_op(*id);
         }
     }
 
@@ -338,6 +235,18 @@ impl Kernel {
         let mut cur = self.head;
         while !cur.is_null() && cur != pos {
             if cur == target {
+                return true;
+            }
+            cur = self.next_op(cur);
+        }
+        false
+    }
+
+    /// Whether any op before `stop` (exclusive) in kernel order uses `op`.
+    fn use_before(&self, op: OpId, stop: OpId) -> bool {
+        let mut cur = self.head;
+        while !cur.is_null() && cur != stop {
+            if self.ops[cur].op.parameters().any(|p| p == op) {
                 return true;
             }
             cur = self.next_op(cur);
@@ -358,286 +267,216 @@ impl Kernel {
         candidates[0]
     }
 
-    /// Walk forward, find scalar ops over `Index` lanes of one vector that
-    /// share the same op head, and bundle them: `Stack` the operands per
-    /// position, rebuild the same op over the vectors, devectorize results.
+    /// Walk forward, find scalar ops over `Index` lanes of one vector
+    /// that share the same op head, and bundle them: `Stack` the
+    /// operands per position, rebuild the same op over the vectors,
+    /// devectorize results. One cover call per head kind and lane
+    /// position (head agreement is the payload binder); partial takes
+    /// (largest supported count, leftovers stay scalar) ride the fuel
+    /// loop.
     pub fn vectorize_ops_forward(&mut self, supported_lens: &[u8]) {
         // Process in descending length order for maximal vectorization first
         let mut supported: Vec<u8> = supported_lens.to_vec();
         supported.sort_unstable_by(|a, b| b.cmp(a));
-
-        // Same op head (variant + payload, ignoring operands).
-        let same_head = |a: &Op, b: &Op| match (a, b) {
-            (Op::Unary { uop: x, .. }, Op::Unary { uop: y, .. }) => x == y,
-            (Op::Cast { dtype: x, .. }, Op::Cast { dtype: y, .. }) => x == y,
-            (Op::Bitcast { dtype: x, .. }, Op::Bitcast { dtype: y, .. }) => x == y,
-            (Op::Binary { bop: x, .. }, Op::Binary { bop: y, .. }) => x == y,
-            _ => false,
-        };
-        // Lane-operand check shared by every op kind.
-        let lane_pat = Pat::index(Pat::bind('v'), 'k');
-
-        // Group key: same source vec, same head, same lane position.
-        // The template is the first member's op, reused for the rebuild.
-        struct Group {
-            source: OpId,
-            template: Op,
-            lane_pos: usize,
-            members: Vec<OpId>,
-        }
-        let mut groups: Vec<Group> = Vec::new();
-
+        // The lane operand identity is IN the pattern: `same vec, same
+        // lane, same head` — the binary retry covers both operand
+        // orders and the use slots come off the match ('n' binds the
+        // lane Index node itself).
+        let lane = Pat::index_node('n', Pat::bind('v'), 'k');
+        let pats = [
+            (Pat::unary(lane.clone(), 'p'), FwdKind::Unary, 1usize),
+            (Pat::cast(lane.clone(), 'p'), FwdKind::Cast, 1usize),
+            (Pat::bitcast(lane.clone(), 'p'), FwdKind::Bitcast, 1usize),
+            (Pat::binary('p', lane, Pat::bind('y')), FwdKind::Binary, 2usize),
+        ];
         // Fuel-capped: each iteration must vectorize one group; the cap
         // turns a no-progress bug into termination, never a hang.
         for _ in 0..10000 {
-            groups.clear();
-
-            // Full pass: collect ALL consumers into groups
-            let mut op_id = self.head;
-            while !op_id.is_null() {
-                let is_candidate =
-                    matches!(self.ops[op_id].op, Op::Unary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Binary { .. });
-                if is_candidate {
-                    let operands: Vec<OpId> = self.ops[op_id].op.parameters().collect();
-                    // First lane operand wins (x preferred for binary).
-                    let mut found = None;
-                    for (i, &o) in operands.iter().enumerate() {
-                        if let Some(m) = self.match_pat(o, &lane_pat) {
-                            found = Some((m.op('v'), i));
-                            break;
-                        }
-                    }
-                    if let Some((source, lane_pos)) = found {
-                        if let Some(g) = groups
-                            .iter_mut()
-                            .find(|g| g.source == source && g.lane_pos == lane_pos && same_head(&g.template, &self.ops[op_id].op))
-                        {
-                            g.members.push(op_id);
-                        } else {
-                            groups.push(Group { source, template: self.ops[op_id].op.clone(), lane_pos, members: vec![op_id] });
-                        }
-                    }
-                }
-                op_id = self.next_op(op_id);
-            }
-
-            // Try groups in descending size order
-            let mut indices: Vec<usize> = (0..groups.len()).filter(|&i| groups[i].members.len() >= 2).collect();
-            indices.sort_by(|&a, &b| groups[b].members.len().cmp(&groups[a].members.len()));
-
             let mut applied = false;
-            for &idx in &indices {
-                let n = groups[idx].members.len();
-
-                // Pick largest supported length <= n
-                let Some(vec_len) = supported.iter().copied().find(|&l| (l as usize) <= n) else {
-                    continue;
-                };
-                let vec_len = vec_len as usize;
-
-                // Take the first vec_len entries
-                let selected: Vec<OpId> = groups[idx].members.iter().take(vec_len).copied().collect();
-                let lane_pos = groups[idx].lane_pos;
-                let source_vec = groups[idx].source;
-                let arity = groups[idx].template.parameters().count();
-
-                let first = selected[0];
-
-                // Every Stack operand must be declared before `first`.
-                // Unrolled bodies interleave lanes with consumers (load,
-                // cast, load, cast, ...), leaving later lanes after `first`.
-                // Hoist those lanes to just before `first`: a lane depends
-                // only on the source vec, so the move is declaration-safe
-                // iff the source vec precedes `first` and no hoisted lane
-                // is used before `first`. Otherwise the group stays scalar
-                // for the store-driven backward pass, as before.
-                // (Multi-operand ops only guard the other side; lanes are
-                // assumed in place, matching prior behavior.)
-                if arity == 1 {
-                    let lane_of = |consumer: OpId| self.ops[consumer].op.parameters().nth(lane_pos).expect("arity drift");
-                    let late: Vec<OpId> =
-                        selected.iter().map(|&c| lane_of(c)).filter(|&l| !self.op_is_before(l, first)).collect();
-                    if !late.is_empty() {
-                        let mut hoist_ok = self.op_is_before(source_vec, first);
-                        for &l in &late {
-                            if !hoist_ok {
-                                break;
-                            }
-                            let mut cur = self.head;
-                            while !cur.is_null() && cur != first {
-                                if self.ops[cur].op.parameters().any(|p| p == l) {
-                                    hoist_ok = false;
-                                    break;
-                                }
-                                cur = self.next_op(cur);
-                            }
-                        }
-                        if !hoist_ok {
-                            continue;
-                        }
-                        for l in late {
-                            self.move_op_before(l, first);
-                        }
-                    }
-                } else {
-                    let mut other_ok = true;
-                    for &c in &selected {
-                        let operands: Vec<OpId> = self.ops[c].op.parameters().collect();
-                        for (i, &o) in operands.iter().enumerate() {
-                            if i != lane_pos && !self.op_is_before(o, first) {
-                                other_ok = false;
-                                break;
-                            }
-                        }
-                        if !other_ok {
-                            break;
-                        }
-                    }
-                    if !other_ok {
-                        continue;
-                    }
+            for (pat, kind, arity) in &pats {
+                if self.vectorize_ops_cover(pat, *kind, *arity, &supported) {
+                    applied = true;
+                    break;
                 }
-
-                // Apply: Stack each operand position across members, rebuild
-                // the template op over the vectors.
-                let mat: Vec<Vec<OpId>> = selected.iter().map(|&c| self.ops[c].op.parameters().collect()).collect();
-                let mut vec_ops = Vec::with_capacity(arity);
-                for i in 0..arity {
-                    let stack: Box<[OpId]> = mat.iter().map(|row| row[i]).collect();
-                    vec_ops.push(self.insert_before(first, Op::Stack { ops: stack }));
-                }
-                let mut rebuilt = groups[idx].template.clone();
-                for (p, v) in rebuilt.parameters_mut().zip(vec_ops) {
-                    *p = v;
-                }
-                let vec_op_id = self.insert_before(first, rebuilt);
-                for (i, &consumer) in selected.iter().enumerate() {
-                    self.ops[consumer].op = Op::Index { vec: vec_op_id, idx: i };
-                }
-                applied = true;
-                break;
             }
-
             if !applied {
                 break;
             }
         }
     }
 
-    /// Walk backward, find Vectorize[X0..Xn] where all Xi are the same compute op.
-    /// Replace Vectorize with compute_op(vectorize[inputs of Xi]),
-    /// replace the first Xi with that vectorize of inputs, and keep walking.
+    /// One cover group of same-head compute ops over lanes of one
+    /// vector: take the largest supported prefix, stack operands per
+    /// position, rebuild the head over the vectors, devectorize the
+    /// take. The lane use slot per member comes off the match
+    /// (`slots('k')`). Returns whether one group applied.
+    fn vectorize_ops_cover(&mut self, pat: &Pat, kind: FwdKind, arity: usize, supported: &[u8]) -> bool {
+        for g in self.match_cover(pat, &['v', 'p'], supported) {
+            let Some(selected) = g.take_prefix(supported) else {
+                continue;
+            };
+            let v = g.bindings.op('v');
+            let first = selected[0];
+            // Per-member lane slot and lane op, off the match.
+            let lane_of = |k: OpId, m: &Bindings| -> OpId {
+                self.ops[k].op.parameters().nth(*m.slots('n').first().expect("lane slot")).expect("arity drift")
+            };
+            let members: Vec<(OpId, &Bindings)> = selected.iter().copied().zip(g.roots_bindings.iter()).collect();
+            // Every Stack operand must be declared before `first`.
+            // Unrolled bodies interleave lanes with consumers (load,
+            // cast, load, cast, ...), leaving later lanes after `first`.
+            // Hoist those lanes to just before `first`: a lane depends
+            // only on the source vec, so the move is declaration-safe
+            // iff the source vec precedes `first` and no hoisted lane
+            // is used before `first`. Otherwise the group stays scalar
+            // for the store-driven backward pass, as before.
+            // (Multi-operand ops only guard the other side; lanes are
+            // assumed in place, matching prior behavior.)
+            if arity == 1 {
+                let late: Vec<OpId> =
+                    members.iter().map(|(c, m)| lane_of(*c, m)).filter(|&l| !self.op_is_before(l, first)).collect();
+                if !late.is_empty() {
+                    let mut hoist_ok = self.op_is_before(v, first);
+                    for l in &late {
+                        if self.use_before(*l, first) {
+                            hoist_ok = false;
+                            break;
+                        }
+                    }
+                    if !hoist_ok {
+                        continue;
+                    }
+                    for l in late {
+                        self.move_op_before(l, first);
+                    }
+                }
+            } else {
+                let mut other_ok = true;
+                for (c, m) in &members {
+                    let slot = *m.slots('n').first().expect("lane slot");
+                    let operands: Vec<OpId> = self.ops[*c].op.parameters().collect();
+                    for (i, &o) in operands.iter().enumerate() {
+                        if i != slot && !self.op_is_before(o, first) {
+                            other_ok = false;
+                            break;
+                        }
+                    }
+                    if !other_ok {
+                        break;
+                    }
+                }
+                if !other_ok {
+                    continue;
+                }
+            }
+
+            // Apply: Stack each operand position across members, rebuild
+            // the head over the vectors.
+            let mat: Vec<Vec<OpId>> = selected.iter().map(|&c| self.ops[c].op.parameters().collect()).collect();
+            let mut vec_ops = Vec::with_capacity(arity);
+            for i in 0..arity {
+                let stack: Box<[OpId]> = mat.iter().map(|row| row[i]).collect();
+                vec_ops.push(self.insert_before(first, Op::Stack { ops: stack }));
+            }
+            let mut rebuilt = match kind {
+                FwdKind::Unary => Op::Unary { x: OpId::NULL, uop: g.bindings.uop('p') },
+                FwdKind::Cast => Op::Cast { x: OpId::NULL, dtype: g.bindings.dtype('p') },
+                FwdKind::Bitcast => Op::Bitcast { x: OpId::NULL, dtype: g.bindings.dtype('p') },
+                FwdKind::Binary => Op::Binary { x: OpId::NULL, y: OpId::NULL, bop: g.bindings.bop('p') },
+            };
+            for (p, vv) in rebuilt.parameters_mut().zip(vec_ops) {
+                *p = vv;
+            }
+            let vec_op_id = self.insert_before(first, rebuilt);
+            for (i, &consumer) in selected.iter().enumerate() {
+                self.ops[consumer].op = Op::Index { vec: vec_op_id, idx: i };
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Walk backward, find `Stack[X0..Xn]` where all Xi are the same
+    /// compute op (head agreement via [`Kernel::match_stack`]), and
+    /// collapse it: compute_op(stack[inputs of Xi]) replaces the stack.
     pub fn vectorize_ops_backward(&mut self, supported_lens: &[u8]) {
         let mut op_id = self.tail;
         while !op_id.is_null() {
-            let ops = match &self.ops[op_id].op {
-                Op::Stack { ops } => ops.clone(),
-                _ => {
-                    op_id = self.prev_op(op_id);
-                    continue;
-                }
-            };
-
-            let n = ops.len();
-            if n < 2 || !supported_lens.contains(&(n as u8)) {
-                op_id = self.prev_op(op_id);
-                continue;
+            let next = self.prev_op(op_id);
+            let is_stack = matches!(self.ops[op_id].op, Op::Stack { .. });
+            if is_stack {
+                self.apply_stack_collapse(op_id, supported_lens);
             }
-
-            // Collect sources for each sub-op, then insert new vector ops
-            // and remap consumers. Guard: no sub-op is also a source
-            // (would create use-before-declaration in the IR).
-            //
-            // Insert new ops after the last operand in kernel order so all
-            // operands are declared before the new Vectorize ops.
-            match &self.ops[ops[0]].op {
-                Op::Unary { uop, .. } => {
-                    let uop = *uop;
-                    let mut sources = Vec::with_capacity(n);
-                    for &sub in ops.iter() {
-                        match &self.ops[sub].op {
-                            Op::Unary { x, uop: u } if *u == uop => sources.push(*x),
-                            _ => {
-                                sources.clear();
-                                break;
-                            }
-                        }
-                    }
-                    if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
-                        let last = self.last_in_kernel_order(&sources);
-                        let v_src = self.insert_after(last, Op::Stack { ops: sources.into_boxed_slice() });
-                        let v_op = self.insert_after(v_src, Op::Unary { x: v_src, uop });
-                        self.remap(op_id, v_op);
-                    }
-                }
-                Op::Cast { dtype, .. } => {
-                    let dtype = *dtype;
-                    let mut sources = Vec::with_capacity(n);
-                    for &sub in ops.iter() {
-                        match &self.ops[sub].op {
-                            Op::Cast { x, dtype: d } if *d == dtype => sources.push(*x),
-                            _ => {
-                                sources.clear();
-                                break;
-                            }
-                        }
-                    }
-                    if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
-                        let last = self.last_in_kernel_order(&sources);
-                        let v_src = self.insert_after(last, Op::Stack { ops: sources.into_boxed_slice() });
-                        let v_op = self.insert_after(v_src, Op::Cast { x: v_src, dtype });
-                        self.remap(op_id, v_op);
-                    }
-                }
-                Op::Bitcast { dtype, .. } => {
-                    let dtype = *dtype;
-                    let mut sources = Vec::with_capacity(n);
-                    for &sub in ops.iter() {
-                        match &self.ops[sub].op {
-                            Op::Bitcast { x, dtype: d } if *d == dtype => sources.push(*x),
-                            _ => {
-                                sources.clear();
-                                break;
-                            }
-                        }
-                    }
-                    if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
-                        let last = self.last_in_kernel_order(&sources);
-                        let v_src = self.insert_after(last, Op::Stack { ops: sources.into_boxed_slice() });
-                        let v_op = self.insert_after(v_src, Op::Bitcast { x: v_src, dtype });
-                        self.remap(op_id, v_op);
-                    }
-                }
-                Op::Binary { bop, .. } => {
-                    let bop = *bop;
-                    let mut xs = Vec::with_capacity(n);
-                    let mut ys = Vec::with_capacity(n);
-                    for &sub in ops.iter() {
-                        match &self.ops[sub].op {
-                            Op::Binary { x, y, bop: b } if *b == bop => {
-                                xs.push(*x);
-                                ys.push(*y);
-                            }
-                            _ => {
-                                xs.clear();
-                                break;
-                            }
-                        }
-                    }
-                    if !xs.is_empty() && !xs.iter().any(|x| ops.contains(x)) && !ys.iter().any(|y| ops.contains(y)) {
-                        let all: Vec<OpId> = xs.iter().chain(ys.iter()).copied().collect();
-                        let last = self.last_in_kernel_order(&all);
-                        let v_xs = self.insert_after(last, Op::Stack { ops: xs.into_boxed_slice() });
-                        let v_ys = self.insert_after(v_xs, Op::Stack { ops: ys.into_boxed_slice() });
-                        let v_op = self.insert_after(v_ys, Op::Binary { x: v_xs, y: v_ys, bop });
-                        self.remap(op_id, v_op);
-                    }
-                }
-                _ => {}
-            }
-
-            op_id = self.prev_op(op_id);
+            op_id = next;
         }
+    }
+
+    /// Collapse one stack whose members share a compute-op head. Each
+    /// head kind gets a leaf pattern; `match_stack` returns per-member
+    /// operand bindings. Insert new ops after the last source in kernel
+    /// order, remap the stack to the new op.
+    fn apply_stack_collapse(&mut self, stack: OpId, supported_lens: &[u8]) {
+        let first = match &self.ops[stack].op {
+            Op::Stack { ops } => ops.first().copied(),
+            _ => {
+                return;
+            }
+        };
+        let Some(first) = first else {
+            return;
+        };
+        // Leaf per head kind: operand binders are per-member op
+        // bindings, the payload binder makes match_stack assert the
+        // same-head condition across members. Arity records how many
+        // operand positions the head carries.
+        let (leaf, arity) = match self.at(first) {
+            Op::Unary { .. } => (Pat::unary(Pat::bind('x'), 'p'), 1usize),
+            Op::Cast { .. } => (Pat::cast(Pat::bind('x'), 'p'), 1usize),
+            Op::Bitcast { .. } => (Pat::bitcast(Pat::bind('x'), 'p'), 1usize),
+            Op::Binary { .. } => (Pat::binary('p', Pat::bind('x'), Pat::bind('y')), 2usize),
+            _ => {
+                return;
+            }
+        };
+        let Some(members) = self.match_stack(stack, &leaf, supported_lens) else {
+            return;
+        };
+        // Per-position sources; guard: no sub-op is also a source
+        // (would create use-before-declaration in the IR).
+        let mut positions: Vec<Vec<OpId>> = vec![Vec::with_capacity(members.len()); arity];
+        let names = ['x', 'y'];
+        for m in &members {
+            for (p, name) in names.iter().enumerate().take(arity) {
+                positions[p].push(m.op(*name));
+            }
+        }
+        let all: Vec<OpId> = positions.iter().flatten().copied().collect();
+        if all.iter().any(|s| matches!(&self.ops[stack].op, Op::Stack { ops } if ops.contains(s))) {
+            return;
+        }
+        // Stack each position, rebuild the head over the stacks, remap.
+        let last = self.last_in_kernel_order(&all);
+        let mut stacks: Vec<OpId> = Vec::with_capacity(arity);
+        let mut prev = last;
+        for pos in &positions {
+            let s = self.insert_after(prev, Op::Stack { ops: pos.clone().into_boxed_slice() });
+            stacks.push(s);
+            prev = s;
+        }
+        let mut rebuilt = match self.at(first) {
+            Op::Unary { .. } => Op::Unary { x: OpId::NULL, uop: members[0].uop('p') },
+            Op::Cast { .. } => Op::Cast { x: OpId::NULL, dtype: members[0].dtype('p') },
+            Op::Bitcast { .. } => Op::Bitcast { x: OpId::NULL, dtype: members[0].dtype('p') },
+            Op::Binary { .. } => Op::Binary { x: OpId::NULL, y: OpId::NULL, bop: members[0].bop('p') },
+            _ => {
+                unreachable!("arity came from this head")
+            }
+        };
+        for (p, s) in rebuilt.parameters_mut().zip(stacks) {
+            *p = s;
+        }
+        let v_op = self.insert_after(prev, rebuilt);
+        self.remap(stack, v_op);
     }
 
     /// Fold an add-chain covering every lane of one vector into a scalar
@@ -924,6 +763,52 @@ mod tests {
                     assert_eq!(vec, tload);
                     rows[idx] = true;
                     assert_eq!(k.shape(v), vec![32]);
+                }
+                ref op => panic!("vload {v} not a row lane: {op:?}"),
+            }
+        }
+        assert!(rows.iter().all(|&r| r), "rows 0..32 all covered");
+    }
+
+    #[test]
+    fn vectorize_loads_range_factored_forms_tile() {
+        // Post-coarsen pipeline shape: 32 vec32 loads with
+        // idx = group_range * 32 + rowconst (range-factored, shared
+        // range op across rows).
+        let mut k = Kernel::new(Dev::Auto);
+        let src = k.param(DType::F32);
+        let num_rows = k.const_idx(32);
+        let gr = k.group_range(0, num_rows);
+        let b32 = k.const_idx(32);
+        let base = k.mul(gr, b32);
+        let mut vloads = Vec::new();
+        for r in 0..32u32 {
+            let off = k.const_idx(r * 32);
+            let idx = k.add(base, off);
+            vloads.push(k.load_vector(src, idx, 32));
+        }
+
+        k.vectorize_loads(&[32], 2);
+
+        let mut tiles = 0;
+        let mut tload = crate::kernel::OpId::NULL;
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            if let Op::Load { .. } = k.ops[op_id].op {
+                if k.shape(op_id) == vec![32, 32] {
+                    tiles += 1;
+                    tload = op_id;
+                }
+            }
+            op_id = k.next_op(op_id);
+        }
+        assert_eq!(tiles, 1, "one tile load expected");
+        let mut rows = vec![false; 32];
+        for &v in &vloads {
+            match k.ops[v].op {
+                Op::Index { vec, idx } => {
+                    assert_eq!(vec, tload);
+                    rows[idx] = true;
                 }
                 ref op => panic!("vload {v} not a row lane: {op:?}"),
             }

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use crate::{
-    DType,
+    DType, Map,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, UOp},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
@@ -94,6 +94,56 @@ impl From<char> for VExpr {
 impl From<i64> for VExpr {
     fn from(v: i64) -> VExpr {
         VExpr::Const(v)
+    }
+}
+
+/// Payload matcher for compute-op patterns: an exact payload value, or
+/// a binder name recording the payload under a `Binding` kind — an
+/// exact payload value, or a binder name recording the payload under
+/// [`Binding::Bop`] / [`Binding::Uop`] / [`Binding::Dtype`]. Call sites
+/// pass either side directly (`Pat::binary(BOp::Add, ..)` and
+/// `Pat::binary('b', ..)` both compile via `Into`).
+#[derive(Clone, Copy, Debug)]
+pub enum PMatch<T> {
+    /// Exact payload value.
+    Exact(T),
+    /// Binder name for the payload.
+    Bind(char),
+}
+
+impl From<BOp> for PMatch<BOp> {
+    fn from(v: BOp) -> PMatch<BOp> {
+        PMatch::Exact(v)
+    }
+}
+
+impl From<UOp> for PMatch<UOp> {
+    fn from(v: UOp) -> PMatch<UOp> {
+        PMatch::Exact(v)
+    }
+}
+
+impl From<DType> for PMatch<DType> {
+    fn from(v: DType) -> PMatch<DType> {
+        PMatch::Exact(v)
+    }
+}
+
+impl From<char> for PMatch<BOp> {
+    fn from(name: char) -> PMatch<BOp> {
+        PMatch::Bind(name)
+    }
+}
+
+impl From<char> for PMatch<UOp> {
+    fn from(name: char) -> PMatch<UOp> {
+        PMatch::Bind(name)
+    }
+}
+
+impl From<char> for PMatch<DType> {
+    fn from(name: char) -> PMatch<DType> {
+        PMatch::Bind(name)
     }
 }
 
@@ -192,22 +242,24 @@ pub enum Pat {
         /// Right-hand value.
         b: VExpr,
     },
-    /// Matches a unary op with this exact `UOp` and an operand matching `x`.
+    /// Matches a unary op with this `uop` (exact value or binder name)
+    /// and an operand matching `x`.
     Unary {
         /// Pattern for the operand.
         x: Box<Pat>,
-        /// Required unary op.
-        uop: UOp,
+        /// Unary op, exact or bound.
+        uop: PMatch<UOp>,
     },
-    /// Matches a binary op with this exact `BOp` and operands matching
-    /// `x`/`y`. Commutative ops also try the swapped order.
+    /// Matches a binary op with this `bop` (exact value or binder name)
+    /// and operands matching `x`/`y`. Commutative ops also try the
+    /// swapped order.
     Binary {
         /// Pattern for the left operand.
         x: Box<Pat>,
         /// Pattern for the right operand.
         y: Box<Pat>,
-        /// Required binary op.
-        bop: BOp,
+        /// Binary op, exact or bound.
+        bop: PMatch<BOp>,
     },
     /// Matches if any alternative matches. Failed alternatives leave no bindings.
     Any(Box<[Pat]>),
@@ -216,28 +268,54 @@ pub enum Pat {
     All(Box<[Pat]>),
     /// Matches a vector lane (`Op::Index`): the source vector matches
     /// `vec` and the lane number binds as an integer value under `idx`
-    /// (read with [`Bindings::int`]).
+    /// (read with [`Bindings::int`]). `node` binds the Index node
+    /// itself for use slots; `'\0'` leaves it unbound.
     Index {
         /// Pattern for the source vector.
         vec: Box<Pat>,
         /// Binder name for the lane number.
         idx: char,
+        /// Binder name for the Index node (`'\0'` = unbound).
+        node: char,
     },
-    /// Matches a cast op (`Op::Cast`) to this exact dtype with an operand
-    /// matching `x`.
+    /// Matches a cast op (`Op::Cast`) to this `dtype` (exact value or
+    /// binder name) with an operand matching `x`.
     Cast {
         /// Pattern for the operand.
         x: Box<Pat>,
         /// Required dtype.
-        dtype: DType,
+        dtype: PMatch<DType>,
     },
-    /// Matches a bitcast op (`Op::Bitcast`) to this exact dtype with an
-    /// operand matching `x`.
+    /// Matches a bitcast op (`Op::Bitcast`) to this `dtype` (exact value
+    /// or binder name) with an operand matching `x`.
     Bitcast {
         /// Pattern for the operand.
         x: Box<Pat>,
         /// Required dtype.
-        dtype: DType,
+        dtype: PMatch<DType>,
+    },
+    /// Matches a load (`Op::Load`) with buffer matching `src` and index
+    /// matching `idx`. The access descriptor (`bytes`) is deliberately
+    /// NOT matched: width agreement stays in the calling pass, like
+    /// shapes and bounds.
+    Load {
+        /// Pattern for the buffer.
+        src: Box<Pat>,
+        /// Pattern for the index.
+        idx: Box<Pat>,
+    },
+    /// Matches a store (`Op::Store`) with buffer matching `dst`, index
+    /// matching `idx` and value matching `x`. The access descriptor is
+    /// deliberately NOT matched: widths stay in the calling pass. Bind
+    /// `x` but exclude it from the cover key — values differ per member
+    /// and are read off `roots_bindings`.
+    Store {
+        /// Pattern for the buffer.
+        dst: Box<Pat>,
+        /// Pattern for the index.
+        idx: Box<Pat>,
+        /// Pattern for the stored value.
+        x: Box<Pat>,
     },
     /// Matches a vector reduce (`Op::VecReduce`) with an operand matching
     /// `x`, binding the reduce `bop` under `bop` (read with
@@ -245,8 +323,8 @@ pub enum Pat {
     VecReduce {
         /// Pattern for the operand.
         x: Box<Pat>,
-        /// Binder name for the reduce op.
-        bop: char,
+        /// Reduce op: exact value or binder name.
+        bop: PMatch<BOp>,
     },
     /// Fold over a `bop` spine of vector lanes. Matches when the cone is a
     /// chain of `bop` links (either operand order per link, `bop` being
@@ -276,7 +354,21 @@ pub enum Pat {
 /// distinct const ops.
 #[derive(Clone, Debug, Default)]
 pub struct Bindings {
-    ops: [(char, OpId, Binding); 5],
+    ops: [(char, OpId, Binding); 8],
+    /// Operand slots inside the matched root where each op-kind binder's
+    /// op appears (recorded by the `record_slots` step in
+    /// [`Kernel::match_pat`] / [`Kernel::match_cover`] /
+    /// [`Kernel::match_stack`]); payload binders bind the root itself
+    /// and carry none. Read with [`Bindings::slots`].
+    slots: Map<char, Vec<usize>>,
+}
+
+impl Bindings {
+    /// Operand slots of the matched root where the op bound under
+    /// `name` appears. Empty for payload binders and unbound names.
+    pub fn slots(&self, name: char) -> &[usize] {
+        self.slots.get(&name).map_or(&[], |s| s)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -285,6 +377,8 @@ enum Binding {
     Int(i64),
     Float(f64),
     Bop(BOp),
+    Uop(UOp),
+    Dtype(DType),
     #[default]
     None,
 }
@@ -296,6 +390,8 @@ impl PartialEq for Binding {
             (Binding::Int(a), Binding::Int(b)) => a == b,
             (Binding::Float(a), Binding::Float(b)) => a.to_bits() == b.to_bits(),
             (Binding::Bop(a), Binding::Bop(b)) => a == b,
+            (Binding::Uop(a), Binding::Uop(b)) => a == b,
+            (Binding::Dtype(a), Binding::Dtype(b)) => a == b,
             (Binding::None, Binding::None) => true,
             _ => false,
         }
@@ -329,27 +425,58 @@ impl Bindings {
         panic!("unbound value name");
     }
 
-    /// Read an OpId bound by pattern
+    /// Read an OpId bound by pattern (any binder kind records its op).
     pub fn op(&self, name: char) -> OpId {
         for (n, op, binding) in &self.ops {
             if *n == name {
                 match binding {
+                    Binding::Op
+                    | Binding::Int(_)
+                    | Binding::Float(_)
+                    | Binding::Bop(_)
+                    | Binding::Uop(_)
+                    | Binding::Dtype(_) => return *op,
                     Binding::None => panic!("unbound value name"),
-                    Binding::Float(_) | Binding::Int(_) | Binding::Bop(_) | Binding::Op => return *op,
                 }
             }
         }
         panic!("unbound value name");
     }
 
-    /// Read a `BOp` bound by [`Pat::vecreduce`]. Panics on unbound names.
+    /// Read a `BOp` bound by a payload binder. Panics on unbound names.
     pub fn bop(&self, name: char) -> BOp {
         for (n, _, binding) in &self.ops {
             if *n == name {
-                match binding {
-                    Binding::Bop(b) => return *b,
-                    Binding::None | Binding::Float(_) | Binding::Int(_) | Binding::Op => panic!("unbound value name"),
+                if let Binding::Bop(b) = binding {
+                    return *b;
                 }
+                panic!("unbound value name");
+            }
+        }
+        panic!("unbound value name");
+    }
+
+    /// Read a `UOp` bound by a payload binder. Panics on unbound names.
+    pub fn uop(&self, name: char) -> UOp {
+        for (n, _, binding) in &self.ops {
+            if *n == name {
+                if let Binding::Uop(u) = binding {
+                    return *u;
+                }
+                panic!("unbound value name");
+            }
+        }
+        panic!("unbound value name");
+    }
+
+    /// Read a `DType` bound by a payload binder. Panics on unbound names.
+    pub fn dtype(&self, name: char) -> DType {
+        for (n, _, binding) in &self.ops {
+            if *n == name {
+                if let Binding::Dtype(d) = binding {
+                    return *d;
+                }
+                panic!("unbound value name");
             }
         }
         panic!("unbound value name");
@@ -374,6 +501,8 @@ impl Bindings {
                     (Binding::Int(a), Binding::Int(b)) => a == b,
                     (Binding::Float(a), Binding::Float(b)) => a.to_bits() == b.to_bits(),
                     (Binding::Bop(a), Binding::Bop(b)) => a == b,
+                    (Binding::Uop(a), Binding::Uop(b)) => a == b,
+                    (Binding::Dtype(a), Binding::Dtype(b)) => a == b,
                     _ => false,
                 };
             }
@@ -387,175 +516,175 @@ impl Bindings {
                 _ => {}
             }
         }
-        panic!("too many bindings, keep bindings under 5 values");
+        panic!("too many bindings, keep bindings under 8 values");
     }
 }
 
 impl<P: Into<Pat>> std::ops::Add<P> for &Pat {
     type Output = Pat;
     fn add(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::Add }
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::Add) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Add<P> for Pat {
     type Output = Pat;
     fn add(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::Add }
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::Add) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Div<P> for &Pat {
     type Output = Pat;
     fn div(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::Div }
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::Div) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Div<P> for Pat {
     type Output = Pat;
     fn div(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::Div }
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::Div) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Sub<P> for &Pat {
     type Output = Pat;
     fn sub(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::Sub }
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::Sub) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Sub<P> for Pat {
     type Output = Pat;
     fn sub(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::Sub }
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::Sub) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Mul<P> for &Pat {
     type Output = Pat;
     fn mul(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::Mul }
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::Mul) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Mul<P> for Pat {
     type Output = Pat;
     fn mul(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::Mul }
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::Mul) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Rem<P> for &Pat {
     type Output = Pat;
     fn rem(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::Mod }
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::Mod) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Rem<P> for Pat {
     type Output = Pat;
     fn rem(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::Mod }
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::Mod) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::BitAnd<P> for &Pat {
     type Output = Pat;
     fn bitand(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::BitAnd }
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::BitAnd) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::BitAnd<P> for Pat {
     type Output = Pat;
     fn bitand(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::BitAnd }
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::BitAnd) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::BitOr<P> for &Pat {
     type Output = Pat;
     fn bitor(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::BitOr }
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::BitOr) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::BitOr<P> for Pat {
     type Output = Pat;
     fn bitor(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::BitOr }
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::BitOr) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::BitXor<P> for &Pat {
     type Output = Pat;
     fn bitxor(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::BitXor }
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::BitXor) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::BitXor<P> for Pat {
     type Output = Pat;
     fn bitxor(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::BitXor }
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::BitXor) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Shl<P> for &Pat {
     type Output = Pat;
     fn shl(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::BitShiftLeft }
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::BitShiftLeft) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Shl<P> for Pat {
     type Output = Pat;
     fn shl(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::BitShiftLeft }
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::BitShiftLeft) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Shr<P> for &Pat {
     type Output = Pat;
     fn shr(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: BOp::BitShiftRight }
+        Pat::Binary { x: Box::new(self.clone()), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::BitShiftRight) }
     }
 }
 
 impl<P: Into<Pat>> std::ops::Shr<P> for Pat {
     type Output = Pat;
     fn shr(self, rhs: P) -> Pat {
-        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: BOp::BitShiftRight }
+        Pat::Binary { x: Box::new(self), y: Box::new(rhs.into()), bop: PMatch::Exact(BOp::BitShiftRight) }
     }
 }
 
 impl std::ops::Neg for &Pat {
     type Output = Pat;
     fn neg(self) -> Pat {
-        Pat::Unary { x: Box::new(self.clone()), uop: UOp::Neg }
+        Pat::Unary { x: Box::new(self.clone()), uop: PMatch::Exact(UOp::Neg) }
     }
 }
 
 impl std::ops::Neg for Pat {
     type Output = Pat;
     fn neg(self) -> Pat {
-        Pat::Unary { x: Box::new(self), uop: UOp::Neg }
+        Pat::Unary { x: Box::new(self), uop: PMatch::Exact(UOp::Neg) }
     }
 }
 
 impl std::ops::Not for &Pat {
     type Output = Pat;
     fn not(self) -> Pat {
-        Pat::Unary { x: Box::new(self.clone()), uop: UOp::Not }
+        Pat::Unary { x: Box::new(self.clone()), uop: PMatch::Exact(UOp::Not) }
     }
 }
 
 impl std::ops::Not for Pat {
     type Output = Pat;
     fn not(self) -> Pat {
-        Pat::Unary { x: Box::new(self), uop: UOp::Not }
+        Pat::Unary { x: Box::new(self), uop: PMatch::Exact(UOp::Not) }
     }
 }
 
@@ -667,26 +796,48 @@ impl Pat {
         Pat::Ge { a: a.into(), b: b.into() }
     }
 
-    /// Binary op with explicit [`BOp`] (for operators without an
-    /// operator-overload spelling, e.g. comparisons). Operands coerce.
-    pub fn binary(bop: BOp, x: impl Into<Pat>, y: impl Into<Pat>) -> Pat {
-        Pat::Binary { x: Box::new(x.into()), y: Box::new(y.into()), bop }
+    /// Binary op with explicit [`BOp`] (exact value or binder name; for
+    /// operators without an operator-overload spelling, e.g.
+    /// comparisons). Operands coerce.
+    pub fn binary(bop: impl Into<PMatch<BOp>>, x: impl Into<Pat>, y: impl Into<Pat>) -> Pat {
+        Pat::Binary { x: Box::new(x.into()), y: Box::new(y.into()), bop: bop.into() }
+    }
+
+    /// Unary op of the `x` pattern (op value or binder name).
+    pub fn unary(x: impl Into<Pat>, uop: impl Into<PMatch<UOp>>) -> Pat {
+        Pat::Unary { x: Box::new(x.into()), uop: uop.into() }
+    }
+
+    /// Load from the `src` pattern at the `idx` pattern.
+    pub fn load(src: impl Into<Pat>, idx: impl Into<Pat>) -> Pat {
+        Pat::Load { src: Box::new(src.into()), idx: Box::new(idx.into()) }
+    }
+
+    /// Store to the `dst` pattern at the `idx` pattern of the `x` value.
+    pub fn store(dst: impl Into<Pat>, idx: impl Into<Pat>, x: impl Into<Pat>) -> Pat {
+        Pat::Store { dst: Box::new(dst.into()), idx: Box::new(idx.into()), x: Box::new(x.into()) }
     }
 
     /// Vector lane of the `vec` pattern, binding the lane number as an
     /// integer value under `idx` (read with [`Bindings::int`]).
     pub fn index(vec: impl Into<Pat>, idx: char) -> Pat {
-        Pat::Index { vec: Box::new(vec.into()), idx }
+        Pat::Index { vec: Box::new(vec.into()), idx, node: '\0' }
     }
 
-    /// Cast to `dtype` of the `x` pattern.
-    pub fn cast(x: impl Into<Pat>, dtype: DType) -> Pat {
-        Pat::Cast { x: Box::new(x.into()), dtype }
+    /// Vector lane of the `vec` pattern; `node` binds the Index node
+    /// itself (use slots via [`Bindings::slots`]), `idx` the lane number.
+    pub fn index_node(node: char, vec: impl Into<Pat>, idx: char) -> Pat {
+        Pat::Index { vec: Box::new(vec.into()), idx, node }
     }
 
-    /// Bitcast to `dtype` of the `x` pattern.
-    pub fn bitcast(x: impl Into<Pat>, dtype: DType) -> Pat {
-        Pat::Bitcast { x: Box::new(x.into()), dtype }
+    /// Cast to `dtype` of the `x` pattern (dtype value or binder name).
+    pub fn cast(x: impl Into<Pat>, dtype: impl Into<PMatch<DType>>) -> Pat {
+        Pat::Cast { x: Box::new(x.into()), dtype: dtype.into() }
+    }
+
+    /// Bitcast to `dtype` of the `x` pattern (dtype value or binder name).
+    pub fn bitcast(x: impl Into<Pat>, dtype: impl Into<PMatch<DType>>) -> Pat {
+        Pat::Bitcast { x: Box::new(x.into()), dtype: dtype.into() }
     }
 
     /// Fold over a `bop` spine of `leaf`-matched vector lanes covering one
@@ -695,24 +846,24 @@ impl Pat {
         Pat::Seq { bop, leaf: Box::new(leaf.into()), widths: widths.into() }
     }
 
-    /// Vector reduce of the `x` pattern, binding the reduce op under `bop`.
-    pub fn vecreduce(x: impl Into<Pat>, bop: char) -> Pat {
-        Pat::VecReduce { x: Box::new(x.into()), bop }
+    /// Vector reduce of the `x` pattern (reduce op value or binder name).
+    pub fn vecreduce(x: impl Into<Pat>, bop: impl Into<PMatch<BOp>>) -> Pat {
+        Pat::VecReduce { x: Box::new(x.into()), bop: bop.into() }
     }
 
     /// Negation of this pattern.
     pub fn neg(&self) -> Pat {
-        Pat::Unary { x: Box::new(self.clone()), uop: UOp::Neg }
+        Pat::Unary { x: Box::new(self.clone()), uop: PMatch::Exact(UOp::Neg) }
     }
 
     /// Exponential of this pattern (`2^x`).
     pub fn exp2(self) -> Pat {
-        Pat::Unary { x: Box::new(self), uop: UOp::Exp2 }
+        Pat::Unary { x: Box::new(self), uop: PMatch::Exact(UOp::Exp2) }
     }
 
     /// Reciprocal of this pattern (`1/x`).
     pub fn recip(self) -> Pat {
-        Pat::Unary { x: Box::new(self), uop: UOp::Reciprocal }
+        Pat::Unary { x: Box::new(self), uop: PMatch::Exact(UOp::Reciprocal) }
     }
 
     /// Exponential of this pattern (`2^x`).
@@ -745,74 +896,175 @@ impl From<Constant> for Pat {
     }
 }
 
-/// One agreed cover group from [`Kernel::match_cover`]: the shared base
-/// bindings (lane binder excluded), plus the roots and their lane numbers
-/// in kernel order.
+/// One agreed cover group from [`Kernel::match_cover`]: the shared key
+/// bindings, the roots with their lane numbers and per-root bindings
+/// (kernel order), the kernel-earliest root, and the match facts the
+/// applier needs — the single-stride lane step and the roots' agreed
+/// shape. Everything but the mutation.
 #[derive(Clone, Debug)]
 pub struct CoverGroup {
-    /// Agreed bindings (tile, bop, ...).
+    /// Agreed bindings (key binders only).
     pub bindings: Bindings,
-    /// Root op per lane, kernel order.
+    /// Root ops in kernel order.
     pub roots: Vec<OpId>,
     /// Lane number per root, parallel to `roots`.
     pub lanes: Vec<i64>,
+    /// Full per-root bindings, parallel to `roots` (reads binders the
+    /// group key excludes, e.g. stored values or per-member indices).
+    pub roots_bindings: Vec<Bindings>,
+    /// Kernel-earliest root (`roots[0]`).
+    pub first: OpId,
+    /// The single-stride lane step (`{s, s+d, ..}`).
+    pub stride: i64,
+    /// The shape shared by every root (`[]` for scalars).
+    pub elem: Vec<Dim>,
+}
+
+impl CoverGroup {
+    /// Scheduling take for partial grouping: the largest `supported`
+    /// width `<= roots.len()`, as a prefix of `roots`; `None` when the
+    /// take would be degenerate (< 2 members). Leftover roots stay
+    /// untouched and ride the caller's fuel loop.
+    pub fn take_prefix(&self, supported: &[u8]) -> Option<Vec<OpId>> {
+        for l in supported {
+            if (*l as usize) <= self.roots.len() && *l >= 2 {
+                return Some(self.roots[..*l as usize].to_vec());
+            }
+        }
+        None
+    }
 }
 
 impl Kernel {
+    /// Match an [`Op::Stack`] whose member count is one of `widths` and
+    /// where every member matches `leaf`, all members agreeing on every
+    /// VALUE-kind binder (payload equality via [`Binding`] equality —
+    /// the same-head condition), while op-kind binders stay per-member.
+    /// Returns per-member bindings in stack order.
+    pub fn match_stack(&self, id: OpId, leaf: &Pat, widths: &[u8]) -> Option<Vec<Bindings>> {
+        let Op::Stack { ops } = self.at(id) else {
+            return None;
+        };
+        if u8::try_from(ops.len()).ok().is_none_or(|w| !widths.contains(&w)) {
+            return None;
+        }
+        let mut out = Vec::with_capacity(ops.len());
+        let mut agreed = Bindings::default();
+        for op in ops.iter() {
+            let mut b = agreed.clone();
+            if !self.match_node(leaf, *op, &mut b) {
+                return None;
+            }
+            self.record_slots(*op, &mut b);
+            out.push(b.clone());
+            // Carry the value-kind bindings forward as the agreement
+            // base; the op-kind binders stay per-member.
+            agreed = Bindings::default();
+            for (n, op_id, binding) in &b.ops {
+                match binding {
+                    Binding::None => {}
+                    Binding::Int(_) | Binding::Float(_) | Binding::Bop(_) | Binding::Uop(_) | Binding::Dtype(_) => {
+                        debug_assert!(agreed.try_insert(*n, *op_id, binding.clone()));
+                    }
+                    Binding::Op => {}
+                }
+            }
+        }
+        Some(out)
+    }
     /// Multi-root cover over the existing leaf machinery: match `root`
     /// against every op (an arbitrary op sequence over `Index` lanes of
-    /// one base); group successes by all non-lane binders (op, bop and
-    /// value equality — the agreement `try_insert` asserts within one
-    /// match, reused across roots). The single int binder is the lane
-    /// number and must form one exact `{0, d, 2d, ..}` progression — a
-    /// single stride, `Seq`-style self-validating — with the group size
-    /// in `widths`. Returns one group per agreed base. Shapes and
-    /// use-counts stay in the calling pass; only the final mutation
-    /// lives there.
-    pub fn match_cover(&self, root: &Pat, widths: &[u8]) -> Vec<CoverGroup> {
+    /// one base, or over affine/absolute traffic offsets); group
+    /// successes by the `key` binders (op, payload and value equality —
+    /// the agreement `try_insert` asserts within one match, reused
+    /// across roots). Binders outside `key` stay per-root (read off
+    /// `roots_bindings`), except the single unnamed int binder: the
+    /// lane number, which must form one exact `{s, s+d, s+2d, ..}`
+    /// progression — a single stride, `Seq`-style self-validating —
+    /// with the group size in `widths`. Returns one group per agreed
+    /// base, kernel ordered. Shapes and use-counts stay in the calling
+    /// pass; only the final mutation lives there.
+    pub fn match_cover(&self, root: &Pat, key: &[char], widths: &[u8]) -> Vec<CoverGroup> {
         let mut hits: Vec<(OpId, Bindings)> = Vec::new();
         let mut id = self.head;
         while !id.is_null() {
             let mut b = Bindings::default();
             if self.match_node(root, id, &mut b) {
+                self.record_slots(id, &mut b);
                 hits.push((id, b));
             }
             id = self.next_op(id);
         }
-        // Key = agreed binders, lane = the single int binder.
-        let mut keyed: Vec<(Vec<(char, OpId, Binding)>, Vec<OpId>, Vec<i64>)> = Vec::new();
+        // Group by try_insert agreement over the named key binders (a
+        // group IS a Bindings all members agree with); unnamed int
+        // binder = lane, everything else unnamed stays per-root.
+        let mut groups: Vec<(Bindings, Vec<OpId>, Vec<i64>, Vec<Bindings>)> = Vec::new();
         for (id, b) in &hits {
-            let mut lane: Option<(char, i64)> = None;
-            let mut key = Vec::new();
+            let mut lane: Option<i64> = None;
             let mut bad = false;
-            for (n, op, binding) in &b.ops {
+            for (n, _, binding) in &b.ops {
                 match binding {
                     Binding::None => {}
                     Binding::Int(v) => {
+                        if key.contains(n) {
+                            continue;
+                        }
                         if lane.is_some() {
                             bad = true;
                         }
-                        lane = Some((*n, *v));
+                        lane = Some(*v);
                     }
-                    Binding::Op | Binding::Bop(_) | Binding::Float(_) => key.push((*n, *op, binding.clone())),
+                    _ => {}
                 }
             }
-            if bad {
+            if bad || lane.is_none() {
                 continue;
             }
-            if lane.is_none() {
-                continue;
-            }
-            let l = lane.unwrap().1;
-            if let Some(g) = keyed.iter_mut().find(|(k, _, _)| *k == key) {
-                g.1.push(*id);
-                g.2.push(l);
-            } else {
-                keyed.push((key, vec![*id], vec![l]));
+            // Membership = the named key binders agree with the group's
+            // shared Bindings. Probe on a clone; join or found a new
+            // group (a probe IS the insert — swap it in).
+            let joined = groups.iter_mut().position(|(agreed, _, _, _)| {
+                let mut probe = agreed.clone();
+                for (n, op, binding) in &b.ops {
+                    match binding {
+                        Binding::None => {}
+                        _ => {
+                            if key.contains(n) {
+                                if !probe.try_insert(*n, *op, binding.clone()) {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+                *agreed = probe;
+                true
+            });
+            match joined {
+                Some(g) => {
+                    let (_, roots, lanes, rbs) = &mut groups[g];
+                    roots.push(*id);
+                    lanes.push(lane.unwrap());
+                    rbs.push(b.clone());
+                }
+                None => {
+                    let mut agreed = Bindings::default();
+                    for (n, op, binding) in &b.ops {
+                        match binding {
+                            Binding::None => {}
+                            _ => {
+                                if key.contains(n) {
+                                    debug_assert!(agreed.try_insert(*n, *op, binding.clone()));
+                                }
+                            }
+                        }
+                    }
+                    groups.push((agreed, vec![*id], vec![lane.unwrap()], vec![b.clone()]));
+                }
             }
         }
         let mut out = Vec::new();
-        for (key, roots, lanes) in keyed {
+        for (agreed, roots, lanes, rbs) in groups {
             let mut sorted = lanes.clone();
             sorted.sort_unstable();
             sorted.dedup();
@@ -823,7 +1075,7 @@ impl Kernel {
             if u8::try_from(n).ok().is_none_or(|w| !widths.contains(&w)) {
                 continue;
             }
-            if sorted.is_empty() || sorted[0] != 0 {
+            if sorted.is_empty() {
                 continue;
             }
             let mut ok = true;
@@ -833,7 +1085,7 @@ impl Kernel {
                     continue;
                 }
                 for (i, k) in sorted.iter().enumerate() {
-                    if *k != i as i64 * d {
+                    if *k != sorted[0] + i as i64 * d {
                         ok = false;
                     }
                 }
@@ -841,11 +1093,15 @@ impl Kernel {
             if !ok {
                 continue;
             }
-            let mut agreed = Bindings::default();
-            for (name, op, binding) in &key {
-                debug_assert!(agreed.try_insert(*name, *op, binding.clone()));
+            // Match facts for the applier: the single-stride step and
+            // the roots' agreed shape (mismatched shapes never cover).
+            let stride = if n > 1 { sorted[1] - sorted[0] } else { 0 };
+            let elem = self.shape(roots[0]);
+            if roots.iter().skip(1).any(|r| self.shape(*r) != elem) {
+                continue;
             }
-            out.push(CoverGroup { bindings: agreed, roots, lanes });
+            let first = roots[0];
+            out.push(CoverGroup { bindings: agreed, roots, lanes, roots_bindings: rbs, first, stride, elem });
         }
         out
     }
@@ -865,9 +1121,24 @@ impl Kernel {
     pub fn match_pat(&self, root: OpId, pat: impl Borrow<Pat>) -> Option<Bindings> {
         let mut bindings = Bindings::default();
         if self.match_node(pat.borrow(), root, &mut bindings) {
+            self.record_slots(root, &mut bindings);
             Some(bindings)
         } else {
             None
+        }
+    }
+
+    /// Record, per op-kind binder, the operand slots of `root` where the
+    /// bound op appears (use positions in the matched root; payload
+    /// binders bind the root itself and carry none).
+    fn record_slots(&self, root: OpId, bindings: &mut Bindings) {
+        let params: Vec<OpId> = self.ops[root].op.parameters().collect();
+        for (name, op_id, binding) in bindings.ops.iter() {
+            if !matches!(binding, Binding::Op) {
+                continue;
+            }
+            let slots: Vec<usize> = params.iter().enumerate().filter(|(_, p)| *p == op_id).map(|(i, _)| i).collect();
+            bindings.slots.insert(*name, slots);
         }
     }
 
@@ -913,19 +1184,47 @@ impl Kernel {
             Pat::Gt { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x > y),
             Pat::Ge { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x >= y),
             Pat::Unary { x, uop } => match self.at(id) {
-                Op::Unary { x: xid, uop: u } => *u == *uop && self.match_node(x, *xid, bindings),
+                Op::Unary { x: xid, uop: u } => match uop {
+                    PMatch::Exact(e) => *u == *e && self.match_node(x, *xid, bindings),
+                    PMatch::Bind(name) => {
+                        let snap = bindings.clone();
+                        if self.match_node(x, *xid, bindings) {
+                            if bindings.try_insert(*name, id, Binding::Uop(*u)) {
+                                return true;
+                            }
+                        }
+                        *bindings = snap;
+                        false
+                    }
+                },
                 _ => false,
             },
             Pat::Binary { x, y, bop } => match self.at(id) {
-                Op::Binary { x: xid, y: yid, bop: b } if *b == *bop => {
+                Op::Binary { x: xid, y: yid, bop: b } => {
                     let snap = bindings.clone();
+                    let pay_ok = match bop {
+                        PMatch::Exact(e) => *b == *e,
+                        PMatch::Bind(name) => bindings.try_insert(*name, id, Binding::Bop(*b)),
+                    };
+                    if !pay_ok {
+                        *bindings = snap;
+                        return false;
+                    }
+                    // A bound payload retries both orders (commutativity
+                    // unknown until bound); an exact one only if commutative.
+                    let retry = match bop {
+                        PMatch::Exact(e) => e.is_commutative(),
+                        PMatch::Bind(_) => true,
+                    };
+                    // The retry's reset keeps the payload bind.
+                    let snapped = bindings.clone();
                     let ok = (self.match_node(x, *xid, bindings) && self.match_node(y, *yid, bindings))
-                        || (bop.is_commutative() && {
-                            *bindings = snap.clone();
+                        || (retry && {
+                            *bindings = snapped.clone();
                             self.match_node(x, *yid, bindings) && self.match_node(y, *xid, bindings)
                         });
                     if !ok {
-                        *bindings = snap;
+                        *bindings = snapped;
                     }
                     ok
                 }
@@ -952,7 +1251,7 @@ impl Kernel {
                 }
                 true
             }
-            Pat::Index { vec, idx } => match self.at(id) {
+            Pat::Index { vec, idx, node } => match self.at(id) {
                 Op::Index { vec: vid, idx: i } => {
                     let snap = bindings.clone();
                     if !self.match_node(vec, *vid, bindings) {
@@ -967,29 +1266,86 @@ impl Kernel {
                         *bindings = snap;
                         return false;
                     }
+                    if *node != '\0' && !bindings.try_insert(*node, id, Binding::Op) {
+                        *bindings = snap;
+                        return false;
+                    }
                     true
                 }
                 _ => false,
             },
             Pat::Cast { x, dtype } => match self.at(id) {
-                Op::Cast { x: xid, dtype: d } => *d == *dtype && self.match_node(x, *xid, bindings),
+                Op::Cast { x: xid, dtype: d } => match dtype {
+                    PMatch::Exact(e) => *d == *e && self.match_node(x, *xid, bindings),
+                    PMatch::Bind(name) => {
+                        let snap = bindings.clone();
+                        if self.match_node(x, *xid, bindings) {
+                            if bindings.try_insert(*name, id, Binding::Dtype(*d)) {
+                                return true;
+                            }
+                        }
+                        *bindings = snap;
+                        false
+                    }
+                },
                 _ => false,
             },
             Pat::Bitcast { x, dtype } => match self.at(id) {
-                Op::Bitcast { x: xid, dtype: d } => *d == *dtype && self.match_node(x, *xid, bindings),
+                Op::Bitcast { x: xid, dtype: d } => match dtype {
+                    PMatch::Exact(e) => *d == *e && self.match_node(x, *xid, bindings),
+                    PMatch::Bind(name) => {
+                        let snap = bindings.clone();
+                        if self.match_node(x, *xid, bindings) {
+                            if bindings.try_insert(*name, id, Binding::Dtype(*d)) {
+                                return true;
+                            }
+                        }
+                        *bindings = snap;
+                        false
+                    }
+                },
+                _ => false,
+            },
+            Pat::Load { src, idx } => match self.at(id) {
+                Op::Load { src: s, src_idx: i, .. } => {
+                    let snap = bindings.clone();
+                    if self.match_node(src, *s, bindings) && self.match_node(idx, *i, bindings) {
+                        true
+                    } else {
+                        *bindings = snap;
+                        false
+                    }
+                }
+                _ => false,
+            },
+            Pat::Store { dst, idx, x } => match self.at(id) {
+                Op::Store { dst: d, dst_idx: i, src: v, .. } => {
+                    let snap = bindings.clone();
+                    if self.match_node(dst, *d, bindings) && self.match_node(idx, *i, bindings) && self.match_node(x, *v, bindings)
+                    {
+                        true
+                    } else {
+                        *bindings = snap;
+                        false
+                    }
+                }
                 _ => false,
             },
             Pat::VecReduce { x, bop } => match self.at(id) {
                 Op::VecReduce { x: xid, bop: b } => {
                     let snap = bindings.clone();
-                    if self.match_node(x, *xid, bindings) {
-                        if bindings.try_insert(*bop, id, Binding::Bop(*b)) {
-                            return true;
-                        }
+                    let pay_ok = match bop {
+                        PMatch::Exact(e) => *b == *e,
+                        PMatch::Bind(name) => bindings.try_insert(*name, id, Binding::Bop(*b)),
+                    };
+                    if !pay_ok {
                         *bindings = snap;
-                    } else {
-                        *bindings = snap;
+                        return false;
                     }
+                    if self.match_node(x, *xid, bindings) {
+                        return true;
+                    }
+                    *bindings = snap;
                     false
                 }
                 _ => false,

@@ -103,7 +103,7 @@ pub use ops::{
     TileDim,
 };
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
-pub use pat::{Bindings, CoverGroup, DtypeClass, Pat, VExpr};
+pub use pat::{Bindings, CoverGroup, DtypeClass, PMatch, Pat, VExpr};
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
