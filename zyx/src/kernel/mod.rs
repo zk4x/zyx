@@ -1380,10 +1380,17 @@ impl Kernel {
                 Op::Load { bytes, .. } if bytes.is_null() => {
                     visited.insert(op_id, vec![]);
                 }
+                // A multi-element access (vector/tile load) has the shape
+                // of its `bytes` descriptor: a width const → `[w]`, a
+                // `Stack` of dims → those dims.
+                Op::Load { bytes, .. } => {
+                    visited.insert(op_id, self.shape_descriptor(bytes));
+                }
                 // A scalar access (null `bytes`) loads one element: a
                 // scalar value; multi-element accesses have no shape (same
                 // as the old vector/tile GEPs, which had none either).
                 Op::Store { src: x, .. }
+                | Op::Copy { src: x, .. }
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
@@ -1391,6 +1398,7 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::TT(TTOp::LLKReduce { cb_in: x, .. })
                 | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
+                | Op::Index { vec: x, .. }
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(op_id, dims.clone());
@@ -1414,12 +1422,33 @@ impl Kernel {
                         }
                     }
                 }
+                // Lane extraction and lane reduction both yield scalars.
+                Op::Index { .. } | Op::VecReduce { .. } => {
+                    visited.insert(op_id, vec![]);
+                }
+                // A fragment value has its native width as a single dim
+                // (same table as the old `layout()` Wmma mapping).
+                Op::Wmma { dims, .. } => {
+                    let n: u32 = match dims {
+                        MMADims::m8n8k16 => 2,
+                        MMADims::m16n8k8 => 4,
+                        MMADims::m16n8k16 => 4,
+                        MMADims::m32n8k16 => 8,
+                        MMADims::m8n32k16 => 8,
+                        MMADims::m8n8k32 => 2,
+                        MMADims::m8n8k128 => 2,
+                    };
+                    let dim = self.const_idx(n);
+                    visited.insert(op_id, vec![dim]);
+                }
                 // Group/loop indices and scalar storages are scalar values.
                 Op::Range { .. } | Op::Loop { .. } => {
                     visited.insert(op_id, vec![]);
                 }
-                Op::Storage { len, .. } if len == 1 => {
-                    visited.insert(op_id, vec![]);
+                // A buffer's shape is a 1-D vector of its element count.
+                Op::Storage { len, .. } => {
+                    let dim = self.const_idx(len);
+                    visited.insert(op_id, vec![dim]);
                 }
                 ref op => todo!("shape_ids of {op:?}"),
             }
@@ -1557,9 +1586,10 @@ impl Kernel {
                     visited.insert(id, vec![]);
                 }
                 // A scalar access (null `bytes`) loads one element: a
-                // scalar value; multi-element accesses have no shape (same
-                // as the old vector/tile GEPs, which had none either).
+                // scalar value; multi-element accesses take their shape
+                // from the `bytes` descriptor (arm above).
                 Op::Store { src: x, .. }
+                | Op::Copy { src: x, .. }
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
@@ -1567,7 +1597,6 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::TT(TTOp::LLKReduce { cb_in: x, .. })
                 | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
-                | Op::Index { vec: x, .. }
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(id, dims.clone());
@@ -1591,17 +1620,46 @@ impl Kernel {
                         }
                     }
                 }
+                // Lane reduction yields a scalar.
+                Op::VecReduce { .. } => {
+                    visited.insert(id, vec![]);
+                }
+                // A fragment value has its native width as a single dim
+                // (same table as the old `layout()` Wmma mapping).
+                Op::Wmma { dims, .. } => {
+                    visited.insert(id, vec![match dims {
+                        MMADims::m8n8k16 => 2,
+                        MMADims::m16n8k8 => 4,
+                        MMADims::m16n8k16 => 4,
+                        MMADims::m32n8k16 => 8,
+                        MMADims::m8n32k16 => 8,
+                        MMADims::m8n8k32 => 2,
+                        MMADims::m8n8k128 => 2,
+                    }]);
+                }
                 // Group/loop indices and scalar storages are scalar values.
                 Op::Range { .. } | Op::Loop { .. } => {
                     visited.insert(id, vec![]);
                 }
                 // A scalar access (null `bytes`) loads one element: a
-                // scalar value (see shape_ids above).
+                // scalar value (see shape_ids above). A multi-element
+                // access (vector/tile load) has the resolved `bytes`
+                // descriptor as its shape, `-1` per symbolic dim.
                 Op::Load { bytes, .. } if bytes.is_null() => {
                     visited.insert(id, vec![]);
                 }
-                Op::Storage { len, .. } if len == 1 => {
-                    visited.insert(id, vec![]);
+                Op::Load { bytes, .. } => {
+                    visited.insert(
+                        id,
+                        descriptor(self, bytes)
+                            .iter()
+                            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
+                            .collect(),
+                    );
+                }
+                // A buffer's shape is a 1-D vector of its element count.
+                Op::Storage { len, .. } => {
+                    visited.insert(id, vec![len]);
                 }
                 ref op => todo!("shape of {op:?}"),
             }
