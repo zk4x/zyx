@@ -239,6 +239,15 @@ pub enum Pat {
         /// Required dtype.
         dtype: DType,
     },
+    /// Matches a vector reduce (`Op::VecReduce`) with an operand matching
+    /// `x`, binding the reduce `bop` under `bop` (read with
+    /// [`Bindings::bop`]). A repeated name asserts `bop` equality.
+    VecReduce {
+        /// Pattern for the operand.
+        x: Box<Pat>,
+        /// Binder name for the reduce op.
+        bop: char,
+    },
     /// Fold over a `bop` spine of vector lanes. Matches when the cone is a
     /// chain of `bop` links (either operand order per link, `bop` being
     /// commutative) whose leaves are all `leaf`-matched lanes of ONE
@@ -275,8 +284,22 @@ enum Binding {
     Op,
     Int(i64),
     Float(f64),
+    Bop(BOp),
     #[default]
     None,
+}
+
+impl PartialEq for Binding {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Binding::Op, Binding::Op) => true,
+            (Binding::Int(a), Binding::Int(b)) => a == b,
+            (Binding::Float(a), Binding::Float(b)) => a.to_bits() == b.to_bits(),
+            (Binding::Bop(a), Binding::Bop(b)) => a == b,
+            (Binding::None, Binding::None) => true,
+            _ => false,
+        }
+    }
 }
 
 impl Bindings {
@@ -284,10 +307,10 @@ impl Bindings {
     pub fn int(&self, name: char) -> i64 {
         for (n, _, binding) in &self.ops {
             if *n == name {
-                match binding {
-                    Binding::None | Binding::Float(_) | Binding::Op => panic!("unbound value name"),
-                    &Binding::Int(dim) => return dim,
+                if let Binding::Int(dim) = binding {
+                    return *dim;
                 }
+                panic!("unbound value name");
             }
         }
         panic!("unbound value name");
@@ -297,10 +320,10 @@ impl Bindings {
     pub fn float(&self, name: char) -> f64 {
         for (n, _, binding) in &self.ops {
             if *n == name {
-                match binding {
-                    Binding::None | Binding::Int(_) | Binding::Op => panic!("unbound value name"),
-                    &Binding::Float(v) => return v,
+                if let Binding::Float(v) = binding {
+                    return *v;
                 }
+                panic!("unbound value name");
             }
         }
         panic!("unbound value name");
@@ -312,7 +335,20 @@ impl Bindings {
             if *n == name {
                 match binding {
                     Binding::None => panic!("unbound value name"),
-                    Binding::Float(_) | Binding::Int(_) | Binding::Op => return *op,
+                    Binding::Float(_) | Binding::Int(_) | Binding::Bop(_) | Binding::Op => return *op,
+                }
+            }
+        }
+        panic!("unbound value name");
+    }
+
+    /// Read a `BOp` bound by [`Pat::vecreduce`]. Panics on unbound names.
+    pub fn bop(&self, name: char) -> BOp {
+        for (n, _, binding) in &self.ops {
+            if *n == name {
+                match binding {
+                    Binding::Bop(b) => return *b,
+                    Binding::None | Binding::Float(_) | Binding::Int(_) | Binding::Op => panic!("unbound value name"),
                 }
             }
         }
@@ -337,6 +373,7 @@ impl Bindings {
                     (Binding::Op, Binding::Op) => *op == id,
                     (Binding::Int(a), Binding::Int(b)) => a == b,
                     (Binding::Float(a), Binding::Float(b)) => a.to_bits() == b.to_bits(),
+                    (Binding::Bop(a), Binding::Bop(b)) => a == b,
                     _ => false,
                 };
             }
@@ -658,6 +695,11 @@ impl Pat {
         Pat::Seq { bop, leaf: Box::new(leaf.into()), widths: widths.into() }
     }
 
+    /// Vector reduce of the `x` pattern, binding the reduce op under `bop`.
+    pub fn vecreduce(x: impl Into<Pat>, bop: char) -> Pat {
+        Pat::VecReduce { x: Box::new(x.into()), bop }
+    }
+
     /// Negation of this pattern.
     pub fn neg(&self) -> Pat {
         Pat::Unary { x: Box::new(self.clone()), uop: UOp::Neg }
@@ -703,7 +745,110 @@ impl From<Constant> for Pat {
     }
 }
 
+/// One agreed cover group from [`Kernel::match_cover`]: the shared base
+/// bindings (lane binder excluded), plus the roots and their lane numbers
+/// in kernel order.
+#[derive(Clone, Debug)]
+pub struct CoverGroup {
+    /// Agreed bindings (tile, bop, ...).
+    pub bindings: Bindings,
+    /// Root op per lane, kernel order.
+    pub roots: Vec<OpId>,
+    /// Lane number per root, parallel to `roots`.
+    pub lanes: Vec<i64>,
+}
+
 impl Kernel {
+    /// Multi-root cover over the existing leaf machinery: match `root`
+    /// against every op (an arbitrary op sequence over `Index` lanes of
+    /// one base); group successes by all non-lane binders (op, bop and
+    /// value equality — the agreement `try_insert` asserts within one
+    /// match, reused across roots). The single int binder is the lane
+    /// number and must form one exact `{0, d, 2d, ..}` progression — a
+    /// single stride, `Seq`-style self-validating — with the group size
+    /// in `widths`. Returns one group per agreed base. Shapes and
+    /// use-counts stay in the calling pass; only the final mutation
+    /// lives there.
+    pub fn match_cover(&self, root: &Pat, widths: &[u8]) -> Vec<CoverGroup> {
+        let mut hits: Vec<(OpId, Bindings)> = Vec::new();
+        let mut id = self.head;
+        while !id.is_null() {
+            let mut b = Bindings::default();
+            if self.match_node(root, id, &mut b) {
+                hits.push((id, b));
+            }
+            id = self.next_op(id);
+        }
+        // Key = agreed binders, lane = the single int binder.
+        let mut keyed: Vec<(Vec<(char, OpId, Binding)>, Vec<OpId>, Vec<i64>)> = Vec::new();
+        for (id, b) in &hits {
+            let mut lane: Option<(char, i64)> = None;
+            let mut key = Vec::new();
+            let mut bad = false;
+            for (n, op, binding) in &b.ops {
+                match binding {
+                    Binding::None => {}
+                    Binding::Int(v) => {
+                        if lane.is_some() {
+                            bad = true;
+                        }
+                        lane = Some((*n, *v));
+                    }
+                    Binding::Op | Binding::Bop(_) | Binding::Float(_) => key.push((*n, *op, binding.clone())),
+                }
+            }
+            if bad {
+                continue;
+            }
+            if lane.is_none() {
+                continue;
+            }
+            let l = lane.unwrap().1;
+            if let Some(g) = keyed.iter_mut().find(|(k, _, _)| *k == key) {
+                g.1.push(*id);
+                g.2.push(l);
+            } else {
+                keyed.push((key, vec![*id], vec![l]));
+            }
+        }
+        let mut out = Vec::new();
+        for (key, roots, lanes) in keyed {
+            let mut sorted = lanes.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            let n = sorted.len();
+            if roots.len() != n {
+                continue;
+            }
+            if u8::try_from(n).ok().is_none_or(|w| !widths.contains(&w)) {
+                continue;
+            }
+            if sorted.is_empty() || sorted[0] != 0 {
+                continue;
+            }
+            let mut ok = true;
+            if n > 1 {
+                let d = sorted[1] - sorted[0];
+                if d <= 0 {
+                    continue;
+                }
+                for (i, k) in sorted.iter().enumerate() {
+                    if *k != i as i64 * d {
+                        ok = false;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            let mut agreed = Bindings::default();
+            for (name, op, binding) in &key {
+                debug_assert!(agreed.try_insert(*name, *op, binding.clone()));
+            }
+            out.push(CoverGroup { bindings: agreed, roots, lanes });
+        }
+        out
+    }
     /// Match the IR cone above `root` against `pat`. Takes anything borrowing
     /// a pattern: a fresh owned temporary (`match_pat(id, Pat::bind("x") / n)`)
     /// or a shared reference to a reused pattern (`match_pat(id, &pat)`).
@@ -832,6 +977,21 @@ impl Kernel {
             },
             Pat::Bitcast { x, dtype } => match self.at(id) {
                 Op::Bitcast { x: xid, dtype: d } => *d == *dtype && self.match_node(x, *xid, bindings),
+                _ => false,
+            },
+            Pat::VecReduce { x, bop } => match self.at(id) {
+                Op::VecReduce { x: xid, bop: b } => {
+                    let snap = bindings.clone();
+                    if self.match_node(x, *xid, bindings) {
+                        if bindings.try_insert(*bop, id, Binding::Bop(*b)) {
+                            return true;
+                        }
+                        *bindings = snap;
+                    } else {
+                        *bindings = snap;
+                    }
+                    false
+                }
                 _ => false,
             },
             Pat::Seq { bop, leaf, widths } => {
