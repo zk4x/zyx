@@ -214,6 +214,15 @@ pub enum Pat {
     /// Matches if all alternatives match the same op. Bindings merge;
     /// a name bound twice must agree.
     All(Box<[Pat]>),
+    /// Matches a vector lane (`Op::Index`): the source vector matches
+    /// `vec` and the lane number binds as an integer value under `idx`
+    /// (read with [`Bindings::int`]).
+    Index {
+        /// Pattern for the source vector.
+        vec: Box<Pat>,
+        /// Binder name for the lane number.
+        idx: char,
+    },
 }
 
 /// Bindings produced by [`Kernel::match_pat`]: matched subexpression ids
@@ -595,6 +604,12 @@ impl Pat {
         Pat::Binary { x: Box::new(x.into()), y: Box::new(y.into()), bop }
     }
 
+    /// Vector lane of the `vec` pattern, binding the lane number as an
+    /// integer value under `idx` (read with [`Bindings::int`]).
+    pub fn index(vec: impl Into<Pat>, idx: char) -> Pat {
+        Pat::Index { vec: Box::new(vec.into()), idx }
+    }
+
     /// Negation of this pattern.
     pub fn neg(&self) -> Pat {
         Pat::Unary { x: Box::new(self.clone()), uop: UOp::Neg }
@@ -744,6 +759,25 @@ impl Kernel {
                 }
                 true
             }
+            Pat::Index { vec, idx } => match self.at(id) {
+                Op::Index { vec: vid, idx: i } => {
+                    let snap = bindings.clone();
+                    if !self.match_node(vec, *vid, bindings) {
+                        *bindings = snap;
+                        return false;
+                    }
+                    let Some(v) = i64::try_from(*i).ok() else {
+                        *bindings = snap;
+                        return false;
+                    };
+                    if !bindings.try_insert(*idx, id, Binding::Int(v)) {
+                        *bindings = snap;
+                        return false;
+                    }
+                    true
+                }
+                _ => false,
+            },
         }
     }
 }

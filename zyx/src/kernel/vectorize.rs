@@ -138,7 +138,7 @@ impl Kernel {
 
                 // Now that we know offsets are continues, we can replace the loads with single vectorized load
                 if base_index.is_some() {
-                    let bytes = self.push_back(Op::Const(Constant::new(vec_len as u16)));
+                    let bytes = self.insert_before(loads[0].id, Op::Const(Constant::new(vec_len as u16)));
                     let vload = self.insert_before(loads[0].id, Op::Load { src, src_idx: loads[0].index, bytes });
                     self.ops[loads[0].id].op = Op::Index { vec: vload, idx: 0 };
                     for (load, &off) in loads[1..].iter().zip(&offset_order) {
@@ -377,7 +377,8 @@ impl Kernel {
 
             let mut applied = false;
             for &idx in &indices {
-                let (_source, op_type, entries) = &groups[idx];
+                let (source_vec, op_type, entries) = &groups[idx];
+                let source_vec = *source_vec;
                 let n = entries.len();
 
                 // Pick largest supported length <= n
@@ -392,19 +393,42 @@ impl Kernel {
                 let first = selected[0].0;
 
                 // The Stack is inserted before `first`, so every lane it
-                // references must already be declared there. Lanes defined
-                // after `first` (e.g. devec lanes interleaved with their
-                // consumers after load vectorization) cannot join this
-                // group; they stay scalar here and remain available to the
-                // store-driven backward pass, which inserts after the last
-                // operand and can still vectorize them legally.
+                // references must already be declared there. Unrolled bodies
+                // interleave lanes with consumers (load, cast, load, cast,
+                // ...), leaving later lanes after `first`. Hoist those lanes
+                // to just before `first`: a lane depends only on the source
+                // vec, so the move is declaration-safe iff the source vec
+                // precedes `first` and no hoisted lane is used before `first`.
+                // Otherwise the group stays scalar for the store-driven
+                // backward pass, as before.
                 if !matches!(op_type, OpType::Binary(_, _)) {
                     let lane_of = |consumer: OpId| match &self.ops[consumer].op {
                         Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => *x,
                         _ => unreachable!(),
                     };
-                    if selected.iter().any(|&(c, _)| !self.op_is_before(lane_of(c), first)) {
-                        continue;
+                    let late: Vec<OpId> =
+                        selected.iter().map(|&(c, _)| lane_of(c)).filter(|&l| !self.op_is_before(l, first)).collect();
+                    if !late.is_empty() {
+                        let mut hoist_ok = self.op_is_before(source_vec, first);
+                        for &l in &late {
+                            if !hoist_ok {
+                                break;
+                            }
+                            let mut cur = self.head;
+                            while !cur.is_null() && cur != first {
+                                if self.ops[cur].op.parameters().any(|p| p == l) {
+                                    hoist_ok = false;
+                                    break;
+                                }
+                                cur = self.next_op(cur);
+                            }
+                        }
+                        if !hoist_ok {
+                            continue;
+                        }
+                        for l in late {
+                            self.move_op_before(l, first);
+                        }
                     }
                 }
 

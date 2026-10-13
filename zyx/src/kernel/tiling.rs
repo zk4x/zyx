@@ -54,6 +54,15 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
+        // Bundle tt_tile's 32-wide scalar bundles into vectors (loads,
+        // stores, then ops). TT declares supported_vec_lens=[32], so the
+        // coarsened bundles match exactly.
+        let vectorize = self.opt_vectorize();
+        vectorize.apply(self, 0);
+
+        self.default_epilogue();
+        self.default_epilogue();
+
         self.verify();
     }
 }
