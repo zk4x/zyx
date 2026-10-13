@@ -207,7 +207,11 @@ impl Kernel {
             let cb = cb_of[base];
             let cloned_off = memo[off];
             let slot_c = self.insert_const_idx_before(anchor, slot);
-            let bytes = self.block_bytes(&[32, 32]);
+            // Bytes live before the anchor with the Copy: block_bytes
+            // push_backs to the tail, which the Copy would precede.
+            let c32a = self.insert_before(anchor, Op::Const(Constant::new(32u16)));
+            let c32b = self.insert_before(anchor, Op::Const(Constant::new(32u16)));
+            let bytes = self.insert_before(anchor, Op::Stack { ops: [c32a, c32b].into() });
             self.insert_before(anchor, Op::Copy { src: *base, src_idx: cloned_off, dst: cb, dst_idx: slot_c, bytes });
             self.ops[*load].op = Op::Load { src: cb, src_idx: slot_c, bytes };
         }

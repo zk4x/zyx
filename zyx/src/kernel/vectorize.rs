@@ -65,105 +65,136 @@ impl Kernel {
         })
     }
 
-    /// Vectorize loads.
+    /// Vectorize loads, general over rank.
     ///
-    /// Combines multiple loads into vectorized operations for better performance.
-    /// `supported_lens` is the list of vector element counts the target device supports.
+    /// One round per level: round r groups loads of shape-rank r-1
+    /// (scalars, then vectors, then tiles, ...) sharing one base with
+    /// contiguous outer offsets into a single higher-rank load + Index
+    /// lanes. Each round re-scans, so earlier rounds' loads group again
+    /// deeper. `supported_lens` is the list of group sizes the target
+    /// device supports (applies at every rank).
     /// TODO for now this function ignores aliasing of stores and loads.
     pub fn vectorize_loads(&mut self, supported_lens: &[u8], level: u8) {
-        // TODO(level-2): group lane-duplicated vector loads into an
-        // outer vector. One-way only: refuse until implemented.
-        if level != 1 {
-            return;
-        }
-        let mut op_id = self.head;
-        // Map: src id -> LoadInfo
-        let mut loads: Vec<Map<OpId, Vec<LoadInfo>>> = Vec::new();
-        loads.push(Map::default());
-        while !op_id.is_null() {
-            match self.ops[op_id].op {
-                Op::Loop { .. } => {
-                    loads.push(Map::default());
-                }
-                Op::Load { src, src_idx: index, bytes } => {
-                    if bytes.is_null() {
-                        loads
-                            .last_mut()
-                            .unwrap()
-                            .entry(src)
-                            .and_modify(|e| e.push(LoadInfo { id: op_id, index }))
-                            .or_insert_with(|| vec![LoadInfo { id: op_id, index }]);
+        for round in 1..=level {
+            let rank = (round - 1) as usize;
+            let mut op_id = self.head;
+            // Map: (src, elem width-shape) -> LoadInfo
+            let mut loads: Vec<Map<(OpId, Vec<Dim>), Vec<LoadInfo>>> = Vec::new();
+            loads.push(Map::default());
+            while !op_id.is_null() {
+                match self.ops[op_id].op {
+                    Op::Loop { .. } => {
+                        loads.push(Map::default());
                     }
+                    Op::Load { src, src_idx: index, bytes } => {
+                        let elem: Option<Vec<Dim>> = if bytes.is_null() {
+                            Some(Vec::new())
+                        } else if let Op::Stack { ref ops } = self.ops[bytes].op {
+                            ops.iter().map(|&d| self.resolve_const(d).and_then(Constant::as_dim)).collect()
+                        } else {
+                            self.resolve_const(bytes).and_then(Constant::as_dim).map(|w| vec![w])
+                        };
+                        if let Some(elem) = elem
+                            && elem.len() == rank
+                        {
+                            loads
+                                .last_mut()
+                                .unwrap()
+                                .entry((src, elem))
+                                .or_default()
+                                .push(LoadInfo { id: op_id, index });
+                        }
+                    }
+                    Op::EndLoop => {
+                        self.verify_and_apply_vectorization(&mut loads, supported_lens);
+                    }
+                    _ => {}
                 }
-                Op::EndLoop => self.verify_and_apply_vectorization(&mut loads, supported_lens),
-                _ => {}
+
+                op_id = self.next_op(op_id);
             }
 
-            op_id = self.next_op(op_id);
+            self.verify_and_apply_vectorization(&mut loads, supported_lens);
         }
-
-        self.verify_and_apply_vectorization(&mut loads, supported_lens);
     }
 
-    fn verify_and_apply_vectorization(&mut self, loads: &mut Vec<Map<OpId, Vec<LoadInfo>>>, supported_lens: &[u8]) {
+    /// Group one scope's loads by (src, elem shape): same width, same
+    /// shared base, outer offsets covering exactly `{0, step, ...}` get
+    /// one higher-rank load (`[n] + elem` descriptor) with every member
+    /// rewritten to an `Index` lane in place. Returns whether any group
+    /// formed.
+    fn verify_and_apply_vectorization(
+        &mut self,
+        loads: &mut Vec<Map<(OpId, Vec<Dim>), Vec<LoadInfo>>>,
+        supported_lens: &[u8],
+    ) -> bool {
+        let mut applied = false;
         if let Some(loads) = loads.pop() {
-            for (src, mut loads) in loads {
-                if !supported_lens.contains(&(loads.len() as u8)) {
+            for ((src, elem), loads) in loads {
+                let n = loads.len();
+                if n >= 256 || !supported_lens.contains(&(n as u8)) {
                     continue;
                 }
-
-                loads.sort_unstable_by_key(|x| self.get_strides(x.index).map_or(0, |s| s.len()));
-
-                let mut base_index = None;
-                let mut offset_order: Vec<Dim> = Vec::new();
-                let vec_len = loads.len() as Dim;
-                for (base_idx, (_, vl)) in self.get_strides(loads[0].index).unwrap_or_default() {
-                    if !(vl == vec_len || (base_idx.is_null() && vl == 0)) {
-                        continue;
-                    }
-                    let mut offsets: Set<Dim> = (0..vec_len).collect();
-                    offset_order.clear();
-
-                    if loads[1..].iter().all(|x| {
-                        let Some(strides) = self.get_strides(x.index) else {
-                            return false;
-                        };
-                        if base_idx.is_null() {
-                            strides.iter().any(|(&idx, (_, st))| {
-                                let found = idx.is_null() && offsets.remove(st);
-                                if found {
-                                    offset_order.push(*st);
-                                }
-                                found
-                            })
-                        } else {
-                            strides.iter().any(|(&idx, (_, st))| idx == base_idx && *st == vec_len)
-                                && strides.iter().any(|(&idx, (_, st))| {
-                                    let found = idx.is_null() && offsets.remove(st);
-                                    if found {
-                                        offset_order.push(*st);
-                                    }
-                                    found
-                                })
-                        }
-                    }) && offsets.remove(&0)
-                    {
-                        base_index = Some(base_idx);
+                // Offset step = one element's footprint; degenerate
+                // (zero/negative) widths never group.
+                let step: Dim = elem.iter().product();
+                if step < 1 {
+                    continue;
+                }
+                // Per-member const offset (consts fold into the NULL
+                // stride) + shared base pattern (everything else must
+                // match exactly across members).
+                let mut offs: Vec<(OpId, OpId, Dim)> = Vec::with_capacity(n);
+                let mut prev: Option<Vec<(OpId, (Dim, Dim))>> = None;
+                let mut ok = true;
+                for load in &loads {
+                    let Some(strides) = self.get_strides(load.index) else {
+                        ok = false;
+                        break;
+                    };
+                    let off = strides.get(&OpId::NULL).map(|(_, v)| *v).unwrap_or(0);
+                    let mut base: Vec<(OpId, (Dim, Dim))> =
+                        strides.iter().filter(|(id, _)| !id.is_null()).map(|(id, v)| (*id, *v)).collect();
+                    base.sort();
+                    if prev.as_ref().is_some_and(|p| *p != base) {
+                        ok = false;
                         break;
                     }
+                    prev = Some(base);
+                    offs.push((load.id, load.index, off));
                 }
-
-                // Now that we know offsets are continues, we can replace the loads with single vectorized load
-                if base_index.is_some() {
-                    let bytes = self.insert_before(loads[0].id, Op::Const(Constant::new(vec_len as u16)));
-                    let vload = self.insert_before(loads[0].id, Op::Load { src, src_idx: loads[0].index, bytes });
-                    self.ops[loads[0].id].op = Op::Index { vec: vload, idx: 0 };
-                    for (load, &off) in loads[1..].iter().zip(&offset_order) {
-                        self.ops[load.id].op = Op::Index { vec: vload, idx: off as usize };
+                if !ok {
+                    continue;
+                }
+                offs.sort_by_key(|(_, _, off)| *off);
+                if offs.iter().map(|(_, _, off)| *off).ne((0..(n as Dim)).map(|i| i * step)) {
+                    continue;
+                }
+                // Form the higher-rank load before the offset-0 member;
+                // every member becomes its lane.
+                let (base_id, base_index, _) = offs[0];
+                let cn = self.insert_before(base_id, Op::Const(Constant::new::<u16>(n.try_into().expect("vectorize: group overflows u16"))));
+                let bytes = if elem.is_empty() {
+                    cn
+                } else {
+                    let mut ops: Vec<OpId> = Vec::with_capacity(elem.len() + 1);
+                    ops.push(cn);
+                    for &d in &elem {
+                        ops.push(self.insert_before(
+                            base_id,
+                            Op::Const(Constant::new::<u16>(d.try_into().expect("vectorize: width overflows u16"))),
+                        ));
                     }
+                    self.insert_before(base_id, Op::Stack { ops: ops.into_boxed_slice() })
+                };
+                let tload = self.insert_before(base_id, Op::Load { src, src_idx: base_index, bytes });
+                for (row, (id, _, _)) in offs.iter().enumerate() {
+                    self.ops[*id].op = Op::Index { vec: tload, idx: row };
                 }
+                applied = true;
             }
         }
+        applied
     }
 
     /// Vectorize stores.
@@ -854,7 +885,51 @@ mod tests {
     }
 
     #[test]
+    fn vectorize_loads_level2_forms_tile() {
+        // Sum-like IR: 32 vec32 loads at outer offsets 0, 32, ... .
+        let mut k = Kernel::new(Dev::Auto);
+        let src = k.param(DType::F32);
+        let mut vloads = Vec::new();
+        for r in 0..32u32 {
+            let off = k.const_idx(r * 32);
+            vloads.push(k.load_vector(src, off, 32));
+        }
+
+        k.vectorize_loads(&[32], 2);
+
+        // One tile load, bytes = Stack[32, 32].
+        let mut tiles = 0;
+        let mut tload = crate::kernel::OpId::NULL;
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            if let Op::Load { bytes, .. } = k.ops[op_id].op
+                && k.shape(op_id) == vec![32, 32]
+            {
+                tiles += 1;
+                tload = op_id;
+                assert!(matches!(k.ops[bytes].op, Op::Stack { .. }));
+            }
+            op_id = k.next_op(op_id);
+        }
+        assert_eq!(tiles, 1, "one tile load expected");
+        // Every original vload is now a row lane 0..32.
+        let mut rows = vec![false; 32];
+        for &v in &vloads {
+            match k.ops[v].op {
+                Op::Index { vec, idx } => {
+                    assert_eq!(vec, tload);
+                    rows[idx] = true;
+                    assert_eq!(k.shape(v), vec![32]);
+                }
+                ref op => panic!("vload {v} not a row lane: {op:?}"),
+            }
+        }
+        assert!(rows.iter().all(|&r| r), "rows 0..32 all covered");
+    }
+
+    #[test]
     fn vectorize_ops_and_constfold_clears_vectorize_devectorize() {
+
         let mut k = Kernel::new(Dev::Auto);
 
         let src = k.param(DType::F32);

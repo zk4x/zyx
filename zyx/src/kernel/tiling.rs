@@ -4,7 +4,8 @@
 //! Tenstorrent tiling pass: canonicalize scalar IR for tile matching.
 //! (Under construction, one step at a time.)
 
-use super::{Kernel, Op, OpId, RangeKind};
+use super::{BOp, DType, Kernel, Op, OpId, RangeKind, TTOp, TileDim};
+use crate::Set;
 
 impl Kernel {
     /// Tenstorrent tiling pass, first cut: reshape only, no tile ops yet.
@@ -69,7 +70,76 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
+        // Vectorize AGAIN: coarsening duplicated the vectorized body,
+        // one vector load per row; the tile former stacks them now.
+        let vectorize = self.opt_vectorize();
+        vectorize.apply(self, 0);
+
+        self.tt_form_reduce_tiles();
+
         self.verify();
+    }
+
+    /// Former: tile load + 32 row reduces -> ReduceTile(Row). Matches
+    /// clean chains only: VecReduce directly over Index{tile, row}.
+    /// Scalar casts around the reduce are vectorize_ops' leftovers and
+    /// must be absorbed there, never matched here. The result tile
+    /// carries the sums in its first row, so every reduce becomes an
+    /// Index lane of row 0. Dead chains die in DCE.
+    pub fn tt_form_reduce_tiles(&mut self) {
+        let mut outers: Vec<(OpId, OpId, usize, BOp)> = Vec::new();
+        {
+            let mut id = self.head;
+            while !id.is_null() {
+                if let Op::VecReduce { x: ix, bop } = self.ops[id].op
+                    && let Op::Index { vec: t, idx: row } = self.ops[ix].op
+                {
+                    outers.push((id, t, row, bop));
+                }
+                id = self.next_op(id);
+            }
+        }
+        let mut tiles: Vec<OpId> = outers.iter().map(|(_, t, _, _)| *t).collect();
+        tiles.sort();
+        tiles.dedup();
+        for t in tiles {
+            if self.shape(t) != vec![32, 32] {
+                continue;
+            }
+            let mine: Vec<(OpId, usize, BOp)> =
+                outers.iter().filter(|(_, tile, _, _)| *tile == t).map(|(o, _, r, b)| (*o, *r, *b)).collect();
+            if mine.len() != 32 {
+                continue;
+            }
+            let first_bop = mine[0].2;
+            let mut rows: [Option<OpId>; 32] = [None; 32];
+            let mut ok = mine.iter().all(|(_, _, b)| *b == first_bop);
+            for (outer, row, _) in &mine {
+                if *row >= 32 || rows[*row].is_some() {
+                    ok = false;
+                    break;
+                }
+                rows[*row] = Some(*outer);
+            }
+            if !ok {
+                continue;
+            }
+            let set: Set<OpId> = mine.iter().map(|(o, _, _)| *o).collect();
+            let mut first = OpId::NULL;
+            let mut scan = self.head;
+            while !scan.is_null() {
+                if set.contains(&scan) {
+                    first = scan;
+                    break;
+                }
+                scan = self.next_op(scan);
+            }
+            let rt = self.insert_before(first, Op::TT(TTOp::ReduceTile { x: t, rop: first_bop, kind: TileDim::Row }));
+            let row0 = self.insert_before(first, Op::Index { vec: rt, idx: 0 });
+            for (r, outer) in rows.iter().enumerate() {
+                self.ops[outer.unwrap()].op = Op::Index { vec: row0, idx: r };
+            }
+        }
     }
 }
 

@@ -453,7 +453,12 @@ impl Kernel {
                 }
                 Op::Index { vec, idx: _ } => {
                     let dtype = dtypes[&vec].0;
-                    dtypes.insert(op_id, (dtype, Vec::new()));
+                    let mut shape = dtypes[&vec].1.clone();
+                    debug_assert!(!shape.is_empty(), "compute_dtypes: Index of scalar");
+                    if !shape.is_empty() {
+                        shape.remove(0);
+                    }
+                    dtypes.insert(op_id, (dtype, shape));
                     *rcs.entry(vec).or_insert(0) += 1;
                 }
                 Op::Wmma { dims: _, layout: _, dtype, a, b, c } => {
@@ -1254,8 +1259,23 @@ impl Kernel {
                         }
                     }
                 }
-                // Lane extraction and lane reduction both yield scalars.
-                Op::Index { .. } | Op::VecReduce { .. } => {
+                // Lane extraction drops the leading dim: scalar from a
+                // vector, row vector from a tile. Lane reduction yields
+                // a scalar.
+                Op::Index { vec: x, .. } => match visited.get(&x).cloned() {
+                    Some(mut dims) => {
+                        debug_assert!(!dims.is_empty(), "shape_ids: Index of scalar");
+                        if !dims.is_empty() {
+                            dims.remove(0);
+                        }
+                        visited.insert(op_id, dims);
+                    }
+                    None => {
+                        stack.push(op_id);
+                        stack.push(x);
+                    }
+                },
+                Op::VecReduce { .. } => {
                     visited.insert(op_id, vec![]);
                 }
                 // A fragment value has its native width as a single dim
@@ -1462,8 +1482,23 @@ impl Kernel {
                         }
                     }
                 }
-                // Lane extraction and lane reduction both yield scalars.
-                Op::Index { .. } | Op::VecReduce { .. } => {
+                // Lane extraction drops the leading dim (scalar from a
+                // vector, row vector from a tile); lane reduction yields
+                // a scalar.
+                Op::Index { vec: x, .. } => match visited.get(&x).cloned() {
+                    Some(mut dims) => {
+                        debug_assert!(!dims.is_empty(), "shape: Index of scalar");
+                        if !dims.is_empty() {
+                            dims.remove(0);
+                        }
+                        visited.insert(id, dims);
+                    }
+                    None => {
+                        stack.push(id);
+                        stack.push(x);
+                    }
+                },
+                Op::VecReduce { .. } => {
                     visited.insert(id, vec![]);
                 }
                 // A fragment value has its native width as a single dim

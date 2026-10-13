@@ -573,9 +573,9 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.indent.pop();
                 sec.indent.pop();
             }
-            Op::Copy { src, src_idx, dst, dst_idx, bytes } => render_copy(sec, id, *src, *src_idx, *dst, *dst_idx, *bytes)?,
-            Op::Load { src, bytes, .. } => render_load(sec, id, *src, *bytes)?,
-            Op::Store { src: x, dst, dst_idx, bytes } => render_store(sec, id, *x, *dst, *dst_idx)?,
+            Op::Copy { src, src_idx, dst, dst_idx, .. } => render_copy(sec, id, *src, *src_idx, *dst, *dst_idx)?,
+            Op::Load { src, .. } => render_load(sec, id, *src)?,
+            Op::Store { src: x, dst, .. } => render_store(sec, id, *x, *dst)?,
             Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } => {
                 if sec.k.shape(id).len() == 2 {
                     render_tile_op(sec, id)?;
@@ -1100,7 +1100,6 @@ fn render_copy(
     src_idx: OpId,
     dst: OpId,
     dst_idx: OpId,
-    bytes: OpId,
 ) -> Result<(), BackendError> {
     let src_cb = circular_base(sec.k, src)?;
     let dst_cb = circular_base(sec.k, dst)?;
@@ -1352,7 +1351,7 @@ fn shift_tmpl(dtype: DType) -> Result<&'static str, BackendError> {
 /// other load emits nothing: SSA consumers copy at their own use
 /// (`operand_slot`), LLK provenance loads are sync accounting, dead
 /// loads are pops only.
-fn render_load(sec: &mut TtSection, id: OpId, src: OpId, bytes: OpId) -> Result<(), BackendError> {
+fn render_load(sec: &mut TtSection, id: OpId, src: OpId) -> Result<(), BackendError> {
     // Validate the access resolves to a concrete shape.
     let _ = sec.k.shape(id);
     if !matches!(sec.k.at(src), Op::Storage { scope: MemScope::Circular, .. }) {
@@ -1395,7 +1394,7 @@ fn cb_slot_expr(sec: &TtSection, idx: OpId, bytes: u32) -> Result<String, Backen
         _ => Ok(format!(" + ({})*{bytes}", sec.expr(idx)?)),
     }
 }
-fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId, dst_idx: OpId) -> Result<(), BackendError> {
+fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(), BackendError> {
     match sec.k.at(dst) {
         Op::Storage { scope: MemScope::Circular, .. } => {
             // Scalar stores into a Circular buffer are rejected:

@@ -108,7 +108,12 @@ impl Kernel {
                     }
                     Op::Index { vec, .. } => {
                         let dtype = dtypes[&vec].0;
-                        dtypes.insert(op_id, (dtype, Vec::new()));
+                        let mut shape = dtypes[&vec].1.clone();
+                        debug_assert!(!shape.is_empty(), "cost: Index of scalar");
+                        if !shape.is_empty() {
+                            shape.remove(0);
+                        }
+                        dtypes.insert(op_id, (dtype, shape));
                         *rcs.entry(vec).or_insert(0) += 1;
                     }
                     Op::VecReduce { x, bop: _ } => {
