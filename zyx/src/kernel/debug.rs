@@ -324,9 +324,16 @@ impl Kernel {
                     let idx_txt = if dst_idx.is_null() {
                         String::new()
                     } else {
-                        format!("[r{dst_idx} @ {:?}]", self.shape(op_id))
+                        format!("[r{dst_idx}]")
                     };
-                    writeln!(f, "{indent}{red}store{reset} r{dst}{idx_txt} = r{x}").unwrap();
+                    let (lb, ub) = bounds.get(&dst_idx).copied().unwrap_or((0, 0));
+                    let kind = match self.shape(op_id).as_slice() {
+                        [] => String::from("store"),
+                        [len] => format!("store vec{len}"),
+                        [x, y] => format!("store tile {x}x{y}"),
+                        _ => todo!("debug: rank>2 access"),
+                    };
+                    writeln!(f, "{indent}{red}{kind}{reset} r{dst}{idx_txt} = r{x}    // {lb}..={ub}").unwrap();
                 }
                 Op::Copy { src, src_idx, dst, dst_idx, .. } => {
                     let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
@@ -336,7 +343,8 @@ impl Kernel {
                     let dst = id_map.get(&dst).copied().unwrap_or(dst);
                     let dst_idx = id_map.get(&dst_idx).copied().unwrap_or(dst_idx);
                     let access_shape = self.shape(op_id);
-                    writeln!(f, "{indent}r{dst}[r{dst_idx} @ {access_shape:?}] = r{src}[r{src_idx}]    // {red}copy{reset}").unwrap();
+                    writeln!(f, "{indent}r{dst}[r{dst_idx} @ {access_shape:?}] = r{src}[r{src_idx}]    // {red}copy{reset}")
+                        .unwrap();
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);

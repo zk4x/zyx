@@ -26,16 +26,15 @@ impl Optimization for Vectorize {
     }
 
     fn apply(&self, kernel: &mut Kernel, _config: u64) {
-        // Level 1 first, then deeper levels in order: each level groups
-        // the output of the previous one.
-        for level in 1..=self.level {
-            kernel.vectorize_loads(&self.supported_lens, level);
-            kernel.vectorize_stores(&self.supported_lens, level);
-            if self.vectorize_ops {
-                kernel.vectorize_ops_forward(&self.supported_lens, level);
-                kernel.vectorize_ops_backward(&self.supported_lens, level);
-                kernel.reduce_lanes(&self.supported_lens, level);
-            }
+        // Zero level gates: loads/stores iterate rank rounds
+        // 1..=level internally; the rest are rank-general as written
+        // and self-limit through supported_lens.
+        kernel.vectorize_loads(&self.supported_lens, self.level);
+        kernel.vectorize_stores(&self.supported_lens, self.level);
+        if self.vectorize_ops {
+            kernel.vectorize_ops_forward(&self.supported_lens);
+            kernel.vectorize_ops_backward(&self.supported_lens);
+            kernel.reduce_lanes(&self.supported_lens);
         }
     }
 }
@@ -106,7 +105,8 @@ impl Kernel {
                         }
                     }
                     Op::EndLoop => {
-                        self.verify_and_apply_vectorization(&mut loads, supported_lens);
+                        let scope = loads.pop().expect("vectorize: scope stack underflow");
+                        self.verify_and_apply_vectorization(scope, supported_lens);
                     }
                     _ => {}
                 }
@@ -114,204 +114,221 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
 
-            self.verify_and_apply_vectorization(&mut loads, supported_lens);
+            let scope = loads.pop().expect("vectorize: scope stack underflow");
+            self.verify_and_apply_vectorization(scope, supported_lens);
         }
     }
 
     /// Group one scope's loads by (src, elem shape): same width, same
     /// shared base, outer offsets covering exactly `{0, step, ...}` get
     /// one higher-rank load (`[n] + elem` descriptor) with every member
-    /// rewritten to an `Index` lane in place. Returns whether any group
-    /// formed.
+    /// rewritten to an `Index` lane in place. The caller pops one loop
+    /// scope and passes it.
     fn verify_and_apply_vectorization(
         &mut self,
-        loads: &mut Vec<Map<(OpId, Vec<Dim>), Vec<LoadInfo>>>,
+        loads: Map<(OpId, Vec<Dim>), Vec<LoadInfo>>,
         supported_lens: &[u8],
-    ) -> bool {
-        let mut applied = false;
-        if let Some(loads) = loads.pop() {
-            for ((src, elem), loads) in loads {
-                let n = loads.len();
-                if n >= 256 || !supported_lens.contains(&(n as u8)) {
-                    continue;
-                }
-                // Offset step = one element's footprint; degenerate
-                // (zero/negative) widths never group.
-                let step: Dim = elem.iter().product();
-                if step < 1 {
-                    continue;
-                }
-                // Per-member const offset (consts fold into the NULL
-                // stride) + shared base pattern (everything else must
-                // match exactly across members).
-                let mut offs: Vec<(OpId, OpId, Dim)> = Vec::with_capacity(n);
-                let mut prev: Option<Vec<(OpId, (Dim, Dim))>> = None;
-                let mut ok = true;
-                for load in &loads {
-                    let Some(strides) = self.get_strides(load.index) else {
-                        ok = false;
-                        break;
-                    };
-                    let off = strides.get(&OpId::NULL).map(|(_, v)| *v).unwrap_or(0);
-                    let mut base: Vec<(OpId, (Dim, Dim))> =
-                        strides.iter().filter(|(id, _)| !id.is_null()).map(|(id, v)| (*id, *v)).collect();
-                    base.sort();
-                    if prev.as_ref().is_some_and(|p| *p != base) {
-                        ok = false;
-                        break;
-                    }
-                    prev = Some(base);
-                    offs.push((load.id, load.index, off));
-                }
-                if !ok {
-                    continue;
-                }
-                offs.sort_by_key(|(_, _, off)| *off);
-                if offs.iter().map(|(_, _, off)| *off).ne((0..(n as Dim)).map(|i| i * step)) {
-                    continue;
-                }
-                // Form the higher-rank load before the offset-0 member;
-                // every member becomes its lane.
-                let (base_id, base_index, _) = offs[0];
-                let cn = self.insert_before(base_id, Op::Const(Constant::new::<u16>(n.try_into().expect("vectorize: group overflows u16"))));
-                let bytes = if elem.is_empty() {
-                    cn
-                } else {
-                    let mut ops: Vec<OpId> = Vec::with_capacity(elem.len() + 1);
-                    ops.push(cn);
-                    for &d in &elem {
-                        ops.push(self.insert_before(
-                            base_id,
-                            Op::Const(Constant::new::<u16>(d.try_into().expect("vectorize: width overflows u16"))),
-                        ));
-                    }
-                    self.insert_before(base_id, Op::Stack { ops: ops.into_boxed_slice() })
+    ) {
+        for ((src, elem), loads) in loads {
+            let n = loads.len();
+            if n >= 256 || !supported_lens.contains(&(n as u8)) {
+                continue;
+            }
+            // Offset step = one element's footprint; degenerate
+            // (zero/negative) widths never group.
+            let step: Dim = elem.iter().product();
+            if step < 1 {
+                continue;
+            }
+            // Per-member const offset (consts fold into the NULL
+            // stride) + shared base pattern (everything else must
+            // match exactly across members).
+            let mut offs: Vec<(OpId, OpId, Dim)> = Vec::with_capacity(n);
+            let mut prev: Option<Vec<(OpId, (Dim, Dim))>> = None;
+            let mut ok = true;
+            for load in &loads {
+                let Some(strides) = self.get_strides(load.index) else {
+                    ok = false;
+                    break;
                 };
-                let tload = self.insert_before(base_id, Op::Load { src, src_idx: base_index, bytes });
-                for (row, (id, _, _)) in offs.iter().enumerate() {
-                    self.ops[*id].op = Op::Index { vec: tload, idx: row };
+                let off = strides.get(&OpId::NULL).map(|(_, v)| *v).unwrap_or(0);
+                let mut base: Vec<(OpId, (Dim, Dim))> =
+                    strides.iter().filter(|(id, _)| !id.is_null()).map(|(id, v)| (*id, *v)).collect();
+                base.sort();
+                if prev.as_ref().is_some_and(|p| *p != base) {
+                    ok = false;
+                    break;
                 }
-                applied = true;
+                prev = Some(base);
+                offs.push((load.id, load.index, off));
+            }
+            if !ok {
+                continue;
+            }
+            offs.sort_by_key(|(_, _, off)| *off);
+            if offs.iter().map(|(_, _, off)| *off).ne((0..(n as Dim)).map(|i| i * step)) {
+                continue;
+            }
+            // Form the higher-rank load before the offset-0 member;
+            // every member becomes its lane.
+            let (base_id, base_index, _) = offs[0];
+            let cn = self.insert_before(base_id, Op::Const(Constant::new::<u16>(n.try_into().expect("vectorize: group overflows u16"))));
+            let bytes = if elem.is_empty() {
+                cn
+            } else {
+                let mut ops: Vec<OpId> = Vec::with_capacity(elem.len() + 1);
+                ops.push(cn);
+                for &d in &elem {
+                    ops.push(self.insert_before(
+                        base_id,
+                        Op::Const(Constant::new::<u16>(d.try_into().expect("vectorize: width overflows u16"))),
+                    ));
+                }
+                self.insert_before(base_id, Op::Stack { ops: ops.into_boxed_slice() })
+            };
+            let tload = self.insert_before(base_id, Op::Load { src, src_idx: base_index, bytes });
+            for (row, (id, _, _)) in offs.iter().enumerate() {
+                self.ops[*id].op = Op::Index { vec: tload, idx: row };
             }
         }
-        applied
     }
 
-    /// Vectorize stores.
-    ///
-    /// Combines multiple scalar stores into a single vectorized store for better performance.
-    /// `supported_lens` is the list of vector element counts the target device supports.
+    /// Vectorize stores, general over rank (mirror of
+    /// [`Self::vectorize_loads`]): round r groups stored values of
+    /// shape-rank r-1 sharing one base with contiguous outer offsets
+    /// into a single higher-rank store. `supported_lens` is the list
+    /// of group sizes the target device supports (applies at every
+    /// rank).
     pub fn vectorize_stores(&mut self, supported_lens: &[u8], level: u8) {
-        // TODO(level-2): group lane-duplicated vector stores. Refuse.
-        if level != 1 {
-            return;
-        }
-        let mut op_id = self.head;
-        let mut stores: Vec<Map<OpId, Vec<StoreInfo>>> = Vec::new();
-        stores.push(Map::default());
-        while !op_id.is_null() {
-            match self.ops[op_id].op {
-                Op::Loop { .. } => {
-                    stores.push(Map::default());
-                }
-                Op::Store { dst, dst_idx: index, src: x, bytes } => {
-                    if bytes.is_null() {
-                        stores
-                            .last_mut()
-                            .unwrap()
-                            .entry(dst)
-                            .and_modify(|e| e.push(StoreInfo { id: op_id, index, x }))
-                            .or_insert_with(|| vec![StoreInfo { id: op_id, index, x }]);
+        for round in 1..=level {
+            let rank = (round - 1) as usize;
+            let mut op_id = self.head;
+            // Map: (dst, elem width-shape) -> StoreInfo
+            let mut stores: Vec<Map<(OpId, Vec<Dim>), Vec<StoreInfo>>> = Vec::new();
+            stores.push(Map::default());
+            while !op_id.is_null() {
+                match self.ops[op_id].op {
+                    Op::Loop { .. } => {
+                        stores.push(Map::default());
                     }
+                    Op::Store { dst, dst_idx: index, src: x, bytes } => {
+                        let elem: Option<Vec<Dim>> = if bytes.is_null() {
+                            Some(Vec::new())
+                        } else if let Op::Stack { ref ops } = self.ops[bytes].op {
+                            ops.iter().map(|&d| self.resolve_const(d).and_then(Constant::as_dim)).collect()
+                        } else {
+                            self.resolve_const(bytes).and_then(Constant::as_dim).map(|w| vec![w])
+                        };
+                        if let Some(elem) = elem
+                            && elem.len() == rank
+                        {
+                            stores
+                                .last_mut()
+                                .unwrap()
+                                .entry((dst, elem))
+                                .or_default()
+                                .push(StoreInfo { id: op_id, index, x });
+                        }
+                    }
+                    Op::EndLoop => {
+                        let scope = stores.pop().expect("vectorize: scope stack underflow");
+                        self.verify_and_apply_store_vectorization(scope, supported_lens);
+                    }
+                    _ => {}
                 }
-                Op::EndLoop => self.verify_and_apply_store_vectorization(&mut stores, supported_lens),
-                _ => {}
+
+                op_id = self.next_op(op_id);
             }
 
-            op_id = self.next_op(op_id);
+            let scope = stores.pop().expect("vectorize: scope stack underflow");
+            self.verify_and_apply_store_vectorization(scope, supported_lens);
         }
-
-        self.verify_and_apply_store_vectorization(&mut stores, supported_lens);
     }
 
-    fn verify_and_apply_store_vectorization(&mut self, stores: &mut Vec<Map<OpId, Vec<StoreInfo>>>, supported_lens: &[u8]) {
-        if let Some(stores) = stores.pop() {
-            for (dst, mut stores) in stores {
-                if !supported_lens.contains(&(stores.len() as u8)) {
-                    continue;
+    /// Group one scope's stores by (dst, elem shape): same width, same
+    /// shared base, outer offsets covering exactly `{0, step, ...}`
+    /// get one higher-rank store (`[n] + elem` descriptor) with the
+    /// values stacked per offset. Stored values must already be
+    /// declared: the stack goes after the last member store. The
+    /// caller pops one loop scope and passes it.
+    fn verify_and_apply_store_vectorization(
+        &mut self,
+        stores: Map<(OpId, Vec<Dim>), Vec<StoreInfo>>,
+        supported_lens: &[u8],
+    ) {
+        for ((dst, elem), stores) in stores {
+            let n = stores.len();
+            if n >= 256 || !supported_lens.contains(&(n as u8)) {
+                continue;
+            }
+            let step: Dim = elem.iter().product();
+            if step < 1 {
+                continue;
+            }
+            let mut offs: Vec<(OpId, OpId, OpId, Dim)> = Vec::with_capacity(n);
+            let mut prev: Option<Vec<(OpId, (Dim, Dim))>> = None;
+            let mut ok = true;
+            for store in &stores {
+                let Some(strides) = self.get_strides(store.index) else {
+                    ok = false;
+                    break;
+                };
+                let off = strides.get(&OpId::NULL).map(|(_, v)| *v).unwrap_or(0);
+                let mut base: Vec<(OpId, (Dim, Dim))> =
+                    strides.iter().filter(|(id, _)| !id.is_null()).map(|(id, v)| (*id, *v)).collect();
+                base.sort();
+                if prev.as_ref().is_some_and(|p| *p != base) {
+                    ok = false;
+                    break;
                 }
-
-                stores.sort_unstable_by_key(|x| self.get_strides(x.index).map_or(0, |s| s.len()));
-
-                let mut base_index = None;
-                let mut offset_order: Vec<Dim> = Vec::new();
-                let vec_len = stores.len() as Dim;
-                for (base_idx, (_, vl)) in self.get_strides(stores[0].index).unwrap_or_default() {
-                    if !(vl == vec_len || (base_idx.is_null() && vl == 0)) {
-                        continue;
-                    }
-                    let mut offsets: Set<Dim> = (0..vec_len).collect();
-                    offset_order.clear();
-
-                    if stores[1..].iter().all(|x| {
-                        let Some(strides) = self.get_strides(x.index) else {
-                            return false;
-                        };
-                        if base_idx.is_null() {
-                            strides.iter().any(|(&idx, (_, st))| {
-                                let found = idx.is_null() && offsets.remove(st);
-                                if found {
-                                    offset_order.push(*st);
-                                }
-                                found
-                            })
-                        } else {
-                            strides.iter().any(|(&idx, (_, st))| idx == base_idx && *st == vec_len)
-                                && strides.iter().any(|(&idx, (_, st))| {
-                                    let found = idx.is_null() && offsets.remove(st);
-                                    if found {
-                                        offset_order.push(*st);
-                                    }
-                                    found
-                                })
-                        }
-                    }) && offsets.remove(&0)
-                    {
-                        base_index = Some(base_idx);
-                        break;
-                    }
+                prev = Some(base);
+                offs.push((store.id, store.index, store.x, off));
+            }
+            if !ok {
+                continue;
+            }
+            offs.sort_by_key(|(_, _, _, off)| *off);
+            if offs.iter().map(|(_, _, _, off)| *off).ne((0..(n as Dim)).map(|i| i * step)) {
+                continue;
+            }
+            // Values stacked at row = off/step; the stack goes
+            // after the last member so all values are declared.
+            let mut ops = vec![OpId::NULL; n].into_boxed_slice();
+            for (_, _, x, off) in &offs {
+                ops[(off / step) as usize] = *x;
+            }
+            let ids: Set<OpId> = offs.iter().map(|(id, _, _, _)| *id).collect();
+            let mut last_id = offs[0].0;
+            let mut cur = offs[0].0;
+            while !cur.is_null() {
+                if ids.contains(&cur) {
+                    last_id = cur;
                 }
-
-                // Now that we know offsets are contiguous, replace scalar stores with a single vectorized store
-                if base_index.is_some() {
-                    // Build vector values at correct offset positions
-                    let mut ops = vec![OpId::NULL; vec_len as usize].into_boxed_slice();
-                    ops[0] = stores[0].x;
-                    for (store, &off) in stores[1..].iter().zip(&offset_order) {
-                        ops[off as usize] = store.x;
-                    }
-
-                    // stores is sorted by strides, not by kernel order.
-                    // Find the store from our group that appears last in the linked list.
-                    let store_ids: Set<OpId> = stores.iter().map(|s| s.id).collect();
-                    let mut last_id = stores[0].id;
-                    let mut cur = stores[0].id;
-                    while !cur.is_null() {
-                        if store_ids.contains(&cur) {
-                            last_id = cur;
-                        }
-                        cur = self.next_op(cur);
-                    }
-
-                    // Insert Vectorize after the last store so all values are declared before it.
-                    let vstore = self.insert_after(last_id, Op::Stack { ops });
-                    // Insert the vectorized store after the Vectorize and remove all scalar stores.
-                    let bytes = self.insert_after(vstore, Op::Const(Constant::new(vec_len as u16)));
-                    self.insert_after(bytes, Op::Store { dst, dst_idx: stores[0].index, src: vstore, bytes });
-                    for store in &stores {
-                        self.remove_op(store.id);
-                    }
+                cur = self.next_op(cur);
+            }
+            let vstore = self.insert_after(last_id, Op::Stack { ops });
+            let mut prev = vstore;
+            prev = self.insert_after(prev, Op::Const(Constant::new::<u16>(n.try_into().expect("vectorize: group overflows u16"))));
+            let bytes = if elem.is_empty() {
+                prev
+            } else {
+                let cn = prev;
+                let mut dims: Vec<OpId> = Vec::with_capacity(elem.len() + 1);
+                dims.push(cn);
+                for &d in &elem {
+                    let c = self.insert_after(
+                        prev,
+                        Op::Const(Constant::new::<u16>(d.try_into().expect("vectorize: width overflows u16"))),
+                    );
+                    dims.push(c);
+                    prev = c;
                 }
+                self.insert_after(prev, Op::Stack { ops: dims.into_boxed_slice() })
+            };
+            let (_, base_index, _, _) = offs[0];
+            self.insert_after(bytes, Op::Store { dst, dst_idx: base_index, src: vstore, bytes });
+            for (id, _, _, _) in &offs {
+                self.remove_op(*id);
             }
         }
     }
@@ -344,12 +361,7 @@ impl Kernel {
     /// Walk forward, find scalar ops over `Index` lanes of one vector that
     /// share the same op head, and bundle them: `Stack` the operands per
     /// position, rebuild the same op over the vectors, devectorize results.
-    pub fn vectorize_ops_forward(&mut self, supported_lens: &[u8], level: u8) {
-        // TODO(level-2): group lane-duplicated vector ops into an outer
-        // vector. Refuse.
-        if level != 1 {
-            return;
-        }
+    pub fn vectorize_ops_forward(&mut self, supported_lens: &[u8]) {
         // Process in descending length order for maximal vectorization first
         let mut supported: Vec<u8> = supported_lens.to_vec();
         supported.sort_unstable_by(|a, b| b.cmp(a));
@@ -515,11 +527,7 @@ impl Kernel {
     /// Walk backward, find Vectorize[X0..Xn] where all Xi are the same compute op.
     /// Replace Vectorize with compute_op(vectorize[inputs of Xi]),
     /// replace the first Xi with that vectorize of inputs, and keep walking.
-    pub fn vectorize_ops_backward(&mut self, supported_lens: &[u8], level: u8) {
-        // TODO(level-2): see forward. Refuse.
-        if level != 1 {
-            return;
-        }
+    pub fn vectorize_ops_backward(&mut self, supported_lens: &[u8]) {
         let mut op_id = self.tail;
         while !op_id.is_null() {
             let ops = match &self.ops[op_id].op {
@@ -636,11 +644,7 @@ impl Kernel {
     /// `VecReduce`. The whole reduction is one [`Pat::seq`]: a match IS
     /// the reduction, so this only walks roots and rewrites them in
     /// place; orphaned links die in DCE.
-    pub fn reduce_lanes(&mut self, supported_lens: &[u8], level: u8) {
-        // TODO(level-2): reduce over an outer vector lane. Refuse.
-        if level != 1 {
-            return;
-        }
+    pub fn reduce_lanes(&mut self, supported_lens: &[u8]) {
         let pat = Pat::seq(BOp::Add, Pat::index(Pat::bind('v'), 'k'), supported_lens);
         // Fuel-capped: one chain per iteration; the cap turns a
         // no-progress bug into termination, never a hang.
@@ -704,7 +708,7 @@ mod tests {
         let idx_c1 = k.add(g0, four);
         k.store(dst, c1, idx_c1);
 
-        k.vectorize_ops_forward(&[2], 1);
+        k.vectorize_ops_forward(&[2]);
 
         assert!(matches!(k.ops[s0].op, Op::Index { .. }));
         assert!(matches!(k.ops[s1].op, Op::Index { .. }));
@@ -734,7 +738,7 @@ mod tests {
         k.store(dst, c2, i2);
         k.store(dst, c3, i3);
 
-        k.vectorize_ops_forward(&[2, 4], 1);
+        k.vectorize_ops_forward(&[2, 4]);
 
         // All 4 should be devecs after one pass (vectorized as length 4)
         assert!(matches!(k.ops[s0].op, Op::Index { .. }));
@@ -791,7 +795,7 @@ mod tests {
         k.store(dst, c2, i2);
         k.store(dst, c3, i3);
 
-        k.vectorize_ops_forward(&[2, 4], 1);
+        k.vectorize_ops_forward(&[2, 4]);
 
         // After full run: all 4 consumers should be devecs
         // (cos was vectorized first as length-2, then sin as length-2)
@@ -836,7 +840,7 @@ mod tests {
         k.store(dst, r0, g0);
         k.store(dst, r1, idx1);
 
-        k.vectorize_ops_forward(&[2], 1);
+        k.vectorize_ops_forward(&[2]);
 
         assert!(matches!(k.ops[s0].op, Op::Index { .. }));
         assert!(matches!(k.ops[s1].op, Op::Index { .. }));
@@ -878,7 +882,7 @@ mod tests {
         k.store(dst, r0, g0);
         k.store(dst, r1, idx1);
 
-        k.vectorize_ops_forward(&[2], 1);
+        k.vectorize_ops_forward(&[2]);
 
         assert!(matches!(k.ops[r0].op, Op::Index { .. }));
         assert!(matches!(k.ops[r1].op, Op::Index { .. }));
@@ -947,7 +951,7 @@ mod tests {
         let vec = k.stack(&[c0, c1, c2, c3]);
         k.store_vector(dst, vec, offset, 4);
 
-        k.vectorize_ops_backward(&[4], 1);
+        k.vectorize_ops_backward(&[4]);
         k.constant_folding();
         k.dead_code_elimination();
 

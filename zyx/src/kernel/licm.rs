@@ -62,7 +62,6 @@ impl Kernel {
                 | Op::Flip { .. }
                 | Op::Narrow { .. }
                 | Op::Reduce { .. }
-                | Op::TT(TTOp::ReduceTile { .. })
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
@@ -102,7 +101,9 @@ impl Kernel {
                     loop_depth -= 1;
                     loop_depth
                 }
-                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => loop_dep[&x],
+                Op::TT(TTOp::ReduceTile { x, .. }) | Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
+                    loop_dep[&x]
+                }
                 Op::Binary { x, y, bop } => {
                     if bop.is_commutative()
                         && !self.ops[x].op.is_const()

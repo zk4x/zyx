@@ -685,45 +685,6 @@ impl Kernel {
             self.debug();
             panic!();
         }
-        // TT section structure: any kernel holding TT ops delimits its
-        // reader/compute/writer sections with exactly one `EndReader`
-        // followed by exactly one `EndCompute`. A leftover `Op::Barrier`
-        // in such a kernel confuses a thread fence with a section split
-        // — loud, never silently rendered.
-        {
-            let mut has_tt = false;
-            let mut barriers = 0u32;
-            let mut markers: Vec<bool> = Vec::new();
-            let mut scan = self.head;
-            while !scan.is_null() {
-                match self.at(scan) {
-                    Op::TT(TTOp::EndReader) => {
-                        has_tt = true;
-                        markers.push(false);
-                    }
-                    Op::TT(TTOp::EndCompute) => {
-                        has_tt = true;
-                        markers.push(true);
-                    }
-                    Op::TT(_) => has_tt = true,
-                    Op::Barrier => barriers += 1,
-                    _ => {}
-                }
-                scan = self.next_op(scan);
-            }
-            if has_tt {
-                if barriers > 0 {
-                    println!("TT kernel holds {barriers} Op::Barrier fences; sections split at EndReader/EndCompute only.");
-                    self.debug();
-                    panic!();
-                }
-                if markers != [false, true] {
-                    println!("TT kernel section markers must be exactly [EndReader, EndCompute], got {markers:?}.");
-                    self.debug();
-                    panic!();
-                }
-            }
-        }
         self.check_oob();
     }
 

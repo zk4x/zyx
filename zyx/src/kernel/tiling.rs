@@ -4,7 +4,7 @@
 //! Tenstorrent tiling pass: canonicalize scalar IR for tile matching.
 //! (Under construction, one step at a time.)
 
-use super::{BOp, DType, Kernel, Op, OpId, RangeKind, TTOp, TileDim};
+use super::{BOp, Kernel, Op, OpId, RangeKind, TTOp, TileDim};
 use crate::Set;
 
 impl Kernel {
@@ -77,15 +77,25 @@ impl Kernel {
 
         self.tt_form_reduce_tiles();
 
+        let vectorize = self.opt_vectorize();
+        vectorize.apply(self, 0);
+
+        self.default_epilogue();
+        self.default_epilogue();
+
         self.verify();
     }
 
-    /// Former: tile load + 32 row reduces -> ReduceTile(Row). Matches
-    /// clean chains only: VecReduce directly over Index{tile, row}.
-    /// Scalar casts around the reduce are vectorize_ops' leftovers and
-    /// must be absorbed there, never matched here. The result tile
-    /// carries the sums in its first row, so every reduce becomes an
-    /// Index lane of row 0. Dead chains die in DCE.
+    /// Former: tiled source + 32 row reduces -> ReduceTile(Row).
+    /// Matches clean chains only: VecReduce directly over Index lanes.
+    /// Like vectorize_ops_forward/backward, the lane source is
+    /// whatever op the lanes share (Load, Cast, Stack, ...) — lane
+    /// values are rows of that source at any source kind, so reducing
+    /// the source computes the same scalars. Scalar casts around the
+    /// reduce are vectorize_ops' leftovers and must be absorbed there,
+    /// never matched here. The result tile carries the sums in its
+    /// first row, so every reduce becomes an Index lane of row 0.
+    /// Dead chains die in DCE.
     pub fn tt_form_reduce_tiles(&mut self) {
         let mut outers: Vec<(OpId, OpId, usize, BOp)> = Vec::new();
         {
@@ -103,6 +113,8 @@ impl Kernel {
         tiles.sort();
         tiles.dedup();
         for t in tiles {
+            // Tile-shaped source of any kind; lane coverage below ties
+            // the lanes to it.
             if self.shape(t) != vec![32, 32] {
                 continue;
             }

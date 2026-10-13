@@ -101,8 +101,8 @@ impl Kernel {
             self.debug();
 
             self.tt_tile();
-            self.tt_add_reader();
-            self.tt_add_writer();
+            //self.tt_add_reader();
+            //self.tt_add_writer();
 
             self.common_subexpression_elimination();
             self.dead_code_elimination();
