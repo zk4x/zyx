@@ -78,7 +78,7 @@ impl Kernel {
 mod tests {
     use super::Kernel;
     use crate::dtype::DType;
-    use crate::kernel::{Dev, MemLayout, Op, RangeKind};
+    use crate::kernel::{Dev, Op, RangeKind};
 
     #[test]
     fn tt_tile_2d() {
@@ -107,7 +107,7 @@ mod tests {
             id = k.next_op(id);
         }
         assert_eq!(lens, [Some(8), Some(64)]);
-        assert_eq!(k.layout(v), MemLayout::Scalar);
-        assert_eq!(k.layout(n), MemLayout::Scalar);
+        assert!(k.shape(v).is_empty());
+        assert!(k.shape(n).is_empty());
     }
 }

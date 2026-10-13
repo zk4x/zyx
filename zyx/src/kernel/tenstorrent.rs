@@ -491,7 +491,7 @@ impl Kernel {
             match op {
                 Op::Asm { .. } => true,
                 Op::Load { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } => {
-                    matches!(kernel.layout(id), MemLayout::Tile { .. })
+                    kernel.shape(id).len() == 2
                 }
                 _ => false,
             }
@@ -502,7 +502,7 @@ impl Kernel {
         let is_pack = |kernel: &Kernel, id: OpId| {
             if let Op::Store { src: x, dst, .. } = kernel.at(id) {
                 if matches!(kernel.at(*dst), Op::Storage { scope: MemScope::Circular, .. }) {
-                    return matches!(kernel.layout(*x), MemLayout::Tile { .. });
+                    return kernel.shape(*x).len() == 2;
                 }
             }
             false
@@ -1313,7 +1313,7 @@ impl Kernel {
                                 us.iter().all(|u| match &self.ops[*u].op {
                                     Op::Store { .. } | Op::Asm { .. } => true,
                                     op => {
-                                        matches!(self.layout(*u), MemLayout::Tile { .. })
+                                        self.shape(*u).len() == 2
                                             && matches!(
                                                 op,
                                                 Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. }
@@ -1465,8 +1465,8 @@ impl Kernel {
                         // streams inline below.
                         let published: Option<(OpId, u64)> = match self.ops[scan].op {
                             Op::Store { src: x, dst, .. } if uncountable == 0 && self.is_circular_base(dst) => {
-                                match self.layout(x) {
-                                    MemLayout::Scalar => Some((dst, 1)),
+                                match self.shape(x).as_slice() {
+                                    [] => Some((dst, 1)),
                                     _ => None,
                                 }
                             }
@@ -1560,14 +1560,14 @@ impl Kernel {
                             // over-count. Partial pages stay
                             // unpublished (loud downstream).
                             let tallied =
-                                matches!(self.layout(dst), MemLayout::Vector(_)) || matches!(self.layout(dst), MemLayout::Scalar);
+                                self.shape(dst).len() <= 1;
                             if !tallied {
                                 self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb, n: 1 }));
                                 self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
                             }
                         }
                         (Some(cb), None) => {
-                            if matches!(self.layout(src), MemLayout::Vector(_)) {
+                            if self.shape(src).len() == 1 {
                                 panic!("tt_sync_cbs: vector drain {op_id:?} has no sync support");
                             }
                             // Indexed-window reads carry no per-trip
@@ -1588,7 +1588,7 @@ impl Kernel {
                     // reserves a back slot and pushes it, like a publish.
                     // A `Const` src is a fill, not a pack — left alone
                     // (render rejects it loudly).
-                    if self.is_circular_base(dst) && matches!(self.layout(x), MemLayout::Tile { .. }) {
+                    if self.is_circular_base(dst) && self.shape(x).len() == 2 {
                         self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb: self.tt_storage_of(dst), n: 1 }));
                         let cb = self.tt_storage_of(dst);
                         self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
@@ -1623,7 +1623,7 @@ impl Kernel {
                                         ) => true,
                                         Op::Store { .. } | Op::Asm { .. } => true,
                                         op => {
-                                            matches!(self.layout(u), MemLayout::Tile { .. })
+                                            self.shape(u).len() == 2
                                                 && matches!(
                                                     op,
                                                     Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. }
@@ -1838,7 +1838,7 @@ impl Kernel {
                     }
                     op => {
                         matches!(op, Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Asm { .. })
-                            && matches!(self.layout(op_id), MemLayout::Tile { .. })
+                            && self.shape(op_id).len() == 2
                     }
                 };
                 if bad {
@@ -1867,7 +1867,7 @@ impl Kernel {
                     let Op::Binary { x, y, bop } = self.ops[op_id].op else {
                         unreachable!("tt_init_math: not a Binary");
                     };
-                    match (matches!(self.layout(x), MemLayout::Tile { .. }), matches!(self.layout(y), MemLayout::Tile { .. })) {
+                    match (self.shape(x).len() == 2, self.shape(y).len() == 2) {
                         (true, true) => InitAction::BinaryInit(bop),
                         (true, false) => {
                             self.tt_check_scalar_lane(op_id, bop, false, y)?;
@@ -2361,7 +2361,7 @@ impl Kernel {
                                 us.iter().all(|u| match &self.ops[*u].op {
                                     Op::Store { .. } | Op::Asm { .. } => true,
                                     op => {
-                                        matches!(self.layout(*u), MemLayout::Tile { .. })
+                                        self.shape(*u).len() == 2
                                             && matches!(
                                                 op,
                                                 Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. }
@@ -2905,7 +2905,7 @@ impl Kernel {
     fn tt_pack_store_cb(&self, id: OpId) -> Option<OpId> {
         if let Op::Store { src: x, dst, .. } = self.at(id) {
             if matches!(self.at(*dst), Op::Storage { scope: MemScope::Circular, .. })
-                && matches!(self.layout(*x), MemLayout::Tile { .. })
+                && self.shape(*x).len() == 2
             {
                 return Some(*dst);
             }

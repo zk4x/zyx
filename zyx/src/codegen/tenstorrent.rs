@@ -577,7 +577,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             Op::Load { src, bytes, .. } => render_load(sec, id, *src, *bytes)?,
             Op::Store { src: x, dst, dst_idx, bytes } => render_store(sec, id, *x, *dst, *dst_idx)?,
             Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } => {
-                if matches!(sec.k.layout(id), MemLayout::Tile { .. }) {
+                if sec.k.shape(id).len() == 2 {
                     render_tile_op(sec, id)?;
                 }
             }
@@ -1261,7 +1261,7 @@ fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
         }
         Op::Binary { x, y, bop } => {
             let lane =
-                match (matches!(sec.k.layout(*x), MemLayout::Tile { .. }), matches!(sec.k.layout(*y), MemLayout::Tile { .. })) {
+                match (sec.k.shape(*x).len() == 2, sec.k.shape(*y).len() == 2) {
                     (true, true) => None,
                     (true, false) => Some((false, *y)),
                     (false, true) => Some((true, *x)),
@@ -1405,7 +1405,7 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId, dst_idx: OpId
                         sec.err(format!("scalar CB store {id:?}: DRAM-CB movement is Copy-only, use load_global_to_cb_scalar"))
                     );
                 }
-            } else if matches!(sec.k.layout(x), MemLayout::Scalar) {
+            } else if sec.k.shape(x).is_empty() {
                 return Err(
                     sec.err(format!("scalar CB store {id:?}: DRAM-CB movement is Copy-only, use load_global_to_cb_scalar"))
                 );

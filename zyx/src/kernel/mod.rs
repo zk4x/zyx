@@ -555,151 +555,6 @@ impl Kernel {
         MemLayout::Vector(w.try_into().expect("bytes: vector length overflows u16"))
     }
 
-    /// Resolve the layout of an operation's result by walking the IR.
-    pub(crate) fn layout(&self, op_id: OpId) -> MemLayout {
-        let mut visited = Set::default();
-        // LIFO with x pushed last: the x spine drains first, so the
-        // first terminal popped is the x-chain answer. A Tile found
-        // anywhere later still wins by immediate return. Each op
-        // visited once — linear, no recursion.
-        let mut stack = vec![op_id];
-        let mut answer = None;
-        for _ in 0..250000 {
-            let Some(s) = stack.pop() else { break };
-            if !visited.insert(s) {
-                continue;
-            }
-            match self.ops[s].op {
-                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) | Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => {
-                    if answer.is_none() {
-                        answer = Some(MemLayout::Scalar);
-                    }
-                }
-                Op::Range { .. } => {
-                    if answer.is_none() {
-                        answer = Some(MemLayout::Scalar);
-                    }
-                }
-                Op::Cast { x, .. } | Op::Bitcast { x, .. } => stack.push(x),
-                // Reduce collapses the vector value into a scalar: the
-                // result's layout is scalar, the vec operand is not part
-                // of the reduced value's materialization.
-                Op::VecReduce { x: _, .. } => {
-                    if answer.is_none() {
-                        answer = Some(MemLayout::Scalar);
-                    }
-                }
-                Op::Load { src, bytes, .. } => {
-                    let layout = self.bytes_layout(bytes);
-                    if let MemLayout::Tile { .. } = layout {
-                        return layout;
-                    }
-                    if answer.is_none() {
-                        answer = Some(layout);
-                    }
-                    stack.push(src)
-                }
-                Op::Copy { src, bytes, .. } => {
-                    let layout = self.bytes_layout(bytes);
-                    if let MemLayout::Tile { .. } = layout {
-                        return layout;
-                    }
-                    if answer.is_none() {
-                        answer = Some(layout);
-                    }
-                    stack.push(src)
-                }
-                Op::Store { src: x, .. } => stack.push(x),
-                Op::Unary { x, .. } => stack.push(x),
-                Op::Binary { x, y, .. } => {
-                    stack.push(y);
-                    stack.push(x);
-                }
-                Op::Wmma { dims, .. } => {
-                    if answer.is_none() {
-                        answer = Some(match dims {
-                            MMADims::m8n8k16 => MemLayout::Vector(2),
-                            MMADims::m16n8k8 => MemLayout::Vector(4),
-                            MMADims::m16n8k16 => MemLayout::Vector(4),
-                            MMADims::m32n8k16 => MemLayout::Vector(8),
-                            MMADims::m8n32k16 => MemLayout::Vector(8),
-                            MMADims::m8n8k32 => MemLayout::Vector(2),
-                            MMADims::m8n8k128 => MemLayout::Vector(2),
-                        });
-                    }
-                }
-                Op::TT(TTOp::MatmulTile { acc, .. }) => stack.push(acc),
-                Op::TT(TTOp::TransposeTile { x }) => stack.push(x),
-                Op::Stack { ref ops } => {
-                    if answer.is_none() {
-                        answer = Some(MemLayout::Vector(ops.len().try_into().unwrap()));
-                    }
-                }
-                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
-                    // Fused storage templates (matmul/reduce/transpose/
-                    // broadcast) all produce a standard 32x32 DST tile:
-                    // the layout the replaced SSA value carried. (The
-                    // old backend verified the unfused IR, where the
-                    // tile value threaded to its tile load — same Tile.)
-                    return MemLayout::Tile { x: 32, y: 32 };
-                }
-                Op::Asm { ref ops, .. } => {
-                    if ops.is_empty() {
-                        // Operand-free Asm is a pure effect (engine-config
-                        // inits like `exp_tile_init();`): it produces no
-                        // value, so it has no tile-ness. Scalar keeps
-                        // every tile-seeking consumer off it.
-                        if answer.is_none() {
-                            answer = Some(MemLayout::Scalar);
-                        }
-                    } else {
-                        stack.push(ops[0]);
-                    }
-                }
-                // Index extracts a single lane: a scalar, not the vec layout.
-                Op::Index { .. } => {
-                    if answer.is_none() {
-                        answer = Some(MemLayout::Scalar);
-                    }
-                }
-                Op::Reduce { x, .. } => stack.push(x),
-                Op::TT(TTOp::ReduceTile { x, .. }) => stack.push(x),
-                Op::TT(TTOp::BroadcastTile { x, .. }) => stack.push(x),
-                Op::EndLoop | Op::Loop { .. } => {
-                    if answer.is_none() {
-                        answer = Some(MemLayout::Scalar);
-                    }
-                }
-                Op::Barrier
-                | Op::TT(TTOp::MathLock)
-                | Op::TT(TTOp::MathUnlock)
-                | Op::TT(TTOp::PackLock)
-                | Op::TT(TTOp::PackUnlock)
-                | Op::TT(TTOp::NocReadBarrier)
-                | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
-                | Op::TT(TTOp::EndReader)
-                | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::ProgramDesc(_))
-                | Op::TT(TTOp::TensixGrid(_)) => todo!(),
-                Op::TT(TTOp::ReserveBack { .. })
-                | Op::TT(TTOp::PushBack { .. })
-                | Op::TT(TTOp::WaitFront { .. })
-                | Op::TT(TTOp::PopFront { .. }) => todo!("layout: CB sync op produces no value"),
-                Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
-                    todo!()
-                }
-                Op::Reshape { x, .. }
-                | Op::Expand { x, .. }
-                | Op::Permute { x, .. }
-                | Op::Flip { x, .. }
-                | Op::Pad { x, .. }
-                | Op::Narrow { x, .. } => stack.push(x),
-            }
-        }
-        answer.expect("layout: empty cone")
-    }
-
     /// Resolve the dtype of an operation's result by walking the IR.
     pub(crate) fn dtype(&self, mut op_id: OpId) -> DType {
         //println!("getting dtype of id: {op_id:?}'");
@@ -1387,8 +1242,8 @@ impl Kernel {
                     visited.insert(op_id, self.shape_descriptor(bytes));
                 }
                 // A scalar access (null `bytes`) loads one element: a
-                // scalar value; multi-element accesses have no shape (same
-                // as the old vector/tile GEPs, which had none either).
+                // scalar value; multi-element accesses take their shape
+                // from the `bytes` descriptor (arm above).
                 Op::Store { src: x, .. }
                 | Op::Copy { src: x, .. }
                 | Op::Cast { x, .. }
@@ -1398,7 +1253,6 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::TT(TTOp::LLKReduce { cb_in: x, .. })
                 | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
-                | Op::Index { vec: x, .. }
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(op_id, dims.clone());
@@ -1620,8 +1474,8 @@ impl Kernel {
                         }
                     }
                 }
-                // Lane reduction yields a scalar.
-                Op::VecReduce { .. } => {
+                // Lane extraction and lane reduction both yield scalars.
+                Op::Index { .. } | Op::VecReduce { .. } => {
                     visited.insert(id, vec![]);
                 }
                 // A fragment value has its native width as a single dim

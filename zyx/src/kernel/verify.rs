@@ -240,15 +240,32 @@ impl Kernel {
                                 panic!();
                             }
                             check(op_id, dst, &stack);
-                            // A store's declared layout must match its src value's
-                            // layout: store_tile carries a Tile layout and its src
-                            // must be a tile value (a scalar const_val stored as a
-                            // tile is a builder misuse, not a valid store).
+                            // A store's declared access shape must match its
+                            // src value's shape: store_tile carries a tile
+                            // access and its src must be a tile value (a
+                            // scalar const_val stored as a tile is a builder
+                            // misuse, not a valid store).
+                            let src_shape = self.shape(x);
+                            let access_shape: Vec<Dim> = if bytes.is_null() {
+                                Vec::new()
+                            } else if let Op::Stack { ref ops } = self.ops[bytes].op {
+                                ops.iter()
+                                    .map(|&d| {
+                                        self.resolve_const(d)
+                                            .and_then(Constant::as_dim)
+                                            .expect("store bytes: tile dim is not a constant")
+                                    })
+                                    .collect()
+                            } else {
+                                vec![
+                                    self.resolve_const(bytes)
+                                        .and_then(Constant::as_dim)
+                                        .expect("store bytes: access width is not a constant"),
+                                ]
+                            };
                             debug_assert_eq!(
-                                self.layout(x),
-                                self.bytes_layout(bytes),
-                                "store={op_id} layout bytes={bytes:?} does not match src {x} layout {:?}",
-                                self.layout(x)
+                                src_shape, access_shape,
+                                "store={op_id} access bytes={bytes:?} does not match src {x} shape {src_shape:?}"
                             );
                             debug_assert!(!dst_idx.is_null(), "storage store without index");
                             debug_assert_eq!(dtypes[&dst_idx], IDX_T, "store index must be {IDX_T}");
@@ -452,17 +469,17 @@ impl Kernel {
                     } else {
                         dtypes.insert(op_id, dtype);
                     }
-                    // Lane layouts: both lanes share one layout, except
+                    // Lane shapes: both lanes share one shape, except
                     // a tile lane beside a compile-time constant (a TT
                     // immediate lane — the unary-imm calls take fp32
                     // bits, so only consts lower). A tile beside a
                     // non-const lane is a missing broadcast — loud
                     // panic, never a silent wrong lane.
-                    let (lx, ly) = (self.layout(x), self.layout(y));
-                    let tile_const = matches!(lx, MemLayout::Tile { .. }) && self.is_const(y)
-                        || matches!(ly, MemLayout::Tile { .. }) && self.is_const(x);
-                    if lx != ly && !tile_const {
-                        println!("Binary layout mismatch on op={op_id}.");
+                    let (sx, sy) = (self.shape(x), self.shape(y));
+                    let tile_const = sx.len() == 2 && self.is_const(y)
+                        || sy.len() == 2 && self.is_const(x);
+                    if sx != sy && !tile_const {
+                        println!("Binary shape mismatch on op={op_id}.");
                         self.debug();
                         panic!();
                     }
@@ -502,9 +519,9 @@ impl Kernel {
                     // Reduce input must be a vector value; the result is
                     // one scalar of the element dtype.
                     debug_assert!(
-                        matches!(self.layout(x), MemLayout::Vector(_)),
+                        self.shape(x).len() == 1,
                         "VecReduce operand {x} must be a vector, got {:?}",
-                        self.layout(x)
+                        self.shape(x)
                     );
                     dtypes.insert(op_id, dtypes[&x]);
                 }

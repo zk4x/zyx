@@ -1052,7 +1052,7 @@ impl Kernel {
     /// its CB as the LLK scale input). `x` is any tile-layout value;
     /// CB attachment is the transport passes' job, never the builder's.
     pub fn reduce_tile(&mut self, x: OpId, rop: BOp, kind: TileDim) -> OpId {
-        debug_assert!(matches!(self.layout(x), MemLayout::Tile { .. }), "reduce_tile: x {x} is not a tile value");
+        debug_assert!(self.shape(x).len() == 2, "reduce_tile: x {x} is not a tile value");
         self.push_back(Op::TT(TTOp::ReduceTile { x, rop, kind }))
     }
 
@@ -2347,18 +2347,19 @@ impl Kernel {
                     s_idx = kernel.mad(coords[a], stride, s_idx);
                 }
             }
-            let layout = kernel.layout(v_transformed);
-            match layout {
-                MemLayout::Vector(n) => {
-                    let bytes = kernel.block_bytes(&[Dim::from(n)]);
+            let shape = kernel.shape(v_transformed);
+            match shape.as_slice() {
+                [n] => {
+                    let bytes = kernel.block_bytes(&[*n]);
                     kernel.store_op(shared.storage, v_transformed, s_idx, bytes);
                 }
-                MemLayout::Scalar => {
+                [] => {
                     kernel.store(shared.storage, v_transformed, s_idx);
                 }
-                MemLayout::Tile { .. } => {
+                [_, _] => {
                     kernel.store(shared.storage, v_transformed, s_idx);
                 }
+                _ => todo!("custom store: rank {} values unsupported", shape.len()),
             }
         });
     }

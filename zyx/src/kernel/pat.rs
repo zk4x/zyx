@@ -898,16 +898,17 @@ impl Kernel {
                 };
                 // Self-validating: the collected set must be exactly
                 // lanes 0..n of a vector whose width is allowed.
-                if walked
-                    && let Some(v) = first_vec
-                    && let MemLayout::Vector(w) = self.layout(v)
-                    && let Ok(w8) = u8::try_from(w)
-                    && widths.contains(&w8)
-                {
-                    lanes.sort_unstable();
-                    lanes.dedup();
-                    if lanes.len() == w as usize && lanes.iter().enumerate().all(|(i, &k)| k == i as i64) {
-                        return true;
+                if walked && let Some(v) = first_vec {
+                    let shape = self.shape(v);
+                    if let [w] = shape.as_slice()
+                        && let Ok(w8) = u8::try_from(*w)
+                        && widths.contains(&w8)
+                    {
+                        lanes.sort_unstable();
+                        lanes.dedup();
+                        if lanes.len() == *w as usize && lanes.iter().enumerate().all(|(i, &k)| k == i as i64) {
+                            return true;
+                        }
                     }
                 }
                 *bindings = snap;
