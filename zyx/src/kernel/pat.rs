@@ -223,6 +223,22 @@ pub enum Pat {
         /// Binder name for the lane number.
         idx: char,
     },
+    /// Matches a cast op (`Op::Cast`) to this exact dtype with an operand
+    /// matching `x`.
+    Cast {
+        /// Pattern for the operand.
+        x: Box<Pat>,
+        /// Required dtype.
+        dtype: DType,
+    },
+    /// Matches a bitcast op (`Op::Bitcast`) to this exact dtype with an
+    /// operand matching `x`.
+    Bitcast {
+        /// Pattern for the operand.
+        x: Box<Pat>,
+        /// Required dtype.
+        dtype: DType,
+    },
 }
 
 /// Bindings produced by [`Kernel::match_pat`]: matched subexpression ids
@@ -610,6 +626,16 @@ impl Pat {
         Pat::Index { vec: Box::new(vec.into()), idx }
     }
 
+    /// Cast to `dtype` of the `x` pattern.
+    pub fn cast(x: impl Into<Pat>, dtype: DType) -> Pat {
+        Pat::Cast { x: Box::new(x.into()), dtype }
+    }
+
+    /// Bitcast to `dtype` of the `x` pattern.
+    pub fn bitcast(x: impl Into<Pat>, dtype: DType) -> Pat {
+        Pat::Bitcast { x: Box::new(x.into()), dtype }
+    }
+
     /// Negation of this pattern.
     pub fn neg(&self) -> Pat {
         Pat::Unary { x: Box::new(self.clone()), uop: UOp::Neg }
@@ -776,6 +802,14 @@ impl Kernel {
                     }
                     true
                 }
+                _ => false,
+            },
+            Pat::Cast { x, dtype } => match self.at(id) {
+                Op::Cast { x: xid, dtype: d } => *d == *dtype && self.match_node(x, *xid, bindings),
+                _ => false,
+            },
+            Pat::Bitcast { x, dtype } => match self.at(id) {
+                Op::Bitcast { x: xid, dtype: d } => *d == *dtype && self.match_node(x, *xid, bindings),
                 _ => false,
             },
         }

@@ -3,9 +3,9 @@
 
 use super::autotune::Optimization;
 use crate::{
-    DType, Map, Set,
+    Map, Set,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, UOp},
+    kernel::{Kernel, Op, OpId, Pat},
     shape::Dim,
 };
 
@@ -50,7 +50,10 @@ impl Kernel {
     /// supported vector widths itself.
     pub fn opt_vectorize(&self) -> Box<dyn Optimization> {
         let dev_info = self.dev_info();
-        Box::new(Vectorize { supported_lens: dev_info.supported_vec_lens.clone(), vectorize_ops: !dev_info.supported_vec_lens.is_empty() })
+        Box::new(Vectorize {
+            supported_lens: dev_info.supported_vec_lens.clone(),
+            vectorize_ops: !dev_info.supported_vec_lens.is_empty(),
+        })
     }
 
     /// Vectorize loads.
@@ -289,97 +292,76 @@ impl Kernel {
         candidates[0]
     }
 
-    /// Walk forward, find `unary(devec(v,i))` / `cast(devec(v,i))` patterns
-    /// where multiple lanes of the same source `v` share identical scalar ops.
-    /// Insert `Vectorize` of the devec operands + vector op + `Devectorize` of results.
+    /// Walk forward, find scalar ops over `Index` lanes of one vector that
+    /// share the same op head, and bundle them: `Stack` the operands per
+    /// position, rebuild the same op over the vectors, devectorize results.
     pub fn vectorize_ops_forward(&mut self, supported_lens: &[u8]) {
         // Process in descending length order for maximal vectorization first
         let mut supported: Vec<u8> = supported_lens.to_vec();
         supported.sort_unstable_by(|a, b| b.cmp(a));
 
-        enum OpType {
-            Unary(UOp),
-            Cast(DType),
-            Bitcast(DType),
-            Binary(BOp, u8), // (op, devec_operand_index)
+        // Same op head (variant + payload, ignoring operands).
+        let same_head = |a: &Op, b: &Op| match (a, b) {
+            (Op::Unary { uop: x, .. }, Op::Unary { uop: y, .. }) => x == y,
+            (Op::Cast { dtype: x, .. }, Op::Cast { dtype: y, .. }) => x == y,
+            (Op::Bitcast { dtype: x, .. }, Op::Bitcast { dtype: y, .. }) => x == y,
+            (Op::Binary { bop: x, .. }, Op::Binary { bop: y, .. }) => x == y,
+            _ => false,
+        };
+        // Lane-operand check shared by every op kind.
+        let lane_pat = Pat::index(Pat::bind('v'), 'k');
+
+        // Group key: same source vec, same head, same lane position.
+        // The template is the first member's op, reused for the rebuild.
+        struct Group {
+            source: OpId,
+            template: Op,
+            lane_pos: usize,
+            members: Vec<OpId>,
         }
+        let mut groups: Vec<Group> = Vec::new();
 
-        #[allow(clippy::type_complexity)] // internal data structure, complexity inherent to the algorithm
-        let mut groups: Vec<(OpId, OpType, Vec<(OpId, usize)>)> = Vec::new();
-
-        loop {
+        // Fuel-capped: each iteration must vectorize one group; the cap
+        // turns a no-progress bug into termination, never a hang.
+        for _ in 0..10000 {
             groups.clear();
 
             // Full pass: collect ALL consumers into groups
             let mut op_id = self.head;
             while !op_id.is_null() {
-                let info = match &self.ops[op_id].op {
-                    Op::Unary { uop, x } => {
-                        let (uop, x) = (*uop, *x);
-                        match &self.ops[x].op {
-                            Op::Index { vec, idx } => Some((*vec, OpType::Unary(uop), op_id, *idx)),
-                            _ => None,
+                let is_candidate =
+                    matches!(self.ops[op_id].op, Op::Unary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Binary { .. });
+                if is_candidate {
+                    let operands: Vec<OpId> = self.ops[op_id].op.parameters().collect();
+                    // First lane operand wins (x preferred for binary).
+                    let mut found = None;
+                    for (i, &o) in operands.iter().enumerate() {
+                        if let Some(m) = self.match_pat(o, &lane_pat) {
+                            found = Some((m.op('v'), i));
+                            break;
                         }
                     }
-                    Op::Cast { dtype, x } => {
-                        let (dtype, x) = (*dtype, *x);
-                        match &self.ops[x].op {
-                            Op::Index { vec, idx } => Some((*vec, OpType::Cast(dtype), op_id, *idx)),
-                            _ => None,
-                        }
-                    }
-                    Op::Bitcast { dtype, x } => {
-                        let (dtype, x) = (*dtype, *x);
-                        match &self.ops[x].op {
-                            Op::Index { vec, idx } => Some((*vec, OpType::Bitcast(dtype), op_id, *idx)),
-                            _ => None,
-                        }
-                    }
-                    Op::Binary { bop, x, y } => {
-                        let (bop, x, y) = (*bop, *x, *y);
-                        if let Op::Index { vec, idx } = &self.ops[x].op {
-                            Some((*vec, OpType::Binary(bop, 0), op_id, *idx))
-                        } else if let Op::Index { vec, idx } = &self.ops[y].op {
-                            Some((*vec, OpType::Binary(bop, 1), op_id, *idx))
+                    if let Some((source, lane_pos)) = found {
+                        if let Some(g) = groups
+                            .iter_mut()
+                            .find(|g| g.source == source && g.lane_pos == lane_pos && same_head(&g.template, &self.ops[op_id].op))
+                        {
+                            g.members.push(op_id);
                         } else {
-                            None
+                            groups.push(Group { source, template: self.ops[op_id].op.clone(), lane_pos, members: vec![op_id] });
                         }
                     }
-                    _ => None,
-                };
-
-                let Some((source, op_type, consumer, _idx)) = info else {
-                    op_id = self.next_op(op_id);
-                    continue;
-                };
-
-                if let Some(g) = groups.iter_mut().find(|(s, t, _)| {
-                    *s == source
-                        && match (t, &op_type) {
-                            (OpType::Unary(a), OpType::Unary(b)) => a == b,
-                            (OpType::Cast(a), OpType::Cast(b)) => a == b,
-                            (OpType::Bitcast(a), OpType::Bitcast(b)) => a == b,
-                            (OpType::Binary(a, ap), OpType::Binary(b, bp)) => a == b && ap == bp,
-                            _ => false,
-                        }
-                }) {
-                    g.2.push((consumer, 0));
-                } else {
-                    groups.push((source, op_type, vec![(consumer, 0)]));
                 }
-
                 op_id = self.next_op(op_id);
             }
 
             // Try groups in descending size order
-            let mut indices: Vec<usize> = (0..groups.len()).filter(|&i| groups[i].2.len() >= 2).collect();
-            indices.sort_by(|&a, &b| groups[b].2.len().cmp(&groups[a].2.len()));
+            let mut indices: Vec<usize> = (0..groups.len()).filter(|&i| groups[i].members.len() >= 2).collect();
+            indices.sort_by(|&a, &b| groups[b].members.len().cmp(&groups[a].members.len()));
 
             let mut applied = false;
             for &idx in &indices {
-                let (source_vec, op_type, entries) = &groups[idx];
-                let source_vec = *source_vec;
-                let n = entries.len();
+                let n = groups[idx].members.len();
 
                 // Pick largest supported length <= n
                 let Some(vec_len) = supported.iter().copied().find(|&l| (l as usize) <= n) else {
@@ -388,26 +370,27 @@ impl Kernel {
                 let vec_len = vec_len as usize;
 
                 // Take the first vec_len entries
-                let selected: Vec<(OpId, usize)> = entries.iter().take(vec_len).copied().collect();
+                let selected: Vec<OpId> = groups[idx].members.iter().take(vec_len).copied().collect();
+                let lane_pos = groups[idx].lane_pos;
+                let source_vec = groups[idx].source;
+                let arity = groups[idx].template.parameters().count();
 
-                let first = selected[0].0;
+                let first = selected[0];
 
-                // The Stack is inserted before `first`, so every lane it
-                // references must already be declared there. Unrolled bodies
-                // interleave lanes with consumers (load, cast, load, cast,
-                // ...), leaving later lanes after `first`. Hoist those lanes
-                // to just before `first`: a lane depends only on the source
-                // vec, so the move is declaration-safe iff the source vec
-                // precedes `first` and no hoisted lane is used before `first`.
-                // Otherwise the group stays scalar for the store-driven
-                // backward pass, as before.
-                if !matches!(op_type, OpType::Binary(_, _)) {
-                    let lane_of = |consumer: OpId| match &self.ops[consumer].op {
-                        Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => *x,
-                        _ => unreachable!(),
-                    };
+                // Every Stack operand must be declared before `first`.
+                // Unrolled bodies interleave lanes with consumers (load,
+                // cast, load, cast, ...), leaving later lanes after `first`.
+                // Hoist those lanes to just before `first`: a lane depends
+                // only on the source vec, so the move is declaration-safe
+                // iff the source vec precedes `first` and no hoisted lane
+                // is used before `first`. Otherwise the group stays scalar
+                // for the store-driven backward pass, as before.
+                // (Multi-operand ops only guard the other side; lanes are
+                // assumed in place, matching prior behavior.)
+                if arity == 1 {
+                    let lane_of = |consumer: OpId| self.ops[consumer].op.parameters().nth(lane_pos).expect("arity drift");
                     let late: Vec<OpId> =
-                        selected.iter().map(|&(c, _)| lane_of(c)).filter(|&l| !self.op_is_before(l, first)).collect();
+                        selected.iter().map(|&c| lane_of(c)).filter(|&l| !self.op_is_before(l, first)).collect();
                     if !late.is_empty() {
                         let mut hoist_ok = self.op_is_before(source_vec, first);
                         for &l in &late {
@@ -430,84 +413,39 @@ impl Kernel {
                             self.move_op_before(l, first);
                         }
                     }
-                }
-
-                // For Binary: guard against other_ops defined after `first`
-                // (would create use-before-declaration).
-                if let OpType::Binary(_, devec_pos) = op_type {
-                    let mut other_ops = Vec::with_capacity(vec_len);
-                    for &(consumer, _) in &selected {
-                        let (x, y) = match &self.ops[consumer].op {
-                            Op::Binary { x, y, .. } => (*x, *y),
-                            _ => unreachable!(),
-                        };
-                        let o = if *devec_pos == 0 { y } else { x };
-                        other_ops.push(o);
+                } else {
+                    let mut other_ok = true;
+                    for &c in &selected {
+                        let operands: Vec<OpId> = self.ops[c].op.parameters().collect();
+                        for (i, &o) in operands.iter().enumerate() {
+                            if i != lane_pos && !self.op_is_before(o, first) {
+                                other_ok = false;
+                                break;
+                            }
+                        }
+                        if !other_ok {
+                            break;
+                        }
                     }
-                    if other_ops.iter().any(|&o| !self.op_is_before(o, first)) {
+                    if !other_ok {
                         continue;
                     }
                 }
 
-                // Apply vectorization
-                let vec_op_id = match op_type {
-                    OpType::Unary(uop) => {
-                        let ops: Box<[OpId]> = selected
-                            .iter()
-                            .map(|&(c, _)| match &self.ops[c].op {
-                                Op::Unary { x, .. } => *x,
-                                _ => unreachable!(),
-                            })
-                            .collect();
-                        let vd = self.insert_before(first, Op::Stack { ops });
-                        self.insert_before(first, Op::Unary { x: vd, uop: *uop })
-                    }
-                    OpType::Cast(dtype) => {
-                        let ops: Box<[OpId]> = selected
-                            .iter()
-                            .map(|&(c, _)| match &self.ops[c].op {
-                                Op::Cast { x, .. } => *x,
-                                _ => unreachable!(),
-                            })
-                            .collect();
-                        let vd = self.insert_before(first, Op::Stack { ops });
-                        self.insert_before(first, Op::Cast { x: vd, dtype: *dtype })
-                    }
-                    OpType::Bitcast(dtype) => {
-                        let ops: Box<[OpId]> = selected
-                            .iter()
-                            .map(|&(c, _)| match &self.ops[c].op {
-                                Op::Bitcast { x, .. } => *x,
-                                _ => unreachable!(),
-                            })
-                            .collect();
-                        let vd = self.insert_before(first, Op::Stack { ops });
-                        self.insert_before(first, Op::Bitcast { x: vd, dtype: *dtype })
-                    }
-                    OpType::Binary(bop, devec_pos) => {
-                        let n = selected.len();
-                        let mut devec_ops = Vec::with_capacity(n);
-                        let mut other_ops = Vec::with_capacity(n);
-                        for &(consumer, _) in &selected {
-                            let (x, y) = match &self.ops[consumer].op {
-                                Op::Binary { x, y, .. } => (*x, *y),
-                                _ => unreachable!(),
-                            };
-                            if *devec_pos == 0 {
-                                devec_ops.push(x);
-                                other_ops.push(y);
-                            } else {
-                                devec_ops.push(y);
-                                other_ops.push(x);
-                            }
-                        }
-                        let vd = self.insert_before(first, Op::Stack { ops: devec_ops.into_boxed_slice() });
-                        let vo = self.insert_before(first, Op::Stack { ops: other_ops.into_boxed_slice() });
-                        let (vx, vy) = if *devec_pos == 0 { (vd, vo) } else { (vo, vd) };
-                        self.insert_before(first, Op::Binary { x: vx, y: vy, bop: *bop })
-                    }
-                };
-                for (i, &(consumer, _)) in selected.iter().enumerate() {
+                // Apply: Stack each operand position across members, rebuild
+                // the template op over the vectors.
+                let mat: Vec<Vec<OpId>> = selected.iter().map(|&c| self.ops[c].op.parameters().collect()).collect();
+                let mut vec_ops = Vec::with_capacity(arity);
+                for i in 0..arity {
+                    let stack: Box<[OpId]> = mat.iter().map(|row| row[i]).collect();
+                    vec_ops.push(self.insert_before(first, Op::Stack { ops: stack }));
+                }
+                let mut rebuilt = groups[idx].template.clone();
+                for (p, v) in rebuilt.parameters_mut().zip(vec_ops) {
+                    *p = v;
+                }
+                let vec_op_id = self.insert_before(first, rebuilt);
+                for (i, &consumer) in selected.iter().enumerate() {
                     self.ops[consumer].op = Op::Index { vec: vec_op_id, idx: i };
                 }
                 applied = true;

@@ -61,7 +61,7 @@ impl Kernel {
                 | Op::Copy { .. }
                 | Op::Range { .. }
                 | Op::Loop { .. }
-                | Op::EndLoop=> {}
+                | Op::EndLoop => {}
                 // Horizontal reduce: no fold rule yet (nothing produces
                 // VecReduce before the vectorize pattern matcher lands).
                 Op::VecReduce { x: _, bop: _ } => {}
