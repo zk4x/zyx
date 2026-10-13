@@ -26,7 +26,7 @@ use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{
-    BOp, GPUOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTCbConfig, TTOp, TTProgramDesc,
+    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTCbConfig, TTOp, TTProgramDesc,
     TileDim, UOp,
 };
 use crate::scalar::{bf16, f16};
@@ -1119,10 +1119,11 @@ fn render_copy(
             // `size` elements at the element stride. Anything else is
             // malformed traffic.
             let tile_bytes = tt_tile_bytes(cb_dtype(sec.k, dst_storage)?)?;
-            let (bytes, stride) = match sec.k.bytes_layout(bytes) {
-                MemLayout::Tile { .. } => (tile_bytes, tile_bytes),
-                MemLayout::Vector(size) => ((size as u32) * eb, eb),
-                MemLayout::Scalar => (eb, eb),
+            let (bytes, stride) = match sec.k.shape(id).as_slice() {
+                [_, _] => (tile_bytes, tile_bytes),
+                [size] => ((*size as u32) * eb, eb),
+                [] => (eb, eb),
+                _ => todo!("tt publish: rank>2 access"),
             };
             let slot = cb_slot_expr(sec, dst_idx, stride)?;
             let noc = sec.transfer;
@@ -1140,7 +1141,7 @@ fn render_copy(
             if sec.section != 2 {
                 return Err(sec.err(format!("drain {id:?} outside the writer")));
             }
-            if matches!(sec.k.bytes_layout(bytes), MemLayout::Vector(_)) {
+            if matches!(sec.k.shape(id).as_slice(), [_]) {
                 return Err(sec.err(format!("vector drain {id:?} is not supported")));
             }
             let scb = sec.cb_num(src_storage)?;
@@ -1167,7 +1168,7 @@ fn render_copy(
             if sec.section != 1 {
                 return Err(sec.err(format!("CB→CB copy {id:?} outside the compute section")));
             }
-            if matches!(sec.k.bytes_layout(bytes), MemLayout::Vector(_)) {
+            if matches!(sec.k.shape(id).as_slice(), [_]) {
                 return Err(sec.err(format!("vector CB→CB copy {id:?} is not supported")));
             }
             let scb = sec.cb_num(src_storage)?;
@@ -1352,7 +1353,8 @@ fn shift_tmpl(dtype: DType) -> Result<&'static str, BackendError> {
 /// (`operand_slot`), LLK provenance loads are sync accounting, dead
 /// loads are pops only.
 fn render_load(sec: &mut TtSection, id: OpId, src: OpId, bytes: OpId) -> Result<(), BackendError> {
-    let _: MemLayout = sec.k.bytes_layout(bytes);
+    // Validate the access resolves to a concrete shape.
+    let _ = sec.k.shape(id);
     if !matches!(sec.k.at(src), Op::Storage { scope: MemScope::Circular, .. }) {
         return Ok(());
     }
@@ -1399,8 +1401,8 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId, dst_idx: OpId
             // Scalar stores into a Circular buffer are rejected:
             // DRAM-CB movement is Copy-only, use
             // load_global_to_cb_scalar.
-            if let Op::Load { bytes, .. } = sec.k.at(x) {
-                if matches!(sec.k.bytes_layout(*bytes), MemLayout::Scalar) {
+            if let Op::Load { .. } = sec.k.at(x) {
+                if sec.k.shape(x).is_empty() {
                     return Err(
                         sec.err(format!("scalar CB store {id:?}: DRAM-CB movement is Copy-only, use load_global_to_cb_scalar"))
                     );

@@ -12,7 +12,7 @@
 //! Requires CUDA with tensor cores (compute capability ≥ 7.0).
 //!
 //! ```rust
-//! use zyx::kernel::{Dev, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, ParamKind};
+//! use zyx::kernel::{Dev, Kernel, MMADType, MMADims, MMALayout, MemScope, ParamKind};
 //! use zyx::DType;
 //!
 //! let (m, n, k) = (1024, 1024, 1024);
@@ -158,7 +158,7 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// Build a kernel that computes `sin(x) + cos(x)` element-wise:
 ///
 /// ```
-/// use zyx::kernel::{Kernel, MemLayout, Dev, ParamKind};
+/// use zyx::kernel::{Kernel, Dev, ParamKind};
 /// use zyx::DType;
 ///
 /// let mut kernel = Kernel::new(Dev::Auto);
@@ -180,7 +180,7 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// Build a kernel using fused multiply-add and compile it:
 ///
 /// ```
-/// use zyx::kernel::{Kernel, MemLayout, Dev, ParamKind};
+/// use zyx::kernel::{Kernel, Dev, ParamKind};
 /// use zyx::{DType, Tensor, ZyxError};
 ///
 /// let mut kernel = Kernel::new(Dev::Auto);
@@ -233,32 +233,6 @@ pub enum MemScope {
     Circular,
 }
 
-/// Memory layout for kernel operations.
-///
-/// Specifies how data is laid out in memory for efficient access.
-///
-/// The layout also determines how much a **single** store / load op
-/// writes (reads): it is the *indexing granularity* of the op, not the rank
-/// or scalarity of the value being moved. `Scalar` means the op writes one
-/// single element per op; `Vector` writes a full vector with a single op;
-/// `Tile` writes a large tile with a single op. A multi-element tensor can
-/// perfectly well be stored through repeated `Scalar`-layout store ops (one
-/// per element) — that says nothing about the value's shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum MemLayout {
-    /// Scalar layout: one element per memory location
-    Scalar,
-    /// Vector layout: vector of size `x`
-    Vector(u16),
-    /// Tile layout: tile of `x` × `y` elements
-    Tile {
-        /// Width of the tile
-        x: u16,
-        /// Height of the tile
-        y: u16,
-    },
-}
-
 impl PartialEq for Kernel {
     fn eq(&self, other: &Self) -> bool {
         self.ops == other.ops && self.head == other.head && self.dev == other.dev
@@ -304,10 +278,12 @@ impl Kernel {
         self.dev_info.as_ref().expect("kernel has no device bound (Dev::Auto placeholder)")
     }
 
-    /// Compute dtypes and reference counts for all operations.
-    pub(crate) fn compute_dtypes_and_rcs(&self) -> (Map<OpId, (DType, MemLayout)>, Map<OpId, u32>) {
+    /// Compute dtypes and reference counts for all operations. The shape
+    /// half of each entry is the value's [`Self::shape`]: `[]` for
+    /// scalars, `[n]` for vectors, `[x, y]` for tiles.
+    pub(crate) fn compute_dtypes_and_rcs(&self) -> (Map<OpId, (DType, Vec<Dim>)>, Map<OpId, u32>) {
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut dtypes: Map<OpId, (DType, Vec<Dim>)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         let mut op_id = self.head;
         for _ in 0..250_000 {
@@ -333,16 +309,18 @@ impl Kernel {
                     unreachable!()
                 }
                 Op::Const(x) => {
-                    dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
+                    dtypes.insert(op_id, (x.dtype(), Vec::new()));
                 }
                 Op::Param { dtype, .. } => {
-                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                    dtypes.insert(op_id, (dtype, Vec::new()));
                 }
                 Op::Storage { dtype, .. } => {
-                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                    dtypes.insert(op_id, (dtype, Vec::new()));
                 }
                 Op::Load { src, src_idx, .. } => {
-                    dtypes.insert(op_id, dtypes[&src]);
+                    // Dtype rides on the buffer; the value shape rides on
+                    // the access itself (vector/tile loads are shaped).
+                    dtypes.insert(op_id, (dtypes[&src].0, self.shape(op_id)));
                     // Load consumes both the buffer read and the position
                     // it reads at (GEP-and-load both counted before).
                     *rcs.entry(src).or_insert(0) += 1;
@@ -351,11 +329,27 @@ impl Kernel {
                 Op::Store { dst, dst_idx, src: x, bytes } => {
                     // Post-linearize the shape rides on the store itself
                     // (`bytes`); pre-linearize whole-view stores are
-                    // Scalar by form (null bytes: no width operand
+                    // scalar by form (null bytes: no width operand
                     // exists to consume).
-                    let layout = self.bytes_layout(bytes);
-                    debug_assert_eq!(dtypes[&x].1, layout);
-                    dtypes.insert(op_id, dtypes[&x]);
+                    let access_shape: Vec<Dim> = if bytes.is_null() {
+                        Vec::new()
+                    } else if let Op::Stack { ref ops } = self.ops[bytes].op {
+                        ops.iter()
+                            .map(|&d| {
+                                self.resolve_const(d)
+                                    .and_then(Constant::as_dim)
+                                    .expect("store bytes: tile dim is not a constant")
+                            })
+                            .collect()
+                    } else {
+                        vec![
+                            self.resolve_const(bytes)
+                                .and_then(Constant::as_dim)
+                                .expect("store bytes: access width is not a constant"),
+                        ]
+                    };
+                    debug_assert_eq!(dtypes[&x].1, access_shape);
+                    dtypes.insert(op_id, dtypes[&x].clone());
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(dst_idx).or_insert(0) += 1;
                     if !bytes.is_null() {
@@ -364,7 +358,9 @@ impl Kernel {
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
-                    dtypes.insert(op_id, dtypes[&src]);
+                    // Like Load: dtype from the buffer, shape from the
+                    // access itself.
+                    dtypes.insert(op_id, (dtypes[&src].0, self.shape(op_id)));
                     *rcs.entry(src).or_insert(0) += 1;
                     for &o in &[src_idx, dst, dst_idx, bytes] {
                         if !o.is_null() {
@@ -373,31 +369,31 @@ impl Kernel {
                     }
                 }
                 Op::Cast { x, dtype } => {
-                    dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                    dtypes.insert(op_id, (dtype, dtypes[&x].1.clone()));
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 Op::Bitcast { x, dtype } => {
-                    dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                    dtypes.insert(op_id, (dtype, dtypes[&x].1.clone()));
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 Op::Unary { x, .. } => {
-                    dtypes.insert(op_id, dtypes[&x]);
+                    dtypes.insert(op_id, dtypes[&x].clone());
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 Op::VecReduce { x, bop: _ } => {
                     // Reduce consumes a vector value (its stack holds
-                    // Vector(n) lanes) and produces one scalar.
+                    // rank-1 lanes) and produces one scalar.
                     debug_assert!(
-                        matches!(dtypes[&x].1, MemLayout::Vector(_)),
-                        "VecReduce operand {x} must have vector layout, got {:?}",
+                        dtypes[&x].1.len() == 1,
+                        "VecReduce operand {x} must have vector shape, got {:?}",
                         dtypes[&x].1
                     );
-                    let (dtype, _) = dtypes[&x];
-                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                    let (dtype, _) = dtypes[&x].clone();
+                    dtypes.insert(op_id, (dtype, Vec::new()));
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 Op::TT(TTOp::BroadcastTile { x, .. }) => {
-                    dtypes.insert(op_id, dtypes[&x]);
+                    dtypes.insert(op_id, dtypes[&x].clone());
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 Op::TT(TTOp::ReserveBack { cb, .. })
@@ -407,14 +403,14 @@ impl Kernel {
                     // Effect-only CB sync: associated with the buffer's
                     // dtype/layout, keeps the CB's refcount (mirrors Copy
                     // minus the dst side — one buffer, not two).
-                    dtypes.insert(op_id, dtypes[&cb]);
+                    dtypes.insert(op_id, dtypes[&cb].clone());
                     *rcs.entry(cb).or_insert(0) += 1;
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = if bop.returns_bool() {
-                        (DType::Bool, dtypes[&x].1)
+                        (DType::Bool, dtypes[&x].1.clone())
                     } else {
-                        dtypes[&x]
+                        dtypes[&x].clone()
                     };
                     dtypes.insert(op_id, dtype);
                     *rcs.entry(x).or_insert(0) += 1;
@@ -426,7 +422,7 @@ impl Kernel {
                     // Operand-free Asm/LLK is an effect-only call (e.g. a
                     // TT LLK init): produces no value, takes no entry.
                     if !ops.is_empty() {
-                        let dtype = dtypes[&ops[0]];
+                        let dtype = dtypes[&ops[0]].clone();
                         dtypes.insert(op_id, dtype);
                         for &x in ops.iter() {
                             *rcs.entry(x).or_insert(0) += 1;
@@ -436,28 +432,28 @@ impl Kernel {
                 Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
                     // Lowered reduce: result takes the input CB's
                     // dtype/layout, like the LLK form's ops[0].
-                    dtypes.insert(op_id, dtypes[&cb_in]);
+                    dtypes.insert(op_id, dtypes[&cb_in].clone());
                     for &f in &[cb_in, cb_sc, slot, x, scaler] {
                         *rcs.entry(f).or_insert(0) += 1;
                     }
                 }
                 Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
                     // Lowered fused broadcast: same rule over cb_a.
-                    dtypes.insert(op_id, dtypes[&cb_a]);
+                    dtypes.insert(op_id, dtypes[&cb_a].clone());
                     for &f in &[cb_a, cb_b, mx, plain] {
                         *rcs.entry(f).or_insert(0) += 1;
                     }
                 }
                 Op::Stack { ref ops } => {
-                    let dtype = dtypes[&ops[0]];
-                    dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
+                    let dtype = dtypes[&ops[0]].0;
+                    dtypes.insert(op_id, (dtype, vec![ops.len() as Dim]));
                     for &x in ops.iter() {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                 }
                 Op::Index { vec, idx: _ } => {
-                    let dtype = dtypes[&vec];
-                    dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
+                    let dtype = dtypes[&vec].0;
+                    dtypes.insert(op_id, (dtype, Vec::new()));
                     *rcs.entry(vec).or_insert(0) += 1;
                 }
                 Op::Wmma { dims: _, layout: _, dtype, a, b, c } => {
@@ -469,19 +465,19 @@ impl Kernel {
                         | MMADType::b1_b1_s32_xor_popc
                         | MMADType::b1_b1_s32_and_popc => DType::I32,
                     };
-                    dtypes.insert(op_id, (out_dtype, MemLayout::Vector(4)));
+                    dtypes.insert(op_id, (out_dtype, vec![4]));
                     *rcs.entry(a).or_insert(0) += 1;
                     *rcs.entry(b).or_insert(0) += 1;
                     *rcs.entry(c).or_insert(0) += 1;
                 }
                 Op::TT(TTOp::MatmulTile { x, y, acc }) => {
-                    dtypes.insert(op_id, dtypes[&acc]);
+                    dtypes.insert(op_id, dtypes[&acc].clone());
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(acc).or_insert(0) += 1;
                 }
                 Op::TT(TTOp::TransposeTile { x }) => {
-                    dtypes.insert(op_id, dtypes[&x]);
+                    dtypes.insert(op_id, dtypes[&x].clone());
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 Op::Range { kind, .. } => {
@@ -494,14 +490,14 @@ impl Kernel {
                     if let RangeKind::Warp(local_id) = kind {
                         *rcs.entry(local_id).or_insert(0) += 1;
                     }
-                    dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
+                    dtypes.insert(op_id, (IDX_T, Vec::new()));
                 }
                 Op::Loop { len, .. } => {
                     // Loop length is a consumed operand (e.g. a Binary
                     // expression) and needs a refcount for codegen register
                     // allocation.
                     *rcs.entry(len).or_insert(0) += 1;
-                    dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
+                    dtypes.insert(op_id, (IDX_T, Vec::new()));
                 }
                 Op::Barrier
                 | Op::EndLoop
@@ -523,36 +519,6 @@ impl Kernel {
             panic!("compute_dtypes_and_rcs did not finish in 250000 steps");
         }
         (dtypes, rcs)
-    }
-
-    /// Interpret an access's `bytes` operand as a [`MemLayout`]: null =
-    /// one scalar element, resolved integer `w` = contiguous vector of
-    /// `w`, `Stack` of resolved integers = contiguous tile ([`Dim`]s
-    /// along each axis; strides implied by the reverse-product rule).
-    /// Shapes deeper than 2 are unsupported while `MemLayout` only has a
-    /// 2D `Tile` variant.
-    pub(crate) fn bytes_layout(&self, bytes: OpId) -> MemLayout {
-        if bytes.is_null() {
-            return MemLayout::Scalar;
-        }
-        if let Op::Stack { ops } = &self.ops[bytes].op {
-            let dims: Vec<Dim> = ops
-                .iter()
-                .map(|&d| self.resolve_const(d).and_then(Constant::as_dim).expect("bytes: tile dim is not a constant"))
-                .collect();
-            match dims.len() {
-                1 => return MemLayout::Vector(dims[0].try_into().expect("bytes: vector length overflows u16")),
-                2 => {
-                    return MemLayout::Tile {
-                        x: dims[0].try_into().expect("bytes: tile width overflows u16"),
-                        y: dims[1].try_into().expect("bytes: tile height overflows u16"),
-                    };
-                }
-                _ => todo!("bytes: tile depth {} unsupported (MemLayout::Tile is 2D)", dims.len()),
-            }
-        }
-        let w = self.resolve_const(bytes).and_then(Constant::as_dim).expect("bytes: access width is not a constant");
-        MemLayout::Vector(w.try_into().expect("bytes: vector length overflows u16"))
     }
 
     /// Resolve the dtype of an operation's result by walking the IR.
@@ -1054,15 +1020,23 @@ impl Kernel {
                     // `load_register_tile` assert Tile { 32, 32 }).
                     flops = flops.saturating_add(2 * 32 * 32 * 32 * mult);
                 }
-                Op::Load { src, bytes, .. } => {
+                Op::Load { src, .. } => {
                     if let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*src].op {
-                        let n_bytes = (dtype.bit_size() as u64 / 8) * self.bytes_layout(*bytes).n_elements() as u64;
+                        let n_elems: Dim = self.shape(op_id).iter().map(|&d| {
+                            assert!(d >= 0, "dram bytes: symbolic access width");
+                            d
+                        }).product();
+                        let n_bytes = (dtype.bit_size() as u64 / 8) * n_elems as u64;
                         read = read.saturating_add(n_bytes.saturating_mul(mult));
                     }
                 }
-                Op::Store { dst, bytes, .. } => {
+                Op::Store { dst, .. } => {
                     if let Op::Param { kind: ParamKind::GlobalMut, dtype, .. } = &self.ops[*dst].op {
-                        let n_bytes = (dtype.bit_size() as u64 / 8) * self.bytes_layout(*bytes).n_elements() as u64;
+                        let n_elems: Dim = self.shape(op_id).iter().map(|&d| {
+                            assert!(d >= 0, "dram bytes: symbolic access width");
+                            d
+                        }).product();
+                        let n_bytes = (dtype.bit_size() as u64 / 8) * n_elems as u64;
                         write = write.saturating_add(n_bytes.saturating_mul(mult));
                     }
                 }
@@ -1244,8 +1218,12 @@ impl Kernel {
                 // A scalar access (null `bytes`) loads one element: a
                 // scalar value; multi-element accesses take their shape
                 // from the `bytes` descriptor (arm above).
+                // `Copy` moves `bytes` elements between buffers: its
+                // shape is the access shape, not either buffer's.
+                Op::Copy { bytes, .. } => {
+                    visited.insert(op_id, self.shape_descriptor(bytes));
+                }
                 Op::Store { src: x, .. }
-                | Op::Copy { src: x, .. }
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
@@ -1281,7 +1259,7 @@ impl Kernel {
                     visited.insert(op_id, vec![]);
                 }
                 // A fragment value has its native width as a single dim
-                // (same table as the old `layout()` Wmma mapping).
+                // (widths match the hardware's native fragment sizes).
                 Op::Wmma { dims, .. } => {
                     let n: u32 = match dims {
                         MMADims::m8n8k16 => 2,
@@ -1442,8 +1420,18 @@ impl Kernel {
                 // A scalar access (null `bytes`) loads one element: a
                 // scalar value; multi-element accesses take their shape
                 // from the `bytes` descriptor (arm above).
+                // `Copy` moves `bytes` elements between buffers: its
+                // shape is the access shape, not either buffer's.
+                Op::Copy { bytes, .. } => {
+                    visited.insert(
+                        id,
+                        descriptor(self, bytes)
+                            .iter()
+                            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
+                            .collect(),
+                    );
+                }
                 Op::Store { src: x, .. }
-                | Op::Copy { src: x, .. }
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
@@ -1479,7 +1467,7 @@ impl Kernel {
                     visited.insert(id, vec![]);
                 }
                 // A fragment value has its native width as a single dim
-                // (same table as the old `layout()` Wmma mapping).
+                // (widths match the hardware's native fragment sizes).
                 Op::Wmma { dims, .. } => {
                     visited.insert(id, vec![match dims {
                         MMADims::m8n8k16 => 2,

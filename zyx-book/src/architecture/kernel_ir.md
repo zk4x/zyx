@@ -96,15 +96,13 @@ Op::Narrow { x: OpId, axis: UAxis, start: OpId, len: OpId }
 Op::Reduce { x: OpId, rop: BOp, reduce_axis: OpId }
 ```
 
-## Memory Layouts and Scopes
+## Access Shapes and Scopes
+
+Load/store/copy move one access per op; the access width lives in the
+op's `bytes` operand and `Kernel::shape` reports it as a rank: scalar
+(`[]`), vector (`[n]`), tile (`[x, y]`).
 
 ```rust,ignore
-pub enum MemLayout {
-    Scalar,
-    Vector(u8),
-    Tile { x, y, stride },
-}
-
 pub enum MemScope {
     Global,
     Local,

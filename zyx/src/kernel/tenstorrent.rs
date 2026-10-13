@@ -25,7 +25,7 @@ use crate::Set;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Pat;
-use crate::kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, TTOp, TileDim, UOp};
+use crate::kernel::{BOp, Kernel, MemScope, Op, OpId, ParamKind, TTOp, TileDim, UOp};
 use crate::shape::Dim;
 use crate::types::{TinyString, TinyVec};
 
@@ -121,9 +121,9 @@ impl Kernel {
             if id.is_null() {
                 break;
             }
-            if let Op::Load { src: base, src_idx: off, bytes } = self.ops[id].op {
+            if let Op::Load { src: base, src_idx: off, .. } = self.ops[id].op {
                 if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
-                    if self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32 }) {
+                    if self.shape(id) != vec![32, 32] {
                         return;
                     }
                     loads.push((id, base, off));
@@ -248,18 +248,18 @@ impl Kernel {
                 break;
             }
             match self.ops[id].op {
-                Op::Load { src: base, bytes, .. } => {
+                Op::Load { src: base, .. } => {
                     if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
-                        && self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32 })
+                        && self.shape(id) != vec![32, 32]
                     {
                         return;
                     }
                 }
-                Op::Store { dst: base, dst_idx: off, src, bytes } => {
+                Op::Store { dst: base, dst_idx: off, src, .. } => {
                     if matches!(self.ops[base].op, Op::Storage { .. }) {
                         // Already lowered; the writer pass owns nothing here.
                     } else if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
-                        if self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32 }) {
+                        if self.shape(id) != vec![32, 32] {
                             return;
                         }
                         stores.push((id, base, off, src));
@@ -311,9 +311,9 @@ impl Kernel {
                 if scan.is_null() {
                     break;
                 }
-                if let Op::Load { src: base, bytes, .. } = self.ops[scan].op {
+                if let Op::Load { src: base, .. } = self.ops[scan].op {
                     if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
-                        && self.bytes_layout(bytes) == (MemLayout::Tile { x: 32, y: 32 })
+                        && self.shape(scan) == vec![32, 32]
                     {
                         return;
                     }
@@ -1470,13 +1470,13 @@ impl Kernel {
                                     _ => None,
                                 }
                             }
-                            Op::Copy { src, dst, bytes, .. } if uncountable == 0 => {
+                            Op::Copy { src, dst, .. } if uncountable == 0 => {
                                 let src_is_cb = matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. });
                                 if matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }) && !src_is_cb {
-                                    match self.bytes_layout(bytes) {
-                                        MemLayout::Vector(size) => Some((dst, size as u64)),
-                                        MemLayout::Scalar => Some((dst, 1)),
-                                        MemLayout::Tile { .. } => None,
+                                    match self.shape(scan).as_slice() {
+                                        [] => Some((dst, 1)),
+                                        [size] => Some((dst, *size as u64)),
+                                        _ => None,
                                     }
                                 } else {
                                     None

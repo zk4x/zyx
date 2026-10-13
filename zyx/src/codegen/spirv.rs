@@ -9,7 +9,7 @@ use crate::{
     backend::{GwsDim, gws_from_kernel},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, GPUOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SpirvOp, UOp},
+    kernel::{BOp, GPUOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SpirvOp, UOp},
     shape::Dim,
     slab::Slab,
 };
@@ -398,7 +398,7 @@ fn emit_type(asm: &mut Asm, cache: &mut Map<DType, u32>, dt: DType) -> u32 {
 
 // ---------- Compute dtypes for all ops ----------
 
-fn compute_dtypes(kernel: &Kernel) -> Map<OpId, (DType, MemLayout)> {
+fn compute_dtypes(kernel: &Kernel) -> Map<OpId, (DType, Vec<Dim>)> {
     let (dt, _) = kernel.compute_dtypes_and_rcs();
     dt
 }
@@ -701,13 +701,21 @@ impl Kernel {
                               vec_type_cache: &mut Map<(u32, u16), u32>,
                               entries: &mut Vec<(OpCode, u32, Vec<u32>)>,
                               dt: DType,
-                              layout: MemLayout|
+                              shape: &[Dim]|
          -> u32 {
             let scalar_id = push_dtype(asm, type_cache, entries, dt);
-            match layout {
-                MemLayout::Scalar => scalar_id,
-                MemLayout::Vector(len) => push_vec_type(asm, vec_type_cache, entries, scalar_id, len),
-                MemLayout::Tile { .. } => scalar_id,
+            match shape {
+                [] => scalar_id,
+                [len] => push_vec_type(
+                    asm,
+                    vec_type_cache,
+                    entries,
+                    scalar_id,
+                    u16::try_from(*len).expect("SPIR-V: vector width is not a u16"),
+                ),
+                // Tiles lower as scalars (same as the old Tile arm).
+                [_, _] => scalar_id,
+                _ => todo!("SPIR-V: rank-3+ value shape"),
             }
         };
 
@@ -749,10 +757,16 @@ impl Kernel {
         const_pool.insert(Constant::U32(0), const_u32_0);
 
         // Pre-populate all vector types needed by dtypes, so they're emitted before function body
-        for (dt, layout) in dtypes.values() {
-            if let MemLayout::Vector(len) = layout {
+        for (dt, shape) in dtypes.values() {
+            if let [len] = shape.as_slice() {
                 let scalar_id = push_dtype(&mut asm, &mut type_cache, &mut type_entries, *dt);
-                push_vec_type(&mut asm, &mut vec_type_cache, &mut type_entries, scalar_id, *len);
+                push_vec_type(
+                    &mut asm,
+                    &mut vec_type_cache,
+                    &mut type_entries,
+                    scalar_id,
+                    u16::try_from(*len).expect("SPIR-V: vector width is not a u16"),
+                );
             }
         }
         let const_u32_1 = asm.id();
@@ -1270,9 +1284,9 @@ impl Kernel {
                     }
                     Op::Asm { .. } => todo!(),
                     Op::Stack { ref ops } => {
-                        let (dt, layout) = dtypes[&op_id];
+                        let (dt, shape) = dtypes[&op_id].clone();
                         let result_type =
-                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);
+                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, &shape);
                         let rid = asm.id();
                         let operands: Vec<u32> = ops.iter().map(|x| spv_values[x]).collect();
                         asm.emit_typed(OpCompositeConstruct, result_type, rid, &operands);
@@ -1328,9 +1342,9 @@ impl Kernel {
                     Op::Copy { .. } => {
                         todo!("Copy lowering for SPIR-V (tenstorrent phase)");
                     }
-                    Op::Load { src: x, src_idx: index, bytes } => {
-                        let layout = self.bytes_layout(bytes);
-                        if matches!(layout, MemLayout::Vector(_) | MemLayout::Tile { .. }) {
+                    Op::Load { src: x, src_idx: index, bytes: _ } => {
+                        let access_shape = self.shape(op_id);
+                        if !access_shape.is_empty() {
                             todo!("SPIR-V Load vector/tile via bytes (tenstorrent phase)");
                         }
                         let elem_dt = dtypes[&x].0;
@@ -1372,9 +1386,15 @@ impl Kernel {
                             let index_id = spv_values[&index];
                             asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, index_id]);
                         }
-                        let (load_dt, _) = dtypes[&op_id];
-                        let result_type =
-                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, load_dt, layout);
+                        let load_dt = dtypes[&op_id].0;
+                        let result_type = layout_type_id(
+                            &mut asm,
+                            &mut type_cache,
+                            &mut vec_type_cache,
+                            &mut type_entries,
+                            load_dt,
+                            &access_shape,
+                        );
                         let is_local = matches!(self.at(x), &Op::Storage { scope: MemScope::Local, .. });
                         let is_bool_buf = bool_buffers.contains(&x) && !is_local;
                         let loaded = asm.id();
@@ -1399,9 +1419,9 @@ impl Kernel {
                             spv_values.insert(op_id, loaded);
                         }
                     }
-                    Op::Store { dst: dst_buf, dst_idx: index, src: x, bytes } => {
-                        let layout = self.bytes_layout(bytes);
-                        if matches!(layout, MemLayout::Vector(_) | MemLayout::Tile { .. }) {
+                    Op::Store { dst: dst_buf, dst_idx: index, src: x, bytes: _ } => {
+                        let access_shape = self.shape(op_id);
+                        if !access_shape.is_empty() {
                             todo!("SPIR-V Store vector/tile via bytes (tenstorrent phase)");
                         }
                         if variable_members.contains_key(&dst_buf) {
@@ -1465,9 +1485,15 @@ impl Kernel {
                         }
                         let src_id = spv_values[&x];
                         let dst_type = dtype;
-                        let (_, layout) = dtypes[&op_id];
-                        let result_type =
-                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dst_type, layout);
+                        let (_, shape) = dtypes[&op_id].clone();
+                        let result_type = layout_type_id(
+                            &mut asm,
+                            &mut type_cache,
+                            &mut vec_type_cache,
+                            &mut type_entries,
+                            dst_type,
+                            &shape,
+                        );
 
                         let rid = asm.id();
                         if src_type == DType::Bool && dst_type.is_float() {
@@ -1487,10 +1513,12 @@ impl Kernel {
                                 || dst_type == DType::I8)
                         {
                             let (one_cid, zero_cid) = cast_u32_consts[&op_id];
-                            let (true_val, false_val) = match layout {
-                                MemLayout::Vector(n) => {
+                            let (true_val, false_val) = match shape.as_slice() {
+                                [n] => {
+                                    let n =
+                                        u16::try_from(*n).expect("SPIR-V: vector width is not a u16") as usize;
                                     let mut broadcast = |val: u32| -> u32 {
-                                        let components = vec![val; n as usize];
+                                        let components = vec![val; n];
                                         let b = asm.id();
                                         asm.emit_typed(OpCompositeConstruct, result_type, b, &components);
                                         b
@@ -1529,9 +1557,15 @@ impl Kernel {
                         }
                         let src_id = spv_values[&x];
                         let dst_type = dtype;
-                        let (_, layout) = dtypes[&op_id];
-                        let result_type =
-                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dst_type, layout);
+                        let (_, shape) = dtypes[&op_id].clone();
+                        let result_type = layout_type_id(
+                            &mut asm,
+                            &mut type_cache,
+                            &mut vec_type_cache,
+                            &mut type_entries,
+                            dst_type,
+                            &shape,
+                        );
 
                         let rid = asm.id();
                         // OpBitcast requires numeric (non-bool) types. Bool's
@@ -1568,9 +1602,15 @@ impl Kernel {
                     }
                     Op::Unary { x, uop } => {
                         let src_id = spv_values[&x];
-                        let (dt, layout) = dtypes[&x];
-                        let result_type =
-                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);
+                        let (dt, shape) = dtypes[&x].clone();
+                        let result_type = layout_type_id(
+                            &mut asm,
+                            &mut type_cache,
+                            &mut vec_type_cache,
+                            &mut type_entries,
+                            dt,
+                            &shape,
+                        );
                         let rid = asm.id();
 
                         match uop {
@@ -1639,9 +1679,15 @@ impl Kernel {
                         let x_id = spv_values[&x];
                         let y_id = spv_values[&y];
                         let dt = dtypes[&x].0;
-                        let (res_dt, res_layout) = dtypes[&op_id];
-                        let result_type =
-                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, res_dt, res_layout);
+                        let (res_dt, res_shape) = dtypes[&op_id].clone();
+                        let result_type = layout_type_id(
+                            &mut asm,
+                            &mut type_cache,
+                            &mut vec_type_cache,
+                            &mut type_entries,
+                            res_dt,
+                            &res_shape,
+                        );
                         let rid = asm.id();
 
                         let (float_op, int_op, _): (Option<OpCode>, Option<OpCode>, Option<OpCode>) = match bop {

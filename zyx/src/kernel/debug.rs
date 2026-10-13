@@ -284,37 +284,38 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {magenta}{value}{reset}").unwrap();
                 }
-                Op::Load { src, src_idx, bytes } => {
+                Op::Load { src, src_idx, .. } => {
                     let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let src = id_map.get(&src).copied().unwrap_or(src);
                     let src_idx = id_map.get(&src_idx).copied().unwrap_or(src_idx);
                     let (lb, ub) = bounds.get(&src_idx).copied().unwrap_or((0, 0));
-                    match self.bytes_layout(bytes) {
-                        crate::kernel::MemLayout::Scalar => {
+                    match self.shape(op_id).as_slice() {
+                        [] => {
                             writeln!(
                                 f,
                                 "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} r{src}[r{src_idx}]    // {lb}..={ub}",
                             )
                             .unwrap();
                         }
-                        crate::kernel::MemLayout::Vector(len) => {
+                        [len] => {
                             writeln!(
                                 f,
                                 "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} vec{len} r{src}[r{src_idx}]    // {lb}..={ub}",
                             )
                             .unwrap();
                         }
-                        crate::kernel::MemLayout::Tile { x, y, .. } => {
+                        [x, y] => {
                             writeln!(
                                 f,
                                 "{indent}r{out_id}{grey}: {dtype}{reset} = {green}load{reset} tile {x}x{y} r{src}[r{src_idx}]    // {lb}..={ub}",
                             )
                             .unwrap();
                         }
+                        _ => todo!("debug: rank>2 access"),
                     }
                 }
-                Op::Store { dst, dst_idx, src: x, bytes } => {
+                Op::Store { dst, dst_idx, src: x, .. } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let dst = id_map.get(&dst).copied().unwrap_or(dst);
@@ -323,19 +324,19 @@ impl Kernel {
                     let idx_txt = if dst_idx.is_null() {
                         String::new()
                     } else {
-                        format!("[r{dst_idx} @ {}]", self.bytes_layout(bytes))
+                        format!("[r{dst_idx} @ {:?}]", self.shape(op_id))
                     };
                     writeln!(f, "{indent}{red}store{reset} r{dst}{idx_txt} = r{x}").unwrap();
                 }
-                Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+                Op::Copy { src, src_idx, dst, dst_idx, .. } => {
                     let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let src = id_map.get(&src).copied().unwrap_or(src);
                     let src_idx = id_map.get(&src_idx).copied().unwrap_or(src_idx);
                     let dst = id_map.get(&dst).copied().unwrap_or(dst);
                     let dst_idx = id_map.get(&dst_idx).copied().unwrap_or(dst_idx);
-                    let layout = self.bytes_layout(bytes);
-                    writeln!(f, "{indent}r{dst}[r{dst_idx} @ {layout}] = r{src}[r{src_idx}]    // {red}copy{reset}").unwrap();
+                    let access_shape = self.shape(op_id);
+                    writeln!(f, "{indent}r{dst}[r{dst_idx} @ {access_shape:?}] = r{src}[r{src_idx}]    // {red}copy{reset}").unwrap();
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);

@@ -19,7 +19,7 @@
 use super::predict_cost::predict_time_us;
 use crate::{
     DType, Map, Set,
-    kernel::{IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
+    kernel::{IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
     shape::Dim,
 };
 
@@ -53,10 +53,10 @@ impl Kernel {
 
         // First pass: compute reference counts and dtypes for register estimation
         let mut rcs: Map<OpId, u32> = Map::default();
-        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::default();
+        let mut dtypes: Map<OpId, (DType, Vec<Dim>)> = Map::default();
         {
-            let mut op_id = self.head;
-            while !op_id.is_null() {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
                 match self.ops[op_id].op {
                     Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                         // Same rule as compute_dtypes_and_rcs: result takes
@@ -64,8 +64,8 @@ impl Kernel {
                         // Operand-free Asm/LLK is an effect-only call: no
                         // value, no entry.
                         if !ops.is_empty() {
-                            let (dtype, layout) = dtypes[&ops[0]];
-                            dtypes.insert(op_id, (dtype, layout));
+                            let (dtype, shape) = dtypes[&ops[0]].clone();
+                            dtypes.insert(op_id, (dtype, shape));
                             for &x in ops.iter() {
                                 *rcs.entry(x).or_insert(0) += 1;
                             }
@@ -73,16 +73,16 @@ impl Kernel {
                     }
                     Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
                         // Lowered reduce: same rule over cb_in.
-                        let (dtype, layout) = dtypes[&cb_in];
-                        dtypes.insert(op_id, (dtype, layout));
+                        let (dtype, shape) = dtypes[&cb_in].clone();
+                        dtypes.insert(op_id, (dtype, shape));
                         for &f in &[cb_in, cb_sc, slot, x, scaler] {
                             *rcs.entry(f).or_insert(0) += 1;
                         }
                     }
                     Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
                         // Lowered fused broadcast: same rule over cb_a.
-                        let (dtype, layout) = dtypes[&cb_a];
-                        dtypes.insert(op_id, (dtype, layout));
+                        let (dtype, shape) = dtypes[&cb_a].clone();
+                        dtypes.insert(op_id, (dtype, shape));
                         for &f in &[cb_a, cb_b, mx, plain] {
                             *rcs.entry(f).or_insert(0) += 1;
                         }
@@ -100,42 +100,42 @@ impl Kernel {
                         unreachable!()
                     }
                     Op::Stack { ref ops } => {
-                        let dtype = dtypes[&ops[0]];
-                        dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
+                        let dtype = dtypes[&ops[0]].0;
+                        dtypes.insert(op_id, (dtype, vec![ops.len() as Dim]));
                         for &x in ops.iter() {
                             *rcs.entry(x).or_insert(0) += 1;
                         }
                     }
                     Op::Index { vec, .. } => {
-                        let dtype = dtypes[&vec];
-                        dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
+                        let dtype = dtypes[&vec].0;
+                        dtypes.insert(op_id, (dtype, Vec::new()));
                         *rcs.entry(vec).or_insert(0) += 1;
                     }
                     Op::VecReduce { x, bop: _ } => {
-                        let (dtype, _) = dtypes[&x];
-                        dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                        let dtype = dtypes[&x].0;
+                        dtypes.insert(op_id, (dtype, Vec::new()));
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                     Op::Const(x) => {
-                        dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
+                        dtypes.insert(op_id, (x.dtype(), Vec::new()));
                     }
                     Op::Param { dtype, .. } => {
-                        dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                        dtypes.insert(op_id, (dtype, Vec::new()));
                     }
                     Op::Storage { dtype, .. } => {
-                        dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                        dtypes.insert(op_id, (dtype, Vec::new()));
                     }
                     Op::Wmma { c, a, b, .. } => {
-                        dtypes.insert(op_id, (DType::F32, MemLayout::Vector(4)));
+                        dtypes.insert(op_id, (DType::F32, vec![4]));
                         *rcs.entry(a).or_insert(0) += 1;
                         *rcs.entry(b).or_insert(0) += 1;
                         *rcs.entry(c).or_insert(0) += 1;
                     }
                     Op::Load { src, .. } => {
-                        dtypes.insert(op_id, dtypes[&src]);
+                        dtypes.insert(op_id, (dtypes[&src].0, self.shape(op_id)));
                     }
                     Op::Store { dst, dst_idx, src: x, bytes } => {
-                        dtypes.insert(op_id, dtypes[&x]);
+                        dtypes.insert(op_id, dtypes[&x].clone());
                         *rcs.entry(dst).or_insert(0) += 1;
                         if !dst_idx.is_null() {
                             *rcs.entry(dst_idx).or_insert(0) += 1;
@@ -146,7 +146,7 @@ impl Kernel {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                     Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
-                        dtypes.insert(op_id, dtypes[&src]);
+                        dtypes.insert(op_id, (dtypes[&src].0, self.shape(op_id)));
                         *rcs.entry(src).or_insert(0) += 1;
                         *rcs.entry(dst).or_insert(0) += 1;
                         for &o in &[src_idx, dst_idx, bytes] {
@@ -156,32 +156,32 @@ impl Kernel {
                         }
                     }
                     Op::Cast { x, dtype } => {
-                        dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                        dtypes.insert(op_id, (dtype, dtypes[&x].1.clone()));
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                     Op::Bitcast { x, dtype } => {
-                        dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                        dtypes.insert(op_id, (dtype, dtypes[&x].1.clone()));
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                     Op::Unary { x, .. } => {
-                        dtypes.insert(op_id, dtypes[&x]);
+                        dtypes.insert(op_id, dtypes[&x].clone());
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                     Op::Binary { x, y, bop } => {
                         let dtype = if bop.returns_bool() {
-                            (DType::Bool, dtypes[&x].1)
+                            (DType::Bool, dtypes[&x].1.clone())
                         } else {
-                            dtypes[&x]
+                            dtypes[&x].clone()
                         };
                         dtypes.insert(op_id, dtype);
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(y).or_insert(0) += 1;
                     }
                     Op::Range { .. } => {
-                        dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
+                        dtypes.insert(op_id, (DType::U32, Vec::new()));
                     }
                     Op::Loop { len } => {
-                        dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
+                        dtypes.insert(op_id, (DType::U32, Vec::new()));
                         // Boolean length = the old `If` condition: live
                         // across the body, so it keeps its refcount.
                         // Counted-loop lengths were never refcounted here.
@@ -191,28 +191,28 @@ impl Kernel {
                     }
                     Op::TT(ref ttop) => match ttop {
                         TTOp::ReduceTile { x, .. } => {
-                            dtypes.insert(op_id, dtypes[x]);
+                            dtypes.insert(op_id, dtypes[x].clone());
                             *rcs.entry(*x).or_insert(0) += 1;
                         }
                         TTOp::MatmulTile { x, y, acc } => {
-                            dtypes.insert(op_id, dtypes[acc]);
+                            dtypes.insert(op_id, dtypes[acc].clone());
                             *rcs.entry(*x).or_insert(0) += 1;
                             *rcs.entry(*y).or_insert(0) += 1;
                             *rcs.entry(*acc).or_insert(0) += 1;
                         }
                         TTOp::TransposeTile { x } => {
-                            dtypes.insert(op_id, dtypes[x]);
+                            dtypes.insert(op_id, dtypes[x].clone());
                             *rcs.entry(*x).or_insert(0) += 1;
                         }
                         TTOp::BroadcastTile { x, .. } => {
-                            dtypes.insert(op_id, dtypes[x]);
+                            dtypes.insert(op_id, dtypes[x].clone());
                             *rcs.entry(*x).or_insert(0) += 1;
                         }
                         TTOp::ReserveBack { cb, .. }
                         | TTOp::PushBack { cb, .. }
                         | TTOp::WaitFront { cb, .. }
                         | TTOp::PopFront { cb, .. } => {
-                            dtypes.insert(op_id, dtypes[cb]);
+                            dtypes.insert(op_id, dtypes[cb].clone());
                             *rcs.entry(*cb).or_insert(0) += 1;
                         }
                         TTOp::LLK { ops, .. } => {
@@ -220,20 +220,20 @@ impl Kernel {
                             // operands stay live (same rule as the Asm
                             // arm above).
                             if !ops.is_empty() {
-                                dtypes.insert(op_id, dtypes[&ops[0]]);
+                                dtypes.insert(op_id, dtypes[&ops[0]].clone());
                                 for &x in ops.iter() {
                                     *rcs.entry(x).or_insert(0) += 1;
                                 }
                             }
                         }
                         TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. } => {
-                            dtypes.insert(op_id, dtypes[cb_in]);
+                            dtypes.insert(op_id, dtypes[cb_in].clone());
                             for f in [cb_in, cb_sc, slot, x, scaler] {
                                 *rcs.entry(*f).or_insert(0) += 1;
                             }
                         }
                         TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. } => {
-                            dtypes.insert(op_id, dtypes[cb_a]);
+                            dtypes.insert(op_id, dtypes[cb_a].clone());
                             for f in [cb_a, cb_b, mx, plain] {
                                 *rcs.entry(*f).or_insert(0) += 1;
                             }
@@ -269,7 +269,7 @@ impl Kernel {
         let mut latest_loop_lengths: Vec<Dim> = Vec::new();
         let mut max_loop_depth = 0i64;
 
-        let mut reg_slots: Vec<(u32, (DType, MemLayout))> = Vec::new(); // (rc, dtype)
+        let mut reg_slots: Vec<(u32, (DType, Vec<Dim>))> = Vec::new(); // (rc, dtype)
         let mut reg_map: Map<OpId, usize> = Map::default();
         let mut indexing_ops: Set<OpId> = Set::default();
         let mut wi_peak_reg_bytes = 0u64;
@@ -283,6 +283,15 @@ impl Kernel {
         let mut loc_store_lidx_stride_weighted = 0i64;
         let mut loc_store_lidx_stride_weight = 0i64;
 
+        // Concrete element count of an access shape. Every dim here
+        // resolves from const-built bytes descriptors; a negative dim
+        // is malformed IR — fail loudly.
+        let concrete_len = |shape: &[Dim]| -> Dim {
+            shape.iter().map(|&d| {
+                assert!(d >= 0, "cost: symbolic access width");
+                d
+            }).product()
+        };
         let mut op_id = self.head;
         while !op_id.is_null() {
             // Register allocation: allocate if this op produces a value
@@ -347,7 +356,7 @@ impl Kernel {
                 }
             };
             if produces && let Some(&rc) = rcs.get(&op_id) {
-                let dtype = dtypes[&op_id];
+                let dtype = dtypes[&op_id].clone();
                 let idx = reg_slots.iter().position(|(r, dt)| *r == 0 && *dt == dtype).unwrap_or_else(|| {
                     let i = reg_slots.len();
                     reg_slots.push((0, dtype));
@@ -409,14 +418,14 @@ impl Kernel {
                 | Op::Reduce { .. }
                 | Op::TT { .. }
                 | Op::Asm { .. } => {}
-                Op::Load { src, src_idx: index, bytes } => {
-                    let layout = self.bytes_layout(bytes);
+                Op::Load { src, src_idx: index, .. } => {
+                    let access_shape = self.shape(op_id);
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
                     }
                     let scope = mem_scope(&self.ops[src].op);
-                    let total_elements = loop_mult * layout.n_elements();
+                    let total_elements = loop_mult * concrete_len(&access_shape);
                     match scope {
                         MemScope::Global => {
                             let n_bits = total_elements * dtypes[&op_id].0.bit_size() as i64;
@@ -496,8 +505,9 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, dst_idx: index, bytes, .. } => {
-                    let layout = self.bytes_layout(bytes);
+                Op::Store { dst, dst_idx: index, .. } => {
+                    let access_shape = self.shape(op_id);
+                    let n_elements = concrete_len(&access_shape);
                     wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
@@ -505,7 +515,7 @@ impl Kernel {
                     let scope = mem_scope(&self.ops[dst].op);
                     match scope {
                         MemScope::Global => {
-                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as i64;
+                            let n_bits = loop_mult * n_elements * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_store_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
                             let strides = self.get_strides(index).unwrap_or_default();
@@ -542,7 +552,7 @@ impl Kernel {
                             }
                         }
                         MemScope::Local | MemScope::Circular => {
-                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as i64;
+                            let n_bits = loop_mult * n_elements * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_store_bits[1] += n_bits;
                             let strides = self.get_strides(index).unwrap_or_default();
                             let stride = strides
@@ -578,11 +588,11 @@ impl Kernel {
                             }
                         }
                         MemScope::Register => {
-                            n_scoped_store_bits[2] += loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as i64
+                            n_scoped_store_bits[2] += loop_mult * n_elements * dtypes[&op_id].0.bit_size() as i64
                         }
                     }
                 }
-                Op::Copy { src, dst, bytes, .. } => {
+                Op::Copy { src, dst, .. } => {
                     // A copy reads once through src and writes once through
                     // dst: account read bits to the src scope, write bits to
                     // the dst scope, at single-transfer weight. No stride
@@ -592,9 +602,9 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 2;
                     }
-                    let layout = self.bytes_layout(bytes);
+                    let n_elements = concrete_len(&self.shape(op_id));
                     for (side, is_read) in [(src, true), (dst, false)] {
-                        let bits = loop_mult * layout.n_elements() * dtypes[&side].0.bit_size() as i64;
+                        let bits = loop_mult * n_elements * dtypes[&side].0.bit_size() as i64;
                         let slot = match mem_scope(&self.ops[side].op) {
                             MemScope::Global => 0,
                             MemScope::Local | MemScope::Circular => 1,
@@ -676,7 +686,7 @@ impl Kernel {
             let bytes: u64 = reg_slots
                 .iter()
                 .filter(|(r, _)| *r > 0)
-                .map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * dt.1.n_elements() as u64)
+                .map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * concrete_len(&dt.1) as u64)
                 .sum();
             if bytes > wi_peak_reg_bytes {
                 wi_peak_reg_bytes = bytes;

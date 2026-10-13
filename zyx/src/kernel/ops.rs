@@ -6,7 +6,7 @@ use nanoserde::{DeBin, SerBin};
 
 use crate::backend::{Dev, GwsDim, ProgramId};
 use crate::dtype::Constant;
-use crate::kernel::{MemLayout, MemScope};
+use crate::kernel::MemScope;
 use crate::shape::{Dim, UAxis};
 use crate::slab::SlabId;
 use crate::types::{TinyString, TinyVec};
@@ -346,7 +346,7 @@ pub enum Op {
 
     /// Reduces a vec into single scalar
     VecReduce {
-        /// Vector value to reduce (any op with a `Vector(n)` layout).
+        /// Vector value to reduce (any op with a rank-1 (`[n]`) shape).
         x: OpId,
         /// Associative fold op over lanes.
         bop: BOp,
@@ -1278,27 +1278,6 @@ impl SlabId for OpId {
 
     fn inc(&mut self) {
         self.0 += 1;
-    }
-}
-
-impl MemLayout {
-    /// Get the number of elements in the memory layout.
-    pub(crate) fn n_elements(self) -> Dim {
-        match self {
-            MemLayout::Scalar => 1,
-            MemLayout::Vector(x) => x.into(),
-            MemLayout::Tile { x, y, .. } => x as Dim * y as Dim,
-        }
-    }
-}
-
-impl std::fmt::Display for MemLayout {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MemLayout::Scalar => f.write_fmt(format_args!("Scalar")),
-            MemLayout::Vector(x) => f.write_fmt(format_args!("Vec({x})")),
-            MemLayout::Tile { x, y } => f.write_fmt(format_args!("Tile({x}x{y})")),
-        }
     }
 }
 

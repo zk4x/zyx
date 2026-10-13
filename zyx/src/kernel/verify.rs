@@ -6,7 +6,7 @@ use std::ops::RangeInclusive;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
+    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
     shape::Dim,
 };
 

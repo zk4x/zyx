@@ -6,8 +6,9 @@ use crate::{
     backend::{GwsDim, gws_from_kernel},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, GPUOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, UOp},
+    kernel::{BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, UOp},
     scalar::{bf16, f16},
+    shape::Dim,
     slab::Slab,
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
@@ -61,9 +62,13 @@ impl Kernel {
         // Reject group lengths that are constant and exceed the device grid limits.
         gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
+        // Rank-1 shape widths lower to u16 vector lanes. Widths are
+        // always concrete here — a symbolic width cannot lower, and the
+        // conversion panics loudly instead of emitting an empty loop.
+        let width = |n: &Dim| u16::try_from(*n).expect("C codegen: vector width is not a u16");
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, MemLayout), u32, u8)> = Vec::new();
+        let mut registers: Vec<((DType, Vec<Dim>), u32, u8)> = Vec::new();
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
         let mut var_params: Map<OpId, DType> = Map::with_hasher(BuildHasherDefault::new());
@@ -197,11 +202,13 @@ impl Kernel {
                 Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
-                Op::Load { src: x, src_idx, bytes } => {
-                    let layout = self.bytes_layout(bytes);
+                Op::Load { src: x, src_idx, bytes: _ } => {
+                    // Access shape rides on the load itself (vector/tile
+                    // loads are shaped).
+                    let access_shape = self.shape(op_id);
                     if let Some(&rc) = rcs.get(&op_id) {
-                        let dtype = dtypes[&op_id];
-                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
+                        let dtype = dtypes[&op_id].clone();
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rc, loop_id);
                         if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
                             match dtypes[&x].0 {
                                 DType::F16 => _ = writeln!(source, "{indent}r{reg} = f16tof32(p{x});"),
@@ -210,8 +217,8 @@ impl Kernel {
                             }
                         } else {
                             let idx = get_var_addr(src_idx, &constants, &indices, &reg_map, &var_params)?;
-                            match layout {
-                                MemLayout::Scalar => match dtypes[&x].0 {
+                            match access_shape.as_slice() {
+                                [] => match dtypes[&x].0 {
                                     DType::F16 => {
                                         _ = writeln!(source, "{indent}r{reg} = f16tof32(p{x}[{idx}]);");
                                     }
@@ -222,9 +229,9 @@ impl Kernel {
                                         _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];");
                                     }
                                 },
-                                MemLayout::Vector(len) => match dtypes[&x].0 {
+                                [len] => match dtypes[&x].0 {
                                     DType::F16 => {
-                                        for i in 0..len {
+                                        for i in 0..width(len) {
                                             _ = writeln!(
                                                 source,
                                                 "{indent}{} = f16tof32(p{x}[{idx} + {i}]);",
@@ -233,7 +240,7 @@ impl Kernel {
                                         }
                                     }
                                     DType::BF16 => {
-                                        for i in 0..len {
+                                        for i in 0..width(len) {
                                             _ = writeln!(
                                                 source,
                                                 "{indent}{} = bf16tof32(p{x}[{idx} + {i}]);",
@@ -245,11 +252,11 @@ impl Kernel {
                                         _ = writeln!(
                                             source,
                                             "{indent}r{reg} = *(({}*)(p{x} + {idx}));",
-                                            dtype.0.vec_type_name(len)
+                                            dtype.0.vec_type_name(width(len))
                                         );
                                     }
                                     _ => {
-                                        for i in 0..len {
+                                        for i in 0..width(len) {
                                             _ = writeln!(
                                                 source,
                                                 "{indent}{} = p{x}[{idx} + {i}];",
@@ -258,22 +265,22 @@ impl Kernel {
                                         }
                                     }
                                 },
-                                MemLayout::Tile { .. } => {
+                                _ => {
                                     return Err(BackendError {
                                         status: ErrorStatus::KernelCompilation,
-                                        context: "C codegen: Tile layout not supported for Load".into(),
+                                        context: format!("C codegen: unsupported load access {access_shape:?}").into(),
                                     });
                                 }
                             }
                         }
                     }
                 }
-                Op::Store { dst: dst_buf, dst_idx, src, bytes } => {
-                    let layout = self.bytes_layout(bytes);
+                Op::Store { dst: dst_buf, dst_idx, src, bytes: _ } => {
+                    let access_shape = self.shape(op_id);
                     let idx = get_var_addr(dst_idx, &constants, &indices, &reg_map, &var_params)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    match layout {
-                        MemLayout::Scalar => match dtypes[&dst_buf].0 {
+                    match access_shape.as_slice() {
+                        [] => match dtypes[&dst_buf].0 {
                             DType::F16 => {
                                 _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = f32tof16({x});");
                             }
@@ -284,9 +291,9 @@ impl Kernel {
                                 _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};");
                             }
                         },
-                        MemLayout::Vector(len) => match dtypes[&dst_buf].0 {
+                        [len] => match dtypes[&dst_buf].0 {
                             DType::F16 => {
-                                for i in 0..len {
+                                for i in 0..width(len) {
                                     _ = writeln!(
                                         source,
                                         "{indent}p{dst_buf}[{idx} + {i}] = f32tof16({});",
@@ -295,7 +302,7 @@ impl Kernel {
                                 }
                             }
                             DType::BF16 => {
-                                for i in 0..len {
+                                for i in 0..width(len) {
                                     _ = writeln!(
                                         source,
                                         "{indent}p{dst_buf}[{idx} + {i}] = f32tobf16({});",
@@ -305,27 +312,28 @@ impl Kernel {
                             }
                             _ if !self.dev_info().supported_vec_lens.is_empty() => {
                                 let ocl_type = dtypes[&dst_buf].0.c_type();
+                                let len = width(len);
                                 _ = writeln!(source, "{indent}*(({ocl_type}{len}*)(p{dst_buf} + {idx})) = {x};");
                             }
                             _ => {
-                                for i in 0..len {
+                                for i in 0..width(len) {
                                     _ = writeln!(source, "{indent}p{dst_buf}[{idx} + {i}] = {};", lane_access(&x, i as usize));
                                 }
                             }
                         },
-                        MemLayout::Tile { .. } => {
+                        _ => {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: "C codegen: Tile layout not supported for Store".into(),
+                                context: format!("C codegen: unsupported store access {access_shape:?}").into(),
                             });
                         }
                     }
                 }
                 Op::Cast { x, dtype } => {
-                    let vlen = dtypes[&x].1;
+                    let vlen = dtypes[&x].1.clone();
                     let src_dt = dtypes[&x].0;
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen.clone()), rcs[&op_id], loop_id);
                     // F8 needs real encode/decode: a plain C cast would
                     // convert the raw byte value instead of the float it
                     // encodes. Rounding is nearest ties-up, matching
@@ -340,9 +348,9 @@ impl Kernel {
                             _ => format!("({}){x}", dtype.c_type()),
                         }
                     };
-                    match vlen {
-                        MemLayout::Vector(n) => {
-                            for i in 0..n {
+                    match vlen.as_slice() {
+                        [n] => {
+                            for i in 0..width(n) {
                                 _ = writeln!(
                                     source,
                                     "{indent}{} = {};",
@@ -356,9 +364,9 @@ impl Kernel {
                 }
                 Op::Bitcast { x, dtype } => {
                     let src_dtype = dtypes[&x].0;
-                    let vlen = dtypes[&x].1;
+                    let vlen = dtypes[&x].1.clone();
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen.clone()), rcs[&op_id], loop_id);
                     // F16/BF16 compute regs are float, so a raw memcpy is only
                     // valid between int/float32 types. Half-precision on either
                     // side must round-trip the STORAGE bits through the
@@ -387,9 +395,9 @@ impl Kernel {
                             }
                         }
                     };
-                    match vlen {
-                        MemLayout::Vector(n) => {
-                            for i in 0..n {
+                    match vlen.as_slice() {
+                        [n] => {
+                            for i in 0..width(n) {
                                 _ = writeln!(
                                     source,
                                     "{indent}{}",
@@ -401,12 +409,12 @@ impl Kernel {
                     }
                 }
                 Op::Unary { x, uop } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes[&x].clone();
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    match dtype.1 {
-                        MemLayout::Vector(n) => {
-                            for i in 0..n {
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
+                    match dtype.1.as_slice() {
+                        [n] => {
+                            for i in 0..width(n) {
                                 let lane = lane_access(&x, i as usize);
                                 let dst = lane_access(&format!("r{reg}"), i as usize);
                                 match uop {
@@ -448,7 +456,7 @@ impl Kernel {
                     }
                 }
                 Op::Stack { ref ops } => {
-                    let dtype = dtypes[&op_id];
+                    let dtype = dtypes[&op_id].clone();
                     let mut vars = String::new();
                     for &x in ops.iter() {
                         let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
@@ -456,14 +464,14 @@ impl Kernel {
                     }
                     vars.pop();
                     vars.pop();
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    let dtype = dtypes[&op_id];
-                    let vlen = match dtype.1 {
-                        MemLayout::Vector(n) => n,
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
+                    let dtype = dtypes[&op_id].clone();
+                    let vlen = match dtype.1.as_slice() {
+                        [n] => width(n),
                         _ => {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: "C codegen: Vectorize requires Vector layout".into(),
+                                context: "C codegen: Vectorize requires rank-1 shape".into(),
                             });
                         }
                     };
@@ -476,19 +484,19 @@ impl Kernel {
                     });
                 }
                 Op::Index { vec, idx } => {
-                    let dtype = dtypes[&op_id];
+                    let dtype = dtypes[&op_id].clone();
                     let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {};", lane_access(&vec, idx));
                 }
                 Op::Binary { x, y, bop } => {
-                    let dtype = dtypes[&op_id];
+                    let dtype = dtypes[&op_id].clone();
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    match dtype.1 {
-                        MemLayout::Vector(n) => {
-                            for i in 0..n {
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
+                    match dtype.1.as_slice() {
+                        [n] => {
+                            for i in 0..width(n) {
                                 let xl = lane_access(&x, i as usize);
                                 let yl = lane_access(&y, i as usize);
                                 emit_binary_op(&mut source, &indent, reg, i as usize, &xl, &yl, bop);
@@ -543,41 +551,41 @@ impl Kernel {
 
         let mut reg_str = String::new();
         if !registers.is_empty() {
-            let (dt, _, _) = registers[0];
+            let (dt, _, _) = &registers[0];
             let mut prev_dt = dt;
             let prefix = "  ";
             _ = write!(
                 reg_str,
                 "{prefix}{} r0",
-                match dt.1 {
-                    MemLayout::Scalar => dt.0.c_type().into(),
-                    MemLayout::Vector(len) => dt.0.vec_type_name(len),
-                    MemLayout::Tile { .. } =>
+                match dt.1.as_slice() {
+                    [] => dt.0.c_type().into(),
+                    [len] => dt.0.vec_type_name(width(len)),
+                    _ =>
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: "C codegen: Tile layout not supported in register declarations".into()
+                            context: format!("C codegen: unsupported register shape {:?}", dt.1).into()
                         }),
                 }
             );
             for (i, (dt, _, _)) in (1..).zip(registers[1..].iter()) {
-                if *dt == prev_dt {
+                if dt == prev_dt {
                     _ = write!(reg_str, ", r{i}");
                 } else {
                     _ = write!(
                         reg_str,
                         ";\n{prefix}{} r{i}",
-                        match dt.1 {
-                            MemLayout::Scalar => dt.0.c_type().into(),
-                            MemLayout::Vector(len) => dt.0.vec_type_name(len),
-                            MemLayout::Tile { .. } =>
+                        match dt.1.as_slice() {
+                            [] => dt.0.c_type().into(),
+                            [len] => dt.0.vec_type_name(width(len)),
+                            _ =>
                                 return Err(BackendError {
                                     status: ErrorStatus::KernelCompilation,
-                                    context: "C codegen: Tile layout not supported in register declarations".into()
+                                    context: format!("C codegen: unsupported register shape {:?}", dt.1).into()
                                 }),
                         }
                     );
                 }
-                prev_dt = *dt;
+                prev_dt = dt;
             }
             _ = writeln!(reg_str, ";");
         }
@@ -727,7 +735,8 @@ static inline unsigned char f32_to_f8e5m2(float v) {
         let omp_include = if has_openmp { "#include <omp.h>\n" } else { "" };
         let mut vec_types = String::new();
         for (dt, _, _) in &registers {
-            if let MemLayout::Vector(len) = dt.1 {
+            if let [len] = dt.1.as_slice() {
+                let len = width(len);
                 let name = dt.0.vec_type_name(len);
                 if !vec_types.contains(&format!("\ntypedef {} {name}", dt.0.c_type())) {
                     _ = writeln!(vec_types, "typedef {} {name} __attribute__((ext_vector_type({len})));", dt.0.c_type());
@@ -758,8 +767,8 @@ static inline unsigned char f32_to_f8e5m2(float v) {
 fn new_reg(
     op_id: OpId,
     reg_map: &mut Map<OpId, usize>,
-    registers: &mut Vec<((DType, MemLayout), u32, u8)>,
-    dtype: (DType, MemLayout),
+    registers: &mut Vec<((DType, Vec<Dim>), u32, u8)>,
+    dtype: (DType, Vec<Dim>),
     rc: u32,
     current_loop_level: u8,
 ) -> usize {
@@ -782,7 +791,7 @@ fn get_var(
     constants: &Map<OpId, Constant>,
     indices: &Map<OpId, u8>,
     reg_map: &Map<OpId, usize>,
-    registers: &mut [((DType, MemLayout), u32, u8)],
+    registers: &mut [((DType, Vec<Dim>), u32, u8)],
     loop_level: u8,
     var_params: &Map<OpId, DType>,
 ) -> Result<String, BackendError> {

@@ -30,7 +30,7 @@ use crate::{
     DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, RangeKind},
+    kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, RangeKind},
     shape::Dim,
     types::TinyVec,
 };

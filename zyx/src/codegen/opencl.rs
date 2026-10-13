@@ -6,8 +6,9 @@ use crate::{
     backend::{GwsDim, gws_from_kernel},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, GPUOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, UOp},
+    kernel::{BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, UOp},
     scalar::{bf16, f16},
+    shape::Dim,
     slab::Slab,
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
@@ -111,9 +112,13 @@ impl Kernel {
         global_args.push('\n');
 
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
+        // Rank-1 shape widths lower to u16 vector lanes. Widths are
+        // always concrete here — a symbolic width cannot lower, and the
+        // conversion panics loudly instead of emitting wrong lanes.
+        let width = |n: &Dim| u16::try_from(*n).expect("OpenCL codegen: vector width is not a u16");
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, MemLayout), u32, u8)> = Vec::new();
+        let mut registers: Vec<((DType, Vec<Dim>), u32, u8)> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -169,7 +174,7 @@ impl Kernel {
                     // normal register path. Param defines precede their uses.
                     match rcs.get(&op_id) {
                         Some(&rc) => {
-                            let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id], rc, loop_id);
+                            let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id].clone(), rc, loop_id);
                             _ = writeln!(source, "{indent}r{reg} = p{op_id};");
                         }
                         // No refcount: nothing references this variable.
@@ -191,49 +196,51 @@ impl Kernel {
                     }
                     _ => unreachable!("opencl only handles local or register storage"),
                 },
-                Op::Load { src: x, src_idx, bytes } => {
-                    let layout = self.bytes_layout(bytes);
+                Op::Load { src: x, src_idx, bytes: _ } => {
+                    let access_shape = self.shape(op_id);
                     if rcs.contains_key(&op_id) {
-                        let dtype = dtypes[&op_id];
-                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                        let dtype = dtypes[&op_id].clone();
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
                         if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
                             _ = writeln!(source, "{indent}r{reg} = p{x};");
                         } else {
                             let idx = get_var_addr(src_idx, &constants, &indices, &reg_map)?;
-                            match layout {
-                                MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];"),
-                                MemLayout::Vector(len) => {
+                            match access_shape.as_slice() {
+                                [] => _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];"),
+                                [len] => {
                                     _ = writeln!(
                                         source,
                                         "{indent}r{reg} = *((__global {}*)(p{x} + {idx}));",
-                                        dtype.0.ocl_vec_type(len)
+                                        dtype.0.ocl_vec_type(width(len))
                                     );
                                 }
-                                MemLayout::Tile { .. } => todo!(),
+                                [_, _] => todo!("OpenCL codegen: tile load"),
+                                _ => todo!("OpenCL codegen: rank-3+ load access"),
                             }
                         }
                     }
                 }
-                Op::Store { dst: dst_buf, dst_idx, src, bytes } => {
-                    let layout = self.bytes_layout(bytes);
+                Op::Store { dst: dst_buf, dst_idx, src, bytes: _ } => {
+                    let access_shape = self.shape(op_id);
                     let idx = get_var_addr(dst_idx, &constants, &indices, &reg_map)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    match layout {
-                        MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};"),
-                        MemLayout::Vector(len) => {
-                            let ocl_type = dtypes[&op_id].0.ocl_vec_type(len);
+                    match access_shape.as_slice() {
+                        [] => _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};"),
+                        [len] => {
+                            let ocl_type = dtypes[&op_id].0.ocl_vec_type(width(len));
                             _ = writeln!(source, "{indent}*((__global {ocl_type}*)(p{dst_buf} + {idx})) = {x};");
                         }
-                        MemLayout::Tile { .. } => todo!(),
+                        [_, _] => todo!("OpenCL codegen: tile store"),
+                        _ => todo!("OpenCL codegen: rank-3+ store access"),
                     }
                 }
                 Op::Cast { x: xop, dtype } => {
-                    let layout = dtypes[&xop].1;
+                    let shape = dtypes[&xop].1.clone();
                     let x = get_var(xop, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, layout), rcs[&op_id], loop_id);
-                    match layout {
-                        MemLayout::Vector(len) => {
-                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, shape.clone()), rcs[&op_id], loop_id);
+                    match shape.as_slice() {
+                        [len] => {
+                            for &c in VEC_COMPONENTS.iter().take(width(len) as usize) {
                                 _ = writeln!(source, "{indent}r{reg}.{c} = ({}){x}.{c};", dtype.ocl());
                             }
                         }
@@ -241,10 +248,10 @@ impl Kernel {
                     }
                 }
                 Op::Bitcast { x: xop, dtype } => {
-                    let layout = dtypes[&xop].1;
+                    let shape = dtypes[&xop].1.clone();
                     let src_dtype = dtypes[&xop].0;
                     let x = get_var(xop, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, layout), rcs[&op_id], loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, shape.clone()), rcs[&op_id], loop_id);
                     // `as_type` has no bool variant. A plain value cast is an exact
                     // bit reinterpretation whenever Bool is on either side: bool's
                     // representation is 0/1, its numeric value equals its bit pattern,
@@ -258,9 +265,9 @@ impl Kernel {
                             format!("as_{}({lane})", dtype.ocl())
                         }
                     }
-                    match layout {
-                        MemLayout::Vector(len) => {
-                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
+                    match shape.as_slice() {
+                        [len] => {
+                            for &c in VEC_COMPONENTS.iter().take(width(len) as usize) {
                                 _ = writeln!(source, "{indent}r{reg}.{c} = {};", bit_expr(dtype, src_dtype, format!("{x}.{c}")));
                             }
                         }
@@ -268,12 +275,12 @@ impl Kernel {
                     }
                 }
                 Op::Unary { x, uop } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes[&x].clone();
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    match dtype.1 {
-                        MemLayout::Vector(len) => {
-                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
+                    match dtype.1.as_slice() {
+                        [len] => {
+                            for &c in VEC_COMPONENTS.iter().take(width(len) as usize) {
                                 _ = match uop {
                                     UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
                                     UOp::Not => writeln!(source, "{indent}r{reg}.{c} = !{x}.{c};"),
@@ -299,7 +306,7 @@ impl Kernel {
                                 };
                             }
                         }
-                        MemLayout::Scalar => match uop {
+                        [] => match uop {
                             UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                             UOp::Not => _ = writeln!(source, "{indent}r{reg} = !{x};"),
                             UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
@@ -322,16 +329,16 @@ impl Kernel {
                             UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
                             UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabs({x});"),
                         },
-                        MemLayout::Tile { .. } => {
+                        _ => {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: "OpenCL codegen: Tile layout not supported for Binary".into(),
+                                context: format!("OpenCL codegen: unsupported unary shape {:?}", dtype.1).into(),
                             });
                         }
                     }
                 }
                 Op::Stack { ref ops } => {
-                    let dtype = dtypes[&op_id];
+                    let dtype = dtypes[&op_id].clone();
                     let mut vars = String::new();
                     for &x in ops.iter() {
                         let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
@@ -339,23 +346,23 @@ impl Kernel {
                     }
                     vars.pop();
                     vars.pop();
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    let dtype = dtypes[&op_id];
-                    let vlen = match dtype.1 {
-                        MemLayout::Vector(len) => len,
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
+                    let dtype = dtypes[&op_id].clone();
+                    let vlen = match dtype.1.as_slice() {
+                        [len] => width(len),
                         _ => {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: "OpenCL codegen: Vectorize requires Vector layout".into(),
+                                context: "OpenCL codegen: Vectorize requires rank-1 shape".into(),
                             });
                         }
                     };
                     _ = writeln!(source, "{indent}r{reg} = ({})({vars});", dtype.0.ocl_vec_type(vlen));
                 }
                 Op::Index { vec, idx } => {
-                    let dtype = dtypes[&op_id];
+                    let dtype = dtypes[&op_id].clone();
                     let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {vec}.{};", VEC_COMPONENTS[idx]);
                 }
                 Op::Wmma { .. } => {
@@ -365,13 +372,13 @@ impl Kernel {
                     });
                 }
                 Op::Binary { x, y, bop } => {
-                    let dtype = dtypes[&op_id];
+                    let dtype = dtypes[&op_id].clone();
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    match dtype.1 {
-                        MemLayout::Vector(len) => {
-                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
+                    match dtype.1.as_slice() {
+                        [len] => {
+                            for &c in VEC_COMPONENTS.iter().take(width(len) as usize) {
                                 _ = match bop {
                                     BOp::Add => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} + {y}.{c};"),
                                     BOp::Sub => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} - {y}.{c};"),
@@ -395,7 +402,7 @@ impl Kernel {
                                 };
                             }
                         }
-                        MemLayout::Scalar => {
+                        [] => {
                             _ = match bop {
                                 BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
                                 BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};"),
@@ -418,10 +425,10 @@ impl Kernel {
                                 BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
                             }
                         }
-                        MemLayout::Tile { .. } => {
+                        _ => {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: "OpenCL codegen: Tile layout not supported for Binary".into(),
+                                context: format!("OpenCL codegen: unsupported binary shape {:?}", dtype.1).into(),
                             });
                         }
                     }
@@ -490,17 +497,17 @@ impl Kernel {
         let mut reg_str = String::new();
         if !registers.is_empty() {
             let (dt, _, _) = registers.remove(0);
-            let mut prev_dt = dt;
+            let mut prev_dt = dt.clone();
             _ = write!(
                 reg_str,
                 "{indent}{} r0",
-                match dt.1 {
-                    MemLayout::Scalar => dt.0.ocl().to_string(),
-                    MemLayout::Vector(len) => dt.0.ocl_vec_type(len),
-                    MemLayout::Tile { .. } =>
+                match dt.1.as_slice() {
+                    [] => dt.0.ocl().to_string(),
+                    [len] => dt.0.ocl_vec_type(width(len)),
+                    _ =>
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
-                            context: "OpenCL codegen: Tile layout not supported in register declarations".into()
+                            context: format!("OpenCL codegen: unsupported register shape {:?}", dt.1).into()
                         }),
                 }
             );
@@ -511,13 +518,13 @@ impl Kernel {
                     _ = write!(
                         reg_str,
                         ";\n{indent}{} r{i}",
-                        match dt.1 {
-                            MemLayout::Scalar => dt.0.ocl().to_string(),
-                            MemLayout::Vector(len) => dt.0.ocl_vec_type(len),
-                            MemLayout::Tile { .. } =>
+                        match dt.1.as_slice() {
+                            [] => dt.0.ocl().to_string(),
+                            [len] => dt.0.ocl_vec_type(width(len)),
+                            _ =>
                                 return Err(BackendError {
                                     status: ErrorStatus::KernelCompilation,
-                                    context: "OpenCL codegen: Tile layout not supported in register declarations".into()
+                                    context: format!("OpenCL codegen: unsupported register shape {:?}", dt.1).into()
                                 }),
                         }
                     );
@@ -531,10 +538,10 @@ impl Kernel {
         // F16 constants emit `as_half`, which needs the extension even when
         // no register is F16 (e.g. a half zero stored through a wider op).
         let has_f16_const = self.ops.values().any(|node| matches!(node.op, Op::Const(Constant::F16(_))));
-        if dtypes.values().any(|&x| x.0 == DType::F16) || has_f16_const {
+        if dtypes.values().any(|x| x.0 == DType::F16) || has_f16_const {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
         }
-        if dtypes.values().any(|&x| x.0 == DType::F64) {
+        if dtypes.values().any(|x| x.0 == DType::F64) {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
 
@@ -545,8 +552,8 @@ impl Kernel {
 fn new_reg(
     op_id: OpId,
     reg_map: &mut Map<OpId, usize>,
-    registers: &mut Vec<((DType, MemLayout), u32, u8)>,
-    dtype: (DType, MemLayout),
+    registers: &mut Vec<((DType, Vec<Dim>), u32, u8)>,
+    dtype: (DType, Vec<Dim>),
     rc: u32,
     current_loop_level: u8,
 ) -> usize {
@@ -569,7 +576,7 @@ fn get_var(
     constants: &Map<OpId, Constant>,
     indices: &Map<OpId, u8>,
     reg_map: &Map<OpId, usize>,
-    registers: &mut [((DType, MemLayout), u32, u8)],
+    registers: &mut [((DType, Vec<Dim>), u32, u8)],
     loop_level: u8,
 ) -> Result<String, BackendError> {
     if let Some(c) = constants.get(&op_id) {

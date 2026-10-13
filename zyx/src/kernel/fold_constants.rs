@@ -347,7 +347,7 @@ impl Kernel {
         let mut latest_stores = vec![OpId::NULL; *len as usize];
 
         // All-or-nothing: bail if any access over this storage can't be
-        // folded below (non-const, non-unroll index, non-scalar layout,
+        // folded below (non-const, non-unroll index, non-scalar shape,
         // copies, or any other use) — otherwise the survivors dangle.
         // Unroll indices are compile-time-known lane sets: an access under
         // one touches every lane at once, so it folds exactly like a

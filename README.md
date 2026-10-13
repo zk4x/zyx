@@ -166,7 +166,7 @@ For more complex examples:
 Hand-optimize kernels for peak performance using hardware-specific features (e.g. tensor cores) using zyx IR:
 
 ```rust
-use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
+use zyx::kernel::{Kernel, Scope, DeviceId};
 use zyx::{DType, Tensor};
 
 fn main() -> Result<(), zyx::ZyxError> {
@@ -174,10 +174,10 @@ fn main() -> Result<(), zyx::ZyxError> {
     let n = 4;
     let inp = kernel.define(DType::F32, Scope::Global, true, n);
     let gidx = kernel.gidx(0, n);
-    let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+    let loaded = kernel.load(inp, gidx);
     let doubled = kernel.add(loaded, loaded);
     let out = kernel.define(DType::F32, Scope::Global, false, n);
-    kernel.store(out, doubled, gidx, MemLayout::Scalar);
+    kernel.store(out, doubled, gidx);
 
     let compiled = kernel.compile()?;
     let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);

@@ -4,7 +4,7 @@
 use crate::{
     DType,
     dtype::Constant,
-    kernel::{BOp, Kernel, MemLayout, Op, OpId, UOp},
+    kernel::{BOp, Kernel, Op, OpId, UOp},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::Dim,
 };
@@ -711,7 +711,7 @@ impl Kernel {
     /// Returns the bound subexpression ids on success. A repeated [`Pat::Bind`]
     /// name asserts `OpId` equality; commutative [`BOp`]s try both operand
     /// orders with full binding backtracking. Only the cone *above* `root`
-    /// (definitions, never uses) is inspected — use-counts, layouts and
+    /// (definitions, never uses) is inspected — use-counts, shapes and
     /// bounds stay in the calling pass.
     ///
     /// The pattern's own root is the prefilter: a `Binary`/`Unary` pattern

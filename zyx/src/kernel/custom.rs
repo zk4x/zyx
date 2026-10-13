@@ -25,7 +25,7 @@ use crate::error::BackendError;
 use crate::graph::OpNode;
 use crate::kernel::TTOp;
 use crate::kernel::{
-    BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock,
+    BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock,
     UOp, ops::TileDim,
 };
 use crate::runtime::{Runtime, TensorData};
@@ -66,7 +66,7 @@ impl Kernel {
     /// # Example
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, MemLayout, Dev, ParamKind};
+    /// use zyx::kernel::{Kernel, Dev, ParamKind};
     /// use zyx::DType;
     ///
     /// let mut kernel = Kernel::new(Dev::Auto);
@@ -106,7 +106,7 @@ impl Kernel {
     /// let the runtime pick the first available device:
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, MemLayout, Dev, ParamKind};
+    /// use zyx::kernel::{Kernel, Dev, ParamKind};
     /// use zyx::{DType, Tensor, ZyxError};
     ///
     /// let mut kernel = Kernel::new(Dev::Auto);
@@ -383,7 +383,7 @@ impl Kernel {
         self.push_back(Op::Range { axis, kind: RangeKind::Warp(local_id) })
     }
 
-    /// Load from `src` at `index` (scalar layout: one element).
+    /// Load from `src` at `index` (scalar shape: one element).
     pub fn load(&mut self, src: OpId, index: impl IntoOp) -> OpId {
         let index = index.into_op(self);
         self.load_op(src, index, OpId::NULL)
@@ -446,7 +446,7 @@ impl Kernel {
         self.push_back(Op::Load { src, src_idx: index, bytes })
     }
 
-    /// Store `x` to `dst` at `index` (scalar layout: one element).
+    /// Store `x` to `dst` at `index` (scalar shape: one element).
     pub fn store(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
         let index = index.into_op(self);
         self.store_op(dst, x, index, OpId::NULL)
@@ -834,8 +834,8 @@ impl Kernel {
         let dtype = self.dtype(x);
         let one = self.const_val(1.0f32);
         let one = self.cast(one, dtype);
-        // Tile first: `Kernel::layout` follows the `x` side, so a
-        // const-first add would poison the chain to Scalar layout and
+        // Tile first: `Kernel::shape` follows the `x` side, so a
+        // const-first add would poison the chain to scalar shape and
         // fail `verify` at the tile store (`a + b == b + a` bit-exact).
         let den = self.add(e, one);
         self.reciprocal(den)
@@ -1049,7 +1049,7 @@ impl Kernel {
     /// tile carries the values in its first row, rest zeros (packer
     /// masks; closed by `ReduceUninit`). Scaling, when needed, is a
     /// separate mul over the result, fused later (`tt_fuse_llks` wires
-    /// its CB as the LLK scale input). `x` is any tile-layout value;
+    /// its CB as the LLK scale input). `x` is any rank-2 (tile-shaped) value;
     /// CB attachment is the transport passes' job, never the builder's.
     pub fn reduce_tile(&mut self, x: OpId, rop: BOp, kind: TileDim) -> OpId {
         debug_assert!(self.shape(x).len() == 2, "reduce_tile: x {x} is not a tile value");
