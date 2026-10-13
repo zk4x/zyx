@@ -1754,6 +1754,9 @@ fn query_device_info(
         dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
     };
     dev_info.dtype_capability[DType::BF16 as usize] = DTypeCapability::none();
+    // SPIR-V/OpenCL codegen has no fp8 casts yet: unusable dtypes.
+    dev_info.dtype_capability[DType::F8E4M3 as usize] = DTypeCapability::none();
+    dev_info.dtype_capability[DType::F8E5M2 as usize] = DTypeCapability::none();
     if let Ok(extensions) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_EXTENSIONS) {
         let has_fp16 = extensions.split(|&b| b == b' ').any(|token| token == b"cl_khr_fp16");
         if !has_fp16 {

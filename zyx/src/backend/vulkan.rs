@@ -1698,6 +1698,9 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                 if !has_shader_float16 {
                     all[DType::F16 as usize] = DTypeCapability::none();
                 }
+                // SPIR-V has no 8-bit float type: fp8 casts are unusable.
+                all[DType::F8E4M3 as usize] = DTypeCapability::none();
+                all[DType::F8E5M2 as usize] = DTypeCapability::none();
                 all
             },
             has_native_exp2: false,

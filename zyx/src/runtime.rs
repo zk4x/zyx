@@ -4048,7 +4048,24 @@ impl Runtime {
         } else if store_pools.is_empty() {
             // Pick the device where most loaded bytes reside, provided it has
             // enough memory for the outputs; otherwise the fastest device
-            // with enough memory.
+            // with enough memory. The device's codegen must be able to
+            // consume every dtype in the kernel: a capability NONE means the
+            // dtype is unusable there (see DeviceInfo::dtype_capability).
+            let kdtypes: &Set<DType> = &dtypes.values().copied().collect();
+            let capable: &Vec<Dev> = &Dev::all()
+                .into_iter()
+                .filter(|&dev_id| {
+                    !dev_id.aot_only()
+                        && dev_id
+                            .info()
+                            .is_ok_and(|info| kdtypes.iter().all(|&d| info.supports_dtype(d) != DTypeCapability::none()))
+                })
+                .collect();
+            if capable.is_empty() {
+                return Err(ZyxError::AllocationError(
+                    format!("kernel dtypes {kdtypes:?} are unusable on every device (capability NONE)").into(),
+                ));
+            }
             let mut loaded_bytes: Map<Pool, Dim> = Map::default();
             for &tid in &loads {
                 if let Some(buf) = self.leaf_buffer(tid) {
@@ -4061,7 +4078,8 @@ impl Runtime {
                 }
             }
             let mut best: Option<(Dev, Pool)> = None;
-            for dev_id in Dev::all() {
+            for dev_id in capable {
+                let dev_id = *dev_id;
                 if dev_id.aot_only() {
                     continue;
                 }

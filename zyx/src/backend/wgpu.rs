@@ -206,6 +206,9 @@ pub(super) fn ensure_pool_table(config: &WGPUConfig, debug_dev: bool) -> Result<
         ops[DType::I8 as usize] = DTypeCapability::none();
         ops[DType::U16 as usize] = DTypeCapability::none();
         ops[DType::I16 as usize] = DTypeCapability::none();
+        // SPIR-V has no 8-bit float type: fp8 casts are unusable.
+        ops[DType::F8E4M3 as usize] = DTypeCapability::none();
+        ops[DType::F8E5M2 as usize] = DTypeCapability::none();
         ops
     };
     pools.push(Mutex::new(WGPUMemoryPool {

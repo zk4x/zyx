@@ -1836,9 +1836,11 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
             cc: [major, minor],
             dtype_capability: {
                 let mut capability = [DTypeCapability::all(); DType::N_DTYPES];
-                if major < 8 {
-                    capability[DType::BF16 as usize] = DTypeCapability::none();
-                }
+                // NONE means the dtype is unusable here (codegen rejects it).
+                // BF16 is emulated through cuda_bf16.h on every cc, so it is
+                // never NONE; fp8 has no codegen yet at any compute capability.
+                capability[DType::F8E4M3 as usize] = DTypeCapability::none();
+                capability[DType::F8E5M2 as usize] = DTypeCapability::none();
                 capability[DType::F16 as usize] =
                     capability[DType::F16 as usize].exclude(DTypeCapability::LOG2 | DTypeCapability::SIN | DTypeCapability::SQRT);
                 capability[DType::F64 as usize] =

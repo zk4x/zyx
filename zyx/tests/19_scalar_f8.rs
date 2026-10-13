@@ -3,7 +3,7 @@
 
 //! f8 scalar bit patterns and the C-backend F32->F8->F32 roundtrip.
 
-use zyx::{DType, Tensor, f8e4m3, f8e5m2};
+use zyx::{DType, Tensor, ZyxError, f8e4m3, f8e5m2};
 
 #[test]
 fn f8_roundtrip() {
@@ -35,7 +35,12 @@ fn f8_roundtrip() {
 }
 
 #[test]
-fn f8_c_roundtrip() {
+fn f8_c_roundtrip() -> Result<(), ZyxError> {
+    // Skip when no available device's codegen can consume fp8 casts
+    // (capability NONE everywhere), same convention as the bf16 tests.
+    if !Tensor::dtype_capability(DType::F8E4M3).any() || !Tensor::dtype_capability(DType::F8E5M2).any() {
+        return Ok(());
+    }
     // C backend F32->F8->F32 must match scalar::from_f32/to_f32 exactly.
     let data: Vec<f32> = (0..256).map(|i| (i as f32 - 128.0) * 3.0).collect();
     for dtype in [DType::F8E4M3, DType::F8E5M2] {
@@ -50,4 +55,5 @@ fn f8_c_roundtrip() {
             assert_eq!(v, expected, "{dtype:?}[{i}] x={x}");
         }
     }
+    Ok(())
 }

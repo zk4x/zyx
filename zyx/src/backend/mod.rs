@@ -1447,7 +1447,11 @@ pub struct DeviceInfo {
     /// Compute capability as [major, minor] (e.g. [7, 5] = sm_75).
     /// [0, 0] on devices without NVIDIA-style compute capability.
     pub cc: [i32; 2],
-    /// Per-dtype operation capabilities
+    /// Per-dtype operation capabilities. Partial masks mean those specific
+    /// ops lack native support; a full NONE means the dtype is unusable on
+    /// this device — its codegen rejects it outright (e.g. `todo!()` on the
+    /// cast). A working emulation means the dtype is NOT NONE (bf16 through
+    /// `cuda_bf16.h` on pre-sm80 CUDA is still usable).
     pub dtype_capability: [DTypeCapability; DType::N_DTYPES],
     /// Whether the device has a native exp2 instruction
     pub has_native_exp2: bool,
