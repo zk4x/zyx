@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 use super::autotune::Optimization;
 use crate::{
+    Map, Set,
     dtype::Constant,
     kernel::{BOp, Kernel, MemScope, Op, OpId, RangeKind},
     shape::Dim,
@@ -139,12 +140,9 @@ impl Kernel {
         Box::new(ThreadCoarse { factors })
     }
 
-    /// Thread coarsening by range split: divide a group range by `factor`
-    /// into a short group plus an unroll range of lanes, with no body
-    /// duplication. Every old user of the group index now varies per
-    /// lane automatically; Register storages grow by the lane count
-    /// with one slot per lane. Unmatched lanes unfold back to scalar
-    /// statements in a later devectorize pass.
+    /// Thread coarsening and register blocking optimization.
+    ///
+    /// Coarsens threads and applies register blocking for tiled reductions.
     pub fn coarsen(&mut self, gidx_id: OpId, factor: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("thread_coarse");
@@ -156,80 +154,69 @@ impl Kernel {
         };
         debug_assert!(len % factor as Dim == 0);
 
-        // Tiled backends match lanes into tiles; other backends would
-        // devectorize into scalar IR past the codegen render limit.
-        let tiled = self.dev_info.as_ref().is_some_and(|d| d.tenstorrent);
-        if !tiled && len as u64 * factor > 5_000 {
-            return;
-        }
-
-        // One unroll per axis: same-axis ranges denote the same value
-        // stream (blockIdx.x used twice is still one value), so splitting
-        // an axis that already hosts lanes would alias them (U*16+U covers
-        // 16 elements, not 256). Refuse with the kernel untouched.
-        let occupied =
-            self.iter_unordered().any(|(_, x)| matches!(x, Op::Range { axis: a, kind: RangeKind::Unroll(_) } if *a == axis));
-        if occupied {
-            return;
-        }
-
         //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
 
-        // Validate before mutating: collect on-chip scratch (Register
-        // and Local) for lane-slotting below. A global store whose
-        // address does not vary with the split range cannot take
-        // per-lane values (extra lanes have no sound output address),
-        // so that refuses.
-        let mut scratch_storages: Vec<OpId> = Vec::new();
-        // Scratch accesses by side: (access op, index operand, is-dst-side).
-        let mut scratch_accesses: Vec<(OpId, OpId, bool)> = Vec::new();
-        for (op, x) in self.iter_unordered() {
-            if matches!(x, Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) {
-                scratch_storages.push(op);
+        // === Some checks when we just cannot coarsen === //
+
+        if self.ops.len().0 as Dim * factor as Dim > 10000 {
+            return;
+        }
+
+        // Shaped accesses duplicate as whole tiles, not per lane;
+        // barriers pin the body to one wave. Refuse both.
+        if self.ops.values().any(|node| match node.op {
+            Op::Load { bytes, .. } | Op::Store { bytes, .. } | Op::Copy { bytes, .. } => !bytes.is_null(),
+            Op::Barrier => true,
+            _ => false,
+        }) {
+            return;
+        }
+
+        // Lane variance: ops whose cone mentions the split range, so
+        // their values/addresses differ per lane. Fixpoint over the op
+        // map (order-free); each iteration only grows the set.
+        let mut varies = Set::default();
+        varies.insert(gidx_id);
+        for _ in 0..10000 {
+            let mut grown = false;
+            for (op, _) in self.iter_unordered() {
+                if !varies.contains(&op) && self.at(op).parameters().any(|p| varies.contains(&p)) {
+                    varies.insert(op);
+                    grown = true;
+                }
             }
-            match x {
-                Op::Load { src, src_idx, .. }
-                    if matches!(self.at(*src), Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) =>
-                {
-                    scratch_accesses.push((op, *src_idx, false));
-                }
-                Op::Store { dst, dst_idx, .. }
-                    if matches!(self.at(*dst), Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) =>
-                {
-                    scratch_accesses.push((op, *dst_idx, true));
-                }
-                Op::Copy { src, src_idx, dst, dst_idx, .. } => {
-                    if matches!(self.at(*src), Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) {
-                        scratch_accesses.push((op, *src_idx, false));
-                    }
-                    if matches!(self.at(*dst), Op::Storage { scope: MemScope::Register | MemScope::Local, .. }) {
-                        scratch_accesses.push((op, *dst_idx, true));
-                    }
-                }
-                _ => {}
+            if !grown {
+                break;
             }
-            if let Op::Store { dst, dst_idx, .. } = x {
-                if matches!(self.at(*dst), Op::Storage { scope: MemScope::Global, .. }) {
-                    // Inline subtree walk (no helper fn): does the
-                    // store address mention the split range?
-                    let mut mentions = false;
-                    let mut stack = vec![*dst_idx];
-                    let mut seen: Vec<OpId> = Vec::new();
-                    while let Some(id) = stack.pop() {
-                        if id == gidx_id {
-                            mentions = true;
-                            break;
-                        }
-                        if seen.contains(&id) {
-                            continue;
-                        }
-                        seen.push(id);
-                        stack.extend(self.at(id).parameters());
-                    }
-                    if !mentions {
-                        return;
-                    }
-                }
+        }
+
+        // Soundness validation, no mutation yet. Duplication is sound
+        // when lanes write distinct locations; lane-varying values at a
+        // lane-invariant address are only slottable in private storage:
+        // Register is private by construction (slotted below), Global
+        // outputs must vary per lane, and a Local acc pattern cannot be
+        // proven private — refuse all three failures before touching IR.
+        for (_, x) in self.iter_unordered() {
+            let (dst, dst_idx, src) = match x {
+                Op::Store { dst, dst_idx, src, .. } => (*dst, *dst_idx, *src),
+                Op::Copy { dst, dst_idx, src, .. } => (*dst, *dst_idx, *src),
+                _ => continue,
+            };
+            let addr_varies = varies.contains(&dst_idx);
+            let val_varies = varies.contains(&src);
+            // Whole-view write: cannot lane-split at all.
+            if !matches!(self.at(dst), Op::Storage { .. }) {
+                return;
+            }
+            // Register is private by construction (slotted below).
+            let private = matches!(self.at(dst), Op::Storage { scope: MemScope::Register, .. });
+            let global = matches!(self.at(dst), Op::Storage { scope: MemScope::Global, .. });
+            if global && !addr_varies {
+                return;
+            }
+            // Local, Circular, ...: shared until proven otherwise.
+            if !private && !global && !addr_varies && val_varies {
+                return;
             }
         }
 
@@ -253,73 +240,150 @@ impl Kernel {
         // Create constant for factor
         let const_factor = self.insert_before(gidx_id, Op::Const(Constant::idx(factor)));
 
-        // Split the group index into a short group plus an unroll range:
-        // gidx := short * factor + unroll. The body is NOT duplicated;
-        // every old user of gidx now varies per lane automatically.
-        // (Unroll widths are small coarsen factors, always fitting u16.)
-        debug_assert!(factor <= u16::MAX as u64, "coarsen: factor exceeds unroll range width");
-        let new_len = self.insert_const_idx_before(gidx_id, len / factor as Dim);
-        let short = self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Group(new_len) });
-        let unroll = self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Unroll(factor as u16) });
-        let base = self.insert_before(gidx_id, Op::Binary { x: short, y: const_factor, bop: BOp::Mul });
-        self.ops[gidx_id].op = Op::Binary { x: base, y: unroll, bop: BOp::Add };
-
-        // Grow every scratch storage by the lane count (one slot per
-        // lane) and remap its indices: const 0 becomes the bare lane,
-        // const c becomes c * factor + unroll, a dynamic index already
-        // varying with the split range is left alone, anything else
-        // becomes idx * factor + unroll. The wrap is value-injective,
-        // so uniformly applied readers/writers stay consistent; without
-        // it coarsened lanes would share scratch addresses (proven
-        // clobber: four lane accs stored to one local slot, three
-        // lost). Barriers stay block-wide and correct; tree reductions
-        // over these slots are duplicated per lane by devectorize
-        // (their indices now mention the unroll range), each lane
-        // reducing its own slots.
-        for storage in &scratch_storages {
-            if let Op::Storage { ref mut len, .. } = self.ops[*storage].op {
-                *len *= factor as Dim;
-            }
+        // Create index offsets
+        let mut offsets = Vec::with_capacity((factor - 1) as usize);
+        for i in 1..factor {
+            offsets.push(self.insert_before(gidx_id, Op::Const(Constant::idx(i))));
         }
-        for (acc, index, is_dst) in scratch_accesses {
-            // Inline subtree walk (no helper fn): does the scratch
-            // address already vary with the split range?
-            let lane = match self.resolve_const(index).and_then(|c| c.as_dim()) {
-                Some(0) => unroll,
-                Some(_) => {
-                    let base = self.insert_before(acc, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                    self.insert_before(acc, Op::Binary { x: base, y: unroll, bop: BOp::Add })
+
+        // For remapping parameters
+        let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
+
+        // Group index now split into multiple indices with constant offsets
+        let new_len = self.insert_const_idx_before(gidx_id, len / factor as Dim);
+        let x = self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Group(new_len) });
+        self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
+        let mut ids = Vec::with_capacity((factor - 1) as usize);
+        let mut id = gidx_id;
+        for &offset in &offsets {
+            id = self.insert_after(id, Op::Binary { x: gidx_id, y: offset, bop: BOp::Add });
+            ids.push(id);
+        }
+        remaps.insert(gidx_id, ids);
+
+        // Now loop over remaining ops and duplicate as needed
+        let mut accumulator_storages = Set::default();
+        while !op_id.is_null() {
+            let next_op_id = self.next_op(op_id);
+            match self.ops[op_id].op {
+                Op::Storage { scope: MemScope::Register, ref mut len, .. } => {
+                    *len *= factor as Dim;
+                    accumulator_storages.insert(op_id);
                 }
-                None => {
-                    let mut mentions = false;
-                    let mut stack = vec![index];
-                    let mut seen: Vec<OpId> = Vec::new();
-                    while let Some(id) = stack.pop() {
-                        if id == gidx_id {
-                            mentions = true;
-                            break;
+                Op::Range { .. } | Op::Loop { .. } | Op::EndLoop | Op::Barrier => {}
+                Op::Store { dst, src, dst_idx, bytes } => {
+                    let mut ids = Vec::with_capacity((factor - 1) as usize);
+                    let mut id = op_id;
+                    // The base names the buffer directly; anything else is
+                    // a whole-view write coarsen cannot lane-split.
+                    if accumulator_storages.contains(&dst) {
+                        for i in 0..(factor - 1) as usize {
+                            let mut x = src;
+                            if let Some(remap) = remaps.get(&x) {
+                                x = remap[i];
+                            }
+                            let xy = self.insert_before(id, Op::Binary { x: dst_idx, y: const_factor, bop: BOp::Mul });
+                            let index = self.insert_before(id, Op::Binary { x: xy, y: offsets[i], bop: BOp::Add });
+                            id = self.insert_after(id, Op::Store { dst, src: x, dst_idx: index, bytes });
+                            ids.push(id);
                         }
-                        if seen.contains(&id) {
-                            continue;
-                        }
-                        seen.push(id);
-                        stack.extend(self.at(id).parameters());
-                    }
-                    if mentions {
-                        index
+                        let index = self.insert_before(op_id, Op::Binary { x: dst_idx, y: const_factor, bop: BOp::Mul });
+                        self.ops[op_id].op = Op::Store { dst, src, dst_idx: index, bytes };
                     } else {
-                        let base = self.insert_before(acc, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                        self.insert_before(acc, Op::Binary { x: base, y: unroll, bop: BOp::Add })
+                        for i in 0..(factor - 1) as usize {
+                            let mut x = src;
+                            if let Some(remap) = remaps.get(&x) {
+                                x = remap[i];
+                            }
+                            let mut dst = dst;
+                            if let Some(remap) = remaps.get(&dst) {
+                                dst = remap[i];
+                            }
+                            let mut dst_idx = dst_idx;
+                            if let Some(remap) = remaps.get(&dst_idx) {
+                                dst_idx = remap[i];
+                            }
+                            id = self.insert_after(id, Op::Store { dst, src: x, dst_idx, bytes });
+                            ids.push(id);
+                        }
                     }
+                    remaps.insert(op_id, ids);
                 }
-            };
-            match (&mut self.ops[acc].op, is_dst) {
-                (Op::Load { src_idx: slot, .. }, false) => *slot = lane,
-                (Op::Store { dst_idx: slot, .. }, true) => *slot = lane,
-                (Op::Copy { src_idx: slot, .. }, false) => *slot = lane,
-                (Op::Copy { dst_idx: slot, .. }, true) => *slot = lane,
-                _ => unreachable!("coarsen: scratch access vanished mid-rewrite"),
+                Op::Load { src, src_idx, bytes } => {
+                    let mut ids = Vec::with_capacity((factor - 1) as usize);
+                    let mut id = op_id;
+                    // The base names the buffer directly; anything else is
+                    // a whole-view read coarsen cannot lane-split.
+                    if accumulator_storages.contains(&src) {
+                        for &offset in &offsets {
+                            let xy = self.insert_before(id, Op::Binary { x: src_idx, y: const_factor, bop: BOp::Mul });
+                            let index = self.insert_before(id, Op::Binary { x: xy, y: offset, bop: BOp::Add });
+                            id = self.insert_after(id, Op::Load { src, src_idx: index, bytes });
+                            ids.push(id);
+                        }
+                        let index = self.insert_before(op_id, Op::Binary { x: src_idx, y: const_factor, bop: BOp::Mul });
+                        self.ops[op_id].op = Op::Load { src, src_idx: index, bytes };
+                    } else {
+                        for i in 0..(factor - 1) as usize {
+                            let mut src = src;
+                            if let Some(remap) = remaps.get(&src) {
+                                src = remap[i];
+                            }
+                            let mut src_idx = src_idx;
+                            if let Some(remap) = remaps.get(&src_idx) {
+                                src_idx = remap[i];
+                            }
+                            id = self.insert_after(id, Op::Load { src, src_idx, bytes });
+                            ids.push(id);
+                        }
+                    }
+                    remaps.insert(op_id, ids);
+                }
+                Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+                    let mut ids = Vec::with_capacity((factor - 1) as usize);
+                    let mut id = op_id;
+                    for i in 0..(factor - 1) as usize {
+                        let mut src = src;
+                        if let Some(remap) = remaps.get(&src) {
+                            src = remap[i];
+                        }
+                        let mut src_idx = src_idx;
+                        if let Some(remap) = remaps.get(&src_idx) {
+                            src_idx = remap[i];
+                        }
+                        let mut dst = dst;
+                        if let Some(remap) = remaps.get(&dst) {
+                            dst = remap[i];
+                        }
+                        let mut dst_idx = dst_idx;
+                        if let Some(remap) = remaps.get(&dst_idx) {
+                            dst_idx = remap[i];
+                        }
+                        id = self.insert_after(id, Op::Copy { src, src_idx, dst, dst_idx, bytes });
+                        ids.push(id);
+                    }
+                    remaps.insert(op_id, ids);
+                }
+                ref op => {
+                    let op = op.clone();
+                    let mut ids = Vec::with_capacity((factor - 1) as usize);
+                    let mut id = op_id;
+                    for i in 0..(factor - 1) as usize {
+                        let mut op = op.clone();
+                        // Reindex the op
+                        for param in op.parameters_mut() {
+                            if let Some(remap) = remaps.get(param) {
+                                *param = remap[i];
+                            }
+                        }
+                        id = self.insert_after(id, op);
+                        ids.push(id);
+                    }
+                    // Store which remaps will be used in the future
+                    remaps.insert(op_id, ids);
+                }
             }
+            op_id = next_op_id;
         }
 
         self.verify();
