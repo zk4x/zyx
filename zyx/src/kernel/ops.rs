@@ -1297,7 +1297,7 @@ impl std::fmt::Display for MemLayout {
         match self {
             MemLayout::Scalar => f.write_fmt(format_args!("Scalar")),
             MemLayout::Vector(x) => f.write_fmt(format_args!("Vec({x})")),
-            MemLayout::Tile { x, y, stride } => f.write_fmt(format_args!("Tile({x}x{y} st={stride})")),
+            MemLayout::Tile { x, y } => f.write_fmt(format_args!("Tile({x}x{y})")),
         }
     }
 }

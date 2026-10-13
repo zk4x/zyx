@@ -255,14 +255,12 @@ pub enum MemLayout {
     Scalar,
     /// Vector layout: vector of size `x`
     Vector(u16),
-    /// Tile layout: tile of `x` × `y` elements with stride
+    /// Tile layout: tile of `x` × `y` elements
     Tile {
         /// Width of the tile
         x: u16,
         /// Height of the tile
         y: u16,
-        /// Stride between tiles
-        stride: u32,
     },
 }
 
@@ -553,7 +551,6 @@ impl Kernel {
                     return MemLayout::Tile {
                         x: dims[0].try_into().expect("bytes: tile width overflows u16"),
                         y: dims[1].try_into().expect("bytes: tile height overflows u16"),
-                        stride: dims[0].try_into().expect("bytes: tile stride overflows u32"),
                     };
                 }
                 _ => todo!("bytes: tile depth {} unsupported (MemLayout::Tile is 2D)", dims.len()),
@@ -649,7 +646,7 @@ impl Kernel {
                     // the layout the replaced SSA value carried. (The
                     // old backend verified the unfused IR, where the
                     // tile value threaded to its tile load — same Tile.)
-                    return MemLayout::Tile { x: 32, y: 32, stride: 32 };
+                    return MemLayout::Tile { x: 32, y: 32 };
                 }
                 Op::Asm { ref ops, .. } => {
                     if ops.is_empty() {
@@ -1204,7 +1201,7 @@ impl Kernel {
                 Op::TT(TTOp::MatmulTile { .. }) => {
                     // Tenstorrent `matmul_tile` is one 32x32x32 MAC: the
                     // kernel API only builds 32x32 tiles (`load_circular` /
-                    // `load_register_tile` assert Tile { 32, 32, 32 }).
+                    // `load_register_tile` assert Tile { 32, 32 }).
                     flops = flops.saturating_add(2 * 32 * 32 * 32 * mult);
                 }
                 Op::Load { src, bytes, .. } => {

@@ -123,7 +123,7 @@ impl Kernel {
             }
             if let Op::Load { src: base, src_idx: off, bytes } = self.ops[id].op {
                 if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
-                    if self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32, stride: 32 }) {
+                    if self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32 }) {
                         return;
                     }
                     loads.push((id, base, off));
@@ -250,7 +250,7 @@ impl Kernel {
             match self.ops[id].op {
                 Op::Load { src: base, bytes, .. } => {
                     if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
-                        && self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32, stride: 32 })
+                        && self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32 })
                     {
                         return;
                     }
@@ -259,7 +259,7 @@ impl Kernel {
                     if matches!(self.ops[base].op, Op::Storage { .. }) {
                         // Already lowered; the writer pass owns nothing here.
                     } else if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
-                        if self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32, stride: 32 }) {
+                        if self.bytes_layout(bytes) != (MemLayout::Tile { x: 32, y: 32 }) {
                             return;
                         }
                         stores.push((id, base, off, src));
@@ -313,7 +313,7 @@ impl Kernel {
                 }
                 if let Op::Load { src: base, bytes, .. } = self.ops[scan].op {
                     if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
-                        && self.bytes_layout(bytes) == (MemLayout::Tile { x: 32, y: 32, stride: 32 })
+                        && self.bytes_layout(bytes) == (MemLayout::Tile { x: 32, y: 32 })
                     {
                         return;
                     }
