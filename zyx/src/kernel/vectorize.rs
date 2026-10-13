@@ -5,7 +5,7 @@ use super::autotune::Optimization;
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{Kernel, Op, OpId, Pat},
+    kernel::{BOp, Kernel, Op, OpId, Pat},
     shape::Dim,
 };
 
@@ -28,6 +28,7 @@ impl Optimization for Vectorize {
         if self.vectorize_ops {
             kernel.vectorize_ops_forward(&self.supported_lens);
             kernel.vectorize_ops_backward(&self.supported_lens);
+            kernel.reduce_lanes(&self.supported_lens);
         }
     }
 }
@@ -571,6 +572,29 @@ impl Kernel {
             }
 
             op_id = self.prev_op(op_id);
+        }
+    }
+
+    /// Fold an add-chain covering every lane of one vector into a scalar
+    /// `VecReduce`. The whole reduction is one [`Pat::seq`]: a match IS
+    /// the reduction, so this only walks roots and rewrites them in
+    /// place; orphaned links die in DCE.
+    pub fn reduce_lanes(&mut self, supported_lens: &[u8]) {
+        let pat = Pat::seq(BOp::Add, Pat::index(Pat::bind('v'), 'k'), supported_lens);
+        // Fuel-capped: one chain per iteration; the cap turns a
+        // no-progress bug into termination, never a hang.
+        for _ in 0..10000 {
+            let mut found = None;
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if let Some(m) = self.match_pat(op_id, &pat) {
+                    found = Some((op_id, m.op('v')));
+                    break;
+                }
+                op_id = self.next_op(op_id);
+            }
+            let Some((root, vec)) = found else { break };
+            self.ops[root].op = Op::VecReduce { x: vec, bop: BOp::Add };
         }
     }
 }

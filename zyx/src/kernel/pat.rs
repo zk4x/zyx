@@ -4,7 +4,7 @@
 use crate::{
     DType,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, UOp},
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, UOp},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::Dim,
 };
@@ -238,6 +238,22 @@ pub enum Pat {
         x: Box<Pat>,
         /// Required dtype.
         dtype: DType,
+    },
+    /// Fold over a `bop` spine of vector lanes. Matches when the cone is a
+    /// chain of `bop` links (either operand order per link, `bop` being
+    /// commutative) whose leaves are all `leaf`-matched lanes of ONE
+    /// vector covering lanes `0..n` exactly, with `n` in `widths`.
+    /// Self-validating: a match IS the whole reduction, no follow-up
+    /// coverage check needed. The leaf's vector binders bind once (and
+    /// every leaf must name the same vector op); the leaf's lane-number
+    /// binder is set-collected, never bound — reading it panics.
+    Seq {
+        /// Fold op of the spine links.
+        bop: BOp,
+        /// Leaf pattern (v1: must be [`Pat::Index`]).
+        leaf: Box<Pat>,
+        /// Allowed vector widths.
+        widths: Box<[u8]>,
     },
 }
 
@@ -636,6 +652,12 @@ impl Pat {
         Pat::Bitcast { x: Box::new(x.into()), dtype }
     }
 
+    /// Fold over a `bop` spine of `leaf`-matched vector lanes covering one
+    /// of `widths` exactly (see [`Pat::Seq`]).
+    pub fn seq(bop: BOp, leaf: impl Into<Pat>, widths: &[u8]) -> Pat {
+        Pat::Seq { bop, leaf: Box::new(leaf.into()), widths: widths.into() }
+    }
+
     /// Negation of this pattern.
     pub fn neg(&self) -> Pat {
         Pat::Unary { x: Box::new(self.clone()), uop: UOp::Neg }
@@ -812,6 +834,85 @@ impl Kernel {
                 Op::Bitcast { x: xid, dtype: d } => *d == *dtype && self.match_node(x, *xid, bindings),
                 _ => false,
             },
+            Pat::Seq { bop, leaf, widths } => {
+                // Lane-per-side matching is order-insensitive: only
+                // commutative folds are sound (an ordered fold would need
+                // lane order in the contract). Anything else never matches.
+                if !bop.is_commutative() {
+                    return false;
+                }
+                // v1: sequence leaves are vector lanes; anything else
+                // never matches. Bindings untouched on this path.
+                let Pat::Index { vec: vec_pat, .. } = leaf.as_ref() else { return false };
+                let snap = bindings.clone();
+                // Lane or spine-continuation per operand. A lane matches
+                // the leaf's vector pattern with the shared bindings (so
+                // the leaf's vector binders must agree across leaves) and
+                // contributes its number to the collected set; anything
+                // else continues the spine only as a same-`bop` link.
+                let mut lanes: Vec<i64> = Vec::new();
+                let mut first_vec: Option<OpId> = None;
+                let mut cur = id;
+                let walked = loop {
+                    let (x, y) = match self.at(cur) {
+                        Op::Binary { x, y, bop: b } if *b == *bop => (*x, *y),
+                        _ => break false,
+                    };
+                    let lane = |o: OpId, bindings: &mut Bindings| match self.at(o) {
+                        Op::Index { vec: vid, idx }
+                            if self.match_node(vec_pat, *vid, bindings) =>
+                        {
+                            i64::try_from(*idx).ok().map(|k| (*vid, k))
+                        }
+                        _ => None,
+                    };
+                    let xl = lane(x, &mut *bindings);
+                    let yl = lane(y, &mut *bindings);
+                    match (xl, yl) {
+                        // Bottom link: two lanes of the same vector.
+                        (Some((vx, kx)), Some((vy, ky))) => {
+                            if vx == vy && first_vec.map_or(true, |w| w == vx) {
+                                first_vec = Some(vx);
+                                lanes.push(kx);
+                                lanes.push(ky);
+                                break true;
+                            }
+                            break false;
+                        }
+                        // Spine link: one lane, the other side continues.
+                        (Some((v, k)), None) | (None, Some((v, k))) => {
+                            if first_vec.map_or(false, |w| w != v) {
+                                break false;
+                            }
+                            first_vec = Some(v);
+                            lanes.push(k);
+                            let next = if xl.is_some() { y } else { x };
+                            if matches!(self.at(next), Op::Binary { bop: b, .. } if *b == *bop) {
+                                cur = next;
+                            } else {
+                                break false;
+                            }
+                        }
+                        (None, None) => break false,
+                    }
+                };
+                // Self-validating: the collected set must be exactly
+                // lanes 0..n of a vector whose width is allowed.
+                if walked
+                    && let Some(v) = first_vec
+                    && let MemLayout::Vector(w) = self.layout(v)
+                    && let Ok(w8) = u8::try_from(w)
+                    && widths.contains(&w8)
+                {
+                    lanes.sort_unstable();
+                    lanes.dedup();
+                    if lanes.len() == w as usize && lanes.iter().enumerate().all(|(i, &k)| k == i as i64) {
+                        return true;
+                    }
+                }
+                *bindings = snap;
+                false
+            }
         }
     }
 }

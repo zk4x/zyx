@@ -347,19 +347,39 @@ impl Kernel {
         let mut latest_stores = vec![OpId::NULL; *len as usize];
 
         // All-or-nothing: bail if any access over this storage can't be
-        // folded below (non-const index, non-scalar layout, copies, or
-        // any other use) — otherwise the survivors dangle.
+        // folded below (non-const, non-unroll index, non-scalar layout,
+        // copies, or any other use) — otherwise the survivors dangle.
+        // Unroll indices are compile-time-known lane sets: an access under
+        // one touches every lane at once, so it folds exactly like a
+        // broadcast const index, provided its width covers the storage.
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::Store { dst, dst_idx, bytes, .. } => {
-                    if dst == storage_id && (!bytes.is_null() || !matches!(self.at(dst_idx), Op::Const(_))) {
-                        return;
+                    if dst == storage_id {
+                        // Const indices fold per lane; an unroll index
+                        // covers every lane at once, provided its width
+                        // covers the storage.
+                        let lane_index = match self.at(dst_idx) {
+                            Op::Const(_) => true,
+                            Op::Range { kind: RangeKind::Unroll(w), .. } => (*w as usize) == latest_stores.len(),
+                            _ => false,
+                        };
+                        if !bytes.is_null() || !lane_index {
+                            return;
+                        }
                     }
                 }
                 Op::Load { src, src_idx, bytes } => {
-                    if src == storage_id && (!bytes.is_null() || !matches!(self.at(src_idx), Op::Const(_))) {
-                        return;
+                    if src == storage_id {
+                        let lane_index = match self.at(src_idx) {
+                            Op::Const(_) => true,
+                            Op::Range { kind: RangeKind::Unroll(w), .. } => (*w as usize) == latest_stores.len(),
+                            _ => false,
+                        };
+                        if !bytes.is_null() || !lane_index {
+                            return;
+                        }
                     }
                 }
                 Op::Copy { src, dst, .. } => {
@@ -389,16 +409,21 @@ impl Kernel {
                         op_id = next;
                         continue;
                     }
-                    let Op::Const(index_c) = self.ops[dst_idx].op else {
-                        // variable index, cannot fold this store
-                        self.ops[op_id].op.remap_params(&remaps);
-                        op_id = next;
-                        continue;
-                    };
                     self.remove_op(op_id);
                     if self.ops.contains_id(x) {
-                        let index = index_c.as_dim().expect("store index must be a non-negative integer constant") as usize;
-                        latest_stores[index] = x;
+                        if let Op::Const(index_c) = self.ops[dst_idx].op {
+                            let index = index_c.as_dim().expect("store index must be a non-negative integer constant") as usize;
+                            latest_stores[index] = x;
+                        } else {
+                            // Pre-check admitted only a width-covering
+                            // unroll index here: one store writes every
+                            // lane the same value at once.
+                            debug_assert!(matches!(
+                                self.ops[dst_idx].op,
+                                Op::Range { kind: RangeKind::Unroll(_), .. }
+                            ));
+                            latest_stores.fill(x);
+                        }
                     }
                     op_id = next;
                     continue;
@@ -413,6 +438,20 @@ impl Kernel {
                         remaps.insert(op_id, latest_stores[index]);
                         op_id = next;
                         continue;
+                    }
+                    if src == storage_id
+                        && bytes.is_null()
+                        && matches!(self.ops[src_idx].op, Op::Range { kind: RangeKind::Unroll(_), .. })
+                    {
+                        // All-or-nothing across lanes: remap only when
+                        // every lane holds the same value.
+                        let first = latest_stores[0];
+                        if latest_stores.iter().all(|&s| s == first) {
+                            self.remove_op(op_id);
+                            remaps.insert(op_id, first);
+                            op_id = next;
+                            continue;
+                        }
                     }
                 }
                 _ => {}
