@@ -539,6 +539,7 @@ fn ensure_pool_table(
                 dtype_capability,
                 has_native_exp2: false,
                 supported_vec_lens: vec![32],
+                vector_depth: 2,
                 tenstorrent: true,
                 tile: [32, 32],
                 tile_sizes: vec![[32, 32]],

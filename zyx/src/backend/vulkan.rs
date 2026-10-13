@@ -1702,6 +1702,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
             },
             has_native_exp2: false,
             supported_vec_lens: vec![2, 3, 4],
+            vector_depth: 1,
             tenstorrent: false,
             tile: [1, 1],
             tile_sizes: vec![],

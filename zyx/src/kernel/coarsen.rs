@@ -162,10 +162,13 @@ impl Kernel {
             return;
         }
 
-        // Shaped accesses duplicate as whole tiles, not per lane;
-        // barriers pin the body to one wave. Refuse both.
+        // Multi-dim tile accesses duplicate as whole tiles, not per
+        // lane; barriers pin the body to one wave. Refuse both. Plain
+        // vector (1-D) bodies duplicate per lane like scalars.
         if self.ops.values().any(|node| match node.op {
-            Op::Load { bytes, .. } | Op::Store { bytes, .. } | Op::Copy { bytes, .. } => !bytes.is_null(),
+            Op::Load { bytes, .. } | Op::Store { bytes, .. } | Op::Copy { bytes, .. } => {
+                !bytes.is_null() && matches!(self.at(bytes), Op::Stack { .. })
+            }
             Op::Barrier => true,
             _ => false,
         }) {
@@ -205,12 +208,16 @@ impl Kernel {
             let addr_varies = varies.contains(&dst_idx);
             let val_varies = varies.contains(&src);
             // Whole-view write: cannot lane-split at all.
-            if !matches!(self.at(dst), Op::Storage { .. }) {
+            if !matches!(self.at(dst), Op::Storage { .. } | Op::Param { .. }) {
                 return;
             }
             // Register is private by construction (slotted below).
             let private = matches!(self.at(dst), Op::Storage { scope: MemScope::Register, .. });
-            let global = matches!(self.at(dst), Op::Storage { scope: MemScope::Global, .. });
+            // Indexed params (kernel outputs) split exactly like Global.
+            let global = matches!(
+                self.at(dst),
+                Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. }
+            );
             if global && !addr_varies {
                 return;
             }

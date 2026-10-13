@@ -1453,6 +1453,9 @@ pub struct DeviceInfo {
     pub has_native_exp2: bool,
     /// Supported vector lengths for loads/stores/compute
     pub supported_vec_lens: Vec<u8>,
+    /// Maximum vector nesting depth the device lowers natively:
+    /// 0 = no vectors, 1 = flat vectors, 2 = vectors of vectors (tiles)
+    pub vector_depth: u8,
     /// Whether this device is a Tenstorrent Tensix accelerator
     pub tenstorrent: bool,
     /// Native tile shape [x, y] for tile-based (SIMD) accelerators

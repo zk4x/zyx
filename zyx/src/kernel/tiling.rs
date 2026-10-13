@@ -36,9 +36,24 @@ impl Kernel {
         for l in loops {
             self.unroll_tree_reduce(l, 32);
         }
-        // Then coarsen every group range with constant length divisible
-        // by 32. Anything else (symbolic, indivisible) is skipped, never
-        // fatal.
+
+        self.default_epilogue();
+        self.default_epilogue();
+
+        // Bundle scalar work into vectors (loads, stores, then ops)
+        // BEFORE coarsening: coarsen duplicates vectorized bodies per
+        // lane, materializing one vector load per lane for the tile
+        // former to stack. TT declares supported_vec_lens=[32], so the
+        // bundles match exactly.
+        let vectorize = self.opt_vectorize();
+        vectorize.apply(self, 0);
+
+        self.default_epilogue();
+        self.default_epilogue();
+
+        // Coarsen group ranges LAST: duplicate the vectorized body, one
+        // lane per row. Anything else (symbolic, indivisible) is
+        // skipped, never fatal.
         let mut groups: Vec<OpId> = Vec::new();
         for (op, x) in self.iter_unordered() {
             if let Op::Range { kind: RangeKind::Group(len), .. } = x {
@@ -50,15 +65,6 @@ impl Kernel {
         for g in groups {
             self.coarsen(g, 32);
         }
-
-        self.default_epilogue();
-        self.default_epilogue();
-
-        // Bundle tt_tile's 32-wide scalar bundles into vectors (loads,
-        // stores, then ops). TT declares supported_vec_lens=[32], so the
-        // coarsened bundles match exactly.
-        let vectorize = self.opt_vectorize();
-        vectorize.apply(self, 0);
 
         self.default_epilogue();
         self.default_epilogue();

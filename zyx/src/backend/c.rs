@@ -250,6 +250,7 @@ fn device_with(config: &CConfig, debug_dev: bool) -> Result<&'static Mutex<CDevi
             dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![2, 4, 8, 16],
+            vector_depth: 1,
             tenstorrent: false,
             tile: [1, 1],
             tile_sizes: vec![],

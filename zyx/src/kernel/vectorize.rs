@@ -15,6 +15,9 @@ pub struct Vectorize {
     /// Supported vector lengths for this device.
     pub supported_lens: Vec<u8>,
     pub vectorize_ops: bool,
+    /// Nesting level to vectorize (1 = flat vectors, 2 = vectors of
+    /// vectors). Driven by `DeviceInfo::vector_depth`.
+    pub level: u8,
 }
 
 impl Optimization for Vectorize {
@@ -23,12 +26,16 @@ impl Optimization for Vectorize {
     }
 
     fn apply(&self, kernel: &mut Kernel, _config: u64) {
-        kernel.vectorize_loads(&self.supported_lens);
-        kernel.vectorize_stores(&self.supported_lens);
-        if self.vectorize_ops {
-            kernel.vectorize_ops_forward(&self.supported_lens);
-            kernel.vectorize_ops_backward(&self.supported_lens);
-            kernel.reduce_lanes(&self.supported_lens);
+        // Level 1 first, then deeper levels in order: each level groups
+        // the output of the previous one.
+        for level in 1..=self.level {
+            kernel.vectorize_loads(&self.supported_lens, level);
+            kernel.vectorize_stores(&self.supported_lens, level);
+            if self.vectorize_ops {
+                kernel.vectorize_ops_forward(&self.supported_lens, level);
+                kernel.vectorize_ops_backward(&self.supported_lens, level);
+                kernel.reduce_lanes(&self.supported_lens, level);
+            }
         }
     }
 }
@@ -48,12 +55,13 @@ struct StoreInfo {
 
 impl Kernel {
     /// Make the `Vectorize` optimization. Reads the bound device's
-    /// supported vector widths itself.
+    /// supported vector widths and nesting depth itself.
     pub fn opt_vectorize(&self) -> Box<dyn Optimization> {
         let dev_info = self.dev_info();
         Box::new(Vectorize {
             supported_lens: dev_info.supported_vec_lens.clone(),
             vectorize_ops: !dev_info.supported_vec_lens.is_empty(),
+            level: dev_info.vector_depth,
         })
     }
 
@@ -62,7 +70,12 @@ impl Kernel {
     /// Combines multiple loads into vectorized operations for better performance.
     /// `supported_lens` is the list of vector element counts the target device supports.
     /// TODO for now this function ignores aliasing of stores and loads.
-    pub fn vectorize_loads(&mut self, supported_lens: &[u8]) {
+    pub fn vectorize_loads(&mut self, supported_lens: &[u8], level: u8) {
+        // TODO(level-2): group lane-duplicated vector loads into an
+        // outer vector. One-way only: refuse until implemented.
+        if level != 1 {
+            return;
+        }
         let mut op_id = self.head;
         // Map: src id -> LoadInfo
         let mut loads: Vec<Map<OpId, Vec<LoadInfo>>> = Vec::new();
@@ -157,7 +170,11 @@ impl Kernel {
     ///
     /// Combines multiple scalar stores into a single vectorized store for better performance.
     /// `supported_lens` is the list of vector element counts the target device supports.
-    pub fn vectorize_stores(&mut self, supported_lens: &[u8]) {
+    pub fn vectorize_stores(&mut self, supported_lens: &[u8], level: u8) {
+        // TODO(level-2): group lane-duplicated vector stores. Refuse.
+        if level != 1 {
+            return;
+        }
         let mut op_id = self.head;
         let mut stores: Vec<Map<OpId, Vec<StoreInfo>>> = Vec::new();
         stores.push(Map::default());
@@ -296,7 +313,12 @@ impl Kernel {
     /// Walk forward, find scalar ops over `Index` lanes of one vector that
     /// share the same op head, and bundle them: `Stack` the operands per
     /// position, rebuild the same op over the vectors, devectorize results.
-    pub fn vectorize_ops_forward(&mut self, supported_lens: &[u8]) {
+    pub fn vectorize_ops_forward(&mut self, supported_lens: &[u8], level: u8) {
+        // TODO(level-2): group lane-duplicated vector ops into an outer
+        // vector. Refuse.
+        if level != 1 {
+            return;
+        }
         // Process in descending length order for maximal vectorization first
         let mut supported: Vec<u8> = supported_lens.to_vec();
         supported.sort_unstable_by(|a, b| b.cmp(a));
@@ -462,7 +484,11 @@ impl Kernel {
     /// Walk backward, find Vectorize[X0..Xn] where all Xi are the same compute op.
     /// Replace Vectorize with compute_op(vectorize[inputs of Xi]),
     /// replace the first Xi with that vectorize of inputs, and keep walking.
-    pub fn vectorize_ops_backward(&mut self, supported_lens: &[u8]) {
+    pub fn vectorize_ops_backward(&mut self, supported_lens: &[u8], level: u8) {
+        // TODO(level-2): see forward. Refuse.
+        if level != 1 {
+            return;
+        }
         let mut op_id = self.tail;
         while !op_id.is_null() {
             let ops = match &self.ops[op_id].op {
@@ -579,7 +605,11 @@ impl Kernel {
     /// `VecReduce`. The whole reduction is one [`Pat::seq`]: a match IS
     /// the reduction, so this only walks roots and rewrites them in
     /// place; orphaned links die in DCE.
-    pub fn reduce_lanes(&mut self, supported_lens: &[u8]) {
+    pub fn reduce_lanes(&mut self, supported_lens: &[u8], level: u8) {
+        // TODO(level-2): reduce over an outer vector lane. Refuse.
+        if level != 1 {
+            return;
+        }
         let pat = Pat::seq(BOp::Add, Pat::index(Pat::bind('v'), 'k'), supported_lens);
         // Fuel-capped: one chain per iteration; the cap turns a
         // no-progress bug into termination, never a hang.
@@ -643,7 +673,7 @@ mod tests {
         let idx_c1 = k.add(g0, four);
         k.store(dst, c1, idx_c1);
 
-        k.vectorize_ops_forward(&[2]);
+        k.vectorize_ops_forward(&[2], 1);
 
         assert!(matches!(k.ops[s0].op, Op::Index { .. }));
         assert!(matches!(k.ops[s1].op, Op::Index { .. }));
@@ -673,7 +703,7 @@ mod tests {
         k.store(dst, c2, i2);
         k.store(dst, c3, i3);
 
-        k.vectorize_ops_forward(&[2, 4]);
+        k.vectorize_ops_forward(&[2, 4], 1);
 
         // All 4 should be devecs after one pass (vectorized as length 4)
         assert!(matches!(k.ops[s0].op, Op::Index { .. }));
@@ -730,7 +760,7 @@ mod tests {
         k.store(dst, c2, i2);
         k.store(dst, c3, i3);
 
-        k.vectorize_ops_forward(&[2, 4]);
+        k.vectorize_ops_forward(&[2, 4], 1);
 
         // After full run: all 4 consumers should be devecs
         // (cos was vectorized first as length-2, then sin as length-2)
@@ -775,7 +805,7 @@ mod tests {
         k.store(dst, r0, g0);
         k.store(dst, r1, idx1);
 
-        k.vectorize_ops_forward(&[2]);
+        k.vectorize_ops_forward(&[2], 1);
 
         assert!(matches!(k.ops[s0].op, Op::Index { .. }));
         assert!(matches!(k.ops[s1].op, Op::Index { .. }));
@@ -817,7 +847,7 @@ mod tests {
         k.store(dst, r0, g0);
         k.store(dst, r1, idx1);
 
-        k.vectorize_ops_forward(&[2]);
+        k.vectorize_ops_forward(&[2], 1);
 
         assert!(matches!(k.ops[r0].op, Op::Index { .. }));
         assert!(matches!(k.ops[r1].op, Op::Index { .. }));
@@ -842,7 +872,7 @@ mod tests {
         let vec = k.stack(&[c0, c1, c2, c3]);
         k.store_vector(dst, vec, offset, 4);
 
-        k.vectorize_ops_backward(&[4]);
+        k.vectorize_ops_backward(&[4], 1);
         k.constant_folding();
         k.dead_code_elimination();
 

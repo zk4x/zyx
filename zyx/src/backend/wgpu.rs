@@ -232,6 +232,7 @@ pub(super) fn ensure_pool_table(config: &WGPUConfig, debug_dev: bool) -> Result<
             cc: [0, 0],
             has_native_exp2: true,
             supported_vec_lens: vec![2, 3, 4],
+            vector_depth: 1,
             dtype_capability,
             tenstorrent: false,
             tile: [1, 1],

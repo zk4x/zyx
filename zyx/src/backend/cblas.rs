@@ -161,6 +161,7 @@ fn device_with(config: &CblasConfig, debug_dev: bool) -> Result<&'static Mutex<C
             dtype_capability: [DTypeCapability::none(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![],
+            vector_depth: 0,
             tenstorrent: false,
             tile: [1, 1],
             tile_sizes: vec![],

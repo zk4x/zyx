@@ -1734,6 +1734,7 @@ fn query_device_info(
         max_register_bytes: 256,
         has_native_exp2: true,
         supported_vec_lens: vec![2, 3, 4, 8, 16],
+        vector_depth: 1,
         tensor_cores: false,
         tenstorrent: false,
         tile: [1, 1],
