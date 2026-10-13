@@ -109,11 +109,6 @@ impl Kernel {
             return;
         }
 
-        // Duplicating multi-use constants repoints `Param { shape }` fields at
-        // fresh constants, invalidating the memoized `shape_ids`; drop the
-        // cache so `add_indexing` re-derives shapes from the actual
-        // (repointed) parameters.
-        self.shape_cache = Map::default();
         self.duplicate_multi_use_consts();
 
         #[cfg(debug_assertions)]
@@ -301,10 +296,6 @@ impl Kernel {
         self.verify();
         self.common_subexpression_elimination();
         self.dead_code_elimination();
-
-        // The shape_ids cache is only valid pre-linearization; drop it so
-        // autotuned kernels stay free of cached shape scaffolding.
-        self.shape_cache = Map::default();
     }
 
     /// Duplicates multi-use constants so every `Op::Const` ends up with

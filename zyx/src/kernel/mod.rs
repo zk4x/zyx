@@ -218,10 +218,6 @@ pub struct Kernel {
     /// placeholder kernels (`Dev::Auto`) before their device is bound.
     /// Hardware properties are fixed, so the snapshot cannot go stale.
     pub(crate) dev_info: Option<Arc<DeviceInfo>>,
-    /// Memoized [`Self::shape_ids`] results. Only valid pre-linearization —
-    /// [`linearize`](crate::kernel::linearize) clears it so kernels stay
-    /// lightweight during autotuning.
-    pub(crate) shape_cache: Map<OpId, Vec<OpId>>,
 }
 
 /// Scope for memory.
@@ -1276,8 +1272,8 @@ impl Kernel {
     }
 
     /// Tensor shape of the value produced by `op_id`, as per-dimension op
-    /// ids. Symbolic walk over existing ops with a per-op memo (shared
-    /// sub-DAGs are re-entered by many parents; re-walking them is
+    /// ids. Symbolic walk over existing ops with a local per-call memo
+    /// (shared sub-DAGs are re-entered by many parents; re-walking them is
     /// exponential without the memo). A `Stack` accessed *directly* (as a
     /// value) produces `[len] + first_element_shape`: its length is emitted
     /// as a const dim. A `Stack` referenced as a *shape descriptor* (through
@@ -1290,17 +1286,11 @@ impl Kernel {
         if op_id.is_null() {
             return Vec::new();
         }
-        if let Some(cached) = self.shape_cache.get(&op_id) {
-            return cached.clone();
-        }
-        let root = op_id;
         let mut stack = vec![op_id];
         let mut visited: Map<OpId, Vec<OpId>> = Map::default();
         for _ in 0..250_000 {
             let Some(op_id) = stack.pop() else {
-                let shape = visited.remove(&op_id).unwrap();
-                self.shape_cache.insert(root, shape.clone());
-                return shape;
+                return visited.remove(&op_id).unwrap();
             };
             if visited.contains_key(&op_id) {
                 continue;
@@ -1956,7 +1946,6 @@ impl Kernel {
             tail: OpId::NULL,
             dev: self.dev,
             dev_info: self.dev_info.clone(),
-            shape_cache: Map::default(),
         };
         let mut remap: Map<OpId, OpId> =
             Map::with_capacity_and_hasher(root_required.len(), core::hash::BuildHasherDefault::default());

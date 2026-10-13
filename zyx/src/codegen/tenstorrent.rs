@@ -140,7 +140,6 @@ impl Kernel {
             tail: OpId::NULL,
             dev: self.dev,
             dev_info: self.dev_info.clone(),
-            shape_cache: Map::default(),
         };
         rendered.push_back(Op::TT(TTOp::ProgramDesc(Box::new(desc))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));

@@ -85,7 +85,7 @@ impl Kernel {
         // An unavailable device binds None and fails at compile() with an
         // error (never a panic), so callers can skip gracefully.
         let dev_info = if dev == Dev::Auto { None } else { dev.info().ok() };
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev, dev_info, shape_cache: Map::default() }
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev, dev_info }
     }
 
     /// Compile the kernel. Consumes `self`.
