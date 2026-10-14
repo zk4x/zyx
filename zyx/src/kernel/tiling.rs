@@ -83,6 +83,9 @@ impl Kernel {
         // Retile the reduce row (see below) on the final IR.
         self.tilize_stores();
 
+        self.default_epilogue();
+        self.default_epilogue();
+
         self.verify();
     }
 
@@ -272,9 +275,12 @@ impl Kernel {
             };
             // Tile dims come from the terminal tile, not the root (the
             // root is still vector-shaped at match time). Pure tile
-            // chains retile to themselves: nothing to do.
+            // chains retile to themselves: nothing to do. An Index or
+            // Reshape root (`root != src`) needs the store rewired to
+            // the terminal tile — the extract/view dies in DCE.
             let Some(dims) = dims else { continue };
-            if rewires.is_empty() && scalars.is_empty() {
+            let pure_tile = matches!(root, Target::Direct(id) if id == src);
+            if rewires.is_empty() && scalars.is_empty() && pure_tile {
                 continue;
             }
             rewires.push(Rewire { user: op, input: src, target: root });
