@@ -305,9 +305,9 @@ pub enum Pat {
         idx: Box<Pat>,
     },
     /// Matches a store (`Op::Store`) with buffer matching `dst`, index
-    /// matching `idx` and value matching `x`. The access descriptor is
-    /// deliberately NOT matched: widths stay in the calling pass. Bind
-    /// `x` but exclude it from the cover key — values differ per member
+    /// matching `idx`, value matching `x` and access descriptor matching
+    /// `bytes`. Widths stay in the calling pass (bind and interpret);
+    /// `x` is excluded from the cover key — values differ per member
     /// and are read off `roots_bindings`.
     Store {
         /// Pattern for the buffer.
@@ -316,6 +316,8 @@ pub enum Pat {
         idx: Box<Pat>,
         /// Pattern for the stored value.
         x: Box<Pat>,
+        /// Pattern for the access descriptor.
+        bytes: Box<Pat>,
     },
     /// Matches a vector reduce (`Op::VecReduce`) with an operand matching
     /// `x`, binding the reduce `bop` under `bop` (read with
@@ -814,8 +816,8 @@ impl Pat {
     }
 
     /// Store to the `dst` pattern at the `idx` pattern of the `x` value.
-    pub fn store(dst: impl Into<Pat>, idx: impl Into<Pat>, x: impl Into<Pat>) -> Pat {
-        Pat::Store { dst: Box::new(dst.into()), idx: Box::new(idx.into()), x: Box::new(x.into()) }
+    pub fn store(dst: impl Into<Pat>, idx: impl Into<Pat>, x: impl Into<Pat>, bytes: impl Into<Pat>) -> Pat {
+        Pat::Store { dst: Box::new(dst.into()), idx: Box::new(idx.into()), x: Box::new(x.into()), bytes: Box::new(bytes.into()) }
     }
 
     /// Vector lane of the `vec` pattern, binding the lane number as an
@@ -1143,7 +1145,15 @@ impl Kernel {
     }
 
     /// Match one pattern node. Returns `false` with `bindings` untouched.
+    /// NULL is a legitimate edge value (unit accessors); only a bare
+    /// binder matches it (records NULL, no dtype to classify).
     fn match_node(&self, pat: &Pat, id: OpId, bindings: &mut Bindings) -> bool {
+        if id.is_null() {
+            return match pat {
+                Pat::Bind { name, .. } => bindings.try_insert(*name, id, Binding::Op),
+                _ => false,
+            };
+        }
         match pat {
             Pat::Bind { name, class } => {
                 if !class.matches(self.dtype(id)) {
@@ -1318,10 +1328,10 @@ impl Kernel {
                 }
                 _ => false,
             },
-            Pat::Store { dst, idx, x } => match self.at(id) {
-                Op::Store { dst: d, dst_idx: i, src: v, .. } => {
+            Pat::Store { dst, idx, x, bytes } => match self.at(id) {
+                Op::Store { dst: d, dst_idx: i, src: v, bytes: b } => {
                     let snap = bindings.clone();
-                    if self.match_node(dst, *d, bindings) && self.match_node(idx, *i, bindings) && self.match_node(x, *v, bindings)
+                    if self.match_node(dst, *d, bindings) && self.match_node(idx, *i, bindings) && self.match_node(x, *v, bindings) && self.match_node(bytes, *b, bindings)
                     {
                         true
                     } else {

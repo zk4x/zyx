@@ -392,10 +392,6 @@ impl Kernel {
                     dtypes.insert(op_id, (dtype, Vec::new()));
                     *rcs.entry(x).or_insert(0) += 1;
                 }
-                Op::TT(TTOp::BroadcastTile { x, .. }) => {
-                    dtypes.insert(op_id, dtypes[&x].clone());
-                    *rcs.entry(x).or_insert(0) += 1;
-                }
                 Op::TT(TTOp::ReserveBack { cb, .. })
                 | Op::TT(TTOp::PushBack { cb, .. })
                 | Op::TT(TTOp::WaitFront { cb, .. })
@@ -575,7 +571,6 @@ impl Kernel {
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
                 Op::TT(TTOp::ReduceTile { x, .. }) => op_id = x,
-                Op::TT(TTOp::BroadcastTile { x, .. }) => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return IDX_T,
                 Op::Barrier
                 | Op::TT(TTOp::MathLock)

@@ -702,11 +702,6 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             Op::TT(TTOp::MatmulTile { .. }) | Op::TT(TTOp::ReduceTile { .. }) | Op::TT(TTOp::TransposeTile { .. }) => {
                 return Err(sec.err(format!("{id:?} is not fully lowered (SSA remains)")));
             }
-            // Fused broadcast marker: dead after `tt_storage` fused its
-            // binary into an `LLK` (the call consumes the CBs straight
-            // from the buffers). Sync accounting only — emits nothing
-            // (old: markers ignored downstream).
-            Op::TT(TTOp::BroadcastTile { .. }) => {}
             Op::TT(TTOp::ReserveBack { cb, n }) => {
                 let c = sec.cb_num(*cb)?;
                 sec.out.push_str(&format!("{}cb{c}.reserve_back({n});\n", sec.indent));
@@ -1353,10 +1348,8 @@ fn render_load(sec: &mut TtSection, id: OpId, src: OpId) -> Result<(), BackendEr
     }
     let all_pack = match sec.users.get(&id) {
         Some(us) => {
-            us.iter().all(|u| {
-                matches!(sec.k.at(*u), Op::TT(TTOp::BroadcastTile { .. }))
-                    || matches!(sec.k.at(*u), Op::Store { src: x, .. } if *x == id)
-            }) && us.iter().any(|u| matches!(sec.k.at(*u), Op::Store { .. }))
+            us.iter().all(|u| matches!(sec.k.at(*u), Op::Store { .. }))
+                && us.iter().any(|u| matches!(sec.k.at(*u), Op::Store { .. }))
         }
         None => false,
     };

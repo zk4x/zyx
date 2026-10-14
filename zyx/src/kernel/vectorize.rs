@@ -171,11 +171,12 @@ impl Kernel {
                 Pat::bind('d'),
                 Pat::all([Pat::bind('i'), Pat::binary(BOp::Add, Pat::bind('b'), Pat::bind_const('o'))]),
                 Pat::bind('x'),
+                Pat::bind('B'),
             );
             for g in self.match_cover(&affine, &['d', 'b'], supported_lens) {
                 self.apply_store_cover(&g, rank);
             }
-            let absolute = Pat::store(Pat::bind('d'), Pat::all([Pat::bind('i'), Pat::bind_const('o')]), Pat::bind('x'));
+            let absolute = Pat::store(Pat::bind('d'), Pat::all([Pat::bind('i'), Pat::bind_const('o')]), Pat::bind('x'), Pat::bind('B'));
             for g in self.match_cover(&absolute, &['d'], supported_lens) {
                 self.apply_store_cover(&g, rank);
             }

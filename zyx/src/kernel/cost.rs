@@ -209,10 +209,6 @@ impl Kernel {
                             dtypes.insert(op_id, dtypes[x].clone());
                             *rcs.entry(*x).or_insert(0) += 1;
                         }
-                        TTOp::BroadcastTile { x, .. } => {
-                            dtypes.insert(op_id, dtypes[x].clone());
-                            *rcs.entry(*x).or_insert(0) += 1;
-                        }
                         TTOp::ReserveBack { cb, .. }
                         | TTOp::PushBack { cb, .. }
                         | TTOp::WaitFront { cb, .. }
@@ -317,7 +313,6 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::MatmulTile { .. })
                 | Op::TT(TTOp::TransposeTile { .. })
-                | Op::TT(TTOp::BroadcastTile { .. })
                 | Op::Index { .. }
                 | Op::Param { .. }
                 | Op::Storage { .. }

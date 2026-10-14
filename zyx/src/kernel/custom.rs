@@ -1062,15 +1062,25 @@ impl Kernel {
         self.push_back(Op::TT(TTOp::ReduceTile { x, rop, kind }))
     }
 
-    /// Marker: tile `x` (a `load_circular` tile) is consumed with
-    /// broadcast `kind` by the consuming tiled binary, which emits the
-    /// fused broadcast form. Carries no traffic itself; forwards `x`.
-    pub fn broadcast_tile(&mut self, x: OpId, kind: TileDim) -> OpId {
+    /// Fused broadcast binary: plain tile `a` from circular buffer
+    /// `cb_a` combined with broadcast tile `b` from circular buffer
+    /// `cb_b` under `bop` (`kind` selects the `*_bcast_*` LLK form).
+    /// Emits the fused call directly (no marker + fusion pass);
+    /// operands stay in CBs, the result is a DST tile like every
+    /// `LLK`. CB attachment is the caller's job: hand kernels own
+    /// their buffers.
+    pub fn bcast_tile(&mut self, a: OpId, cb_a: OpId, b: OpId, cb_b: OpId, bop: BOp, kind: TileDim) -> OpId {
         debug_assert!(
-            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
-            "broadcast_tile: x {x} is not a load_circular tile"
+            matches!(self.ops[cb_a].op, Op::Storage { scope: MemScope::Circular, .. }),
+            "bcast_tile: cb_a {cb_a} is not a Circular storage"
         );
-        self.push_back(Op::TT(TTOp::BroadcastTile { x, kind }))
+        debug_assert!(
+            matches!(self.ops[cb_b].op, Op::Storage { scope: MemScope::Circular, .. }),
+            "bcast_tile: cb_b {cb_b} is not a Circular storage"
+        );
+        debug_assert!(self.shape(a).len() == 2, "bcast_tile: a {a} is not a tile value");
+        debug_assert!(self.shape(b).len() == 2, "bcast_tile: b {b} is not a tile value");
+        self.push_back(Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, mx: b, plain: a }))
     }
 
     /// Backend-specific assembly instruction applied to `ops`.

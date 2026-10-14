@@ -78,7 +78,6 @@ impl Kernel {
                     | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::MatmulTile { .. })
                     | Op::TT(TTOp::TransposeTile { .. })
-                    | Op::TT(TTOp::BroadcastTile { .. })
                     | Op::TT(TTOp::ReserveBack { .. })
                     | Op::TT(TTOp::PushBack { .. })
                     | Op::TT(TTOp::WaitFront { .. })
@@ -309,10 +308,6 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&acc]);
                 }
                 Op::TT(TTOp::TransposeTile { x }) => {
-                    check(op_id, x, &stack);
-                    dtypes.insert(op_id, dtypes[&x]);
-                }
-                Op::TT(TTOp::BroadcastTile { x, .. }) => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }

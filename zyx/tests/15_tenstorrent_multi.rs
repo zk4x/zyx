@@ -1207,8 +1207,7 @@ fn tenstorrent_softmax_rows() -> Result<(), ZyxError> {
     // Center + exp -> ce (stored twice: sum-fold, final mul).
     let va2 = k.load_cb(ca, 0);
     let vm2 = k.load_cb(cm, 0);
-    let mb = k.broadcast_tile(vm2, TileDim::Col);
-    let d = k.sub(va2, mb);
+    let d = k.bcast_tile(va2, ca, vm2, cm, BOp::Sub, TileDim::Col);
     let e = k.exp(d);
     k.store_cb(ce, e, 0);
     k.store_cb(ce, e, 0);
@@ -1228,8 +1227,7 @@ fn tenstorrent_softmax_rows() -> Result<(), ZyxError> {
     // Normalize: e * (1/sum) via fused bcast_cols mul.
     let ve2 = k.load_cb(ce, 0);
     let vr = k.load_cb(cr, 0);
-    let rb = k.broadcast_tile(vr, TileDim::Col);
-    let o = k.mul(ve2, rb);
+    let o = k.bcast_tile(ve2, ce, vr, cr, BOp::Mul, TileDim::Col);
     k.store_cb(cout, o, 0);
     k.tt_end_compute();
 
@@ -1318,9 +1316,8 @@ fn tenstorrent_rmsnorm_rows() -> Result<(), ZyxError> {
 
     // mean + eps -> cv, rsqrt -> cr.
     let vm2 = k.load_cb(cm, 0);
-    let mb = k.broadcast_tile(vm2, TileDim::Col);
     let veps = k.load_cb(ceps, 0);
-    let v = k.add(mb, veps);
+    let v = k.bcast_tile(veps, ceps, vm2, cm, BOp::Add, TileDim::Col);
     k.store_cb(cv, v, 0);
     let vv = k.load_cb(cv, 0);
     let r = k.rsqrt(vv);

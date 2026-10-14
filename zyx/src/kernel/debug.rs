@@ -127,12 +127,6 @@ impl Kernel {
                     let x = id_map[&x];
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}").unwrap();
                 }
-                Op::TT(TTOp::BroadcastTile { x, kind }) => {
-                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
-                    dtypes.insert(op_id, dtype);
-                    let x = id_map[&x];
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}broadcast_tile_{kind:?}{reset} r{x}").unwrap();
-                }
                 Op::VecReduce { x, bop } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);

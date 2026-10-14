@@ -456,9 +456,7 @@ impl Kernel {
     /// keeps FIFO balance exact (one push per pop). Covers `ReduceTile`,
     /// `MatmulTile` (`x`/`y`, never `acc`), `TransposeTile`, and
     /// tile-shaped elementwise `Unary`/`Binary`/`Cast`/`Bitcast` (scalar
-    /// lanes flow through untouched). `BroadcastTile` markers are skipped:
-    /// dead ones must stay traffic-free, live ones fail loudly in
-    /// `tt_storage` if unresolvable. Runs after `tt_add_writer` (traffic
+    /// lanes flow through untouched). Runs after `tt_add_writer` (traffic
     /// edges first, interior second). TT-only, no `Loop`s — same contract
     /// as reader/writer; tile-op inputs outside `[32, 32]` bail the whole
     /// pass instead of half-rewriting.
@@ -648,7 +646,6 @@ impl Kernel {
                 Op::TT(TTOp::MatmulTile { .. })
                     | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::TransposeTile { .. })
-                    | Op::TT(TTOp::BroadcastTile { .. })
                     | Op::TT(TTOp::LLKReduce { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLK { .. })
@@ -657,15 +654,12 @@ impl Kernel {
             }
             // A circular load consumed straight by a pack store unpacks
             // at its own position (render copies there) — it is MATH
-            // work like any other unpack. Markers are invisible (the
-            // fused call consumes through provenance).
+            // work like any other unpack.
             if let Op::Load { src, .. } = op {
                 if matches!(kernel.at(*src), Op::Storage { scope: MemScope::Circular, .. }) {
                     if let Some(us) = users.get(&id) {
-                        return us.iter().all(|u| {
-                            matches!(kernel.at(*u), Op::TT(TTOp::BroadcastTile { .. }))
-                                || matches!(kernel.at(*u), Op::Store { src: x, .. } if *x == id)
-                        }) && us.iter().any(|u| matches!(kernel.at(*u), Op::Store { .. }));
+                        return us.iter().all(|u| matches!(kernel.at(*u), Op::Store { .. }))
+                            && us.iter().any(|u| matches!(kernel.at(*u), Op::Store { .. }));
                     }
                 }
                 return false;
@@ -963,8 +957,7 @@ impl Kernel {
     }
 
     /// Storage lowering: the SSA tile-compute ops (`MatmulTile`/
-    /// `ReduceTile`/`TransposeTile`, plus a tiled `Binary` fused with
-    /// a `BroadcastTile` marker) are the stream's compute representation;
+    /// `ReduceTile`/`TransposeTile`) are the stream's compute
     /// the physical CB and DST slots are the `Op::Storage`s already in
     /// the IR. This pass rewrites each compute op to a [`TTOp::LLK`]
     /// call template over those bare storages. After this pass the
@@ -980,8 +973,7 @@ impl Kernel {
     /// `tt_place_pops` pops). Render ignores them. A `Load` that feeds
     /// a compute op must chase through its `GEP` to a `Storage`; a
     /// `Load` over a `Param` (DRAM) feeding a compute op is a lowering
-    /// bug — loud `panic!`. `BroadcastTile` markers never lower alone:
-    /// unfused (dead) markers stay in place and are ignored downstream.
+    /// bug — loud `panic!`.
     pub fn tt_storage(&mut self) {
         let mut op_id = self.head;
         // CB Storage definitions live in the prologue (see tt_add_reader):
@@ -1096,44 +1088,9 @@ impl Kernel {
                     // load, for sync accounting only.
                     (TinyString::new("transpose_wh_tile({0}, 0, {1});"), TinyVec::new(&[cb, OpId::NULL, *x]))
                 }
-                Op::TT(TTOp::BroadcastTile { .. }) => {
-                    // Marker only: the consuming tiled binary fuses it
-                    // (see the `Op::Binary` arm below). Left in place;
-                    // `tt_place_pops` ignores markers as load users and
-                    // pairs the marked load with the fused call.
-                    op_id = next;
-                    continue;
-                }
-                Op::Binary { x, y, bop } => {
-                    let x_marked = matches!(self.at(*x), Op::TT(TTOp::BroadcastTile { .. }));
-                    let y_marked = matches!(self.at(*y), Op::TT(TTOp::BroadcastTile { .. }));
-                    if !x_marked && !y_marked {
-                        op_id = next;
-                        continue;
-                    }
-                    if x_marked && y_marked {
-                        panic!("tt_storage: binary {op_id:?} marks both sides for broadcast");
-                    }
-                    // The marked side consumes its CB straight from the
-                    // buffer (`cb_b`); the plain side must be a plain
-                    // circular load (`cb_a`). The fused result is a
-                    // normal DST tile (operand {2}, filled by render).
-                    let (marked, plain) = if x_marked { (*x, *y) } else { (*y, *x) };
-                    let Op::TT(TTOp::BroadcastTile { x: mx, kind }) = self.at(marked) else {
-                        unreachable!("tt_storage: marked side is not a BroadcastTile");
-                    };
-                    let cb_b = self.tt_storage_of(*mx);
-                    if !matches!(self.at(cb_b), Op::Storage { scope: MemScope::Circular, .. }) {
-                        panic!("tt_storage: broadcast {op_id:?} marked side is no CB tile load");
-                    }
-                    if !matches!(self.at(plain), Op::Load { .. } | Op::TT(TTOp::BroadcastTile { .. })) {
-                        panic!("tt_storage: broadcast {op_id:?} plain side is no CB tile load");
-                    }
-                    let cb_a = self.tt_storage_of(plain);
-                    if !matches!(self.at(cb_a), Op::Storage { scope: MemScope::Circular, .. }) {
-                        panic!("tt_storage: broadcast {op_id:?} plain side is no CB tile load");
-                    }
-                    self.ops[op_id].op = Op::TT(TTOp::LLKBcast { bop: *bop, kind: *kind, cb_a, cb_b, mx: *mx, plain });
+                Op::Binary { .. } => {
+                    // Broadcast fusion via markers is gone (Expand-based
+                    // broadcast pending); plain binaries lower elsewhere.
                     op_id = next;
                     continue;
                 }
@@ -1236,7 +1193,6 @@ impl Kernel {
                     TTOp::MatmulTile { .. }
                     | TTOp::TransposeTile { .. }
                     | TTOp::ReduceTile { .. }
-                    | TTOp::BroadcastTile { .. }
                     | TTOp::ReserveBack { .. }
                     | TTOp::PushBack { .. }
                     | TTOp::WaitFront { .. }
@@ -1341,7 +1297,6 @@ impl Kernel {
                         Op::TT(TTOp::LLK { .. } | TTOp::LLKReduce { .. } | TTOp::LLKBcast { .. }) => {
                             call_waits += 1;
                         }
-                        Op::TT(TTOp::BroadcastTile { .. }) => {}
                         _ => {
                             draws_load_wait = true;
                         }
@@ -1419,7 +1374,7 @@ impl Kernel {
     /// tile ops pre-storage, tiled elementwise SSA (`Unary`/`Binary`/
     /// `Cast`/`Bitcast`), a pack `Store` (CB→CB spelled load+store), or
     /// tiled user `Asm`. A load drained only through fusion (every user
-    /// a `BroadcastTile` marker or an `LLK` provenance position) carries
+    /// an `LLK` provenance position) carries
     /// no wait of its own: the fused call's provenance waits cover those
     /// pages (old "fused-draining loads carry no syncs"). Any other consumer
     /// is malformed CB traffic — DRAM↔CB moves are `Copy` (see
@@ -1850,7 +1805,6 @@ impl Kernel {
                                             TTOp::MatmulTile { .. }
                                             | TTOp::TransposeTile { .. }
                                             | TTOp::ReduceTile { .. }
-                                            | TTOp::BroadcastTile { .. }
                                             | TTOp::LLKReduce { .. }
                                             | TTOp::LLKBcast { .. }
                                             | TTOp::LLK { .. },
@@ -1879,8 +1833,7 @@ impl Kernel {
                                 let fused_only = use_list.iter().all(|u| {
                                     matches!(
                                         self.ops[*u].op,
-                                        Op::TT(TTOp::BroadcastTile { .. })
-                                            | Op::TT(TTOp::LLK { .. })
+                                        Op::TT(TTOp::LLK { .. })
                                             | Op::TT(TTOp::LLKReduce { .. })
                                             | Op::TT(TTOp::LLKBcast { .. })
                                     )
@@ -2165,7 +2118,6 @@ impl Kernel {
                     Op::Load { src, .. } => *src == acc,
                     Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => acc_values.contains(x),
                     Op::Binary { x, y, .. } => acc_values.contains(x) || acc_values.contains(y),
-                    Op::TT(TTOp::BroadcastTile { x, .. }) => acc_values.contains(x),
                     Op::Asm { ops, .. } => ops.iter().copied().any(|o| !o.is_null() && acc_values.contains(&o)),
                     _ => false,
                 };
@@ -2466,8 +2418,8 @@ impl Kernel {
     ///   `(cb, load)` remaining counts — the old `Counted` case);
     /// - a circular load consumed through SSA (`Unary`/`Binary`/
     ///   `Cast`/`Bitcast`, a pack store, user `Asm`) pops once after
-    ///   its last same-section consumer (`BroadcastTile` markers are
-    ///   not consumers — the fused call consumes through provenance);
+    ///   its last same-section consumer (the fused call consumes
+    ///   through provenance);
     /// - a circular load with no users at all is a drain pop: pop
     ///   after the load itself.
     pub fn tt_place_pops(&mut self) {
@@ -2735,7 +2687,6 @@ impl Kernel {
                     Op::TT(TTOp::LLK { .. })
                         | Op::TT(TTOp::LLKReduce { .. })
                         | Op::TT(TTOp::LLKBcast { .. })
-                        | Op::TT(TTOp::BroadcastTile { .. })
                 ) {
                     continue;
                 }
@@ -3175,8 +3126,7 @@ impl Kernel {
     /// underlying `Storage`/`Param`. Tile-compute results name DST slots,
     /// not buffers: `MatmulTile`/`ReduceTile` see through to their `acc`
     /// (a `load_register_tile`), so matmul→reduce acc chains resolve to
-    /// the Register slot instead of panicking. `BroadcastTile` is a pure
-    /// marker and forwards to its input. A post-lowering `LLK` resolves to
+    /// the Register slot instead of panicking. A post-lowering `LLK` resolves to
     /// the Register storage in its operands (its DST slot); an `LLK` with
     /// no Register operand names no slot — loud panic. The GEP index is
     /// not needed (render uses slot 0).
@@ -3186,7 +3136,6 @@ impl Kernel {
             Op::Store { dst, .. } => self.tt_storage_of(*dst),
             Op::Storage { .. } | Op::Param { .. } => op_id,
             Op::TT(TTOp::MatmulTile { acc, .. }) => self.tt_storage_of(*acc),
-            Op::TT(TTOp::BroadcastTile { x, .. }) => self.tt_storage_of(*x),
             Op::TT(TTOp::LLK { ops, .. }) => {
                 let mut slot = None;
                 for o in ops.iter().copied() {

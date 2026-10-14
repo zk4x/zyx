@@ -2638,8 +2638,7 @@ fn tenstorrent_broadcast_row_add() -> Result<(), ZyxError> {
         k.loop_over(1, |k, _nti| {
             let va = k.load_cb(ca, 0);
             let vb = k.load_cb(cb, 0);
-            let b = k.broadcast_tile(vb, TileDim::Row);
-            let f = k.add(va, b);
+            let f = k.bcast_tile(va, ca, vb, cb, BOp::Add, TileDim::Row);
             k.store_cb(cout, f, 0);
         });
     });

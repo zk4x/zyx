@@ -504,17 +504,6 @@ pub enum TTOp {
         /// Input tile.
         x: OpId,
     },
-    /// Marker: tile `x` (a `load_circular` tile) is consumed with
-    /// broadcast `kind` by the consuming tiled binary, which emits the
-    /// fused broadcast form (TT: `add/sub/mul_tiles_bcast_*`, operands
-    /// stay in CBs). Without the marker the binary uses the plain
-    /// register form. Carries no traffic itself.
-    BroadcastTile {
-        /// Consumed tile.
-        x: OpId,
-        /// Broadcast dimension.
-        kind: TileDim,
-    },
     /// CB sync: `cb.reserve_back(n)` — open `n` back slots of circular
     /// buffer `cb` for writing. Effect-only like [`Op::Store`]: produces
     /// no SSA value, is a DCE root, is never CSE'd or LICM-hoisted.
@@ -642,9 +631,9 @@ pub enum TTOp {
         /// Scaler tile value (provenance for sync accounting).
         scaler: OpId,
     },
-    /// Lowered fused-broadcast call: a tiled binary over a
-    /// [`TTOp::BroadcastTile`] marker after `tt_storage` resolved its
-    /// CBs. Carries the structured `(bop, kind)`; same rules as
+    /// Lowered fused-broadcast call: a tiled binary with a broadcast
+    /// side over resolved CBs (built directly by builders now).
+    /// Carries the structured `(bop, kind)`; same rules as
     /// [`TTOp::LLKReduce`]. The result slot is DST (filled by render
     /// with a fresh slot), so there is no `slot` field.
     LLKBcast {
@@ -1019,15 +1008,15 @@ impl Ord for Op {
     }
 }
 
-/// Which dimension a `TTOp::ReduceTile` collapses, or a
-/// `TTOp::BroadcastTile` replicates, within each 32x32 tile.
+/// Which dimension a `TTOp::ReduceTile` collapses within each 32x32
+/// tile (broadcast replication is [`Op::Expand`] now).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum TileDim {
-    /// One value per row (reduce: 32 values carried in the result
-    /// tile's first row; broadcast: one row replicated to all rows).
+    /// Reduce over rows: one value per row, carried in the result
+    /// tile's first column.
     Row,
-    /// One value per column (reduce: 32 values carried in the result
-    /// tile's first row; broadcast: one column replicated to all columns).
+    /// Reduce over columns: one value per column, carried in the
+    /// result tile's first row.
     Col,
     /// Whole tile to/from a single scalar.
     Scalar,
@@ -1346,7 +1335,6 @@ impl Op {
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
             &Op::TT(TTOp::MatmulTile { x, y, acc }) => vec![x, y, acc],
             &Op::TT(TTOp::TransposeTile { x }) => vec![x],
-            &Op::TT(TTOp::BroadcastTile { x, .. }) => vec![x],
             &Op::TT(TTOp::ReduceTile { x, .. }) => vec![x],
             &Op::TT(TTOp::ReserveBack { cb, .. })
             | &Op::TT(TTOp::PushBack { cb, .. })
@@ -1438,7 +1426,6 @@ impl Op {
             Op::TT(TTOp::MatmulTile { x, y, acc }) => vec![x, y, acc],
             Op::TT(TTOp::ReduceTile { x, .. }) => vec![x],
             Op::TT(TTOp::TransposeTile { x }) => vec![x],
-            Op::TT(TTOp::BroadcastTile { x, .. }) => vec![x],
             Op::TT(TTOp::ReserveBack { cb, .. })
             | Op::TT(TTOp::PushBack { cb, .. })
             | Op::TT(TTOp::WaitFront { cb, .. })

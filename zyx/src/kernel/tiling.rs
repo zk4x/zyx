@@ -5,7 +5,9 @@
 //! (Under construction, one step at a time.)
 
 use super::{Kernel, Op, OpId, Pat, RangeKind, TTOp, TileDim};
+use crate::Map;
 use crate::Set;
+use crate::dtype::Constant;
 
 impl Kernel {
     /// Tenstorrent tiling pass, first cut: reshape only, no tile ops yet.
@@ -78,6 +80,12 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
+        // Retile the reduce row (see below) on the final IR.
+        self.tilize_stores();
+
+        self.debug();
+        panic!();
+
         self.verify();
     }
 
@@ -119,63 +127,195 @@ impl Kernel {
             }
         }
     }
-}
 
-#[cfg(feature = "tenstorrent")]
-#[cfg(test)]
-mod tests {
-    use super::Kernel;
-    use crate::dtype::DType;
-    use crate::kernel::{Dev, Op};
-
-    #[test]
-    fn tt_form_reduce_tiles_pipeline_shape() {
-        // The post-pipeline state that must fire: tile load + f32 cast +
-        // 32 vec_reduce_sum over Index row lanes of the cast, stacked,
-        // cast back, stored.
-        use crate::kernel::{BOp, TTOp};
-        let mut k = Kernel::new(Dev::TT(0));
-        let r46 = k.param(DType::BF16);
-        let r17 = k.param_mut(DType::BF16);
-        let r25 = k.const_idx(0);
-        let tload = k.load_tile(r46, r25, 32, 32);
-        let r164 = k.cast(tload, DType::F32);
-        let mut sums = Vec::new();
-        for r in 0..32usize {
-            let lane = k.push_back(crate::kernel::Op::Index { vec: r164, idx: r });
-            let vopr = k.push_back(crate::kernel::Op::VecReduce { x: lane, bop: BOp::Add });
-            sums.push(vopr);
+    /// Backward tile-push over vector stores (tile equivalent of
+    /// `vectorize_stores`/`vectorize_ops_backward`, which are fully
+    /// general over stored values and op heads — this is too, no
+    /// enumerated op list). Anchored at each vector-length `Store` via
+    /// `Pat`, then structural descent through whatever heads appear:
+    /// single-input elementwise and tile-native heads retile their
+    /// input, binaries retile both sides, and the walk terminates at
+    /// leaves: a tile-typed value is kept, an `Index` of a tile becomes
+    /// the tile itself (the extract dies in DCE), a scalar const becomes
+    /// an `Expand` to the tile dims (lowered later; render rejects it
+    /// loudly until then). Anything else stops the tree — skipped,
+    /// never fatal. The store bytes become the tile dims (the packer
+    /// masks the non-result lanes, so the whole tile drains).
+    pub fn tilize_stores(&mut self) {
+        #[derive(Clone, Copy)]
+        enum Target {
+            Direct(OpId),
+            Expanded(OpId),
         }
-        let sstack = k.stack(&sums);
-        let r636 = k.cast(sstack, DType::BF16);
-        k.store_vector(r17, r636, r25, 32);
-
-        k.tt_form_reduce_tiles();
-
-        let mut rts = 0;
-        let mut vreduces = 0;
-        let mut id = k.head;
-        while !id.is_null() {
-            match k.at(id) {
-                Op::TT(TTOp::ReduceTile { .. }) => rts += 1,
-                Op::VecReduce { .. } => vreduces += 1,
-                _ => {}
+        struct Rewire {
+            user: OpId,
+            input: OpId,
+            target: Target,
+        }
+        struct Job {
+            store: OpId,
+            rewires: Vec<Rewire>,
+            scalars: Vec<OpId>,
+            dims: [u16; 2],
+        }
+        fn tile_dims(k: &Kernel, v: OpId) -> Option<[u16; 2]> {
+            let dims = k.shape(v);
+            if dims.len() != 2 || dims.iter().any(|&d| d <= 0 || d > 65535) {
+                return None;
             }
-            id = k.next_op(id);
+            Some([dims[0] as u16, dims[1] as u16])
         }
-        assert_eq!(rts, 1, "one ReduceTile formed");
-        assert_eq!(vreduces, 0, "vec_reduces absorbed");
-        // Every former reduce root became an Index lane of the reduce
-        // tile's row 0.
-        for s in &sums {
-            match k.at(*s) {
-                Op::Index { vec, idx } => {
-                    assert!(!vec.is_null());
-                    assert_eq!(k.shape(*s).len(), 0);
-                    let _ = idx;
+        fn descend(
+            k: &Kernel,
+            v: OpId,
+            memo: &mut Map<OpId, Target>,
+            active: &mut Set<OpId>,
+            rewires: &mut Vec<Rewire>,
+            scalars: &mut Vec<OpId>,
+            dims: &mut Option<[u16; 2]>,
+        ) -> Option<Target> {
+            if let Some(t) = memo.get(&v) {
+                return Some(*t);
+            }
+            if !active.insert(v) {
+                return None;
+            }
+            // Tile-typed values (and the reduce tile itself) need nothing.
+            if k.shape(v).len() == 2 {
+                *dims = tile_dims(k, v);
+                if dims.is_none() {
+                    active.remove(&v);
+                    return None;
                 }
-                op => panic!("reduce root not an Index lane: {op:?}"),
+                memo.insert(v, Target::Direct(v));
+                active.remove(&v);
+                return Some(Target::Direct(v));
+            }
+            // An extract of a tile is the tile (narrowing dies in DCE).
+            if let Op::Index { vec, .. } = k.at(v) {
+                if k.shape(*vec).len() == 2 {
+                    *dims = tile_dims(k, *vec);
+                    if dims.is_none() {
+                        active.remove(&v);
+                        return None;
+                    }
+                    memo.insert(v, Target::Direct(*vec));
+                    active.remove(&v);
+                    return Some(Target::Direct(*vec));
+                }
+                active.remove(&v);
+                return None;
+            }
+            // Scalar leaves broadcast later.
+            if k.shape(v).is_empty() && matches!(k.at(v), Op::Const(_)) {
+                if !scalars.contains(&v) {
+                    scalars.push(v);
+                }
+                memo.insert(v, Target::Expanded(v));
+                active.remove(&v);
+                return Some(Target::Expanded(v));
+            }
+            // Single-input heads retile their input (elementwise and
+            // tile-native alike — all well-defined on tiles).
+            let ins: Vec<OpId> = match k.at(v) {
+                Op::Unary { x, .. }
+                | Op::Cast { x, .. }
+                | Op::Bitcast { x, .. }
+                | Op::TT(TTOp::TransposeTile { x, .. })
+                | Op::TT(TTOp::ReduceTile { x, .. }) => vec![*x],
+                Op::Binary { x, y, .. } => vec![*x, *y],
+                _ => {
+                    active.remove(&v);
+                    return None;
+                }
+            };
+            for i in ins {
+                let Some(t) = descend(k, i, memo, active, rewires, scalars, dims) else {
+                    active.remove(&v);
+                    return None;
+                };
+                rewires.push(Rewire { user: v, input: i, target: t });
+            }
+            memo.insert(v, Target::Direct(v));
+            active.remove(&v);
+            Some(Target::Direct(v))
+        }
+        let anchor = Pat::store(Pat::bind('d'), Pat::bind('i'), Pat::bind('x'), Pat::bind('b'));
+        let mut jobs: Vec<Job> = Vec::new();
+        for (op, x) in self.iter_unordered() {
+            if !matches!(x, Op::Store { .. }) {
+                continue;
+            }
+            let Some(m) = self.match_pat(op, &anchor) else { continue };
+            let (src, bytes) = (m.op('x'), m.op('b'));
+            // Vector length (scalar descriptor), scalar-or-vector source.
+            if bytes.is_null() || !self.shape(bytes).is_empty() {
+                continue;
+            }
+            if self.shape(src).len() > 1 {
+                continue;
+            }
+            let mut memo = Map::default();
+            let mut active = Set::default();
+            let mut rewires = Vec::new();
+            let mut scalars = Vec::new();
+            let mut dims = None;
+            let Some(root) = descend(self, src, &mut memo, &mut active, &mut rewires, &mut scalars, &mut dims) else {
+                continue;
+            };
+            // Tile dims come from the terminal tile, not the root (the
+            // root is still vector-shaped at match time).
+            let Some(dims) = dims else { continue };
+            rewires.push(Rewire { user: op, input: src, target: root });
+            jobs.push(Job { store: op, rewires, scalars, dims });
+        }
+        for job in jobs {
+            // One tile stack per store; scalar leaves share it as their
+            // `Expand` shape.
+            let a = self.insert_before(job.store, Op::Const(Constant::new(job.dims[0])));
+            let b = self.insert_before(job.store, Op::Const(Constant::new(job.dims[1])));
+            let stack = self.insert_before(job.store, Op::Stack { ops: [a, b].into() });
+            let mut expanded: Map<OpId, OpId> = Map::default();
+            for s in job.scalars {
+                let e = self.insert_before(job.store, Op::Expand { x: s, shape: stack });
+                expanded.insert(s, e);
+            }
+            for r in job.rewires {
+                let t = match r.target {
+                    Target::Direct(id) => id,
+                    Target::Expanded(s) => expanded[&s],
+                };
+                match &mut self.ops[r.user].op {
+                    Op::Unary { x, .. }
+                    | Op::Cast { x, .. }
+                    | Op::Bitcast { x, .. }
+                    | Op::TT(TTOp::TransposeTile { x, .. })
+                    | Op::TT(TTOp::ReduceTile { x, .. })
+                    | Op::Index { vec: x, .. } => {
+                        if *x == r.input {
+                            *x = t;
+                        }
+                    }
+                    Op::Binary { x, y, .. } => {
+                        if *x == r.input {
+                            *x = t;
+                        }
+                        if *y == r.input {
+                            *y = t;
+                        }
+                    }
+                    Op::Store { src: x, .. } => {
+                        if *x == r.input {
+                            *x = t;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Op::Store { bytes, .. } = &mut self.ops[job.store].op {
+                *bytes = stack;
             }
         }
+        self.dead_code_elimination();
     }
 }
