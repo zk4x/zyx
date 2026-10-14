@@ -152,6 +152,21 @@ impl Kernel {
             }
         }
         let anchor = loads[0].0;
+        // CB Storage definitions live in the prologue (past leading
+        // params/storages, before everything else): tt_init_math's
+        // startup triple references every compute CB right after
+        // EndReader, so a mid-kernel definition is a use before
+        // declaration. Inserting before `prologue` keeps it stable.
+        let mut prologue = self.head;
+        for _ in 0..250_000 {
+            if prologue.is_null() {
+                break;
+            }
+            match self.ops[prologue].op {
+                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
+                _ => break,
+            }
+        }
         // One CB per DRAM param, in first-load order; slots counted up front.
         let mut cbs: Vec<(OpId, DType, i64)> = Vec::new();
         for (_, base, _) in loads.iter() {
@@ -165,7 +180,11 @@ impl Kernel {
         let mut cb_of: Map<OpId, OpId> = Map::default();
         let mut slot_of: Map<OpId, i64> = Map::default();
         for (base, dtype, ntiles) in cbs.iter() {
-            let cb = self.insert_before(anchor, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 });
+            let cb = if prologue.is_null() {
+                self.push_back(Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
+            } else {
+                self.insert_before(prologue, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
+            };
             cb_of.insert(*base, cb);
             slot_of.insert(*base, 0);
         }
@@ -265,10 +284,12 @@ impl Kernel {
                     if matches!(self.ops[base].op, Op::Storage { .. }) {
                         // Already lowered; the writer pass owns nothing here.
                     } else if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
-                        if self.shape(id) != vec![32, 32] {
-                            return;
+                        // Tiled stores and row stores (a reduce row is 32
+                        // elements); anything else bails the pass.
+                        match self.shape(id).as_slice() {
+                            [32, 32] | [32] => stores.push((id, base, off, src)),
+                            _ => return,
                         }
-                        stores.push((id, base, off, src));
                     } else {
                         return;
                     }
@@ -340,8 +361,23 @@ impl Kernel {
         }
         let mut cb_of: Map<OpId, OpId> = Map::default();
         let mut slot_of: Map<OpId, i64> = Map::default();
+        // CB Storage definitions live in the prologue (see tt_add_reader).
+        let mut prologue = self.head;
+        for _ in 0..250_000 {
+            if prologue.is_null() {
+                break;
+            }
+            match self.ops[prologue].op {
+                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
+                _ => break,
+            }
+        }
         for (base, dtype, ntiles) in cbs.iter() {
-            let cb = self.insert_before(first, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 });
+            let cb = if prologue.is_null() {
+                self.push_back(Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
+            } else {
+                self.insert_before(prologue, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
+            };
             cb_of.insert(*base, cb);
             slot_of.insert(*base, 0);
         }
@@ -355,7 +391,18 @@ impl Kernel {
             // CB indices are elementwise (uniform with vector traffic):
             // tile k lives at element offset k*1024.
             let slot_c = self.insert_const_idx_before(*store, slot * 1024);
-            let bytes = self.block_bytes(&[32, 32]);
+            // Drain access shape follows the store: tile or row. The
+            // descriptor is built before the store (not block_bytes,
+            // which push_backs past it — a use before declaration).
+            let bytes = match self.shape(*store).as_slice() {
+                [32, 32] => {
+                    let c32a = self.insert_before(*store, Op::Const(Constant::new(32u16)));
+                    let c32b = self.insert_before(*store, Op::Const(Constant::new(32u16)));
+                    self.insert_before(*store, Op::Stack { ops: [c32a, c32b].into() })
+                }
+                [32] => self.insert_before(*store, Op::Const(Constant::new(32u16))),
+                _ => unreachable!("tt_add_writer: gate admits only tile/row stores"),
+            };
             let Op::Store { src: v, .. } = self.ops[*store].op else {
                 return;
             };
@@ -392,6 +439,133 @@ impl Kernel {
             }
             let cloned_off = memo[off];
             self.push_back(Op::Copy { src: cb, src_idx: slot_c, dst: *base, dst_idx: cloned_off, bytes });
+        }
+        self.verify();
+    }
+
+    /// Mid-computation CB materialization: every tile-typed value feeding
+    /// a tile compute op must come from a CB load — the unpacker streams
+    /// CBs only, so a `Cast`/chain between load and consumer is a lowering
+    /// bug (loud in `tt_storage`, which resolves every tile operand to a
+    /// `Circular` storage). For each such input not already `Load` from a
+    /// storage (Circular input is ready; Register input is acc threading,
+    /// left alone), insert `Store(new CB)` + `Load(new CB)` feeding the op:
+    /// the manual-CB contract (one CB per intermediate, cf. the
+    /// `tenstorrent_exp_reduce` pattern) as a pass. One CB per wrapped
+    /// value, input dtype, single tile; duplicate traffic per consumer
+    /// keeps FIFO balance exact (one push per pop). Covers `ReduceTile`,
+    /// `MatmulTile` (`x`/`y`, never `acc`), `TransposeTile`, and
+    /// tile-shaped elementwise `Unary`/`Binary`/`Cast`/`Bitcast` (scalar
+    /// lanes flow through untouched). `BroadcastTile` markers are skipped:
+    /// dead ones must stay traffic-free, live ones fail loudly in
+    /// `tt_storage` if unresolvable. Runs after `tt_add_writer` (traffic
+    /// edges first, interior second). TT-only, no `Loop`s — same contract
+    /// as reader/writer; tile-op inputs outside `[32, 32]` bail the whole
+    /// pass instead of half-rewriting.
+    pub fn tt_add_compute_cbs(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        for (_, x) in self.iter_unordered() {
+            if let Op::Loop { .. } = x {
+                return;
+            }
+        }
+        // (consumer, operand tag, input): tag 0 = x/a, 1 = y/b.
+        let mut wraps: Vec<(OpId, u8, OpId)> = Vec::new();
+        let mut id = self.head;
+        for _ in 0..250_000 {
+            if id.is_null() {
+                break;
+            }
+            // Already storage-backed (Circular input ready, Register
+            // input is acc threading): nothing to do.
+            let backed = |input: OpId| {
+                if let Op::Load { src, .. } = self.ops[input].op {
+                    return matches!(self.ops[src].op, Op::Storage { .. });
+                }
+                false
+            };
+            match self.ops[id].op {
+                Op::TT(TTOp::ReduceTile { x, .. }) | Op::TT(TTOp::TransposeTile { x }) => {
+                    if self.shape(x) != vec![32, 32] {
+                        return;
+                    }
+                    if !backed(x) {
+                        wraps.push((id, 0, x));
+                    }
+                }
+                Op::TT(TTOp::MatmulTile { x, y, .. }) => {
+                    if self.shape(x) != vec![32, 32] || self.shape(y) != vec![32, 32] {
+                        return;
+                    }
+                    if !backed(x) {
+                        wraps.push((id, 0, x));
+                    }
+                    if !backed(y) {
+                        wraps.push((id, 1, y));
+                    }
+                }
+                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
+                    if self.shape(x) == vec![32, 32] && !backed(x) {
+                        wraps.push((id, 0, x));
+                    }
+                }
+                Op::Binary { x, y, .. } => {
+                    if self.shape(x) == vec![32, 32] && !backed(x) {
+                        wraps.push((id, 0, x));
+                    }
+                    if self.shape(y) == vec![32, 32] && !backed(y) {
+                        wraps.push((id, 1, y));
+                    }
+                }
+                _ => {}
+            }
+            id = self.ops[id].next;
+        }
+        // CB Storage definitions live in the prologue (see tt_add_reader).
+        // Computed once: inserting before `prologue` keeps it stable.
+        let mut prologue = self.head;
+        for _ in 0..250_000 {
+            if prologue.is_null() {
+                break;
+            }
+            match self.ops[prologue].op {
+                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
+                _ => break,
+            }
+        }
+        for (consumer, tag, input) in wraps {
+            let dtype = self.dtype(input);
+            let cb = if prologue.is_null() {
+                self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+            } else {
+                self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+            };
+            let zero = self.insert_const_idx_before(consumer, 0i64);
+            let c32a = self.insert_before(consumer, Op::Const(Constant::new(32u16)));
+            let c32b = self.insert_before(consumer, Op::Const(Constant::new(32u16)));
+            let bytes = self.insert_before(consumer, Op::Stack { ops: [c32a, c32b].into() });
+            self.insert_before(consumer, Op::Store { dst: cb, dst_idx: zero, src: input, bytes });
+            let load = self.insert_before(consumer, Op::Load { src: cb, src_idx: zero, bytes });
+            match &mut self.ops[consumer].op {
+                Op::TT(TTOp::ReduceTile { x, .. })
+                | Op::TT(TTOp::TransposeTile { x })
+                | Op::Unary { x, .. }
+                | Op::Cast { x, .. }
+                | Op::Bitcast { x, .. } => {
+                    debug_assert!(tag == 0, "tt_add_compute_cbs: single-operand consumer with tag {tag}");
+                    *x = load;
+                }
+                Op::Binary { x, y, .. } | Op::TT(TTOp::MatmulTile { x, y, .. }) => {
+                    if tag == 0 {
+                        *x = load;
+                    } else {
+                        *y = load;
+                    }
+                }
+                _ => unreachable!("tt_add_compute_cbs: consumer {consumer:?} vanished"),
+            }
         }
         self.verify();
     }
@@ -504,17 +678,10 @@ impl Kernel {
                 _ => false,
             }
         };
-        // Pack drain: a Store into a Circular buffer of a tile value
-        // (Register slot, circular load, or SSA/LLK/Asm tile result).
-        // The drain empties DST into a CB.
-        let is_pack = |kernel: &Kernel, id: OpId| {
-            if let Op::Store { src: x, dst, .. } = kernel.at(id) {
-                if matches!(kernel.at(*dst), Op::Storage { scope: MemScope::Circular, .. }) {
-                    return kernel.shape(*x).len() == 2;
-                }
-            }
-            false
-        };
+        // Pack drain: a Store into a Circular buffer of a tile or row
+        // value. Single source of truth is `tt_pack_store_cb` (shared
+        // with sync accounting and init_math); this delegates to it.
+        let is_pack = |kernel: &Kernel, id: OpId| kernel.tt_pack_store_cb(id).is_some();
         let mut op_id = self.head;
         while !op_id.is_null() {
             // Section scan: ordered math/pack positions, per-math
@@ -817,6 +984,19 @@ impl Kernel {
     /// unfused (dead) markers stay in place and are ignored downstream.
     pub fn tt_storage(&mut self) {
         let mut op_id = self.head;
+        // CB Storage definitions live in the prologue (see tt_add_reader):
+        // tt_init_math's startup triple references every compute CB right
+        // after EndReader. Lowered CBs created mid-pass use this anchor.
+        let mut prologue = self.head;
+        for _ in 0..250_000 {
+            if prologue.is_null() {
+                break;
+            }
+            match self.ops[prologue].op {
+                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
+                _ => break,
+            }
+        }
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             // Canonicalize CB→CB moves to load+store spelling first: a
@@ -831,6 +1011,50 @@ impl Kernel {
                     op_id = next;
                     continue;
                 }
+            }
+            // Unscaled-reduce lowering: a pure ReduceTile becomes an
+            // LLKReduce over its input CB plus a device-filled ones CB
+            // as the identity scaler (fill + pack). A graph scaler mul
+            // is fuse_llks' fusion domain, later. Runs before the
+            // shared-borrow template match below (it mutates).
+            let reduce = match self.at(op_id) {
+                Op::TT(TTOp::ReduceTile { x, rop, kind }) => Some((*x, *rop, *kind)),
+                _ => None,
+            };
+            if let Some((x, rop, kind)) = reduce {
+                let cb_in = self.tt_storage_of(x);
+                debug_assert!(
+                    matches!(self.at(cb_in), Op::Storage { scope: MemScope::Circular, .. }),
+                    "tt_storage: reduce input {cb_in:?} is not a Circular storage"
+                );
+                let dtype = self.dtype(x);
+                if !dtype.is_float() {
+                    todo!("tt_storage: ones fill for non-float dtype {dtype:?}");
+                }
+                let ones_cb = if prologue.is_null() {
+                    self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+                } else {
+                    self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+                };
+                let fill_dst = self.insert_before(op_id, Op::Storage { dtype, scope: MemScope::Register, len: 1024 });
+                let slot = self.insert_before(op_id, Op::Storage { dtype, scope: MemScope::Register, len: 1024 });
+                let zero = self.insert_const_idx_before(op_id, 0i64);
+                let c32a = self.insert_before(op_id, Op::Const(Constant::new(32u16)));
+                let c32b = self.insert_before(op_id, Op::Const(Constant::new(32u16)));
+                let bytes = self.insert_before(op_id, Op::Stack { ops: [c32a, c32b].into() });
+                // Plain Asm renders verbatim (no dispatch): fill the DST
+                // slot, read it back through a Register load, pack it.
+                self.insert_before(op_id, Op::Asm { asm: TinyString::new("fill_tile_init();"), ops: TinyVec::new(&[]) });
+                self.insert_before(
+                    op_id,
+                    Op::Asm { asm: TinyString::new("fill_tile({0}, 1.0);"), ops: TinyVec::new(&[fill_dst]) },
+                );
+                let ones_val = self.insert_before(op_id, Op::Load { src: fill_dst, src_idx: zero, bytes });
+                self.insert_before(op_id, Op::Store { dst: ones_cb, dst_idx: zero, src: ones_val, bytes });
+                let scaler = self.insert_before(op_id, Op::Load { src: ones_cb, src_idx: zero, bytes });
+                self.ops[op_id].op = Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc: ones_cb, slot, x, scaler });
+                op_id = next;
+                continue;
             }
             let (asm, ops) = match self.at(op_id) {
                 Op::TT(TTOp::MatmulTile { x, y, acc }) => {
@@ -858,7 +1082,7 @@ impl Kernel {
                         "tt_storage: reduce input {cb_in:?} is not a Circular storage"
                     );
                     todo!(
-                        "tt_storage: pure ReduceTile has no scale operand; fuse_llks must wire the scale mul's CB as cb_sc first (ones source for the unscaled case undecided)"
+                        "tt_storage: ReduceTile reached the template match unlowered"
                     );
                 }
                 Op::TT(TTOp::TransposeTile { x }) => {
@@ -1566,18 +1790,19 @@ impl Kernel {
                             // element-wise above (exact page multiples
                             // publish); the per-op publish here would
                             // over-count. Partial pages stay
-                            // unpublished (loud downstream).
+                            // unpublished (loud downstream). Tile traffic
+                            // keys off the Copy's access shape, not the
+                            // CB buffer's ([len] is always length-1).
                             let tallied =
-                                self.shape(dst).len() <= 1;
+                                self.shape(op_id).len() <= 1;
                             if !tallied {
                                 self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb, n: 1 }));
                                 self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
                             }
                         }
                         (Some(cb), None) => {
-                            if self.shape(src).len() == 1 {
-                                panic!("tt_sync_cbs: vector drain {op_id:?} has no sync support");
-                            }
+                            // Drains wait page-granular like tile drains;
+                            // partial-page use needs no special tally.
                             // Indexed-window reads carry no per-trip
                             // wait: the bracket wait covers the window.
                             if !batched_read.contains(&op_id) {
@@ -1591,12 +1816,13 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { src: x, dst, .. } => {
-                    // Pack store: a tile value into a Circular buffer
-                    // reserves a back slot and pushes it, like a publish.
-                    // A `Const` src is a fill, not a pack — left alone
-                    // (render rejects it loudly).
-                    if self.is_circular_base(dst) && self.shape(x).len() == 2 {
+                Op::Store { dst, .. } => {
+                    // Pack store: a tile or row value into a Circular
+                    // buffer reserves a back slot and pushes it, like a
+                    // publish. A `Const` src is a fill, not a pack — left
+                    // alone (render rejects it loudly). Single source of
+                    // truth is `tt_pack_store_cb`.
+                    if self.is_circular_base(dst) && self.tt_pack_store_cb(op_id).is_some() {
                         self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb: self.tt_storage_of(dst), n: 1 }));
                         let cb = self.tt_storage_of(dst);
                         self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
@@ -2850,6 +3076,79 @@ impl Kernel {
                     f.waited -= need;
                     f.popped += need;
                 }
+                Op::Copy { src, src_idx, dst, dst_idx, .. } => {
+                    // 64-byte congruence on DRAM-touching traffic: the
+                    // board crashes on incongruent NOC addresses, so both
+                    // ends of every DRAM Copy must agree mod 64. Offsets
+                    // are index x unit x elsize: tile transfers count
+                    // slots (1024 els), vector/scalar count elements —
+                    // the same units render_copy emits. Affine indices
+                    // prove by stride (get_strides, bare var = stride 1);
+                    // anything else is unprovable and rejected, never
+                    // silently skipped.
+                    let is_dram = |base: OpId| {
+                        matches!(
+                            self.at(base),
+                            Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }
+                        )
+                    };
+                    if is_dram(src) || is_dram(dst) {
+                        let elsize = |base: OpId| match self.at(base) {
+                            Op::Param { dtype, .. } | Op::Storage { dtype, .. } => {
+                                let bits = dtype.bit_size();
+                                if bits % 8 != 0 {
+                                    panic!("tt_fifo_check: copy {op_id:?} side {base:?} has sub-byte dtype {dtype:?}");
+                                }
+                                (bits / 8) as i64
+                            }
+                            other => panic!("tt_fifo_check: copy {op_id:?} side {base:?} is not a buffer: {other:?}"),
+                        };
+                        let unit: i64 = match self.shape(op_id).as_slice() {
+                            [_, _] => 1024,
+                            [] | [_] => 1,
+                            _ => panic!("tt_fifo_check: copy {op_id:?} has non-tile/vector access shape"),
+                        };
+                        // Affine decomposition: per-var element strides
+                        // plus the const base (the NULL entry); a null
+                        // index is const 0.
+                        let decomp = |idx: OpId| -> Map<OpId, i64> {
+                            if idx.is_null() {
+                                return Map::default();
+                            }
+                            self.get_strides(idx)
+                                .unwrap_or_else(|| panic!("tt_fifo_check: copy {op_id:?} has unprovable index {idx:?}"))
+                                .into_iter()
+                                .map(|(v, (_, st))| (v, st))
+                                .collect()
+                        };
+                        let sm = decomp(src_idx);
+                        let dm = decomp(dst_idx);
+                        let es = elsize(src);
+                        let ed = elsize(dst);
+                        let check = |var: &str, ss: i64, ds: i64| {
+                            if (ss * unit * es - ds * unit * ed).rem_euclid(64) != 0 {
+                                panic!(
+                                    "tt_fifo_check: copy {op_id:?} is 64-byte incongruent at {var}: src {ss} vs dst {ds} (unit {unit}, elsize {es}/{ed})"
+                                );
+                            }
+                        };
+                        for (v, ss) in sm.iter() {
+                            if v.is_null() {
+                                continue;
+                            }
+                            check(&std::format!("{v:?}"), *ss, dm.get(v).copied().unwrap_or(0));
+                        }
+                        for (v, ds) in dm.iter() {
+                            if v.is_null() || sm.contains_key(v) {
+                                continue;
+                            }
+                            check(&std::format!("{v:?}"), 0, *ds);
+                        }
+                        let bs = sm.get(&OpId::NULL).copied().unwrap_or(0);
+                        let bd = dm.get(&OpId::NULL).copied().unwrap_or(0);
+                        check("base", bs, bd);
+                    }
+                }
                 _ => {}
             }
             op_id = self.next_op(op_id);
@@ -2912,10 +3211,13 @@ impl Kernel {
     /// accounting, and `tt_init_math` — single source of truth).
     fn tt_pack_store_cb(&self, id: OpId) -> Option<OpId> {
         if let Op::Store { src: x, dst, .. } = self.at(id) {
-            if matches!(self.at(*dst), Op::Storage { scope: MemScope::Circular, .. })
-                && self.shape(*x).len() == 2
-            {
-                return Some(*dst);
+            if matches!(self.at(*dst), Op::Storage { scope: MemScope::Circular, .. }) {
+                // Tile and row packs (rank 1 or 2 values); scalar stores
+                // stay rejected loudly downstream.
+                let n = self.shape(*x).len();
+                if n == 1 || n == 2 {
+                    return Some(*dst);
+                }
             }
         }
         None

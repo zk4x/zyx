@@ -1141,16 +1141,20 @@ fn render_copy(
             if sec.section != 2 {
                 return Err(sec.err(format!("drain {id:?} outside the writer")));
             }
-            if matches!(sec.k.shape(id).as_slice(), [_]) {
-                return Err(sec.err(format!("vector drain {id:?} is not supported")));
-            }
             let scb = sec.cb_num(src_storage)?;
             let (param, didx) = dram_side(sec.k, dst, dst_idx)?;
             let ord = sec.ord_of(param)?;
             let idx = sec.expr(didx)?;
             let eb = elem_bytes(sec.k, param)?;
-            let bytes = tt_tile_bytes(cb_dtype(sec.k, src_storage)?)?;
-            // Drain indices are element-unit (like the publish side), so
+            // Transfer size follows the access shape (mirror of the
+            // publish arm): whole tile, `size`-element vector, scalar.
+            let bytes = match sec.k.shape(id).as_slice() {
+                [_, _] => tt_tile_bytes(cb_dtype(sec.k, src_storage)?)?,
+                [size] => (*size as u32) * eb,
+                [] => eb,
+                _ => todo!("tt drain: rank>2 access"),
+            };
+            // Drain indices are elementwise (like the publish side), so
             // the slot stride is `eb`, not tile bytes.
             let slot = cb_slot_expr(sec, src_idx, eb)?;
             let noc = sec.transfer;

@@ -1234,7 +1234,7 @@ impl Kernel {
                 | Op::Unary { x, .. }
                 | Op::TT(TTOp::MatmulTile { x, .. })
                 | Op::TT(TTOp::ReduceTile { x, .. })
-                | Op::TT(TTOp::LLKReduce { cb_in: x, .. })
+                | Op::TT(TTOp::LLKReduce { x, .. })
                 | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
@@ -1457,7 +1457,7 @@ impl Kernel {
                 | Op::Unary { x, .. }
                 | Op::TT(TTOp::MatmulTile { x, .. })
                 | Op::TT(TTOp::ReduceTile { x, .. })
-                | Op::TT(TTOp::LLKReduce { cb_in: x, .. })
+                | Op::TT(TTOp::LLKReduce { x, .. })
                 | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {

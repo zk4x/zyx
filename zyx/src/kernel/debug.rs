@@ -342,9 +342,13 @@ impl Kernel {
                     let src_idx = id_map.get(&src_idx).copied().unwrap_or(src_idx);
                     let dst = id_map.get(&dst).copied().unwrap_or(dst);
                     let dst_idx = id_map.get(&dst_idx).copied().unwrap_or(dst_idx);
-                    let access_shape = self.shape(op_id);
-                    writeln!(f, "{indent}r{dst}[r{dst_idx} @ {access_shape:?}] = r{src}[r{src_idx}]    // {red}copy{reset}")
-                        .unwrap();
+                    let kind = match self.shape(op_id).as_slice() {
+                        [] => String::from("copy"),
+                        [len] => format!("copy vec{len}"),
+                        [x, y] => format!("copy tile {x}x{y}"),
+                        _ => todo!("debug: rank>2 access"),
+                    };
+                    writeln!(f, "{indent}{red}{kind}{reset} r{dst}[r{dst_idx}] = r{src}[r{src_idx}]").unwrap();
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
