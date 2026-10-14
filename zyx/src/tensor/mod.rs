@@ -32,7 +32,6 @@ mod dequantize;
 mod elementwise;
 mod index_ops;
 mod reduce_ops;
-mod tilize;
 
 /// Signed axis, when we need negative axes for indexing, reduces and so on...
 pub type Axis = i32;

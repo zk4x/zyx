@@ -537,6 +537,9 @@ impl NoSearch {
         seed.dead_code_elimination();
 
         let debug = crate::debug_mask();
+        if debug.ir() {
+            seed.debug();
+        }
         let program_id = seed.dev.compile(&seed, debug.asm())?;
         // Warmup + single timed launch, mirroring `launch_with_timings`.
         let _ = seed.dev.launch_timed(program_id, args)?;

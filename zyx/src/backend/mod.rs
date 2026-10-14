@@ -421,14 +421,23 @@ impl Plan {
                         if resolved.contains_key(&op.dst) {
                             continue;
                         }
+                        let src_placed =
+                            resolved.get(&op.src).unwrap_or_else(|| panic!("replay: copy src {:?} is unplaced", op.src)).clone();
                         let el = Dim::from(op.dtype.bit_size() / 8);
                         let bytes = op.dims.iter().map(|d| d.eval(vars)).fold(el, |a, b| a * b);
                         debug_assert!(bytes >= 0, "replay copied negative bytes");
+                        // TT sources move physical bytes (whole tiles);
+                        // logical dims undercount, so take the shard lens.
+                        #[cfg(feature = "tenstorrent")]
+                        let bytes = match src_placed.shards.first() {
+                            Some(Shard { pool: Pool::TT(_), .. }) => {
+                                src_placed.shards.iter().map(|s| s.len as Dim).sum()
+                            }
+                            _ => bytes,
+                        };
                         let pool = dst.pool();
                         let chunk = pool.allocate(bytes)?;
                         let placed = Arc::new(Placement { shards: vec![Shard { pool, chunk, offset: 0, len: bytes as usize }] });
-                        let src_placed =
-                            resolved.get(&op.src).unwrap_or_else(|| panic!("replay: copy src {:?} is unplaced", op.src)).clone();
                         match dst {
                             Dev::C => {
                                 let device = c::device()?;

@@ -203,6 +203,18 @@ impl Kernel {
                 active.remove(&v);
                 return None;
             }
+            // A reshape is metadata: the chain uses the tile, the view
+            // stays for other users (or dies in DCE). The store below
+            // always drains the whole tile.
+            if let Op::Reshape { x, .. } = k.at(v) {
+                let Some(t) = descend(k, *x, memo, active, rewires, scalars, dims) else {
+                    active.remove(&v);
+                    return None;
+                };
+                memo.insert(v, t);
+                active.remove(&v);
+                return Some(t);
+            }
             // Scalar leaves broadcast later.
             if k.shape(v).is_empty() && matches!(k.at(v), Op::Const(_)) {
                 if !scalars.contains(&v) {
@@ -245,11 +257,9 @@ impl Kernel {
             }
             let Some(m) = self.match_pat(op, &anchor) else { continue };
             let (src, bytes) = (m.op('x'), m.op('b'));
-            // Vector length (scalar descriptor), scalar-or-vector source.
-            if bytes.is_null() || !self.shape(bytes).is_empty() {
-                continue;
-            }
-            if self.shape(src).len() > 1 {
+            // Any store with a descriptor (scalar lengths and sub-tile
+            // descriptors alike); unit stores (null bytes) stay scalar.
+            if bytes.is_null() {
                 continue;
             }
             let mut memo = Map::default();
@@ -261,8 +271,12 @@ impl Kernel {
                 continue;
             };
             // Tile dims come from the terminal tile, not the root (the
-            // root is still vector-shaped at match time).
+            // root is still vector-shaped at match time). Pure tile
+            // chains retile to themselves: nothing to do.
             let Some(dims) = dims else { continue };
+            if rewires.is_empty() && scalars.is_empty() {
+                continue;
+            }
             rewires.push(Rewire { user: op, input: src, target: root });
             jobs.push(Job { store: op, rewires, scalars, dims });
         }

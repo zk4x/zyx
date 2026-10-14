@@ -161,6 +161,9 @@ impl Kernel {
     pub(crate) fn generate_tenstorrent(&self) -> Result<TTProgram, BackendError> {
         // Render-only: lowering lives in `device_epilogue` (which
         // verifies the lowered IR); this consumes the result 1:1.
+        if crate::debug_mask().ir() {
+            self.debug();
+        }
         let k = self;
 
         // Param ordinals + input/output dtypes, flat head order.
@@ -1408,6 +1411,6 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
             sec.slots.insert(dst, slot);
             Ok(())
         }
-        _ => Err(sec.err(format!("store {id:?} dst is not a buffer"))),
+        _ => Err(sec.err(format!("store {id:?} dst {dst:?} ({:?}) is not a buffer", sec.k.at(dst)))),
     }
 }
