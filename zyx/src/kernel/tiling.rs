@@ -83,9 +83,6 @@ impl Kernel {
         // Retile the reduce row (see below) on the final IR.
         self.tilize_stores();
 
-        self.debug();
-        panic!();
-
         self.verify();
     }
 

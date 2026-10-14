@@ -69,16 +69,6 @@ impl Tensor {
         dtype: Option<DType>,
         correction: Dim,
     ) -> Result<Tensor, ZyxError> {
-        fn reduce_acc_dtype(dtype: DType) -> DType {
-            if dtype.is_uint() {
-                return dtype.least_upper_dtype(DType::U32);
-            }
-            if dtype.is_int() || dtype == DType::Bool {
-                return dtype.least_upper_dtype(DType::I32);
-            }
-            dtype.least_upper_dtype(DType::F32)
-        }
-
         // Determine axes
         let shape = self.resolve_shape();
         // Dim tensors for CONSTRUCTION: computation must compose these so
@@ -93,27 +83,17 @@ impl Tensor {
         // Start with the base reduction for ops runtime supports
         let mut tensor = match op {
             ReduceOp::Sum => {
-                let x = if let Some(dtype) = dtype {
-                    self.cast(dtype)
-                } else {
-                    self.cast(reduce_acc_dtype(x_dtype))
-                };
+                // Torch semantics: accumulate in the input dtype; only
+                // an explicit `dtype` (sum_dtype) changes it.
+                let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
                 x.reduce_axes(axes_vec.clone(), BOp::Add)?
             }
             ReduceOp::Max => {
-                let x = if let Some(dtype) = dtype {
-                    self.cast(dtype)
-                } else {
-                    self.cast(reduce_acc_dtype(x_dtype))
-                };
+                let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
                 x.reduce_axes(axes_vec.clone(), BOp::Max)?
             }
             ReduceOp::Prod => {
-                let x = if let Some(dtype) = dtype {
-                    self.cast(dtype)
-                } else {
-                    self.cast(reduce_acc_dtype(x_dtype))
-                };
+                let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
                 x.reduce_axes(axes_vec.clone(), BOp::Mul)?
             }
             ReduceOp::Min => {

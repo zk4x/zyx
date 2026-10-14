@@ -103,7 +103,7 @@ impl Kernel {
                     let x = id_map[&x];
                     writeln!(
                         f,
-                        "{indent}r{out_id}: {dtype}{grey}: {dtype}{reset} = {red}reduce_tile_{}{reset} r{x}",
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {red}reduce_tile_{}{reset} r{x}",
                         match rop {
                             BOp::Add => "sum",
                             BOp::Max => "max",
