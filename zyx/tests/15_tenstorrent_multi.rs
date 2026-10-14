@@ -360,11 +360,13 @@ fn tenstorrent_multitile_double() -> Result<(), ZyxError> {
     });
     k.tt_end_reader();
     // Compute: pop each tile, double it, push to cout at index j.
+    // CB indices are elementwise: tile j lives at element j*1024.
     k.loop_over(2, |k, _o| {
         k.loop_over(2, |k, j| {
             let va = k.load_cb(ca, 0);
             let s = k.add(va, va);
-            k.store_cb(cout, s, j);
+            let js = k.mad(j, 1024, 0);
+            k.store_cb(cout, s, js);
         });
     });
     k.tt_end_compute();
@@ -373,7 +375,8 @@ fn tenstorrent_multitile_double() -> Result<(), ZyxError> {
         k.loop_over(2, |k, j| {
             let ot = k.mad(o, 2, j);
             let base = k.mad(ot, 1024, 0);
-            k.store_cb_to_global(cout, j, out, base);
+            let js = k.mad(j, 1024, 0);
+            k.store_cb_to_global(cout, js, out, base);
         });
     });
 

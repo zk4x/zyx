@@ -21,6 +21,7 @@
 ## No Workarounds
 
 - Never paper over a bug by rerouting the caller away from the buggy path (e.g. swapping `index_select` for `slice`, dropping an API). Reproduce it in a test (e.g. `zyx/tests/`) and report it. If avoiding the path seems necessary, STOP and ask first.
+- **Remove limitations, don't work around them.** When a helper cannot express what its callers need (a silent drop, a partial match, a narrowed gate), fix the helper — never build workaround logic around its gaps in the callers. A workaround bakes the limitation into every caller; removing it fixes all of them.
 
 ## Optimization Pass Performance Budget
 

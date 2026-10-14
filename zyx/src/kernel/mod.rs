@@ -1581,11 +1581,23 @@ impl Kernel {
         // Patterns built once per call, matched by reference: no
         // allocation on the per-node path below.
         let range_or_loop = Pat::any([Pat::Range, Pat::Loop]);
+        let bare_idx = Pat::all([Pat::bind('r'), range_or_loop.clone()]);
         let add_idx = Pat::binary(BOp::Add, Pat::all([Pat::bind('r'), range_or_loop.clone()]), Pat::bind('s'));
         let add = Pat::binary(BOp::Add, Pat::bind('a'), Pat::bind('b'));
+        let sub = Pat::binary(BOp::Sub, Pat::bind('a'), Pat::bind('b'));
+        let neg = Pat::unary(Pat::bind('a'), UOp::Neg);
         let mul_idx = Pat::binary(BOp::Mul, Pat::all([Pat::bind('r'), range_or_loop.clone()]), Pat::bind_const('k'));
         let shl_idx = Pat::binary(BOp::BitShiftLeft, Pat::all([Pat::bind('r'), range_or_loop]), Pat::bind_const('k'));
         let shl = Pat::binary(BOp::BitShiftLeft, Pat::bind('e'), Pat::bind_const('k'));
+
+        // Stride accumulation: one var may appear several times
+        // (i + i*4 has stride 5, not 4); overwriting drops terms.
+        let add_stride = |indices: &mut Map<OpId, (Dim, Dim)>, var: OpId, len: Dim, stride: Dim| {
+            indices
+                .entry(var)
+                .and_modify(|(_, s)| *s += stride)
+                .or_insert((len, stride));
+        };
 
         let mut params = vec![(index, 1i64)];
         let mut indices = Map::default();
@@ -1601,12 +1613,21 @@ impl Kernel {
                     .or_insert((0, c.as_dim().unwrap() * scale));
                 continue;
             }
-            // Add with an index operand: stride 1, descend the rest.
+            // Bare index var: stride 1 (times the inherited scale).
+            if let Some(m) = self.match_pat(param, &bare_idx) {
+                let Some(d) = index_len_of(self.at(m.op('r'))) else {
+                    return None;
+                };
+                add_stride(&mut indices, m.op('r'), d, scale);
+                continue;
+            }
+            // Add with an index operand: stride 1 (times the inherited
+            // scale), descend the rest.
             if let Some(m) = self.match_pat(param, &add_idx) {
                 let Some(d) = index_len_of(self.at(m.op('r'))) else {
                     return None;
                 };
-                indices.insert(m.op('r'), (d, 1));
+                add_stride(&mut indices, m.op('r'), d, scale);
                 params.push((m.op('s'), scale));
                 continue;
             }
@@ -1616,13 +1637,24 @@ impl Kernel {
                 params.push((m.op('b'), scale));
                 continue;
             }
+            // Sub descends with the subtrahend negated.
+            if let Some(m) = self.match_pat(param, &sub) {
+                params.push((m.op('a'), scale));
+                params.push((m.op('b'), -scale));
+                continue;
+            }
+            // Negation flips the scale.
+            if let Some(m) = self.match_pat(param, &neg) {
+                params.push((m.op('a'), -scale));
+                continue;
+            }
             // Index times const: stride folds the factor in.
             if let Some(m) = self.match_pat(param, &mul_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
                 let Some(d) = index_len_of(self.at(m.op('r'))) else {
                     return None;
                 };
-                indices.insert(m.op('r'), (d, c.as_dim().unwrap() * scale));
+                add_stride(&mut indices, m.op('r'), d, c.as_dim().unwrap() * scale);
                 continue;
             }
             // Shifted index records 2^k; any other shifted expr descends.
@@ -1631,7 +1663,7 @@ impl Kernel {
                 let Some(d) = index_len_of(self.at(m.op('r'))) else {
                     return None;
                 };
-                indices.insert(m.op('r'), (d, (1i64 << c.as_dim().unwrap()) * scale));
+                add_stride(&mut indices, m.op('r'), d, (1i64 << c.as_dim().unwrap()) * scale);
                 continue;
             }
             if let Some(m) = self.match_pat(param, &shl) {
@@ -1640,7 +1672,11 @@ impl Kernel {
                 }
                 continue;
             }
-            // Anything else carries no stride info.
+            // Anything else (Div/Mod/Min/Max, dynamic factors,
+            // data-dependent leaves) is not an affine index expression:
+            // report unanalyzable explicitly instead of returning a
+            // partial map that silently drops terms.
+            return None;
         }
         if !params.is_empty() {
             panic!("get_strides did not finish in 250000 steps");

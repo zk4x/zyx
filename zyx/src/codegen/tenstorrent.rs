@@ -1114,12 +1114,13 @@ fn render_copy(
             let ord = sec.ord_of(param)?;
             let idx = sec.expr(sidx)?;
             let eb = elem_bytes(sec.k, param)?;
-            // Tile publishes move whole tiles; vector publishes move
-            // `size` elements at the element stride. Anything else is
-            // malformed traffic.
+            // All CB indices are elementwise (uniform with vector
+            // publishes, scalar traffic, and vectorized loads): the
+            // index counts elements, `bytes` carries the transfer
+            // size. Anything else is malformed traffic.
             let tile_bytes = tt_tile_bytes(cb_dtype(sec.k, dst_storage)?)?;
             let (bytes, stride) = match sec.k.shape(id).as_slice() {
-                [_, _] => (tile_bytes, tile_bytes),
+                [_, _] => (tile_bytes, eb),
                 [size] => ((*size as u32) * eb, eb),
                 [] => (eb, eb),
                 _ => todo!("tt publish: rank>2 access"),

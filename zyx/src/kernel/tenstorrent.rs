@@ -206,7 +206,9 @@ impl Kernel {
             slot_of.insert(*base, slot + 1);
             let cb = cb_of[base];
             let cloned_off = memo[off];
-            let slot_c = self.insert_const_idx_before(anchor, slot);
+            // CB indices are elementwise (uniform with vector traffic):
+            // tile k lives at element offset k*1024.
+            let slot_c = self.insert_const_idx_before(anchor, slot * 1024);
             // Bytes live before the anchor with the Copy: block_bytes
             // push_backs to the tail, which the Copy would precede.
             let c32a = self.insert_before(anchor, Op::Const(Constant::new(32u16)));
@@ -350,7 +352,9 @@ impl Kernel {
             let slot = slot_of[base];
             slot_of.insert(*base, slot + 1);
             let cb = cb_of[base];
-            let slot_c = self.insert_const_idx_before(*store, slot);
+            // CB indices are elementwise (uniform with vector traffic):
+            // tile k lives at element offset k*1024.
+            let slot_c = self.insert_const_idx_before(*store, slot * 1024);
             let bytes = self.block_bytes(&[32, 32]);
             let Op::Store { src: v, .. } = self.ops[*store].op else {
                 return;
