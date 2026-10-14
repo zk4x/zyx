@@ -944,6 +944,9 @@ impl TTDevice {
             }
         }
         let shim = shim();
+        if crate::debug_mask().launch() {
+            println!("[tt] launch {program_id:?} grid=({},{}) args={args:?}", grid_dims[0], grid_dims[1]);
+        }
         let ok = unsafe {
             let ordinals = vars.iter().map(|(o, _)| *o).collect::<Vec<u32>>();
             let values = vars.iter().map(|(_, v)| *v).collect::<Vec<u32>>();

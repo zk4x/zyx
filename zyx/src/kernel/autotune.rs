@@ -98,12 +98,22 @@ impl Kernel {
         // Non-TT backends need no device epilogue.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
-            self.debug();
-
             self.tt_tile();
             self.tt_add_reader();
             self.tt_add_writer();
             self.tt_add_compute_cbs();
+            // Lowering (order-flexible; each pass tolerates the
+            // others' legal output): fused LLK claiming, storage,
+            // locks, duplicate-publish elimination, engine-config
+            // inits + startup + reduce cones, CB sync, pop placement.
+            self.tt_fuse_llks();
+            self.tt_storage();
+            self.tt_lock_dst();
+            self.tt_dedup_pushes();
+            self.tt_init_math().expect("device_epilogue: tt_init_math");
+            self.tt_sync_cbs();
+            self.tt_place_pops();
+            self.verify();
 
             self.common_subexpression_elimination();
             self.dead_code_elimination();

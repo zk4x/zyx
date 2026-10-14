@@ -186,6 +186,9 @@ impl Kernel {
         if crate::debug_mask().ir() {
             self.debug();
         }
+        // TT lowering runs here (custom kernels bypass the autotune
+        // epilogue); other backends no-op inside.
+        self.device_epilogue();
         let debug_asm = crate::debug_mask().asm();
         let program_id = device_id.compile(&self, debug_asm)?;
         // Dev debug bit: record the compile-time perf estimate so eager

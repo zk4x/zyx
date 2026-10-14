@@ -88,9 +88,10 @@ impl Kernel {
     /// Tenstorrent render: lower to a descriptor-only kernel — head
     /// order `ProgramDesc`, `Params`, `TensixGrid`, then the three
     /// section sources separated by the existing `EndReader` /
-    /// `EndCompute` markers. Lowering + emission runs once here via
-    /// `generate_tenstorrent` (which verifies the lowered IR);
-    /// backend `compile` only decodes positions and drives the shim.
+    /// `EndCompute` markers. Lowering lives in `device_epilogue`
+    /// (which verifies the lowered IR); `generate_tenstorrent`
+    /// renders 1:1. Backend `compile` only decodes positions and
+    /// drives the shim.
     /// The unlowered ops are consumed, never carried. Every kernel
     /// goes through here, including hand-built custom kernels (raw IR
     /// lowers exactly once; kernels already holding a `Source` pass
@@ -158,21 +159,9 @@ impl Kernel {
     /// derives CBs, DST slots, param ordinals, and grid axes from the
     /// resulting ops.
     pub(crate) fn generate_tenstorrent(&self) -> Result<TTProgram, BackendError> {
-        let mut k = self.clone();
-        // Lowering order: fused LLK claiming (sigmoid/silu composites
-        // become opaque calls), storage (compute ops become LLK calls over
-        // bare storages, broadcast fusion), locks, duplicate-publish
-        // elimination, engine-config inits + startup + reduce cones, CB
-        // sync, pop placement + FIFO check. Render consumes the result 1:1.
-        k.tt_fuse_llks();
-        k.tt_storage();
-        k.tt_lock_dst();
-        k.tt_dedup_pushes();
-        k.tt_init_math()?;
-        k.tt_sync_cbs();
-        k.tt_place_pops();
-        k.verify();
-        k.debug();
+        // Render-only: lowering lives in `device_epilogue` (which
+        // verifies the lowered IR); this consumes the result 1:1.
+        let k = self;
 
         // Param ordinals + input/output dtypes, flat head order.
         let mut param_ordinal_of: Map<OpId, u32> = Map::default();
@@ -240,7 +229,7 @@ impl Kernel {
 
         // Render.
         let (reader_src, compute_src, writer_src, reader_params, compute_params, writer_params, fp32) =
-            render(&k, &param_ordinal_of, &cbs)?;
+            render(k, &param_ordinal_of, &cbs)?;
 
         // CB config per CB, in index order.
         let mut cb_config: Vec<(u32, u32, u32)> = Vec::new();
@@ -549,7 +538,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
     let mut loop_stack: Vec<OpId> = Vec::new();
     for id in ops.iter().copied() {
         match sec.k.at(id) {
-            Op::Const { .. } | Op::Param { .. } | Op::Storage { .. } => {}
+            Op::Const { .. } | Op::Param { .. } | Op::Storage { .. } | Op::Stack { .. } => {}
             Op::Range { kind, .. } => match kind {
                 RangeKind::Group(_) => {}
                 _ => return Err(sec.err(format!("range {id:?} is not a group range"))),

@@ -41,11 +41,6 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
-        if std::env::var("ZYX_TILE_TRACE").is_ok() {
-            eprintln!("=== tt_tile: after unroll+v1 ===");
-            self.debug();
-        }
-
         // Bundle scalar work into vectors (loads, stores, then ops)
         // BEFORE coarsening: coarsen duplicates vectorized bodies per
         // lane, materializing one vector load per lane for the tile
@@ -75,7 +70,7 @@ impl Kernel {
         self.default_epilogue();
         vectorize.apply(self, 0);
 
-        self.tt_form_reduce_tiles();
+        self.vectorize_reduce_tile();
 
         let vectorize = self.opt_vectorize();
         vectorize.apply(self, 0);
@@ -92,7 +87,7 @@ impl Kernel {
     /// leftovers and must be absorbed there, never matched here. The
     /// result tile carries the sums in its first row, so every reduce
     /// becomes an Index lane of row 0. Dead chains die in DCE.
-    pub fn tt_form_reduce_tiles(&mut self) {
+    pub fn vectorize_reduce_tile(&mut self) {
         let pat = Pat::vecreduce(Pat::index(Pat::bind('t'), 'r'), 'o');
         for g in self.match_cover(&pat, &['t', 'o'], &[32]) {
             let t = g.bindings.op('t');
