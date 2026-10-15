@@ -94,9 +94,6 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
-        self.debug();
-        panic!();
-
         self.verify();
     }
 

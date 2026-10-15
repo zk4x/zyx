@@ -646,6 +646,24 @@ pub enum TTOp {
         /// Plain side tile value (provenance for sync accounting).
         plain: OpId,
     },
+    /// Lowered tile matmul: `x @ y` over tile-shaped values, rendered
+    /// as `matmul_block` (single tile: rt=ct=kt=1, transpose=0). Built
+    /// by `tt_storage` from [`TTOp::MatmulTile`]: carries the resolved
+    /// input CBs plus the result slot, like [`TTOp::LLKReduce`]. Same
+    /// effect/CSE rules as [`TTOp::LLK`]: a DCE root, pinned by LICM,
+    /// never deduplicated.
+    LLKMatmul {
+        /// Left input circular buffer.
+        cb_a: OpId,
+        /// Right input circular buffer.
+        cb_b: OpId,
+        /// Result (Register) storage.
+        slot: OpId,
+        /// Left tile value (provenance for sync accounting).
+        x: OpId,
+        /// Right tile value (provenance for sync accounting).
+        y: OpId,
+    },
 }
 
 /// Boxed payload of [`Op::Custom`]: a custom kernel boundary's inputs,
@@ -1325,6 +1343,7 @@ impl Op {
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().filter(|o| !o.is_null()).collect(),
             &Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
+            &Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => vec![cb_a, cb_b, slot, x, y],
             &Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
@@ -1440,6 +1459,7 @@ impl Op {
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().filter(|o| !o.is_null()).collect(),
             Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
+            Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => vec![cb_a, cb_b, slot, x, y],
             Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
         }
         .into_iter()

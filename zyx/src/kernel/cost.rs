@@ -79,6 +79,14 @@ impl Kernel {
                             *rcs.entry(f).or_insert(0) += 1;
                         }
                     }
+                    Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
+                        // Lowered matmul: same rule over cb_a.
+                        let (dtype, shape) = dtypes[&cb_a].clone();
+                        dtypes.insert(op_id, (dtype, shape));
+                        for &f in &[cb_a, cb_b, slot, x, y] {
+                            *rcs.entry(f).or_insert(0) += 1;
+                        }
+                    }
                     Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
                         // Lowered fused broadcast: same rule over cb_a.
                         let (dtype, shape) = dtypes[&cb_a].clone();
@@ -232,6 +240,12 @@ impl Kernel {
                                 *rcs.entry(*f).or_insert(0) += 1;
                             }
                         }
+                        TTOp::LLKMatmul { cb_a, cb_b, slot, x, y } => {
+                            dtypes.insert(op_id, dtypes[cb_a].clone());
+                            for f in [cb_a, cb_b, slot, x, y] {
+                                *rcs.entry(*f).or_insert(0) += 1;
+                            }
+                        }
                         TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. } => {
                             dtypes.insert(op_id, dtypes[cb_a].clone());
                             for f in [cb_a, cb_b, mx, plain] {
@@ -337,6 +351,7 @@ impl Kernel {
                 | Op::TT(TTOp::LLK { .. })
                 | Op::TT(TTOp::LLKReduce { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
+                | Op::TT(TTOp::LLKMatmul { .. })
                 | Op::EndLoop
                 | Op::Barrier => false,
                 // Counted loops produce the induction value; boolean

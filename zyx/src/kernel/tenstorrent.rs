@@ -648,6 +648,7 @@ impl Kernel {
                     | Op::TT(TTOp::TransposeTile { .. })
                     | Op::TT(TTOp::LLKReduce { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
+                    | Op::TT(TTOp::LLKMatmul { .. })
                     | Op::TT(TTOp::LLK { .. })
             ) {
                 return true;
@@ -1048,9 +1049,35 @@ impl Kernel {
                 op_id = next;
                 continue;
             }
+            // Matmul lowering: a MatmulTile becomes an LLKMatmul over
+            // its resolved input CBs plus a fresh result slot. Runs
+            // before the shared-borrow template match below (it mutates).
+            let matmul = match self.at(op_id) {
+                Op::TT(TTOp::MatmulTile { x, y }) => Some((*x, *y)),
+                _ => None,
+            };
+            if let Some((x, y)) = matmul {
+                let cb_a = self.tt_storage_of(x);
+                let cb_b = self.tt_storage_of(y);
+                debug_assert!(
+                    matches!(self.at(cb_a), Op::Storage { scope: MemScope::Circular, .. }),
+                    "tt_storage: matmul left {cb_a:?} is not a Circular storage"
+                );
+                debug_assert!(
+                    matches!(self.at(cb_b), Op::Storage { scope: MemScope::Circular, .. }),
+                    "tt_storage: matmul right {cb_b:?} is not a Circular storage"
+                );
+                let dtype = self.dtype(x);
+                let slot = self.insert_before(op_id, Op::Storage { dtype, scope: MemScope::Register, len: 1024 });
+                self.ops[op_id].op = Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y });
+                op_id = next;
+                continue;
+            }
             let (asm, ops) = match self.at(op_id) {
                 Op::TT(TTOp::MatmulTile { .. }) => {
-                    todo!("tt_storage: MatmulTile result slot pending redesign");
+                    todo!(
+                        "tt_storage: MatmulTile reached the template match unlowered"
+                    );
                 }
                 Op::TT(TTOp::ReduceTile { x, .. }) => {
                     let cb_in = self.tt_storage_of(*x);
@@ -1171,6 +1198,9 @@ impl Kernel {
                 Op::TT(TTOp::LLKReduce { cb_in, cb_sc, x, scaler, .. }) => {
                     *cb_in == cb || *cb_sc == cb || load_cb(*x) || load_cb(*scaler)
                 }
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, x, y, .. }) => {
+                    *cb_a == cb || *cb_b == cb || load_cb(*x) || load_cb(*y)
+                }
                 Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
                     *cb_a == cb || *cb_b == cb || load_cb(*mx) || load_cb(*plain)
                 }
@@ -1279,7 +1309,7 @@ impl Kernel {
                 let mut draws_load_wait = false;
                 for u in us {
                     match self.at(*u) {
-                        Op::TT(TTOp::LLK { .. } | TTOp::LLKReduce { .. } | TTOp::LLKBcast { .. }) => {
+                        Op::TT(TTOp::LLK { .. } | TTOp::LLKReduce { .. } | TTOp::LLKBcast { .. } | TTOp::LLKMatmul { .. }) => {
                             call_waits += 1;
                         }
                         _ => {
@@ -1527,7 +1557,7 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
+                    Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => {
                         let mut feeds = false;
                         for o in self.at(cur).parameters() {
                             if o.is_null() {
@@ -1792,6 +1822,7 @@ impl Kernel {
                                             | TTOp::ReduceTile { .. }
                                             | TTOp::LLKReduce { .. }
                                             | TTOp::LLKBcast { .. }
+                                            | TTOp::LLKMatmul { .. }
                                             | TTOp::LLK { .. },
                                         ) => true,
                                         Op::Store { .. } | Op::Asm { .. } => true,
@@ -1821,6 +1852,7 @@ impl Kernel {
                                         Op::TT(TTOp::LLK { .. })
                                             | Op::TT(TTOp::LLKReduce { .. })
                                             | Op::TT(TTOp::LLKBcast { .. })
+                                            | Op::TT(TTOp::LLKMatmul { .. })
                                     )
                                 });
                                 if !fused_only && !batched_read.contains(&op_id) {
@@ -1830,7 +1862,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
+                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => {
                     // Provenance waits: the call consumes its input CBs
                     // straight from the buffers, so each trailing feeder
                     // load gets a wait immediately before the call.
@@ -1924,6 +1956,7 @@ impl Kernel {
         // Pre-scan: first pack CB, matmul presence, startup triple.
         let mut first_pack: Option<OpId> = None;
         let mut has_matmul = false;
+        let mut has_matmul_block = false;
         let mut startup_loads: Vec<OpId> = Vec::new();
         let mut end_reader: Option<OpId> = None;
         let mut in_compute = false;
@@ -1954,21 +1987,37 @@ impl Kernel {
             {
                 has_matmul = true;
             }
+            if matches!(&self.ops[scan].op, Op::TT(TTOp::LLKMatmul { .. })) {
+                has_matmul_block = true;
+            }
             scan = self.next_op(scan);
         }
-        if let (Some(reader), false) = (end_reader, has_matmul)
-            && let (Some(&in0), Some(out)) = (startup_loads.first(), first_pack)
-        {
+        if let (Some(reader), Some(&in0), Some(out)) = (end_reader, startup_loads.first(), first_pack) {
             let in1 = startup_loads.get(1).copied().unwrap_or(in0);
-            // Same template as `tt_compute_startup`, placed right after
-            // `EndReader` (the ctor pushes back — wrong end).
-            self.insert_after(
-                reader,
-                Op::Asm {
-                    asm: TinyString::new("compute_kernel_hw_startup({0}, {1}, {2});"),
-                    ops: TinyVec::new(&[in0, in1, out]),
-                },
-            );
+            if has_matmul_block {
+                // matmul needs in0->SrcB, in1->SrcA. The installed
+                // headers have no SrcOrder-templated startup overload
+                // (docs describe a newer tree), so swap the CB args:
+                // srca=in1, srcb=in0. The legacy matmul_tiles string
+                // path below keeps its old skip.
+                self.insert_after(
+                    reader,
+                    Op::Asm {
+                        asm: TinyString::new("compute_kernel_hw_startup({1}, {0}, {2});"),
+                        ops: TinyVec::new(&[in0, in1, out]),
+                    },
+                );
+            } else if !has_matmul {
+                // Same template as `tt_compute_startup`, placed right after
+                // `EndReader` (the ctor pushes back — wrong end).
+                self.insert_after(
+                    reader,
+                    Op::Asm {
+                        asm: TinyString::new("compute_kernel_hw_startup({0}, {1}, {2});"),
+                        ops: TinyVec::new(&[in0, in1, out]),
+                    },
+                );
+            }
         }
 
         // Main walk: per-op inits, reduce cones, section discipline.
@@ -2003,7 +2052,7 @@ impl Kernel {
                 // compute, fused call, pack store, or CB load outside
                 // the compute section is malformed.
                 let bad = match &self.ops[op_id].op {
-                    Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => true,
+                    Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => true,
                     Op::Store { .. } => self.tt_pack_store_cb(op_id).is_some(),
                     Op::Load { src, .. } => {
                         matches!(self.ops[*src].op, Op::Storage { scope: MemScope::Circular, .. })
@@ -2029,6 +2078,7 @@ impl Kernel {
                 CastInit(DType, DType),
                 PackReconfig(OpId),
                 MatmulInit(OpId, OpId, OpId),
+                MatmulBlockInit(OpId, OpId, OpId),
                 TransposeInit(OpId, OpId),
                 ReduceInit(OpId, OpId, OpId, BOp, TileDim),
                 BcastInit(BOp, TileDim, OpId, OpId),
@@ -2076,6 +2126,10 @@ impl Kernel {
                     InitAction::ReduceInit(*cb_in, *cb_sc, *slot, *rop, *kind)
                 }
                 Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, .. }) => InitAction::BcastInit(*bop, *kind, *cb_a, *cb_b),
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, .. }) => {
+                    let out = first_pack.unwrap_or_else(|| panic!("tt_init_math: matmul {op_id:?} with no packed CB"));
+                    InitAction::MatmulBlockInit(*cb_a, *cb_b, out)
+                }
                 Op::TT(TTOp::LLK { .. }) => {
                     let Op::TT(TTOp::LLK { asm, ops }) = &self.ops[op_id].op else {
                         unreachable!("tt_init_math: not an LLK");
@@ -2255,6 +2309,14 @@ impl Kernel {
                 InitAction::MatmulInit(a, b, out) => {
                     unpack_src = Some(a);
                     asm_before(self, op_id, "mm_init({0}, {1}, {2});", &[a, b, out]);
+                }
+                InitAction::MatmulBlockInit(a, b, out) => {
+                    unpack_src = Some(a);
+                    // mm_init_short = state_configure(in1, in0) [the
+                    // Reverse mapping] + math/unpack matmul-mode init,
+                    // all internally thread-dispatched, so it compiles
+                    // in the replicated unpack/pack sources too.
+                    asm_before(self, op_id, "mm_init_short({0}, {1}, 0);", &[a, b, out]);
                 }
                 InitAction::TransposeInit(cb, out) => {
                     asm_before(self, op_id, "transpose_wh_init({0}, {1});", &[cb, out]);
@@ -2574,7 +2636,7 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
+                    Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => {
                         let mut feeds = false;
                         for o in self.at(cur).parameters() {
                             if o.is_null() {
@@ -2627,7 +2689,7 @@ impl Kernel {
         while !walk.is_null() {
             if matches!(
                 self.ops[walk].op,
-                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. })
+                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. })
             ) {
                 for o in self.at(walk).parameters() {
                     if o.is_null() || !matches!(self.ops[o].op, Op::Load { .. }) {
@@ -2672,6 +2734,7 @@ impl Kernel {
                     Op::TT(TTOp::LLK { .. })
                         | Op::TT(TTOp::LLKReduce { .. })
                         | Op::TT(TTOp::LLKBcast { .. })
+                        | Op::TT(TTOp::LLKMatmul { .. })
                 ) {
                     continue;
                 }
@@ -2716,7 +2779,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) => {
+                Op::TT(TTOp::LLK { .. }) | Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => {
                     let mut seen: Vec<OpId> = Vec::new();
                     let mut cbs: Vec<(OpId, OpId)> = Vec::new();
                     for o in self.at(op_id).parameters() {
@@ -3135,6 +3198,7 @@ impl Kernel {
                 slot.unwrap_or_else(|| panic!("tt_storage_of: LLK {op_id:?} names no Register slot"))
             }
             Op::TT(TTOp::LLKReduce { slot, .. }) => *slot,
+            Op::TT(TTOp::LLKMatmul { slot, .. }) => *slot,
             Op::TT(TTOp::LLKBcast { .. }) => panic!("tt_storage_of: LLKBcast {op_id:?} names no Register slot"),
             other => panic!("tt_storage_of: {op_id:?} is not a Load/Store/Copy/GEP, got {other:?}"),
         }

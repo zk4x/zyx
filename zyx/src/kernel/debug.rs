@@ -234,6 +234,21 @@ impl Kernel {
                     )
                     .unwrap();
                 }
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
+                    let dtype = dtypes.get(&cb_a).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}llk_matmul{reset} r{}, r{}, r{}, r{}, r{}",
+                        map(cb_a),
+                        map(cb_b),
+                        map(slot),
+                        map(x),
+                        map(y),
+                    )
+                    .unwrap();
+                }
                 Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, mx, plain }) => {
                     let dtype = dtypes.get(&cb_a).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);

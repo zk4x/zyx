@@ -96,6 +96,7 @@ impl Kernel {
                     | Op::TT(TTOp::LLK { .. })
                     | Op::TT(TTOp::LLKReduce { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
+                    | Op::TT(TTOp::LLKMatmul { .. })
                     | Op::Asm { .. } => has_post_linearize_ops = true,
                     Op::Permute { .. }
                     | Op::Expand { .. }
@@ -395,6 +396,35 @@ impl Kernel {
                         }
                     }
                     dtypes.insert(op_id, dtypes[&cb_in]);
+                }
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
+                    // Lowered matmul: same operand rule as LLK — bare
+                    // storages (input CBs, result slot) and value ops
+                    // (feeder loads). Result takes the left CB's dtype.
+                    for &f in &[cb_a, cb_b, slot, x, y] {
+                        check(op_id, f, &stack);
+                        if !matches!(
+                            self.at(f),
+                            Op::Storage { .. }
+                                | Op::Const(_)
+                                | Op::Param { .. }
+                                | Op::Cast { .. }
+                                | Op::Bitcast { .. }
+                                | Op::Unary { .. }
+                                | Op::Binary { .. }
+                                | Op::Stack { .. }
+                                | Op::Load { .. }
+                                | Op::Copy { .. }
+                                | Op::Range { .. }
+                                | Op::Loop { .. }
+                                | Op::Index { .. }
+                        ) {
+                            println!("tt llk matmul op={op_id} has non-storage/non-value operand {f}");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    dtypes.insert(op_id, dtypes[&cb_a]);
                 }
                 Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
                     // Lowered fused broadcast: same rule over cb_a.
@@ -805,6 +835,20 @@ impl Kernel {
                 Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
                     let mut r = None;
                     for f in [cb_in, cb_sc, slot, x, scaler] {
+                        if let Some(&(xl, xu)) = bounds.get(&f) {
+                            r = Some(match r {
+                                Some((l, u)) => (xl.min(l), xu.max(u)),
+                                None => (xl, xu),
+                            });
+                        }
+                    }
+                    if let Some((xl, xu)) = r {
+                        bounds.insert(op_id, (xl, xu));
+                    }
+                }
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
+                    let mut r = None;
+                    for f in [cb_a, cb_b, slot, x, y] {
                         if let Some(&(xl, xu)) = bounds.get(&f) {
                             r = Some(match r {
                                 Some((l, u)) => (xl.min(l), xu.max(u)),

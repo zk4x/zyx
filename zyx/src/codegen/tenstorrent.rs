@@ -664,6 +664,31 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 }
                 sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
             }
+            Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, .. }) => {
+                // Structured lowered matmul: rebuild the compute
+                // template from the fields (never parsed back).
+                // Single tile: tile indices 0, 0; transpose 0;
+                // ct_dim = rt_dim = kt_dim = 1.
+                let template = "matmul_block({0}, {1}, 0, 0, {2}, 0, 1, 1, 1);".to_string();
+                let mut rendered = template;
+                for (i, o) in [*cb_a, *cb_b, *slot].iter().copied().enumerate() {
+                    let num = match sec.k.at(o) {
+                        Op::Storage { scope: MemScope::Circular, .. } => {
+                            sec.cbs.get(&o).copied().ok_or_else(|| sec.err(format!("CB {o:?} has no number")))?
+                        }
+                        Op::Storage { scope: MemScope::Register, .. } => sec.reg_slot(o)?,
+                        _ => return Err(sec.err(format!("LLKMatmul {id:?} operand {o:?} is not a storage"))),
+                    };
+                    rendered = rendered.replace(&format!("{{{i}}}"), &num.to_string());
+                    if i == 2 {
+                        sec.slots.insert(id, num);
+                    }
+                }
+                if rendered.contains('{') {
+                    return Err(sec.err(format!("LLKMatmul left placeholders unsubstituted: {rendered}")));
+                }
+                sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
+            }
             Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, .. }) => {
                 // Structured lowered fused broadcast: same rebuild; the
                 // result slot is DST (fresh slot, like the LLK NULL).

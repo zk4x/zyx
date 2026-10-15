@@ -595,6 +595,7 @@ impl Kernel {
                     | Op::TT(TTOp::LLK { .. })
                     | Op::TT(TTOp::LLKReduce { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
+                    | Op::TT(TTOp::LLKMatmul { .. })
                     | Op::Param { .. }
                     | Op::Storage { .. }
                     | Op::Wmma { .. }
@@ -669,6 +670,7 @@ impl Kernel {
                 | &mut Op::TT(TTOp::LLK { .. })
                 | &mut Op::TT(TTOp::LLKReduce { .. })
                 | &mut Op::TT(TTOp::LLKBcast { .. })
+                | &mut Op::TT(TTOp::LLKMatmul { .. })
                 | &mut Op::TT(TTOp::MathLock)
                 | &mut Op::TT(TTOp::MathUnlock)
                 | &mut Op::TT(TTOp::PackLock)

@@ -440,6 +440,14 @@ impl Kernel {
                         *rcs.entry(f).or_insert(0) += 1;
                     }
                 }
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
+                    // Lowered matmul: result takes the left CB's
+                    // dtype/layout, like the LLK form's ops[0].
+                    dtypes.insert(op_id, dtypes[&cb_a].clone());
+                    for &f in &[cb_a, cb_b, slot, x, y] {
+                        *rcs.entry(f).or_insert(0) += 1;
+                    }
+                }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes[&ops[0]].0;
                     dtypes.insert(op_id, (dtype, vec![ops.len() as Dim]));
@@ -566,6 +574,7 @@ impl Kernel {
                 }
                 Op::TT(TTOp::LLKReduce { cb_in, .. }) => op_id = cb_in,
                 Op::TT(TTOp::LLKBcast { cb_a, .. }) => op_id = cb_a,
+                Op::TT(TTOp::LLKMatmul { cb_a, .. }) => op_id = cb_a,
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
@@ -1019,6 +1028,10 @@ impl Kernel {
                     // `load_register_tile` assert Tile { 32, 32 }).
                     flops = flops.saturating_add(2 * 32 * 32 * 32 * mult);
                 }
+                Op::TT(TTOp::LLKMatmul { .. }) => {
+                    // Lowered matmul: same single-tile MAC as MatmulTile.
+                    flops = flops.saturating_add(2 * 32 * 32 * 32 * mult);
+                }
                 Op::Load { src, .. } => {
                     if let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*src].op {
                         let n_elems: Dim = self.shape(op_id).iter().map(|&d| {
@@ -1230,6 +1243,7 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::TT(TTOp::LLKReduce { x, .. })
                 | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
+                | Op::TT(TTOp::LLKMatmul { x, .. })
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(op_id, dims.clone());
@@ -1453,6 +1467,7 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::TT(TTOp::LLKReduce { x, .. })
                 | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
+                | Op::TT(TTOp::LLKMatmul { x, .. })
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(id, dims.clone());
