@@ -4,10 +4,11 @@
 //! Tenstorrent tiling pass: canonicalize scalar IR for tile matching.
 //! (Under construction, one step at a time.)
 
-use super::{BOp, Kernel, MemScope, Op, OpId, Pat, RangeKind, TTOp, TileDim};
+use super::{BOp, Kernel, Op, OpId, Pat, RangeKind, TTOp, TileDim};
 use crate::Map;
 use crate::Set;
 use crate::dtype::Constant;
+use crate::shape::Dim;
 
 impl Kernel {
     /// Tenstorrent tiling pass, first cut: reshape only, no tile ops yet.
@@ -88,7 +89,7 @@ impl Kernel {
         self.tilize_stores();
 
         // Fold dot-cone families into matmul tiles (see below).
-        self.vectorize_matmul_tile();
+        self.vectorize_matmul_tile(32, 32, 32);
 
         self.default_epilogue();
         self.default_epilogue();
@@ -346,53 +347,39 @@ impl Kernel {
         self.dead_code_elimination();
     }
 
-    /// Former: 32 dot-cones sharing one B tile -> MatmulTile.
-    /// Directly pattern-matches the vectorized matmul seed, no Expand
-    /// nodes involved: per cone a broadcast `Stack[v x 32]` of one
-    /// A-column vec times the shared B tile load, one `VecReduce` dot
-    /// per product lane, the 1024 dots assembled [lane][cone] into a
-    /// `store tile`. Emits one `MatmulTile` over the shared tile loads
-    /// plus a fresh register acc; the cone family dies in DCE.
-    /// Anything else keeps its shape (never fatal). The tile loads are
-    /// plain DRAM loads here; the reader pass moves them to CBs before
-    /// `tt_storage`, exactly like any other tile load.
-    pub fn vectorize_matmul_tile(&mut self) {
-        let mut stores: Vec<OpId> = Vec::new();
+    /// Former: m x n dots over a shared [k, n] tile -> MatmulTile.
+    /// Matches the vectorized matmul family with no reference to loads
+    /// or stores: per dot a `Mul` of a broadcast `Stack[k]` of one
+    /// A-column against a tile-shaped `[k, n]` op, one `VecReduce` dot
+    /// per lane, the m*n dots assembled [row][col] into an outer stack.
+    /// The `a` root is whatever tile-shaped op the A-lane Index chains
+    /// bottom out at (`shape == [m, k]`); the `b` root is whatever
+    /// tile-shaped op the prods share (`shape == [k, n]`). Emits by
+    /// replacing the outer stack op in place with
+    /// `MatmulTile { x: a_tile, y: b_tile }`, so consumers keep pointing
+    /// at the same `OpId`; the replaced family dies in DCE. Anything
+    /// else keeps its shape (never fatal).
+    pub fn vectorize_matmul_tile(&mut self, m: Dim, n: Dim, k: Dim) {
+        let (m_len, n_len, k_len) = (m as usize, n as usize, k as usize);
+        let mut outers: Vec<OpId> = Vec::new();
         for (op, x) in self.iter_unordered() {
-            if matches!(x, Op::Store { .. }) {
-                stores.push(op);
+            if matches!(x, Op::Stack { .. }) {
+                outers.push(op);
             }
         }
-        for store in stores {
-            let (src, bytes) = match self.ops[store].op {
-                Op::Store { src, bytes, .. } => (src, bytes),
-                _ => continue,
-            };
-            if bytes.is_null() {
-                continue;
-            }
-            let tile_bytes = match &self.ops[bytes].op {
-                Op::Stack { ops } => {
-                    ops.len() == 2
-                        && ops.iter().all(|o| self.resolve_const(*o).and_then(|c| c.as_dim()) == Some(32))
-                }
-                _ => false,
-            };
-            if !tile_bytes {
-                continue;
-            }
-            let rows: Vec<OpId> = match &self.ops[src].op {
-                Op::Stack { ops } if ops.len() == 32 => ops.to_vec(),
+        for outer in outers {
+            let rows: Vec<OpId> = match &self.ops[outer].op {
+                Op::Stack { ops } if ops.len() == m_len => ops.to_vec(),
                 _ => continue,
             };
             // Dots per row; dot -> (prod, lane); prod -> lanes.
-            let mut row_dots: Vec<Vec<OpId>> = Vec::with_capacity(32);
+            let mut row_dots: Vec<Vec<OpId>> = Vec::with_capacity(m_len);
             let mut dot_cone: Map<OpId, (OpId, usize)> = Map::default();
             let mut prod_lanes: Map<OpId, Vec<usize>> = Map::default();
             let mut shaped = true;
             for &row in &rows {
                 let dots: Vec<OpId> = match &self.ops[row].op {
-                    Op::Stack { ops } if ops.len() == 32 => ops.to_vec(),
+                    Op::Stack { ops } if ops.len() == n_len => ops.to_vec(),
                     _ => {
                         shaped = false;
                         break;
@@ -430,20 +417,20 @@ impl Kernel {
             if !shaped {
                 continue;
             }
-            // 32 prods, lanes 0..=31 each, no gaps, no dups.
-            if prod_lanes.len() != 32 {
+            // n prods, lanes 0..m each, no gaps, no dups.
+            if prod_lanes.len() != n_len {
                 continue;
             }
-            let mut prods: Vec<OpId> = Vec::with_capacity(32);
+            let mut prods: Vec<OpId> = Vec::with_capacity(n_len);
             let mut covered = true;
             for (prod, lanes) in prod_lanes.iter() {
-                if lanes.len() != 32 {
+                if lanes.len() != m_len {
                     covered = false;
                     break;
                 }
-                let mut seen = [false; 32];
+                let mut seen = vec![false; m_len];
                 for lane in lanes.iter() {
-                    if *lane >= 32 || seen[*lane] {
+                    if *lane >= m_len || seen[*lane] {
                         covered = false;
                         break;
                     }
@@ -479,7 +466,7 @@ impl Kernel {
                 if !assembled {
                     break;
                 }
-                if set.len() != 32 {
+                if set.len() != n_len {
                     assembled = false;
                     break;
                 }
@@ -495,9 +482,9 @@ impl Kernel {
             if !assembled {
                 continue;
             }
-            // Cones: Mul(broadcast-stack, shared tile load).
+            // Prods: Mul(broadcast-stack, shared tile-shaped op).
             let mut b_tile = OpId::NULL;
-            let mut acols: Vec<OpId> = Vec::with_capacity(32);
+            let mut acols: Vec<OpId> = Vec::with_capacity(n_len);
             let mut cones = true;
             for &prod in &prods {
                 let (bl, br) = match self.ops[prod].op {
@@ -521,7 +508,7 @@ impl Kernel {
                 if !cones {
                     break;
                 }
-                if !matches!(self.ops[b].op, Op::Load { .. }) || self.shape(b) != vec![32, 32] {
+                if self.shape(b) != vec![k, n] {
                     cones = false;
                     break;
                 }
@@ -532,7 +519,7 @@ impl Kernel {
                     break;
                 }
                 let acol = match &self.ops[bcast].op {
-                    Op::Stack { ops } if ops.len() == 32 && ops.iter().all(|o| *o == ops[0]) => ops[0],
+                    Op::Stack { ops } if ops.len() == k_len && ops.iter().all(|o| *o == ops[0]) => ops[0],
                     _ => {
                         cones = false;
                         break;
@@ -549,8 +536,8 @@ impl Kernel {
             if b_tile.is_null() {
                 continue;
             }
-            // All A-lane Index chains bottom out at one shared tile load;
-            // every lane op distinct (no shared lanes across columns).
+            // All A-lane Index chains bottom out at one shared tile-shaped
+            // root; every lane op distinct (no shared lanes across columns).
             let mut lane_ops = Set::default();
             let mut seen_bcast = Set::default();
             let mut a_tile = OpId::NULL;
@@ -561,7 +548,7 @@ impl Kernel {
                     break;
                 }
                 let members: Vec<OpId> = match &self.ops[acol].op {
-                    Op::Stack { ops } if ops.len() == 32 => ops.to_vec(),
+                    Op::Stack { ops } if ops.len() == k_len => ops.to_vec(),
                     _ => {
                         tiled = false;
                         break;
@@ -570,17 +557,17 @@ impl Kernel {
                 if !tiled {
                     break;
                 }
-                for &m in &members {
-                    if !lane_ops.insert(m) {
+                for &mem in &members {
+                    if !lane_ops.insert(mem) {
                         tiled = false;
                         break;
                     }
-                    let mut t = m;
+                    let mut t = mem;
                     while let Op::Index { vec, .. } = &self.ops[t].op {
                         t = *vec;
                     }
                     if a_tile.is_null() {
-                        if !matches!(self.ops[t].op, Op::Load { .. }) || self.shape(t) != vec![32, 32] {
+                        if self.shape(t) != vec![m, k] {
                             tiled = false;
                             break;
                         }
@@ -597,11 +584,10 @@ impl Kernel {
             if !tiled || a_tile.is_null() {
                 continue;
             }
-            // Emit: one matmul tile over the shared loads, repoint store.
-            let mm = self.insert_before(store, Op::TT(TTOp::MatmulTile { x: a_tile, y: b_tile }));
-            if let Op::Store { src: s, .. } = &mut self.ops[store].op {
-                *s = mm;
-            }
+            // Emit: replace the outer stack in place with the matmul tile.
+            // Consumers keep pointing at the same OpId; the replaced
+            // family dies in DCE.
+            self.ops[outer].op = Op::TT(TTOp::MatmulTile { x: a_tile, y: b_tile });
         }
         self.dead_code_elimination();
     }
