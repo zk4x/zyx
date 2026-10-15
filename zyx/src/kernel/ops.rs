@@ -496,8 +496,6 @@ pub enum TTOp {
         x: OpId,
         /// Right tile.
         y: OpId,
-        /// Accumulator tile.
-        acc: OpId,
     },
     /// Hardware tile transpose (width-height swap).
     TransposeTile {

@@ -4,7 +4,7 @@
 //! Tenstorrent tiling pass: canonicalize scalar IR for tile matching.
 //! (Under construction, one step at a time.)
 
-use super::{Kernel, Op, OpId, Pat, RangeKind, TTOp, TileDim};
+use super::{BOp, Kernel, MemScope, Op, OpId, Pat, RangeKind, TTOp, TileDim};
 use crate::Map;
 use crate::Set;
 use crate::dtype::Constant;
@@ -86,6 +86,9 @@ impl Kernel {
 
         // Retile the reduce row (see below) on the final IR.
         self.tilize_stores();
+
+        // Fold dot-cone families into matmul tiles (see below).
+        self.vectorize_matmul_tile();
 
         self.default_epilogue();
         self.default_epilogue();
@@ -338,6 +341,266 @@ impl Kernel {
             }
             if let Op::Store { bytes, .. } = &mut self.ops[job.store].op {
                 *bytes = stack;
+            }
+        }
+        self.dead_code_elimination();
+    }
+
+    /// Former: 32 dot-cones sharing one B tile -> MatmulTile.
+    /// Directly pattern-matches the vectorized matmul seed, no Expand
+    /// nodes involved: per cone a broadcast `Stack[v x 32]` of one
+    /// A-column vec times the shared B tile load, one `VecReduce` dot
+    /// per product lane, the 1024 dots assembled [lane][cone] into a
+    /// `store tile`. Emits one `MatmulTile` over the shared tile loads
+    /// plus a fresh register acc; the cone family dies in DCE.
+    /// Anything else keeps its shape (never fatal). The tile loads are
+    /// plain DRAM loads here; the reader pass moves them to CBs before
+    /// `tt_storage`, exactly like any other tile load.
+    pub fn vectorize_matmul_tile(&mut self) {
+        let mut stores: Vec<OpId> = Vec::new();
+        for (op, x) in self.iter_unordered() {
+            if matches!(x, Op::Store { .. }) {
+                stores.push(op);
+            }
+        }
+        for store in stores {
+            let (src, bytes) = match self.ops[store].op {
+                Op::Store { src, bytes, .. } => (src, bytes),
+                _ => continue,
+            };
+            if bytes.is_null() {
+                continue;
+            }
+            let tile_bytes = match &self.ops[bytes].op {
+                Op::Stack { ops } => {
+                    ops.len() == 2
+                        && ops.iter().all(|o| self.resolve_const(*o).and_then(|c| c.as_dim()) == Some(32))
+                }
+                _ => false,
+            };
+            if !tile_bytes {
+                continue;
+            }
+            let rows: Vec<OpId> = match &self.ops[src].op {
+                Op::Stack { ops } if ops.len() == 32 => ops.to_vec(),
+                _ => continue,
+            };
+            // Dots per row; dot -> (prod, lane); prod -> lanes.
+            let mut row_dots: Vec<Vec<OpId>> = Vec::with_capacity(32);
+            let mut dot_cone: Map<OpId, (OpId, usize)> = Map::default();
+            let mut prod_lanes: Map<OpId, Vec<usize>> = Map::default();
+            let mut shaped = true;
+            for &row in &rows {
+                let dots: Vec<OpId> = match &self.ops[row].op {
+                    Op::Stack { ops } if ops.len() == 32 => ops.to_vec(),
+                    _ => {
+                        shaped = false;
+                        break;
+                    }
+                };
+                for &dot in &dots {
+                    let idxop = match &self.ops[dot].op {
+                        Op::VecReduce { x, bop } if *bop == BOp::Add => *x,
+                        _ => {
+                            shaped = false;
+                            break;
+                        }
+                    };
+                    if !shaped {
+                        break;
+                    }
+                    let (prod, lane) = match &self.ops[idxop].op {
+                        Op::Index { vec, idx } => (*vec, *idx),
+                        _ => {
+                            shaped = false;
+                            break;
+                        }
+                    };
+                    if !shaped {
+                        break;
+                    }
+                    dot_cone.insert(dot, (prod, lane));
+                    prod_lanes.entry(prod).or_default().push(lane);
+                }
+                if !shaped {
+                    break;
+                }
+                row_dots.push(dots);
+            }
+            if !shaped {
+                continue;
+            }
+            // 32 prods, lanes 0..=31 each, no gaps, no dups.
+            if prod_lanes.len() != 32 {
+                continue;
+            }
+            let mut prods: Vec<OpId> = Vec::with_capacity(32);
+            let mut covered = true;
+            for (prod, lanes) in prod_lanes.iter() {
+                if lanes.len() != 32 {
+                    covered = false;
+                    break;
+                }
+                let mut seen = [false; 32];
+                for lane in lanes.iter() {
+                    if *lane >= 32 || seen[*lane] {
+                        covered = false;
+                        break;
+                    }
+                    seen[*lane] = true;
+                }
+                if !covered {
+                    break;
+                }
+                prods.push(*prod);
+            }
+            if !covered {
+                continue;
+            }
+            // Rows: lane == row, prods distinct, same prod set.
+            let mut cone_set: Option<Set<OpId>> = None;
+            let mut assembled = true;
+            for (r, dots) in row_dots.iter().enumerate() {
+                let mut set = Set::default();
+                for &dot in dots.iter() {
+                    let (prod, lane) = match dot_cone.get(&dot) {
+                        Some(&(p, l)) => (p, l),
+                        None => {
+                            assembled = false;
+                            break;
+                        }
+                    };
+                    if lane != r {
+                        assembled = false;
+                        break;
+                    }
+                    set.insert(prod);
+                }
+                if !assembled {
+                    break;
+                }
+                if set.len() != 32 {
+                    assembled = false;
+                    break;
+                }
+                if let Some(first) = &cone_set {
+                    if *first != set {
+                        assembled = false;
+                        break;
+                    }
+                } else {
+                    cone_set = Some(set);
+                }
+            }
+            if !assembled {
+                continue;
+            }
+            // Cones: Mul(broadcast-stack, shared tile load).
+            let mut b_tile = OpId::NULL;
+            let mut acols: Vec<OpId> = Vec::with_capacity(32);
+            let mut cones = true;
+            for &prod in &prods {
+                let (bl, br) = match self.ops[prod].op {
+                    Op::Binary { x, y, bop } if bop == BOp::Mul => (x, y),
+                    _ => {
+                        cones = false;
+                        break;
+                    }
+                };
+                if !cones {
+                    break;
+                }
+                let (bcast, b) = match (&self.ops[bl].op, &self.ops[br].op) {
+                    (Op::Stack { .. }, _) => (bl, br),
+                    (_, Op::Stack { .. }) => (br, bl),
+                    _ => {
+                        cones = false;
+                        break;
+                    }
+                };
+                if !cones {
+                    break;
+                }
+                if !matches!(self.ops[b].op, Op::Load { .. }) || self.shape(b) != vec![32, 32] {
+                    cones = false;
+                    break;
+                }
+                if b_tile.is_null() {
+                    b_tile = b;
+                } else if b_tile != b {
+                    cones = false;
+                    break;
+                }
+                let acol = match &self.ops[bcast].op {
+                    Op::Stack { ops } if ops.len() == 32 && ops.iter().all(|o| *o == ops[0]) => ops[0],
+                    _ => {
+                        cones = false;
+                        break;
+                    }
+                };
+                if !cones {
+                    break;
+                }
+                acols.push(acol);
+            }
+            if !cones {
+                continue;
+            }
+            if b_tile.is_null() {
+                continue;
+            }
+            // All A-lane Index chains bottom out at one shared tile load;
+            // every lane op distinct (no shared lanes across columns).
+            let mut lane_ops = Set::default();
+            let mut seen_bcast = Set::default();
+            let mut a_tile = OpId::NULL;
+            let mut tiled = true;
+            for &acol in &acols {
+                if !seen_bcast.insert(acol) {
+                    tiled = false;
+                    break;
+                }
+                let members: Vec<OpId> = match &self.ops[acol].op {
+                    Op::Stack { ops } if ops.len() == 32 => ops.to_vec(),
+                    _ => {
+                        tiled = false;
+                        break;
+                    }
+                };
+                if !tiled {
+                    break;
+                }
+                for &m in &members {
+                    if !lane_ops.insert(m) {
+                        tiled = false;
+                        break;
+                    }
+                    let mut t = m;
+                    while let Op::Index { vec, .. } = &self.ops[t].op {
+                        t = *vec;
+                    }
+                    if a_tile.is_null() {
+                        if !matches!(self.ops[t].op, Op::Load { .. }) || self.shape(t) != vec![32, 32] {
+                            tiled = false;
+                            break;
+                        }
+                        a_tile = t;
+                    } else if t != a_tile {
+                        tiled = false;
+                        break;
+                    }
+                }
+                if !tiled {
+                    break;
+                }
+            }
+            if !tiled || a_tile.is_null() {
+                continue;
+            }
+            // Emit: one matmul tile over the shared loads, repoint store.
+            let mm = self.insert_before(store, Op::TT(TTOp::MatmulTile { x: a_tile, y: b_tile }));
+            if let Op::Store { src: s, .. } = &mut self.ops[store].op {
+                *s = mm;
             }
         }
         self.dead_code_elimination();
