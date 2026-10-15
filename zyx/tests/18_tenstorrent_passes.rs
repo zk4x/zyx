@@ -25,8 +25,7 @@ fn lock_dst_wraps_math_and_pack() {
     k.tt_end_reader();
     let va = k.load_cb(cb_a, zero);
     let vb = k.load_cb(cb_b, zero);
-    let av = k.load_register_tile(acc, zero);
-    let f = k.matmul_tile(va, vb, av);
+    let f = k.matmul_tile(va, vb);
     k.store_register_tile(acc, f, zero);
     let out = k.load_register_tile(acc, zero);
     k.store_cb(cout, out, zero);
@@ -72,8 +71,7 @@ fn sync_cbs_wraps_cb_traffic() {
     k.tt_end_reader();
     let va = k.load_cb(ca, zero);
     let vb = k.load_cb(cb, zero);
-    let av = k.load_register_tile(acc, zero);
-    let f = k.matmul_tile(va, vb, av);
+    let f = k.matmul_tile(va, vb);
     k.store_register_tile(acc, f, zero);
     k.tt_end_compute();
     let drain = k.store_cb_to_global(cout, zero, out, zero);
@@ -145,8 +143,7 @@ fn storage_lowering_rewrites_matmul() {
     k.tt_end_reader();
     let va = k.load_cb(cb_a, zero);
     let vb = k.load_cb(cb_b, zero);
-    let av = k.load_register_tile(acc, zero);
-    let f = k.matmul_tile(va, vb, av);
+    let f = k.matmul_tile(va, vb);
     // Pack drain: the Register slot is read out and stored to a
     // CB. The matmul result is an effect op after lowering
     // (no SSA value to thread).

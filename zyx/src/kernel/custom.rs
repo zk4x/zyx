@@ -1018,25 +1018,12 @@ impl Kernel {
         self.push_back(Op::Wmma { dims, layout, dtype, a, b, c })
     }
 
-    /// Hardware tile matmul: folds `x @ y` into accumulator tile `acc`,
-    /// returning the new accumulator value (explicit SSA threading).
-    /// `x`/`y` are circular (`load_circular`) tiles, `acc` a register
-    /// (`load_register_tile`) tile: the op programs the unpacker itself
-    /// and cannot consume DST registers.
-    pub fn matmul_tile(&mut self, x: OpId, y: OpId, acc: OpId) -> OpId {
-        debug_assert!(
-            matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
-            "matmul_tile: x {x} is not a load_circular tile"
-        );
-        debug_assert!(
-            matches!(self.ops[y].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
-            "matmul_tile: y {y} is not a load_circular tile"
-        );
-        debug_assert!(
-            matches!(self.ops[acc].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })),
-            "matmul_tile: acc {acc} is not a load_register_tile tile"
-        );
-        self.push_back(Op::TT(TTOp::MatmulTile { x, y, acc }))
+    /// Hardware tile matmul: `x @ y` over 32x32 tiles, result in a DST
+    /// slot filled by render. `x`/`y` are circular (`load_circular`)
+    /// tiles. The op programs the unpacker itself and cannot consume
+    /// DST registers.
+    pub fn matmul_tile(&mut self, x: OpId, y: OpId) -> OpId {
+        todo!("matmul_tile builder pending redesign")
     }
 
     /// Hardware tile transpose. `x` is a circular (`load_circular`)
@@ -2474,7 +2461,7 @@ impl Kernel {
             // Pure (non-accumulating) matmul: seed the explicit acc with zeros.
             let zero_acc_storage = self.zeros(x.dtype, 1024);
             let zero_acc = self.load_tile(zero_acc_storage, idx0, 32, 32);
-            let rot = self.matmul_tile(x_tile, trans_tile, zero_acc);
+            let rot = self.matmul_tile(x_tile, trans_tile);
             let y1 = self.mul(x_tile, cos_tile);
             let y2 = self.mul(rot, sin_tile);
             let y = self.add(y1, y2);

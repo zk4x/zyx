@@ -1049,23 +1049,8 @@ impl Kernel {
                 continue;
             }
             let (asm, ops) = match self.at(op_id) {
-                Op::TT(TTOp::MatmulTile { x, y, acc }) => {
-                    let cb_a = self.tt_storage_of(*x);
-                    let cb_b = self.tt_storage_of(*y);
-                    let slot = self.tt_storage_of(*acc);
-                    debug_assert!(
-                        matches!(self.at(cb_a), Op::Storage { scope: MemScope::Circular, .. }),
-                        "tt_storage: matmul left {cb_a:?} is not a Circular storage"
-                    );
-                    debug_assert!(
-                        matches!(self.at(cb_b), Op::Storage { scope: MemScope::Circular, .. }),
-                        "tt_storage: matmul right {cb_b:?} is not a Circular storage"
-                    );
-                    debug_assert!(
-                        matches!(self.at(slot), Op::Storage { scope: MemScope::Register, .. }),
-                        "tt_storage: matmul acc {slot:?} is not a Register slot"
-                    );
-                    (TinyString::new("matmul_tiles({0}, {1}, 0, 0, {2});"), TinyVec::new(&[cb_a, cb_b, slot, *x, *y]))
+                Op::TT(TTOp::MatmulTile { .. }) => {
+                    todo!("tt_storage: MatmulTile result slot pending redesign");
                 }
                 Op::TT(TTOp::ReduceTile { x, .. }) => {
                     let cb_in = self.tt_storage_of(*x);
@@ -3124,9 +3109,7 @@ impl Kernel {
 
     /// Chase a `Load`/`Store`/`Copy` operand through its `GEP` to the
     /// underlying `Storage`/`Param`. Tile-compute results name DST slots,
-    /// not buffers: `MatmulTile`/`ReduceTile` see through to their `acc`
-    /// (a `load_register_tile`), so matmul→reduce acc chains resolve to
-    /// the Register slot instead of panicking. A post-lowering `LLK` resolves to
+    /// not buffers. A post-lowering `LLK` resolves to
     /// the Register storage in its operands (its DST slot); an `LLK` with
     /// no Register operand names no slot — loud panic. The GEP index is
     /// not needed (render uses slot 0).
@@ -3135,7 +3118,9 @@ impl Kernel {
             Op::Load { src, .. } | Op::Copy { src, .. } => self.tt_storage_of(*src),
             Op::Store { dst, .. } => self.tt_storage_of(*dst),
             Op::Storage { .. } | Op::Param { .. } => op_id,
-            Op::TT(TTOp::MatmulTile { acc, .. }) => self.tt_storage_of(*acc),
+            Op::TT(TTOp::MatmulTile { .. }) => {
+                todo!("tt_storage_of: MatmulTile resolution pending redesign");
+            }
             Op::TT(TTOp::LLK { ops, .. }) => {
                 let mut slot = None;
                 for o in ops.iter().copied() {

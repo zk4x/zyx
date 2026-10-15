@@ -199,11 +199,10 @@ impl Kernel {
                             dtypes.insert(op_id, dtypes[x].clone());
                             *rcs.entry(*x).or_insert(0) += 1;
                         }
-                        TTOp::MatmulTile { x, y, acc } => {
-                            dtypes.insert(op_id, dtypes[acc].clone());
+                        TTOp::MatmulTile { x, y } => {
+                            dtypes.insert(op_id, dtypes[x].clone());
                             *rcs.entry(*x).or_insert(0) += 1;
                             *rcs.entry(*y).or_insert(0) += 1;
-                            *rcs.entry(*acc).or_insert(0) += 1;
                         }
                         TTOp::TransposeTile { x } => {
                             dtypes.insert(op_id, dtypes[x].clone());

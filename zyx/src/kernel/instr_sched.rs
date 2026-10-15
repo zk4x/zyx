@@ -181,10 +181,9 @@ impl Kernel {
                 Op::TT(TTOp::ReduceTile { x, .. }) => {
                     add_param!(x);
                 }
-                Op::TT(TTOp::MatmulTile { x, y, acc }) => {
+                Op::TT(TTOp::MatmulTile { x, y }) => {
                     add_param!(x);
                     add_param!(y);
-                    add_param!(acc);
                 }
                 Op::TT(TTOp::TransposeTile { x }) => add_param!(x),
                 Op::VecReduce { x, bop: _ } => add_param!(x),

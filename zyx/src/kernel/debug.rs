@@ -113,13 +113,12 @@ impl Kernel {
                     )
                     .unwrap();
                 }
-                Op::TT(TTOp::MatmulTile { x, y, acc }) => {
-                    let dtype = dtypes.get(&acc).copied().unwrap_or(DType::U8);
+                Op::TT(TTOp::MatmulTile { x, y }) => {
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
                     let y = id_map[&y];
-                    let acc = id_map[&acc];
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}matmul_tile{reset} r{x}, r{y}, r{acc}").unwrap();
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}matmul_tile{reset} r{x}, r{y}").unwrap();
                 }
                 Op::TT(TTOp::TransposeTile { x }) => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);

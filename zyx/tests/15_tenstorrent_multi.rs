@@ -448,8 +448,7 @@ fn tenstorrent_matmul_bias() -> Result<(), ZyxError> {
             k.loop_over(2, |k, _kti| {
                 let va = k.load_cb(ca, 0);
                 let vb = k.load_cb(cb, 0);
-                let av = k.load_register_tile(acc, 0);
-                let f = k.matmul_tile(va, vb, av);
+                let f = k.matmul_tile(va, vb);
                 k.store_register_tile(acc, f, 0);
             });
             let f = k.load_register_tile(acc, 0);
@@ -551,8 +550,7 @@ fn tenstorrent_matmul_bias_single() -> Result<(), ZyxError> {
             k.loop_over(2, |k, _kti| {
                 let va = k.load_cb(ca, 0);
                 let vb = k.load_cb(cb, 0);
-                let av = k.load_register_tile(acc, 0);
-                let f = k.matmul_tile(va, vb, av);
+                let f = k.matmul_tile(va, vb);
                 k.store_register_tile(acc, f, 0);
             });
             let f = k.load_register_tile(acc, 0);
@@ -720,8 +718,7 @@ fn tenstorrent_matmul_short() -> Result<(), ZyxError> {
             k.loop_over(2, |k, _kti| {
                 let va = k.load_cb(ca, 0);
                 let vb = k.load_cb(cb, 0);
-                let av = k.load_register_tile(acc, 0);
-                let f = k.matmul_tile(va, vb, av);
+                let f = k.matmul_tile(va, vb);
                 k.store_register_tile(acc, f, 0);
             });
             let f = k.load_register_tile(acc, 0);
@@ -803,8 +800,7 @@ fn tenstorrent_matmul_exp() -> Result<(), ZyxError> {
             k.loop_over(2, |k, _kti| {
                 let va = k.load_cb(ca, 0);
                 let vb = k.load_cb(cb, 0);
-                let av = k.load_register_tile(acc, 0);
-                let f = k.matmul_tile(va, vb, av);
+                let f = k.matmul_tile(va, vb);
                 k.store_register_tile(acc, f, 0);
             });
             let f = k.load_register_tile(acc, 0);
@@ -897,8 +893,7 @@ fn tenstorrent_matmul_transpose() -> Result<(), ZyxError> {
             k.loop_over(2, |k, _kti| {
                 let va = k.load_cb(ca, 0);
                 let vb = k.load_cb(cb, 0);
-                let av = k.load_register_tile(acc, 0);
-                let f = k.matmul_tile(va, vb, av);
+                let f = k.matmul_tile(va, vb);
                 k.store_register_tile(acc, f, 0);
             });
             let f = k.load_register_tile(acc, 0);
@@ -1003,8 +998,7 @@ fn tenstorrent_matmul_reduce() -> Result<(), ZyxError> {
             k.loop_over(2, |k, _kti| {
                 let va = k.load_cb(ca, 0);
                 let vb = k.load_cb(cb, 0);
-                let av = k.load_register_tile(acc, 0);
-                let f = k.matmul_tile(va, vb, av);
+                let f = k.matmul_tile(va, vb);
                 k.store_register_tile(acc, f, 0);
             });
             let f = k.load_register_tile(acc, 0);
@@ -1108,8 +1102,7 @@ fn tenstorrent_matmul_cast() -> Result<(), ZyxError> {
             k.loop_over(2, |k, _kti| {
                 let va = k.load_cb(ca, 0);
                 let vb = k.load_cb(cb, 0);
-                let av = k.load_register_tile(acc, 0);
-                let f = k.matmul_tile(va, vb, av);
+                let f = k.matmul_tile(va, vb);
                 k.store_register_tile(acc, f, 0);
             });
             let f = k.load_register_tile(acc, 0);

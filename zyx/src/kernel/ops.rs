@@ -488,9 +488,7 @@ pub enum TTOp {
         /// Reduce dimension.
         kind: TileDim,
     },
-    /// Hardware tile matmul: folds `x @ y` into accumulator tile `acc`
-    /// (TT: `matmul_tiles` accumulates into DST). Explicit `acc` keeps
-    /// the accumulation in SSA dataflow instead of a fold marker.
+    /// Hardware tile matmul: `x @ y` over 32x32 tiles, result in a DST slot.
     MatmulTile {
         /// Left tile.
         x: OpId,
@@ -1331,7 +1329,7 @@ impl Op {
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            &Op::TT(TTOp::MatmulTile { x, y, acc }) => vec![x, y, acc],
+            &Op::TT(TTOp::MatmulTile { x, y }) => vec![x, y],
             &Op::TT(TTOp::TransposeTile { x }) => vec![x],
             &Op::TT(TTOp::ReduceTile { x, .. }) => vec![x],
             &Op::TT(TTOp::ReserveBack { cb, .. })
@@ -1421,7 +1419,7 @@ impl Op {
             Op::VecReduce { x, bop: _ } => vec![x],
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::TT(TTOp::MatmulTile { x, y, acc }) => vec![x, y, acc],
+            Op::TT(TTOp::MatmulTile { x, y }) => vec![x, y],
             Op::TT(TTOp::ReduceTile { x, .. }) => vec![x],
             Op::TT(TTOp::TransposeTile { x }) => vec![x],
             Op::TT(TTOp::ReserveBack { cb, .. })

@@ -471,11 +471,10 @@ impl Kernel {
                     *rcs.entry(b).or_insert(0) += 1;
                     *rcs.entry(c).or_insert(0) += 1;
                 }
-                Op::TT(TTOp::MatmulTile { x, y, acc }) => {
-                    dtypes.insert(op_id, dtypes[&acc].clone());
+                Op::TT(TTOp::MatmulTile { x, y }) => {
+                    dtypes.insert(op_id, dtypes[&x].clone());
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
-                    *rcs.entry(acc).or_insert(0) += 1;
                 }
                 Op::TT(TTOp::TransposeTile { x }) => {
                     dtypes.insert(op_id, dtypes[&x].clone());
@@ -556,7 +555,7 @@ impl Kernel {
                     | MMADType::b1_b1_s32_xor_popc
                     | MMADType::b1_b1_s32_and_popc => return DType::I32,
                 },
-                Op::TT(TTOp::MatmulTile { acc, .. }) => op_id = acc,
+                Op::TT(TTOp::MatmulTile { x, .. }) => op_id = x,
                 Op::TT(TTOp::TransposeTile { x }) => op_id = x,
                 Op::Stack { ref ops } => op_id = ops[0],
                 Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {

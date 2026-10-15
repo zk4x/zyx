@@ -301,11 +301,11 @@ impl Kernel {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
-                Op::TT(TTOp::MatmulTile { x, y, acc }) => {
+                Op::TT(TTOp::MatmulTile { x, y }) => {
                     check(op_id, x, &stack);
                     check(op_id, y, &stack);
-                    check(op_id, acc, &stack);
-                    dtypes.insert(op_id, dtypes[&acc]);
+                    debug_assert_eq!(dtypes[&x], dtypes[&y], "MatmulTile x/y dtype mismatch");
+                    dtypes.insert(op_id, dtypes[&x]);
                 }
                 Op::TT(TTOp::TransposeTile { x }) => {
                     check(op_id, x, &stack);
