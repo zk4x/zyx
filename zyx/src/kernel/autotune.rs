@@ -103,7 +103,8 @@ impl Kernel {
             self.tt_add_writer();
             self.tt_add_compute_cbs();
             // Lowering (order-flexible; each pass tolerates the
-            // others' legal output): fused LLK claiming, storage,
+            // others' legal output - not currently, but it's the idea):
+            // fused LLK claiming, storage,
             // locks, duplicate-publish elimination, engine-config
             // inits + startup + reduce cones, CB sync, pop placement.
             self.tt_fuse_llks();

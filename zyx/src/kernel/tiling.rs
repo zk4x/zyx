@@ -20,6 +20,10 @@ impl Kernel {
         if !self.device_info().tenstorrent {
             return;
         }
+        self.default_epilogue();
+        self.default_epilogue();
+
+        self.debug();
         // Fold first: unroll/coarsen replicate the body, so wrappers
         // (x*1, casts of consts) must die before replication, not after.
         self.constant_folding();
@@ -72,7 +76,7 @@ impl Kernel {
         self.default_epilogue();
         vectorize.apply(self, 0);
 
-        self.vectorize_reduce_tile();
+        //self.vectorize_reduce_tile();
 
         let vectorize = self.opt_vectorize();
         vectorize.apply(self, 0);
@@ -85,6 +89,9 @@ impl Kernel {
 
         self.default_epilogue();
         self.default_epilogue();
+
+        self.debug();
+        panic!();
 
         self.verify();
     }

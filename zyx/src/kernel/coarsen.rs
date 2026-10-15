@@ -156,12 +156,10 @@ impl Kernel {
 
         //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
 
+        // Cannot live here, must live elsewhere, int opt_coarsen and in opt_register_tile
+        //if self.ops.len().0 as Dim * factor as Dim > 10000 { return; }
+
         // === Some checks when we just cannot coarsen === //
-
-        if self.ops.len().0 as Dim * factor as Dim > 10000 {
-            return;
-        }
-
         // Multi-dim tile accesses duplicate as whole tiles, not per
         // lane; barriers pin the body to one wave. Refuse both. Plain
         // vector (1-D) bodies duplicate per lane like scalars.

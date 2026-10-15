@@ -1067,43 +1067,93 @@ impl Kernel {
         }
         let mut out = Vec::new();
         for (agreed, roots, lanes, rbs) in groups {
-            let mut sorted = lanes.clone();
-            sorted.sort_unstable();
-            sorted.dedup();
-            let n = sorted.len();
-            if roots.len() != n {
-                continue;
-            }
-            if u8::try_from(n).ok().is_none_or(|w| !widths.contains(&w)) {
-                continue;
-            }
-            if sorted.is_empty() {
-                continue;
-            }
-            let mut ok = true;
-            if n > 1 {
-                let d = sorted[1] - sorted[0];
-                if d <= 0 {
-                    continue;
+            // One cover per width-sized chunk of a constant-stride lane
+            // run: a group spans a whole buffer (e.g. 1024 unrolled
+            // scalar loads whose lanes no single width contains), so the
+            // run is carved into exact-width covers from its smallest
+            // lane. Extra roots sharing a lane stay scalar (first
+            // occurrence wins).
+            let mut order: Vec<usize> = (0..lanes.len()).collect();
+            order.sort_by_key(|&p| lanes[p]);
+            let mut distinct: Vec<usize> = Vec::new();
+            for p in order {
+                let fresh = match distinct.last() {
+                    None => true,
+                    Some(&q) => lanes[q] != lanes[p],
+                };
+                if fresh {
+                    distinct.push(p);
                 }
-                for (i, k) in sorted.iter().enumerate() {
-                    if *k != sorted[0] + i as i64 * d {
-                        ok = false;
+            }
+            let mut run_start = 0;
+            while run_start < distinct.len() {
+                let mut run_end = run_start + 1;
+                let mut step = 0;
+                if run_start + 1 < distinct.len() {
+                    step = lanes[distinct[run_start + 1]] - lanes[distinct[run_start]];
+                }
+                if step > 0 {
+                    while run_end < distinct.len()
+                        && lanes[distinct[run_end]] - lanes[distinct[run_end - 1]] == step
+                    {
+                        run_end += 1;
                     }
                 }
+                let mut c = run_start;
+                while c < run_end {
+                    let rest = run_end - c;
+                    let mut pick = 0usize;
+                    for &w in widths {
+                        let w = w as usize;
+                        if w <= rest && w > pick {
+                            pick = w;
+                        }
+                    }
+                    if pick == 0 {
+                        c += 1;
+                        continue;
+                    }
+                    let chunk = &distinct[c..c + pick];
+                    c += pick;
+                    // Roots' agreed shape (mismatched shapes never cover).
+                    let elem = self.shape(roots[chunk[0]]);
+                    let mut agree = true;
+                    for &p in chunk.iter().skip(1) {
+                        if self.shape(roots[p]) != elem {
+                            agree = false;
+                            break;
+                        }
+                    }
+                    if !agree {
+                        continue;
+                    }
+                    let mut croot: Vec<OpId> = Vec::with_capacity(pick);
+                    let mut clane: Vec<i64> = Vec::with_capacity(pick);
+                    let mut crb: Vec<Bindings> = Vec::with_capacity(pick);
+                    let mut first = roots[chunk[0]];
+                    let mut first_pos = chunk[0];
+                    for &p in chunk {
+                        croot.push(roots[p]);
+                        clane.push(lanes[p]);
+                        crb.push(rbs[p].clone());
+                        if p < first_pos {
+                            first_pos = p;
+                            first = roots[p];
+                        }
+                    }
+                    let stride = if pick > 1 { step } else { 0 };
+                    out.push(CoverGroup {
+                        bindings: agreed.clone(),
+                        roots: croot,
+                        lanes: clane,
+                        roots_bindings: crb,
+                        first,
+                        stride,
+                        elem,
+                    });
+                }
+                run_start = run_end;
             }
-            if !ok {
-                continue;
-            }
-            // Match facts for the applier: the single-stride step and
-            // the roots' agreed shape (mismatched shapes never cover).
-            let stride = if n > 1 { sorted[1] - sorted[0] } else { 0 };
-            let elem = self.shape(roots[0]);
-            if roots.iter().skip(1).any(|r| self.shape(*r) != elem) {
-                continue;
-            }
-            let first = roots[0];
-            out.push(CoverGroup { bindings: agreed, roots, lanes, roots_bindings: rbs, first, stride, elem });
         }
         out
     }
