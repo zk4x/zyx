@@ -356,7 +356,7 @@ pub enum Pat {
 /// distinct const ops.
 #[derive(Clone, Debug, Default)]
 pub struct Bindings {
-    ops: [(char, OpId, Binding); 4],
+    ops: [(char, OpId, Binding); 5],
 }
 
 #[derive(Clone, Debug, Default)]

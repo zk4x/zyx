@@ -447,6 +447,56 @@ impl Kernel {
             op_id = next;
         }
 
+        // Combination bound: no emitted config may blow the IR past
+        // 10k ops. Every config's growth is bounded by the max
+        // combination (all sites at max factor; global sites may also
+        // skip), so prune largest factors until the max fits.
+        let ops_len = self.ops.len().0 as Dim;
+        loop {
+            let max_prod: Dim = reduce_factor
+                .values()
+                .chain(global_upcasts.values())
+                .map(|fs| fs.iter().max().copied().unwrap_or(1) as Dim)
+                .fold(1, Dim::saturating_mul);
+            if ops_len.saturating_mul(max_prod) <= 10_000 {
+                break;
+            }
+            let mut target: Option<(OpId, bool)> = None;
+            let mut target_max: u64 = 0;
+            for (&id, fs) in reduce_factor.iter() {
+                if let Some(&m) = fs.iter().max() {
+                    if m > target_max {
+                        target_max = m;
+                        target = Some((id, false));
+                    }
+                }
+            }
+            for (&id, fs) in global_upcasts.iter() {
+                if let Some(&m) = fs.iter().max() {
+                    if m > target_max {
+                        target_max = m;
+                        target = Some((id, true));
+                    }
+                }
+            }
+            let Some((id, is_global)) = target else { break };
+            if is_global {
+                if let Some(fs) = global_upcasts.get_mut(&id) {
+                    fs.retain(|&f| f != target_max);
+                }
+            } else {
+                let mut empty = false;
+                if let Some(fs) = reduce_factor.get_mut(&id) {
+                    fs.retain(|&f| f != target_max);
+                    empty = fs.is_empty();
+                }
+                // An empty reduce vec would divide by zero in apply.
+                if empty {
+                    reduce_factor.remove(&id);
+                }
+            }
+        }
+
         if global_upcasts.is_empty() || reduce_factor.is_empty() {
             return Box::new(RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts });
         }

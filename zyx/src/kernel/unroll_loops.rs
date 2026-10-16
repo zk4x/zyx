@@ -324,10 +324,6 @@ impl Kernel {
             return;
         }
 
-        if self.ops.len().0 as i64 * factor > 5000 {
-            return;
-        }
-
         //println!("Unroll tree reduce for loop={loop_id}, factor={factor}");
 
         // Find the acc
