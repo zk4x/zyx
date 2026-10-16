@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use crate::{
-    DType, Map,
+    DType,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, UOp},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
@@ -356,21 +356,7 @@ pub enum Pat {
 /// distinct const ops.
 #[derive(Clone, Debug, Default)]
 pub struct Bindings {
-    ops: [(char, OpId, Binding); 8],
-    /// Operand slots inside the matched root where each op-kind binder's
-    /// op appears (recorded by the `record_slots` step in
-    /// [`Kernel::match_pat`] / [`Kernel::match_cover`] /
-    /// [`Kernel::match_stack`]); payload binders bind the root itself
-    /// and carry none. Read with [`Bindings::slots`].
-    slots: Map<char, Vec<usize>>,
-}
-
-impl Bindings {
-    /// Operand slots of the matched root where the op bound under
-    /// `name` appears. Empty for payload binders and unbound names.
-    pub fn slots(&self, name: char) -> &[usize] {
-        self.slots.get(&name).map_or(&[], |s| s)
-    }
+    ops: [(char, OpId, Binding); 4],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -432,12 +418,9 @@ impl Bindings {
         for (n, op, binding) in &self.ops {
             if *n == name {
                 match binding {
-                    Binding::Op
-                    | Binding::Int(_)
-                    | Binding::Float(_)
-                    | Binding::Bop(_)
-                    | Binding::Uop(_)
-                    | Binding::Dtype(_) => return *op,
+                    Binding::Op | Binding::Int(_) | Binding::Float(_) | Binding::Bop(_) | Binding::Uop(_) | Binding::Dtype(_) => {
+                        return *op;
+                    }
                     Binding::None => panic!("unbound value name"),
                 }
             }
@@ -957,7 +940,6 @@ impl Kernel {
             if !self.match_node(leaf, *op, &mut b) {
                 return None;
             }
-            self.record_slots(*op, &mut b);
             out.push(b.clone());
             // Carry the value-kind bindings forward as the agreement
             // base; the op-kind binders stay per-member.
@@ -992,7 +974,6 @@ impl Kernel {
         while !id.is_null() {
             let mut b = Bindings::default();
             if self.match_node(root, id, &mut b) {
-                self.record_slots(id, &mut b);
                 hits.push((id, b));
             }
             id = self.next_op(id);
@@ -1093,9 +1074,7 @@ impl Kernel {
                     step = lanes[distinct[run_start + 1]] - lanes[distinct[run_start]];
                 }
                 if step > 0 {
-                    while run_end < distinct.len()
-                        && lanes[distinct[run_end]] - lanes[distinct[run_end - 1]] == step
-                    {
+                    while run_end < distinct.len() && lanes[distinct[run_end]] - lanes[distinct[run_end - 1]] == step {
                         run_end += 1;
                     }
                 }
@@ -1173,24 +1152,9 @@ impl Kernel {
     pub fn match_pat(&self, root: OpId, pat: impl Borrow<Pat>) -> Option<Bindings> {
         let mut bindings = Bindings::default();
         if self.match_node(pat.borrow(), root, &mut bindings) {
-            self.record_slots(root, &mut bindings);
             Some(bindings)
         } else {
             None
-        }
-    }
-
-    /// Record, per op-kind binder, the operand slots of `root` where the
-    /// bound op appears (use positions in the matched root; payload
-    /// binders bind the root itself and carry none).
-    fn record_slots(&self, root: OpId, bindings: &mut Bindings) {
-        let params: Vec<OpId> = self.ops[root].op.parameters().collect();
-        for (name, op_id, binding) in bindings.ops.iter() {
-            if !matches!(binding, Binding::Op) {
-                continue;
-            }
-            let slots: Vec<usize> = params.iter().enumerate().filter(|(_, p)| *p == op_id).map(|(i, _)| i).collect();
-            bindings.slots.insert(*name, slots);
         }
     }
 
@@ -1381,7 +1345,10 @@ impl Kernel {
             Pat::Store { dst, idx, x, bytes } => match self.at(id) {
                 Op::Store { dst: d, dst_idx: i, src: v, bytes: b } => {
                     let snap = bindings.clone();
-                    if self.match_node(dst, *d, bindings) && self.match_node(idx, *i, bindings) && self.match_node(x, *v, bindings) && self.match_node(bytes, *b, bindings)
+                    if self.match_node(dst, *d, bindings)
+                        && self.match_node(idx, *i, bindings)
+                        && self.match_node(x, *v, bindings)
+                        && self.match_node(bytes, *b, bindings)
                     {
                         true
                     } else {
@@ -1419,7 +1386,9 @@ impl Kernel {
                 }
                 // v1: sequence leaves are vector lanes; anything else
                 // never matches. Bindings untouched on this path.
-                let Pat::Index { vec: vec_pat, .. } = leaf.as_ref() else { return false };
+                let Pat::Index { vec: vec_pat, .. } = leaf.as_ref() else {
+                    return false;
+                };
                 let snap = bindings.clone();
                 // Lane or spine-continuation per operand. A lane matches
                 // the leaf's vector pattern with the shared bindings (so
@@ -1435,9 +1404,7 @@ impl Kernel {
                         _ => break false,
                     };
                     let lane = |o: OpId, bindings: &mut Bindings| match self.at(o) {
-                        Op::Index { vec: vid, idx }
-                            if self.match_node(vec_pat, *vid, bindings) =>
-                        {
+                        Op::Index { vec: vid, idx } if self.match_node(vec_pat, *vid, bindings) => {
                             i64::try_from(*idx).ok().map(|k| (*vid, k))
                         }
                         _ => None,

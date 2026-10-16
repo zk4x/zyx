@@ -309,8 +309,8 @@ impl Kernel {
     /// One cover group of same-head compute ops over lanes of one
     /// vector: take the largest supported prefix, stack operands per
     /// position, rebuild the head over the vectors, devectorize the
-    /// take. The lane use slot per member comes off the match
-    /// (`slots('k')`). Returns whether one group applied.
+    /// take. The lane use slot per member is the position of the lane
+    /// op in the member's parameters. Returns whether one group applied.
     fn vectorize_ops_cover(&mut self, pat: &Pat, kind: FwdKind, arity: usize, supported: &[u8]) -> bool {
         for g in self.match_cover(pat, &['v', 'p'], supported) {
             let Some(selected) = g.take_prefix(supported) else {
@@ -318,9 +318,12 @@ impl Kernel {
             };
             let v = g.bindings.op('v');
             let first = selected[0];
-            // Per-member lane slot and lane op, off the match.
+            // Per-member lane slot and lane op: position of the lane op
+            // in the member's parameters.
             let lane_of = |k: OpId, m: &Bindings| -> OpId {
-                self.ops[k].op.parameters().nth(*m.slots('n').first().expect("lane slot")).expect("arity drift")
+                let lane = m.op('n');
+                let pos = self.ops[k].op.parameters().position(|p| p == lane).expect("lane slot");
+                self.ops[k].op.parameters().nth(pos).expect("arity drift")
             };
             let members: Vec<(OpId, &Bindings)> = selected.iter().copied().zip(g.roots_bindings.iter()).collect();
             // Every Stack operand must be declared before `first`.
@@ -354,8 +357,9 @@ impl Kernel {
             } else {
                 let mut other_ok = true;
                 for (c, m) in &members {
-                    let slot = *m.slots('n').first().expect("lane slot");
+                    let lane = m.op('n');
                     let operands: Vec<OpId> = self.ops[*c].op.parameters().collect();
+                    let slot = operands.iter().position(|&o| o == lane).expect("lane slot");
                     for (i, &o) in operands.iter().enumerate() {
                         if i != slot && !self.op_is_before(o, first) {
                             other_ok = false;

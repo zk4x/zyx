@@ -278,6 +278,10 @@ pub(crate) struct Timer {
 #[cfg(feature = "time")]
 impl Timer {
     pub(crate) fn new(name: &str) -> Timer {
+        static REGISTER: std::sync::Once = std::sync::Once::new();
+        REGISTER.call_once(|| {
+            unsafe { atexit(Some(runtime_atexit_deinitialize)) };
+        });
         let name: String = name.into();
         ET.lock().entry(name.clone()).or_insert((0, 0));
         Timer { name, begin: std::time::Instant::now() }
@@ -292,4 +296,19 @@ impl Drop for Timer {
         x.0 += self.begin.elapsed().as_micros();
         x.1 += 1;
     }
+}
+
+// Process exit hook (libc atexit, declared directly — no libc crate,
+// same pattern as the tenstorrent backend).
+#[cfg(feature = "time")]
+unsafe extern "C" {
+    fn atexit(cb: Option<unsafe extern "C" fn()>) -> core::ffi::c_int;
+}
+
+/// Exit-time runtime deinitialize: flushes the timing table (and releases
+/// runtime state). `static`s never drop, so without this the `time`
+/// feature records into a map nobody reads.
+#[cfg(feature = "time")]
+extern "C" fn runtime_atexit_deinitialize() {
+    RT.lock().deinitialize();
 }
