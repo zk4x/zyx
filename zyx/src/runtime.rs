@@ -3649,10 +3649,8 @@ impl Runtime {
         };
 
         let contains_stores = self.kernels[kid].kernel.contains_stores();
-        // A reduce in the chain duplicates like anything else; only an
-        // actual store (or force_store) materializes. Storing here would
-        // mint a movement kernel per follower that no backend can stage.
-        if force_store || contains_stores {
+        let preceded_by_reduce = self.kernels[kid].kernel.is_preceded_by_reduce(op_id);
+        if force_store || contains_stores || preceded_by_reduce {
             self.add_store(x)?;
             // add_store re-homes x onto... nothing: x becomes a **Leaf**.
             // Mint the fresh load kernel directly — it is already the clean

@@ -339,7 +339,7 @@ impl Kernel {
                         [] => String::from("store"),
                         [len] => format!("store vec{len}"),
                         [x, y] => format!("store tile {x}x{y}"),
-                        _ => todo!("debug: rank>2 access"),
+                        dims => format!("store {}", dims.iter().map(|d| format!("{d}")).collect::<Vec<_>>().join("x")),
                     };
                     writeln!(f, "{indent}{red}{kind}{reset} r{dst}{idx_txt} = r{x}    // {lb}..={ub}").unwrap();
                 }
