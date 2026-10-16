@@ -25,8 +25,8 @@ use crate::error::BackendError;
 use crate::graph::OpNode;
 use crate::kernel::TTOp;
 use crate::kernel::{
-    BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock,
-    UOp, ops::TileDim,
+    BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, UOp,
+    ops::TileDim,
 };
 use crate::runtime::{Runtime, TensorData};
 use crate::shape::UAxis;
@@ -2459,8 +2459,6 @@ impl Kernel {
             let sin_tile = self.load_tile(sin.src, idx0, 32, 32);
             let trans_tile = self.load_tile(trans.src, idx0, 32, 32);
             // Pure (non-accumulating) matmul: seed the explicit acc with zeros.
-            let zero_acc_storage = self.zeros(x.dtype, 1024);
-            let zero_acc = self.load_tile(zero_acc_storage, idx0, 32, 32);
             let rot = self.matmul_tile(x_tile, trans_tile);
             let y1 = self.mul(x_tile, cos_tile);
             let y2 = self.mul(rot, sin_tile);

@@ -149,7 +149,7 @@ fn q4k_repack_whole() -> Result<(), ZyxError> {
         segs.push(Tensor::cat([&lg, &hg], 1)?);
     }
     let mat = Tensor::cat(&segs, 1)?.reshape([rows, cols])?;
-    let flat = mat.cast(DType::U16).tilize()?.reshape([rows * cols])?;
+    let flat = mat.cast(DType::U16).reshape([rows * cols])?;
     // Strided per-page planes: page p word s holds tiles 4p+k slot s.
     let ntiles_q = rows * cols / 1024;
     assert_eq!(ntiles_q % 4, 0);
@@ -174,7 +174,7 @@ fn q4k_repack_whole() -> Result<(), ZyxError> {
             til[(p * 4 + k) * 1024 + s] = (w >> (4 * k)) & 15;
         }
     }
-    let nib: Vec<u16> = Tensor::from_vec(til, [rows, cols])?.untilize(rows, cols)?.to_vec()?;
+    let nib: Vec<u16> = Tensor::from_vec(til, [rows, cols])?.to_vec()?;
     for b in 0..n {
         for w in 0..256 {
             let g = w / 64;

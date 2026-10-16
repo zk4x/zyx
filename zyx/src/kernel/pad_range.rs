@@ -40,31 +40,19 @@ impl Optimization for PadIndex {
             return;
         }
         let (idx_id, pad_to) = self.factors[config as usize];
-        let Op::Range { kind, .. } = kernel.ops[idx_id].op else {
-            unreachable!()
-        };
-        let current_len = match kind {
-            RangeKind::Group(len) => kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-            RangeKind::Local(len) => i64::from(len),
-            // opt_pad_index never collects warp factors (warp views can't be padded).
-            RangeKind::Warp(_) => unreachable!("PadIndex never collects warp factors"),
-            // opt_pad_index never collects unroll factors (lane counts can't be padded).
-            RangeKind::Unroll(_) => unreachable!("PadIndex never collects unroll factors"),
-        };
-        let pad_len = (pad_to - current_len % pad_to) % pad_to;
-        if pad_len > 0 {
-            kernel.pad_range(idx_id, pad_len);
-        }
+        kernel.pad_range(idx_id, pad_to);
     }
 }
 
 impl Kernel {
-    /// Pads a global index to the next multiple of `tile_size`, guarding out-of-range loads
+    /// Pads a global index up to a multiple of `pad_to`, guarding out-of-range loads
     /// and skipping out-of-range stores.
     ///
-    /// This extends `Op::Index { len: current_len, .. }` to `len: current_len + pad_len`
-    /// so the grid covers full tiles.  OOB reads are redirected to element 0 (safe).
-    /// OOB stores are wrapped in a boolean-length `Op::Loop` (conditional) and skipped entirely.
+    /// The pad amount is computed symbolically (`(pad_to - len % pad_to) % pad_to`
+    /// as IR), so unresolvable lengths pad exactly with no `resolve_const`.
+    /// This extends the range length so the grid covers full tiles. OOB reads
+    /// are redirected to element 0 (safe). OOB stores are wrapped in a
+    /// boolean-length `Op::Loop` (conditional) and skipped entirely.
     ///
     /// Useful for tiling: when a tensor dimension isn't a multiple of the tile size,
     /// pad the index so the grid covers full tiles, and OOB threads compute garbage
@@ -72,27 +60,31 @@ impl Kernel {
     ///
     /// # Panics
     /// - If `gidx_id` is not an `Op::Index` node.
-    pub(crate) fn pad_range(&mut self, gidx_id: OpId, pad_len: Dim) {
-        if pad_len == 0 {
-            return;
-        }
-
-        // 1. Extend the index length
+    pub(crate) fn pad_range(&mut self, gidx_id: OpId, pad_to: Dim) {
+        debug_assert!(pad_to > 0, "pad_range: pad_to {pad_to} <= 0");
+        // 1. Extend the index length to the next multiple of pad_to.
+        // The limit (original length) doubles as the OOB guard comparison.
         let Op::Range { axis, kind } = self.ops[gidx_id].op else {
             panic!("pad_index: op is not an Index");
         };
-        let (current_len, new_kind) = match kind {
-            RangeKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
-                Some(current_len) => {
-                    let new_len = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len + pad_len)));
-                    (current_len, RangeKind::Group(new_len))
-                }
-                None => return,
-            },
+        let (limit, new_kind) = match kind {
+            RangeKind::Group(len) => {
+                let pad_to_c = self.insert_before(gidx_id, Op::Const(Constant::idx(pad_to)));
+                let rem = self.insert_before(gidx_id, Op::Binary { x: len, y: pad_to_c, bop: BOp::Mod });
+                let sub = self.insert_before(gidx_id, Op::Binary { x: pad_to_c, y: rem, bop: BOp::Sub });
+                let pad = self.insert_before(gidx_id, Op::Binary { x: sub, y: pad_to_c, bop: BOp::Mod });
+                let new_len = self.insert_before(gidx_id, Op::Binary { x: len, y: pad, bop: BOp::Add });
+                (len, RangeKind::Group(new_len))
+            }
             RangeKind::Local(len) => {
                 let current_len = Dim::from(len);
+                let pad_len = (pad_to - current_len % pad_to) % pad_to;
+                if pad_len == 0 {
+                    return;
+                }
                 let new_len = len + u32::try_from(pad_len).expect("pad_len too large for local index");
-                (current_len, RangeKind::Local(new_len))
+                let limit = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len)));
+                (limit, RangeKind::Local(new_len))
             }
             RangeKind::Warp(_) => {
                 panic!("pad_range: cannot pad a warp view; pad its underlying local range instead")
@@ -103,10 +95,7 @@ impl Kernel {
         };
         self.ops[gidx_id].op = Op::Range { axis, kind: new_kind };
 
-        // 2. Create limit constant for comparison
-        let limit = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len)));
-
-        // 3. Walk all ops to guard loads and stores depending on this index
+        // 2. Walk all ops to guard loads and stores depending on this index
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
@@ -262,28 +251,34 @@ impl Kernel {
     }
 
     /// Make the `PadIndex` optimization: scan the kernel for indices whose
-    /// lengths are not multiples of hardware-friendly sizes.
+    /// lengths are not provably multiples of hardware-friendly sizes.
     pub fn opt_pad_index(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let Op::Range { kind, .. } = self.ops[op_id].op {
-                let len = match kind {
-                    RangeKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
-                        Some(len) => len,
-                        None => continue,
-                    },
-                    RangeKind::Local(len) => Dim::from(len),
-                    // Warp views can't be padded — skip them entirely.
-                    RangeKind::Warp(_) => continue,
-                    // Unroll widths are exact lane counts — skip them entirely.
-                    RangeKind::Unroll(_) => continue,
-                };
-                for pad_to in [8, 16, 32] {
-                    if len % pad_to as Dim != 0 {
-                        factors.push((op_id, pad_to));
+                match kind {
+                    // Symbolic lengths skip only when provably a multiple.
+                    RangeKind::Group(len) => {
+                        for pad_to in [8, 16, 32] {
+                            if !self.is_sym_multiple(len, pad_to) {
+                                factors.push((op_id, pad_to));
+                            }
+                        }
                     }
+                    RangeKind::Local(len) => {
+                        let len = Dim::from(len);
+                        for pad_to in [8, 16, 32] {
+                            if len % pad_to != 0 {
+                                factors.push((op_id, pad_to));
+                            }
+                        }
+                    }
+                    // Warp views can't be padded — skip them entirely.
+                    RangeKind::Warp(_) => {}
+                    // Unroll widths are exact lane counts — skip them entirely.
+                    RangeKind::Unroll(_) => {}
                 }
             }
             op_id = next;

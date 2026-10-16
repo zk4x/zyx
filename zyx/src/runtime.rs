@@ -687,9 +687,7 @@ impl Runtime {
                 // the store kernel never launched. Warn, don't panic: this
                 // fires during error teardown and would mask the real error.
                 if old_buffer.is_some() {
-                    eprintln!(
-                        "release: PendingLeaf {x} dies with a kept buffer — its store kernel never launched"
-                    );
+                    eprintln!("release: PendingLeaf {x} dies with a kept buffer — its store kernel never launched");
                 }
                 if !depends_on.is_null() && self.kernels.contains_id(depends_on) {
                     let mut_params: Vec<OpId> = {
@@ -1116,10 +1114,9 @@ impl Runtime {
         // Auto for materialize to pick.
         let dev = match self.leaf_buffer(x) {
             Some(buf) => match &buf.shards[..] {
-                [Shard { pool, .. }] => Dev::all()
-                    .into_iter()
-                    .find(|d| d.pool() == *pool && !matches!(d, Dev::Host))
-                    .unwrap_or(Dev::Auto),
+                [Shard { pool, .. }] => {
+                    Dev::all().into_iter().find(|d| d.pool() == *pool && !matches!(d, Dev::Host)).unwrap_or(Dev::Auto)
+                }
                 _ => Dev::Auto,
             },
             None => Dev::Auto,
@@ -1930,7 +1927,7 @@ impl Runtime {
     }
 
     #[allow(clippy::wrong_self_convention)] // naming convention from GPU API, not a conversion method
-    pub fn to_device(&mut self, mut x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
+    pub fn to_device(&mut self, x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device={device:?})");
         // Implicit layout: crossing onto TT tilizes (row-major in, face

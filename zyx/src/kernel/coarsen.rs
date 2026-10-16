@@ -130,7 +130,7 @@ impl Kernel {
                 };
                 for f in [16, 8, 4] {
                     //println!("len={len} f={f}");
-                    if len % f as Dim == 0 {
+                    if len % f as Dim == 0 && f as Dim * self.ops.len().0 as Dim <= 10000 {
                         factors.push((op_id, f));
                     }
                 }
@@ -155,9 +155,6 @@ impl Kernel {
         debug_assert!(len % factor as Dim == 0);
 
         //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
-
-        // Cannot live here, must live elsewhere, int opt_coarsen and in opt_register_tile
-        //if self.ops.len().0 as Dim * factor as Dim > 10000 { return; }
 
         // === Some checks when we just cannot coarsen === //
         // Multi-dim tile accesses duplicate as whole tiles, not per
@@ -419,8 +416,13 @@ impl Kernel {
                     continue;
                 };
                 if len >= 16 {
-                    let applicable: Vec<u64> =
-                        candidates.iter().copied().filter(|&f| len % f as Dim == 0 && len / f as Dim >= 4).collect();
+                    let applicable: Vec<u64> = candidates
+                        .iter()
+                        .copied()
+                        .filter(|&f| {
+                            len % f as Dim == 0 && len / f as Dim >= 4 && f as Dim * self.ops.len().0 as Dim <= 10000
+                        })
+                        .collect();
                     if !applicable.is_empty() {
                         reduce_factor.insert(op_id, applicable);
                     }
@@ -431,8 +433,13 @@ impl Kernel {
                     op_id = next;
                     continue;
                 };
-                let applicable: Vec<u64> =
-                    candidates.iter().copied().filter(|&f| len % f as Dim == 0 && len / f as Dim >= 4).collect();
+                let applicable: Vec<u64> = candidates
+                    .iter()
+                    .copied()
+                    .filter(|&f| {
+                        len % f as Dim == 0 && len / f as Dim >= 4 && f as Dim * self.ops.len().0 as Dim <= 10000
+                    })
+                    .collect();
                 if !applicable.is_empty() {
                     global_upcasts.insert(op_id, applicable);
                 }

@@ -1616,10 +1616,11 @@ impl Kernel {
             // Const leaf folds into the NULL offset.
             if self.match_pat(param, Pat::Const).is_some() {
                 let Op::Const(c) = self.at(param) else { unreachable!() };
+                let Some(k) = c.as_integer() else { return None };
                 indices
                     .entry(OpId::NULL)
-                    .and_modify(|(_, v)| *v += c.as_dim().unwrap() * scale)
-                    .or_insert((0, c.as_dim().unwrap() * scale));
+                    .and_modify(|(_, v)| *v += k * scale)
+                    .or_insert((0, k * scale));
                 continue;
             }
             // Bare index var: stride 1 (times the inherited scale).
@@ -1663,7 +1664,8 @@ impl Kernel {
                 let Some(d) = index_len_of(self.at(m.op('r'))) else {
                     return None;
                 };
-                add_stride(&mut indices, m.op('r'), d, c.as_dim().unwrap() * scale);
+                let Some(k) = c.as_integer() else { return None };
+                add_stride(&mut indices, m.op('r'), d, k * scale);
                 continue;
             }
             // Shifted index records 2^k; any other shifted expr descends.
@@ -1672,12 +1674,14 @@ impl Kernel {
                 let Some(d) = index_len_of(self.at(m.op('r'))) else {
                     return None;
                 };
-                add_stride(&mut indices, m.op('r'), d, (1i64 << c.as_dim().unwrap()) * scale);
+                let Some(k) = c.as_dim() else { return None };
+                add_stride(&mut indices, m.op('r'), d, (1i64 << k) * scale);
                 continue;
             }
             if let Some(m) = self.match_pat(param, &shl) {
                 if let Op::Const(c) = self.at(m.op('k')) {
-                    params.push((m.op('e'), scale * (1i64 << c.as_dim().unwrap())));
+                    let Some(k) = c.as_dim() else { return None };
+                    params.push((m.op('e'), scale * (1i64 << k)));
                 }
                 continue;
             }
@@ -1811,6 +1815,69 @@ impl Kernel {
             }
         }
         panic!("is_const did not finish in 250000 steps");
+    }
+
+    /// True iff the dim expression at `id` is provably a multiple of
+    /// `divisor`, without resolving it to a constant.
+    ///
+    /// Divisibility over the const-expr ops: `Const(c)` checks the value;
+    /// `Cast` preserves integer values; `Mul` holds when either side is a
+    /// multiple; `Add`/`Sub` hold when both sides are. Everything else
+    /// (params, loads, divisions, bitcasts, unknown ops) is unprovable
+    /// and returns false — the caller pads as usual. Iterative, never
+    /// panics.
+    pub(crate) fn is_sym_multiple(&self, id: OpId, divisor: Dim) -> bool {
+        debug_assert!(divisor > 0, "is_sym_multiple: divisor {divisor} <= 0");
+        if divisor <= 0 {
+            return false;
+        }
+        // Postorder collection (same walk as resolve_const), then
+        // bottom-up divisibility.
+        let mut seen: Set<OpId> = Set::default();
+        let mut order: Vec<OpId> = Vec::new();
+        let mut stack = vec![(id, false)];
+        for _ in 0..250_000 {
+            let Some((nid, emit)) = stack.pop() else { break };
+            if nid.is_null() {
+                continue;
+            }
+            if emit {
+                order.push(nid);
+                continue;
+            }
+            if !seen.insert(nid) {
+                continue;
+            }
+            stack.push((nid, true));
+            match self.at(nid) {
+                Op::Cast { x, .. } => stack.push((*x, false)),
+                Op::Bitcast { x, .. } => stack.push((*x, false)),
+                Op::Unary { x, .. } => stack.push((*x, false)),
+                Op::Binary { x, y, .. } => {
+                    stack.push((*x, false));
+                    stack.push((*y, false));
+                }
+                _ => {}
+            }
+        }
+        if !stack.is_empty() {
+            panic!("is_sym_multiple did not finish in 250000 steps");
+        }
+        let mut multiple: Map<OpId, bool> = Map::default();
+        for &nid in &order {
+            let m = match self.at(nid) {
+                Op::Const(c) => c.as_dim().map(|v| v % divisor == 0).unwrap_or(false),
+                Op::Cast { x, .. } => multiple.get(x).copied().unwrap_or(false),
+                Op::Binary { x, y, bop } => match bop {
+                    BOp::Mul => multiple.get(x).copied().unwrap_or(false) || multiple.get(y).copied().unwrap_or(false),
+                    BOp::Add | BOp::Sub => multiple.get(x).copied().unwrap_or(false) && multiple.get(y).copied().unwrap_or(false),
+                    _ => false,
+                },
+                _ => false,
+            };
+            multiple.insert(nid, m);
+        }
+        multiple.get(&id).copied().unwrap_or(false)
     }
 
     /// Remap slab indices from x to y
