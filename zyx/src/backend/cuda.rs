@@ -1975,6 +1975,12 @@ impl CUDADevice {
             // decode handling.
             let PTXOp::Bytes(bytes) = ptx.as_ref();
             let ptx_vec: Vec<u8> = bytes.to_vec();
+            // PTX bytes carry no nul terminator (unlike the C-string
+            // path below), so dump lossily instead of via CString.
+            if debug_asm {
+                println!();
+                println!("{}", String::from_utf8_lossy(&ptx_vec));
+            }
             name += "\0";
             let (reply, reply_rx) = channel();
             self.tx

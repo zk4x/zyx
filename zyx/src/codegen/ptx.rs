@@ -970,6 +970,8 @@ impl Kernel {
         }
 
         comp.header.push_str(&comp.body);
+        // cuModuleLoadDataEx reads a nul-terminated image.
+        comp.header.push('\0');
 
         Ok((comp.header.into_bytes(), lws))
     }
