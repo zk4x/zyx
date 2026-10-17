@@ -515,8 +515,8 @@ impl Graph {
                     }
                 }
             }
-            if let Op::Store { dst, dst_idx, src, bytes } = &self.ops[nid].op {
-                for p in [dst, dst_idx, src, bytes] {
+            if let Op::Store { dst, dst_idx, src } = &self.ops[nid].op {
+                for p in [dst, dst_idx, src] {
                     if !p.is_null() && !kdeps.contains(p) {
                         kdeps.push(*p);
                     }
@@ -1737,15 +1737,12 @@ impl Runtime {
                         stack.push(*x);
                     }
                     Op::Stack { ops } => stack.extend(ops.iter().copied()),
-                    Op::Store { dst, dst_idx, src, bytes } => {
+                    Op::Store { dst, dst_idx, src } => {
                         stack.push(*dst);
                         if !dst_idx.is_null() {
                             stack.push(*dst_idx);
                         }
                         stack.push(*src);
-                        if !bytes.is_null() {
-                            stack.push(*bytes);
-                        }
                     }
                     Op::TT(TTOp::ReduceTile { x, .. }) => {
                         stack.push(*x);
@@ -1761,21 +1758,20 @@ impl Runtime {
                     | Op::Wmma { .. }
                     | Op::TT { .. }
                     | Op::VecReduce { .. }
-                | Op::After { .. }
-                | Op::ToDevice { .. }
-                | Op::Contiguous { .. }
-                | Op::Source(_)
-                | Op::GPU(_)
-                | Op::Spirv(_)
-                | Op::PTX(_)
-                | Op::Program { .. }
-                | Op::Kernel(_) => {
-                    unreachable!("promote_to_graph: eager kernel op {oid:?}")
-                }
-                Op::Unroll { .. } => {
-                    unreachable!("promote_to_graph: unroll is post-linearize only, eager kernel op {oid:?}")
-                }
-
+                    | Op::After { .. }
+                    | Op::ToDevice { .. }
+                    | Op::Contiguous { .. }
+                    | Op::Source(_)
+                    | Op::GPU(_)
+                    | Op::Spirv(_)
+                    | Op::PTX(_)
+                    | Op::Program { .. }
+                    | Op::Kernel(_) => {
+                        unreachable!("promote_to_graph: eager kernel op {oid:?}")
+                    }
+                    Op::Unroll { .. } => {
+                        unreachable!("promote_to_graph: unroll is post-linearize only, eager kernel op {oid:?}")
+                    }
                 }
             }
             relevant

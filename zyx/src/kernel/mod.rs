@@ -125,7 +125,6 @@ mod licm;
 mod linearize;
 mod local_reduce;
 mod merge_loops;
-mod mma;
 mod ops;
 mod pad_range;
 mod pat;
@@ -134,7 +133,6 @@ mod split_loops;
 mod tenstorrent;
 mod tiling;
 mod unroll_loops;
-mod vectorize;
 mod verify;
 
 // TODO later make this dynamic u32 or u64 depending on max range
@@ -326,43 +324,25 @@ impl Kernel {
                     *rcs.entry(src).or_insert(0) += 1;
                     *rcs.entry(src_idx).or_insert(0) += 1;
                 }
-                Op::Store { dst, dst_idx, src: x, bytes } => {
-                    // Post-linearize the shape rides on the store itself
-                    // (`bytes`); pre-linearize whole-view stores are
-                    // scalar by form (null bytes: no width operand
-                    // exists to consume).
-                    let access_shape: Vec<Dim> = if bytes.is_null() {
-                        Vec::new()
-                    } else if let Op::Stack { ref ops } = self.ops[bytes].op {
-                        ops.iter()
-                            .map(|&d| {
-                                self.resolve_const(d)
-                                    .and_then(Constant::as_dim)
-                                    .expect("store bytes: tile dim is not a constant")
-                            })
-                            .collect()
-                    } else {
-                        vec![
-                            self.resolve_const(bytes)
-                                .and_then(Constant::as_dim)
-                                .expect("store bytes: access width is not a constant"),
-                        ]
-                    };
-                    debug_assert_eq!(dtypes[&x].1, access_shape);
+                Op::Store { dst, dst_idx, src: x } => {
+                    // The access shape rides on the index arithmetic:
+                    // whole-view store (null dst_idx) is scalar by
+                    // form, an element store's shape is its index's
+                    // lane shape. The stored value must match it.
+                    if !dst_idx.is_null() {
+                        debug_assert_eq!(dtypes[&x].1, dtypes[&dst_idx].1, "store value/index shape mismatch");
+                    }
                     dtypes.insert(op_id, dtypes[&x].clone());
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(dst_idx).or_insert(0) += 1;
-                    if !bytes.is_null() {
-                        *rcs.entry(bytes).or_insert(0) += 1;
-                    }
                     *rcs.entry(x).or_insert(0) += 1;
                 }
-                Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
-                    // Like Load: dtype from the buffer, shape from the
-                    // access itself.
-                    dtypes.insert(op_id, (dtypes[&src].0, self.shape(op_id)));
+                Op::Copy { src, src_idx, dst, dst_idx } => {
+                    // Dtype from the buffer, access shape from the
+                    // source index expression.
+                    dtypes.insert(op_id, (dtypes[&src].0, dtypes[&src_idx].1.clone()));
                     *rcs.entry(src).or_insert(0) += 1;
-                    for &o in &[src_idx, dst, dst_idx, bytes] {
+                    for &o in &[src_idx, dst, dst_idx] {
                         if !o.is_null() {
                             *rcs.entry(o).or_insert(0) += 1;
                         }
@@ -1038,20 +1018,28 @@ impl Kernel {
                 }
                 Op::Load { src, .. } => {
                     if let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*src].op {
-                        let n_elems: Dim = self.shape(op_id).iter().map(|&d| {
-                            assert!(d >= 0, "dram bytes: symbolic access width");
-                            d
-                        }).product();
+                        let n_elems: Dim = self
+                            .shape(op_id)
+                            .iter()
+                            .map(|&d| {
+                                assert!(d >= 0, "dram bytes: symbolic access width");
+                                d
+                            })
+                            .product();
                         let n_bytes = (dtype.bit_size() as u64 / 8) * n_elems as u64;
                         read = read.saturating_add(n_bytes.saturating_mul(mult));
                     }
                 }
                 Op::Store { dst, .. } => {
                     if let Op::Param { kind: ParamKind::GlobalMut, dtype, .. } = &self.ops[*dst].op {
-                        let n_elems: Dim = self.shape(op_id).iter().map(|&d| {
-                            assert!(d >= 0, "dram bytes: symbolic access width");
-                            d
-                        }).product();
+                        let n_elems: Dim = self
+                            .shape(op_id)
+                            .iter()
+                            .map(|&d| {
+                                assert!(d >= 0, "dram bytes: symbolic access width");
+                                d
+                            })
+                            .product();
                         let n_bytes = (dtype.bit_size() as u64 / 8) * n_elems as u64;
                         write = write.saturating_add(n_bytes.saturating_mul(mult));
                     }
@@ -1133,6 +1121,9 @@ impl Kernel {
         }
         let mut stack = vec![op_id];
         let mut visited: Map<OpId, Vec<OpId>> = Map::default();
+        // Lane-axis attribution for binary lane-merge semantics (see
+        // the `binary` shape rules): which axis each lane dim came from.
+        let mut axes: Map<OpId, Vec<u32>> = Map::default();
         for _ in 0..250_000 {
             let Some(op_id) = stack.pop() else {
                 return visited.remove(&op_id).unwrap();
@@ -1144,6 +1135,11 @@ impl Kernel {
             match node_op {
                 Op::Const(_) => {
                     visited.insert(op_id, vec![]);
+                }
+                // Unroll lane values: one dim of `len` lanes on `axis`.
+                Op::Unroll { axis, len } => {
+                    visited.insert(op_id, vec![self.const_idx(u32::from(len))]);
+                    axes.insert(op_id, vec![axis]);
                 }
                 Op::Param { shape, .. } => {
                     visited.insert(op_id, self.shape_descriptor(shape));
@@ -1196,20 +1192,67 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                // Scalars broadcast implicitly: if `x` is a scalar (empty
-                // shape), the binary takes `y`'s shape.
+                // Value shape of a binary: scalars broadcast (the other
+                // operand's shape); lane operands merge axis-aware (see
+                // the `binary` shape rules).
                 Op::Binary { x, y, .. } => {
                     let x_done = visited.contains_key(&x);
-                    if x_done && !visited[&x].is_empty() {
-                        visited.insert(op_id, visited[&x].clone());
-                    } else if visited.contains_key(&y) {
-                        visited.insert(op_id, visited[&y].clone());
-                    } else {
+                    let y_done = visited.contains_key(&y);
+                    if !x_done || !y_done {
+                        // Not both operands resolved yet: revisit after.
                         stack.push(op_id);
                         if !x_done {
                             stack.push(x);
                         }
-                        stack.push(y);
+                        if !y_done {
+                            stack.push(y);
+                        }
+                        continue;
+                    }
+                    let x_dims = visited[&x].clone();
+                    let y_dims = visited[&y].clone();
+                    // Merged shape + axes, plain binary semantics.
+                    let (dims, mut merged_axes) = match (x_dims.as_slice(), y_dims.as_slice()) {
+                        (&[], &[]) => (Vec::new(), Vec::new()),
+                        (&[], _) => (visited[&y].clone(), axes.get(&y).cloned().unwrap_or_default()),
+                        (_, &[]) => (visited[&x].clone(), axes.get(&x).cloned().unwrap_or_default()),
+                        _ => {
+                            let x_axes = axes.get(&x).cloned().unwrap_or_default();
+                            let y_axes = axes.get(&y).cloned().unwrap_or_default();
+                            if x_axes.is_empty() && y_axes.is_empty() {
+                                // Plain value arithmetic: x's shape.
+                                (visited[&x].clone(), Vec::new())
+                            } else if x_axes.is_empty() {
+                                debug_assert_eq!(x_dims, y_dims, "lane binary over broadcast operand with unequal shapes");
+                                (y_dims, y_axes)
+                            } else if y_axes.is_empty() {
+                                debug_assert_eq!(x_dims, y_dims, "lane binary over broadcast operand with unequal shapes");
+                                (x_dims, x_axes)
+                            } else if x_axes == y_axes {
+                                debug_assert_eq!(x_dims, y_dims, "lane binary on same axes with unequal shapes");
+                                (x_dims, x_axes)
+                            } else {
+                                // Nest by axis order (2-D tile indices
+                                // compose this way).
+                                let mut merged: Vec<(u32, OpId)> = x_axes.iter().copied().zip(x_dims.iter().copied()).collect();
+                                merged.extend(y_axes.iter().copied().zip(y_dims.iter().copied()).by_ref());
+                                merged.sort_by_key(|&(a, _)| a);
+                                let mut dims = Vec::with_capacity(merged.len());
+                                let mut prev: Option<u32> = None;
+                                for (a, d) in &merged {
+                                    if Some(*a) == prev {
+                                        todo!("lane binary on axis {a} with different lens");
+                                    }
+                                    prev = Some(*a);
+                                    dims.push(*d);
+                                }
+                                (dims, merged.iter().map(|&(a, _)| a).collect())
+                            }
+                        }
+                    };
+                    visited.insert(op_id, dims);
+                    if !merged_axes.is_empty() {
+                        axes.insert(op_id, merged_axes);
                     }
                 }
                 Op::Reduce { x, .. } => match visited.get(&x).cloned() {
@@ -1222,22 +1265,47 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::Load { bytes, .. } if bytes.is_null() => {
-                    visited.insert(op_id, vec![]);
+                // A scalar access (null index) is scalar by form; a
+                // vector/tile load has the shape of its index expression.
+                Op::Load { src_idx, .. } => {
+                    if src_idx.is_null() {
+                        visited.insert(op_id, vec![]);
+                    } else {
+                        match visited.get(&src_idx).cloned() {
+                            Some(dims) => {
+                                visited.insert(op_id, dims);
+                                if let Some(a) = axes.get(&src_idx).cloned() {
+                                    axes.insert(op_id, a);
+                                }
+                            }
+                            None => {
+                                stack.push(op_id);
+                                stack.push(src_idx);
+                                continue;
+                            }
+                        }
+                    }
                 }
-                // A multi-element access (vector/tile load) has the shape
-                // of its `bytes` descriptor: a width const → `[w]`, a
-                // `Stack` of dims → those dims.
-                Op::Load { bytes, .. } => {
-                    visited.insert(op_id, self.shape_descriptor(bytes));
-                }
-                // A scalar access (null `bytes`) loads one element: a
-                // scalar value; multi-element accesses take their shape
-                // from the `bytes` descriptor (arm above).
-                // `Copy` moves `bytes` elements between buffers: its
-                // shape is the access shape, not either buffer's.
-                Op::Copy { bytes, .. } => {
-                    visited.insert(op_id, self.shape_descriptor(bytes));
+                // `Copy` moves elements between buffers: its shape is the
+                // access shape, not either buffer's.
+                Op::Copy { src_idx, .. } => {
+                    if src_idx.is_null() {
+                        visited.insert(op_id, vec![]);
+                    } else {
+                        match visited.get(&src_idx).cloned() {
+                            Some(dims) => {
+                                visited.insert(op_id, dims);
+                                if let Some(a) = axes.get(&src_idx).cloned() {
+                                    axes.insert(op_id, a);
+                                }
+                            }
+                            None => {
+                                stack.push(op_id);
+                                stack.push(src_idx);
+                                continue;
+                            }
+                        }
+                    }
                 }
                 Op::Store { src: x, .. }
                 | Op::Cast { x, .. }
@@ -1346,6 +1414,9 @@ impl Kernel {
         }
         let mut stack = vec![op_id];
         let mut visited: Map<OpId, Vec<Dim>> = Map::default();
+        // Lane-axis attribution for binary lane-merge semantics (see
+        // the `binary` shape rules): which axis each lane dim came from.
+        let mut axes: Map<OpId, Vec<u32>> = Map::default();
         for _ in 0..250_000 {
             let Some(id) = stack.pop() else {
                 return visited[&op_id].clone();
@@ -1356,6 +1427,11 @@ impl Kernel {
             match self.ops[id].op {
                 Op::Const(_) => {
                     visited.insert(id, vec![]);
+                }
+                // Unroll lane values: one dim of `len` lanes on `axis`.
+                Op::Unroll { axis, len } => {
+                    visited.insert(id, vec![i64::from(len)]);
+                    axes.insert(id, vec![axis]);
                 }
                 Op::Param { shape, .. } => {
                     visited.insert(
@@ -1420,20 +1496,66 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                // Scalars broadcast implicitly: if `x` is a scalar (empty
-                // shape), the binary takes `y`'s shape.
+                // Value shape of a binary: scalars broadcast (the other
+                // operand's shape); lane operands merge axis-aware (see
+                // the `binary` shape rules).
                 Op::Binary { x, y, .. } => {
                     let x_done = visited.contains_key(&x);
-                    if x_done && !visited[&x].is_empty() {
-                        visited.insert(id, visited[&x].clone());
-                    } else if visited.contains_key(&y) {
-                        visited.insert(id, visited[&y].clone());
-                    } else {
+                    let y_done = visited.contains_key(&y);
+                    if !x_done || !y_done {
+                        // Not both operands resolved yet: revisit after.
                         stack.push(id);
                         if !x_done {
                             stack.push(x);
                         }
-                        stack.push(y);
+                        if !y_done {
+                            stack.push(y);
+                        }
+                        continue;
+                    }
+                    let x_dims = visited[&x].clone();
+                    let y_dims = visited[&y].clone();
+                    let (dims, merged_axes) = match (x_dims.as_slice(), y_dims.as_slice()) {
+                        ([], []) => (Vec::new(), Vec::new()),
+                        ([], _) => (visited[&y].clone(), axes.get(&y).cloned().unwrap_or_default()),
+                        (_, []) => (visited[&x].clone(), axes.get(&x).cloned().unwrap_or_default()),
+                        _ => {
+                            let x_axes = axes.get(&x).cloned().unwrap_or_default();
+                            let y_axes = axes.get(&y).cloned().unwrap_or_default();
+                            if x_axes.is_empty() && y_axes.is_empty() {
+                                // Plain value arithmetic: x's shape.
+                                (visited[&x].clone(), Vec::new())
+                            } else if x_axes.is_empty() {
+                                debug_assert_eq!(x_dims, y_dims, "lane binary over broadcast operand with unequal shapes");
+                                (y_dims, y_axes)
+                            } else if y_axes.is_empty() {
+                                debug_assert_eq!(x_dims, y_dims, "lane binary over broadcast operand with unequal shapes");
+                                (x_dims, x_axes)
+                            } else if x_axes == y_axes {
+                                debug_assert_eq!(x_dims, y_dims, "lane binary on same axes with unequal shapes");
+                                (x_dims, x_axes)
+                            } else {
+                                // Nest by axis order (2-D tile indices
+                                // compose this way).
+                                let mut merged: Vec<(u32, Dim)> = x_axes.iter().copied().zip(x_dims.iter().copied()).collect();
+                                merged.extend(y_axes.iter().copied().zip(y_dims.iter().copied()));
+                                merged.sort_by_key(|&(a, _)| a);
+                                let mut dims = Vec::with_capacity(merged.len());
+                                let mut prev: Option<u32> = None;
+                                for (a, d) in &merged {
+                                    if Some(*a) == prev {
+                                        todo!("lane binary on axis {a} with different lens");
+                                    }
+                                    prev = Some(*a);
+                                    dims.push(*d);
+                                }
+                                (dims, merged.iter().map(|&(a, _)| a).collect())
+                            }
+                        }
+                    };
+                    visited.insert(id, dims);
+                    if !merged_axes.is_empty() {
+                        axes.insert(id, merged_axes);
                     }
                 }
                 Op::Reduce { x, .. } => match visited.get(&x).cloned() {
@@ -1446,23 +1568,6 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::Load { bytes, .. } if bytes.is_null() => {
-                    visited.insert(id, vec![]);
-                }
-                // A scalar access (null `bytes`) loads one element: a
-                // scalar value; multi-element accesses take their shape
-                // from the `bytes` descriptor (arm above).
-                // `Copy` moves `bytes` elements between buffers: its
-                // shape is the access shape, not either buffer's.
-                Op::Copy { bytes, .. } => {
-                    visited.insert(
-                        id,
-                        descriptor(self, bytes)
-                            .iter()
-                            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
-                            .collect(),
-                    );
-                }
                 Op::Store { src: x, .. }
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
@@ -1517,35 +1622,55 @@ impl Kernel {
                 // A fragment value has its native width as a single dim
                 // (widths match the hardware's native fragment sizes).
                 Op::Wmma { dims, .. } => {
-                    visited.insert(id, vec![match dims {
-                        MMADims::m8n8k16 => 2,
-                        MMADims::m16n8k8 => 4,
-                        MMADims::m16n8k16 => 4,
-                        MMADims::m32n8k16 => 8,
-                        MMADims::m8n32k16 => 8,
-                        MMADims::m8n8k32 => 2,
-                        MMADims::m8n8k128 => 2,
-                    }]);
+                    visited.insert(
+                        id,
+                        vec![match dims {
+                            MMADims::m8n8k16 => 2,
+                            MMADims::m16n8k8 => 4,
+                            MMADims::m16n8k16 => 4,
+                            MMADims::m32n8k16 => 8,
+                            MMADims::m8n32k16 => 8,
+                            MMADims::m8n8k32 => 2,
+                            MMADims::m8n8k128 => 2,
+                        }],
+                    );
                 }
                 // Group/loop indices and scalar storages are scalar values.
                 Op::Range { .. } | Op::Loop { .. } => {
                     visited.insert(id, vec![]);
                 }
-                // A scalar access (null `bytes`) loads one element: a
-                // scalar value (see shape_ids above). A multi-element
-                // access (vector/tile load) has the resolved `bytes`
-                // descriptor as its shape, `-1` per symbolic dim.
-                Op::Load { bytes, .. } if bytes.is_null() => {
-                    visited.insert(id, vec![]);
+                // A scalar access (null index) is scalar by form; a
+                // vector/tile load has the resolved shape of its index
+                // expression (`-1` per symbolic dim).
+                Op::Load { src_idx, .. } => {
+                    if src_idx.is_null() {
+                        visited.insert(id, vec![]);
+                    } else {
+                        match visited.get(&src_idx).cloned() {
+                            Some(dims) => visited.insert(id, dims),
+                            None => {
+                                stack.push(id);
+                                stack.push(src_idx);
+                                continue;
+                            }
+                        };
+                    }
                 }
-                Op::Load { bytes, .. } => {
-                    visited.insert(
-                        id,
-                        descriptor(self, bytes)
-                            .iter()
-                            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
-                            .collect(),
-                    );
+                // `Copy` moves elements between buffers: its shape is the
+                // access shape (scalar on a whole-view null index).
+                Op::Copy { src_idx, .. } => {
+                    if src_idx.is_null() {
+                        visited.insert(id, vec![]);
+                    } else {
+                        match visited.get(&src_idx).cloned() {
+                            Some(dims) => visited.insert(id, dims),
+                            None => {
+                                stack.push(id);
+                                stack.push(src_idx);
+                                continue;
+                            }
+                        };
+                    }
                 }
                 // A buffer's shape is a 1-D vector of its element count.
                 Op::Storage { len, .. } => {
@@ -1606,10 +1731,7 @@ impl Kernel {
         // Stride accumulation: one var may appear several times
         // (i + i*4 has stride 5, not 4); overwriting drops terms.
         let add_stride = |indices: &mut Map<OpId, (Dim, Dim)>, var: OpId, len: Dim, stride: Dim| {
-            indices
-                .entry(var)
-                .and_modify(|(_, s)| *s += stride)
-                .or_insert((len, stride));
+            indices.entry(var).and_modify(|(_, s)| *s += stride).or_insert((len, stride));
         };
 
         let mut params = vec![(index, 1i64)];
@@ -1621,10 +1743,7 @@ impl Kernel {
             if self.match_pat(param, Pat::Const).is_some() {
                 let Op::Const(c) = self.at(param) else { unreachable!() };
                 let Some(k) = c.as_integer() else { return None };
-                indices
-                    .entry(OpId::NULL)
-                    .and_modify(|(_, v)| *v += k * scale)
-                    .or_insert((0, k * scale));
+                indices.entry(OpId::NULL).and_modify(|(_, v)| *v += k * scale).or_insert((0, k * scale));
                 continue;
             }
             // Bare index var: stride 1 (times the inherited scale).
@@ -1991,13 +2110,8 @@ impl Kernel {
             panic!("duplicate_subkernel did not finish in 250000 steps");
         }
 
-        let mut new_kernel = Self {
-            ops: Slab::new(),
-            head: OpId::NULL,
-            tail: OpId::NULL,
-            dev: self.dev,
-            dev_info: self.dev_info.clone(),
-        };
+        let mut new_kernel =
+            Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
         let mut remap: Map<OpId, OpId> =
             Map::with_capacity_and_hasher(root_required.len(), core::hash::BuildHasherDefault::default());
         let mut new_root_op = OpId::NULL;

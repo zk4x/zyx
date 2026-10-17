@@ -492,13 +492,8 @@ impl Kernel {
         } else {
             push_cur.next_multiple_of(4).max(4)
         };
-        let mut rendered = Kernel {
-            ops: Slab::new(),
-            head: OpId::NULL,
-            tail: OpId::NULL,
-            dev: self.dev,
-            dev_info: self.dev_info.clone(),
-        };
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
@@ -1343,7 +1338,7 @@ impl Kernel {
                     Op::Copy { .. } => {
                         todo!("Copy lowering for SPIR-V (tenstorrent phase)");
                     }
-                    Op::Load { src: x, src_idx: index, bytes: _ } => {
+                    Op::Load { src: x, src_idx: index } => {
                         let access_shape = self.shape(op_id);
                         if !access_shape.is_empty() {
                             todo!("SPIR-V Load vector/tile via bytes (tenstorrent phase)");
@@ -1420,7 +1415,7 @@ impl Kernel {
                             spv_values.insert(op_id, loaded);
                         }
                     }
-                    Op::Store { dst: dst_buf, dst_idx: index, src: x, bytes: _ } => {
+                    Op::Store { dst: dst_buf, dst_idx: index, src: x } => {
                         let access_shape = self.shape(op_id);
                         if !access_shape.is_empty() {
                             todo!("SPIR-V Store vector/tile via bytes (tenstorrent phase)");
@@ -1487,14 +1482,8 @@ impl Kernel {
                         let src_id = spv_values[&x];
                         let dst_type = dtype;
                         let (_, shape) = dtypes[&op_id].clone();
-                        let result_type = layout_type_id(
-                            &mut asm,
-                            &mut type_cache,
-                            &mut vec_type_cache,
-                            &mut type_entries,
-                            dst_type,
-                            &shape,
-                        );
+                        let result_type =
+                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dst_type, &shape);
 
                         let rid = asm.id();
                         if src_type == DType::Bool && dst_type.is_float() {
@@ -1516,8 +1505,7 @@ impl Kernel {
                             let (one_cid, zero_cid) = cast_u32_consts[&op_id];
                             let (true_val, false_val) = match shape.as_slice() {
                                 [n] => {
-                                    let n =
-                                        u16::try_from(*n).expect("SPIR-V: vector width is not a u16") as usize;
+                                    let n = u16::try_from(*n).expect("SPIR-V: vector width is not a u16") as usize;
                                     let mut broadcast = |val: u32| -> u32 {
                                         let components = vec![val; n];
                                         let b = asm.id();
@@ -1559,14 +1547,8 @@ impl Kernel {
                         let src_id = spv_values[&x];
                         let dst_type = dtype;
                         let (_, shape) = dtypes[&op_id].clone();
-                        let result_type = layout_type_id(
-                            &mut asm,
-                            &mut type_cache,
-                            &mut vec_type_cache,
-                            &mut type_entries,
-                            dst_type,
-                            &shape,
-                        );
+                        let result_type =
+                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dst_type, &shape);
 
                         let rid = asm.id();
                         // OpBitcast requires numeric (non-bool) types. Bool's
@@ -1604,14 +1586,8 @@ impl Kernel {
                     Op::Unary { x, uop } => {
                         let src_id = spv_values[&x];
                         let (dt, shape) = dtypes[&x].clone();
-                        let result_type = layout_type_id(
-                            &mut asm,
-                            &mut type_cache,
-                            &mut vec_type_cache,
-                            &mut type_entries,
-                            dt,
-                            &shape,
-                        );
+                        let result_type =
+                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, &shape);
                         let rid = asm.id();
 
                         match uop {
@@ -1681,14 +1657,8 @@ impl Kernel {
                         let y_id = spv_values[&y];
                         let dt = dtypes[&x].0;
                         let (res_dt, res_shape) = dtypes[&op_id].clone();
-                        let result_type = layout_type_id(
-                            &mut asm,
-                            &mut type_cache,
-                            &mut vec_type_cache,
-                            &mut type_entries,
-                            res_dt,
-                            &res_shape,
-                        );
+                        let result_type =
+                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, res_dt, &res_shape);
                         let rid = asm.id();
 
                         let (float_op, int_op, _): (Option<OpCode>, Option<OpCode>, Option<OpCode>) = match bop {

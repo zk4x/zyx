@@ -430,9 +430,7 @@ impl Plan {
                         // logical dims undercount, so take the shard lens.
                         #[cfg(feature = "tenstorrent")]
                         let bytes = match src_placed.shards.first() {
-                            Some(Shard { pool: Pool::TT(_), .. }) => {
-                                src_placed.shards.iter().map(|s| s.len as Dim).sum()
-                            }
+                            Some(Shard { pool: Pool::TT(_), .. }) => src_placed.shards.iter().map(|s| s.len as Dim).sum(),
                             _ => bytes,
                         };
                         let pool = dst.pool();

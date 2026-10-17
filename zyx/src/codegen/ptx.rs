@@ -556,7 +556,7 @@ impl Kernel {
                     };
                     _ = writeln!(comp.body, "{}mov.{ptx_dtype} %r{reg}, {};", comp.indent, constant.ptx());
                 }
-                Op::Load { src: buf, src_idx, bytes: _ } => {
+                Op::Load { src: buf, src_idx } => {
                     let access_shape = self.shape(op_id);
                     let dtype = dtypes[&buf].0;
                     match comp.get_scope(self, buf) {
@@ -612,7 +612,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst: dst_buf, dst_idx, src: x, bytes: _ } => {
+                Op::Store { dst: dst_buf, dst_idx, src: x } => {
                     let access_shape = self.shape(op_id);
                     let dtype = dtypes[&x].0;
                     let byte_shift = (dtype.bit_size() / 8).ilog2();

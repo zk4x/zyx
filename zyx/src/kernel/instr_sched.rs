@@ -129,7 +129,9 @@ impl Kernel {
                 // program-ordered like a barrier for placement (never
                 // crosses one), but not a barrier itself.
                 Op::Asm { .. } | Op::TT(TTOp::LLK { .. }) => structural[i] = true,
-                Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => structural[i] = true,
+                Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => {
+                    structural[i] = true
+                }
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
                 // A copy reads its src and writes its dst: it pins like a
@@ -230,23 +232,20 @@ impl Kernel {
                     // Unroll widths are immediates — no length operand to add.
                     RangeKind::Unroll(_) => {}
                 },
-                Op::Store { dst, dst_idx, src: x, bytes } => {
+                Op::Store { dst, dst_idx, src: x } => {
                     add_param!(dst);
                     add_param!(dst_idx);
                     add_param!(x);
-                    add_param!(bytes);
                 }
-                Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+                Op::Copy { src, src_idx, dst, dst_idx } => {
                     add_param!(src);
                     add_param!(src_idx);
                     add_param!(dst);
                     add_param!(dst_idx);
-                    add_param!(bytes);
                 }
-                Op::Load { src, src_idx, bytes } => {
+                Op::Load { src, src_idx } => {
                     add_param!(src);
                     add_param!(src_idx);
-                    add_param!(bytes);
                 }
                 Op::Loop { len, .. } => add_param!(len),
                 Op::Wmma { a, b, c, .. } => {

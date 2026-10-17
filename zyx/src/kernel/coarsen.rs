@@ -161,9 +161,11 @@ impl Kernel {
         // lane; barriers pin the body to one wave. Refuse both. Plain
         // vector (1-D) bodies duplicate per lane like scalars.
         if self.ops.values().any(|node| match node.op {
-            Op::Load { bytes, .. } | Op::Store { bytes, .. } | Op::Copy { bytes, .. } => {
-                !bytes.is_null() && matches!(self.at(bytes), Op::Stack { .. })
-            }
+            // A multi-lane access whose access shape spans >1 lane axes
+            // (a tile) duplicates as a whole tile, not per lane.
+            Op::Load { src_idx, .. } => !src_idx.is_null() && self.shape(src_idx).len() > 1,
+            Op::Store { dst_idx, .. } => !dst_idx.is_null() && self.shape(dst_idx).len() > 1,
+            Op::Copy { src_idx, .. } => !src_idx.is_null() && self.shape(src_idx).len() > 1,
             Op::Barrier => true,
             _ => false,
         }) {
@@ -209,10 +211,7 @@ impl Kernel {
             // Register is private by construction (slotted below).
             let private = matches!(self.at(dst), Op::Storage { scope: MemScope::Register, .. });
             // Indexed params (kernel outputs) split exactly like Global.
-            let global = matches!(
-                self.at(dst),
-                Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. }
-            );
+            let global = matches!(self.at(dst), Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
             if global && !addr_varies {
                 return;
             }
@@ -273,7 +272,7 @@ impl Kernel {
                     accumulator_storages.insert(op_id);
                 }
                 Op::Range { .. } | Op::Loop { .. } | Op::EndLoop | Op::Barrier => {}
-                Op::Store { dst, src, dst_idx, bytes } => {
+                Op::Store { dst, src, dst_idx } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
                     // The base names the buffer directly; anything else is
@@ -286,11 +285,11 @@ impl Kernel {
                             }
                             let xy = self.insert_before(id, Op::Binary { x: dst_idx, y: const_factor, bop: BOp::Mul });
                             let index = self.insert_before(id, Op::Binary { x: xy, y: offsets[i], bop: BOp::Add });
-                            id = self.insert_after(id, Op::Store { dst, src: x, dst_idx: index, bytes });
+                            id = self.insert_after(id, Op::Store { dst, src: x, dst_idx: index });
                             ids.push(id);
                         }
                         let index = self.insert_before(op_id, Op::Binary { x: dst_idx, y: const_factor, bop: BOp::Mul });
-                        self.ops[op_id].op = Op::Store { dst, src, dst_idx: index, bytes };
+                        self.ops[op_id].op = Op::Store { dst, src, dst_idx: index };
                     } else {
                         for i in 0..(factor - 1) as usize {
                             let mut x = src;
@@ -305,13 +304,13 @@ impl Kernel {
                             if let Some(remap) = remaps.get(&dst_idx) {
                                 dst_idx = remap[i];
                             }
-                            id = self.insert_after(id, Op::Store { dst, src: x, dst_idx, bytes });
+                            id = self.insert_after(id, Op::Store { dst, src: x, dst_idx });
                             ids.push(id);
                         }
                     }
                     remaps.insert(op_id, ids);
                 }
-                Op::Load { src, src_idx, bytes } => {
+                Op::Load { src, src_idx } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
                     // The base names the buffer directly; anything else is
@@ -320,11 +319,11 @@ impl Kernel {
                         for &offset in &offsets {
                             let xy = self.insert_before(id, Op::Binary { x: src_idx, y: const_factor, bop: BOp::Mul });
                             let index = self.insert_before(id, Op::Binary { x: xy, y: offset, bop: BOp::Add });
-                            id = self.insert_after(id, Op::Load { src, src_idx: index, bytes });
+                            id = self.insert_after(id, Op::Load { src, src_idx: index });
                             ids.push(id);
                         }
                         let index = self.insert_before(op_id, Op::Binary { x: src_idx, y: const_factor, bop: BOp::Mul });
-                        self.ops[op_id].op = Op::Load { src, src_idx: index, bytes };
+                        self.ops[op_id].op = Op::Load { src, src_idx: index };
                     } else {
                         for i in 0..(factor - 1) as usize {
                             let mut src = src;
@@ -335,13 +334,13 @@ impl Kernel {
                             if let Some(remap) = remaps.get(&src_idx) {
                                 src_idx = remap[i];
                             }
-                            id = self.insert_after(id, Op::Load { src, src_idx, bytes });
+                            id = self.insert_after(id, Op::Load { src, src_idx });
                             ids.push(id);
                         }
                     }
                     remaps.insert(op_id, ids);
                 }
-                Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+                Op::Copy { src, src_idx, dst, dst_idx } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
                     for i in 0..(factor - 1) as usize {
@@ -361,7 +360,7 @@ impl Kernel {
                         if let Some(remap) = remaps.get(&dst_idx) {
                             dst_idx = remap[i];
                         }
-                        id = self.insert_after(id, Op::Copy { src, src_idx, dst, dst_idx, bytes });
+                        id = self.insert_after(id, Op::Copy { src, src_idx, dst, dst_idx });
                         ids.push(id);
                     }
                     remaps.insert(op_id, ids);
@@ -419,9 +418,7 @@ impl Kernel {
                     let applicable: Vec<u64> = candidates
                         .iter()
                         .copied()
-                        .filter(|&f| {
-                            len % f as Dim == 0 && len / f as Dim >= 4 && f as Dim * self.ops.len().0 as Dim <= 10000
-                        })
+                        .filter(|&f| len % f as Dim == 0 && len / f as Dim >= 4 && f as Dim * self.ops.len().0 as Dim <= 10000)
                         .collect();
                     if !applicable.is_empty() {
                         reduce_factor.insert(op_id, applicable);
@@ -436,9 +433,7 @@ impl Kernel {
                 let applicable: Vec<u64> = candidates
                     .iter()
                     .copied()
-                    .filter(|&f| {
-                        len % f as Dim == 0 && len / f as Dim >= 4 && f as Dim * self.ops.len().0 as Dim <= 10000
-                    })
+                    .filter(|&f| len % f as Dim == 0 && len / f as Dim >= 4 && f as Dim * self.ops.len().0 as Dim <= 10000)
                     .collect();
                 if !applicable.is_empty() {
                     global_upcasts.insert(op_id, applicable);

@@ -48,13 +48,9 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
-        // Bundle scalar work into vectors (loads, stores, then ops)
-        // BEFORE coarsening: coarsen duplicates vectorized bodies per
-        // lane, materializing one vector load per lane for the tile
-        // former to stack. TT declares supported_vec_lens=[32], so the
-        // bundles match exactly.
-        let vectorize = self.opt_vectorize();
-        vectorize.apply(self, 0);
+        // TODO: retile via shaped index approaches (split-based lane
+        // vectors); the vectorize pass is deleted.
+        todo!("tiling: vectorize-based bundling is deleted");
 
         self.default_epilogue();
         self.default_epilogue();
@@ -75,12 +71,9 @@ impl Kernel {
         }
 
         self.default_epilogue();
-        vectorize.apply(self, 0);
+        // Deleted vectorize pass (see above todo).
 
         //self.vectorize_reduce_tile();
-
-        let vectorize = self.opt_vectorize();
-        vectorize.apply(self, 0);
 
         self.default_epilogue();
         self.default_epilogue();
@@ -260,7 +253,7 @@ impl Kernel {
             active.remove(&v);
             Some(Target::Direct(v))
         }
-        let anchor = Pat::store(Pat::bind('d'), Pat::bind('i'), Pat::bind('x'), Pat::bind('b'));
+        let anchor = Pat::store(Pat::bind('d'), Pat::bind('i'), Pat::bind('x'));
         let mut jobs: Vec<Job> = Vec::new();
         for (op, x) in self.iter_unordered() {
             if !matches!(x, Op::Store { .. }) {
@@ -337,9 +330,7 @@ impl Kernel {
                     _ => {}
                 }
             }
-            if let Op::Store { bytes, .. } = &mut self.ops[job.store].op {
-                *bytes = stack;
-            }
+            todo!("tt_tile store descriptor rewrite is deferred to the TT rework (bytes no longer exists)")
         }
         self.dead_code_elimination();
     }

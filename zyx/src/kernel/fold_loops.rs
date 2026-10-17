@@ -78,9 +78,8 @@ impl Kernel {
         // Find the initial store to the accumulator (acc[0] = init_value)
         let mut store_id = self.next_op(acc_id);
         while !store_id.is_null() {
-            if let &Op::Store { dst, dst_idx, bytes, .. } = self.at(store_id)
+            if let &Op::Store { dst, dst_idx, .. } = self.at(store_id)
                 && dst == acc_id
-                && bytes.is_null()
             {
                 // Looking for store at index 0 (the init value)
                 if let Op::Const(cst) = self.at(dst_idx)
@@ -170,11 +169,11 @@ impl Kernel {
             load_id = self.next_op(load_id);
         }
 
-        let &Op::Load { src, src_idx: index, bytes } = self.at(load_id) else {
+        let &Op::Load { src, src_idx: index } = self.at(load_id) else {
             return None;
         };
         let &Op::Const(index) = self.at(index) else { return None };
-        if !bytes.is_null() || index.as_dim() != Some(0) {
+        if index.as_dim() != Some(0) {
             return None;
         }
         if src != acc_id {
@@ -199,11 +198,11 @@ impl Kernel {
         };
 
         let store_id = self.next_op(add_id);
-        let &Op::Store { dst, dst_idx: index, src: x, bytes } = self.at(store_id) else {
+        let &Op::Store { dst, dst_idx: index, src: x } = self.at(store_id) else {
             return None;
         };
         let &Op::Const(index) = self.at(index) else { return None };
-        if !bytes.is_null() || index.as_dim() != Some(0) {
+        if index.as_dim() != Some(0) {
             return None;
         }
         if dst != acc_id || x != add_id {
@@ -214,11 +213,11 @@ impl Kernel {
         let Op::EndLoop = self.at(endloop_id) else { return None };
 
         let load2_id = self.next_op(endloop_id);
-        let &Op::Load { src, src_idx: index, bytes } = self.at(load2_id) else {
+        let &Op::Load { src, src_idx: index } = self.at(load2_id) else {
             return None;
         };
         let &Op::Const(index) = self.at(index) else { return None };
-        if !bytes.is_null() || index.as_dim() != Some(0) {
+        if index.as_dim() != Some(0) {
             return None;
         }
         if src != acc_id {

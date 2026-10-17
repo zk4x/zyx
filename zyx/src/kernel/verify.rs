@@ -54,8 +54,8 @@ impl Kernel {
                         }
                         debug_assert!(!is_nan, "kernel contains a NaN constant at op {scan:?}");
                     }
-                    Op::Store { dst, dst_idx, bytes, .. } => {
-                        if dst_idx.is_null() && bytes.is_null() && matches!(self.at(*dst), Op::Param { .. }) {
+                    Op::Store { dst, dst_idx, .. } => {
+                        if dst_idx.is_null() && matches!(self.at(*dst), Op::Param { .. }) {
                             param_dst_stores += 1;
                         } else {
                             indexed_stores += 1;
@@ -217,19 +217,19 @@ impl Kernel {
         let mut dtypes: Map<OpId, DType> = Map::default();
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Store { dst, dst_idx, src: x, bytes } => {
+                Op::Store { dst, dst_idx, src: x } => {
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
                     match self.at(dst) {
-                        // Pre-linearize whole-view write: no index or bytes.
+                        // Pre-linearize whole-view write: no index.
                         Op::Param { .. } => {
                             if dst_idx.is_null() {
                                 // Pre-linearize write to a bare Param,
-                                // whole view: no index, no bytes.
-                                debug_assert!(bytes.is_null());
+                                // whole view: no index.
+                                // Post-linearize scalar checks now.
                             } else {
                                 // Post-linearize element write into a
-                                // global-mut Param: index required, scalar.
+                                // global-mut Param: index required.
                                 debug_assert_eq!(dtypes[&dst_idx], IDX_T, "store index must be {IDX_T}");
                                 check(op_id, dst_idx, &stack);
                             }
@@ -241,40 +241,23 @@ impl Kernel {
                                 panic!();
                             }
                             check(op_id, dst, &stack);
-                            // A store's declared access shape must match its
-                            // src value's shape: store_tile carries a tile
+                            // A store's access shape (its index expres-
+                            // sion's lane shape) must match its src
+                            // value's shape: a tile store carries a tile
                             // access and its src must be a tile value (a
-                            // scalar const_val stored as a tile is a builder
+                            // scalar stored as a tile is a builder
                             // misuse, not a valid store).
                             let src_shape = self.shape(x);
-                            let access_shape: Vec<Dim> = if bytes.is_null() {
-                                Vec::new()
-                            } else if let Op::Stack { ref ops } = self.ops[bytes].op {
-                                ops.iter()
-                                    .map(|&d| {
-                                        self.resolve_const(d)
-                                            .and_then(Constant::as_dim)
-                                            .expect("store bytes: tile dim is not a constant")
-                                    })
-                                    .collect()
-                            } else {
-                                vec![
-                                    self.resolve_const(bytes)
-                                        .and_then(Constant::as_dim)
-                                        .expect("store bytes: access width is not a constant"),
-                                ]
-                            };
-                            debug_assert_eq!(
-                                src_shape, access_shape,
-                                "store={op_id} access bytes={bytes:?} does not match src {x} shape {src_shape:?}"
-                            );
+                            if !dst_idx.is_null() {
+                                let access_shape = self.shape(dst_idx);
+                                debug_assert_eq!(
+                                    src_shape, access_shape,
+                                    "store={op_id} access index {dst_idx:?} does not match src {x} shape {src_shape:?}"
+                                );
+                            }
                             debug_assert!(!dst_idx.is_null(), "storage store without index");
                             debug_assert_eq!(dtypes[&dst_idx], IDX_T, "store index must be {IDX_T}");
                             check(op_id, dst_idx, &stack);
-                            if !bytes.is_null() {
-                                // bytes=null means an unvectorized scalar store.
-                                check(op_id, bytes, &stack);
-                            }
                         }
                         _ => {
                             println!("store={op_id} dst is not a Param or Storage");
@@ -506,8 +489,7 @@ impl Kernel {
                     // non-const lane is a missing broadcast — loud
                     // panic, never a silent wrong lane.
                     let (sx, sy) = (self.shape(x), self.shape(y));
-                    let tile_const = sx.len() == 2 && self.is_const(y)
-                        || sy.len() == 2 && self.is_const(x);
+                    let tile_const = sx.len() == 2 && self.is_const(y) || sy.len() == 2 && self.is_const(x);
                     if sx != sy && !tile_const {
                         println!("Binary shape mismatch on op={op_id}.");
                         self.debug();
@@ -548,11 +530,7 @@ impl Kernel {
                     check(op_id, x, &stack);
                     // Reduce input must be a vector value; the result is
                     // one scalar of the element dtype.
-                    debug_assert!(
-                        self.shape(x).len() == 1,
-                        "VecReduce operand {x} must be a vector, got {:?}",
-                        self.shape(x)
-                    );
+                    debug_assert!(self.shape(x).len() == 1, "VecReduce operand {x} must be a vector, got {:?}", self.shape(x));
                     dtypes.insert(op_id, dtypes[&x]);
                 }
                 Op::Wmma { c, a, b, .. } => {
@@ -585,7 +563,7 @@ impl Kernel {
                     storages.insert(op_id, (scope, len));
                     dtypes.insert(op_id, dtype);
                 }
-                Op::Load { src, src_idx: index, bytes } => {
+                Op::Load { src, src_idx: index } => {
                     if !params.contains_key(&src) && !storages.contains_key(&src) {
                         println!("load={op_id} is trying to load from undefined variable");
                         self.debug();
@@ -594,14 +572,9 @@ impl Kernel {
                     debug_assert_eq!(dtypes[&index], IDX_T, "load index must be {IDX_T}");
                     check(op_id, src, &stack);
                     check(op_id, index, &stack);
-                    if !bytes.is_null() {
-                        // bytes=null means an unvectorized scalar load:
-                        // it names no width op.
-                        check(op_id, bytes, &stack);
-                    }
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+                Op::Copy { src, src_idx, dst, dst_idx } => {
                     for &side in &[src, dst] {
                         if !matches!(self.at(side), Op::Param { .. } | Op::Storage { .. }) {
                             println!("copy={op_id} side is not a Param or Storage");
@@ -610,7 +583,7 @@ impl Kernel {
                         }
                         check(op_id, side, &stack);
                     }
-                    for &o in &[src_idx, dst_idx, bytes] {
+                    for &o in &[src_idx, dst_idx] {
                         if !o.is_null() {
                             check(op_id, o, &stack);
                         }

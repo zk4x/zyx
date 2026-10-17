@@ -64,8 +64,7 @@ impl Kernel {
         let _timer = crate::Timer::new("simplify_fused");
         // Arm patterns, built once: constructing these trees per visited op
         // (millions of throwaway allocs per search) dominated this pass.
-        let pat_shl_shr =
-            ((Pat::bind('y') << Pat::bind_const('d').dim_lt(64)) + Pat::bind('r')) >> Pat::bind_const('d').int();
+        let pat_shl_shr = ((Pat::bind('y') << Pat::bind_const('d').dim_lt(64)) + Pat::bind('r')) >> Pat::bind_const('d').int();
         let pat_and_or = {
             let x = Pat::bind('x');
             Pat::any([&x & Pat::const_if(Constant::is_max), &x | 0])
@@ -165,10 +164,8 @@ impl Kernel {
                 // sharing one body below. Integer operands only (float
                 // remainder is never exact here). Commutativity retry covers
                 // the orderings; the shl form computes its 2^k multiple.
-                let mul_like = self
-                    .match_pat(x, &pat_mod_mullike)
-                    .map(|ma| (ma.op('a'), ma.int('c'), ma.op('b')))
-                    .or_else(|| {
+                let mul_like =
+                    self.match_pat(x, &pat_mod_mullike).map(|ma| (ma.op('a'), ma.int('c'), ma.op('b'))).or_else(|| {
                         self.match_pat(x, &pat_mod_shllike).and_then(|ma| {
                             let kv = ma.int('k');
                             (kv >= 0 && kv < 64).then(|| (ma.op('a'), 1i64 << kv, ma.op('b')))
@@ -738,9 +735,7 @@ impl Kernel {
                                             (kv >= 0 && kv < 64).then(|| (m.op('b'), 1i64 << kv))
                                         })
                                     })
-                                    .or_else(|| {
-                                        self.match_pat(mult_side, &pat_mul_c).map(|m| (m.op('b'), m.int('c')))
-                                    });
+                                    .or_else(|| self.match_pat(mult_side, &pat_mul_c).map(|m| (m.op('b'), m.int('c'))));
                                 let Some((b, c)) = mult_match else {
                                     continue;
                                 };
@@ -792,9 +787,7 @@ impl Kernel {
                                                 (kv >= 0 && kv < 64).then(|| (m.op('b'), 1i64 << kv))
                                             })
                                         })
-                                        .or_else(|| {
-                                            self.match_pat(mult_side, &pat_mul_c).map(|m| (m.op('b'), m.int('c')))
-                                        });
+                                        .or_else(|| self.match_pat(mult_side, &pat_mul_c).map(|m| (m.op('b'), m.int('c'))));
                                     let Some((b, mult_c)) = mult_match else {
                                         continue;
                                     };
@@ -823,7 +816,6 @@ impl Kernel {
             op_id = next;
         }
     }
-
 }
 
 fn is_unsigned(dtype: DType) -> bool {

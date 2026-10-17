@@ -162,16 +162,13 @@ pub enum Op {
     Store {
         /// Destination base ([`Op::Param`] or [`Op::Storage`]).
         dst: OpId,
-        /// Index arithmetic into `dst`.
+        /// Index arithmetic into `dst`. Its shape is the access shape:
+        /// a scalar index stores one element, an index over a lane
+        /// vector stores a vector, an index over two distinct axes
+        /// stores a tile.
         dst_idx: OpId,
-        /// SSA value to store.
+        /// SSA value to store. Its shape must equal `dst_idx`'s.
         src: OpId,
-        /// Access shape in elements: null = one scalar, `Const(n)` =
-        /// contiguous vector of n, `Stack` of consts = contiguous
-        /// multi-dim tile (strides implied by the reverse-product rule;
-        /// a GENUINELY strided access is spelled as separate scalar
-        /// accesses sharing index arithmetic, never as shaped bytes).
-        bytes: OpId,
     },
     /// Load an addressed location into an SSA value. Hard rule: Load is
     /// memory→SSA (the location stays in memory-space; only the value
@@ -179,10 +176,11 @@ pub enum Op {
     Load {
         /// Source base ([`Op::Param`] or [`Op::Storage`]).
         src: OpId,
-        /// Index arithmetic into `src`.
+        /// Index arithmetic into `src`. Its shape is the value shape:
+        /// a scalar index loads one element, an index over a lane
+        /// vector loads a vector, an index over two distinct axes
+        /// loads a tile.
         src_idx: OpId,
-        /// Access shape in elements (see [`Op::Store::bytes`]).
-        bytes: OpId,
     },
     /// Copy between addressed locations: moves the value at `src` to `dst`.
     /// Hard rule: both bases are [`Op::Param`]/[`Op::Storage`]s
@@ -193,14 +191,13 @@ pub enum Op {
     Copy {
         /// Source base ([`Op::Param`] or [`Op::Storage`]).
         src: OpId,
-        /// Index arithmetic into `src`.
+        /// Index arithmetic into `src`. Its shape is the access shape;
+        /// must equal `dst_idx`'s.
         src_idx: OpId,
         /// Destination base ([`Op::Param`] or [`Op::Storage`]).
         dst: OpId,
         /// Index arithmetic into `dst`.
         dst_idx: OpId,
-        /// Access shape in elements (see [`Op::Store::bytes`]).
-        bytes: OpId,
     },
     // Like loop, but for dimensions always executed in parallel
     /// A dimension always executed in parallel (never a trip-counted loop).
@@ -763,17 +760,14 @@ impl PartialEq for Op {
             (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
                 ad == bd && as_ == bs && al == bl
             }
-            (
-                Op::Store { dst: ad, dst_idx: adi, src: as_, bytes: ab },
-                Op::Store { dst: bd, dst_idx: bdi, src: bs, bytes: bb },
-            ) => ad == bd && adi == bdi && as_ == bs && ab == bb,
-            (Op::Load { src: a, src_idx: ai, bytes: ab }, Op::Load { src: b, src_idx: bi, bytes: bb }) => {
-                a == b && ai == bi && ab == bb
+            (Op::Store { dst: ad, dst_idx: adi, src: as_, .. }, Op::Store { dst: bd, dst_idx: bdi, src: bs, .. }) => {
+                ad == bd && adi == bdi && as_ == bs
             }
+            (Op::Load { src: a, src_idx: ai, .. }, Op::Load { src: b, src_idx: bi, .. }) => a == b && ai == bi,
             (
-                Op::Copy { src: as_, src_idx: asi, dst: ad, dst_idx: adi, bytes: ab },
-                Op::Copy { src: bs, src_idx: bsi, dst: bd, dst_idx: bdi, bytes: bb },
-            ) => as_ == bs && asi == bsi && ad == bd && adi == bdi && ab == bb,
+                Op::Copy { src: as_, src_idx: asi, dst: ad, dst_idx: adi, .. },
+                Op::Copy { src: bs, src_idx: bsi, dst: bd, dst_idx: bdi, .. },
+            ) => as_ == bs && asi == bsi && ad == bd && adi == bdi,
             (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => aa == ba && ak == bk,
             (Op::Loop { len: a }, Op::Loop { len: b }) => a == b,
             (Op::EndLoop, Op::EndLoop) => true,
@@ -858,23 +852,20 @@ impl Hash for Op {
                 scope.hash(state);
                 len.hash(state);
             }
-            Op::Store { dst, dst_idx, src, bytes } => {
+            Op::Store { dst, dst_idx, src } => {
                 dst.hash(state);
                 dst_idx.hash(state);
                 src.hash(state);
-                bytes.hash(state);
             }
-            Op::Load { src, src_idx, bytes } => {
+            Op::Load { src, src_idx } => {
                 src.hash(state);
                 src_idx.hash(state);
-                bytes.hash(state);
             }
-            Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+            Op::Copy { src, src_idx, dst, dst_idx } => {
                 src.hash(state);
                 src_idx.hash(state);
                 dst.hash(state);
                 dst_idx.hash(state);
-                bytes.hash(state);
             }
             Op::Range { axis, kind } => {
                 axis.hash(state);
@@ -991,17 +982,14 @@ impl Ord for Op {
             (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
                 (ad, as_, al).cmp(&(bd, bs, bl))
             }
-            (
-                Op::Store { dst: ad, dst_idx: adi, src: as_, bytes: ab },
-                Op::Store { dst: bd, dst_idx: bdi, src: bs, bytes: bb },
-            ) => (ad, adi, as_, ab).cmp(&(bd, bdi, bs, bb)),
-            (Op::Load { src: a, src_idx: ai, bytes: ab }, Op::Load { src: b, src_idx: bi, bytes: bb }) => {
-                (a, ai, ab).cmp(&(b, bi, bb))
+            (Op::Store { dst: ad, dst_idx: adi, src: as_ }, Op::Store { dst: bd, dst_idx: bdi, src: bs }) => {
+                (ad, adi, as_).cmp(&(bd, bdi, bs))
             }
+            (Op::Load { src: a, src_idx: ai }, Op::Load { src: b, src_idx: bi }) => (a, ai).cmp(&(b, bi)),
             (
-                Op::Copy { src: as_, src_idx: asi, dst: ad, dst_idx: adi, bytes: ab },
-                Op::Copy { src: bs, src_idx: bsi, dst: bd, dst_idx: bdi, bytes: bb },
-            ) => (as_, asi, ad, adi, ab).cmp(&(bs, bsi, bd, bdi, bb)),
+                Op::Copy { src: as_, src_idx: asi, dst: ad, dst_idx: adi },
+                Op::Copy { src: bs, src_idx: bsi, dst: bd, dst_idx: bdi },
+            ) => (as_, asi, ad, adi).cmp(&(bs, bsi, bd, bdi)),
             (Op::Range { axis: aa, kind: ak }, Op::Range { axis: ba, kind: bk }) => (aa, ak).cmp(&(ba, bk)),
             (Op::Loop { len: a }, Op::Loop { len: b }) => a.cmp(b),
             (Op::EndLoop, Op::EndLoop) | (Op::Barrier, Op::Barrier) => std::cmp::Ordering::Equal,
@@ -1331,36 +1319,24 @@ impl Op {
             // Len/axis are immediates — no operand slots.
             Op::Unroll { .. } => vec![],
             // dst/src are NEVER null (whole-view stores spell the bare
-            // Param); only dst_idx and bytes can be null.
-            // dst/src are NEVER null (whole-view stores spell the bare
-            // Param); only dst_idx and bytes can be null, src_idx and
-            // bytes are null exactly when a load is a whole view.
-            &Op::Store { dst, dst_idx, src, bytes } => {
-                debug_assert!(!dst_idx.is_null() || bytes.is_null());
+            // Param); only dst_idx can be null.
+            &Op::Store { dst, dst_idx, src } => {
                 if dst_idx.is_null() {
                     vec![dst, src]
-                } else if bytes.is_null() {
-                    vec![dst, dst_idx, src]
                 } else {
-                    vec![dst, dst_idx, src, bytes]
+                    vec![dst, dst_idx, src]
                 }
             }
-            &Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+            &Op::Copy { src, src_idx, dst, dst_idx } => {
                 debug_assert!(!src_idx.is_null());
-                vec![src, src_idx, dst, dst_idx, bytes]
+                vec![src, src_idx, dst, dst_idx]
             }
             Op::Cast { x, .. } => vec![*x],
             Op::Bitcast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             &Op::Binary { x, y, .. } => vec![x, y],
             // src_idx is NEVER null: every load names its element.
-            &Op::Load { src, src_idx, bytes } => {
-                if bytes.is_null() {
-                    vec![src, src_idx]
-                } else {
-                    vec![src, src_idx, bytes]
-                }
-            }
+            &Op::Load { src, src_idx } => vec![src, src_idx],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().filter(|o| !o.is_null()).collect(),
             &Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
@@ -1429,32 +1405,23 @@ impl Op {
             Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![x, reduce_axis],
-            Op::Store { dst, dst_idx, src: x, bytes } => {
-                debug_assert!(!dst_idx.is_null() || bytes.is_null());
+            Op::Store { dst, dst_idx, src: x } => {
                 if dst_idx.is_null() {
                     vec![dst, x]
-                } else if bytes.is_null() {
-                    vec![dst, dst_idx, x]
                 } else {
-                    vec![dst, dst_idx, x, bytes]
+                    vec![dst, dst_idx, x]
                 }
             }
-            Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+            Op::Copy { src, src_idx, dst, dst_idx } => {
                 debug_assert!(!src_idx.is_null());
-                vec![src, src_idx, dst, dst_idx, bytes]
+                vec![src, src_idx, dst, dst_idx]
             }
             Op::Cast { x, .. } => vec![x],
             Op::Bitcast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],
             Op::Binary { x, y, .. } => vec![x, y],
             // src_idx is NEVER null: every load names its element.
-            Op::Load { src, src_idx, bytes } => {
-                if bytes.is_null() {
-                    vec![src, src_idx]
-                } else {
-                    vec![src, src_idx, bytes]
-                }
-            }
+            Op::Load { src, src_idx } => vec![src, src_idx],
             Op::Stack { ops } => ops.iter_mut().collect(),
             Op::VecReduce { x, bop: _ } => vec![x],
             Op::Unroll { .. } => vec![],

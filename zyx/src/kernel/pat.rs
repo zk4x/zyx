@@ -305,10 +305,9 @@ pub enum Pat {
         idx: Box<Pat>,
     },
     /// Matches a store (`Op::Store`) with buffer matching `dst`, index
-    /// matching `idx`, value matching `x` and access descriptor matching
-    /// `bytes`. Widths stay in the calling pass (bind and interpret);
-    /// `x` is excluded from the cover key — values differ per member
-    /// and are read off `roots_bindings`.
+    /// matching `idx`, value matching `x`. Widths stay in the calling
+    /// pass (bind and interpret); `x` is excluded from the cover key —
+    /// values differ per member and are read off `roots_bindings`.
     Store {
         /// Pattern for the buffer.
         dst: Box<Pat>,
@@ -316,8 +315,6 @@ pub enum Pat {
         idx: Box<Pat>,
         /// Pattern for the stored value.
         x: Box<Pat>,
-        /// Pattern for the access descriptor.
-        bytes: Box<Pat>,
     },
     /// Matches a vector reduce (`Op::VecReduce`) with an operand matching
     /// `x`, binding the reduce `bop` under `bop` (read with
@@ -799,8 +796,8 @@ impl Pat {
     }
 
     /// Store to the `dst` pattern at the `idx` pattern of the `x` value.
-    pub fn store(dst: impl Into<Pat>, idx: impl Into<Pat>, x: impl Into<Pat>, bytes: impl Into<Pat>) -> Pat {
-        Pat::Store { dst: Box::new(dst.into()), idx: Box::new(idx.into()), x: Box::new(x.into()), bytes: Box::new(bytes.into()) }
+    pub fn store(dst: impl Into<Pat>, idx: impl Into<Pat>, x: impl Into<Pat>) -> Pat {
+        Pat::Store { dst: Box::new(dst.into()), idx: Box::new(idx.into()), x: Box::new(x.into()) }
     }
 
     /// Vector lane of the `vec` pattern, binding the lane number as an
@@ -1342,13 +1339,12 @@ impl Kernel {
                 }
                 _ => false,
             },
-            Pat::Store { dst, idx, x, bytes } => match self.at(id) {
-                Op::Store { dst: d, dst_idx: i, src: v, bytes: b } => {
+            Pat::Store { dst, idx, x } => match self.at(id) {
+                Op::Store { dst: d, dst_idx: i, src: v } => {
                     let snap = bindings.clone();
                     if self.match_node(dst, *d, bindings)
                         && self.match_node(idx, *i, bindings)
                         && self.match_node(x, *v, bindings)
-                        && self.match_node(bytes, *b, bindings)
                     {
                         true
                     } else {

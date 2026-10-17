@@ -1330,15 +1330,15 @@ impl Kernel {
                 }),
             );
             let acc = self.insert_before(loop_id, Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1 });
-            self.insert_before(loop_id, Op::Store { dst: acc, dst_idx: zero, src: acc_init, bytes: OpId::NULL });
+            self.insert_before(loop_id, Op::Store { dst: acc, dst_idx: zero, src: acc_init });
 
             // Accumulate inside the loop, then close it, then read the result.
             // The shared `zero` const serves every insertion point.
-            let load_acc = self.insert_before(op_id, Op::Load { src: acc, src_idx: zero, bytes: OpId::NULL });
+            let load_acc = self.insert_before(op_id, Op::Load { src: acc, src_idx: zero });
             let bin_acc = self.insert_before(op_id, Op::Binary { x, y: load_acc, bop: rop });
-            self.insert_before(op_id, Op::Store { dst: acc, dst_idx: zero, src: bin_acc, bytes: OpId::NULL });
+            self.insert_before(op_id, Op::Store { dst: acc, dst_idx: zero, src: bin_acc });
             self.insert_before(op_id, Op::EndLoop);
-            self.ops[op_id].op = Op::Load { src: acc, src_idx: zero, bytes: OpId::NULL };
+            self.ops[op_id].op = Op::Load { src: acc, src_idx: zero };
         }
     }
 }

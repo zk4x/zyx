@@ -55,8 +55,8 @@ impl Kernel {
         let mut rcs: Map<OpId, u32> = Map::default();
         let mut dtypes: Map<OpId, (DType, Vec<Dim>)> = Map::default();
         {
-        let mut op_id = self.head;
-        while !op_id.is_null() {
+            let mut op_id = self.head;
+            while !op_id.is_null() {
                 match self.ops[op_id].op {
                     Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                         // Same rule as compute_dtypes_and_rcs: result takes
@@ -150,22 +150,19 @@ impl Kernel {
                     Op::Load { src, .. } => {
                         dtypes.insert(op_id, (dtypes[&src].0, self.shape(op_id)));
                     }
-                    Op::Store { dst, dst_idx, src: x, bytes } => {
+                    Op::Store { dst, dst_idx, src: x } => {
                         dtypes.insert(op_id, dtypes[&x].clone());
                         *rcs.entry(dst).or_insert(0) += 1;
                         if !dst_idx.is_null() {
                             *rcs.entry(dst_idx).or_insert(0) += 1;
                         }
-                        if !bytes.is_null() {
-                            *rcs.entry(bytes).or_insert(0) += 1;
-                        }
                         *rcs.entry(x).or_insert(0) += 1;
                     }
-                    Op::Copy { src, src_idx, dst, dst_idx, bytes } => {
+                    Op::Copy { src, src_idx, dst, dst_idx } => {
                         dtypes.insert(op_id, (dtypes[&src].0, self.shape(op_id)));
                         *rcs.entry(src).or_insert(0) += 1;
                         *rcs.entry(dst).or_insert(0) += 1;
-                        for &o in &[src_idx, dst_idx, bytes] {
+                        for &o in &[src_idx, dst_idx] {
                             if !o.is_null() {
                                 *rcs.entry(o).or_insert(0) += 1;
                             }
@@ -304,10 +301,13 @@ impl Kernel {
         // resolves from const-built bytes descriptors; a negative dim
         // is malformed IR — fail loudly.
         let concrete_len = |shape: &[Dim]| -> Dim {
-            shape.iter().map(|&d| {
-                assert!(d >= 0, "cost: symbolic access width");
-                d
-            }).product()
+            shape
+                .iter()
+                .map(|&d| {
+                    assert!(d >= 0, "cost: symbolic access width");
+                    d
+                })
+                .product()
         };
         let mut op_id = self.head;
         while !op_id.is_null() {

@@ -198,20 +198,19 @@ impl Kernel {
                         self.unroll_loop(op_id);
                     }
                 }
-                Op::Store { dst, bytes, .. } => {
-                    if !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. }) || !bytes.is_null() {
+                Op::Store { dst, .. } => {
+                    if !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. }) {
                         *constant_loops.last_mut().unwrap() = false;
                     }
                 }
-                Op::Load { src, bytes, .. } => {
-                    if !matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. }) || !bytes.is_null() {
+                Op::Load { src, .. } => {
+                    if !matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. }) {
                         *constant_loops.last_mut().unwrap() = false;
                     }
                 }
-                Op::Copy { src, dst, bytes, .. } => {
+                Op::Copy { src, dst, .. } => {
                     if !matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })
                         || !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. })
-                        || !bytes.is_null()
                     {
                         *constant_loops.last_mut().unwrap() = false;
                     }
@@ -366,8 +365,8 @@ impl Kernel {
         loop {
             match self.ops[op_id].op {
                 Op::Loop { .. } => return, // no nested loops
-                Op::Store { dst, bytes, .. } => {
-                    if has_store || !bytes.is_null() {
+                Op::Store { dst, .. } => {
+                    if has_store {
                         return;
                     }
                     if !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. }) {
@@ -375,9 +374,8 @@ impl Kernel {
                     }
                     has_store = true;
                 }
-                Op::Copy { src, dst, bytes, .. } => {
+                Op::Copy { src, dst, .. } => {
                     if has_store
-                        || !bytes.is_null()
                         || !matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })
                         || !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. })
                     {
@@ -435,7 +433,7 @@ impl Kernel {
                     };
                     carry = self.insert_before(op_id, Op::Binary { x, y: carry, bop });
                 }
-                self.insert_before(op_id, Op::Store { dst, dst_idx, src: carry, bytes: OpId::NULL });
+                self.insert_before(op_id, Op::Store { dst, dst_idx, src: carry });
             } else {
                 let mut new_ones = Vec::with_capacity(factor as usize - 1);
                 for i in 1..factor {

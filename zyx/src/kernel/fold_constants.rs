@@ -356,29 +356,31 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::Store { dst, dst_idx, bytes, .. } => {
+                Op::Store { dst, dst_idx, .. } => {
                     if dst == storage_id {
                         // Const indices fold per lane; an unroll index
                         // covers every lane at once, provided its width
-                        // covers the storage.
+                        // covers the storage. Scalar accesses only: the
+                        // index must resolve to a plain scalar (a lane
+                        // tree's shape is non-empty).
                         let lane_index = match self.at(dst_idx) {
                             Op::Const(_) => true,
                             Op::Range { kind: RangeKind::Unroll(w), .. } => (*w as usize) == latest_stores.len(),
                             _ => false,
                         };
-                        if !bytes.is_null() || !lane_index {
+                        if !self.shape(dst_idx).is_empty() || !lane_index {
                             return;
                         }
                     }
                 }
-                Op::Load { src, src_idx, bytes } => {
+                Op::Load { src, src_idx } => {
                     if src == storage_id {
                         let lane_index = match self.at(src_idx) {
                             Op::Const(_) => true,
                             Op::Range { kind: RangeKind::Unroll(w), .. } => (*w as usize) == latest_stores.len(),
                             _ => false,
                         };
-                        if !bytes.is_null() || !lane_index {
+                        if !self.shape(src_idx).is_empty() || !lane_index {
                             return;
                         }
                     }
@@ -404,8 +406,8 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match *self.at(op_id) {
-                Op::Store { dst, dst_idx, src: x, bytes } => {
-                    if dst != storage_id || !bytes.is_null() {
+                Op::Store { dst, dst_idx, src: x } => {
+                    if dst != storage_id || !self.shape(dst_idx).is_empty() {
                         self.ops[op_id].op.remap_params(&remaps);
                         op_id = next;
                         continue;
@@ -419,19 +421,16 @@ impl Kernel {
                             // Pre-check admitted only a width-covering
                             // unroll index here: one store writes every
                             // lane the same value at once.
-                            debug_assert!(matches!(
-                                self.ops[dst_idx].op,
-                                Op::Range { kind: RangeKind::Unroll(_), .. }
-                            ));
+                            debug_assert!(matches!(self.ops[dst_idx].op, Op::Range { kind: RangeKind::Unroll(_), .. }));
                             latest_stores.fill(x);
                         }
                     }
                     op_id = next;
                     continue;
                 }
-                Op::Load { src, src_idx, bytes } => {
+                Op::Load { src, src_idx } => {
                     if src == storage_id
-                        && bytes.is_null()
+                        && self.shape(src_idx).is_empty()
                         && let Op::Const(index_c) = self.ops[src_idx].op
                     {
                         self.remove_op(op_id);
@@ -441,7 +440,7 @@ impl Kernel {
                         continue;
                     }
                     if src == storage_id
-                        && bytes.is_null()
+                        && self.shape(src_idx).is_empty()
                         && matches!(self.ops[src_idx].op, Op::Range { kind: RangeKind::Unroll(_), .. })
                     {
                         // All-or-nothing across lanes: remap only when

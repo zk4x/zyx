@@ -85,15 +85,27 @@ impl Tensor {
             ReduceOp::Sum => {
                 // Torch semantics: accumulate in the input dtype; only
                 // an explicit `dtype` (sum_dtype) changes it.
-                let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
+                let x = if let Some(dtype) = dtype {
+                    self.cast(dtype)
+                } else {
+                    self.clone()
+                };
                 x.reduce_axes(axes_vec.clone(), BOp::Add)?
             }
             ReduceOp::Max => {
-                let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
+                let x = if let Some(dtype) = dtype {
+                    self.cast(dtype)
+                } else {
+                    self.clone()
+                };
                 x.reduce_axes(axes_vec.clone(), BOp::Max)?
             }
             ReduceOp::Prod => {
-                let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
+                let x = if let Some(dtype) = dtype {
+                    self.cast(dtype)
+                } else {
+                    self.clone()
+                };
                 x.reduce_axes(axes_vec.clone(), BOp::Mul)?
             }
             ReduceOp::Min => {

@@ -66,13 +66,8 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        let mut rendered = Kernel {
-            ops: Slab::new(),
-            head: OpId::NULL,
-            tail: OpId::NULL,
-            dev: self.dev,
-            dev_info: self.dev_info.clone(),
-        };
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
@@ -197,7 +192,7 @@ impl Kernel {
                     }
                     _ => unreachable!("opencl only handles local or register storage"),
                 },
-                Op::Load { src: x, src_idx, bytes: _ } => {
+                Op::Load { src: x, src_idx } => {
                     let access_shape = self.shape(op_id);
                     if rcs.contains_key(&op_id) {
                         let dtype = dtypes[&op_id].clone();
@@ -221,7 +216,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst: dst_buf, dst_idx, src, bytes: _ } => {
+                Op::Store { dst: dst_buf, dst_idx, src } => {
                     let access_shape = self.shape(op_id);
                     let idx = get_var_addr(dst_idx, &constants, &indices, &reg_map)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;

@@ -389,14 +389,13 @@ impl Kernel {
     /// Load from `src` at `index` (scalar shape: one element).
     pub fn load(&mut self, src: OpId, index: impl IntoOp) -> OpId {
         let index = index.into_op(self);
-        self.load_op(src, index, OpId::NULL)
+        self.load_op(src, index, &[])
     }
 
     /// Load a vector of `size` elements from `src` at `index`.
     pub fn load_vector(&mut self, src: OpId, index: impl IntoOp, size: u16) -> OpId {
         let index = index.into_op(self);
-        let bytes = self.push_back(Op::Const(Constant::new(size)));
-        self.load_op(src, index, bytes)
+        self.load_op(src, index, &[Dim::from(size)])
     }
 
     /// Load an `x` × `y` contiguous tile from `src` at `index` (strides
@@ -408,8 +407,7 @@ impl Kernel {
 
     /// Load a shape-`block` contiguous tile from `src` at `index`.
     fn load_block(&mut self, src: OpId, index: OpId, block: &[Dim]) -> OpId {
-        let bytes = self.block_bytes(block);
-        self.load_op(src, index, bytes)
+        self.load_op(src, index, block)
     }
 
     /// Load a standard 32 x 32 circular tile from `src` at `index`.
@@ -441,25 +439,52 @@ impl Kernel {
         self.load_tile(src, index, 32, 32)
     }
 
-    fn load_op(&mut self, src: OpId, index: OpId, bytes: OpId) -> OpId {
+    fn load_op(&mut self, src: OpId, index: OpId, block: &[Dim]) -> OpId {
         debug_assert!(
             matches!(self.ops[src].op, Op::Param { .. } | Op::Storage { .. }),
             "load_op: src {src} must be a Param or Storage (access base)"
         );
-        self.push_back(Op::Load { src, src_idx: index, bytes })
+        let src_idx = self.lane_tree(index, block);
+        self.push_back(Op::Load { src, src_idx })
+    }
+
+    /// Builds the lane index over `base` for a contiguous `block`
+    /// access: `base` for scalars, `base + Unroll{axis: 0, len}` for
+    /// vectors (lanes are adjacent, stride 1 implied), and
+    /// `base + Σ Unroll{axis: i, len: len_i} * stride_i` (row-major
+    /// consecutive strides) for tiles.
+    pub(crate) fn lane_tree(&mut self, base: OpId, block: &[Dim]) -> OpId {
+        let mut idx = base;
+        let n = block.len();
+        for (i, &len) in block.iter().enumerate() {
+            let lanes =
+                self.push_back(Op::Unroll { axis: i as u32, len: u16::try_from(len).expect("block lane count overflows u16") });
+            let term = if i == n - 1 {
+                lanes
+            } else {
+                let mut stride = 1 as Dim;
+                for &l in &block[i + 1..] {
+                    stride *= l;
+                }
+                let stride_op =
+                    self.push_back(Op::Const(Constant::new(u16::try_from(stride).expect("block stride overflows u16"))));
+                self.push_back(Op::Binary { x: lanes, y: stride_op, bop: BOp::Mul })
+            };
+            idx = self.push_back(Op::Binary { x: idx, y: term, bop: BOp::Add });
+        }
+        idx
     }
 
     /// Store `x` to `dst` at `index` (scalar shape: one element).
     pub fn store(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
         let index = index.into_op(self);
-        self.store_op(dst, x, index, OpId::NULL)
+        self.store_op(dst, x, index, &[])
     }
 
     /// Store a vector of `size` elements to `dst` at `index`.
     pub fn store_vector(&mut self, dst: OpId, x: OpId, index: impl IntoOp, size: u16) {
         let index = index.into_op(self);
-        let bytes = self.push_back(Op::Const(Constant::new(size)));
-        self.store_op(dst, x, index, bytes)
+        self.store_op(dst, x, index, &[Dim::from(size)])
     }
 
     /// Store an `x` × `y` contiguous tile to `dst` at `index` (strides
@@ -471,8 +496,7 @@ impl Kernel {
 
     /// Store a shape-`block` contiguous tile to `dst` at `index`.
     fn store_block(&mut self, dst: OpId, x: OpId, index: OpId, block: &[Dim]) {
-        let bytes = self.block_bytes(block);
-        self.store_op(dst, x, index, bytes)
+        self.store_op(dst, x, index, block)
     }
 
     /// Store a standard 32 x 32 circular tile `x` to `dst` at `index`.
@@ -521,10 +545,11 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
             "copy_global_to_circular: dst {dst} is not a Circular storage"
         );
-        let bytes = self.block_bytes(&[32, 32]);
         let src_idx = src_idx.into_op(self);
+        let src_idx = self.lane_tree(src_idx, &[32, 32]);
         let dst_idx = dst_idx.into_op(self);
-        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
+        let dst_idx = self.lane_tree(dst_idx, &[32, 32]);
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx })
     }
 
     /// Copy a standard 32 x 32 tile from a `MemScope::Circular`
@@ -542,10 +567,11 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. }),
             "copy_circular_to_global: dst {dst} is not a GlobalMut param"
         );
-        let bytes = self.block_bytes(&[32, 32]);
         let src_idx = src_idx.into_op(self);
+        let src_idx = self.lane_tree(src_idx, &[32, 32]);
         let dst_idx = dst_idx.into_op(self);
-        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
+        let dst_idx = self.lane_tree(dst_idx, &[32, 32]);
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx })
     }
 
     /// Copy a vector of `size` elements from a DRAM param into a
@@ -568,10 +594,11 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
             "load_global_to_cb_vector: dst {dst} is not a Circular storage"
         );
-        let bytes = self.block_bytes(&[Dim::from(size)]);
         let src_idx = src_idx.into_op(self);
+        let src_idx = self.lane_tree(src_idx, &[Dim::from(size)]);
         let dst_idx = dst_idx.into_op(self);
-        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
+        let dst_idx = self.lane_tree(dst_idx, &[Dim::from(size)]);
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx })
     }
 
     /// Copy a single scalar from a DRAM param into a
@@ -590,10 +617,10 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
             "load_global_to_cb_scalar: dst {dst} is not a Circular storage"
         );
-        let bytes = OpId::NULL;
         let src_idx = src_idx.into_op(self);
         let dst_idx = dst_idx.into_op(self);
-        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
+        // Scalar copy: no lane tree, both indices stay as-is.
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx })
     }
 
     /// Copy a vector of `size` elements from a `MemScope::Circular`
@@ -617,10 +644,11 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. }),
             "store_cb_to_global_vector: dst {dst} is not a GlobalMut param"
         );
-        let bytes = self.block_bytes(&[Dim::from(size)]);
         let src_idx = src_idx.into_op(self);
+        let src_idx = self.lane_tree(src_idx, &[Dim::from(size)]);
         let dst_idx = dst_idx.into_op(self);
-        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
+        let dst_idx = self.lane_tree(dst_idx, &[Dim::from(size)]);
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx })
     }
 
     /// Copy a standard 32 x 32 tile between two `MemScope::Circular`
@@ -638,35 +666,20 @@ impl Kernel {
             matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. }),
             "copy_circular_to_circular: dst {dst} is not a Circular storage"
         );
-        let bytes = self.block_bytes(&[32, 32]);
         let src_idx = src_idx.into_op(self);
+        let src_idx = self.lane_tree(src_idx, &[32, 32]);
         let dst_idx = dst_idx.into_op(self);
-        self.push_back(Op::Copy { src, src_idx, dst, dst_idx, bytes })
+        let dst_idx = self.lane_tree(dst_idx, &[32, 32]);
+        self.push_back(Op::Copy { src, src_idx, dst, dst_idx })
     }
 
-    fn store_op(&mut self, dst: OpId, x: OpId, index: OpId, bytes: OpId) {
+    fn store_op(&mut self, dst: OpId, x: OpId, index: OpId, block: &[Dim]) {
         debug_assert!(
             matches!(self.ops[dst].op, Op::Param { .. } | Op::Storage { .. }),
             "store_op: dst {dst} must be a Param or Storage (access base)"
         );
-        self.push_back(Op::Store { dst, dst_idx: index, src: x, bytes });
-    }
-
-    /// Build the `bytes` operand for a contiguous access of `block`
-    /// elements per axis: null for one scalar element, a resolved
-    /// integer for a 1D block, a `Stack` of resolved integers otherwise.
-    pub(crate) fn block_bytes(&mut self, block: &[Dim]) -> OpId {
-        match block {
-            [] => OpId::NULL,
-            [one] => {
-                debug_assert_ne!(*one, 0, "block_bytes: 0-sized block");
-                self.push_back(Op::Const(Constant::new(*one as u16)))
-            }
-            dims => {
-                let ops: Vec<OpId> = dims.iter().map(|&d| self.push_back(Op::Const(Constant::new(d as u16)))).collect();
-                self.push_back(Op::Stack { ops: ops.try_into().unwrap() })
-            }
-        }
+        let dst_idx = self.lane_tree(index, block);
+        self.push_back(Op::Store { dst, dst_idx, src: x });
     }
 
     /// Emit a loop over `len`, call `f` to build the body (the closure
@@ -2353,8 +2366,7 @@ impl Kernel {
             let shape = kernel.shape(v_transformed);
             match shape.as_slice() {
                 [n] => {
-                    let bytes = kernel.block_bytes(&[*n]);
-                    kernel.store_op(shared.storage, v_transformed, s_idx, bytes);
+                    kernel.store_op(shared.storage, v_transformed, s_idx, &[*n]);
                 }
                 [] => {
                     kernel.store(shared.storage, v_transformed, s_idx);

@@ -26,8 +26,7 @@ use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{
-    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTCbConfig, TTOp, TTProgramDesc,
-    TileDim, UOp,
+    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTCbConfig, TTOp, TTProgramDesc, TileDim, UOp,
 };
 use crate::scalar::{bf16, f16};
 use crate::slab::Slab;
@@ -135,13 +134,8 @@ impl Kernel {
                 .collect(),
             fp32: program.fp32,
         };
-        let mut rendered = Kernel {
-            ops: Slab::new(),
-            head: OpId::NULL,
-            tail: OpId::NULL,
-            dev: self.dev,
-            dev_info: self.dev_info.clone(),
-        };
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
         rendered.push_back(Op::TT(TTOp::ProgramDesc(Box::new(desc))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
@@ -1105,14 +1099,7 @@ fn render(
 /// (`p<ord>`); arg reads use section positions. CB→CB moves never
 /// reach here (`tt_storage` canonicalizes them to load+store); the
 /// arm below is defensive only.
-fn render_copy(
-    sec: &mut TtSection,
-    id: OpId,
-    src: OpId,
-    src_idx: OpId,
-    dst: OpId,
-    dst_idx: OpId,
-) -> Result<(), BackendError> {
+fn render_copy(sec: &mut TtSection, id: OpId, src: OpId, src_idx: OpId, dst: OpId, dst_idx: OpId) -> Result<(), BackendError> {
     let src_cb = circular_base(sec.k, src)?;
     let dst_cb = circular_base(sec.k, dst)?;
     match (src_cb, dst_cb) {
@@ -1277,13 +1264,12 @@ fn render_tile_op(sec: &mut TtSection, id: OpId) -> Result<(), BackendError> {
             Ok(())
         }
         Op::Binary { x, y, bop } => {
-            let lane =
-                match (sec.k.shape(*x).len() == 2, sec.k.shape(*y).len() == 2) {
-                    (true, true) => None,
-                    (true, false) => Some((false, *y)),
-                    (false, true) => Some((true, *x)),
-                    (false, false) => return Err(sec.err(format!("tiled binary {id:?} with no tile lane"))),
-                };
+            let lane = match (sec.k.shape(*x).len() == 2, sec.k.shape(*y).len() == 2) {
+                (true, true) => None,
+                (true, false) => Some((false, *y)),
+                (false, true) => Some((true, *x)),
+                (false, false) => return Err(sec.err(format!("tiled binary {id:?} with no tile lane"))),
+            };
             match lane {
                 None => {
                     let sx = sec.operand_slot(*x)?;

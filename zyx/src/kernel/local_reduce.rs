@@ -171,8 +171,7 @@ impl Kernel {
         loop {
             match self.ops[op_id].op {
                 // Update store to use the lidx for indexing
-                Op::Store { dst, src: x, bytes, .. } => {
-                    debug_assert!(bytes.is_null());
+                Op::Store { dst, src: x, .. } => {
                     if dst == reg_acc {
                         reduce_bop_id = x;
                     }
@@ -182,9 +181,8 @@ impl Kernel {
                         return;
                     }
                 }
-                Op::Load { src, bytes, .. } if depth == 0 => {
+                Op::Load { src, .. } if depth == 0 => {
                     if src == reg_acc {
-                        debug_assert!(bytes.is_null());
                         acc_load_id = op_id;
                         break;
                     }
@@ -234,10 +232,9 @@ impl Kernel {
         self.ops[loop_start].op = Op::Binary { x: xy, y: lidx, bop: BOp::Add };
 
         // Store to local accumulator
-        const NULL: OpId = OpId::NULL;
         let const_zero = self.insert_before(acc_load_id, Op::Const(Constant::idx(0)));
-        let x = self.insert_before(acc_load_id, Op::Load { src: reg_acc, src_idx: const_zero, bytes: NULL });
-        self.insert_before(acc_load_id, Op::Store { dst: loc_acc, dst_idx: lidx, src: x, bytes: NULL });
+        let x = self.insert_before(acc_load_id, Op::Load { src: reg_acc, src_idx: const_zero });
+        self.insert_before(acc_load_id, Op::Store { dst: loc_acc, dst_idx: lidx, src: x });
 
         // Sync memory
         self.insert_before(acc_load_id, Op::Barrier);
@@ -262,16 +259,16 @@ impl Kernel {
                 let offset = i * active_threads;
                 let offset_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(offset)));
                 let offset_idx = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: offset_const, bop: BOp::Add });
-                let local_load = self.insert_before(acc_load_id, Op::Load { src: loc_acc, src_idx: offset_idx, bytes: NULL });
+                let local_load = self.insert_before(acc_load_id, Op::Load { src: loc_acc, src_idx: offset_idx });
                 if let Some(prev_sum) = sum_x {
                     sum_x = Some(self.insert_before(acc_load_id, Op::Binary { x: prev_sum, y: local_load, bop }));
                 } else {
-                    let current_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, src_idx: lidx, bytes: NULL });
+                    let current_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, src_idx: lidx });
                     sum_x = Some(self.insert_before(acc_load_id, Op::Binary { x: current_val, y: local_load, bop }));
                 }
             }
             let bop_id = sum_x.unwrap();
-            self.insert_before(acc_load_id, Op::Store { dst: loc_acc, dst_idx: lidx, src: bop_id, bytes: NULL });
+            self.insert_before(acc_load_id, Op::Store { dst: loc_acc, dst_idx: lidx, src: bop_id });
 
             self.insert_before(acc_load_id, Op::EndLoop);
             self.insert_before(acc_load_id, Op::Barrier);
@@ -282,8 +279,8 @@ impl Kernel {
         // Load final result from local[0] to register (only thread 0)
         let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: const_zero, bop: BOp::Eq });
         self.insert_before(acc_load_id, Op::Loop { len: condition });
-        let final_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, src_idx: const_zero, bytes: NULL });
-        self.insert_before(acc_load_id, Op::Store { dst: reg_acc, dst_idx: const_zero, src: final_val, bytes: NULL });
+        let final_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, src_idx: const_zero });
+        self.insert_before(acc_load_id, Op::Store { dst: reg_acc, dst_idx: const_zero, src: final_val });
         self.insert_after(self.tail, Op::EndLoop);
 
         self.verify();
