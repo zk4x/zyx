@@ -475,6 +475,13 @@ impl Kernel {
                                     BOp::Cmplt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} < {y}.{c});"),
                                     BOp::Cmpgt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} > {y}.{c});"),
                                     BOp::Cmpge => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} >= {y}.{c});"),
+                                    BOp::Max if dtype.0 == DType::F16 => {
+                                        writeln!(source, "{indent}r{reg}.{c} = (half)fmaxf((float){x}.{c}, (float){y}.{c});")
+                                    }
+                                    BOp::Max if dtype.0 == DType::BF16 => writeln!(
+                                        source,
+                                        "{indent}r{reg}.{c} = (__nv_bfloat16)fmaxf((float){x}.{c}, (float){y}.{c});"
+                                    ),
                                     BOp::Max => writeln!(source, "{indent}r{reg}.{c} = max({x}.{c}, {y}.{c});"),
                                     BOp::Or => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} || {y}.{c};"),
                                     BOp::And => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} && {y}.{c};"),
@@ -500,6 +507,12 @@ impl Kernel {
                                 BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};"),
                                 BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};"),
                                 BOp::Cmpge => writeln!(source, "{indent}r{reg} = {x} >= {y};"),
+                                BOp::Max if dtype.0 == DType::F16 => {
+                                    writeln!(source, "{indent}r{reg} = (half)fmaxf((float){x}, (float){y});")
+                                }
+                                BOp::Max if dtype.0 == DType::BF16 => {
+                                    writeln!(source, "{indent}r{reg} = (__nv_bfloat16)fmaxf((float){x}, (float){y});")
+                                }
                                 BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});"),
                                 BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};"),
                                 BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};"),
