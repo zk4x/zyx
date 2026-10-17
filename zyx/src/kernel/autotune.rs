@@ -92,19 +92,11 @@ impl Kernel {
 
     /// Device specific epilogue
     pub fn device_epilogue(&mut self) {
-        if std::env::var("ZYX_DEBUG").map(|v| v == "8").unwrap_or(false) {
-            eprintln!("=== device_epilogue BEFORE devectorize ===");
-            self.debug();
-        }
         // Lane bundles never survive to a backend: the fold chains
         // expand first (their lane values are the bundles), then the
         // remaining unroll lanes unfold to per-lane statements.
         self.devectorize_reduces();
         self.devectorize_unrolls();
-        if std::env::var("ZYX_DEBUG").map(|v| v == "8").unwrap_or(false) {
-            eprintln!("=== device_epilogue AFTER devectorize ===");
-            self.debug();
-        }
         // Non-TT backends need no device epilogue.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {

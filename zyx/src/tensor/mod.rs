@@ -790,7 +790,7 @@ impl Tensor {
         Ok((x1 * x2).cast(dtype))
     }
 
-    /// Sample from the multinomial distribution defined by this tensor.
+    /// Sample from the multinomial distribution specified by this tensor.
     ///
     /// # Example
     ///

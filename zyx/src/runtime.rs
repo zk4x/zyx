@@ -381,11 +381,11 @@ pub struct KernelData {
     /// - `stores`: tensors whose StoreView the kernel holds. They are
     ///   **finished**: materializing the kernel must realize every one of
     ///   them (allocate their buffers), because other kernels already use
-    ///   them as loads. A `GlobalMut` define's buffer slot is carried here,
+    ///   them as loads. A `GlobalMut` param's buffer slot is carried here,
     ///   NOT in `loads`: an in-place assign turns dst from a load into a pure
     ///   store, so the target must not appear in `loads`.
     /// - `loads`: tensors this kernel reads, aligned to its non-store
-    ///   `Param` defines (`Global` buffers and scalar `Variable` dim params)
+    ///   `Param` params (`Global` buffers and scalar `Variable` dim params)
     ///   in head order. Launch args bind positionally: load slots first
     ///   (`loads`), then store slots (`stores`) — never shuffled.
     ///
@@ -732,9 +732,9 @@ impl Runtime {
                                             break;
                                         }
                                         if let Op::Store { dst, .. } = kd.kernel.ops[i].op {
-                                            // Runtime kernels never contain
-                                            // GEPs (pre-linearize form):
-                                            // dst names the Param directly.
+                                            // Runtime kernels are pre-linearize:
+                                            // dst names the Param directly (no
+                                            // index expression yet).
                                             if dst == *param {
                                                 stores_to_param.push(i);
                                             }
@@ -1128,7 +1128,7 @@ impl Runtime {
             kernel: Kernel::new(dev),
         });
         let shape = self.replay_expr(kernel_id, shape_id);
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, cons_id: 0 });
+        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, id: x.0 + 1 });
         self.kernels[kernel_id].loads.push(x);
         self.retain(x);
         (kernel_id, op_id)
@@ -3235,7 +3235,7 @@ impl Runtime {
                 dtype,
                 kind: ParamKind::GlobalMut,
                 shape: dst_shape_op,
-                cons_id: 0,
+                id: dst.0 + 1,
             });
             self.kernels[kernel_id].kernel.push_back(Op::Store { dst: mut_param, dst_idx: OpId::NULL, src: src_op });
             self.kernels[kernel_id].stores.push(dst);
@@ -3354,8 +3354,8 @@ impl Runtime {
                 "assign: dst kernel load {t} is neither the buffer nor a known variable"
             );
         }
-        // `loads` is positionally aligned with the kernel's Param defines
-        // (invariant: len == number of defines); verify before replaying.
+        // `loads` is positionally aligned with the kernel's Param nodes
+        // (invariant: len == number of params); verify before replaying.
         {
             let mut n_params = 0usize;
             let mut p = kernel.head;
@@ -3401,8 +3401,8 @@ impl Runtime {
         // param becomes the (mutable) store target; the last replayed
         // movement op yields dst's final value within src's kernel.
         let mut op_map = Map::default();
-        // Load classes for src's kernel, aligned to every define replayed
-        // below, in define order. Variable defines keep their variable tid;
+        // Load classes for src's kernel, aligned to every param replayed
+        // below, in param order. Variable params keep their variable tid;
         // the base buffer param gets dst_org.
         let mut new_def_loads: Vec<TensorId> = Vec::new();
         // Pass A: transitive dependency closure over the removed kernel's ops
@@ -3428,7 +3428,7 @@ impl Runtime {
             debug_assert!(stack.is_empty(), "assign replay: dependency walk did not finish");
         }
         // Pass B: copy in ORIGINAL head order. This preserves the head-order
-        // relation between defines and `loads` (params appended in the same
+        // relation between params and `loads` (params appended in the same
         // order they appear in `loads`) and guarantees every dependency is
         // copied before its user.
         let mut def_i = 0usize;
@@ -3491,7 +3491,7 @@ impl Runtime {
             "assign: dst base {dst_org} is not a leaf/pending leaf"
         );
         self.kernels[src_kid].stores.push(dst_org);
-        // Register every replayed define's load in define order. Variables
+        // Register every replayed param's load in param order. Variables
         // only — the GlobalMut base is a PURE STORE now and must not appear
         // in loads (its buffer slot comes via `stores`). dst's kernel stays
         // alive and keeps its own load edges, so these are NEW edges on
@@ -3512,7 +3512,7 @@ impl Runtime {
         {
             let kd = &self.kernels[src_kid];
             assert!(!kd.loads.contains(&dst_org), "assign: GlobalMut store target {dst_org} leaked into loads");
-            // loads ↔ non-mut defines, aligned in head order.
+            // loads ↔ non-mut params, aligned in head order.
             let mut n_non_mut = 0usize;
             let mut p = kd.kernel.head;
             while !p.is_null() {
@@ -3523,7 +3523,7 @@ impl Runtime {
                 }
                 p = kd.kernel.next_op(p);
             }
-            assert_eq!(n_non_mut, kd.loads.len(), "assign: loads/defines alignment broken for kernel {:?}", src_kid);
+            assert_eq!(n_non_mut, kd.loads.len(), "assign: loads/params alignment broken for kernel {:?}", src_kid);
         }
 
         // The base's backing store may still be deferred (e.g. `contiguous`
@@ -3836,12 +3836,8 @@ impl Runtime {
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
             let store_shape_id = self.kernels[kid].kernel.stack_shape_dims(op_id);
-            let dst = self.kernels[kid].kernel.push_back(Op::Param {
-                dtype,
-                kind: ParamKind::GlobalMut,
-                shape: store_shape_id,
-                cons_id: 0,
-            });
+            let dst =
+                self.kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: store_shape_id, id: x.0 + 1 });
             self.kernels[kid].kernel.push_back(Op::Store { dst, dst_idx: OpId::NULL, src: op_id });
             self.kernels[kid].stores.push(x);
             kid
@@ -3878,12 +3874,42 @@ impl Runtime {
     /// Autotune (or fetch from cache) a compiled program for `kernel`.
     ///
     /// `buffers` are the complete launch arguments from the caller,
-    /// positionally bound: read-only defines (`Global` buffers and scalar
+    /// positionally bound: read-only params (`Global` buffers and scalar
     /// `Variable` values) in head order, then `GlobalMut` stores in head
     /// order. Every buffer is preallocated (eager path) or freshly
     /// allocated by the graph caller; every variable carries its actual
     /// runtime value. Nothing is invented here.
     pub fn get_or_autotune(&mut self, kernel: Kernel, buffers: &[LaunchArg]) -> Result<(DeviceProgramId, u64), ZyxError> {
+        // Canonicalize param ids to head-order ordinals before anything
+        // else: raw ids are builder-local identities (tensor/expr ids),
+        // so structurally identical kernels canonicalize identically
+        // and share cache entries. Ordinals start at 1; raw id 0 means
+        // unidentified (legacy paths) and each such param gets a distinct
+        // top-down ordinal so unknowns never compare equal — to each
+        // other or to a real identity. Linearize and all passes already
+        // see canonicalized ordinals.
+        let mut kernel = kernel;
+        {
+            let mut raw_to_ordinal: Map<u32, u32> = Map::default();
+            let mut next_ordinal: u32 = 1;
+            let mut next_unknown: u32 = u32::MAX;
+            let mut op_id = kernel.head;
+            while !op_id.is_null() {
+                if let Op::Param { id, .. } = &mut kernel.ops[op_id].op {
+                    if *id == 0 {
+                        *id = next_unknown;
+                        next_unknown -= 1;
+                    } else if let Some(&ordinal) = raw_to_ordinal.get(id) {
+                        *id = ordinal;
+                    } else {
+                        raw_to_ordinal.insert(*id, next_ordinal);
+                        *id = next_ordinal;
+                        next_ordinal += 1;
+                    }
+                }
+                op_id = kernel.next_op(op_id);
+            }
+        }
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
                 let pid = ProgramId { dev: kernel.dev, program_id };
@@ -4459,7 +4485,7 @@ impl Runtime {
         }
 
         // Build args: load buffers/variables first, then store buffers.
-        // Law: `loads` ↔ Global+Variable defines, `stores` carries the
+        // Law: `loads` ↔ Global+Variable params, `stores` carries the
         // GlobalMut store targets — args bind positionally over exactly this
         // concatenation, so both sides must stay aligned and unshuffled.
         #[cfg(debug_assertions)]
@@ -4475,8 +4501,8 @@ impl Runtime {
                 }
                 p = kernel.next_op(p);
             }
-            assert_eq!(n_non_mut, loads.len(), "materialize: {} non-store defines but {} load entries", n_non_mut, loads.len());
-            assert!(n_mut <= stores.len(), "materialize: {} GlobalMut defines but only {} stores", n_mut, stores.len());
+            assert_eq!(n_non_mut, loads.len(), "materialize: {} non-store params but {} load entries", n_non_mut, loads.len());
+            assert!(n_mut <= stores.len(), "materialize: {} GlobalMut params but only {} stores", n_mut, stores.len());
         }
         let mut buffers: Vec<LaunchArg> = Vec::new();
         for &tid in &loads {
@@ -4520,7 +4546,7 @@ impl Runtime {
         let (dev_prog, _timing) = self.get_or_autotune(kernel, &buffers)?;
 
         // One-off launch queue: one slot per arg in positional order
-        // (loads ↔ Global+Variable defines, then stores ↔ GlobalMut).
+        // (loads ↔ Global+Variable params, then stores ↔ GlobalMut).
         // Buffers ride in the boundary map, scalars in `vars`; the kept
         // store buffers are already bound, so replay reuses them.
         let mut queue = CmdQueue::new();

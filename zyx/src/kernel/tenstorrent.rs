@@ -101,7 +101,7 @@ impl Kernel {
     /// anchor (the first tiled load); a `Copy` publishes
     /// `param[cloned_off]` into the param's CB at the load's own slot
     /// (indexed both sides, one slot per `Load` — duplicate pushes of
-    /// one tile, the softmax pattern); the load's GEP is repointed at
+    /// one tile, the softmax pattern); the load's index is repointed at
     /// the CB slot. One CB per DRAM param, sized in tiles at the end.
     /// Stores are untouched (the writer pass owns them).
     pub fn tt_add_reader(&mut self) {
@@ -248,7 +248,7 @@ impl Kernel {
     /// `Loop`s, pure index cones validated before mutating, one
     /// indexed slot per `Store`, one CB per DRAM param). New ops
     /// append at the tail: `EndCompute`, then per store the cloned
-    /// index cone and the drain `Copy`. The compute-side CB `GEP`
+    /// index cone and the drain `Copy`. The compute-side CB index
     /// goes right before its store. If no `EndReader` is present
     /// (store-only kernel, reader was a no-op) one is inserted
     /// before the first store — an empty reader section. Stores
@@ -965,9 +965,9 @@ impl Kernel {
     /// are provenance only: the feeder `Load` ids the call consumes
     /// from, for sync accounting (`tt_sync_cbs` waits,
     /// `tt_place_pops` pops). Render ignores them. A `Load` that feeds
-    /// a compute op must chase through its `GEP` to a `Storage`; a
-    /// `Load` over a `Param` (DRAM) feeding a compute op is a lowering
-    /// bug — loud `panic!`.
+    /// a compute op must chase through its index expression to a
+    /// `Storage`; a `Load` over a `Param` (DRAM) feeding a compute op
+    /// is a lowering bug — loud `panic!`.
     pub fn tt_storage(&mut self) {
         let mut op_id = self.head;
         // CB Storage definitions live in the prologue (see tt_add_reader):
@@ -1354,9 +1354,9 @@ impl Kernel {
     /// CB sync insertion: wrap every CB traffic op with straight-line
     /// single-tile syncs (`n = 1`; hoisted batches land with batching).
     /// Direction reads off which copy side is circular:
-    /// - publish (`dst` GEP over a Circular storage): `ReserveBack`
+    /// - publish (`dst` index over a Circular storage): `ReserveBack`
     ///   immediately before, `PushBack` immediately after;
-    /// - drain (`src` GEP over a Circular storage): `WaitFront`
+    /// - drain (`src` index over a Circular storage): `WaitFront`
     ///   immediately before, no pop yet;
     /// - CB-to-CB copy: `WaitFront` on the read side immediately
     ///   before plus `ReserveBack`/`PushBack` on the write side
@@ -1379,8 +1379,8 @@ impl Kernel {
     /// pages (old "fused-draining loads carry no syncs"). Any other consumer
     /// is malformed CB traffic — DRAM↔CB moves are `Copy` (see
     /// `copy_global_to_circular`), never load+store — loud, never
-    /// silently skipped. A circular buffer reached outside a GEP is
-    /// likewise malformed — loud, never silently skipped.
+    /// silently skipped. A circular buffer reached outside an index
+    /// expression is likewise malformed — loud, never silently skipped.
     /// An `LLK` consumes its input CBs straight from the buffers, so
     /// each trailing provenance load gets a `WaitFront` immediately
     /// before the call (waits are level checks — sharing one page
@@ -2141,7 +2141,7 @@ impl Kernel {
                 }
                 _ => InitAction::None,
             };
-            // Forward acc-threading mark: a value defined from the
+            // Forward acc-threading mark: a value computed from the
             // pending acc joins the set, so the pack check below is a
             // single lookup. Defs precede uses in walk order, so every
             // contributor is already marked when its consumer arrives.
@@ -2880,14 +2880,14 @@ impl Kernel {
 
         // Pop-relative rebase (consume-side addressing): Metal
         // advances a CB's read pointer on every PopFront, so
-        // Load-src and Copy-src GEP indices past pops address
+        // Load-src and Copy-src index expressions past pops address
         // pop-relative pages. Rebase const indices by popped
         // pages (x1024 elems). Copy-dst (reserve-relative) and
-        // Store-dst (push-relative) GEPs are other traffic and
+        // Store-dst (push-relative) index expressions are other traffic and
         // stay, as does the whole reader section (no pops there).
         // Loop-varying indices stay: bracket windows hold the
         // pointer still mid-loop, so only const indices rebase.
-        // A shared GEP is cloned, never mutated in place.
+        // A shared index expression is cloned, never mutated in place.
         let mut popped: Map<OpId, u64> = Map::default();
         section = 0;
         scan = self.head;
@@ -3168,11 +3168,11 @@ impl Kernel {
         }
     }
 
-    /// Chase a `Load`/`Store`/`Copy` operand through its `GEP` to the
-    /// underlying `Storage`/`Param`. Tile-compute results name DST slots,
-    /// not buffers. A post-lowering `LLK` resolves to
+    /// Chase a `Load`/`Store`/`Copy` operand through its index expression
+    /// to the underlying `Storage`/`Param`. Tile-compute results name DST
+    /// slots, not buffers. A post-lowering `LLK` resolves to
     /// the Register storage in its operands (its DST slot); an `LLK` with
-    /// no Register operand names no slot — loud panic. The GEP index is
+    /// no Register operand names no slot — loud panic. The index is
     /// not needed (render uses slot 0).
     pub(crate) fn tt_storage_of(&self, op_id: OpId) -> OpId {
         match self.at(op_id) {
@@ -3198,7 +3198,7 @@ impl Kernel {
             Op::TT(TTOp::LLKReduce { slot, .. }) => *slot,
             Op::TT(TTOp::LLKMatmul { slot, .. }) => *slot,
             Op::TT(TTOp::LLKBcast { .. }) => panic!("tt_storage_of: LLKBcast {op_id:?} names no Register slot"),
-            other => panic!("tt_storage_of: {op_id:?} is not a Load/Store/Copy/GEP, got {other:?}"),
+            other => panic!("tt_storage_of: {op_id:?} is not a Load/Store/Copy, got {other:?}"),
         }
     }
 

@@ -189,7 +189,7 @@ impl Kernel {
         }
 
         // CB allocation: first touch over loads/stores/copies of
-        // Circular storages (chased through their GEPs), with the
+        // Circular storages (chased through their index expressions), with the
         // legacy validity checks.
         let mut cbs: Map<OpId, u32> = Map::default();
         let mut cb_order: Vec<OpId> = Vec::new();

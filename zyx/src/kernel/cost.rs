@@ -184,12 +184,10 @@ impl Kernel {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                     Op::Binary { x, y, bop } => {
-                        let dtype = if bop.returns_bool() {
-                            (DType::Bool, dtypes[&x].1.clone())
-                        } else {
-                            dtypes[&x].clone()
-                        };
-                        dtypes.insert(op_id, dtype);
+                        // Value shape is the lane algebra's answer, computed
+                        // canonically (scalar broadcast, union by lane axis).
+                        let dtype = if bop.returns_bool() { DType::Bool } else { dtypes[&x].0 };
+                        dtypes.insert(op_id, (dtype, self.shape(op_id)));
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(y).or_insert(0) += 1;
                     }

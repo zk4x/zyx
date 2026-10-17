@@ -1494,7 +1494,7 @@ fn spawn_worker(
                         // recording into the live executable. The
                         // previous launch is async on several streams now:
                         // drain them all, updating a running executable
-                        // is undefined.
+                        // is not allowed.
                         if let Some(id) = graph
                             && graphs.contains_id(id)
                         {

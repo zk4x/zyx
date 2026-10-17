@@ -61,7 +61,6 @@ impl Kernel {
                 | Op::Expand { .. }
                 | Op::Flip { .. }
                 | Op::Narrow { .. }
-                | Op::Reduce { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
@@ -100,7 +99,7 @@ impl Kernel {
                     loop_depth -= 1;
                     loop_depth
                 }
-                Op::TT(TTOp::ReduceTile { x, .. }) | Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
+                Op::TT(TTOp::ReduceTile { x, .. }) | Op::Reduce { x, .. } | Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
                     loop_dep[&x]
                 }
                 Op::Binary { x, y, bop } => {
@@ -153,7 +152,6 @@ impl Kernel {
                 | Op::Expand { .. }
                 | Op::Flip { .. }
                 | Op::Narrow { .. }
-                | Op::Reduce { .. }
                 | Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)
@@ -211,7 +209,7 @@ impl Kernel {
                     loop_depth -= 1;
                     loop_depth
                 }
-                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => loop_dep[x],
+                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Reduce { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
                 Op::Range { .. }
                 | Op::Barrier

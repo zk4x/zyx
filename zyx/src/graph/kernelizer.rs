@@ -599,8 +599,8 @@ impl Graph {
                         // Replay dst's movement chain into src's kernel. The
                         // replayed base param becomes the mutable (GlobalMut)
                         // store target; the last replayed move yields dst's final
-                        // position. Every replayed define keeps its load class,
-                        // aligned in define order (positional args law).
+                        // position. Every replayed param keeps its load class,
+                        // aligned in param order (positional args law).
                         let mut op_map: Map<OpId, OpId> = Map::default();
                         let mut new_def_loads: Vec<OpId> = Vec::new();
                         let mut def_i = 0usize;
@@ -611,7 +611,7 @@ impl Graph {
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Const(value));
                                     op_map.insert(op_id, id);
                                 }
-                                Op::Param { dtype, mut kind, shape, cons_id: _ } => {
+                                Op::Param { dtype, mut kind, shape, id } => {
                                     if op_id == dst_param {
                                         kind = ParamKind::GlobalMut;
                                     }
@@ -625,8 +625,12 @@ impl Graph {
                                     // remapped like the movement refs (the shape
                                     // stack ops precede the param in head
                                     // order, so the mapping always exists).
+                                    // Raw id 0 is reserved for unidentified
+                                    // params: graph cons_ids shift by one so a
+                                    // real first class (cons_id 0) stays
+                                    // identifiable.
                                     let shape = if shape.is_null() { shape } else { op_map[&shape] };
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape, cons_id: 0 });
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape, id: id + 1 });
                                     // Assign turns dst's base from a load into a
                                     // PURE STORE: it must NOT register in loads —
                                     // its buffer slot comes via `stores` instead.
@@ -704,7 +708,7 @@ impl Graph {
                         let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
                         self.jit_kernels[kid].kernel.push_back(Op::Store { dst: dst_op, dst_idx: OpId::NULL, src: src_op });
                         self.jit_kernels[kid].stores.push(dst_leaf);
-                        // Register every replayed define's load class in define
+                        // Register every replayed param's load class in param
                         // order (variables and the GlobalMut base buffer alike)
                         // — positional args law.
                         self.jit_kernels[kid].loads.extend(new_def_loads);
@@ -1159,13 +1163,13 @@ impl Graph {
         // the egraph into this kernel via `replay_symbolic_into_kernel` — the
         // graph-side mirror of eager's `Runtime::replay_symbolic_into_kernel`.
         // Variables register in `loads` at mint time inside the replay, before
-        // the buffer param below, so define order == loads order and the
+        // the buffer param below, so param order == loads order and the
         // positional args law holds. No constant folding, no anonymous
         // variables, no fallbacks.
         let dims = self.shape(cid);
         let shape = self.replay_symbolic_into_kernel(kid, &dims);
         let dtype = self.dtype(cid);
-        let op_id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, cons_id: 0 });
+        let op_id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, id: cid.0 + 1 });
         let data = &mut self.jit_kernels[kid];
         data.outputs = vec![cid; rc as usize];
         data.loads.push(cid);
@@ -1211,7 +1215,7 @@ impl Graph {
             let dtype = self.dtype(cid);
             let kernel = &mut self.jit_kernels[kid].kernel;
             let shape = kernel.stack_shape_dims(op_id);
-            let dst = kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape, cons_id: 0 });
+            let dst = kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape, id: cid.0 + 1 });
             kernel.push_back(Op::Store { dst, dst_idx: OpId::NULL, src: op_id });
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);

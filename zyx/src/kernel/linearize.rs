@@ -487,7 +487,7 @@ impl Kernel {
                     let z = self.push_back(Op::Const(value));
                     self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                 }
-                Op::Param { dtype, kind, shape, cons_id } => {
+                Op::Param { dtype, kind, shape, id } => {
                     // Metadata-only param: referenced only as a shape descriptor
                     // (never loaded as data), so no view was seeded for it.
                     // Load paths only — a shaped param must always be loaded.
@@ -563,10 +563,10 @@ impl Kernel {
                             }
                             // A variable IS its value: like a constant it needs only
                             // the pad mask — no storage insert, no load. A fresh
-                            // param is inserted so the define order (which scalar
+                            // param is inserted so the param order (which scalar
                             // args bind to) is preserved, then the value is
                             // multiplied by the mask.
-                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, cons_id });
+                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, id });
                             self.ops[op_id].op = Op::Binary { x: pc, y: src, bop: BOp::Mul };
                         }
                         ParamKind::Global => {
@@ -609,7 +609,7 @@ impl Kernel {
                             }
                             // Insert the ro source storage immediately before this op so the
                             // global param order (which buffer args bind to) is preserved.
-                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, cons_id });
+                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, id });
                             // Zero the offset where the padding condition fails, so the load
                             // always reads in-bounds, then zero the loaded value itself.
                             let offset = self.mul(pc, index);
@@ -664,8 +664,8 @@ impl Kernel {
                         "store dst chain terminates at Param {dst_param:?}, which is already a store destination"
                     );
                     // The store already names its whole-view Param destination;
-                    // the Param handler above wraps it in a GEP once the
-                    // write index is computed. Seed the views from the dst.
+                    // the Param handler above attaches the flat write index
+                    // once computed. Seed the views from the dst.
                     let dims = self.shape_ids(dst);
                     let mut view = Vec::new();
                     for (axis, &len) in dims.iter().enumerate().rev() {

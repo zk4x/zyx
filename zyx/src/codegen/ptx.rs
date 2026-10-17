@@ -284,10 +284,10 @@ impl Compiler {
         r
     }
 
-    /// Like [`Compiler::get_var`], but for address composition only (GEP index
+    /// Like [`Compiler::get_var`], but for address composition only (index
     /// operands at load/store sites): the returned register indexes the inline
     /// address expression and the index op's register must NOT be decremented.
-    /// One address gep is routinely shared by several load/store users
+    /// One address expression is routinely shared by several load/store users
     /// (accumulator pattern), and a "consumed per read" account would underflow
     /// on the second user. The index op's register instead stays live for the
     /// whole kernel.

@@ -92,22 +92,22 @@ impl SlabId for JitKernelId {
 ///
 /// # Field contracts
 ///
-/// - `kernel`: the kernel IR. All `Param` defines — global buffer params and
+/// - `kernel`: the kernel IR. All `Param` params — global buffer params and
 ///   scalar `Param { kind: Variable }` dim params alike — sit in flat head
 ///   order, and launch-time args bind **positionally** over exactly that
-///   sequence (see the gws section of AGENTS.md). No define may be inserted,
+///   sequence (see the gws section of AGENTS.md). No param may be inserted,
 ///   removed, or reordered after ops referencing it exist: that would silently
 ///   re-bind every arg.
 /// - `loads`: every class this kernel reads, aligned to the kernel's
-///   **non-store** `Param` defines (`Global` buffers and scalar
+///   **non-store** `Param` params (`Global` buffers and scalar
 ///   `Param { kind: Variable }` dim params) in head order — each entry
-///   corresponds to exactly one such define: a global buffer class
+///   corresponds to exactly one such param: a global buffer class
 ///   (`Op::Param` with data dtype) for a `Global` param, or a dim-variable
 ///   class (`Op::Param { dtype: IDX_T, shape: NULL }`) for a `Variable`
 ///   param. **A `GlobalMut` store target must NOT appear here**: an in-place
 ///   assign turns dst from a load into a pure store; its buffer slot is
 ///   carried by `stores` instead. Invariant
-///   `loads.len() == number of Global+Variable defines` is asserted at
+///   `loads.len() == number of Global+Variable params` is asserted at
 ///   extraction. Never shuffle; consumers (exec plan, tape) map entries to
 ///   pooled values via `buffer_map` / `variable_map` keyed by the originating
 ///   tensor id resolved through `leaf_map`.
@@ -1205,8 +1205,8 @@ impl Graph {
     ///   plan caching all depend on this).
     /// - Dim variables are `Op::Param { dtype: IDX_T, shape: NULL }` classes;
     ///   each distinct class becomes exactly one `Param { kind: Variable }`
-    ///   define plus one entry in `jit_kernels[kid].loads` (registered at mint
-    ///   time so define order == load order and positional binding holds).
+    ///   param plus one entry in `jit_kernels[kid].loads` (registered at mint
+    ///   time so param order == load order and positional binding holds).
     /// - `dims` is the already-decomposed list of top-level dim classes (the
     ///   result of [`Graph::dims`]). Each is replayed as a full expression;
     ///   dedupe of shared subexpressions happens within this call via the
@@ -1262,10 +1262,16 @@ impl Graph {
                 let node = self.ops[c].op.clone();
                 let op_id = match node {
                     Op::Const(value) => self.jit_kernels[kid].kernel.push_back(Op::Const(value)),
-                    Op::Param { dtype, shape, .. } => {
+                    Op::Param { dtype, shape, id: cons_id, .. } => {
                         debug_assert!(shape.is_null(), "dim-variable leaf must be scalar, got shape {:?}", shape);
                         debug_assert!(dtype == IDX_T, "dim-variable leaf must be {:?}-typed, got {:?}", IDX_T, dtype);
                         let op_id = self.jit_kernels[kid].kernel.variable(IDX_T);
+                        // Param identity: the replayed node names the graph
+                        // class, so the same variable replayed twice compares
+                        // equal. Raw id 0 is reserved for unidentified params.
+                        if let Op::Param { id, .. } = &mut self.jit_kernels[kid].kernel.ops[op_id].op {
+                            *id = cons_id + 1;
+                        }
                         self.jit_kernels[kid].loads.push(c);
                         op_id
                     }
@@ -1655,8 +1661,24 @@ impl Runtime {
                             matches!(self.tensors[var_tid], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. })),
                             "promote_to_graph: dim variable {var_tid} is not a symbolic variable"
                         );
-                        let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, OpId::NULL);
-                        self.graphs[graph_id].leaf_map.insert(dim_cid, var_tid);
+                        // Same tensor promoted twice names the same variable:
+                        // reuse its class so downstream identity (kernel
+                        // param ids, shape algebra) sees one variable, not
+                        // two. Each use still registers its own edge below.
+                        let existing = self.graphs[graph_id]
+                            .leaf_map
+                            .iter()
+                            .find_map(|(&c, &t)| (t == var_tid).then_some(c));
+                        if std::env::var("ZYX_DEBUG").is_ok() {
+                            eprintln!("TMP promote var_tid={var_tid:?} existing={existing:?}");
+                        }
+                        let dim_cid = if let Some(c) = existing {
+                            c
+                        } else {
+                            let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, OpId::NULL);
+                            self.graphs[graph_id].leaf_map.insert(dim_cid, var_tid);
+                            dim_cid
+                        };
                         self.retain(var_tid);
                         self.graphs[graph_id].leaf_classes.push(dim_cid);
                         self.graphs[graph_id].ref_count += 1;
@@ -1858,8 +1880,19 @@ impl Runtime {
                                             matches!(self.tensors[var_tid], TensorData::Symbolic { expr, .. } if matches!(self.exprs[expr], Expr::Variable { .. })),
                                             "promote_to_graph: dim variable {var_tid} is not a symbolic variable"
                                         );
-                                        let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, OpId::NULL);
-                                        self.graphs[graph_id].leaf_map.insert(dim_cid, var_tid);
+                                        // Same tensor promoted twice names the same
+                                        // variable: reuse its class (see above).
+                                        let existing = self.graphs[graph_id]
+                                            .leaf_map
+                                            .iter()
+                                            .find_map(|(&c, &t)| (t == var_tid).then_some(c));
+                                        let dim_cid = if let Some(c) = existing {
+                                            c
+                                        } else {
+                                            let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, OpId::NULL);
+                                            self.graphs[graph_id].leaf_map.insert(dim_cid, var_tid);
+                                            dim_cid
+                                        };
                                         self.retain(var_tid);
                                         self.graphs[graph_id].leaf_classes.push(dim_cid);
                                         self.graphs[graph_id].ref_count += 1;
@@ -2190,14 +2223,14 @@ impl Runtime {
         for ek in jit_kernels.values() {
             let class_of = ek.stores.first().copied().unwrap();
 
-            // Timing launch args, bound positionally: read-only defines
+            // Timing launch args, bound positionally: read-only params
             // (`Global` buffers and scalar `Variable` dims) in head order,
             // then `GlobalMut` stores in head order. Every variable carries
             // its actual runtime value — variables are never unknown, so
             // nothing is substituted. Buffer lengths resolve from true
             // graph shapes (never const-folded, never substituted).
-            // `ek.loads` parallels the non-store defines and `ek.stores`
-            // the mut defines; both invariants are asserted below.
+            // `ek.loads` parallels the non-store params and `ek.stores`
+            // the mut params; both invariants are asserted below.
             // `args` holds only Variable values in Param order (no
             // placeholders: buffer slots are bound per-device below).
             let mut args: Vec<LaunchArg> = Vec::new();
@@ -2249,8 +2282,8 @@ impl Runtime {
                     }
                     p = ek.kernel.next_op(p);
                 }
-                debug_assert_eq!(load_idx, ek.loads.len(), "loads must parallel Global|Variable defines");
-                debug_assert_eq!(store_idx, ek.stores.len(), "stores must parallel GlobalMut defines");
+                debug_assert_eq!(load_idx, ek.loads.len(), "loads must parallel Global|Variable params");
+                debug_assert_eq!(store_idx, ek.stores.len(), "stores must parallel GlobalMut params");
             }
 
             for &dev_id in device_ids.iter() {
@@ -2732,7 +2765,7 @@ impl Runtime {
         // its own class).
         let cons_id = self.graphs[graph_id].max_cons_id;
         self.graphs[graph_id].max_cons_id += 1;
-        let node = Op::Param { dtype, kind: ParamKind::Global, shape, cons_id };
+        let node = Op::Param { dtype, kind: ParamKind::Global, shape, id: cons_id };
         let g = &mut self.graphs[graph_id];
         let nid = g.ops.push(OpNode { op: node.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
         let cid = nid;

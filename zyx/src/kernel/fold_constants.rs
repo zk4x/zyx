@@ -327,7 +327,7 @@ impl Kernel {
         for (acc, _) in accumulators {
             self.fold_acc(acc);
         }
-        // Cleanup belongs to DCE: the folds above orphan GEPs (and leave
+        // Cleanup belongs to DCE: the folds above orphan index expressions (and leave
         // other dead ops), which is verify-dangling interim state. Sweep
         // once here; DCE's trailing verify is the guard.
         self.dead_code_elimination();
@@ -649,7 +649,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match &mut self.ops[op_id].op {
-                Op::Param { .. } | Op::Barrier | Op::Storage { .. } => {} // skip param/barrier/storage ops, these can not be deduplicated
+                Op::Barrier | Op::Storage { .. } => {} // skip barrier/storage ops, these can not be deduplicated
                 Op::Loop { .. } => {
                     stack.push(Map::with_capacity_and_hasher(20, BuildHasherDefault::default()));
                     stored_stack.push(Set::with_capacity_and_hasher(10, BuildHasherDefault::default()));

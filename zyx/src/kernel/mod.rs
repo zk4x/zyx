@@ -105,7 +105,7 @@ pub use ops::{
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, CoverGroup, DtypeClass, PMatch, Pat, VExpr};
 
-use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
+use crate::{DType, Map, Set, dtype::Constant, shape::{Dim, UAxis}, slab::Slab};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -321,7 +321,7 @@ impl Kernel {
                     // the access itself (vector/tile loads are shaped).
                     dtypes.insert(op_id, (dtypes[&src].0, self.shape(op_id)));
                     // Load consumes both the buffer read and the position
-                    // it reads at (GEP-and-load both counted before).
+                    // it reads at (index-and-load both counted before).
                     *rcs.entry(src).or_insert(0) += 1;
                     *rcs.entry(src_idx).or_insert(0) += 1;
                 }
@@ -382,12 +382,14 @@ impl Kernel {
                     *rcs.entry(cb).or_insert(0) += 1;
                 }
                 Op::Binary { x, y, bop } => {
+                    // Value shape is the lane algebra's answer, computed
+                    // canonically (scalar broadcast, union by lane axis).
                     let dtype = if bop.returns_bool() {
-                        (DType::Bool, dtypes[&x].1.clone())
+                        DType::Bool
                     } else {
-                        dtypes[&x].clone()
+                        dtypes[&x].0
                     };
-                    dtypes.insert(op_id, dtype);
+                    dtypes.insert(op_id, (dtype, self.shape(op_id)));
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                 }
@@ -612,7 +614,7 @@ impl Kernel {
         self.ops[op_id].next
     }
 
-    /// The ops in head-to-tail definition order (the order `push_back` defined them).
+    /// The ops in head-to-tail emission order (the order `push_back` emitted them).
     /// Backends decode rendered kernels positionally with this instead of
     /// chaining `head` → `next_op` by hand.
     pub fn ops_in_order(&self) -> impl Iterator<Item = &Op> {
@@ -1208,7 +1210,38 @@ impl Kernel {
                     }
                     let x_dims = visited[&x].clone();
                     let y_dims = visited[&y].clone();
-                    // Merged shape + axes, plain binary semantics.
+                    // Lane algebra: scalar broadcast, union by lane axis.
+                    // A binary is elementwise: scalars broadcast, shared
+                    // axes must carry equal dims (compared by value —
+                    // distinct nodes can denote the same length), disjoint
+                    // axes outer (sorted ascending). Anything else is a
+                    // missing broadcast and fails loudly.
+                    // Same logical variable (two Param{Variable} nodes with
+                    // the same id — raw expr/tensor identity pre-canonical,
+                    // head-order ordinal after) is the same dim even though
+                    // the nodes differ; id 0 means unidentified and never
+                    // matches. Raw values compare numerically. Casts are
+                    // transparent (dim casts widen to IDX_T).
+                    let strip = |mut o: OpId| -> OpId {
+                        for _ in 0..1024 {
+                            match &self.ops[o].op {
+                                Op::Cast { x, .. } => o = *x,
+                                _ => break,
+                            }
+                        }
+                        o
+                    };
+                    let same_var = |a: &OpId, b: &OpId| {
+                        let (sa, sb) = (strip(*a), strip(*b));
+                        matches!(
+                            (&self.ops[sa].op, &self.ops[sb].op),
+                            (
+                                Op::Param { kind: ParamKind::Variable, id: ia, .. },
+                                Op::Param { kind: ParamKind::Variable, id: ib, .. },
+                            ) if ia == ib && *ia != 0
+                        )
+                    };
+                    let num = |o: &OpId| self.resolve_const(*o).and_then(Constant::as_dim);
                     let (dims, merged_axes) = match (x_dims.as_slice(), y_dims.as_slice()) {
                         (&[], &[]) => (Vec::new(), Vec::new()),
                         (&[], _) => (visited[&y].clone(), axes.get(&y).cloned().unwrap_or_default()),
@@ -1216,34 +1249,51 @@ impl Kernel {
                         _ => {
                             let x_axes = axes.get(&x).cloned().unwrap_or_default();
                             let y_axes = axes.get(&y).cloned().unwrap_or_default();
-                            if x_axes.is_empty() && y_axes.is_empty() {
-                                // Plain value arithmetic: x's shape.
-                                (visited[&x].clone(), Vec::new())
-                            } else if x_axes.is_empty() {
-                                debug_assert_eq!(x_dims, y_dims, "lane binary over broadcast operand with unequal shapes");
-                                (y_dims, y_axes)
-                            } else if y_axes.is_empty() {
-                                debug_assert_eq!(x_dims, y_dims, "lane binary over broadcast operand with unequal shapes");
-                                (x_dims, x_axes)
-                            } else if x_axes == y_axes {
-                                debug_assert_eq!(x_dims, y_dims, "lane binary on same axes with unequal shapes");
-                                (x_dims, x_axes)
-                            } else {
-                                // Nest by axis order (2-D tile indices
-                                // compose this way).
-                                let mut merged: Vec<(u32, OpId)> = x_axes.iter().copied().zip(x_dims.iter().copied()).collect();
-                                merged.extend(y_axes.iter().copied().zip(y_dims.iter().copied()).by_ref());
-                                merged.sort_by_key(|&(a, _)| a);
-                                let mut dims = Vec::with_capacity(merged.len());
-                                let mut prev: Option<u32> = None;
-                                for (a, d) in &merged {
-                                    if Some(*a) == prev {
-                                        todo!("lane binary on axis {a} with different lens");
-                                    }
-                                    prev = Some(*a);
-                                    dims.push(*d);
+                            if x_axes.is_empty() || y_axes.is_empty() {
+                                // At least one side unattributed: dims must
+                                // match by numeric value (distinct nodes,
+                                // even of different dtypes, can denote the
+                                // same length); unprovable equality fails
+                                // loudly.
+                                let equal = x_dims.len() == y_dims.len()
+                                    && x_dims.iter().zip(y_dims.iter()).all(|(a, b)| {
+                                        a == b
+                                            || same_var(a, b)
+                                            || matches!((num(a), num(b)), (Some(da), Some(db)) if da == db)
+                                    });
+                                if !equal {
+                                    todo!("lane-free binary with unequal shapes {x_dims:?} vs {y_dims:?}");
                                 }
-                                (dims, merged.iter().map(|&(a, _)| a).collect())
+                                if x_axes.is_empty() {
+                                    (y_dims, y_axes)
+                                } else {
+                                    (x_dims, x_axes)
+                                }
+                            } else {
+                                // Union by axis, sorted ascending.
+                                // Shared axes must carry equal dims —
+                                // compared by numeric value (distinct nodes,
+                                // even of different dtypes, can denote the
+                                // same length); unprovable equality fails
+                                // loudly.
+                                let num = |o: &OpId| self.resolve_const(*o).and_then(Constant::as_dim);
+                                let mut merged: Vec<(UAxis, OpId)> =
+                                    x_axes.iter().copied().zip(x_dims.iter().copied()).collect();
+                                for (a, d) in y_axes.iter().copied().zip(y_dims.iter().copied()) {
+                                    match merged.iter().find(|(b, _)| *b == a) {
+                                        Some((_, e)) => {
+                                            let equal = *e == d
+                                                || same_var(e, &d)
+                                                || matches!((num(e), num(&d)), (Some(de), Some(dd)) if de == dd);
+                                            if !equal {
+                                                todo!("lane binary on axis {a} with different lens");
+                                            }
+                                        }
+                                        None => merged.push((a, d)),
+                                    }
+                                }
+                                merged.sort_by_key(|&(a, _)| a);
+                                (merged.iter().map(|&(_, d)| d).collect(), merged.iter().map(|&(a, _)| a).collect())
                             }
                         }
                     };
@@ -1367,6 +1417,9 @@ impl Kernel {
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(op_id, dims.clone());
+                        if let Some(a) = axes.get(&x).cloned() {
+                            axes.insert(op_id, a);
+                        }
                     }
                     None => {
                         stack.push(op_id);
@@ -1380,6 +1433,9 @@ impl Kernel {
                     match visited.get(&ops[0]) {
                         Some(dims) => {
                             visited.insert(op_id, dims.clone());
+                            if let Some(a) = axes.get(&ops[0]).cloned() {
+                                axes.insert(op_id, a);
+                            }
                         }
                         None => {
                             stack.push(op_id);
@@ -1389,12 +1445,19 @@ impl Kernel {
                 }
                 // Lane extraction drops the leading dim: scalar from a
                 // vector, row vector from a tile. Lane reduction yields
-                // a scalar.
+                // a scalar. The leading axis goes with the leading dim.
                 Op::Index { vec: x, .. } => match visited.get(&x).cloned() {
                     Some(mut dims) => {
                         debug_assert!(!dims.is_empty(), "shape_ids: Index of scalar");
                         if !dims.is_empty() {
                             dims.remove(0);
+                            let mut axs = axes.get(&x).cloned().unwrap_or_default();
+                            if !axs.is_empty() {
+                                axs.remove(0);
+                            }
+                            if !axs.is_empty() {
+                                axes.insert(op_id, axs);
+                            }
                         }
                         visited.insert(op_id, dims);
                     }
@@ -1458,13 +1521,20 @@ impl Kernel {
             return Vec::new();
         }
         let mut stack = vec![op_id];
-        let mut visited: Map<OpId, Vec<Dim>> = Map::default();
+        // Value dims paired with the dim-expression node that produced
+        // them (`NULL` where the dim is a literal with no node: unroll
+        // widths, fragment widths, storage lengths, stack counts).
+        // Numeric equality decides where values resolve; node identity
+        // (same node, or two `Param{Variable}` nodes with the same id)
+        // decides where resolution fails (`-1`); unprovable equality
+        // fails loudly at the consumer.
+        let mut visited: Map<OpId, Vec<(Dim, OpId)>> = Map::default();
         // Lane-axis attribution for binary lane-merge semantics (see
         // the `binary` shape rules): which axis each lane dim came from.
         let mut axes: Map<OpId, Vec<u32>> = Map::default();
         for _ in 0..250_000 {
             let Some(id) = stack.pop() else {
-                return visited[&op_id].clone();
+                return visited[&op_id].iter().map(|&(d, _)| d).collect();
             };
             if visited.contains_key(&id) {
                 continue;
@@ -1475,7 +1545,7 @@ impl Kernel {
                 }
                 // Unroll lane values: one dim of `len` lanes on `axis`.
                 Op::Unroll { axis, len } => {
-                    visited.insert(id, vec![i64::from(len)]);
+                    visited.insert(id, vec![(i64::from(len), OpId::NULL)]);
                     axes.insert(id, vec![axis]);
                 }
                 Op::Param { shape, .. } => {
@@ -1483,7 +1553,9 @@ impl Kernel {
                         id,
                         descriptor(self, shape)
                             .iter()
-                            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
+                            .map(|&d| {
+                                (self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1), d)
+                            })
                             .collect(),
                     );
                 }
@@ -1493,7 +1565,7 @@ impl Kernel {
                     if ops.is_empty() {
                         visited.insert(id, vec![]);
                     } else if let Some(mut dims) = visited.get(&ops[0]).cloned() {
-                        dims.insert(0, ops.len() as Dim);
+                        dims.insert(0, (ops.len() as Dim, OpId::NULL));
                         visited.insert(id, dims);
                     } else {
                         stack.push(id);
@@ -1505,7 +1577,9 @@ impl Kernel {
                         id,
                         descriptor(self, shape)
                             .iter()
-                            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
+                            .map(|&d| {
+                                (self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1), d)
+                            })
                             .collect(),
                     );
                 }
@@ -1529,10 +1603,11 @@ impl Kernel {
                 },
                 Op::Narrow { x, axis, len, .. } | Op::Pad { x, axis, len, .. } => match visited.get(&x).cloned() {
                     Some(mut dims) => {
+                        let resolved = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1);
                         if dims.is_empty() {
-                            dims = vec![self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)];
+                            dims = vec![(resolved, len)];
                         } else {
-                            dims[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1);
+                            dims[axis as usize] = (resolved, len);
                         }
                         visited.insert(id, dims);
                     }
@@ -1560,6 +1635,48 @@ impl Kernel {
                     }
                     let x_dims = visited[&x].clone();
                     let y_dims = visited[&y].clone();
+                    // Same logical variable (two Param{Variable} nodes with
+                    // the same id) is the same dim even though the nodes
+                    // differ; id 0 means unidentified and never matches.
+                    // Raw values compare numerically; unresolvable (`-1`)
+                    // dims match only by node identity. Casts are
+                    // transparent (dim casts widen to IDX_T).
+                    let strip = |mut o: OpId| -> OpId {
+                        for _ in 0..1024 {
+                            match &self.ops[o].op {
+                                Op::Cast { x, .. } => o = *x,
+                                _ => break,
+                            }
+                        }
+                        o
+                    };
+                    let same_var = |a: &OpId, b: &OpId| {
+                        let (sa, sb) = (strip(*a), strip(*b));
+                        let r = matches!(
+                            (&self.ops[sa].op, &self.ops[sb].op),
+                            (
+                                Op::Param { kind: ParamKind::Variable, id: ia, .. },
+                                Op::Param { kind: ParamKind::Variable, id: ib, .. },
+                            ) if ia == ib && *ia != 0
+                        );
+                        if !r && std::env::var("ZYX_DEBUG").is_ok() {
+                            eprintln!("TMP2 same_var: {a:?}=>{sa:?}={:?} vs {b:?}=>{sb:?}={:?}", self.ops[sa].op, self.ops[sb].op);
+                        }
+                        r
+                    };
+                    let equal = |a: &(Dim, OpId), b: &(Dim, OpId)| {
+                        (a.0 == b.0 && a.0 != -1) || (!a.1.is_null() && (a.1 == b.1 || same_var(&a.1, &b.1)))
+                    };
+                    if std::env::var("ZYX_DEBUG").is_ok() {
+                        eprintln!("TMP kernel params (binary {x_dims:?} vs {y_dims:?}):");
+                        let mut oid = self.head;
+                        while !oid.is_null() {
+                            if let Op::Param { kind, id, .. } = &self.ops[oid].op {
+                                eprintln!("  {oid:?} kind={kind:?} id={id}");
+                            }
+                            oid = self.next_op(oid);
+                        }
+                    }
                     let (dims, merged_axes) = match (x_dims.as_slice(), y_dims.as_slice()) {
                         ([], []) => (Vec::new(), Vec::new()),
                         ([], _) => (visited[&y].clone(), axes.get(&y).cloned().unwrap_or_default()),
@@ -1567,34 +1684,38 @@ impl Kernel {
                         _ => {
                             let x_axes = axes.get(&x).cloned().unwrap_or_default();
                             let y_axes = axes.get(&y).cloned().unwrap_or_default();
-                            if x_axes.is_empty() && y_axes.is_empty() {
-                                // Plain value arithmetic: x's shape.
-                                (visited[&x].clone(), Vec::new())
-                            } else if x_axes.is_empty() {
-                                debug_assert_eq!(x_dims, y_dims, "lane binary over broadcast operand with unequal shapes");
-                                (y_dims, y_axes)
-                            } else if y_axes.is_empty() {
-                                debug_assert_eq!(x_dims, y_dims, "lane binary over broadcast operand with unequal shapes");
-                                (x_dims, x_axes)
-                            } else if x_axes == y_axes {
-                                debug_assert_eq!(x_dims, y_dims, "lane binary on same axes with unequal shapes");
-                                (x_dims, x_axes)
-                            } else {
-                                // Nest by axis order (2-D tile indices
-                                // compose this way).
-                                let mut merged: Vec<(u32, Dim)> = x_axes.iter().copied().zip(x_dims.iter().copied()).collect();
-                                merged.extend(y_axes.iter().copied().zip(y_dims.iter().copied()));
-                                merged.sort_by_key(|&(a, _)| a);
-                                let mut dims = Vec::with_capacity(merged.len());
-                                let mut prev: Option<u32> = None;
-                                for (a, d) in &merged {
-                                    if Some(*a) == prev {
-                                        todo!("lane binary on axis {a} with different lens");
-                                    }
-                                    prev = Some(*a);
-                                    dims.push(*d);
+                            if x_axes.is_empty() || y_axes.is_empty() {
+                                // At least one side unattributed: dims must
+                                // match pairwise (value, node identity, or
+                                // same variable); unprovable equality fails
+                                // loudly.
+                                let ok = x_dims.len() == y_dims.len()
+                                    && x_dims.iter().zip(y_dims.iter()).all(|(a, b)| equal(a, b));
+                                if !ok {
+                                    todo!("lane-free binary with unequal shapes {x_dims:?} vs {y_dims:?}");
                                 }
-                                (dims, merged.iter().map(|&(a, _)| a).collect())
+                                if x_axes.is_empty() {
+                                    (y_dims, y_axes)
+                                } else {
+                                    (x_dims, x_axes)
+                                }
+                            } else {
+                                // Union by axis, sorted ascending. Shared
+                                // axes must carry equal dims.
+                                let mut merged: Vec<(UAxis, (Dim, OpId))> =
+                                    x_axes.iter().copied().zip(x_dims.iter().copied()).collect();
+                                for (a, d) in y_axes.iter().copied().zip(y_dims.iter().copied()) {
+                                    match merged.iter().find(|(b, _)| *b == a) {
+                                        Some((_, e)) => {
+                                            if !equal(e, &d) {
+                                                todo!("lane binary on axis {a} with different lens");
+                                            }
+                                        }
+                                        None => merged.push((a, d)),
+                                    }
+                                }
+                                merged.sort_by_key(|&(a, _)| a);
+                                (merged.iter().map(|&(_, d)| d).collect(), merged.iter().map(|&(a, _)| a).collect())
                             }
                         }
                     };
@@ -1676,6 +1797,9 @@ impl Kernel {
                 | Op::TT(TTOp::TransposeTile { x }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(id, dims.clone());
+                        if let Some(a) = axes.get(&x).cloned() {
+                            axes.insert(id, a);
+                        }
                     }
                     None => {
                         stack.push(id);
@@ -1689,6 +1813,9 @@ impl Kernel {
                     match visited.get(&ops[0]) {
                         Some(dims) => {
                             visited.insert(id, dims.clone());
+                            if let Some(a) = axes.get(&ops[0]).cloned() {
+                                axes.insert(id, a);
+                            }
                         }
                         None => {
                             stack.push(id);
@@ -1704,6 +1831,13 @@ impl Kernel {
                         debug_assert!(!dims.is_empty(), "shape: Index of scalar");
                         if !dims.is_empty() {
                             dims.remove(0);
+                            let mut axs = axes.get(&x).cloned().unwrap_or_default();
+                            if !axs.is_empty() {
+                                axs.remove(0);
+                            }
+                            if !axs.is_empty() {
+                                axes.insert(id, axs);
+                            }
                         }
                         visited.insert(id, dims);
                     }
@@ -1717,15 +1851,18 @@ impl Kernel {
                 Op::Wmma { dims, .. } => {
                     visited.insert(
                         id,
-                        vec![match dims {
-                            MMADims::m8n8k16 => 2,
-                            MMADims::m16n8k8 => 4,
-                            MMADims::m16n8k16 => 4,
-                            MMADims::m32n8k16 => 8,
-                            MMADims::m8n32k16 => 8,
-                            MMADims::m8n8k32 => 2,
-                            MMADims::m8n8k128 => 2,
-                        }],
+                        vec![(
+                            match dims {
+                                MMADims::m8n8k16 => 2,
+                                MMADims::m16n8k8 => 4,
+                                MMADims::m16n8k16 => 4,
+                                MMADims::m32n8k16 => 8,
+                                MMADims::m8n32k16 => 8,
+                                MMADims::m8n8k32 => 2,
+                                MMADims::m8n8k128 => 2,
+                            },
+                            OpId::NULL,
+                        )],
                     );
                 }
                 // Group/loop indices and scalar storages are scalar values.
@@ -1734,13 +1871,19 @@ impl Kernel {
                 }
                 // A scalar access (null index) is scalar by form; a
                 // vector/tile load has the resolved shape of its index
-                // expression (`-1` per symbolic dim).
+                // expression (`-1` per symbolic dim). Lane attribution
+                // rides the index cone with the dims.
                 Op::Load { src_idx, .. } => {
                     if src_idx.is_null() {
                         visited.insert(id, vec![]);
                     } else {
                         match visited.get(&src_idx).cloned() {
-                            Some(dims) => visited.insert(id, dims),
+                            Some(dims) => {
+                                visited.insert(id, dims);
+                                if let Some(a) = axes.get(&src_idx).cloned() {
+                                    axes.insert(id, a);
+                                }
+                            }
                             None => {
                                 stack.push(id);
                                 stack.push(src_idx);
@@ -1750,13 +1893,19 @@ impl Kernel {
                     }
                 }
                 // `Copy` moves elements between buffers: its shape is the
-                // access shape (scalar on a whole-view null index).
+                // access shape (scalar on a whole-view null index). Lane
+                // attribution rides the index cone with the dims.
                 Op::Copy { src_idx, .. } => {
                     if src_idx.is_null() {
                         visited.insert(id, vec![]);
                     } else {
                         match visited.get(&src_idx).cloned() {
-                            Some(dims) => visited.insert(id, dims),
+                            Some(dims) => {
+                                visited.insert(id, dims);
+                                if let Some(a) = axes.get(&src_idx).cloned() {
+                                    axes.insert(id, a);
+                                }
+                            }
                             None => {
                                 stack.push(id);
                                 stack.push(src_idx);
@@ -1767,7 +1916,7 @@ impl Kernel {
                 }
                 // A buffer's shape is a 1-D vector of its element count.
                 Op::Storage { len, .. } => {
-                    visited.insert(id, vec![len]);
+                    visited.insert(id, vec![(len, OpId::NULL)]);
                 }
                 ref op => todo!("shape of {op:?}"),
             }

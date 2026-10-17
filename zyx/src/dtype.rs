@@ -160,7 +160,7 @@ impl DType {
 
     pub(crate) fn least_upper_dtype(self, rhs: DType) -> DType {
         use DType::*;
-        // define an ordered list of "widening" priority
+        // specify an ordered list of "widening" priority
         let order = [
             Bool, U8, U16, U32, U64, I8, I16, I32, I64, F8E4M3, F8E5M2, BF16, F16, F32, F64,
         ];

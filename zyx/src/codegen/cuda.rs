@@ -210,7 +210,7 @@ impl Kernel {
                     ParamKind::GlobalMut => _ = writeln!(global_args, "  {}* p{op_id},", dtype.cu()),
                 }
             }
-            // Walk the ENTIRE op list: Param defines may sit anywhere in the
+            // Walk the ENTIRE op list: Params may sit anywhere in the
             // kernel (merges append them after compute ops), and the argument
             // order must match the positional `loads` mapping used at launch.
             op_id = self.next_op(op_id);
@@ -724,15 +724,15 @@ fn get_var(
     }
 }
 
-/// Like [`get_var`], but for address composition only (GEP index operands at
+/// Like [`get_var`], but for address composition only (index operands at
 /// load/store sites): the returned C expression is written inline as
 /// `p{buf}[{expr}]` and the index op's register must NOT be decremented.
-/// One address gep is routinely shared by several load/store users
+/// One address expression is routinely shared by several load/store users
 /// (accumulator pattern: store / in-loop load + store / final load), and a
 /// "consumed per read" account would underflow on the second user. The
-/// index op's register instead stays live for the whole kernel; the GEP arm
-/// in `compute_dtypes_and_rcs` still counts its operands once (flat) for
-/// consistency with the rest of the accounting.
+/// index op's register instead stays live for the whole kernel; the
+/// Load/Copy arms in `compute_dtypes_and_rcs` still count their operands
+/// once (flat) for consistency with the rest of the accounting.
 #[allow(clippy::too_many_arguments)]
 fn get_var_addr(
     op_id: OpId,

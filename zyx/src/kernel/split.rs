@@ -53,10 +53,6 @@ impl Optimization for OptSplit {
     fn apply(&self, kernel: &mut Kernel, config: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("OptSplit::apply");
-        if std::env::var("ZYX_DEBUG").map(|v| v == "8").unwrap_or(false) {
-            eprintln!("DBG OptSplit::apply config={config} of {:?}", &self.configs[0..self.configs.len().min(8)]);
-            kernel.debug();
-        }
         let &(site, ref mode, factor) = &self.configs[config as usize];
         match mode {
             SplitMode::Local => {
@@ -304,15 +300,23 @@ impl Optimization for OptSplit {
                             }
                         }
                     }
-                    Op::Loop { len: len_id } => {
-                        // Reduce-loop lane split: [Loop(len/factor), Unroll
-                        // lanes]. The per-iteration value bundle folds over its
-                        // lane space at the accumulator store: `Op::Reduce`
-                        // over the lane axis, inserted before the chain binary,
-                        // which is rewritten in place to
-                        // `Binary { x: fold, y: carry, bop }` so its consumers
-                        // keep the identity. The accumulator keeps length 1.
-                        let len = kernel.resolve_const(len_id).and_then(Constant::as_dim).unwrap();
+            Op::Loop { len: len_id } => {
+                // Reduce-loop lane split: [Loop(len/factor), Unroll
+                // lanes]. The per-iteration value bundle folds over its
+                // lane space at the accumulator store: `Op::Reduce`
+                // over the lane axis, inserted before the chain binary,
+                // which is rewritten in place to
+                // `Binary { x: fold, y: carry, bop }` so its consumers
+                // keep the identity. The accumulator keeps length 1.
+                //
+                // One fold per kernel: devectorize expands a single
+                // fold's lanes; a second fold (nested or disjoint) has
+                // no lowering. A later config in the same sequence that
+                // would add one is skipped (the variant dedups away).
+                if kernel.iter_unordered().any(|(_, op)| matches!(op, Op::Reduce { .. })) {
+                    return;
+                }
+                let len = kernel.resolve_const(len_id).and_then(Constant::as_dim).unwrap();
                         let factor = Dim::from(factor);
                         debug_assert!(len % factor == 0 && len / factor >= 1, "loop length {len} not divisible by {factor}");
 
@@ -596,7 +600,32 @@ impl Kernel {
                     }
                     // The chain binary mixing the per-iteration value with
                     // the carried load: the lane fold rewrites it in place.
-                    if !matches!(self.at(src), Op::Binary { .. }) {
+                    // Exactly one operand must consume the loop index: the
+                    // per-iteration bundle. A loop-invariant chain gains
+                    // nothing from lane splitting (the fold would combine
+                    // identical values), and a doubly-variant chain has no
+                    // clean carry — neither is a valid site for this
+                    // transform.
+                    let (cx, cy) = match self.at(src) {
+                        Op::Binary { x, y, .. } => (*x, *y),
+                        _ => return false,
+                    };
+                    let consumes = [cx, cy].map(|root| {
+                        let mut seen = Set::default();
+                        let mut stack = vec![root];
+                        for _ in 0..10_000 {
+                            let Some(id) = stack.pop() else { break };
+                            if !seen.insert(id) {
+                                continue;
+                            }
+                            if id == loop_id {
+                                return true;
+                            }
+                            stack.extend(self.at(id).parameters());
+                        }
+                        false
+                    });
+                    if consumes[0] == consumes[1] {
                         return false;
                     }
                     store_seen = true;

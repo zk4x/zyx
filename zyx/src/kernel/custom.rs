@@ -282,27 +282,51 @@ impl Kernel {
         core::array::from_fn(|i| self.const_idx(vals[i]))
     }
 
-    /// Define a kernel input param (global memory read-only argument).
+    /// Create a kernel input param (global memory read-only argument).
+    /// The param id is one past the highest existing param id: distinct
+    /// nodes stay distinct (callers wanting shared identity pass an
+    /// explicit id via the replay paths instead of minting here).
     pub fn param(&mut self, dtype: DType) -> OpId {
-        self.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: OpId::NULL, cons_id: 0 })
+        let mut id = 0;
+        for (_, op) in self.iter_unordered() {
+            if let Op::Param { id: pid, .. } = op {
+                id = core::cmp::max(id, *pid);
+            }
+        }
+        self.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: OpId::NULL, id: id + 1 })
     }
 
-    /// Define a kernel output param (global memory mutable argument).
+    /// Create a kernel output param (global memory mutable argument).
     pub fn param_mut(&mut self, dtype: DType) -> OpId {
-        self.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: OpId::NULL, cons_id: 0 })
+        let mut id = 0;
+        for (_, op) in self.iter_unordered() {
+            if let Op::Param { id: pid, .. } = op {
+                id = core::cmp::max(id, *pid);
+            }
+        }
+        self.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: OpId::NULL, id: id + 1 })
     }
 
-    /// Define a scalar variable param (its value lives in the backend pools' variable slots).
+    /// Create a scalar variable param (its value lives in the backend pools' variable slots).
     pub fn variable(&mut self, dtype: DType) -> OpId {
-        self.push_back(Op::Param { dtype, kind: ParamKind::Variable, shape: OpId::NULL, cons_id: 0 })
+        let mut id = 0;
+        for (_, op) in self.iter_unordered() {
+            if let Op::Param { id: pid, .. } = op {
+                id = core::cmp::max(id, *pid);
+            }
+        }
+        if std::env::var("ZYX_DEBUG").is_ok() {
+            eprintln!("TMP variable() max+1 -> {}", id + 1);
+        }
+        self.push_back(Op::Param { dtype, kind: ParamKind::Variable, shape: OpId::NULL, id: id + 1 })
     }
 
-    /// Define multiple scalar variable params (see [`Kernel::variable`]).
+    /// Create multiple scalar variable params (see [`Kernel::variable`]).
     pub fn variables<const N: usize>(&mut self, dtypes: [DType; N]) -> [OpId; N] {
         dtypes.map(|dtype| self.variable(dtype))
     }
 
-    /// Define multiple kernel input params (see [`Kernel::param`]).
+    /// Create multiple kernel input params (see [`Kernel::param`]).
     pub fn params<const N: usize>(&mut self, dtypes: [DType; N]) -> [OpId; N] {
         dtypes.map(|dtype| self.param(dtype))
     }
@@ -314,6 +338,9 @@ impl Kernel {
     /// becomes a const index. Returns `OpId::NULL` for rank-0, the single dim op for rank-1,
     /// or a `Stack` for higher ranks.
     pub fn add_shape(&mut self, shape: &[Dim]) -> OpId {
+        if shape.iter().any(|&d| d < 0) && std::env::var("ZYX_DEBUG").is_ok() {
+            eprintln!("TMP add_shape symbolic {shape:?}\n{}", std::backtrace::Backtrace::capture());
+        }
         let dim_ops: Vec<OpId> = shape.iter().map(|&d| if d < 0 { self.variable(IDX_T) } else { self.const_idx(d) }).collect();
         match dim_ops.len() {
             0 => OpId::NULL,
@@ -322,7 +349,7 @@ impl Kernel {
         }
     }
 
-    /// Define a storage (kernel-internal memory). The `len` must resolve to
+    /// Create a storage (kernel-internal memory). The `len` must resolve to
     /// a constant (the buffer size is baked into the IR).
     pub fn storage(&mut self, dtype: DType, scope: MemScope, len: impl IntoOp) -> OpId {
         let len_op = len.into_op(self);
@@ -348,7 +375,7 @@ impl Kernel {
         acc
     }
 
-    /// Define a `MemScope::Circular` storage of `ntiles` standard 32 x 32
+    /// Create a `MemScope::Circular` storage of `ntiles` standard 32 x 32
     /// tiles (`ntiles * 1024` elements).
     pub fn circular_storage(&mut self, dtype: DType, ntiles: i64) -> OpId {
         self.storage(dtype, MemScope::Circular, ntiles * 1024)

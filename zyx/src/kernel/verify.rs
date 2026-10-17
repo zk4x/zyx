@@ -25,8 +25,8 @@ impl Kernel {
 
         // Detect the kernel's linearization state from its stores — the rule
         // that always holds: a pre-linearize store writes a whole view to a
-        // bare `Param`; linearization wraps every store destination in a
-        // [`Op::GEP`]. (Param shapes can NOT be used for detection:
+        // bare `Param`; linearization gives every store destination an
+        // index expression. (Param shapes can NOT be used for detection:
         // `Variable` params have null shapes even pre-linearization.)
         let mut param_dst_stores = 0u32;
         let mut indexed_stores = 0u32;
@@ -194,7 +194,7 @@ impl Kernel {
             }
         } else {
             // Pre-linearize DAG: no lowered memory/control ops may exist.
-            debug_assert!(!has_post_linearize_ops, "pre-linearize kernel must not contain GEP/Load/Copy/Storage/Loop ops");
+            debug_assert!(!has_post_linearize_ops, "pre-linearize kernel must not contain Load/Copy/Storage/Loop ops");
         }
 
         let mut stack = Vec::new();
@@ -237,7 +237,7 @@ impl Kernel {
                         }
                         Op::Storage { .. } => {
                             if !params.contains_key(&dst) && !storages.contains_key(&dst) {
-                                println!("store={op_id} targets undefined variable");
+                                println!("store={op_id} targets unbound variable");
                                 self.debug();
                                 panic!();
                             }
@@ -247,14 +247,53 @@ impl Kernel {
                             // value's shape: a tile store carries a tile
                             // access and its src must be a tile value (a
                             // scalar stored as a tile is a builder
-                            // misuse, not a valid store).
+                            // misuse, not a valid store). A src whose
+                            // lanes are a subset of the access lanes is a
+                            // broadcast (one value written to every lane
+                            // address sharing its lanes): every unroll
+                            // node in the src cone must appear in the
+                            // index cone, and (both dim lists sorted
+                            // ascending by axis) the src dims must form a
+                            // subsequence of the access dims.
                             let src_shape = self.shape(x);
                             if !dst_idx.is_null() {
                                 let access_shape = self.shape(dst_idx);
-                                debug_assert_eq!(
-                                    src_shape, access_shape,
-                                    "store={op_id} access index {dst_idx:?} does not match src {x} shape {src_shape:?}"
-                                );
+                                // Scalar src broadcasts to any access.
+                                let mut subset = src_shape == access_shape || src_shape.is_empty();
+                                if !subset && !src_shape.is_empty() {
+                                    let mut src_seen = Set::default();
+                                    let mut src_unrolls = Set::default();
+                                    let mut stack = vec![x];
+                                    while let Some(id) = stack.pop() {
+                                        if !src_seen.insert(id) {
+                                            continue;
+                                        }
+                                        if matches!(self.ops[id].op, Op::Unroll { .. }) {
+                                            src_unrolls.insert(id);
+                                        }
+                                        stack.extend(self.ops[id].op.parameters());
+                                    }
+                                    let mut idx_seen = Set::default();
+                                    let mut idx_unrolls = Set::default();
+                                    stack = vec![dst_idx];
+                                    while let Some(id) = stack.pop() {
+                                        if !idx_seen.insert(id) {
+                                            continue;
+                                        }
+                                        if matches!(self.ops[id].op, Op::Unroll { .. }) {
+                                            idx_unrolls.insert(id);
+                                        }
+                                        stack.extend(self.ops[id].op.parameters());
+                                    }
+                                    let mut rest = access_shape.iter();
+                                    subset = src_unrolls.iter().all(|u| idx_unrolls.contains(u))
+                                        && src_shape.iter().all(|d| rest.any(|e| e == d));
+                                }
+                                if !subset {
+                                    println!("store={op_id} access index {dst_idx:?} does not match src {x} shape {src_shape:?}");
+                                    self.debug();
+                                    panic!();
+                                }
                             }
                             debug_assert!(!dst_idx.is_null(), "storage store without index");
                             debug_assert_eq!(dtypes[&dst_idx], IDX_T, "store index must be {IDX_T}");
@@ -303,7 +342,7 @@ impl Kernel {
                 | Op::TT(TTOp::WaitFront { cb, n })
                 | Op::TT(TTOp::PopFront { cb, n }) => {
                     // Whole-buffer CB sync: `cb` names the Circular
-                    // storage directly (no GEP — a reserve/wait/push/pop
+                    // storage directly (no index — a reserve/wait/push/pop
                     // addresses no single location).
                     check(op_id, cb, &stack);
                     if !matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }) {
@@ -484,21 +523,13 @@ impl Kernel {
                     } else {
                         dtypes.insert(op_id, dtype);
                     }
-                    // Lane shapes: both lanes share one shape, except a
-                    // tile lane beside a compile-time constant (a TT
-                    // immediate lane — the unary-imm calls take fp32
-                    // bits, so only consts lower) and a scalar operand,
-                    // which broadcasts over the other side's lanes (the
-                    // lane merge algebra: an unroll operand beside a
-                    // scalar takes the unroll side's shape and axis).
-                    let (sx, sy) = (self.shape(x), self.shape(y));
-                    let tile_const = sx.len() == 2 && self.is_const(y) || sy.len() == 2 && self.is_const(x);
-                    let scalar_broadcast = sx.is_empty() || sy.is_empty();
-                    if sx != sy && !tile_const && !scalar_broadcast {
-                        println!("Binary shape mismatch on op={op_id}.");
-                        self.debug();
-                        panic!();
-                    }
+                    // A binary is valid iff the lane algebra accepts it:
+                    // scalar broadcast, union by lane axis (shared axes
+                    // equal, disjoint axes outer). Forcing the walker's
+                    // Binary arm here IS the check — every violation
+                    // fails loudly inside it, so no numeric comparison
+                    // here can add anything but false positives.
+                    let _ = self.shape(op_id);
                 }
                 Op::Asm { ref ops, .. } => {
                     if ops.is_empty() {
@@ -562,7 +593,7 @@ impl Kernel {
                 }
                 Op::Load { src, src_idx: index } => {
                     if !params.contains_key(&src) && !storages.contains_key(&src) {
-                        println!("load={op_id} is trying to load from undefined variable");
+                        println!("load={op_id} is trying to load from unbound variable");
                         self.debug();
                         panic!();
                     }

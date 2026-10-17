@@ -90,7 +90,7 @@ impl Kernel {
         // originally, but once per *flat* iteration after merging — changing the
         // result. Refuse to merge such groups.
         //
-        // The register may be defined outside the outer loop (linearize hoists
+        // The register may be created outside the outer loop (linearize hoists
         // accumulator storages to the top of the kernel and resets them via
         // Store inside the loop), so also refuse when a Register is stored or
         // loaded anywhere in the region — its value crosses the inner/outer

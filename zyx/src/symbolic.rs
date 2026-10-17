@@ -407,7 +407,7 @@ impl Runtime {
     ///   emitted verbatim as `Op::Const` (linearize's autocast reconciles
     ///   dtype mixing with surrounding expression ops).
     /// - `Variable` — resolved at execution time from `variable_map`; each
-    ///   occurrence becomes a `Param { kind: Variable }` define registered in
+    ///   occurrence becomes a `Param { kind: Variable }` param registered in
     ///   the owning kernel's `loads` under its originating `TensorId`.
     /// - `Cast`, `Unary`, `Binary` over already-mapped operands — replayed as
     ///   real kernel ops.
@@ -422,18 +422,18 @@ impl Runtime {
     ///
     /// # Positional binding (the args law)
     ///
-    /// All `Param` defines of a kernel — global buffers and scalar variables
+    /// All `Param` params of a kernel — global buffers and scalar variables
     /// alike — appear in flat head order in the kernel IR, and the launch-time
     /// args slice binds positionally over exactly that sequence. Deduplicating
     /// repeated variable tids via `op_map` therefore preserves correctness:
-    /// fewer defines, and each surviving define still maps to the same slot in
+    /// fewer params, and each surviving param still maps to the same slot in
     /// whatever positional binding the caller passes. See also
     /// `kernel::verify`'s checks and the gws section of AGENTS.md.
     ///
     /// # Why registration rides on `loads`
     ///
     /// Each `Variable` leaf adds `tid` to `KernelData::loads` and takes an rc.
-    /// This is what ties an abstract define back to the pooled value at
+    /// This is what ties an abstract param back to the pooled value at
     /// launch time without any parallel bookkeeping structure: `n_params ==
     /// loads.len()` remains an enforced invariant.
     pub fn replay_symbolic_into_kernel(&mut self, kid: KernelId, shape: TensorId) -> OpId {
@@ -500,6 +500,16 @@ impl Runtime {
                 Expr::Constant { value } => self.kernels[kid].kernel.push_back(Op::Const(value)),
                 Expr::Variable { value } => {
                     let op_id = self.kernels[kid].kernel.variable(value.dtype());
+                    // Param identity for the shape algebra and CSE: the
+                    // replayed node names the source expression, so the
+                    // same variable replayed twice compares equal. Raw id
+                    // 0 is reserved for unidentified params.
+                    if let Op::Param { id, .. } = &mut self.kernels[kid].kernel.ops[op_id].op {
+                        *id = eid.0 + 1;
+                    }
+                    if std::env::var("ZYX_DEBUG").is_ok() {
+                        eprintln!("TMP replay-into-kernel var eid={eid:?} -> {op_id:?}");
+                    }
                     // Load-owned handle (rc = 1 is the load edge; no user
                     // handle). Released with the kernel's loads.
                     let tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
@@ -605,6 +615,16 @@ impl Runtime {
                 Expr::Constant { value } => self.kernels[kid].kernel.push_back(Op::Const(value)),
                 Expr::Variable { value } => {
                     let op_id = self.kernels[kid].kernel.variable(value.dtype());
+                    // Param identity for the shape algebra and CSE: the
+                    // replayed node names the source expression, so the
+                    // same variable replayed twice compares equal. Raw id
+                    // 0 is reserved for unidentified params.
+                    if let Op::Param { id, .. } = &mut self.kernels[kid].kernel.ops[op_id].op {
+                        *id = eid.0 + 1;
+                    }
+                    if std::env::var("ZYX_DEBUG").is_ok() {
+                        eprintln!("TMP replay var eid={eid:?} -> {op_id:?}");
+                    }
                     let tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
                     self.kernels[kid].loads.push(tid);
                     op_id

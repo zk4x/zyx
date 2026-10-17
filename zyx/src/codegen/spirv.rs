@@ -1300,7 +1300,7 @@ impl Kernel {
                         // Already declared as module-level variable. Scalar
                         // Variables additionally load here so every later
                         // use resolves through spv_values (the OpenCL
-                        // register-copy pattern). Param defines precede
+                        // register-copy pattern). Params precede
                         // their uses; the layout pre-pass ran first, so the
                         // member is present.
                         if matches!(kind, ParamKind::Variable)

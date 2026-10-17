@@ -81,12 +81,12 @@ pub enum Op {
         kind: ParamKind,
         /// Buffer shape (null means scalar shape, rank 0).
         shape: OpId,
-        /// Buffer identity for egraph hashconsing (mirrors the former
-        /// `Op::Param.cons_id`): two params name the same buffer iff their
-        /// `cons_id`s agree. Kernel passes ignore it (params are bound
-        /// positionally there); it is compared by `Eq` but skipped by `Hash`
-        /// so program caches (`get_hash`) keep sharing across buffers.
-        cons_id: u32,
+        /// Buffer identity for egraph hashconsing: two params name the same
+        /// buffer iff their `id`s agree. Kernel passes ignore it (params are
+        /// bound positionally there); it is compared by `Eq` and included
+        /// in `Hash` (canonicalized to head-order ordinals first, so
+        /// program caches keep sharing across buffers).
+        id: u32,
     },
     /// Cast `x` to `dtype` (value conversion; bit-preserving form is
     /// [`Op::Bitcast`]).
@@ -739,10 +739,9 @@ impl PartialEq for Op {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Op::Const(a), Op::Const(b)) => a == b,
-            (
-                Op::Param { dtype: ad, kind: ak, shape: as_, cons_id: ac },
-                Op::Param { dtype: bd, kind: bk, shape: bs, cons_id: bc },
-            ) => ad == bd && ak == bk && as_ == bs && ac == bc,
+            (Op::Param { dtype: ad, kind: ak, shape: as_, id: ac }, Op::Param { dtype: bd, kind: bk, shape: bs, id: bc }) => {
+                ad == bd && ak == bk && as_ == bs && ac == bc
+            }
             (Op::Cast { x: a, dtype: ad }, Op::Cast { x: b, dtype: bd }) => a == b && ad == bd,
             (Op::Bitcast { x: a, dtype: ad }, Op::Bitcast { x: b, dtype: bd }) => a == b && ad == bd,
             (Op::Unary { x: a, uop: au }, Op::Unary { x: b, uop: bu }) => a == b && au == bu,
@@ -810,14 +809,15 @@ impl Hash for Op {
         self.disc().hash(state);
         match self {
             Op::Const(c) => c.hash(state),
-            // `cons_id` is skipped: program caches (`get_hash`, incl. the C
-            // backend disk cache) must keep sharing one program across
-            // buffers. `Eq` stays stricter (it compares `cons_id`), which is
-            // contract-legal and gives the egraph its leaf identity.
-            Op::Param { dtype, kind, shape, .. } => {
+            // `id` is included: it is canonicalized to head-order
+            // ordinals before any cache lookup, so structurally
+            // identical kernels hash identically and share programs.
+            // `Eq` compares it too, which gives CSE same-id dedup.
+            Op::Param { dtype, kind, shape, id } => {
                 dtype.hash(state);
                 kind.hash(state);
                 shape.hash(state);
+                id.hash(state);
             }
             Op::Cast { x, dtype } => {
                 x.hash(state);
@@ -956,10 +956,9 @@ impl Ord for Op {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self, other) {
             (Op::Const(a), Op::Const(b)) => a.cmp(b),
-            (
-                Op::Param { dtype: ad, kind: ak, shape: as_, cons_id: ac },
-                Op::Param { dtype: bd, kind: bk, shape: bs, cons_id: bc },
-            ) => (ad, ak, as_, ac).cmp(&(bd, bk, bs, bc)),
+            (Op::Param { dtype: ad, kind: ak, shape: as_, id: ac }, Op::Param { dtype: bd, kind: bk, shape: bs, id: bc }) => {
+                (ad, ak, as_, ac).cmp(&(bd, bk, bs, bc))
+            }
             (Op::Cast { x: a, dtype: ad }, Op::Cast { x: b, dtype: bd }) => (a, ad).cmp(&(b, bd)),
             (Op::Bitcast { x: a, dtype: ad }, Op::Bitcast { x: b, dtype: bd }) => (a, ad).cmp(&(b, bd)),
             (Op::Unary { x: a, uop: au }, Op::Unary { x: b, uop: bu }) => (a, au).cmp(&(b, bu)),

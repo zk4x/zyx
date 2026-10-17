@@ -82,7 +82,7 @@ impl Tensor {
         x.sign() * (1 - t * poly * (-x.clone() * x).exp())
     }
 
-    /// Inverse error function `erfinv(x)`, defined for `|x| < 1`
+    /// Inverse error function `erfinv(x)`, valid for `|x| < 1`
     /// via the Winitzki approximation.
     ///
     /// # Example

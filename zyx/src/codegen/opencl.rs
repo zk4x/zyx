@@ -166,7 +166,7 @@ impl Kernel {
                 Op::Param { kind: ParamKind::Variable, .. } => {
                     // Scalar variables are kernel arguments; copy the argument
                     // into a register so every later use resolves through the
-                    // normal register path. Param defines precede their uses.
+                    // normal register path. Params precede their uses.
                     match rcs.get(&op_id) {
                         Some(&rc) => {
                             let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id].clone(), rc, loop_id);
@@ -591,10 +591,10 @@ fn get_var(
     }
 }
 
-/// Like [`get_var`], but for address composition only (GEP index operands at
+/// Like [`get_var`], but for address composition only (index operands at
 /// load/store sites): the returned C expression is written inline as
 /// `p{buf}[{expr}]` and the index op's register must NOT be decremented.
-/// One address gep is routinely shared by several load/store users
+/// One address expression is routinely shared by several load/store users
 /// (accumulator pattern), and a "consumed per read" account would underflow
 /// on the second user. The index op's register instead stays live for the
 /// whole kernel.

@@ -202,7 +202,7 @@ impl Kernel {
                 return Some(Target::Expanded(v));
             }
             // Single-input heads retile their input (elementwise and
-            // tile-native alike — all well-defined on tiles).
+            // tile-native alike — all valid on tiles).
             let ins: Vec<OpId> = match k.at(v) {
                 Op::Unary { x, .. }
                 | Op::Cast { x, .. }
