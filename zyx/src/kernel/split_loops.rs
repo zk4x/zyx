@@ -15,11 +15,8 @@
 //! - Splitting global indices into local factors
 
 use super::autotune::Optimization;
-use crate::{
-    dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, RangeKind},
-    shape::Dim,
-};
+use crate::kernel::{Kernel, Op, OpId, RangeKind};
+use crate::shape::Dim;
 
 /// Split a global index into local factors for parallelization.
 #[derive(Debug)]
@@ -161,122 +158,4 @@ impl Kernel {
         Box::new(SplitLoop { factors })
     }
 
-    /// Splits dim (index or loop) into multiple indices or loops
-    /// Returns the `OpId`s of the created split operations in the order they were provided
-    pub(crate) fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) -> Vec<OpId> {
-        #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("split_dim");
-        let is_loop = matches!(self.ops[dim_id].op, Op::Loop { .. });
-
-        #[cfg(debug_assertions)]
-        {
-            let mut dim = 1;
-            let mut ok = true;
-            for op in splits.iter() {
-                use crate::shape::Dim;
-
-                match *op {
-                    Op::Loop { len, .. } => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
-                        Some(l) => dim *= l,
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    },
-                    Op::Range { kind, .. } => match kind {
-                        RangeKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
-                            Some(l) => dim *= l,
-                            None => {
-                                ok = false;
-                                break;
-                            }
-                        },
-                        RangeKind::Local(len) => dim *= len as Dim,
-                        // A warp is a view over a local range — it is never split.
-                        RangeKind::Warp(_) => {
-                            ok = false;
-                            break;
-                        }
-                        // Unroll lanes are never split.
-                        RangeKind::Unroll(_) => {
-                            ok = false;
-                            break;
-                        }
-                    },
-                    _ => unreachable!("split can be only index or loop"),
-                }
-            }
-            if ok {
-                match self.ops[dim_id].op {
-                    Op::Range { kind, .. } => {
-                        use crate::shape::Dim;
-
-                        match kind {
-                            RangeKind::Group(len) => {
-                                if let Some(l) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
-                                    debug_assert_eq!(l, dim);
-                                }
-                            }
-                            RangeKind::Local(l) => debug_assert_eq!(l as Dim, dim),
-                            RangeKind::Warp(_) => unreachable!("warp dims are never split"),
-                            RangeKind::Unroll(_) => unreachable!("unroll dims are never split"),
-                        }
-                    }
-                    Op::Loop { len, .. } => {
-                        if let Some(l) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
-                            debug_assert_eq!(l, dim);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        let last_dim_op = self.get_last_dim_op(dim_id);
-        let n_loops = splits.iter().filter(|op| matches!(op, Op::Loop { .. })).count();
-        for (i, op) in splits.iter().enumerate() {
-            if matches!(op, Op::Loop { .. }) {
-                if is_loop && i == n_loops - 1 {
-                } else {
-                    self.insert_after(last_dim_op, Op::EndLoop);
-                }
-            }
-        }
-
-        let mut strides = Vec::new();
-        let mut st = 1;
-        for op in splits.iter().rev() {
-            strides.push(st);
-            match op {
-                Op::Loop { len, .. } => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                Op::Range { kind, .. } => match kind {
-                    RangeKind::Group(len) => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                    RangeKind::Local(len) => st *= i64::from(*len),
-                    RangeKind::Warp(_) => unreachable!("warp dims are never split"),
-                    RangeKind::Unroll(_) => unreachable!("unroll dims are never split"),
-                },
-                _ => unreachable!("split can be only index or loop"),
-            }
-        }
-        strides.reverse();
-        strides.pop();
-        let last_op = splits.pop().unwrap();
-
-        let mut split_ids: Vec<OpId> = Vec::new();
-        let mut acc = self.insert_before(dim_id, Op::Const(Constant::idx(0)));
-        for (&st, op) in strides.iter().zip(splits) {
-            let x = self.insert_before(dim_id, Op::Const(Constant::idx(st)));
-            let y = self.insert_before(dim_id, op);
-            let xy = self.insert_before(dim_id, Op::Binary { x, y, bop: BOp::Mul });
-            acc = self.insert_before(dim_id, Op::Binary { x: xy, y: acc, bop: BOp::Add });
-            split_ids.push(y);
-        }
-
-        let y = self.insert_before(dim_id, last_op);
-        split_ids.push(y);
-        self.ops[dim_id].op = Op::Binary { x: acc, y, bop: BOp::Add };
-
-        self.verify();
-        split_ids
-    }
 }

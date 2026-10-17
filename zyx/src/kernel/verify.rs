@@ -482,15 +482,17 @@ impl Kernel {
                     } else {
                         dtypes.insert(op_id, dtype);
                     }
-                    // Lane shapes: both lanes share one shape, except
-                    // a tile lane beside a compile-time constant (a TT
+                    // Lane shapes: both lanes share one shape, except a
+                    // tile lane beside a compile-time constant (a TT
                     // immediate lane — the unary-imm calls take fp32
-                    // bits, so only consts lower). A tile beside a
-                    // non-const lane is a missing broadcast — loud
-                    // panic, never a silent wrong lane.
+                    // bits, so only consts lower) and a scalar operand,
+                    // which broadcasts over the other side's lanes (the
+                    // lane merge algebra: an unroll operand beside a
+                    // scalar takes the unroll side's shape and axis).
                     let (sx, sy) = (self.shape(x), self.shape(y));
                     let tile_const = sx.len() == 2 && self.is_const(y) || sy.len() == 2 && self.is_const(x);
-                    if sx != sy && !tile_const {
+                    let scalar_broadcast = sx.is_empty() || sy.is_empty();
+                    if sx != sy && !tile_const && !scalar_broadcast {
                         println!("Binary shape mismatch on op={op_id}.");
                         self.debug();
                         panic!();

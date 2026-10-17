@@ -129,6 +129,7 @@ mod ops;
 mod pad_range;
 mod pat;
 mod predict_cost;
+mod split;
 mod split_loops;
 mod tenstorrent;
 mod tiling;
@@ -1212,7 +1213,7 @@ impl Kernel {
                     let x_dims = visited[&x].clone();
                     let y_dims = visited[&y].clone();
                     // Merged shape + axes, plain binary semantics.
-                    let (dims, mut merged_axes) = match (x_dims.as_slice(), y_dims.as_slice()) {
+                    let (dims, merged_axes) = match (x_dims.as_slice(), y_dims.as_slice()) {
                         (&[], &[]) => (Vec::new(), Vec::new()),
                         (&[], _) => (visited[&y].clone(), axes.get(&y).cloned().unwrap_or_default()),
                         (_, &[]) => (visited[&x].clone(), axes.get(&x).cloned().unwrap_or_default()),
@@ -1908,6 +1909,8 @@ impl Kernel {
                 // is runtime data — never compile-time constant, but a
                 // legitimate dynamic length (same as Param).
                 Op::Load { .. } => None,
+                // The unroll value op is the lane id vector — runtime data.
+                Op::Unroll { .. } => None,
                 ref op => todo!("{op:?}"),
             };
             values.insert(id, v);
