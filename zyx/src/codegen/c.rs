@@ -519,9 +519,6 @@ impl Kernel {
                 | Op::Reshape { .. }
                 | Op::Pad { .. }
                 | Op::Reduce { .. }
-                // TODO: native C horizontal reduce (SIMD) once the
-                // vectorize pattern matcher produces VecReduce.
-                | Op::VecReduce { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }

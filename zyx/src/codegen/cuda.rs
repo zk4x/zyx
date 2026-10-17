@@ -269,7 +269,6 @@ impl Kernel {
                 | Op::Reshape { .. }
                 | Op::Pad { .. }
                 | Op::Reduce { .. }
-                | Op::VecReduce { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }

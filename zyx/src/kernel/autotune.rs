@@ -56,12 +56,10 @@ pub type MakeOpt = fn(&Kernel) -> Box<dyn Optimization>;
 impl Kernel {
     /// The default optimization set: the search space [`BeamSearch`] explores
     /// unless the caller provides its own list of make functions.
-    pub const fn default_optimizations() -> [MakeOpt; 7] {
+    pub const fn default_optimizations() -> [MakeOpt; 5] {
         [
-            Kernel::opt_split_global_to_local,
+            Kernel::opt_split,
             Kernel::opt_reassociate_commutative,
-            Kernel::opt_coarsen,
-            Kernel::opt_register_blocking,
             Kernel::opt_local_reduce,
             Kernel::opt_split_loop,
             Kernel::opt_merge_nested_loops,
@@ -94,6 +92,19 @@ impl Kernel {
 
     /// Device specific epilogue
     pub fn device_epilogue(&mut self) {
+        if std::env::var("ZYX_DEBUG").map(|v| v == "8").unwrap_or(false) {
+            eprintln!("=== device_epilogue BEFORE devectorize ===");
+            self.debug();
+        }
+        // Lane bundles never survive to a backend: the fold chains
+        // expand first (their lane values are the bundles), then the
+        // remaining unroll lanes unfold to per-lane statements.
+        self.devectorize_reduces();
+        self.devectorize_unrolls();
+        if std::env::var("ZYX_DEBUG").map(|v| v == "8").unwrap_or(false) {
+            eprintln!("=== device_epilogue AFTER devectorize ===");
+            self.debug();
+        }
         // Non-TT backends need no device epilogue.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {

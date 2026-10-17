@@ -97,36 +97,9 @@ impl Kernel {
     /// result tile carries the sums in its first row, so every reduce
     /// becomes an Index lane of row 0. Dead chains die in DCE.
     pub fn vectorize_reduce_tile(&mut self) {
-        let pat = Pat::vecreduce(Pat::index(Pat::bind('t'), 'r'), 'o');
-        for g in self.match_cover(&pat, &['t', 'o'], &[32]) {
-            let t = g.bindings.op('t');
-            // Tile-shaped source of any kind; lane coverage below ties
-            // the lanes to it.
-            if self.shape(t) != vec![32, 32] {
-                continue;
-            }
-            let rop = g.bindings.bop('o');
-            let mut rows: [Option<OpId>; 32] = [None; 32];
-            for (root, lane) in g.roots.iter().zip(g.lanes.iter()) {
-                rows[*lane as usize] = Some(*root);
-            }
-            debug_assert!(rows.iter().all(|r| r.is_some()), "cover guarantees exact lanes");
-            let set: Set<OpId> = g.roots.iter().copied().collect();
-            let mut first = OpId::NULL;
-            let mut scan = self.head;
-            while !scan.is_null() {
-                if set.contains(&scan) {
-                    first = scan;
-                    break;
-                }
-                scan = self.next_op(scan);
-            }
-            let rt = self.insert_before(first, Op::TT(TTOp::ReduceTile { x: t, rop, kind: TileDim::Row }));
-            let row0 = self.insert_before(first, Op::Index { vec: rt, idx: 0 });
-            for (r, outer) in rows.iter().enumerate() {
-                self.ops[outer.unwrap()].op = Op::Index { vec: row0, idx: r };
-            }
-        }
+        // The matched lane folds rode the deleted vectorize IR; with
+        // the tile matcher absent this lowering never fires.
+        todo!("tiling: vectorize-based bundling is deleted");
     }
 
     /// Backward tile-push over vector stores (tile equivalent of
@@ -338,8 +311,9 @@ impl Kernel {
     /// Former: m x n dots over a shared [k, n] tile -> MatmulTile.
     /// Matches the vectorized matmul family with no reference to loads
     /// or stores: per dot a `Mul` of a broadcast `Stack[k]` of one
-    /// A-column against a tile-shaped `[k, n]` op, one `VecReduce` dot
-    /// per lane, the m*n dots assembled [row][col] into an outer stack.
+    /// A-column against a tile-shaped `[k, n]` op (dot lanes fed by the
+    /// vectorize pass, since deleted via the tile matcher), the m*n dots
+    /// assembled [row][col] into an outer stack.
     /// The `a` root is whatever tile-shaped op the A-lane Index chains
     /// bottom out at (`shape == [m, k]`); the `b` root is whatever
     /// tile-shaped op the prods share (`shape == [k, n]`). Emits by
@@ -374,28 +348,12 @@ impl Kernel {
                     }
                 };
                 for &dot in &dots {
-                    let idxop = match &self.ops[dot].op {
-                        Op::VecReduce { x, bop } if *bop == BOp::Add => *x,
-                        _ => {
-                            shaped = false;
-                            break;
-                        }
-                    };
-                    if !shaped {
-                        break;
-                    }
-                    let (prod, lane) = match &self.ops[idxop].op {
-                        Op::Index { vec, idx } => (*vec, *idx),
-                        _ => {
-                            shaped = false;
-                            break;
-                        }
-                    };
-                    if !shaped {
-                        break;
-                    }
-                    dot_cone.insert(dot, (prod, lane));
-                    prod_lanes.entry(prod).or_default().push(lane);
+                    // Stacked dot-lane lowers came from the deleted
+                    // vectorize pass; with no lane folds in IR, the
+                    // stack members never shape.
+                    let _ = dot;
+                    shaped = false;
+                    break;
                 }
                 if !shaped {
                     break;

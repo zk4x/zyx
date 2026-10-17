@@ -100,9 +100,17 @@ impl Kernel {
                     | Op::Flip { .. }
                     | Op::Narrow { .. }
                     | Op::Reshape { .. }
-                    | Op::Pad { .. }
-                    | Op::Reduce { .. } => {
+                    | Op::Pad { .. } => {
                         unreachable!()
+                    }
+                    Op::Reduce { x, reduce_axis, .. } => {
+                        // Lane-space fold: the fold's own value shape comes
+                        // from the shared shape machinery (the folded
+                        // lanes leave the shape); x and the axis
+                        // expression are consumed operands.
+                        dtypes.insert(op_id, (dtypes[&x].0, self.shape(op_id)));
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(reduce_axis).or_insert(0) += 1;
                     }
                     Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                         unreachable!()
@@ -123,11 +131,6 @@ impl Kernel {
                         }
                         dtypes.insert(op_id, (dtype, shape));
                         *rcs.entry(vec).or_insert(0) += 1;
-                    }
-                    Op::VecReduce { x, bop: _ } => {
-                        let dtype = dtypes[&x].0;
-                        dtypes.insert(op_id, (dtype, Vec::new()));
-                        *rcs.entry(x).or_insert(0) += 1;
                     }
                     Op::Const(x) => {
                         dtypes.insert(op_id, (x.dtype(), Vec::new()));
@@ -325,7 +328,6 @@ impl Kernel {
                 | Op::Binary { .. }
                 | Op::Stack { .. }
                 | Op::Wmma { .. }
-                | Op::VecReduce { .. }
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::MatmulTile { .. })
                 | Op::TT(TTOp::TransposeTile { .. })
@@ -367,7 +369,7 @@ impl Kernel {
                 | Op::Narrow { .. }
                 | Op::Reshape { .. }
                 | Op::Pad { .. } => todo!(),
-                Op::Reduce { .. } => todo!(),
+                Op::Reduce { .. } => true,
                 Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
@@ -417,10 +419,31 @@ impl Kernel {
                         wi_compute_ops += loop_mult;
                     }
                 }
-                // One horizontal reduce instruction per invocation.
-                Op::VecReduce { .. } => {
-                    wi_ops += loop_mult;
-                    wi_compute_ops += loop_mult;
+                // The fold expands into one add per lane pair: the chain
+                // cost is (lane_len - 1) additions, lane_len the product
+                // of the fold's unroll lens.
+                Op::Reduce { reduce_axis, .. } => {
+                    let mut lane_len: u64 = 1;
+                    let mut stack = vec![reduce_axis];
+                    let mut seen: Set<OpId> = Set::default();
+                    while let Some(p) = stack.pop() {
+                        if !seen.insert(p) {
+                            continue;
+                        }
+                        match self.at(p) {
+                            Op::Unroll { len, .. } => lane_len *= u64::from(*len),
+                            Op::Binary { x, y, .. } => {
+                                stack.push(*x);
+                                stack.push(*y);
+                            }
+                            // Legacy pre-linearize axes carry no lane space.
+                            Op::Const(_) => {}
+                            _ => {}
+                        }
+                    }
+                    let adds = (lane_len.saturating_sub(1)) as i64;
+                    wi_ops += loop_mult * adds;
+                    wi_compute_ops += loop_mult * adds;
                 }
                 Op::Const(_)
                 | Op::Param { .. }
@@ -434,7 +457,6 @@ impl Kernel {
                 | Op::Narrow { .. }
                 | Op::Reshape { .. }
                 | Op::Pad { .. }
-                | Op::Reduce { .. }
                 | Op::TT { .. }
                 | Op::Asm { .. } => {}
                 Op::Load { src, src_idx: index, .. } => {

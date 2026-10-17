@@ -309,7 +309,7 @@ pub enum Op {
         x: OpId,
         /// Reduce op.
         rop: BOp,
-        /// Axis (always the trailing dim's class).
+        /// Axis - always the trailing dim, this op id is the id of the loop being reduced.
         reduce_axis: OpId,
     },
     // Graph-only ops (former `Node` variants). They never appear in ordered
@@ -339,14 +339,6 @@ pub enum Op {
     Contiguous {
         /// Value to materialize.
         x: OpId,
-    },
-
-    /// Reduces a vec into single scalar
-    VecReduce {
-        /// Vector value to reduce (any op with a rank-1 (`[n]`) shape).
-        x: OpId,
-        /// Associative fold op over lanes.
-        bop: BOp,
     },
 
     /// Unroll lane vector: the lane constants `0..len` as a single
@@ -738,7 +730,6 @@ impl Op {
             Op::PTX(_) => 39,
             // Appended past every existing discriminant: inserting an
             // in-declaration-order number would reorder existing variants.
-            Op::VecReduce { .. } => 40,
             Op::Unroll { .. } => 41,
         }
     }
@@ -804,7 +795,6 @@ impl PartialEq for Op {
             (Op::Narrow { x: a, axis: aa, start: as_, len: al }, Op::Narrow { x: b, axis: ba, start: bs, len: bl }) => {
                 a == b && aa == ba && as_ == bs && al == bl
             }
-            (Op::VecReduce { x: a, bop: ab }, Op::VecReduce { x: b, bop: bb }) => a == b && ab == bb,
             (Op::Unroll { axis: aa, len: al }, Op::Unroll { axis: ba, len: bl }) => aa == ba && al == bl,
             // Different variants are never equal (Hash carries no
             // discriminant, so cross-variant collisions land here).
@@ -907,10 +897,6 @@ impl Hash for Op {
                 device.hash(state);
             }
             Op::Contiguous { x } => x.hash(state),
-            Op::VecReduce { x, bop } => {
-                x.hash(state);
-                bop.hash(state);
-            }
             Op::Unroll { axis, len } => {
                 axis.hash(state);
                 len.hash(state);
@@ -1315,9 +1301,8 @@ impl Op {
             &Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             &Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
-            Op::VecReduce { x, bop: _ } => vec![*x],
-            // Len/axis are immediates — no operand slots.
             Op::Unroll { .. } => vec![],
+
             // dst/src are NEVER null (whole-view stores spell the bare
             // Param); only dst_idx can be null.
             &Op::Store { dst, dst_idx, src } => {
@@ -1423,7 +1408,6 @@ impl Op {
             // src_idx is NEVER null: every load names its element.
             Op::Load { src, src_idx } => vec![src, src_idx],
             Op::Stack { ops } => ops.iter_mut().collect(),
-            Op::VecReduce { x, bop: _ } => vec![x],
             Op::Unroll { .. } => vec![],
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],

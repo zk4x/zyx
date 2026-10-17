@@ -71,7 +71,6 @@ impl Kernel {
                 }
                 Op::TT(TTOp::MatmulTile { x, y }) => loop_dep[&x].max(loop_dep[&y]),
                 Op::TT(TTOp::TransposeTile { x }) => loop_dep[&x],
-                Op::VecReduce { x, bop: _ } => loop_dep[&x],
                 // Effect-only TT ops: pinned like Store/Copy, never hoisted.
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
@@ -169,7 +168,6 @@ impl Kernel {
                 Op::TT(TTOp::ReduceTile { x, .. }) => loop_dep[x],
                 Op::TT(TTOp::MatmulTile { x, y }) => loop_dep[x].max(loop_dep[y]),
                 Op::TT(TTOp::TransposeTile { x }) => loop_dep[x],
-                Op::VecReduce { x, bop: _ } => loop_dep[x],
                 // Effect-only TT ops: pinned like Store/Copy, never hoisted.
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })

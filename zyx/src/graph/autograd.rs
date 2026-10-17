@@ -415,7 +415,6 @@ impl Runtime {
                 | Op::Barrier
                 | Op::Wmma { .. }
                 | Op::TT { .. }
-                | Op::VecReduce { .. }
                 | Op::Unroll { .. }
                 | Op::Asm { .. } => {
                     unreachable!("gradient runs on graph ops, never kernel-only: {:?}", self.graphs[graph_id].ops[nid].op)

@@ -316,15 +316,6 @@ pub enum Pat {
         /// Pattern for the stored value.
         x: Box<Pat>,
     },
-    /// Matches a vector reduce (`Op::VecReduce`) with an operand matching
-    /// `x`, binding the reduce `bop` under `bop` (read with
-    /// [`Bindings::bop`]). A repeated name asserts `bop` equality.
-    VecReduce {
-        /// Pattern for the operand.
-        x: Box<Pat>,
-        /// Reduce op: exact value or binder name.
-        bop: PMatch<BOp>,
-    },
     /// Fold over a `bop` spine of vector lanes. Matches when the cone is a
     /// chain of `bop` links (either operand order per link, `bop` being
     /// commutative) whose leaves are all `leaf`-matched lanes of ONE
@@ -826,11 +817,6 @@ impl Pat {
     /// of `widths` exactly (see [`Pat::Seq`]).
     pub fn seq(bop: BOp, leaf: impl Into<Pat>, widths: &[u8]) -> Pat {
         Pat::Seq { bop, leaf: Box::new(leaf.into()), widths: widths.into() }
-    }
-
-    /// Vector reduce of the `x` pattern (reduce op value or binder name).
-    pub fn vecreduce(x: impl Into<Pat>, bop: impl Into<PMatch<BOp>>) -> Pat {
-        Pat::VecReduce { x: Box::new(x.into()), bop: bop.into() }
     }
 
     /// Negation of this pattern.
@@ -1351,25 +1337,6 @@ impl Kernel {
                         *bindings = snap;
                         false
                     }
-                }
-                _ => false,
-            },
-            Pat::VecReduce { x, bop } => match self.at(id) {
-                Op::VecReduce { x: xid, bop: b } => {
-                    let snap = bindings.clone();
-                    let pay_ok = match bop {
-                        PMatch::Exact(e) => *b == *e,
-                        PMatch::Bind(name) => bindings.try_insert(*name, id, Binding::Bop(*b)),
-                    };
-                    if !pay_ok {
-                        *bindings = snap;
-                        return false;
-                    }
-                    if self.match_node(x, *xid, bindings) {
-                        return true;
-                    }
-                    *bindings = snap;
-                    false
                 }
                 _ => false,
             },

@@ -63,9 +63,6 @@ impl Kernel {
                 | Op::Loop { .. }
                 | Op::Unroll { .. }
                 | Op::EndLoop => {}
-                // Horizontal reduce: no fold rule yet (nothing produces
-                // VecReduce before the vectorize pattern matcher lands).
-                Op::VecReduce { x: _, bop: _ } => {}
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }

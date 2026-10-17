@@ -140,7 +140,6 @@ impl Kernel {
                 Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before OpenCL codegen"),
                 Op::TT { .. }
                 | Op::Reduce { .. }
-                | Op::VecReduce { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }

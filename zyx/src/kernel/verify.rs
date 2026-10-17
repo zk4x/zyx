@@ -72,7 +72,6 @@ impl Kernel {
                     | Op::Loop { .. }
                     | Op::EndLoop
                     | Op::Index { .. }
-                    | Op::VecReduce { .. }
                     | Op::Unroll { .. }
                     | Op::Barrier
                     | Op::Wmma { .. }
@@ -104,8 +103,7 @@ impl Kernel {
                     | Op::Reshape { .. }
                     | Op::Pad { .. }
                     | Op::Narrow { .. }
-                    | Op::Flip { .. }
-                    | Op::Reduce { .. } => has_move_or_reduce = true,
+                    | Op::Flip { .. } => has_move_or_reduce = true,
                     // Params and elementwise/compute ops appear in every
                     // kernel, pre- and post-linearization; they carry no
                     // linearization signal.
@@ -114,6 +112,9 @@ impl Kernel {
                     | Op::Bitcast { .. }
                     | Op::Unary { .. }
                     | Op::Binary { .. }
+                    // Post-linearize lane-space folds are legal until the
+                    // device epilogue devectorizes them.
+                    | Op::Reduce { .. }
                     | Op::Stack { .. } => {}
                     // Graph-only and post-render ops must never reach
                     // kernel IR at this (pre-render) stage.
@@ -142,7 +143,7 @@ impl Kernel {
         // Verify param/storage ordering: global params (RO) → GlobalMut params → local storages → everything else.
         // Only meaningful post-linearization; skipped for pre-linearize DAGs.
         if param_dst_stores == 0 {
-            debug_assert!(!has_move_or_reduce, "post-linearize kernel must not contain Move/Reduce ops");
+            debug_assert!(!has_move_or_reduce, "post-linearize kernel must not contain Move/graph-shape ops");
             #[derive(PartialEq, Eq)]
             #[allow(dead_code)]
             enum Phase {
@@ -275,12 +276,13 @@ impl Kernel {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtype);
                 }
-                Op::Reduce { x, .. } => {
+                Op::Reduce { x, reduce_axis, .. } => {
+                    // Lane-space fold: a value op whose operands are the
+                    // folded value and the axis expression naming the
+                    // folded lane space.
                     check(op_id, x, &stack);
+                    check(op_id, reduce_axis, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
-                    if stack.len() > 1 {
-                        stack.pop();
-                    }
                 }
                 Op::TT(TTOp::ReduceTile { x, .. }) => {
                     check(op_id, x, &stack);
@@ -527,13 +529,6 @@ impl Kernel {
                 Op::Index { vec, .. } => {
                     let dtype = dtypes[&vec];
                     dtypes.insert(op_id, dtype);
-                }
-                Op::VecReduce { x, bop: _ } => {
-                    check(op_id, x, &stack);
-                    // Reduce input must be a vector value; the result is
-                    // one scalar of the element dtype.
-                    debug_assert!(self.shape(x).len() == 1, "VecReduce operand {x} must be a vector, got {:?}", self.shape(x));
-                    dtypes.insert(op_id, dtypes[&x]);
                 }
                 Op::Wmma { c, a, b, .. } => {
                     let dtype = dtypes[&c];

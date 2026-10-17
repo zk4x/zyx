@@ -117,6 +117,7 @@ mod coarsen;
 mod cost;
 mod custom;
 pub(crate) mod debug;
+mod devectorize;
 mod fold_constants;
 mod fold_loops;
 mod fuse;
@@ -300,7 +301,6 @@ impl Kernel {
                 | Op::Flip { .. }
                 | Op::Pad { .. }
                 | Op::Narrow { .. }
-                | Op::Reduce { .. }
                 | Op::TT(TTOp::ReduceTile { .. }) => {
                     unreachable!()
                 }
@@ -361,17 +361,15 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&x].clone());
                     *rcs.entry(x).or_insert(0) += 1;
                 }
-                Op::VecReduce { x, bop: _ } => {
-                    // Reduce consumes a vector value (its stack holds
-                    // rank-1 lanes) and produces one scalar.
-                    debug_assert!(
-                        dtypes[&x].1.len() == 1,
-                        "VecReduce operand {x} must have vector shape, got {:?}",
-                        dtypes[&x].1
-                    );
+                Op::Reduce { x, reduce_axis, .. } => {
+                    // Lane-space fold: dtype and value shape from the
+                    // folded value minus the folds' lanes; the shape
+                    // machinery attributes which dims fold. The axis
+                    // expression is consumed as the fold's lane space.
                     let (dtype, _) = dtypes[&x].clone();
-                    dtypes.insert(op_id, (dtype, Vec::new()));
+                    dtypes.insert(op_id, (dtype, self.shape(op_id)));
                     *rcs.entry(x).or_insert(0) += 1;
+                    *rcs.entry(reduce_axis).or_insert(0) += 1;
                 }
                 Op::TT(TTOp::ReserveBack { cb, .. })
                 | Op::TT(TTOp::PushBack { cb, .. })
@@ -531,8 +529,6 @@ impl Kernel {
                 Op::Load { src, .. } => op_id = src,
                 Op::Copy { src, .. } => op_id = src,
                 Op::Unary { x, .. } => op_id = x,
-                // Reducing a vec yields one scalar of the element dtype.
-                Op::VecReduce { x, .. } => op_id = x,
                 Op::Unroll { .. } => return IDX_T,
                 Op::Binary { x, bop, .. } => {
                     if bop.returns_bool() {
@@ -1256,10 +1252,61 @@ impl Kernel {
                         axes.insert(op_id, merged_axes);
                     }
                 }
-                Op::Reduce { x, .. } => match visited.get(&x).cloned() {
-                    Some(mut dims) => {
-                        dims.truncate(dims.len().saturating_sub(1));
-                        visited.insert(op_id, dims);
+                Op::Reduce { x, reduce_axis, .. } => match visited.get(&x).cloned() {
+                    Some(dims) => {
+                        // Lane-space fold: dims of x minus the dims of the
+                        // axes the fold iterates. The fold axes are the
+                        // unroll nodes the axis expression names; dim/axis
+                        // attribution rides the axes map. A legacy
+                        // pre-linearize reduce (its axis is the loop being
+                        // collapsed, no unroll nodes in the cone) keeps the
+                        // old trailing-dim semantics: it drops the last
+                        // value dim.
+                        let mut fold_axes: Vec<u32> = Vec::new();
+                        let mut axis_stack = vec![reduce_axis];
+                        let mut axis_seen: Set<OpId> = Set::default();
+                        while let Some(id) = axis_stack.pop() {
+                            if !axis_seen.insert(id) {
+                                continue;
+                            }
+                            let node_op = self.ops[id].op.clone();
+                            match node_op {
+                                Op::Unroll { axis, .. } => fold_axes.push(axis),
+                                Op::Binary { x: a, y: b, .. } => {
+                                    axis_stack.push(a);
+                                    axis_stack.push(b);
+                                }
+                                Op::Const(_) => {}
+                                _ => {}
+                            }
+                        }
+                        if fold_axes.is_empty() {
+                            let mut legacy = dims;
+                            legacy.truncate(legacy.len().saturating_sub(1));
+                            visited.insert(op_id, legacy);
+                        } else {
+                            match axes.get(&x).cloned() {
+                                Some(xs) => {
+                                    let xs: Vec<u32> = xs;
+                                    let surviving: Vec<u32> =
+                                        xs.iter().copied().filter(|a| !fold_axes.contains(a)).collect();
+                                    let surviving_dims: Vec<_> = dims
+                                        .iter()
+                                        .copied()
+                                        .zip(xs)
+                                        .filter(|&(_, a)| !fold_axes.contains(&a))
+                                        .map(|(d, _)| d)
+                                        .collect();
+                                    visited.insert(op_id, surviving_dims);
+                                    if !surviving.is_empty() {
+                                        axes.insert(op_id, surviving);
+                                    }
+                                }
+                                None => {
+                                    visited.insert(op_id, vec![]);
+                                }
+                            }
+                        }
                     }
                     None => {
                         stack.push(op_id);
@@ -1356,9 +1403,6 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::VecReduce { .. } => {
-                    visited.insert(op_id, vec![]);
-                }
                 // A fragment value has its native width as a single dim
                 // (widths match the hardware's native fragment sizes).
                 Op::Wmma { dims, .. } => {
@@ -1559,10 +1603,61 @@ impl Kernel {
                         axes.insert(id, merged_axes);
                     }
                 }
-                Op::Reduce { x, .. } => match visited.get(&x).cloned() {
-                    Some(mut dims) => {
-                        dims.truncate(dims.len().saturating_sub(1));
-                        visited.insert(id, dims);
+                Op::Reduce { x, reduce_axis, .. } => match visited.get(&x).cloned() {
+                    Some(dims) => {
+                        // Lane-space fold: dims of x minus the dims of the
+                        // axes the fold iterates. The fold axes are the
+                        // unroll nodes the axis expression names; dim/axis
+                        // attribution rides the axes map. A legacy
+                        // pre-linearize reduce (its axis is the loop being
+                        // collapsed, no unroll nodes in the cone) keeps the
+                        // old trailing-dim semantics: it drops the last
+                        // value dim.
+                        let mut fold_axes: Vec<u32> = Vec::new();
+                        let mut axis_stack = vec![reduce_axis];
+                        let mut axis_seen: Set<OpId> = Set::default();
+                        while let Some(id) = axis_stack.pop() {
+                            if !axis_seen.insert(id) {
+                                continue;
+                            }
+                            let node_op = self.ops[id].op.clone();
+                            match node_op {
+                                Op::Unroll { axis, .. } => fold_axes.push(axis),
+                                Op::Binary { x: a, y: b, .. } => {
+                                    axis_stack.push(a);
+                                    axis_stack.push(b);
+                                }
+                                Op::Const(_) => {}
+                                _ => {}
+                            }
+                        }
+                        if fold_axes.is_empty() {
+                            let mut legacy = dims;
+                            legacy.truncate(legacy.len().saturating_sub(1));
+                            visited.insert(id, legacy);
+                        } else {
+                            match axes.get(&x).cloned() {
+                                Some(xs) => {
+                                    let xs: Vec<u32> = xs;
+                                    let surviving: Vec<u32> =
+                                        xs.iter().copied().filter(|a| !fold_axes.contains(a)).collect();
+                                    let surviving_dims: Vec<_> = dims
+                                        .iter()
+                                        .copied()
+                                        .zip(xs)
+                                        .filter(|&(_, a)| !fold_axes.contains(&a))
+                                        .map(|(d, _)| d)
+                                        .collect();
+                                    visited.insert(id, surviving_dims);
+                                    if !surviving.is_empty() {
+                                        axes.insert(id, surviving);
+                                    }
+                                }
+                                None => {
+                                    visited.insert(id, vec![]);
+                                }
+                            }
+                        }
                     }
                     None => {
                         stack.push(id);
@@ -1617,9 +1712,6 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::VecReduce { .. } => {
-                    visited.insert(id, vec![]);
-                }
                 // A fragment value has its native width as a single dim
                 // (widths match the hardware's native fragment sizes).
                 Op::Wmma { dims, .. } => {
