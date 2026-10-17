@@ -142,6 +142,14 @@ impl Kernel {
                     )
                     .unwrap();
                 }
+                Op::Unroll { axis, len } => {
+                    dtypes.insert(op_id, IDX_T);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {IDX_T}{reset} = {red}unroll{reset} axis{axis} lanes {len}"
+                    )
+                    .unwrap();
+                }
                 Op::TT(TTOp::ReserveBack { cb, n }) => {
                     let dtype = dtypes.get(&cb).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);

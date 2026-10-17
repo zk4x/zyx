@@ -152,6 +152,7 @@ impl Kernel {
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
                 Op::PTX(_) => todo!(),
+                Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before C codegen"),
                 Op::Range { kind: scope, .. } => {
                     let RangeKind::Group(len) = scope else {
                         return Err(BackendError {

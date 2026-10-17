@@ -455,6 +455,9 @@ impl Kernel {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                 }
+                Op::Unroll { len, .. } => {
+                    dtypes.insert(op_id, (IDX_T, vec![len as Dim]));
+                }
                 Op::Index { vec, idx: _ } => {
                     let dtype = dtypes[&vec].0;
                     let mut shape = dtypes[&vec].1.clone();
@@ -549,6 +552,7 @@ impl Kernel {
                 Op::Unary { x, .. } => op_id = x,
                 // Reducing a vec yields one scalar of the element dtype.
                 Op::VecReduce { x, .. } => op_id = x,
+                Op::Unroll { .. } => return IDX_T,
                 Op::Binary { x, bop, .. } => {
                     if bop.returns_bool() {
                         return DType::Bool;

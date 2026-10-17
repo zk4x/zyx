@@ -1178,6 +1178,7 @@ impl Graph {
             | Op::Wmma { .. }
             | Op::TT { .. }
             | Op::VecReduce { .. }
+            | Op::Unroll { .. }
             | Op::Asm { .. } => unreachable!("shape: kernel-internal op never appears in graph classes"),
         }
     }
@@ -1372,6 +1373,7 @@ impl Graph {
             | Op::Wmma { .. }
             | Op::TT { .. }
             | Op::VecReduce { .. }
+            | Op::Unroll { .. }
             | Op::Asm { .. } => unreachable!("dtype: kernel-internal op never appears in graph classes"),
         }
     }
@@ -1428,6 +1430,7 @@ impl Graph {
                 | Op::Wmma { .. }
                 | Op::TT(_)
                 | Op::VecReduce { .. }
+                | Op::Unroll { .. }
                 | Op::Asm { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }
@@ -1758,17 +1761,21 @@ impl Runtime {
                     | Op::Wmma { .. }
                     | Op::TT { .. }
                     | Op::VecReduce { .. }
-                    | Op::After { .. }
-                    | Op::ToDevice { .. }
-                    | Op::Contiguous { .. }
-                    | Op::Source(_)
-                    | Op::GPU(_)
-                    | Op::Spirv(_)
-                    | Op::PTX(_)
-                    | Op::Program { .. }
-                    | Op::Kernel(_) => {
-                        unreachable!("promote_to_graph: eager kernel op {oid:?}")
-                    }
+                | Op::After { .. }
+                | Op::ToDevice { .. }
+                | Op::Contiguous { .. }
+                | Op::Source(_)
+                | Op::GPU(_)
+                | Op::Spirv(_)
+                | Op::PTX(_)
+                | Op::Program { .. }
+                | Op::Kernel(_) => {
+                    unreachable!("promote_to_graph: eager kernel op {oid:?}")
+                }
+                Op::Unroll { .. } => {
+                    unreachable!("promote_to_graph: unroll is post-linearize only, eager kernel op {oid:?}")
+                }
+
                 }
             }
             relevant
@@ -1905,11 +1912,15 @@ impl Runtime {
                                     | Op::Source(_)
                                     | Op::GPU(_)
                                     | Op::Spirv(_)
-                    | Op::PTX(_)
+                                    | Op::PTX(_)
                                     | Op::Program { .. }
                                     | Op::Kernel(_) => {
                                         unreachable!("promote_to_graph: dim op {entry:?} in param shape stack")
                                     }
+                                    Op::Unroll { .. } => {
+                                        unreachable!("promote_to_graph: unroll in param shape stack, dim op {entry:?}")
+                                    }
+
                                 });
                             }
                             let shape_class = match dim_classes.len() {

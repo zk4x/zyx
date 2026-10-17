@@ -123,6 +123,7 @@ impl Kernel {
                 | Op::Store { .. }
                 | Op::Copy { .. }
                 | Op::Const(_)
+                | Op::Unroll { .. }
                 | Op::Storage { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
@@ -220,6 +221,7 @@ impl Kernel {
                 | Op::Store { .. }
                 | Op::Copy { .. }
                 | Op::Const(_)
+                | Op::Unroll { .. }
                 | Op::Param { .. }
                 | Op::Storage { .. }
                 | Op::Wmma { .. } => loop_depth,

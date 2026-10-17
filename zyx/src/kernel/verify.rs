@@ -73,6 +73,7 @@ impl Kernel {
                     | Op::EndLoop
                     | Op::Index { .. }
                     | Op::VecReduce { .. }
+                    | Op::Unroll { .. }
                     | Op::Barrier
                     | Op::Wmma { .. }
                     | Op::TT(TTOp::ReduceTile { .. })
@@ -346,6 +347,7 @@ impl Kernel {
                             self.at(x),
                             Op::Storage { .. }
                                 | Op::Const(_)
+                                | Op::Unroll { .. }
                                 | Op::Param { .. }
                                 | Op::Cast { .. }
                                 | Op::Bitcast { .. }
@@ -378,6 +380,7 @@ impl Kernel {
                             self.at(f),
                             Op::Storage { .. }
                                 | Op::Const(_)
+                                | Op::Unroll { .. }
                                 | Op::Param { .. }
                                 | Op::Cast { .. }
                                 | Op::Bitcast { .. }
@@ -407,6 +410,7 @@ impl Kernel {
                             self.at(f),
                             Op::Storage { .. }
                                 | Op::Const(_)
+                                | Op::Unroll { .. }
                                 | Op::Param { .. }
                                 | Op::Cast { .. }
                                 | Op::Bitcast { .. }
@@ -434,6 +438,7 @@ impl Kernel {
                             self.at(f),
                             Op::Storage { .. }
                                 | Op::Const(_)
+                                | Op::Unroll { .. }
                                 | Op::Param { .. }
                                 | Op::Cast { .. }
                                 | Op::Bitcast { .. }
@@ -564,6 +569,10 @@ impl Kernel {
                 }
                 Op::Const(v) => {
                     dtypes.insert(op_id, v.dtype());
+                }
+                Op::Unroll { len, .. } => {
+                    dtypes.insert(op_id, IDX_T);
+                    debug_assert!(len > 0, "unroll with zero lanes");
                 }
                 Op::Param { dtype, kind, shape, .. } => {
                     params.insert(op_id, kind);

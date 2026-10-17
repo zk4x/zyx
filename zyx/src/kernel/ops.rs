@@ -352,6 +352,19 @@ pub enum Op {
         bop: BOp,
     },
 
+    /// Unroll lane vector: the lane constants `0..len` as a single
+    /// post-linearize value, tagged with the axis it was split from.
+    /// Produced only by `split`; devectorized into a `Stack` of consts
+    /// right before codegen. Shapes the ops it flows through: a binary
+    /// of a scalar with an unroll is a vector, unrolls of two different
+    /// axes in one expression form a tile.
+    Unroll {
+        /// The `Op::Range`/`Op::Loop` axis this lane vector was split from.
+        axis: u32,
+        /// Number of lanes: the vector holds values `0..len`.
+        len: u16,
+    },
+
     /// Program source block
     Source(SourceBlock),
     /// A compiled kernel boundary: `info` is the owning program and measured
@@ -729,6 +742,7 @@ impl Op {
             // Appended past every existing discriminant: inserting an
             // in-declaration-order number would reorder existing variants.
             Op::VecReduce { .. } => 40,
+            Op::Unroll { .. } => 41,
         }
     }
 }
@@ -797,6 +811,7 @@ impl PartialEq for Op {
                 a == b && aa == ba && as_ == bs && al == bl
             }
             (Op::VecReduce { x: a, bop: ab }, Op::VecReduce { x: b, bop: bb }) => a == b && ab == bb,
+            (Op::Unroll { axis: aa, len: al }, Op::Unroll { axis: ba, len: bl }) => aa == ba && al == bl,
             // Different variants are never equal (Hash carries no
             // discriminant, so cross-variant collisions land here).
             _ => false,
@@ -904,6 +919,10 @@ impl Hash for Op {
             Op::VecReduce { x, bop } => {
                 x.hash(state);
                 bop.hash(state);
+            }
+            Op::Unroll { axis, len } => {
+                axis.hash(state);
+                len.hash(state);
             }
             Op::Program { inputs, outputs, info } => {
                 inputs.hash(state);
@@ -1309,6 +1328,8 @@ impl Op {
             &Op::Narrow { x, start, len, .. } => vec![x, start, len],
             Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
             Op::VecReduce { x, bop: _ } => vec![*x],
+            // Len/axis are immediates — no operand slots.
+            Op::Unroll { .. } => vec![],
             // dst/src are NEVER null (whole-view stores spell the bare
             // Param); only dst_idx and bytes can be null.
             // dst/src are NEVER null (whole-view stores spell the bare
@@ -1436,6 +1457,7 @@ impl Op {
             }
             Op::Stack { ops } => ops.iter_mut().collect(),
             Op::VecReduce { x, bop: _ } => vec![x],
+            Op::Unroll { .. } => vec![],
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::TT(TTOp::MatmulTile { x, y }) => vec![x, y],

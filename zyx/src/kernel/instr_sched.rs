@@ -197,6 +197,7 @@ impl Kernel {
                 }
                 Op::Param { .. }
                 | Op::Const(_)
+                | Op::Unroll { .. }
                 | Op::Storage { .. }
                 | Op::EndLoop
                 | Op::Barrier

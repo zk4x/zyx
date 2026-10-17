@@ -266,6 +266,7 @@ impl Kernel {
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
                 Op::PTX(_) => todo!(),
+                Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before CUDA codegen"),
                 Op::TT { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }

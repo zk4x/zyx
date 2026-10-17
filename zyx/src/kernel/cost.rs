@@ -132,6 +132,9 @@ impl Kernel {
                     Op::Const(x) => {
                         dtypes.insert(op_id, (x.dtype(), Vec::new()));
                     }
+                    Op::Unroll { len, .. } => {
+                        dtypes.insert(op_id, (IDX_T, vec![len as Dim]));
+                    }
                     Op::Param { dtype, .. } => {
                         dtypes.insert(op_id, (dtype, Vec::new()));
                     }
@@ -330,6 +333,7 @@ impl Kernel {
                 | Op::Param { .. }
                 | Op::Storage { .. }
                 | Op::Const(_)
+                | Op::Unroll { .. }
                 | Op::Range { .. } => true,
                 Op::Store { .. }
                 | Op::Copy { .. }
@@ -423,6 +427,7 @@ impl Kernel {
                 | Op::Storage { .. }
                 | Op::Index { .. }
                 | Op::Stack { .. }
+                | Op::Unroll { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Flip { .. }

@@ -1262,6 +1262,7 @@ impl Kernel {
                     Op::GPU(_) => todo!(),
                     Op::Spirv(_) => todo!(),
                     Op::PTX(_) => todo!(),
+                    Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before SPIR-V codegen"),
                     Op::TT { .. }
                     | Op::Expand { .. }
                     | Op::Permute { .. }
