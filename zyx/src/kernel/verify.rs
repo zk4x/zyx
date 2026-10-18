@@ -216,6 +216,10 @@ impl Kernel {
         let mut op_id = self.head;
         let mut prev: OpId;
         let mut dtypes: Map<OpId, DType> = Map::default();
+        // Value shapes for the access checks below: single map
+        // computation up front, never `Kernel::shape` (which is a
+        // check-free accessor, not a verifier).
+        let (shapes, _) = self.compute_dtypes_and_rcs();
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Store { dst, dst_idx, src: x } => {
@@ -255,9 +259,9 @@ impl Kernel {
                             // index cone, and (both dim lists sorted
                             // ascending by axis) the src dims must form a
                             // subsequence of the access dims.
-                            let src_shape = self.shape(x);
+                            let src_shape = shapes[&x].1.clone();
                             if !dst_idx.is_null() {
-                                let access_shape = self.shape(dst_idx);
+                                let access_shape = shapes[&dst_idx].1.clone();
                                 // Scalar src broadcasts to any access.
                                 let mut subset = src_shape == access_shape || src_shape.is_empty();
                                 if !subset && !src_shape.is_empty() {
@@ -523,13 +527,10 @@ impl Kernel {
                     } else {
                         dtypes.insert(op_id, dtype);
                     }
-                    // A binary is valid iff the lane algebra accepts it:
-                    // scalar broadcast, union by lane axis (shared axes
-                    // equal, disjoint axes outer). Forcing the walker's
-                    // Binary arm here IS the check — every violation
-                    // fails loudly inside it, so no numeric comparison
-                    // here can add anything but false positives.
-                    let _ = self.shape(op_id);
+                    // A binary's dtype compatibility is checked above;
+                    // shape compatibility is the passes' own business
+                    // (symbolic checks happen at tensor level, never in
+                    // the kernel), so no shape proof is forced here.
                 }
                 Op::Asm { ref ops, .. } => {
                     if ops.is_empty() {

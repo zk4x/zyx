@@ -315,9 +315,6 @@ impl Kernel {
                 id = core::cmp::max(id, *pid);
             }
         }
-        if std::env::var("ZYX_DEBUG").is_ok() {
-            eprintln!("TMP variable() max+1 -> {}", id + 1);
-        }
         self.push_back(Op::Param { dtype, kind: ParamKind::Variable, shape: OpId::NULL, id: id + 1 })
     }
 
@@ -338,9 +335,6 @@ impl Kernel {
     /// becomes a const index. Returns `OpId::NULL` for rank-0, the single dim op for rank-1,
     /// or a `Stack` for higher ranks.
     pub fn add_shape(&mut self, shape: &[Dim]) -> OpId {
-        if shape.iter().any(|&d| d < 0) && std::env::var("ZYX_DEBUG").is_ok() {
-            eprintln!("TMP add_shape symbolic {shape:?}\n{}", std::backtrace::Backtrace::capture());
-        }
         let dim_ops: Vec<OpId> = shape.iter().map(|&d| if d < 0 { self.variable(IDX_T) } else { self.const_idx(d) }).collect();
         match dim_ops.len() {
             0 => OpId::NULL,

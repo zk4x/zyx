@@ -300,16 +300,15 @@ pub enum Op {
         /// Slice length.
         len: OpId,
     },
-    /// Reduce `x` with `rop` over the trailing dim. `reduce_axis` always
-    /// names the last dim's class (null is tolerated as shorthand for it).
-    /// Reductions over any other axis are permuted to trailing before
-    /// reaching this op.
+    /// Reduce `x` with `rop`, folding away the named lanes: if
+    /// `reduce_axis` is an `Op::Unroll`, its axis slot is zeroed,
+    /// otherwise the last dim drops.
     Reduce {
         /// Input.
         x: OpId,
         /// Reduce op.
         rop: BOp,
-        /// Axis - always the trailing dim, this op id is the id of the loop being reduced.
+        /// Axis expression naming the folded lanes (see above).
         reduce_axis: OpId,
     },
     // Graph-only ops (former `Node` variants). They never appear in ordered

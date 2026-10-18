@@ -15,7 +15,7 @@
 
 use super::autotune::Optimization;
 use crate::{
-    Map, Set,
+    Set,
     dtype::Constant,
     kernel::{BOp, Kernel, MemScope, Op, OpId, RangeKind},
     shape::Dim,
@@ -28,13 +28,16 @@ use crate::{
 /// lanes. A group split grows only the register storages that become
 /// lane-dependent (coarsen's slotting); a reduce-loop split keeps its scalar
 /// accumulator and folds the per-iteration lane bundle at the store arm.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum SplitMode {
     /// Secondary part is a local thread range.
     Local,
     /// Secondary part is unroll lanes; the lane axis is the next free one
     /// at apply time.
     Unroll,
+    /// Secondary part is a loop nest; the new loop is inserted right after
+    /// the split site and its end lands at the kernel tail.
+    Loop,
 }
 
 /// The split optimization: one config splits one site by one factor.
@@ -53,29 +56,49 @@ impl Optimization for OptSplit {
     fn apply(&self, kernel: &mut Kernel, config: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("OptSplit::apply");
-        let &(site, ref mode, factor) = &self.configs[config as usize];
-        match mode {
+        let &(axis_id, mode, factor) = &self.configs[config as usize];
+        kernel.split(axis_id, mode, factor);
+        kernel.verify();
+    }
+}
+
+impl Kernel {
+    /// Single split of one axis into `split_mode` by `factor`.
+    ///
+    /// Returns the new secondary node (`Local`/`Unroll`/`Loop`);
+    /// `OpId::NULL` when the config cannot apply. All validity gates
+    /// live here so `OptSplit::apply` stays a straight call.
+    pub(crate) fn split(&mut self, axis_id: OpId, split_mode: SplitMode, factor: u16) -> OpId {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("split");
+        let factor_dim = Dim::from(factor);
+        match split_mode {
             SplitMode::Local => {
-                let Op::Range { axis, kind: RangeKind::Group(len_id) } = kernel.ops[site].op else {
-                    unreachable!("local split applies to a group range site");
+                let Op::Range { axis, kind: RangeKind::Group(len_id) } = self.ops[axis_id].op else {
+                    return OpId::NULL;
                 };
-                let len = kernel.resolve_const(len_id).and_then(Constant::as_dim).unwrap();
-                let factor = Dim::from(factor);
-                debug_assert!(len % factor == 0, "group length {len} not divisible by {factor}");
-                let group_len = kernel.insert_const_idx_before(site, len / factor);
-                kernel.split_dim(
-                    site,
+                let Some(len) = self.resolve_const(len_id).and_then(Constant::as_dim) else {
+                    return OpId::NULL;
+                };
+                if len % factor_dim != 0 {
+                    return OpId::NULL;
+                }
+                let group_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                let ids = self.recompose(
+                    axis_id,
                     vec![
                         Op::Range { axis, kind: RangeKind::Group(group_len) },
-                        Op::Range { axis, kind: RangeKind::Local(u32::from(factor as u16)) },
+                        Op::Range { axis, kind: RangeKind::Local(u32::from(factor)) },
                     ],
+                    false,
                 );
+                ids[1]
             }
             SplitMode::Unroll => {
                 // The lane axis is the next free one; nothing runs between
                 // the make scan and apply, so the state matches make's view.
                 let mut next_lane_axis = 0u64;
-                for (_, op) in kernel.iter_unordered() {
+                for (_, op) in self.iter_unordered() {
                     match op {
                         Op::Range { axis, kind: RangeKind::Unroll(_) } => {
                             next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1);
@@ -86,7 +109,7 @@ impl Optimization for OptSplit {
                 }
                 let axis = u32::try_from(next_lane_axis).expect("unroll lane axis overflows u32");
                 let lanes = factor;
-                match kernel.ops[site].op {
+                match self.ops[axis_id].op {
                     Op::Range { axis: group_axis, kind: RangeKind::Group(len_id) } => {
                         // Global -> unroll lanes. Soundness validation first,
                         // no mutation yet: coarsen's gates rooted at the range
@@ -94,16 +117,16 @@ impl Optimization for OptSplit {
                         // (dst is an SSA value) and shared-memory effects a
                         // lane axis cannot slot refuse the split silently,
                         // mirroring `coarsen`'s refusal contract.
-                        let len = kernel.resolve_const(len_id).and_then(Constant::as_dim).unwrap();
+                        let len = self.resolve_const(len_id).and_then(Constant::as_dim).unwrap();
                         let factor = Dim::from(factor);
                         debug_assert!(len % factor == 0, "group length {len} not divisible by {factor}");
 
                         let mut varies: Set<OpId> = Set::default();
-                        varies.insert(site);
+                        varies.insert(axis_id);
                         for _ in 0..10_000 {
                             let mut grown = false;
-                            for (op, _) in kernel.iter_unordered() {
-                                if !varies.contains(&op) && kernel.at(op).parameters().any(|p| varies.contains(&p)) {
+                            for (op, _) in self.iter_unordered() {
+                                if !varies.contains(&op) && self.at(op).parameters().any(|p| varies.contains(&p)) {
                                     varies.insert(op);
                                     grown = true;
                                 }
@@ -113,12 +136,12 @@ impl Optimization for OptSplit {
                             }
                         }
                         let mut valid = true;
-                        for (_, op) in kernel.iter_unordered() {
+                        for (_, op) in self.iter_unordered() {
                             match *op {
                                 Op::Store { dst, dst_idx, src, .. } => {
                                     let addr_varies = !dst_idx.is_null() && varies.contains(&dst_idx);
                                     let val_varies = varies.contains(&src);
-                                    let base = kernel.at(dst);
+                                    let base = self.at(dst);
                                     let global =
                                         matches!(base, Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
                                     if !matches!(base, Op::Storage { .. } | Op::Param { .. }) {
@@ -135,7 +158,7 @@ impl Optimization for OptSplit {
                                 }
                                 Op::Copy { dst, dst_idx, .. } => {
                                     let addr_varies = !dst_idx.is_null() && varies.contains(&dst_idx);
-                                    let base = kernel.at(dst);
+                                    let base = self.at(dst);
                                     let global =
                                         matches!(base, Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
                                     if !matches!(base, Op::Storage { .. } | Op::Param { .. }) {
@@ -148,20 +171,21 @@ impl Optimization for OptSplit {
                             }
                         }
                         if !valid {
-                            return;
+                            return OpId::NULL;
                         }
 
                         // Split the group range: [Group(len/factor), Unroll
                         // lanes]; the composed index rides `split_dim` and its
                         // consumers become lane-dependent through the shape
                         // algebra.
-                        let group_len = kernel.insert_const_idx_before(site, len / factor);
-                        let split_ids = kernel.split_dim(
-                            site,
+                        let group_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                        let split_ids = self.recompose(
+                            axis_id,
                             vec![
                                 Op::Range { axis: group_axis, kind: RangeKind::Group(group_len) },
                                 Op::Unroll { axis, len: lanes },
                             ],
+                            false,
                         );
                         let unroll_id = split_ids[1];
 
@@ -171,8 +195,8 @@ impl Optimization for OptSplit {
                         varies.insert(unroll_id);
                         for _ in 0..10_000 {
                             let mut grown = false;
-                            for (op, _) in kernel.iter_unordered() {
-                                if !varies.contains(&op) && kernel.at(op).parameters().any(|p| varies.contains(&p)) {
+                            for (op, _) in self.iter_unordered() {
+                                if !varies.contains(&op) && self.at(op).parameters().any(|p| varies.contains(&p)) {
                                     varies.insert(op);
                                     grown = true;
                                 }
@@ -188,13 +212,13 @@ impl Optimization for OptSplit {
                         // else does. One pass: `grows` is itself consulted, so
                         // a single lane-varying access grows the storage it
                         // belongs to.
-                        let op_ids: Vec<OpId> = kernel.ops.ids().collect();
+                        let op_ids: Vec<OpId> = self.ops.ids().collect();
                         let mut grows: Set<OpId> = Set::default();
                         for &walk_id in &op_ids {
-                            match kernel.at(walk_id) {
+                            match self.at(walk_id) {
                                 Op::Store { dst, dst_idx, src, .. } => {
                                     let is_register =
-                                        matches!(kernel.at(*dst), Op::Storage { scope: MemScope::Register, .. });
+                                        matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. });
                                     let lane_dep = varies.contains(src)
                                         || (!dst_idx.is_null() && varies.contains(dst_idx))
                                         || grows.contains(dst);
@@ -204,7 +228,7 @@ impl Optimization for OptSplit {
                                 }
                                 Op::Load { src, src_idx, .. } => {
                                     let is_register =
-                                        matches!(kernel.at(*src), Op::Storage { scope: MemScope::Register, .. });
+                                        matches!(self.at(*src), Op::Storage { scope: MemScope::Register, .. });
                                     let lane_dep =
                                         (!src_idx.is_null() && varies.contains(src_idx)) || grows.contains(src);
                                     if is_register && lane_dep {
@@ -213,7 +237,7 @@ impl Optimization for OptSplit {
                                 }
                                 Op::Copy { dst, dst_idx, .. } => {
                                     let is_register =
-                                        matches!(kernel.at(*dst), Op::Storage { scope: MemScope::Register, .. });
+                                        matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. });
                                     let lane_dep = (!dst_idx.is_null() && varies.contains(dst_idx)) || grows.contains(dst);
                                     if is_register && lane_dep {
                                         grows.insert(*dst);
@@ -225,10 +249,10 @@ impl Optimization for OptSplit {
                         // Grow the storages themselves: one slot block
                         // per lane.
                         for &growth_id in &grows {
-                            match kernel.at(growth_id) {
+                            match self.at(growth_id) {
                                 Op::Storage { dtype, scope, len, .. } => {
                                     let (dtype, scope, len) = (*dtype, *scope, *len);
-                                    kernel.ops[growth_id].op = Op::Storage { dtype, scope, len: len * factor };
+                                    self.ops[growth_id].op = Op::Storage { dtype, scope, len: len * factor };
                                 }
                                 _ => unreachable!("lane split grows a storage"),
                             }
@@ -238,69 +262,60 @@ impl Optimization for OptSplit {
                         // and lane-invariant stored values broadcast across
                         // the slot block as `value + 0*lane`.
                         for &walk_id in &op_ids {
-                            match kernel.ops[walk_id].op {
+                            match self.ops[walk_id].op {
                                 Op::Load { src, src_idx } if grows.contains(&src) => {
                                     debug_assert!(
                                         !src_idx.is_null(),
                                         "lane split over a whole-view register load"
                                     );
-                                    let scale = kernel.insert_const_idx_before(walk_id, factor);
+                                    let scale = self.insert_const_idx_before(walk_id, factor);
                                     let mul =
-                                        kernel.insert_before(walk_id, Op::Binary { x: src_idx, y: scale, bop: BOp::Mul });
+                                        self.insert_before(walk_id, Op::Binary { x: src_idx, y: scale, bop: BOp::Mul });
                                     let new_idx =
-                                        kernel.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
-                                    kernel.ops[walk_id].op = Op::Load { src, src_idx: new_idx };
+                                        self.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
+                                    self.ops[walk_id].op = Op::Load { src, src_idx: new_idx };
                                 }
                                 Op::Store { dst, dst_idx, src } if grows.contains(&dst) => {
                                     debug_assert!(
                                         !dst_idx.is_null(),
                                         "lane split over a whole-view register store"
                                     );
-                                    let scale = kernel.insert_const_idx_before(walk_id, factor);
+                                    let scale = self.insert_const_idx_before(walk_id, factor);
                                     let mul =
-                                        kernel.insert_before(walk_id, Op::Binary { x: dst_idx, y: scale, bop: BOp::Mul });
+                                        self.insert_before(walk_id, Op::Binary { x: dst_idx, y: scale, bop: BOp::Mul });
                                     let new_idx =
-                                        kernel.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
-                                    let new_src = if varies.contains(&src) {
-                                        src
-                                    } else {
-                                        let dtype = kernel.dtype(src);
-                                        let cast = kernel.insert_before(walk_id, Op::Cast { x: unroll_id, dtype });
-                                        let zero = kernel.insert_before(walk_id, Op::Const(dtype.zero_constant()));
-                                        let delta =
-                                            kernel.insert_before(walk_id, Op::Binary { x: cast, y: zero, bop: BOp::Mul });
-                                        kernel.insert_before(walk_id, Op::Binary { x: src, y: delta, bop: BOp::Add })
-                                    };
-                                    kernel.ops[walk_id].op = Op::Store { dst, dst_idx: new_idx, src: new_src };
+                                        self.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
+                                    self.ops[walk_id].op = Op::Store { dst, dst_idx: new_idx, src };
                                 }
                                 Op::Copy { src, src_idx, dst, dst_idx } if grows.contains(&src) || grows.contains(&dst) => {
                                     let mut new_src_idx = src_idx;
                                     if !new_src_idx.is_null() {
-                                        let scale = kernel.insert_const_idx_before(walk_id, factor);
-                                        let mul = kernel.insert_before(
+                                        let scale = self.insert_const_idx_before(walk_id, factor);
+                                        let mul = self.insert_before(
                                             walk_id,
                                             Op::Binary { x: new_src_idx, y: scale, bop: BOp::Mul },
                                         );
                                         new_src_idx =
-                                            kernel.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
+                                            self.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
                                     }
                                     let mut new_dst_idx = dst_idx;
                                     if !new_dst_idx.is_null() {
-                                        let scale = kernel.insert_const_idx_before(walk_id, factor);
-                                        let mul = kernel.insert_before(
+                                        let scale = self.insert_const_idx_before(walk_id, factor);
+                                        let mul = self.insert_before(
                                             walk_id,
                                             Op::Binary { x: new_dst_idx, y: scale, bop: BOp::Mul },
                                         );
                                         new_dst_idx =
-                                            kernel.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
+                                            self.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
                                     }
-                                    kernel.ops[walk_id].op = Op::Copy { src, src_idx: new_src_idx, dst, dst_idx: new_dst_idx };
+                                    self.ops[walk_id].op = Op::Copy { src, src_idx: new_src_idx, dst, dst_idx: new_dst_idx };
                                 }
                                 _ => {}
                             }
                         }
+                        return unroll_id;
                     }
-            Op::Loop { len: len_id } => {
+                    Op::Loop { len: len_id } => {
                 // Reduce-loop lane split: [Loop(len/factor), Unroll
                 // lanes]. The per-iteration value bundle folds over its
                 // lane space at the accumulator store: `Op::Reduce`
@@ -313,46 +328,59 @@ impl Optimization for OptSplit {
                 // fold's lanes; a second fold (nested or disjoint) has
                 // no lowering. A later config in the same sequence that
                 // would add one is skipped (the variant dedups away).
-                if kernel.iter_unordered().any(|(_, op)| matches!(op, Op::Reduce { .. })) {
-                    return;
+                if self.iter_unordered().any(|(_, op)| matches!(op, Op::Reduce { .. })) {
+                    return OpId::NULL;
                 }
-                let len = kernel.resolve_const(len_id).and_then(Constant::as_dim).unwrap();
-                        let factor = Dim::from(factor);
-                        debug_assert!(len % factor == 0 && len / factor >= 1, "loop length {len} not divisible by {factor}");
+                let Some(len) = self.resolve_const(len_id).and_then(Constant::as_dim) else {
+                    return OpId::NULL;
+                };
+                if len % factor_dim != 0 || len / factor_dim < 1 {
+                    return OpId::NULL;
+                }
 
-                        let new_len = kernel.insert_const_idx_before(site, len / factor);
-                        let split_ids = kernel.split_dim(site, vec![Op::Loop { len: new_len }, Op::Unroll { axis, len: lanes }]);
-                        let (loop_new, unroll_body) = (split_ids[0], split_ids[1]);
+                let new_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                let split_ids = self.recompose(
+                    axis_id,
+                    vec![Op::Loop { len: new_len }, Op::Unroll { axis, len: lanes }],
+                    false,
+                );
+                let (loop_new, unroll_body) = (split_ids[0], split_ids[1]);
 
-                        // The accumulator store: exactly one per body (the
-                        // make scan validated it); its source is the chain
-                        // binary mixing the per-iteration value with the
-                        // carried accumulator load.
+                        // The accumulator store: a store to a register
+                        // storage at the end of the body. Its source is the
+                        // chain binary mixing the per-iteration vector with
+                        // the carried accumulator load; the fold reduces
+                        // the vector right before the store. No register
+                        // store: the loop has no accumulator, the vector
+                        // flows downstream unfolded and no fold is inserted.
                         let store_id;
-                        let mut op_id = kernel.next_op(loop_new);
+                        let mut op_id = self.next_op(loop_new);
                         loop {
-                            match kernel.ops[op_id].op {
-                                Op::EndLoop => unreachable!("opt_split validated the acc store"),
-                                Op::Store { .. } => {
-                                    store_id = op_id;
-                                    break;
+                            match self.ops[op_id].op {
+                                Op::EndLoop => return unroll_body,
+                                Op::Store { dst, .. } => {
+                                    if matches!(self.at(dst), Op::Storage { scope: MemScope::Register, .. }) {
+                                        store_id = op_id;
+                                        break;
+                                    }
+                                    return unroll_body;
                                 }
                                 _ => {}
                             }
-                            op_id = kernel.next_op(op_id);
+                            op_id = self.next_op(op_id);
                         }
-                        let Op::Store { dst, dst_idx, src } = kernel.ops[store_id].op else {
+                        let Op::Store { dst, dst_idx, src } = self.ops[store_id].op else {
                             unreachable!("opt_split validated the acc store")
                         };
                         debug_assert!(
-                            kernel.resolve_const(dst_idx) == Some(Constant::new(0i64)),
+                            self.resolve_const(dst_idx) == Some(Constant::new(0i64)),
                             "opt_split validated the acc store index"
                         );
                         debug_assert!(
-                            matches!(kernel.at(dst), Op::Storage { scope: MemScope::Register, .. }),
+                            matches!(self.at(dst), Op::Storage { scope: MemScope::Register, .. }),
                             "opt_split validated the acc storage"
                         );
-                        let (x, y, bop) = match kernel.at(src) {
+                        let (x, y, bop) = match self.at(src) {
                             Op::Binary { x, y, bop } => (*x, *y, *bop),
                             _ => unreachable!("opt_split validated the chain binary"),
                         };
@@ -372,7 +400,7 @@ impl Optimization for OptSplit {
                                 x_dep = true;
                                 break;
                             }
-                            x_stack.extend(kernel.at(id).parameters());
+                            x_stack.extend(self.at(id).parameters());
                         }
                         let mut y_stack: Vec<OpId> = vec![y];
                         let mut y_seen: Set<OpId> = Set::default();
@@ -386,25 +414,53 @@ impl Optimization for OptSplit {
                                 y_dep = true;
                                 break;
                             }
-                            y_stack.extend(kernel.at(id).parameters());
+                            y_stack.extend(self.at(id).parameters());
                         }
                         debug_assert!(x_dep != y_dep, "lane split chain binary operands misclassified");
                         let (bundle, carry) = if x_dep { (x, y) } else { (y, x) };
 
-                        let fold = kernel.insert_before(src, Op::Reduce { x: bundle, rop: bop, reduce_axis: unroll_body });
-                        kernel.ops[src].op = Op::Binary { x: fold, y: carry, bop };
+                        let fold = self.insert_before(src, Op::Reduce { x: bundle, rop: bop, reduce_axis: unroll_body });
+                        self.ops[src].op = Op::Binary { x: fold, y: carry, bop };
+                        return unroll_body;
                     }
-                    _ => unreachable!("lane split applies to a group range or loop site"),
+                    _ => return OpId::NULL,
                 }
             }
+            SplitMode::Loop => {
+                // Strip-mine into a nested loop: the new loop goes right
+                // after the split site, its end lands at the kernel tail.
+                // No fold: plain nesting needs no lane combine.
+                let (outer_len_id, is_loop) = match self.ops[axis_id].op {
+                    Op::Range { kind: RangeKind::Group(len_id), .. } => (len_id, false),
+                    Op::Loop { len: len_id } => (len_id, true),
+                    _ => return OpId::NULL,
+                };
+                let Some(len) = self.resolve_const(outer_len_id).and_then(Constant::as_dim) else {
+                    return OpId::NULL;
+                };
+                if len % factor_dim != 0 {
+                    return OpId::NULL;
+                }
+                let outer_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                let outer = if is_loop {
+                    Op::Loop { len: outer_len }
+                } else {
+                    let Op::Range { axis, .. } = self.ops[axis_id].op else {
+                        return OpId::NULL;
+                    };
+                    Op::Range { axis, kind: RangeKind::Group(outer_len) }
+                };
+                let inner_len = self.insert_const_idx_before(axis_id, factor_dim);
+                let ids = self.recompose(axis_id, vec![outer, Op::Loop { len: inner_len }], true);
+                ids[1]
+            }
         }
-        kernel.verify();
     }
 }
 
 impl Kernel {
-    /// Make the split optimization: scan the kernel for splittable sites and
-    /// emit one config per (site, factor, mode).
+    /// Make the split optimization: scan the kernel for splittable axis_ids and
+    /// emit one config per (axis_id, factor, mode).
     ///
     /// Validity for lane-emitting modes is checked here so `apply` can assume
     /// a validated config; the boolean-loop gate for local splits and the
@@ -510,6 +566,15 @@ impl Kernel {
                             configs.push((op_id, SplitMode::Unroll, f as u16));
                         }
                     }
+                    // Plain nested loops (the deleted `SplitLoop`): large
+                    // loops strip-mine without lanes or folds.
+                    if len >= 16 {
+                        for f in [8u64, 16, 4, 2] {
+                            if len % f as Dim == 0 {
+                                configs.push((op_id, SplitMode::Loop, f as u16));
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -604,7 +669,7 @@ impl Kernel {
                     // per-iteration bundle. A loop-invariant chain gains
                     // nothing from lane splitting (the fold would combine
                     // identical values), and a doubly-variant chain has no
-                    // clean carry — neither is a valid site for this
+                    // clean carry — neither is a valid axis_id for this
                     // transform.
                     let (cx, cy) = match self.at(src) {
                         Op::Binary { x, y, .. } => (*x, *y),
@@ -637,9 +702,11 @@ impl Kernel {
         store_seen
     }
 
-    /// Splits dim (index or loop) into multiple indices or loops
-    /// Returns the `OpId`s of the created split operations in the order they were provided
-    pub(crate) fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) -> Vec<OpId> {
+    /// Recomposes dim into the given splits (index arithmetic + placement).
+    /// Returns the `OpId`s of the created split operations in the order they were provided.
+    /// With `endloop_at_tail`, new loops close at the kernel tail instead
+    /// of right after the split site.
+    pub(crate) fn recompose(&mut self, dim_id: OpId, mut splits: Vec<Op>, endloop_at_tail: bool) -> Vec<OpId> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("split_dim");
         let is_loop = matches!(self.ops[dim_id].op, Op::Loop { .. });
@@ -709,7 +776,9 @@ impl Kernel {
         let n_loops = splits.iter().filter(|op| matches!(op, Op::Loop { .. })).count();
         for (i, op) in splits.iter().enumerate() {
             if matches!(op, Op::Loop { .. }) {
-                if is_loop && i == n_loops - 1 {
+                if endloop_at_tail {
+                    // Tail placement handled after composition below.
+                } else if is_loop && i == n_loops - 1 {
                 } else {
                     self.insert_after(last_dim_op, Op::EndLoop);
                 }
@@ -746,12 +815,15 @@ impl Kernel {
             split_ids.push(y);
         }
 
-        // The reduce-loop caller repairs the restructured accesses only
-        // after the composition exists, so `split_dim` itself does not run
+        // The caller repairs the restructured accesses only
+        // after the composition exists, so `recompose` itself does not run
         // the shape verifier; each caller verifies.
         let y = self.insert_before(dim_id, last_op);
         split_ids.push(y);
         self.ops[dim_id].op = Op::Binary { x: acc, y, bop: BOp::Add };
+        if endloop_at_tail {
+            self.push_back(Op::EndLoop);
+        }
 
         split_ids
     }

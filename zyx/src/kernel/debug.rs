@@ -49,12 +49,12 @@ impl Kernel {
         println!("{self}")
     }
 
-    fn shape_suffix(&self, op_id: OpId) -> String {
-        match self.shape(op_id).as_slice() {
-            [] => String::new(),
-            [dim] => format!("[{dim}]"),
-            [x, y] => format!("[{x}x{y}]"),
-            dims => format!("[{}]", dims.iter().map(ToString::to_string).collect::<Vec<_>>().join("x")),
+    fn shape_suffix(&self, op_id: OpId, shapes: &Map<OpId, (DType, Vec<Dim>)>) -> String {
+        match shapes.get(&op_id).map(|(_, dims)| dims.as_slice()) {
+            None | Some([]) => String::new(),
+            Some([dim]) => format!("[{dim}]"),
+            Some([x, y]) => format!("[{x}x{y}]"),
+            Some(dims) => format!("[{}]", dims.iter().map(ToString::to_string).collect::<Vec<_>>().join("x")),
         }
     }
 
@@ -62,6 +62,10 @@ impl Kernel {
         let remap_ids = false;
         let mut indent = String::from(" ");
         let bounds = self.compute_bounds();
+        // Value shapes for display: single map computation up front, no
+        // per-op shape walks. Ops with no value (barriers, embedded
+        // source) simply have no entry and print without a suffix.
+        let (shapes, _) = self.compute_dtypes_and_rcs();
         let mut dtypes: Map<OpId, DType> = Map::default();
         let mut op_id = self.head;
         let mut has_loops = false;
@@ -88,7 +92,7 @@ impl Kernel {
                 Op::Reduce { x, rop, reduce_axis } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map[&x];
                     let reduce_axis = id_map.get(&reduce_axis).unwrap_or(&reduce_axis);
                     if has_loops {
@@ -110,7 +114,7 @@ impl Kernel {
                 Op::TT(TTOp::ReduceTile { x, rop, .. }) => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map[&x];
                     writeln!(
                         f,
@@ -127,7 +131,7 @@ impl Kernel {
                 Op::TT(TTOp::MatmulTile { x, y }) => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map[&x];
                     let y = id_map[&y];
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {red}matmul_tile{reset} r{x}, r{y}").unwrap();
@@ -135,13 +139,13 @@ impl Kernel {
                 Op::TT(TTOp::TransposeTile { x }) => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map[&x];
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {red}transpose_tile{reset} r{x}").unwrap();
                 }
                 Op::Unroll { axis, len } => {
                     dtypes.insert(op_id, IDX_T);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{shp}{reset} = {red}unroll{reset} axis{axis} lanes {len}").unwrap();
                 }
                 Op::TT(TTOp::ReserveBack { cb, n }) => {
@@ -218,14 +222,14 @@ impl Kernel {
                     // placeholder like Asm (effect-only, never a value).
                     let dtype = ops.iter().next().and_then(|x| dtypes.get(x)).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}llk{reset} {asm} {ops:?}").unwrap();
                 }
                 Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, x, scaler }) => {
                     let dtype = dtypes.get(&cb_in).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
                     writeln!(
                         f,
@@ -241,7 +245,7 @@ impl Kernel {
                 Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
                     let dtype = dtypes.get(&cb_a).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
                     writeln!(
                         f,
@@ -257,7 +261,7 @@ impl Kernel {
                 Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, mx, plain }) => {
                     let dtype = dtypes.get(&cb_a).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
                     writeln!(
                         f,
@@ -271,7 +275,7 @@ impl Kernel {
                 }
                 Op::Param { dtype, kind, shape, .. } => {
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     if shape.is_null() {
                         writeln!(
                             f,
@@ -288,7 +292,7 @@ impl Kernel {
                 }
                 Op::Storage { dtype, scope, len } => {
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     writeln!(
                         f,
                         "{indent}{red}r{out_id}{reset}{grey}: {dtype}{shp}{reset} = {yellow}storage{reset} {scope}, len={len:?}"
@@ -298,13 +302,13 @@ impl Kernel {
                 Op::Const(value) => {
                     let dtype = value.dtype();
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {magenta}{value}{reset}").unwrap();
                 }
                 Op::Load { src, src_idx, .. } => {
                     let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let src = id_map.get(&src).copied().unwrap_or(src);
                     let src_idx = id_map.get(&src_idx).copied().unwrap_or(src_idx);
                     let (lb, ub) = bounds.get(&src_idx).copied().unwrap_or((0, 0));
@@ -370,7 +374,7 @@ impl Kernel {
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map.get(&x).copied().unwrap_or(x);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {dtype}(r{x})    // {lb}..={ub}").unwrap();
@@ -380,7 +384,7 @@ impl Kernel {
                 }
                 Op::Bitcast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map.get(&x).copied().unwrap_or(x);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = bits({dtype})r{x}    // {lb}..={ub}").unwrap();
@@ -391,7 +395,7 @@ impl Kernel {
                 Op::Unary { x, uop, .. } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let (op1, op2) = match uop {
                         UOp::Neg => ("-", ""),
                         UOp::Not => ("!", ""),
@@ -421,7 +425,7 @@ impl Kernel {
                         dtypes.get(&x).copied().unwrap_or(DType::U8)
                     };
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let (op1, op2, op3) = match bop {
                         BOp::Add => ("", " + ", ""),
                         BOp::Sub => ("", " - ", ""),
@@ -455,7 +459,7 @@ impl Kernel {
                 Op::Wmma { dims, layout, dtype, c, a, b } => {
                     let cdtype = dtypes.get(&c).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, cdtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let a = id_map.get(&a).copied().unwrap_or(a);
                     let b = id_map.get(&b).copied().unwrap_or(b);
                     let c = id_map.get(&c).copied().unwrap_or(c);
@@ -525,14 +529,14 @@ impl Kernel {
                     // display placeholder, never a value dtype.
                     let dtype = ops.iter().next().and_then(|x| dtypes.get(x)).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}asm{reset} {asm} {ops:?}").unwrap();
                 }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes.get(&ops[0]).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = bounds.get(&op_id) {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}stack{reset}{ops:?}    // {lb}..={ub}")
@@ -544,7 +548,7 @@ impl Kernel {
                 Op::Index { vec, idx } => {
                     let dtype = dtypes.get(&vec).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let vec = id_map.get(&vec).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = r{vec}{orange}.s{idx}{reset}    // {l}..={u}",)
@@ -556,7 +560,7 @@ impl Kernel {
                 Op::Reshape { x, shape, .. } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     let shape = id_map.get(&shape).copied().unwrap_or(shape);
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {cyan}reshape{reset} r{x} -> {shape:?}").unwrap();
@@ -564,7 +568,7 @@ impl Kernel {
                 Op::Expand { x, shape } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     let shape = id_map.get(&shape).copied().unwrap_or(shape);
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {cyan}expand{reset} r{x} -> {shape:?}").unwrap();
@@ -572,14 +576,14 @@ impl Kernel {
                 Op::Permute { x, ref axes } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {cyan}permute{reset} r{x} axes={axes:?}").unwrap();
                 }
                 Op::Pad { x, ref axis, lp, len } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     let lp = id_map.get(&lp).copied().unwrap_or(lp);
                     let len = id_map.get(&len).copied().unwrap_or(len);
@@ -592,7 +596,7 @@ impl Kernel {
                 Op::Narrow { x, axis, start, len } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     let start = id_map.get(&start).copied().unwrap_or(start);
                     let len = id_map.get(&len).copied().unwrap_or(len);
@@ -605,7 +609,7 @@ impl Kernel {
                 Op::Flip { x, ref axes } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id);
+                    let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {cyan}flip{reset} r{x} axes={axes:?}").unwrap();
                 }

@@ -36,7 +36,7 @@ impl Kernel {
                 .iter_unordered()
                 .find_map(|(op, x)| matches!(x, Op::Reduce { .. }).then_some(op));
             let Some(reduce_id) = found else { break };
-            self.devectorize_reduce_one(reduce_id);
+            self.devectorize_reduce(reduce_id);
         }
         self.constant_folding();
         self.common_subexpression_elimination();
@@ -57,7 +57,7 @@ impl Kernel {
     /// the fold axes only and the result keeps its other lanes — the
     /// fold-chain members stay lane-conditional on those surviving
     /// unroll nodes for [`Self::devectorize_unrolls`] to unfold.
-    fn devectorize_reduce_one(&mut self, reduce_id: OpId) {
+    fn devectorize_reduce(&mut self, reduce_id: OpId) {
         let Op::Reduce { x, rop, reduce_axis } = self.ops[reduce_id].op.clone() else {
             unreachable!("devectorize: not a reduce")
         };

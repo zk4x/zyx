@@ -507,9 +507,6 @@ impl Runtime {
                     if let Op::Param { id, .. } = &mut self.kernels[kid].kernel.ops[op_id].op {
                         *id = eid.0 + 1;
                     }
-                    if std::env::var("ZYX_DEBUG").is_ok() {
-                        eprintln!("TMP replay-into-kernel var eid={eid:?} -> {op_id:?}");
-                    }
                     // Load-owned handle (rc = 1 is the load edge; no user
                     // handle). Released with the kernel's loads.
                     let tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
@@ -621,9 +618,6 @@ impl Runtime {
                     // 0 is reserved for unidentified params.
                     if let Op::Param { id, .. } = &mut self.kernels[kid].kernel.ops[op_id].op {
                         *id = eid.0 + 1;
-                    }
-                    if std::env::var("ZYX_DEBUG").is_ok() {
-                        eprintln!("TMP replay var eid={eid:?} -> {op_id:?}");
                     }
                     let tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
                     self.kernels[kid].loads.push(tid);
@@ -751,14 +745,27 @@ impl Runtime {
                     // A variable in a shape expression is an input, not
                     // structure: register its leaf so the plan binds it via
                     // the tensors slab and value changes never force
-                    // recompilation.
-                    let (_, cid) = self.push_leaf_node(graph_id, IDX_T, OpId::NULL);
-                    let var_tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
-                    self.graphs[graph_id].leaf_map.insert(cid, var_tid);
-                    self.retain(var_tid);
-                    self.graphs[graph_id].leaf_classes.push(cid);
-                    self.graphs[graph_id].ref_count += 1;
-                    cid
+                    // recompilation. The same expression replayed twice
+                    // (e.g. x's and y's shapes sharing one variable) names
+                    // the same variable: reuse its class so downstream
+                    // identity sees one variable, not two.
+                    let existing = self.graphs[graph_id]
+                        .leaf_map
+                        .iter()
+                        .find_map(|(&c, &t)| {
+                            matches!(self.tensors[t], TensorData::Symbolic { expr: e, .. } if e == eid).then_some(c)
+                        });
+                    if let Some(cid) = existing {
+                        cid
+                    } else {
+                        let (_, cid) = self.push_leaf_node(graph_id, IDX_T, OpId::NULL);
+                        let var_tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
+                        self.graphs[graph_id].leaf_map.insert(cid, var_tid);
+                        self.retain(var_tid);
+                        self.graphs[graph_id].leaf_classes.push(cid);
+                        self.graphs[graph_id].ref_count += 1;
+                        cid
+                    }
                 }
                 Expr::Cast { x, dtype } => {
                     let a = class_map[&x];

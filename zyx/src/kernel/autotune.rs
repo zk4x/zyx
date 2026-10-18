@@ -56,12 +56,11 @@ pub type MakeOpt = fn(&Kernel) -> Box<dyn Optimization>;
 impl Kernel {
     /// The default optimization set: the search space [`BeamSearch`] explores
     /// unless the caller provides its own list of make functions.
-    pub const fn default_optimizations() -> [MakeOpt; 5] {
+    pub const fn default_optimizations() -> [MakeOpt; 4] {
         [
             Kernel::opt_split,
             Kernel::opt_reassociate_commutative,
             Kernel::opt_local_reduce,
-            Kernel::opt_split_loop,
             Kernel::opt_merge_nested_loops,
         ]
     }
@@ -74,13 +73,11 @@ impl Kernel {
     pub fn default_epilogue(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("default_epilogue");
-        self.unroll_len1_loops();
+        self.delete_useless_loops();
         self.constant_folding();
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
         self.fold_accs();
-        self.delete_zero_len_indices();
-        self.delete_zero_len_loops();
         self.unfold_pows();
         self.algebraic_simplifications();
         self.simplify_accumulating_loop();

@@ -1669,9 +1669,6 @@ impl Runtime {
                             .leaf_map
                             .iter()
                             .find_map(|(&c, &t)| (t == var_tid).then_some(c));
-                        if std::env::var("ZYX_DEBUG").is_ok() {
-                            eprintln!("TMP promote var_tid={var_tid:?} existing={existing:?}");
-                        }
                         let dim_cid = if let Some(c) = existing {
                             c
                         } else {
@@ -1844,6 +1841,15 @@ impl Runtime {
                             | TensorData::Promoted { class_id: c, graph_id: g, .. } => {
                                 !c.is_null() && *g == graph_id && !self.graphs[graph_id].dead
                             }
+                            // A scalar variable stays `Symbolic` after
+                            // promoting (its value binds at launch), so a
+                            // second promotion of the same tid must reuse
+                            // the leaf class bound in `leaf_map` instead of
+                            // minting a duplicate variable leaf.
+                            TensorData::Symbolic { .. } => self.graphs[graph_id]
+                                .leaf_map
+                                .values()
+                                .any(|&t| t == load_tid),
                             _ => false,
                         };
                         if load_is_leaf {
@@ -1852,6 +1858,13 @@ impl Runtime {
                                 TensorData::Graph { class_id: c, .. }
                                 | TensorData::GraphLeaf { class_id: c, .. }
                                 | TensorData::Promoted { class_id: c, .. } => *c,
+                                TensorData::Symbolic { .. } => {
+                                    self.graphs[graph_id]
+                                        .leaf_map
+                                        .iter()
+                                        .find_map(|(&c, &t)| (t == load_tid).then_some(c))
+                                        .expect("promote_to_graph: symbolic load bound in leaf_map")
+                                }
                                 ref t => unreachable!("{t:?}"),
                             }
                         } else {

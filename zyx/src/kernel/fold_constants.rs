@@ -462,9 +462,55 @@ impl Kernel {
     ///
     /// This method removes loops that don't contain any stores,
     /// reducing instruction count and improving performance.
-    pub(crate) fn delete_zero_len_loops(&mut self) {
+    /// Delete useless loops and ranges: length-1 `Loop`s and `Range`s
+    /// iterate exactly once, so they become `Const(0)` (a length-1 loop
+    /// also drops its paired `EndLoop`); loops whose bodies never escape
+    /// (no store to an outside buffer) are removed entirely.
+    pub(crate) fn delete_useless_loops(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("delete_empty_loops");
+
+        // Length-1 iteration structure iterates exactly once: replace it
+        // with the constant index 0.
+        let mut op_id = self.head;
+        let mut depth = 0;
+        let mut deleted = Vec::new();
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            match self.ops[op_id].op {
+                Op::Loop { len: len_id } => {
+                    depth += 1;
+                    if self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) == Some(1) {
+                        self.ops[op_id].op = Op::Const(Constant::idx(0));
+                        deleted.push(depth);
+                    }
+                }
+                Op::EndLoop => {
+                    if deleted.pop_if(|x| *x == depth).is_some() {
+                        self.remove_op(op_id);
+                    }
+                    depth -= 1;
+                }
+                Op::Range { kind, .. } => match kind {
+                    RangeKind::Group(len) => {
+                        if self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) == Some(1) {
+                            self.ops[op_id].op = Op::Const(Constant::idx(0));
+                        }
+                    }
+                    RangeKind::Local(len) => {
+                        if len == 1 {
+                            self.ops[op_id].op = Op::Const(Constant::idx(0));
+                        }
+                    }
+                    // A warp is a view over a local range — never a removable len-1 index.
+                    RangeKind::Warp(_) => {}
+                    // An unroll range is lanes, not an index — never a removable len-1 index.
+                    RangeKind::Unroll(_) => {}
+                },
+                _ => {}
+            }
+            op_id = next;
+        }
 
         let mut dead = Set::default();
         let mut store_targets_stack: Vec<Set<OpId>> = Vec::new();
