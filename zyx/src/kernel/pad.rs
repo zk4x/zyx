@@ -1,17 +1,24 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-//! Pad index optimization.
+//! Pad axis optimization.
 //!
-//! This module provides index padding optimizations for kernels,
-//! which pad global indices to hardware-friendly sizes.
+//! This module provides axis padding for kernels, which pads range and
+//! loop lengths up to a multiple of a hardware-friendly size.
 //!
-//! Padding indices is useful for:
+//! Padding is useful for:
 //!
 //! - Enabling efficient tiling when tensor dimensions aren't multiples
 //!   of the tile size
 //! - Guarding out-of-range loads
 //! - Skipping out-of-range stores with conditionals
+//!
+//! `pad_to(axis, multiple)` pads the length up to the next multiple
+//! (`multiple = 32` pads up to a multiple of 32). Lengths already provably
+//! a multiple (concrete or symbolic, via `is_sym_multiple`) are left
+//! untouched; everything else
+//! pads symbolically (`(pad_to - len % pad_to) % pad_to` as IR), so no
+//! `resolve_const` anywhere on this path.
 
 use crate::{
     Set,
@@ -23,10 +30,10 @@ use crate::{
 
 use super::autotune::Optimization;
 
-/// Pad indices to hardware-friendly sizes (e.g., 32 for CUDA warps).
+/// Pad axes to hardware-friendly multiples (e.g., 32 for CUDA warps).
 #[derive(Debug)]
 pub struct PadIndex {
-    /// Pairs of (index_op_id, target_size) for each padding.
+    /// Pairs of (axis_op_id, multiple) for each padding.
     pub factors: Vec<(OpId, Dim)>,
 }
 
@@ -40,35 +47,49 @@ impl Optimization for PadIndex {
             return;
         }
         let (idx_id, pad_to) = self.factors[config as usize];
-        kernel.pad_range(idx_id, pad_to);
+        kernel.pad_to(idx_id, pad_to);
     }
 }
 
 impl Kernel {
-    /// Pads a global index up to a multiple of `pad_to`, guarding out-of-range loads
-    /// and skipping out-of-range stores.
+    /// Pads a range or loop length up to a multiple of `pad_to`, guarding
+    /// out-of-range loads and stores.
     ///
-    /// The pad amount is computed symbolically (`(pad_to - len % pad_to) % pad_to`
-    /// as IR), so unresolvable lengths pad exactly with no `resolve_const`.
-    /// This extends the range length so the grid covers full tiles. OOB reads
-    /// are redirected to element 0 (safe). OOB stores are wrapped in a
-    /// boolean-length `Op::Loop` (conditional) and skipped entirely.
+    /// The pad amount is computed symbolically (`(pad_to - len % pad_to)
+    /// % pad_to` as IR). This extends the length so the grid covers full
+    /// tiles. OOB reads are redirected to element 0 (safe). OOB stores
+    /// are redirected to a trash element past the buffer end.
     ///
-    /// Useful for tiling: when a tensor dimension isn't a multiple of the tile size,
-    /// pad the index so the grid covers full tiles, and OOB threads compute garbage
-    /// but never write it to memory.
+    /// Useful for tiling: when a tensor dimension isn't a multiple of the
+    /// tile size, pad the axis so the grid covers full tiles, and OOB
+    /// threads compute garbage but never write it to memory.
     ///
     /// # Panics
-    /// - If `gidx_id` is not an `Op::Index` node.
-    pub(crate) fn pad_range(&mut self, gidx_id: OpId, pad_to: Dim) {
-        debug_assert!(pad_to > 0, "pad_range: pad_to {pad_to} <= 0");
+    /// - If `axis` is neither a range nor a loop.
+    /// - If `axis` is a warp view or unroll range (pad the underlying
+    ///   local/group range instead).
+    pub(crate) fn pad_to(&mut self, axis: OpId, multiple: Dim) {
+        debug_assert!(multiple > 0, "pad_to: multiple {multiple} <= 0");
+        match self.ops[axis].op {
+            Op::Range { .. } => self.pad_range(axis, multiple),
+            Op::Loop { .. } => self.pad_loop(axis, multiple),
+            _ => panic!("pad_to: op is neither a range nor a loop"),
+        }
+    }
+
+    /// Pads a range length up to a multiple of `pad_to`.
+    ///
+    /// The limit (original length) doubles as the OOB guard comparison.
+    fn pad_range(&mut self, gidx_id: OpId, pad_to: Dim) {
         // 1. Extend the index length to the next multiple of pad_to.
-        // The limit (original length) doubles as the OOB guard comparison.
         let Op::Range { axis, kind } = self.ops[gidx_id].op else {
-            panic!("pad_index: op is not an Index");
+            panic!("pad: op is not a range");
         };
         let (limit, new_kind) = match kind {
             RangeKind::Group(len) => {
+                if self.is_sym_multiple(len, pad_to) {
+                    return;
+                }
                 let pad_to_c = self.insert_before(gidx_id, Op::Const(Constant::idx(pad_to)));
                 let rem = self.insert_before(gidx_id, Op::Binary { x: len, y: pad_to_c, bop: BOp::Mod });
                 let sub = self.insert_before(gidx_id, Op::Binary { x: pad_to_c, y: rem, bop: BOp::Sub });
@@ -87,10 +108,10 @@ impl Kernel {
                 (limit, RangeKind::Local(new_len))
             }
             RangeKind::Warp(_) => {
-                panic!("pad_range: cannot pad a warp view; pad its underlying local range instead")
+                panic!("pad: cannot pad a warp view; pad its underlying local range instead")
             }
             RangeKind::Unroll(_) => {
-                panic!("pad_range: cannot pad an unroll range; pad its underlying group range instead")
+                panic!("pad: cannot pad an unroll range; pad its underlying group range instead")
             }
         };
         self.ops[gidx_id].op = Op::Range { axis, kind: new_kind };
@@ -163,22 +184,27 @@ impl Kernel {
         }
     }
 
-    #[allow(unused)]
-    pub(crate) fn pad_loop(&mut self, loop_id: OpId, pad_len: Dim) {
-        if pad_len == 0 {
+    /// Pads a loop length up to a multiple of `pad_to`.
+    ///
+    /// The limit (original length expression) doubles as the OOB guard
+    /// comparison. Symbolic lengths pad exactly, like ranges.
+    fn pad_loop(&mut self, loop_id: OpId, pad_to: Dim) {
+        // 1. Extend the loop length to the next multiple of pad_to.
+        let Op::Loop { len } = self.ops[loop_id].op else {
+            panic!("pad: op is not a loop");
+        };
+        if self.is_sym_multiple(len, pad_to) {
             return;
         }
-
-        // 1. Extend the loop length
-        let Op::Loop { len } = &self.ops[loop_id].op else {
-            panic!("pad_loop: op is not a Loop");
-        };
-        let current_len = self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap();
-        let new_len = self.insert_before(loop_id, Op::Const(Constant::idx(current_len + pad_len)));
+        let pad_to_c = self.insert_before(loop_id, Op::Const(Constant::idx(pad_to)));
+        let rem = self.insert_before(loop_id, Op::Binary { x: len, y: pad_to_c, bop: BOp::Mod });
+        let sub = self.insert_before(loop_id, Op::Binary { x: pad_to_c, y: rem, bop: BOp::Sub });
+        let pad = self.insert_before(loop_id, Op::Binary { x: sub, y: pad_to_c, bop: BOp::Mod });
+        let new_len = self.insert_before(loop_id, Op::Binary { x: len, y: pad, bop: BOp::Add });
         self.ops[loop_id].op = Op::Loop { len: new_len };
 
-        // 2. Create limit constant for comparison
-        let limit = self.insert_before(loop_id, Op::Const(Constant::idx(current_len)));
+        // 2. The original length doubles as the OOB guard comparison.
+        let limit = len;
 
         // 3. Walk all ops to guard loads and stores depending on this loop
         let mut op_id = self.head;
@@ -189,9 +215,9 @@ impl Kernel {
             if let Op::Store { dst, dst_idx: store_idx, src: x } = self.ops[op_id].op.clone()
                 && self.depends_on(store_idx, loop_id, &mut Set::default())
             {
-                let buf_len: Option<Dim> = match self.ops[dst].op {
-                    Op::Param { .. } => todo!(),
-                    Op::Storage { len, .. } => Some(len),
+                let buf_len: Option<Dim> = match &self.ops[dst].op {
+                    Op::Param { .. } => Some(self.shape(dst).iter().product()),
+                    Op::Storage { len, .. } => Some(*len),
                     _ => None,
                 };
                 if let Some(buf_len) = buf_len {
@@ -211,9 +237,9 @@ impl Kernel {
             if let Op::Copy { src: copy_src, src_idx: copy_sidx, dst, dst_idx: store_idx } = self.ops[op_id].op.clone()
                 && self.depends_on(store_idx, loop_id, &mut Set::default())
             {
-                let buf_len: Option<Dim> = match self.ops[dst].op {
-                    Op::Param { .. } => todo!(),
-                    Op::Storage { len, .. } => Some(len),
+                let buf_len: Option<Dim> = match &self.ops[dst].op {
+                    Op::Param { .. } => Some(self.shape(dst).iter().product()),
+                    Op::Storage { len, .. } => Some(*len),
                     _ => None,
                 };
                 if let Some(buf_len) = buf_len {
@@ -250,15 +276,16 @@ impl Kernel {
         }
     }
 
-    /// Make the `PadIndex` optimization: scan the kernel for indices whose
-    /// lengths are not provably multiples of hardware-friendly sizes.
+    /// Make the `PadIndex` optimization: scan the kernel for ranges and
+    /// loops whose lengths are not provably multiples of
+    /// hardware-friendly sizes.
     pub fn opt_pad_index(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let Op::Range { kind, .. } = self.ops[op_id].op {
-                match kind {
+            match self.ops[op_id].op {
+                Op::Range { kind, .. } => match kind {
                     // Symbolic lengths skip only when provably a multiple.
                     RangeKind::Group(len) => {
                         for pad_to in [8, 16, 32] {
@@ -279,7 +306,15 @@ impl Kernel {
                     RangeKind::Warp(_) => {}
                     // Unroll widths are exact lane counts — skip them entirely.
                     RangeKind::Unroll(_) => {}
+                },
+                Op::Loop { len, .. } => {
+                    for pad_to in [8, 16, 32] {
+                        if !self.is_sym_multiple(len, pad_to) {
+                            factors.push((op_id, pad_to));
+                        }
+                    }
                 }
+                _ => {}
             }
             op_id = next;
         }

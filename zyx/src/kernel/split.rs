@@ -78,12 +78,12 @@ impl Kernel {
                 let Op::Range { axis, kind: RangeKind::Group(len_id) } = self.ops[axis_id].op else {
                     return OpId::NULL;
                 };
+                if !self.is_sym_multiple(len_id, factor_dim) {
+                    return OpId::NULL;
+                }
                 let Some(len) = self.resolve_const(len_id).and_then(Constant::as_dim) else {
                     return OpId::NULL;
                 };
-                if len % factor_dim != 0 {
-                    return OpId::NULL;
-                }
                 let group_len = self.insert_const_idx_before(axis_id, len / factor_dim);
                 // Index composition for exactly two parts: group * factor + local.
                 let zero = self.insert_before(axis_id, Op::Const(Constant::idx(0)));
@@ -349,12 +349,12 @@ impl Kernel {
                         // duplicate the body per element, chaining the
                         // per-element values into the acc store. No Reduce
                         // op (unroll_tree_reduce mechanics, inline).
+                        if factor_dim < 2 || !self.is_sym_multiple(len_id, factor_dim) {
+                            return OpId::NULL;
+                        }
                         let Some(len) = self.resolve_const(len_id).and_then(Constant::as_dim) else {
                             return OpId::NULL;
                         };
-                        if factor_dim < 2 || len % factor_dim != 0 {
-                            return OpId::NULL;
-                        }
 
                         // Find the acc.
                         let acc_id;
@@ -493,12 +493,12 @@ impl Kernel {
                     Op::Loop { len: len_id } => (len_id, true),
                     _ => return OpId::NULL,
                 };
+                if !self.is_sym_multiple(outer_len_id, factor_dim) {
+                    return OpId::NULL;
+                }
                 let Some(len) = self.resolve_const(outer_len_id).and_then(Constant::as_dim) else {
                     return OpId::NULL;
                 };
-                if len % factor_dim != 0 {
-                    return OpId::NULL;
-                }
                 let outer_len = self.insert_const_idx_before(axis_id, len / factor_dim);
                 let outer = if is_loop {
                     Op::Loop { len: outer_len }

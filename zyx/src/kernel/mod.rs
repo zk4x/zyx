@@ -131,7 +131,7 @@ mod linearize;
 mod local_reduce;
 mod merge;
 mod ops;
-mod pad_range;
+mod pad;
 mod pat;
 mod predict_cost;
 mod split;
