@@ -4,7 +4,7 @@
 //! Tenstorrent tiling pass: canonicalize scalar IR for tile matching.
 //! (Under construction, one step at a time.)
 
-use super::{BOp, Kernel, Op, OpId, Pat, RangeKind, TTOp, TileDim};
+use super::{BOp, Kernel, Op, OpId, Pat, TTOp};
 use crate::Map;
 use crate::Set;
 use crate::dtype::Constant;
@@ -25,25 +25,9 @@ impl Kernel {
         self.default_epilogue();
 
         self.debug();
-        // Fold first: unroll/coarsen replicate the body, so wrappers
+        // Fold first: split replicates the body, so wrappers
         // (x*1, casts of consts) must die before replication, not after.
         self.constant_folding();
-        // Tree-unroll every counted loop with constant length divisible
-        // by 4 FIRST: unroll_tree_reduce allows exactly one acc store
-        // per body, so it must run before coarsening replicates the
-        // body. Non-reduce loops are a no-op inside (no acc found);
-        // anything else keeps its shape for later cuts.
-        let mut loops: Vec<OpId> = Vec::new();
-        for (op, x) in self.iter_unordered() {
-            if let Op::Loop { len, .. } = x {
-                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
-                    loops.push(op);
-                }
-            }
-        }
-        for l in loops {
-            self.unroll_tree_reduce(l, 32);
-        }
 
         self.default_epilogue();
         self.default_epilogue();
@@ -51,24 +35,6 @@ impl Kernel {
         // TODO: retile via shaped index approaches (split-based lane
         // vectors); the vectorize pass is deleted.
         todo!("tiling: vectorize-based bundling is deleted");
-
-        self.default_epilogue();
-        self.default_epilogue();
-
-        // Coarsen group ranges LAST: duplicate the vectorized body, one
-        // lane per row. Anything else (symbolic, indivisible) is
-        // skipped, never fatal.
-        let mut groups: Vec<OpId> = Vec::new();
-        for (op, x) in self.iter_unordered() {
-            if let Op::Range { kind: RangeKind::Group(len), .. } = x {
-                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
-                    groups.push(op);
-                }
-            }
-        }
-        for g in groups {
-            self.coarsen(g, 32);
-        }
 
         self.default_epilogue();
         // Deleted vectorize pass (see above todo).

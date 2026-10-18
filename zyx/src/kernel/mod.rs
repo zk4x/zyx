@@ -118,7 +118,6 @@ use std::{hash::BuildHasherDefault, hash::Hash};
 
 mod algebraic;
 pub mod autotune;
-mod coarsen;
 mod cost;
 mod custom;
 pub(crate) mod debug;
@@ -138,7 +137,6 @@ mod predict_cost;
 mod split;
 mod tenstorrent;
 mod tiling;
-mod unroll_loops;
 mod verify;
 
 // TODO later make this dynamic u32 or u64 depending on max range
@@ -2065,31 +2063,6 @@ impl Kernel {
             values.insert(id, v);
         }
         values[&op_id]
-    }
-
-    /// True iff `id` is a compile-time constant: a `Const` or a
-    /// const-expr over consts (`Cast`/`Unary`/`Binary`/`Mad`
-    /// chains — constant folding may not have run yet). Iterative,
-    /// never panics: params, loads, loops, and anything else are
-    /// not const (a missing broadcast or a dynamic lane, never a
-    /// silent fold).
-    pub(crate) fn is_const(&self, id: OpId) -> bool {
-        let mut stack = vec![id];
-        for _ in 0..250_000 {
-            let Some(cur) = stack.pop() else {
-                return true;
-            };
-            match self.at(cur) {
-                Op::Const(_) => {}
-                Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => stack.push(*x),
-                Op::Binary { x, y, .. } => {
-                    stack.push(*x);
-                    stack.push(*y);
-                }
-                _ => return false,
-            }
-        }
-        panic!("is_const did not finish in 250000 steps");
     }
 
     /// True iff the dim expression at `id` is provably a multiple of

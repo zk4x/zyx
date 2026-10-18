@@ -62,7 +62,6 @@ impl Kernel {
             return;
         }
 
-        self.unroll_loops(4);
         self.swap_commutative();
         //self.reassociate_commutative();
         self.loop_invariant_code_motion();

@@ -3976,7 +3976,7 @@ impl Runtime {
             base.renumber_indices();
             base.verify();
         }
-        base.delete_zero_len_indices();
+        base.delete_useless_loops();
         base.renumber_indices();
         for _ in 0..3 {
             base.default_epilogue();

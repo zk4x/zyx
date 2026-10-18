@@ -130,7 +130,7 @@ mod tests {
     use crate::{
         DType,
         backend::DeviceInfo,
-        kernel::{BOp, Dev, MemScope, autotune::Optimization, split},
+        kernel::{Dev, MemScope, autotune::Optimization, split},
         shape::Dim,
     };
     use std::sync::Arc;
