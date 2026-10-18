@@ -89,10 +89,8 @@ impl Kernel {
 
     /// Device specific epilogue
     pub fn device_epilogue(&mut self) {
-        // Lane bundles never survive to a backend: the fold chains
-        // expand first (their lane values are the bundles), then the
-        // remaining unroll lanes unfold to per-lane statements.
-        self.devectorize_reduces();
+        // Unroll vectors never survive to a backend: they unfold to
+        // per-element statements.
         self.devectorize_unrolls();
         // Non-TT backends need no device epilogue.
         let dev_info = self.device_info();
