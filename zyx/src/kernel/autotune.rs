@@ -56,12 +56,13 @@ pub type MakeOpt = fn(&Kernel) -> Box<dyn Optimization>;
 impl Kernel {
     /// The default optimization set: the search space [`BeamSearch`] explores
     /// unless the caller provides its own list of make functions.
-    pub const fn default_optimizations() -> [MakeOpt; 4] {
+    pub const fn default_optimizations() -> [MakeOpt; 5] {
         [
             Kernel::opt_split,
             Kernel::opt_reassociate_commutative,
             Kernel::opt_local_reduce,
             Kernel::opt_merge,
+            Kernel::opt_pad,
         ]
     }
 

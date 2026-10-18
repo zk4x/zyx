@@ -480,6 +480,15 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::Loop { len: len_id } => {
                     depth += 1;
+                    // Boolean lengths are conditionals (`if`), not trip
+                    // counts: DIM-resolution of a per-thread value
+                    // comparison is meaningless (it can fold to 1 even when
+                    // the condition is false for most threads), so the
+                    // length-1 rule never applies to them.
+                    if self.dtype(len_id) == crate::DType::Bool {
+                        op_id = next;
+                        continue;
+                    }
                     if self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) == Some(1) {
                         self.ops[op_id].op = Op::Const(Constant::idx(0));
                         deleted.push(depth);

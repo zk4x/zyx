@@ -21,6 +21,13 @@
 - NO design decisions, EVER. `todo!()` beats a guessed fix.
 - Never go beyond the ask. Failure? Report, don't fix untold.
 - NEVER chain fixes. One fix per question. Never commit unless asked.
+- NEVER disable, revert, remove, or neuter user-ordered functionality
+  to get green (no silent unregistrations, no refusal-gates that neuter,
+  no reordering user registries). Red tests from ordered features are
+  reported, never self-resolved by removal. Registries
+  (`default_optimizations`, pass lists) change ONLY as ordered:
+  additions go exactly where specified, existing entries keep their
+  relative order, nothing is removed without an explicit verb.
 - Never leave temporary debug code behind; revert completely.
 - Never `stash`/`checkout`; use `git restore`. Edit precisely, don't cascade.
 - RT lock discipline: a live guard must never overlap a `Tensor` drop

@@ -14,17 +14,18 @@
 //! - Skipping out-of-range stores with conditionals
 //!
 //! `pad_to(axis, multiple)` pads the length up to the next multiple
-//! (`multiple = 32` pads up to a multiple of 32). Lengths already provably
-//! a multiple (concrete or symbolic, via `is_sym_multiple`) are left
-//! untouched; everything else
-//! pads symbolically (`(pad_to - len % pad_to) % pad_to` as IR), so no
-//! `resolve_const` anywhere on this path.
+//! (`multiple = 32` pads up to a multiple of 32) via the round-up idiom
+//! `((len + (multiple - 1)) / multiple) * multiple` as IR. Ranges pad on
+//! every device; loops pad only on Tenstorrent (tile loops must run
+//! full-tile trip counts). Lengths already provably a multiple (concrete
+//! or symbolic, via `is_sym_multiple`) are left untouched; the trailing
+//! multiply keeps padded lengths provably multiple, so no axis pads
+//! twice. No `resolve_const` on this path.
 
 use crate::{
     Set,
-    backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId, RangeKind},
+    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, RangeKind},
     shape::Dim,
 };
 
@@ -52,11 +53,13 @@ impl Optimization for PadIndex {
 }
 
 impl Kernel {
-    /// Pads a range or loop length up to a multiple of `pad_to`, guarding
-    /// out-of-range loads and stores.
+    /// Pads a range length up to a multiple of `multiple`, guarding
+    /// out-of-range loads and stores. Ranges pad on every device; loops
+    /// pad only on Tenstorrent (tile loops must run full-tile trip
+    /// counts, other devices never extend loop bounds).
     ///
-    /// The pad amount is computed symbolically (`(pad_to - len % pad_to)
-    /// % pad_to` as IR). This extends the length so the grid covers full
+    /// The length is rounded up via `((len + (multiple - 1)) / multiple) *
+    /// multiple` as IR. This extends the length so the grid covers full
     /// tiles. OOB reads are redirected to element 0 (safe). OOB stores
     /// are redirected to a trash element past the buffer end.
     ///
@@ -65,221 +68,219 @@ impl Kernel {
     /// threads compute garbage but never write it to memory.
     ///
     /// # Panics
-    /// - If `axis` is neither a range nor a loop.
+    /// - If `axis` is not a range (non-TT) or neither a range nor a loop (TT).
     /// - If `axis` is a warp view or unroll range (pad the underlying
     ///   local/group range instead).
     pub(crate) fn pad_to(&mut self, axis: OpId, multiple: Dim) {
         debug_assert!(multiple > 0, "pad_to: multiple {multiple} <= 0");
         match self.ops[axis].op {
-            Op::Range { .. } => self.pad_range(axis, multiple),
-            Op::Loop { .. } => self.pad_loop(axis, multiple),
-            _ => panic!("pad_to: op is neither a range nor a loop"),
-        }
-    }
+            Op::Range { axis: range_axis, kind } => {
+                // 1. Extend the index length to the next multiple.
+                // The limit (original length) doubles as the OOB guard
+                // comparison.
+                let (limit, new_kind) = match kind {
+                    RangeKind::Group(len) => {
+                        if self.dtype(len) == crate::DType::Bool {
+                            // Boolean lengths are 0/1 flags, never pad candidates.
+                            return;
+                        }
+                        if self.is_sym_multiple(len, multiple) {
+                            return;
+                        }
+                        // Index arithmetic is IDX_T throughout; a symbolic
+                        // length of any int dtype is cast once, concrete
+                        // lengths become IDX_T consts. The round-up below
+                        // and the limit guard then always typecheck.
+                        let len_idx = match self.resolve_const(len).and_then(Constant::as_dim) {
+                            Some(l) => self.insert_before(axis, Op::Const(Constant::idx(l))),
+                            None => self.insert_before(axis, Op::Cast { x: len, dtype: IDX_T }),
+                        };
+                        // Round up to the next multiple:
+                        // ((len + (multiple - 1)) / multiple) * multiple.
+                        // The trailing multiply by Const(multiple) makes
+                        // the result provably a multiple
+                        // (is_sym_multiple), so the scan never re-pads
+                        // this axis.
+                        let multiple_c = self.insert_before(axis, Op::Const(Constant::idx(multiple)));
+                        let m1 = self.insert_before(axis, Op::Const(Constant::idx(multiple - 1)));
+                        let up = self.insert_before(axis, Op::Binary { x: len_idx, y: m1, bop: BOp::Add });
+                        let q = self.insert_before(axis, Op::Binary { x: up, y: multiple_c, bop: BOp::Div });
+                        let new_len = self.insert_before(axis, Op::Binary { x: q, y: multiple_c, bop: BOp::Mul });
+                        (len_idx, RangeKind::Group(new_len))
+                    }
+                    RangeKind::Local(len) => {
+                        let current_len = Dim::from(len);
+                        let pad_len = (multiple - current_len % multiple) % multiple;
+                        if pad_len == 0 {
+                            return;
+                        }
+                        let new_len = len + u32::try_from(pad_len).expect("pad_len too large for local index");
+                        let limit = self.insert_before(axis, Op::Const(Constant::idx(current_len)));
+                        (limit, RangeKind::Local(new_len))
+                    }
+                    RangeKind::Warp(_) => {
+                        panic!("pad_to: cannot pad a warp view; pad its underlying local range instead")
+                    }
+                    RangeKind::Unroll(_) => {
+                        panic!("pad_to: cannot pad an unroll range; pad its underlying group range instead")
+                    }
+                };
+                self.ops[axis].op = Op::Range { axis: range_axis, kind: new_kind };
 
-    /// Pads a range length up to a multiple of `pad_to`.
-    ///
-    /// The limit (original length) doubles as the OOB guard comparison.
-    fn pad_range(&mut self, gidx_id: OpId, pad_to: Dim) {
-        // 1. Extend the index length to the next multiple of pad_to.
-        let Op::Range { axis, kind } = self.ops[gidx_id].op else {
-            panic!("pad: op is not a range");
-        };
-        let (limit, new_kind) = match kind {
-            RangeKind::Group(len) => {
-                if self.is_sym_multiple(len, pad_to) {
+                // 2. Walk all ops after this axis and guard the loads and
+                // stores depending on it. Stores are wrapped unconditionally:
+                // the guard condition tests the thread position, never the
+                // (rewritable) index, so wrapping is exact per thread and
+                // later index rewrites cannot detach it.
+                let mut op_id = self.next_op(axis);
+                while !op_id.is_null() {
+                    let next = self.next_op(op_id);
+
+                    // Skip OOB stores entirely: wrap the store in a 0-or-1-trip
+                    // loop over the in-bounds condition. No single trash
+                    // index serves every destination buffer (multi-dim
+                    // outputs share no common past-the-end element, and
+                    // buffer lengths are unrealized here), so OOB stores
+                    // simply never execute. Register destinations are
+                    // thread-private and never OOB — leave them alone so
+                    // accumulator patterns stay intact for later passes.
+                    if let Op::Store { dst, .. } = self.ops[op_id].op.clone()
+                        && !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. })
+                    {
+                        let cond = self.insert_before(op_id, Op::Binary { x: axis, y: limit, bop: BOp::Cmplt });
+                        self.insert_before(op_id, Op::Loop { len: cond });
+                        self.insert_after(op_id, Op::EndLoop);
+                    }
+
+                    // Skip OOB copies entirely (dst side, like stores).
+                    if let Op::Copy { dst, .. } = self.ops[op_id].op.clone()
+                        && !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. })
+                    {
+                        let cond = self.insert_before(op_id, Op::Binary { x: axis, y: limit, bop: BOp::Cmplt });
+                        self.insert_before(op_id, Op::Loop { len: cond });
+                        self.insert_after(op_id, Op::EndLoop);
+                    }
+
+                    // Guard loads: redirect OOB reads to element 0 (safe)
+                    if let Op::Load { src, src_idx: load_idx } = self.ops[op_id].op.clone() {
+                        if !self.shape(load_idx).is_empty() {
+                            // non-scalar accesses stay scalar-guardable only
+                            op_id = next;
+                            continue;
+                        }
+                        if self.depends_on(load_idx, axis, &mut Set::default()) {
+                            let cond = self.insert_before(op_id, Op::Binary { x: axis, y: limit, bop: BOp::Cmplt });
+                            let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
+                            let safe_idx = self.insert_before(op_id, Op::Binary { x: load_idx, y: cast_idx, bop: BOp::Mul });
+                            let safe_load = self.insert_before(op_id, Op::Load { src, src_idx: safe_idx });
+                            self.remap(op_id, safe_load);
+                            self.remove_op(op_id);
+                        }
+                    }
+
+                    op_id = next;
+                }
+            }
+            Op::Loop { .. } => {
+                // Loop padding is Tenstorrent-only: tile loops must run
+                // full-tile trip counts. Other devices never extend loop
+                // bounds. TT also needs element-level OOB checks: its
+                // 32x32 tiles span memory, so edge tiles read OOB elements
+                // even for in-bounds tile iterations (still open).
+                #[cfg(feature = "tenstorrent")]
+                let tt = matches!(self.dev, crate::backend::Dev::TT(_));
+                #[cfg(not(feature = "tenstorrent"))]
+                let tt = false;
+                if !tt {
                     return;
                 }
-                let pad_to_c = self.insert_before(gidx_id, Op::Const(Constant::idx(pad_to)));
-                let rem = self.insert_before(gidx_id, Op::Binary { x: len, y: pad_to_c, bop: BOp::Mod });
-                let sub = self.insert_before(gidx_id, Op::Binary { x: pad_to_c, y: rem, bop: BOp::Sub });
-                let pad = self.insert_before(gidx_id, Op::Binary { x: sub, y: pad_to_c, bop: BOp::Mod });
-                let new_len = self.insert_before(gidx_id, Op::Binary { x: len, y: pad, bop: BOp::Add });
-                (len, RangeKind::Group(new_len))
-            }
-            RangeKind::Local(len) => {
-                let current_len = Dim::from(len);
-                let pad_len = (pad_to - current_len % pad_to) % pad_to;
-                if pad_len == 0 {
+                // 1. Extend the loop length to the next multiple.
+                let Op::Loop { len } = self.ops[axis].op else {
+                    panic!("pad_to: op is not a loop");
+                };
+                if self.dtype(len) == crate::DType::Bool {
+                    // Boolean lengths are 0/1 flags, never pad candidates.
                     return;
                 }
-                let new_len = len + u32::try_from(pad_len).expect("pad_len too large for local index");
-                let limit = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len)));
-                (limit, RangeKind::Local(new_len))
-            }
-            RangeKind::Warp(_) => {
-                panic!("pad: cannot pad a warp view; pad its underlying local range instead")
-            }
-            RangeKind::Unroll(_) => {
-                panic!("pad: cannot pad an unroll range; pad its underlying group range instead")
-            }
-        };
-        self.ops[gidx_id].op = Op::Range { axis, kind: new_kind };
-
-        // 2. Walk all ops to guard loads and stores depending on this index
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-
-            // Redirect OOB stores to trash element at index `limit`
-            if let Op::Store { dst, dst_idx: store_idx, src: x } = self.ops[op_id].op.clone()
-                && self.depends_on(store_idx, gidx_id, &mut Set::default())
-            {
-                let buf_len: Option<Dim> = match &self.ops[dst].op {
-                    Op::Param { .. } => Some(self.shape(dst).iter().product()),
-                    _ => None,
-                };
-                if let Some(buf_len) = buf_len {
-                    let clen = self.insert_before(op_id, Op::Const(Constant::idx(buf_len)));
-                    let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
-                    let cast_cond = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
-                    let one = self.insert_before(op_id, Op::Const(Constant::idx(1)));
-                    let not_cond = self.insert_before(op_id, Op::Binary { x: one, y: cast_cond, bop: BOp::Sub });
-                    let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
-                    let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
-                    let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
-                    self.ops[op_id].op = Op::Store { dst, dst_idx: safe_idx, src: x };
+                if self.is_sym_multiple(len, multiple) {
+                    return;
                 }
-            }
-
-            // Redirect OOB copies to trash element at index `limit` (dst side, like stores)
-            if let Op::Copy { src: copy_src, src_idx: copy_sidx, dst, dst_idx: store_idx } = self.ops[op_id].op.clone()
-                && self.depends_on(store_idx, gidx_id, &mut Set::default())
-            {
-                let buf_len: Option<Dim> = match &self.ops[dst].op {
-                    Op::Param { .. } => Some(self.shape(dst).iter().product()),
-                    _ => None,
+                // Round up to the next multiple (see the range arm: the
+                // trailing multiply keeps the result provably a multiple).
+                // Lengths are cast to IDX_T once, like group ranges.
+                let len_idx = match self.resolve_const(len).and_then(Constant::as_dim) {
+                    Some(l) => self.insert_before(axis, Op::Const(Constant::idx(l))),
+                    None => self.insert_before(axis, Op::Cast { x: len, dtype: IDX_T }),
                 };
-                if let Some(buf_len) = buf_len {
-                    let clen = self.insert_before(op_id, Op::Const(Constant::idx(buf_len)));
-                    let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
-                    let cast_cond = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
-                    let one = self.insert_before(op_id, Op::Const(Constant::idx(1)));
-                    let not_cond = self.insert_before(op_id, Op::Binary { x: one, y: cast_cond, bop: BOp::Sub });
-                    let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
-                    let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
-                    let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
-                    self.ops[op_id].op = Op::Copy { src: copy_src, src_idx: copy_sidx, dst, dst_idx: safe_idx };
-                }
-            }
+                let multiple_c = self.insert_before(axis, Op::Const(Constant::idx(multiple)));
+                let m1 = self.insert_before(axis, Op::Const(Constant::idx(multiple - 1)));
+                let up = self.insert_before(axis, Op::Binary { x: len_idx, y: m1, bop: BOp::Add });
+                let q = self.insert_before(axis, Op::Binary { x: up, y: multiple_c, bop: BOp::Div });
+                let new_len = self.insert_before(axis, Op::Binary { x: q, y: multiple_c, bop: BOp::Mul });
+                self.ops[axis].op = Op::Loop { len: new_len };
 
-            // Guard loads: redirect OOB reads to element 0 (safe)
-            if let Op::Load { src, src_idx: load_idx } = self.ops[op_id].op.clone() {
-                if !self.shape(load_idx).is_empty() {
-                    // non-scalar accesses stay scalar-guardable only
+                // 2. The original length doubles as the OOB guard comparison.
+                let limit = len_idx;
+
+                // 3. Walk all ops after this loop and guard the loads and
+                // stores depending on it (see the range arm: store wrapping
+                // is unconditional so later index rewrites cannot detach it).
+                let mut op_id = self.next_op(axis);
+                while !op_id.is_null() {
+                    let next = self.next_op(op_id);
+
+                    // Skip OOB stores entirely (see the range arm; register
+                    // destinations are thread-private, leave them alone).
+                    if let Op::Store { dst, .. } = self.ops[op_id].op.clone()
+                        && !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. })
+                    {
+                        let cond = self.insert_before(op_id, Op::Binary { x: axis, y: limit, bop: BOp::Cmplt });
+                        self.insert_before(op_id, Op::Loop { len: cond });
+                        self.insert_after(op_id, Op::EndLoop);
+                    }
+
+                    // Skip OOB copies entirely (dst side, like stores).
+                    if let Op::Copy { dst, .. } = self.ops[op_id].op.clone()
+                        && !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. })
+                    {
+                        let cond = self.insert_before(op_id, Op::Binary { x: axis, y: limit, bop: BOp::Cmplt });
+                        self.insert_before(op_id, Op::Loop { len: cond });
+                        self.insert_after(op_id, Op::EndLoop);
+                    }
+
+                    // Guard loads: redirect OOB reads to element 0 (safe)
+                    if let Op::Load { src, src_idx: load_idx } = self.ops[op_id].op.clone() {
+                        if !self.shape(load_idx).is_empty() {
+                            // non-scalar accesses stay scalar-guardable only
+                            op_id = next;
+                            continue;
+                        }
+                        if self.depends_on(load_idx, axis, &mut Set::default()) {
+                            let cond = self.insert_before(op_id, Op::Binary { x: axis, y: limit, bop: BOp::Cmplt });
+                            let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
+                            let safe_idx = self.insert_before(op_id, Op::Binary { x: load_idx, y: cast_idx, bop: BOp::Mul });
+                            let safe_load = self.insert_before(op_id, Op::Load { src, src_idx: safe_idx });
+                            self.remap(op_id, safe_load);
+                            self.remove_op(op_id);
+                        }
+                    }
+
                     op_id = next;
-                    continue;
-                }
-                if self.depends_on(load_idx, gidx_id, &mut Set::default()) {
-                    let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
-                    let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
-                    let safe_idx = self.insert_before(op_id, Op::Binary { x: load_idx, y: cast_idx, bop: BOp::Mul });
-                    let safe_load = self.insert_before(op_id, Op::Load { src, src_idx: safe_idx });
-                    self.remap(op_id, safe_load);
-                    self.remove_op(op_id);
                 }
             }
-
-            op_id = next;
+            _ => panic!("pad_to: op is not a range"),
         }
     }
 
-    /// Pads a loop length up to a multiple of `pad_to`.
-    ///
-    /// The limit (original length expression) doubles as the OOB guard
-    /// comparison. Symbolic lengths pad exactly, like ranges.
-    fn pad_loop(&mut self, loop_id: OpId, pad_to: Dim) {
-        // 1. Extend the loop length to the next multiple of pad_to.
-        let Op::Loop { len } = self.ops[loop_id].op else {
-            panic!("pad: op is not a loop");
-        };
-        if self.is_sym_multiple(len, pad_to) {
-            return;
-        }
-        let pad_to_c = self.insert_before(loop_id, Op::Const(Constant::idx(pad_to)));
-        let rem = self.insert_before(loop_id, Op::Binary { x: len, y: pad_to_c, bop: BOp::Mod });
-        let sub = self.insert_before(loop_id, Op::Binary { x: pad_to_c, y: rem, bop: BOp::Sub });
-        let pad = self.insert_before(loop_id, Op::Binary { x: sub, y: pad_to_c, bop: BOp::Mod });
-        let new_len = self.insert_before(loop_id, Op::Binary { x: len, y: pad, bop: BOp::Add });
-        self.ops[loop_id].op = Op::Loop { len: new_len };
-
-        // 2. The original length doubles as the OOB guard comparison.
-        let limit = len;
-
-        // 3. Walk all ops to guard loads and stores depending on this loop
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-
-            // Redirect OOB stores to trash element at index `buf_len`
-            if let Op::Store { dst, dst_idx: store_idx, src: x } = self.ops[op_id].op.clone()
-                && self.depends_on(store_idx, loop_id, &mut Set::default())
-            {
-                let buf_len: Option<Dim> = match &self.ops[dst].op {
-                    Op::Param { .. } => Some(self.shape(dst).iter().product()),
-                    Op::Storage { len, .. } => Some(*len),
-                    _ => None,
-                };
-                if let Some(buf_len) = buf_len {
-                    let clen = self.insert_before(op_id, Op::Const(Constant::idx(buf_len)));
-                    let cond = self.insert_before(op_id, Op::Binary { x: loop_id, y: limit, bop: BOp::Cmplt });
-                    let cast_cond = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
-                    let one = self.insert_before(op_id, Op::Const(Constant::idx(1)));
-                    let not_cond = self.insert_before(op_id, Op::Binary { x: one, y: cast_cond, bop: BOp::Sub });
-                    let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
-                    let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
-                    let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
-                    self.ops[op_id].op = Op::Store { dst, dst_idx: safe_idx, src: x };
-                }
-            }
-
-            // Redirect OOB copies to trash element at index `buf_len` (dst side, like stores)
-            if let Op::Copy { src: copy_src, src_idx: copy_sidx, dst, dst_idx: store_idx } = self.ops[op_id].op.clone()
-                && self.depends_on(store_idx, loop_id, &mut Set::default())
-            {
-                let buf_len: Option<Dim> = match &self.ops[dst].op {
-                    Op::Param { .. } => Some(self.shape(dst).iter().product()),
-                    Op::Storage { len, .. } => Some(*len),
-                    _ => None,
-                };
-                if let Some(buf_len) = buf_len {
-                    let clen = self.insert_before(op_id, Op::Const(Constant::idx(buf_len)));
-                    let cond = self.insert_before(op_id, Op::Binary { x: loop_id, y: limit, bop: BOp::Cmplt });
-                    let cast_cond = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
-                    let one = self.insert_before(op_id, Op::Const(Constant::idx(1)));
-                    let not_cond = self.insert_before(op_id, Op::Binary { x: one, y: cast_cond, bop: BOp::Sub });
-                    let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
-                    let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
-                    let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
-                    self.ops[op_id].op = Op::Copy { src: copy_src, src_idx: copy_sidx, dst, dst_idx: safe_idx };
-                }
-            }
-
-            // Guard loads: redirect OOB reads to element 0 (safe)
-            if let Op::Load { src, src_idx: load_idx } = self.ops[op_id].op.clone() {
-                if !self.shape(load_idx).is_empty() {
-                    // non-scalar accesses stay scalar-guardable only
-                    op_id = next;
-                    continue;
-                }
-                if self.depends_on(load_idx, loop_id, &mut Set::default()) {
-                    let cond = self.insert_before(op_id, Op::Binary { x: loop_id, y: limit, bop: BOp::Cmplt });
-                    let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
-                    let safe_idx = self.insert_before(op_id, Op::Binary { x: load_idx, y: cast_idx, bop: BOp::Mul });
-                    let safe_load = self.insert_before(op_id, Op::Load { src, src_idx: safe_idx });
-                    self.remap(op_id, safe_load);
-                    self.remove_op(op_id);
-                }
-            }
-
-            op_id = next;
-        }
-    }
-
-    /// Make the `PadIndex` optimization: scan the kernel for ranges and
-    /// loops whose lengths are not provably multiples of
-    /// hardware-friendly sizes.
-    pub fn opt_pad_index(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+    /// Make the `PadIndex` optimization: scan the kernel for ranges whose
+    /// lengths are not provably multiples of hardware-friendly sizes.
+    /// Loops are scanned only on Tenstorrent (tile loops must run
+    /// full-tile trip counts); elsewhere loop bounds are never extended.
+    pub fn opt_pad(&self) -> Box<dyn Optimization> {
+        #[cfg(feature = "tenstorrent")]
+        let tt = matches!(self.dev, crate::backend::Dev::TT(_));
+        #[cfg(not(feature = "tenstorrent"))]
+        let tt = false;
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -287,10 +288,13 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::Range { kind, .. } => match kind {
                     // Symbolic lengths skip only when provably a multiple.
+                    // Boolean lengths are 0/1 flags, never pad candidates.
                     RangeKind::Group(len) => {
-                        for pad_to in [8, 16, 32] {
-                            if !self.is_sym_multiple(len, pad_to) {
-                                factors.push((op_id, pad_to));
+                        if self.dtype(len) != crate::DType::Bool {
+                            for pad_to in [8, 16, 32] {
+                                if !self.is_sym_multiple(len, pad_to) {
+                                    factors.push((op_id, pad_to));
+                                }
                             }
                         }
                     }
@@ -308,9 +312,11 @@ impl Kernel {
                     RangeKind::Unroll(_) => {}
                 },
                 Op::Loop { len, .. } => {
-                    for pad_to in [8, 16, 32] {
-                        if !self.is_sym_multiple(len, pad_to) {
-                            factors.push((op_id, pad_to));
+                    if tt && self.dtype(len) != crate::DType::Bool {
+                        for pad_to in [8, 16, 32] {
+                            if !self.is_sym_multiple(len, pad_to) {
+                                factors.push((op_id, pad_to));
+                            }
                         }
                     }
                 }

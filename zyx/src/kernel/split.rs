@@ -178,6 +178,25 @@ impl Kernel {
                             return OpId::NULL;
                         }
 
+                        // Unrolling vectorizes every downstream consumer of
+                        // the new lanes — including scalar conditionals over
+                        // this axis. A bool-len `if` guarding stores (pad's
+                        // OOB skip) would then execute all-or-nothing instead
+                        // of per-lane, so refuse axes with one depending on
+                        // this axis.
+                        {
+                            let mut op_id = self.next_op(axis_id);
+                            while !op_id.is_null() {
+                                if let Op::Loop { len, .. } = self.ops[op_id].op
+                                    && self.dtype(len) == crate::DType::Bool
+                                    && self.depends_on(len, axis_id, &mut Set::default())
+                                {
+                                    return OpId::NULL;
+                                }
+                                op_id = self.next_op(op_id);
+                            }
+                        }
+
                         // Split the group range: [Group(len/factor), Unroll
                         // lanes]; the composed index rides the inline affine
                         // composition and its
@@ -355,6 +374,28 @@ impl Kernel {
                         let Some(len) = self.resolve_const(len_id).and_then(Constant::as_dim) else {
                             return OpId::NULL;
                         };
+
+                        // Unrolling vectorizes the whole body — including
+                        // scalar conditionals over this axis. A bool-len
+                        // `if` guarding stores (pad's OOB skip) would then
+                        // execute all-or-nothing instead of per-lane, so
+                        // refuse loops with one depending on this axis.
+                        {
+                            let end = self.get_last_dim_op(axis_id);
+                            let mut op_id = self.next_op(axis_id);
+                            while op_id != end {
+                                if op_id.is_null() {
+                                    break;
+                                }
+                                if let Op::Loop { len, .. } = self.ops[op_id].op
+                                    && self.dtype(len) == crate::DType::Bool
+                                    && self.depends_on(len, axis_id, &mut Set::default())
+                                {
+                                    return OpId::NULL;
+                                }
+                                op_id = self.next_op(op_id);
+                            }
+                        }
 
                         // Find the acc.
                         let acc_id;
