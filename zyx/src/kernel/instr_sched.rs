@@ -417,7 +417,7 @@ impl Kernel {
         // Hoisting prevention: a param/storage must never leave the scope it was
         // created in. Hoisting a register computation out of a loop breaks
         // per-iteration register reset semantics that downstream passes (e.g.
-        // `merge_nested_loops`) rely on to keep nested reduce loops intact. So
+        // `merge`) rely on to keep nested reduce loops intact. So
         // a param/storage must stay after every opener that precedes it and before
         // every closer that follows it.
         for i in (0..n).filter(|&i| matches!(self.at(rest[i]), Op::Storage { .. })) {

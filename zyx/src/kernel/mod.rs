@@ -129,7 +129,7 @@ mod instr_sched;
 mod licm;
 mod linearize;
 mod local_reduce;
-mod merge_loops;
+mod merge;
 mod ops;
 mod pad_range;
 mod pat;

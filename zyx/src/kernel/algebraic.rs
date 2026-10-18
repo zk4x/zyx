@@ -380,7 +380,7 @@ impl Kernel {
     /// Try to recognize an expression as `root << K + constant` where the
     /// expression extracts disjoint bit slices of `root` via div/mod/shr,
     /// shifts each to a new position via mul/shl, and sums them (a round-trip
-    /// after merge_nested_loops + constant folding).
+    /// after merge + constant folding).
     fn simplify_demux_roundtrip(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("simplify_demux_roundtrip");

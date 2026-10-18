@@ -61,7 +61,7 @@ impl Kernel {
             Kernel::opt_split,
             Kernel::opt_reassociate_commutative,
             Kernel::opt_local_reduce,
-            Kernel::opt_merge_nested_loops,
+            Kernel::opt_merge,
         ]
     }
 
