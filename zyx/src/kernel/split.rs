@@ -364,10 +364,13 @@ impl Kernel {
                         return unroll_id;
                     }
                     Op::Loop { len: len_id } => {
-                        // Loop unroll: strip-mine into Loop(len/factor) and
-                        // duplicate the body per element, chaining the
-                        // per-element values into the acc store. No Reduce
-                        // op (unroll_tree_reduce mechanics, inline).
+                        // Loop unroll: strip-mine into Loop(len/factor) plus
+                        // Unroll lanes, folding the per-lane values with a
+                        // Reduce. No replication: the body stays single,
+                        // values widen to lane vectors through the shape
+                        // algebra, and the loop-carried accumulation becomes
+                        // acc + Reduce(prod) per outer iteration. The whole
+                        // loop becomes bare lanes when len == factor.
                         if factor_dim < 2 || !self.is_sym_multiple(len_id, factor_dim) {
                             return OpId::NULL;
                         }
@@ -417,12 +420,12 @@ impl Kernel {
 
                         // Find the store to acc.
                         let mut op_id = acc_id;
-                        let acc_init;
+                        let _acc_init;
                         loop {
                             if let Op::Store { dst, src: x, .. } = self.ops[op_id].op
                                 && dst == acc_id
                             {
-                                acc_init = x;
+                                _acc_init = x;
                                 break;
                             }
                             op_id = self.next_op(op_id);
@@ -464,63 +467,157 @@ impl Kernel {
                             op_id = self.next_op(op_id);
                         }
 
-                        let mut map: crate::Map<OpId, Vec<OpId>> = crate::Map::default();
-
-                        let new_len = self.insert_const_idx_before(axis_id, len / factor_dim);
-                        let new_loop = self.insert_before(axis_id, Op::Loop { len: new_len });
-                        let mut op_id = self.next_op(axis_id);
-                        let stride = self.insert_before(axis_id, Op::Const(Constant::idx(factor_dim)));
-                        self.ops[axis_id].op = Op::Binary { x: new_loop, y: stride, bop: BOp::Mul };
-                        let mut new_ones = Vec::with_capacity(factor_dim as usize - 1);
-                        for i in 1..factor_dim {
-                            let offset = self.insert_before(op_id, Op::Const(Constant::idx(i)));
-                            let new_id = self.insert_before(op_id, Op::Binary { x: axis_id, y: offset, bop: BOp::Add });
-                            new_ones.push(new_id);
-                        }
-                        map.insert(axis_id, new_ones);
-
-                        while op_id != endloop_id {
-                            let this_id = op_id;
-                            op_id = self.next_op(op_id);
-                            if let Op::Load { src, .. } = self.ops[this_id].op
-                                && src == acc_id
-                            {
-                                map.insert(this_id, vec![acc_init; factor_dim as usize - 1]);
-                            } else if let Op::Store { dst, dst_idx, src: x, .. } = self.ops[this_id].op
-                                && dst == acc_id
-                            {
-                                let Op::Binary { bop, .. } = self.ops[x].op else {
-                                    unreachable!()
-                                };
-                                let y = if let Some(mapping) = map.get(&x) { mapping[0] } else { x };
-                                let mut carry = this_id;
-                                self.ops[this_id].op = Op::Binary { x, y, bop };
-                                for i in 1..factor_dim - 1 {
-                                    let x = if let Some(mapping) = map.get(&x) {
-                                        mapping[i as usize]
-                                    } else {
-                                        x
-                                    };
-                                    carry = self.insert_before(op_id, Op::Binary { x, y: carry, bop });
+                        // Unroll gives repetition only through use: side
+                        // effects come only from copy and store, so the
+                        // loop var must feed every one of them (directly
+                        // or transitively). A fed side effect keeps its
+                        // repetitions through width; an unfed one would
+                        // silently lose them.
+                        {
+                            let mut unfed = false;
+                            let mut use_id = self.next_op(axis_id);
+                            while use_id != endloop_id && !unfed {
+                                if use_id.is_null() {
+                                    break;
                                 }
-                                self.insert_before(op_id, Op::Store { dst, dst_idx, src: carry });
-                            } else {
-                                let mut new_ones = Vec::with_capacity(factor_dim as usize - 1);
-                                for i in 1..factor_dim {
-                                    let mut new_op = self.ops[this_id].op.clone();
-                                    for param in new_op.parameters_mut() {
-                                        if let Some(mapping) = map.get(param) {
-                                            *param = mapping[i as usize - 1];
+                                match self.ops[use_id].op {
+                                    Op::Copy { .. } | Op::Store { .. } => {
+                                        if !self.at(use_id).parameters().any(|p| {
+                                            p == axis_id || self.depends_on(p, axis_id, &mut Set::default())
+                                        }) {
+                                            unfed = true;
                                         }
                                     }
-                                    let new_id = self.insert_before(op_id, new_op);
-                                    new_ones.push(new_id);
+                                    _ => {}
                                 }
-                                map.insert(this_id, new_ones);
+                                use_id = self.next_op(use_id);
+                            }
+                            if unfed {
+                                return OpId::NULL;
                             }
                         }
 
-                        new_loop
+                        // No body value may escape the loop: post-loop
+                        // users would read lane vectors. The acc storage
+                        // is defined before the loop; the acc store itself
+                        // is the designated exit.
+                        let end = self.get_last_dim_op(axis_id);
+                        let mut body_set: crate::Set<OpId> = crate::Set::default();
+                        body_set.insert(axis_id);
+                        let mut walk_id = self.next_op(axis_id);
+                        while walk_id != end {
+                            if walk_id.is_null() {
+                                break;
+                            }
+                            body_set.insert(walk_id);
+                            walk_id = self.next_op(walk_id);
+                        }
+                        let mut walk_id = self.next_op(end);
+                        while !walk_id.is_null() {
+                            if self.at(walk_id).parameters().any(|p| body_set.contains(&p)) {
+                                return OpId::NULL;
+                            }
+                            walk_id = self.next_op(walk_id);
+                        }
+
+                        // The acc store must combine the acc load with a
+                        // lane-varying prod via one Binary; anything else
+                        // is not a foldable accumulation.
+                        let (acc_store_id, acc_store_idx, acc_store_src) = {
+                            let mut found = None;
+                            let mut op_id = self.next_op(axis_id);
+                            while op_id != endloop_id {
+                                if let Op::Store { dst, dst_idx, src } = self.ops[op_id].op
+                                    && dst == acc_id
+                                {
+                                    found = Some((op_id, dst_idx, src));
+                                    break;
+                                }
+                                op_id = self.next_op(op_id);
+                            }
+                            let Some(f) = found else { return OpId::NULL };
+                            f
+                        };
+                        let acc_load_id = {
+                            let mut found = OpId::NULL;
+                            let mut op_id = self.next_op(axis_id);
+                            while op_id != endloop_id {
+                                if let Op::Load { src, .. } = self.ops[op_id].op
+                                    && src == acc_id
+                                {
+                                    found = op_id;
+                                    break;
+                                }
+                                op_id = self.next_op(op_id);
+                            }
+                            found
+                        };
+                        if acc_load_id.is_null() {
+                            return OpId::NULL;
+                        }
+                        let (sx, sy, bop) = match self.ops[acc_store_src].op {
+                            Op::Binary { x, y, bop } => (x, y, bop),
+                            _ => return OpId::NULL,
+                        };
+                        let x_acc =
+                            sx == acc_load_id || self.depends_on(sx, acc_load_id, &mut Set::default());
+                        let y_acc =
+                            sy == acc_load_id || self.depends_on(sy, acc_load_id, &mut Set::default());
+                        if x_acc == y_acc {
+                            return OpId::NULL;
+                        }
+                        let (acc_side, prod_side) = if x_acc { (sx, sy) } else { (sy, sx) };
+
+                        // Next free lane axis for the Unroll node.
+                        let mut next_lane_axis = 0u64;
+                        for (_, op) in self.iter_unordered() {
+                            match op {
+                                Op::Range { axis, kind: RangeKind::Unroll(_) } => {
+                                    next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1);
+                                }
+                                Op::Unroll { axis, .. } => {
+                                    next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1)
+                                }
+                                _ => {}
+                            }
+                        }
+                        let lane_axis =
+                            u32::try_from(next_lane_axis).expect("unroll lane axis overflows u32");
+
+                        // Lane composition: bare lanes when the factor
+                        // covers the loop, else outer * factor + lane.
+                        let unroll_id = if len == factor_dim {
+                            self.ops[axis_id].op = Op::Unroll { axis: lane_axis, len: factor };
+                            self.remove_op(endloop_id);
+                            axis_id
+                        } else {
+                            let new_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                            let outer_id = self.insert_before(axis_id, Op::Loop { len: new_len });
+                            let stride = self.insert_before(axis_id, Op::Const(Constant::idx(factor_dim)));
+                            let scaled = self.insert_before(
+                                axis_id,
+                                Op::Binary { x: outer_id, y: stride, bop: BOp::Mul },
+                            );
+                            let lane_id =
+                                self.insert_before(axis_id, Op::Unroll { axis: lane_axis, len: factor });
+                            self.ops[axis_id].op =
+                                Op::Binary { x: scaled, y: lane_id, bop: BOp::Add };
+                            lane_id
+                        };
+
+                        // Fold the prod side; the acc side stays scalar.
+                        let red = self.insert_before(
+                            acc_store_id,
+                            Op::Reduce { x: prod_side, rop: bop, reduce_axis: unroll_id },
+                        );
+                        let (nx, ny) = if x_acc { (acc_side, red) } else { (red, acc_side) };
+                        self.ops[acc_store_id].op =
+                            Op::Store { dst: acc_id, dst_idx: acc_store_idx, src: self.insert_before(
+                                acc_store_id,
+                                Op::Binary { x: nx, y: ny, bop },
+                            ) };
+
+                        unroll_id
                     }
                     _ => return OpId::NULL,
                 }

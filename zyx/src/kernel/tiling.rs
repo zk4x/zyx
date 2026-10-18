@@ -4,7 +4,7 @@
 //! Tenstorrent tiling pass: canonicalize scalar IR for tile matching.
 //! (Under construction, one step at a time.)
 
-use super::{BOp, Kernel, Op, OpId, Pat, TTOp};
+use super::{BOp, Kernel, Op, OpId, ParamKind, Pat, RangeKind, TTOp, split::SplitMode};
 use crate::Map;
 use crate::Set;
 use crate::dtype::Constant;
@@ -24,34 +24,59 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
-        self.debug();
         // Fold first: split replicates the body, so wrappers
         // (x*1, casts of consts) must die before replication, not after.
         self.constant_folding();
+        // Tree-unroll every counted loop with constant length divisible
+        // by 32 FIRST: split's loop arm allows exactly one acc store
+        // per body, so it must run before coarsening replicates the
+        // body. Non-reduce loops are a no-op inside (no acc found);
+        // anything else keeps its shape for later cuts.
+        let mut loops: Vec<OpId> = Vec::new();
+        for (op, x) in self.iter_unordered() {
+            if let Op::Loop { len, .. } = x {
+                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
+                    loops.push(op);
+                }
+            }
+        }
+        for l in loops {
+            self.split(l, SplitMode::Unroll, 32);
+        }
 
         self.default_epilogue();
         self.default_epilogue();
 
-        // TODO: retile via shaped index approaches (split-based lane
-        // vectors); the vectorize pass is deleted.
-        todo!("tiling: vectorize-based bundling is deleted");
-
-        self.default_epilogue();
-        // Deleted vectorize pass (see above todo).
-
-        //self.vectorize_reduce_tile();
+        // Coarsen group ranges LAST: duplicate the vectorized body, one
+        // lane per row. Anything else (symbolic, indivisible) is
+        // skipped, never fatal.
+        let mut groups: Vec<OpId> = Vec::new();
+        for (op, x) in self.iter_unordered() {
+            if let Op::Range { kind: RangeKind::Group(len), .. } = x {
+                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
+                    groups.push(op);
+                }
+            }
+        }
+        for g in groups {
+            self.split(g, SplitMode::Unroll, 32);
+        }
 
         self.default_epilogue();
         self.default_epilogue();
 
         // Retile the reduce row (see below) on the final IR.
         self.tilize_stores();
+        self.debug();
 
         // Fold dot-cone families into matmul tiles (see below).
         self.vectorize_matmul_tile(32, 32, 32);
 
         self.default_epilogue();
         self.default_epilogue();
+
+        self.debug();
+        todo!();
 
         self.verify();
     }
@@ -199,10 +224,10 @@ impl Kernel {
                 continue;
             }
             let Some(m) = self.match_pat(op, &anchor) else { continue };
-            let (src, bytes) = (m.op('x'), m.op('b'));
-            // Any store with a descriptor (scalar lengths and sub-tile
-            // descriptors alike); unit stores (null bytes) stay scalar.
-            if bytes.is_null() {
+            let src = m.op('x');
+            // Scalar stored values stay scalar; anything lane-vector
+            // goes through the tile push.
+            if self.shape(src).is_empty() {
                 continue;
             }
             let mut memo = Map::default();
@@ -274,232 +299,137 @@ impl Kernel {
         self.dead_code_elimination();
     }
 
-    /// Former: m x n dots over a shared [k, n] tile -> MatmulTile.
-    /// Matches the vectorized matmul family with no reference to loads
-    /// or stores: per dot a `Mul` of a broadcast `Stack[k]` of one
-    /// A-column against a tile-shaped `[k, n]` op (dot lanes fed by the
-    /// vectorize pass, since deleted via the tile matcher), the m*n dots
-    /// assembled [row][col] into an outer stack.
-    /// The `a` root is whatever tile-shaped op the A-lane Index chains
-    /// bottom out at (`shape == [m, k]`); the `b` root is whatever
-    /// tile-shaped op the prods share (`shape == [k, n]`). Emits by
-    /// replacing the outer stack op in place with
-    /// `MatmulTile { x: a_tile, y: b_tile }`, so consumers keep pointing
-    /// at the same `OpId`; the replaced family dies in DCE. Anything
-    /// else keeps its shape (never fatal).
+    /// Split-IR lane fold -> MatmulTile.
+    /// Matches the lane-vector matmul family split produces: one `Store`
+    /// whose access mentions two `Unroll` vector axes, fed by a single
+    /// `Reduce` over one `Mul` of two tile loads. The k lane (the
+    /// `Reduce` axis) appears in both load cones; each load cone holds
+    /// exactly its own access lane plus k. Emits by replacing the
+    /// `Reduce` in place with `MatmulTile { x: a, y: b }` pointing at
+    /// the two tile loads, so consumers keep pointing at the same
+    /// `OpId`. Anything else keeps its shape (never fatal).
     pub fn vectorize_matmul_tile(&mut self, m: Dim, n: Dim, k: Dim) {
         let (m_len, n_len, k_len) = (m as usize, n as usize, k as usize);
-        let mut outers: Vec<OpId> = Vec::new();
+        // Anchor stores first; mutation happens after the scan.
+        let mut anchors: Vec<OpId> = Vec::new();
         for (op, x) in self.iter_unordered() {
-            if matches!(x, Op::Stack { .. }) {
-                outers.push(op);
+            if matches!(x, Op::Store { .. }) {
+                anchors.push(op);
             }
         }
-        for outer in outers {
-            let rows: Vec<OpId> = match &self.ops[outer].op {
-                Op::Stack { ops } if ops.len() == m_len => ops.to_vec(),
+        'anchor: for store in anchors {
+            let (dst_idx, root) = match self.ops[store].op {
+                Op::Store { dst_idx, src, .. } => (dst_idx, src),
                 _ => continue,
             };
-            // Dots per row; dot -> (prod, lane); prod -> lanes.
-            let mut row_dots: Vec<Vec<OpId>> = Vec::with_capacity(m_len);
-            let mut dot_cone: Map<OpId, (OpId, usize)> = Map::default();
-            let mut prod_lanes: Map<OpId, Vec<usize>> = Map::default();
-            let mut shaped = true;
-            for &row in &rows {
-                let dots: Vec<OpId> = match &self.ops[row].op {
-                    Op::Stack { ops } if ops.len() == n_len => ops.to_vec(),
-                    _ => {
-                        shaped = false;
-                        break;
+            if dst_idx.is_null() || root.is_null() {
+                continue;
+            }
+            let cone_lanes = |id: OpId| -> Set<OpId> {
+                let mut out = Set::default();
+                let mut stack = vec![id];
+                let mut seen = Set::default();
+                while let Some(nid) = stack.pop() {
+                    if !seen.insert(nid) {
+                        continue;
                     }
-                };
-                for &dot in &dots {
-                    // Stacked dot-lane lowers came from the deleted
-                    // vectorize pass; with no lane folds in IR, the
-                    // stack members never shape.
-                    let _ = dot;
-                    shaped = false;
-                    break;
-                }
-                if !shaped {
-                    break;
-                }
-                row_dots.push(dots);
-            }
-            if !shaped {
-                continue;
-            }
-            // n prods, lanes 0..m each, no gaps, no dups.
-            if prod_lanes.len() != n_len {
-                continue;
-            }
-            let mut prods: Vec<OpId> = Vec::with_capacity(n_len);
-            let mut covered = true;
-            for (prod, lanes) in prod_lanes.iter() {
-                if lanes.len() != m_len {
-                    covered = false;
-                    break;
-                }
-                let mut seen = vec![false; m_len];
-                for lane in lanes.iter() {
-                    if *lane >= m_len || seen[*lane] {
-                        covered = false;
-                        break;
-                    }
-                    seen[*lane] = true;
-                }
-                if !covered {
-                    break;
-                }
-                prods.push(*prod);
-            }
-            if !covered {
-                continue;
-            }
-            // Rows: lane == row, prods distinct, same prod set.
-            let mut cone_set: Option<Set<OpId>> = None;
-            let mut assembled = true;
-            for (r, dots) in row_dots.iter().enumerate() {
-                let mut set = Set::default();
-                for &dot in dots.iter() {
-                    let (prod, lane) = match dot_cone.get(&dot) {
-                        Some(&(p, l)) => (p, l),
-                        None => {
-                            assembled = false;
-                            break;
+                    match self.ops[nid].op {
+                        Op::Unroll { .. } => {
+                            out.insert(nid);
                         }
-                    };
-                    if lane != r {
-                        assembled = false;
-                        break;
-                    }
-                    set.insert(prod);
-                }
-                if !assembled {
-                    break;
-                }
-                if set.len() != n_len {
-                    assembled = false;
-                    break;
-                }
-                if let Some(first) = &cone_set {
-                    if *first != set {
-                        assembled = false;
-                        break;
-                    }
-                } else {
-                    cone_set = Some(set);
-                }
-            }
-            if !assembled {
-                continue;
-            }
-            // Prods: Mul(broadcast-stack, shared tile-shaped op).
-            let mut b_tile = OpId::NULL;
-            let mut acols: Vec<OpId> = Vec::with_capacity(n_len);
-            let mut cones = true;
-            for &prod in &prods {
-                let (bl, br) = match self.ops[prod].op {
-                    Op::Binary { x, y, bop } if bop == BOp::Mul => (x, y),
-                    _ => {
-                        cones = false;
-                        break;
-                    }
-                };
-                if !cones {
-                    break;
-                }
-                let (bcast, b) = match (&self.ops[bl].op, &self.ops[br].op) {
-                    (Op::Stack { .. }, _) => (bl, br),
-                    (_, Op::Stack { .. }) => (br, bl),
-                    _ => {
-                        cones = false;
-                        break;
-                    }
-                };
-                if !cones {
-                    break;
-                }
-                if self.shape(b) != vec![k, n] {
-                    cones = false;
-                    break;
-                }
-                if b_tile.is_null() {
-                    b_tile = b;
-                } else if b_tile != b {
-                    cones = false;
-                    break;
-                }
-                let acol = match &self.ops[bcast].op {
-                    Op::Stack { ops } if ops.len() == k_len && ops.iter().all(|o| *o == ops[0]) => ops[0],
-                    _ => {
-                        cones = false;
-                        break;
-                    }
-                };
-                if !cones {
-                    break;
-                }
-                acols.push(acol);
-            }
-            if !cones {
-                continue;
-            }
-            if b_tile.is_null() {
-                continue;
-            }
-            // All A-lane Index chains bottom out at one shared tile-shaped
-            // root; every lane op distinct (no shared lanes across columns).
-            let mut lane_ops = Set::default();
-            let mut seen_bcast = Set::default();
-            let mut a_tile = OpId::NULL;
-            let mut tiled = true;
-            for &acol in &acols {
-                if !seen_bcast.insert(acol) {
-                    tiled = false;
-                    break;
-                }
-                let members: Vec<OpId> = match &self.ops[acol].op {
-                    Op::Stack { ops } if ops.len() == k_len => ops.to_vec(),
-                    _ => {
-                        tiled = false;
-                        break;
-                    }
-                };
-                if !tiled {
-                    break;
-                }
-                for &mem in &members {
-                    if !lane_ops.insert(mem) {
-                        tiled = false;
-                        break;
-                    }
-                    let mut t = mem;
-                    while let Op::Index { vec, .. } = &self.ops[t].op {
-                        t = *vec;
-                    }
-                    if a_tile.is_null() {
-                        if self.shape(t) != vec![m, k] {
-                            tiled = false;
-                            break;
+                        Op::Binary { x, y, .. } => {
+                            stack.push(x);
+                            stack.push(y);
                         }
-                        a_tile = t;
-                    } else if t != a_tile {
-                        tiled = false;
-                        break;
+                        Op::Unary { x, .. } | Op::Cast { x, .. } => {
+                            stack.push(x);
+                        }
+                        Op::Load { src_idx, .. } => {
+                            if !src_idx.is_null() {
+                                stack.push(src_idx);
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                if !tiled {
-                    break;
-                }
-            }
-            if !tiled || a_tile.is_null() {
+                out
+            };
+            let lane_len = |id: OpId| match self.ops[id].op {
+                Op::Unroll { len, .. } => len as usize,
+                _ => 0,
+            };
+            // The value must be a single Reduce over one Mul of two
+            // tile loads: split's loop arm folds the accumulation.
+            let (prod, rop, k_lane) = match self.ops[root].op {
+                Op::Reduce { x, rop, reduce_axis } => (x, rop, reduce_axis),
+                _ => continue,
+            };
+            if rop != BOp::Add {
                 continue;
             }
-            // Emit: replace the outer stack in place with the matmul tile.
-            // Consumers keep pointing at the same OpId; the replaced
-            // family dies in DCE.
-            self.ops[outer].op = Op::TT(TTOp::MatmulTile { x: a_tile, y: b_tile });
+            if !matches!(self.ops[k_lane].op, Op::Unroll { .. }) {
+                continue;
+            }
+            let (a, b) = match self.ops[prod].op {
+                Op::Binary { x, y, bop } if bop == BOp::Mul => (x, y),
+                _ => continue,
+            };
+            let (a_src, a_idx) = match self.ops[a].op {
+                Op::Load { src, src_idx, .. } if !src_idx.is_null() => (src, src_idx),
+                _ => continue,
+            };
+            let (b_src, b_idx) = match self.ops[b].op {
+                Op::Load { src, src_idx, .. } if !src_idx.is_null() => (src, src_idx),
+                _ => continue,
+            };
+            for s in [a_src, b_src] {
+                if !matches!(self.ops[s].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
+                    continue 'anchor;
+                }
+            }
+            // Tile loads: value shapes are the full tile.
+            if self.shape(a) != vec![m, k] || self.shape(b) != vec![k, n] {
+                continue;
+            }
+            // Lane partition: k in both load cones; each cone holds
+            // exactly its own access lane plus k; the access holds
+            // exactly the two access lanes.
+            let la = cone_lanes(a_idx);
+            let lb = cone_lanes(b_idx);
+            let ld = cone_lanes(dst_idx);
+            if ld.len() != 2 || la.len() != 2 || lb.len() != 2 {
+                continue;
+            }
+            if !la.contains(&k_lane) || !lb.contains(&k_lane) {
+                continue;
+            }
+            let a_hit: Vec<OpId> = ld.iter().filter(|l| la.contains(l)).copied().collect();
+            let b_hit: Vec<OpId> = ld.iter().filter(|l| lb.contains(l)).copied().collect();
+            if a_hit.len() != 1 || b_hit.len() != 1 || a_hit[0] == b_hit[0] {
+                continue;
+            }
+            // Lane sizes: k lane folds k, access lanes span m by n.
+            if lane_len(k_lane) != k_len {
+                continue;
+            }
+            let mut dst_lens: Vec<usize> = ld.iter().map(|&l| lane_len(l)).collect();
+            dst_lens.sort();
+            let mut want = vec![m_len, n_len];
+            want.sort();
+            if dst_lens != want {
+                continue;
+            }
+            // Emit: replace the Reduce in place. Consumers keep pointing
+            // at the same OpId; the loads stay (the reader publishes
+            // them).
+            self.ops[root].op = Op::TT(TTOp::MatmulTile { x: a, y: b });
+            // (families folded into the single Reduce above)
+
+            // (bases ride the access lanes; checked above)
+
+            // (lane coverage checked above; tile loads stay)
+
+            // (single tile loads feed the tile directly)
         }
         self.dead_code_elimination();
     }

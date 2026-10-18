@@ -585,6 +585,9 @@ impl Kernel {
         if !op_id.is_null() {
             panic!("compute_dtypes_and_rcs did not finish in 250000 steps");
         }
+        for (_, v) in dtypes.iter_mut() {
+            v.1.retain(|&d| d != 0);
+        }
         (dtypes, rcs)
     }
 
@@ -1543,11 +1546,7 @@ impl Kernel {
         for _ in 0..250_000 {
             let Some(id) = stack.pop() else {
                 let slots = visited[&op_id];
-                let mut end = slots.len();
-                while end > 0 && slots[end - 1] == 0 {
-                    end -= 1;
-                }
-                return slots[..end].iter().map(|&d| d as Dim).collect();
+                return slots.iter().filter(|&&d| d != 0).map(|&d| d as Dim).collect();
             };
             if visited.contains_key(&id) {
                 continue;

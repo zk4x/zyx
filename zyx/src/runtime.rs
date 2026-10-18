@@ -1927,7 +1927,7 @@ impl Runtime {
     }
 
     #[allow(clippy::wrong_self_convention)] // naming convention from GPU API, not a conversion method
-    pub fn to_device(&mut self, x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
+    pub fn to_device(&mut self, mut x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device={device:?})");
         // Implicit layout: crossing onto TT tilizes (row-major in, face
@@ -3836,8 +3836,12 @@ impl Runtime {
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
             let store_shape_id = self.kernels[kid].kernel.stack_shape_dims(op_id);
-            let dst =
-                self.kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: store_shape_id, id: x.0 + 1 });
+            let dst = self.kernels[kid].kernel.push_back(Op::Param {
+                dtype,
+                kind: ParamKind::GlobalMut,
+                shape: store_shape_id,
+                id: x.0 + 1,
+            });
             self.kernels[kid].kernel.push_back(Op::Store { dst, dst_idx: OpId::NULL, src: op_id });
             self.kernels[kid].stores.push(x);
             kid

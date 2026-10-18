@@ -16,6 +16,9 @@
 - ASK BEFORE CHANGING ANY DATA STRUCTURE'S SHAPE
   (fields, variants, aliases). Name field, type, placement, consumers.
 - `?`/interrogative = answer and stop. No edits/launches/tests until confirmed.
+- A `why` inside an order still gets a direct answer FIRST, in the same
+  message, before any edit. Never substitute implementation for an
+  explanation.
 - "Why did you X?" explains only, never undoes. Undo needs an explicit verb.
 - Literal ask only ("a test" = ONE test). Ambiguous scope: ask first.
 - NO design decisions, EVER. `todo!()` beats a guessed fix.
