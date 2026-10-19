@@ -4,7 +4,7 @@
 //! Tenstorrent tiling pass: canonicalize scalar IR for tile matching.
 //! (Under construction, one step at a time.)
 
-use super::{BOp, Kernel, Op, OpId, ParamKind, Pat, RangeKind, TTOp, split::SplitMode};
+use super::{BOp, Kernel, Op, OpId, Pat, RangeKind, TTOp, split::SplitMode};
 use crate::Map;
 use crate::Set;
 use crate::dtype::Constant;
@@ -299,137 +299,44 @@ impl Kernel {
         self.dead_code_elimination();
     }
 
-    /// Split-IR lane fold -> MatmulTile.
-    /// Matches the lane-vector matmul family split produces: one `Store`
-    /// whose access mentions two `Unroll` vector axes, fed by a single
-    /// `Reduce` over one `Mul` of two tile loads. The k lane (the
-    /// `Reduce` axis) appears in both load cones; each load cone holds
-    /// exactly its own access lane plus k. Emits by replacing the
-    /// `Reduce` in place with `MatmulTile { x: a, y: b }` pointing at
-    /// the two tile loads, so consumers keep pointing at the same
-    /// `OpId`. Anything else keeps its shape (never fatal).
+    /// Split-IR lane fold -> MatmulTile, values only.
+    /// Matches the lane-vector matmul family split produces: a single
+    /// `Reduce` over one `Mul` of two 2D-shaped operands, folding to a
+    /// 2D result. Shapes only — `[m, k]` and `[k, n]` operands, `[m, n]`
+    /// result. No memory op is ever matched: operands may be any op
+    /// producing tile values.
+    /// Emits by replacing the `Reduce` in place with
+    /// `MatmulTile { x: a, y: b }`, so consumers keep pointing at the
+    /// same `OpId`. Anything else keeps its shape (never fatal).
     pub fn vectorize_matmul_tile(&mut self, m: Dim, n: Dim, k: Dim) {
-        let (m_len, n_len, k_len) = (m as usize, n as usize, k as usize);
-        // Anchor stores first; mutation happens after the scan.
-        let mut anchors: Vec<OpId> = Vec::new();
+        // Collect the Reduce sites first; mutation happens after the scan.
+        let mut sites: Vec<OpId> = Vec::new();
         for (op, x) in self.iter_unordered() {
-            if matches!(x, Op::Store { .. }) {
-                anchors.push(op);
+            if matches!(x, Op::Reduce { .. }) {
+                sites.push(op);
             }
         }
-        'anchor: for store in anchors {
-            let (dst_idx, root) = match self.ops[store].op {
-                Op::Store { dst_idx, src, .. } => (dst_idx, src),
+        for root in sites {
+            // A single Reduce over one Mul of two 2D-shaped operands:
+            // split's loop arm folds the accumulation.
+            let prod = match self.ops[root].op {
+                Op::Reduce { x, rop, .. } if rop == BOp::Add => x,
                 _ => continue,
             };
-            if dst_idx.is_null() || root.is_null() {
-                continue;
-            }
-            let cone_lanes = |id: OpId| -> Set<OpId> {
-                let mut out = Set::default();
-                let mut stack = vec![id];
-                let mut seen = Set::default();
-                while let Some(nid) = stack.pop() {
-                    if !seen.insert(nid) {
-                        continue;
-                    }
-                    match self.ops[nid].op {
-                        Op::Unroll { .. } => {
-                            out.insert(nid);
-                        }
-                        Op::Binary { x, y, .. } => {
-                            stack.push(x);
-                            stack.push(y);
-                        }
-                        Op::Unary { x, .. } | Op::Cast { x, .. } => {
-                            stack.push(x);
-                        }
-                        Op::Load { src_idx, .. } => {
-                            if !src_idx.is_null() {
-                                stack.push(src_idx);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                out
-            };
-            let lane_len = |id: OpId| match self.ops[id].op {
-                Op::Unroll { len, .. } => len as usize,
-                _ => 0,
-            };
-            // The value must be a single Reduce over one Mul of two
-            // tile loads: split's loop arm folds the accumulation.
-            let (prod, rop, k_lane) = match self.ops[root].op {
-                Op::Reduce { x, rop, reduce_axis } => (x, rop, reduce_axis),
-                _ => continue,
-            };
-            if rop != BOp::Add {
-                continue;
-            }
-            if !matches!(self.ops[k_lane].op, Op::Unroll { .. }) {
-                continue;
-            }
             let (a, b) = match self.ops[prod].op {
                 Op::Binary { x, y, bop } if bop == BOp::Mul => (x, y),
                 _ => continue,
             };
-            let (a_src, a_idx) = match self.ops[a].op {
-                Op::Load { src, src_idx, .. } if !src_idx.is_null() => (src, src_idx),
-                _ => continue,
-            };
-            let (b_src, b_idx) = match self.ops[b].op {
-                Op::Load { src, src_idx, .. } if !src_idx.is_null() => (src, src_idx),
-                _ => continue,
-            };
-            for s in [a_src, b_src] {
-                if !matches!(self.ops[s].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
-                    continue 'anchor;
-                }
-            }
-            // Tile loads: value shapes are the full tile.
+            // Shapes only: [m, k] and [k, n] operands folding to [m, n].
             if self.shape(a) != vec![m, k] || self.shape(b) != vec![k, n] {
                 continue;
             }
-            // Lane partition: k in both load cones; each cone holds
-            // exactly its own access lane plus k; the access holds
-            // exactly the two access lanes.
-            let la = cone_lanes(a_idx);
-            let lb = cone_lanes(b_idx);
-            let ld = cone_lanes(dst_idx);
-            if ld.len() != 2 || la.len() != 2 || lb.len() != 2 {
-                continue;
-            }
-            if !la.contains(&k_lane) || !lb.contains(&k_lane) {
-                continue;
-            }
-            let a_hit: Vec<OpId> = ld.iter().filter(|l| la.contains(l)).copied().collect();
-            let b_hit: Vec<OpId> = ld.iter().filter(|l| lb.contains(l)).copied().collect();
-            if a_hit.len() != 1 || b_hit.len() != 1 || a_hit[0] == b_hit[0] {
-                continue;
-            }
-            // Lane sizes: k lane folds k, access lanes span m by n.
-            if lane_len(k_lane) != k_len {
-                continue;
-            }
-            let mut dst_lens: Vec<usize> = ld.iter().map(|&l| lane_len(l)).collect();
-            dst_lens.sort();
-            let mut want = vec![m_len, n_len];
-            want.sort();
-            if dst_lens != want {
+            if self.shape(root) != vec![m, n] {
                 continue;
             }
             // Emit: replace the Reduce in place. Consumers keep pointing
-            // at the same OpId; the loads stay (the reader publishes
-            // them).
+            // at the same OpId; the operands stay.
             self.ops[root].op = Op::TT(TTOp::MatmulTile { x: a, y: b });
-            // (families folded into the single Reduce above)
-
-            // (bases ride the access lanes; checked above)
-
-            // (lane coverage checked above; tile loads stay)
-
-            // (single tile loads feed the tile directly)
         }
         self.dead_code_elimination();
     }
