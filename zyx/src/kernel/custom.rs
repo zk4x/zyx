@@ -120,7 +120,7 @@ impl Kernel {
     /// kernel.store(out, doubled, gidx);
     ///
     /// let compiled = kernel.compile()?;
-    /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
+    /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]).to(compiled.device())?;
     /// let result = compiled.forward(&[&x], vec![[n]])?;
     /// let data: Vec<f32> = result.into_iter().next().unwrap().try_into()?;
     /// assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
@@ -1239,6 +1239,12 @@ impl CompiledKernel {
         self.program.dev.info()
     }
 
+    /// Returns the device this kernel was compiled for.
+    #[must_use]
+    pub fn device(&self) -> Dev {
+        self.program.dev
+    }
+
     /// Execute the compiled kernel with new input tensors.
     ///
     /// Routing mirrors every other op: if **any** input is a graph tensor of
@@ -1340,7 +1346,7 @@ impl Runtime {
                 if *pool != prog_pool {
                     return Err(ZyxError::BackendError(BackendError {
                         status: crate::error::ErrorStatus::IncorrectKernelArg,
-                        context: format!("custom kernel input tensor {input} is on a different device than the compiled kernel")
+                        context: format!("custom kernel input tensor {input} lives on pool {pool:?}, but the kernel is compiled for device {:?}, whose pool is {prog_pool:?}", program.dev)
                             .into(),
                     }));
                 }
@@ -1503,7 +1509,7 @@ impl Runtime {
                 if *found != pool_id {
                     return Err(ZyxError::BackendError(BackendError {
                         status: crate::error::ErrorStatus::IncorrectKernelArg,
-                        context: format!("custom kernel input tensor {input} is on a different device than the compiled kernel")
+                        context: format!("custom kernel input tensor {input} lives on pool {found:?}, but the kernel is compiled for device {device_id:?}, whose pool is {pool_id:?}")
                             .into(),
                     }));
                 }
