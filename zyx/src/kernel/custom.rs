@@ -496,6 +496,37 @@ impl Kernel {
         idx
     }
 
+    /// Same as [`Kernel::lane_tree`], but the lane nodes are built
+    /// before `before` instead of at the tail: mid-kernel users (a
+    /// publish `Copy`, a pack `Store`) must dominate their index
+    /// math in iteration order, or the dtype map misses a
+    /// use-before-def. Paired traffic (publish/drain `Copy`s) shares
+    /// the DRAM side's lane vars instead (see `lane_local`): fresh
+    /// lanes on an already-laned base double-count.
+    pub(crate) fn lane_tree_before(&mut self, base: OpId, block: &[Dim], before: OpId) -> OpId {
+        let mut idx = base;
+        let n = block.len();
+        for (i, &len) in block.iter().enumerate() {
+            let lanes = self
+                .insert_before(before, Op::Unroll { axis: i as u32, len: u16::try_from(len).expect("block lane count overflows u16") });
+            let term = if i == n - 1 {
+                lanes
+            } else {
+                let mut stride = 1 as Dim;
+                for &l in &block[i + 1..] {
+                    stride *= l;
+                }
+                let stride_op = self.insert_before(
+                    before,
+                    Op::Const(Constant::idx(u16::try_from(stride).expect("block stride overflows u16"))),
+                );
+                self.insert_before(before, Op::Binary { x: lanes, y: stride_op, bop: BOp::Mul })
+            };
+            idx = self.insert_before(before, Op::Binary { x: idx, y: term, bop: BOp::Add });
+        }
+        idx
+    }
+
     /// Store `x` to `dst` at `index` (scalar shape: one element).
     pub fn store(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
         let index = index.into_op(self);

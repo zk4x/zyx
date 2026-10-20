@@ -303,7 +303,8 @@ impl Kernel {
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
                 | Op::Program { .. }
-                | Op::Kernel(_) => {}
+                | Op::Kernel(_)
+                | Op::TT(TTOp::Copy { .. }) => {}
                 // Movement ops carry their output shape in their
                 // descriptor operands: resolve each dim, `-1` where
                 // symbolic (same convention as `Kernel::shape`).
@@ -474,11 +475,25 @@ impl Kernel {
                         }
                     }
                 }
-                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => {
-                    // Lowered reduce: result takes the input CB's
-                    // dtype/layout, like the LLK form's ops[0].
-                    dtypes.insert(op_id, dtypes[&cb_in].clone());
-                    for &f in &[cb_in, cb_sc, slot, x, scaler] {
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, kind, .. }) => {
+                    // Lowered reduce: result takes the input CB's dtype; the
+                    // shape drops the trailing dim (Row/Col) or everything
+                    // (Scalar), like `Kernel::shape`.
+                    let (dtype, _) = dtypes[&cb_in].clone();
+                    let shape = if matches!(kind, TileDim::Scalar) {
+                        Vec::new()
+                    } else {
+                        vec![32]
+                    };
+                    dtypes.insert(op_id, (dtype, shape));
+                    for &f in &[cb_in, cb_sc, slot] {
+                        *rcs.entry(f).or_insert(0) += 1;
+                    }
+                }
+                Op::TT(TTOp::FillTile { slot, val }) => {
+                    // Lowered fill: scalar value broadcast to one tile.
+                    dtypes.insert(op_id, (dtypes[&val].0, vec![32, 32]));
+                    for &f in &[slot, val] {
                         *rcs.entry(f).or_insert(0) += 1;
                     }
                 }
@@ -489,11 +504,12 @@ impl Kernel {
                         *rcs.entry(f).or_insert(0) += 1;
                     }
                 }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
-                    // Lowered matmul: result takes the left CB's
-                    // dtype/layout, like the LLK form's ops[0].
-                    dtypes.insert(op_id, dtypes[&cb_a].clone());
-                    for &f in &[cb_a, cb_b, slot, x, y] {
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
+                    // Lowered matmul: one tile out; result takes the
+                    // left CB's dtype.
+                    let (dtype, _) = dtypes[&cb_a].clone();
+                    dtypes.insert(op_id, (dtype, vec![32, 32]));
+                    for &f in &[cb_a, cb_b, slot] {
                         *rcs.entry(f).or_insert(0) += 1;
                     }
                 }
@@ -619,6 +635,7 @@ impl Kernel {
                     op_id = ops[0]
                 }
                 Op::TT(TTOp::ReduceTile { cb_in, .. }) => op_id = cb_in,
+                Op::TT(TTOp::FillTile { val, .. }) => op_id = val,
                 Op::TT(TTOp::LLKBcast { cb_a, .. }) => op_id = cb_a,
                 Op::TT(TTOp::LLKMatmul { cb_a, .. }) => op_id = cb_a,
                 Op::Index { vec, .. } => op_id = vec,
@@ -640,7 +657,8 @@ impl Kernel {
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
-                | Op::TT(TTOp::PopFront { .. }) => todo!("dtype: CB sync op produces no value"),
+                | Op::TT(TTOp::PopFront { .. })
+                | Op::TT(TTOp::Copy { .. }) => todo!("dtype: CB sync/traffic op produces no value"),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
@@ -1404,9 +1422,7 @@ impl Kernel {
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
-                | Op::TT(TTOp::ReduceTile { x, .. })
-                | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
-                | Op::TT(TTOp::LLKMatmul { x, .. }) => match visited.get(&x) {
+                | Op::TT(TTOp::LLKBcast { cb_a: x, .. }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(op_id, dims.clone());
                         if let Some(a) = axes.get(&x).cloned() {
@@ -1417,6 +1433,12 @@ impl Kernel {
                         stack.push(op_id);
                         stack.push(x);
                     }
+                },
+                // Lowered calls report no shape ids: no buffer is ever
+                // sized from them (writer CBs are pre-sized). `shape`
+                // and the dtype map carry their tile shapes.
+                Op::TT(TTOp::LLKMatmul { .. }) | Op::TT(TTOp::ReduceTile { .. }) => {
+                    visited.insert(op_id, Vec::new());
                 },
                 Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     if ops.is_empty() {
@@ -1684,9 +1706,7 @@ impl Kernel {
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
-                | Op::TT(TTOp::ReduceTile { x, .. })
-                | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
-                | Op::TT(TTOp::LLKMatmul { x, .. }) => match visited.get(&x) {
+                | Op::TT(TTOp::LLKBcast { cb_a: x, .. }) => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(id, *dims);
                     }
@@ -1695,6 +1715,25 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
+                // A reduce over a 32-tile yields one [32] row (Row/Col)
+                // or a scalar (Scalar): kind-constant, since the
+                // slot-indexed feeder load itself shapes scalar.
+                // A matmul yields one [32, 32] tile: kind-constant.
+                Op::TT(TTOp::ReduceTile { kind, .. }) => {
+                    let mut out = [0; 8];
+                    if !matches!(kind, TileDim::Scalar) {
+                        out[0] = 32;
+                    }
+                    visited.insert(id, out);
+                }
+                Op::TT(TTOp::LLKMatmul { .. }) => {
+                    visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);
+                }
+                // A fill produces one full tile: fixed [32, 32], no
+                // unroll dims anywhere.
+                Op::TT(TTOp::FillTile { .. }) => {
+                    visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);
+                }
                 Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     if ops.is_empty() {
                         // Operand-free Asm/LLK is an effect-only call:
@@ -1920,6 +1959,26 @@ impl Kernel {
                 }
                 continue;
             }
+            // Unroll lane var: post-tile lane trees index over
+            // `Op::Unroll` nodes, not Range/Loop. Bare lane var takes
+            // stride 1 (times the inherited scale), length is the lane
+            // count; lane var scaled by a const (lane-tree terms) folds
+            // the factor into the stride.
+            if let Op::Unroll { len, .. } = self.at(param) {
+                add_stride(&mut indices, param, i64::from(*len), scale);
+                continue;
+            }
+            if let Op::Binary { x, y, bop: BOp::Mul } = self.at(param) {
+                match (self.at(*x), self.at(*y)) {
+                    (Op::Unroll { len, .. }, Op::Const(c)) | (Op::Const(c), Op::Unroll { len, .. }) => {
+                        let Some(k) = c.as_integer() else { return None };
+                        let lane = if matches!(self.at(*x), Op::Unroll { .. }) { *x } else { *y };
+                        add_stride(&mut indices, lane, i64::from(*len), k * scale);
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             // Anything else (Div/Mod/Min/Max, dynamic factors,
             // data-dependent leaves) is not an affine index expression:
             // report unanalyzable explicitly instead of returning a
@@ -1931,6 +1990,31 @@ impl Kernel {
         }
 
         Some(indices)
+    }
+
+    /// True if the value's expression references an `Op::Unroll` node.
+    /// Traffic base indices must be unroll-free (lanes stripped at
+    /// lowering); anything else renders per-lane addresses the hardware
+    /// cannot execute.
+    pub(crate) fn contains_unroll(&self, id: OpId) -> bool {
+        let mut stack = vec![id];
+        for _ in 0..250_000 {
+            let Some(n) = stack.pop() else { return false };
+            if n.is_null() {
+                continue;
+            }
+            match self.ops[n].op {
+                Op::Unroll { .. } => return true,
+                Op::Const(_) | Op::Param { .. } | Op::Range { .. } | Op::Storage { .. } => {}
+                Op::Binary { x, y, .. } => {
+                    stack.push(x);
+                    stack.push(y);
+                }
+                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Index { vec: x, .. } => stack.push(x),
+                _ => return true,
+            }
+        }
+        panic!("contains_unroll did not finish in 250000 steps");
     }
 
     /// Fully resolve a kernel-shape value (an `OpId`) down to a constant dim.

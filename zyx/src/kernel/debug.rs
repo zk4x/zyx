@@ -194,35 +194,57 @@ impl Kernel {
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}llk{reset} {asm} {ops:?}").unwrap();
                 }
-                Op::TT(TTOp::ReduceTile { rop, kind, cb_in, cb_sc, slot, x, scaler }) => {
+                Op::TT(TTOp::ReduceTile { rop, kind, cb_in, cb_sc, slot }) => {
                     let dtype = dtypes.get(&cb_in).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let shp = self.shape_suffix(op_id, &shapes);
                     let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
                     writeln!(
                         f,
-                        "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}llk_reduce_{rop:?}_{kind:?}{reset} r{}, r{}, r{}, r{}, r{}",
+                        "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}reduce_tile_{rop:?}_{kind:?}{reset} r{}, r{}, r{}",
                         map(cb_in),
                         map(cb_sc),
                         map(slot),
-                        map(x),
-                        map(scaler),
                     )
                     .unwrap();
                 }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
+                Op::TT(TTOp::FillTile { slot, val }) => {
+                    let dtype = dtypes.get(&val).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let shp = self.shape_suffix(op_id, &shapes);
+                    let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}fill_tile{reset} r{}, r{}",
+                        map(slot),
+                        map(val),
+                    )
+                    .unwrap();
+                }
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
                     let dtype = dtypes.get(&cb_a).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let shp = self.shape_suffix(op_id, &shapes);
                     let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
                     writeln!(
                         f,
-                        "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}llk_matmul{reset} r{}, r{}, r{}, r{}, r{}",
+                        "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}matmul_tiles{reset} r{}, r{}, r{}",
                         map(cb_a),
                         map(cb_b),
                         map(slot),
-                        map(x),
-                        map(y),
+                    )
+                    .unwrap();
+                }
+                Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, bytes }) => {
+                    let shp = self.shape_suffix(op_id, &shapes);
+                    let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {shp}{reset} = {orange}tt_copy{reset} r{}, r{} -> r{}, r{} ({bytes}B)",
+                        map(src),
+                        map(src_idx),
+                        map(dst),
+                        map(dst_idx),
                     )
                     .unwrap();
                 }

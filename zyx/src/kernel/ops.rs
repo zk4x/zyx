@@ -598,10 +598,34 @@ pub enum TTOp {
         cb_sc: OpId,
         /// Accumulator (Register) storage.
         slot: OpId,
-        /// Input tile value (provenance for sync accounting).
-        x: OpId,
-        /// Scaler tile value (provenance for sync accounting).
-        scaler: OpId,
+    },
+    /// TT traffic copy: DRAM↔CB and CB→DRAM movement with an
+    /// explicit transfer size. Both indices are lane-invariant bases
+    /// (unrolls stripped at lowering); the size carries the transfer,
+    /// never the index shape. Effect-only like [`Op::Copy`]: a DCE
+    /// root, never CSE'd.
+    Copy {
+        /// Source buffer (DRAM param or Circular storage).
+        src: OpId,
+        /// Source base index (unroll-free).
+        src_idx: OpId,
+        /// Destination buffer (Circular storage or DRAM param).
+        dst: OpId,
+        /// Destination base index (unroll-free).
+        dst_idx: OpId,
+        /// Transfer size in bytes.
+        bytes: u32,
+    },
+    /// Lowered fill call: `fill_tile(dst, lit)` writes a scalar
+    /// literal across a DST segment; a pack store moves it to a CB
+    /// (the reduce scaler ones). Produces the filled tile as an SSA
+    /// value so the pack orders after it. Same effect/CSE rules as
+    /// [`TTOp::LLK`]: a DCE root, pinned by LICM, never deduplicated.
+    FillTile {
+        /// Destination (Register) storage.
+        slot: OpId,
+        /// Scalar fill value (Const).
+        val: OpId,
     },
     /// Lowered fused-broadcast call: a tiled binary with a broadcast
     /// side over resolved CBs (built directly by builders now).
@@ -623,7 +647,7 @@ pub enum TTOp {
         plain: OpId,
     },
     /// Lowered tile matmul: `x @ y` over tile-shaped values, rendered
-    /// as `matmul_block` (single tile: rt=ct=kt=1, transpose=0). Built
+    /// as doc-driven `matmul_tiles` (single tile). Built
     /// by `tt_storage`: carries the resolved
     /// input CBs plus the result slot, like [`TTOp::ReduceTile`]. Same
     /// effect/CSE rules as [`TTOp::LLK`]: a DCE root, pinned by LICM,
@@ -635,10 +659,6 @@ pub enum TTOp {
         cb_b: OpId,
         /// Result (Register) storage.
         slot: OpId,
-        /// Left tile value (provenance for sync accounting).
-        x: OpId,
-        /// Right tile value (provenance for sync accounting).
-        y: OpId,
     },
 }
 
@@ -1297,8 +1317,10 @@ impl Op {
             &Op::Load { src, src_idx } => vec![src, src_idx],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().filter(|o| !o.is_null()).collect(),
-            &Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
-            &Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => vec![cb_a, cb_b, slot, x, y],
+            &Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => vec![cb_in, cb_sc, slot],
+            &Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
+            &Op::TT(TTOp::FillTile { slot, val }) => vec![slot, val],
+            &Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => vec![cb_a, cb_b, slot],
             &Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
@@ -1398,8 +1420,10 @@ impl Op {
             | Op::TT(TTOp::TensixGrid(_)) => vec![],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().filter(|o| !o.is_null()).collect(),
-            Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
-            Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => vec![cb_a, cb_b, slot, x, y],
+            Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => vec![cb_in, cb_sc, slot],
+            Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
+            Op::TT(TTOp::FillTile { slot, val }) => vec![slot, val],
+            Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => vec![cb_a, cb_b, slot],
             Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
         }
         .into_iter()

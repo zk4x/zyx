@@ -629,6 +629,7 @@ impl Kernel {
                 op,
                 Op::Store { .. }
                     | Op::Copy { .. }
+                    | Op::TT(TTOp::Copy { .. })
                     | Op::TT(TTOp::ReserveBack { .. })
                     | Op::TT(TTOp::PushBack { .. })
                     | Op::TT(TTOp::WaitFront { .. })
@@ -646,6 +647,7 @@ impl Kernel {
                     | Op::TT(TTOp::TensixGrid(_))
                     | Op::TT(TTOp::LLK { .. })
                     | Op::TT(TTOp::ReduceTile { .. })
+                    | Op::TT(TTOp::FillTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLKMatmul { .. })
                     | Op::Param { .. }
@@ -715,12 +717,14 @@ impl Kernel {
                 }
                 &mut Op::Store { .. }
                 | &mut Op::Copy { .. }
+                | &mut Op::TT(TTOp::Copy { .. })
                 | &mut Op::TT(TTOp::ReserveBack { .. })
                 | &mut Op::TT(TTOp::PushBack { .. })
                 | &mut Op::TT(TTOp::WaitFront { .. })
                 | &mut Op::TT(TTOp::PopFront { .. })
                 | &mut Op::TT(TTOp::LLK { .. })
                 | &mut Op::TT(TTOp::ReduceTile { .. })
+                | &mut Op::TT(TTOp::FillTile { .. })
                 | &mut Op::TT(TTOp::LLKBcast { .. })
                 | &mut Op::TT(TTOp::LLKMatmul { .. })
                 | &mut Op::TT(TTOp::MathLock)

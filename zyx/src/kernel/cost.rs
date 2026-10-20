@@ -71,19 +71,27 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                    Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => {
                         // Lowered reduce: same rule over cb_in.
                         let (dtype, shape) = dtypes[&cb_in].clone();
                         dtypes.insert(op_id, (dtype, shape));
-                        for &f in &[cb_in, cb_sc, slot, x, scaler] {
+                        for &f in &[cb_in, cb_sc, slot] {
                             *rcs.entry(f).or_insert(0) += 1;
                         }
                     }
-                    Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
+                    Op::TT(TTOp::FillTile { slot, val }) => {
+                        // Lowered fill: scalar value broadcast to one tile.
+                        let (dtype, _) = dtypes[&val].clone();
+                        dtypes.insert(op_id, (dtype, vec![32, 32]));
+                        for &f in &[slot, val] {
+                            *rcs.entry(f).or_insert(0) += 1;
+                        }
+                    }
+                    Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
                         // Lowered matmul: same rule over cb_a.
                         let (dtype, shape) = dtypes[&cb_a].clone();
                         dtypes.insert(op_id, (dtype, shape));
-                        for &f in &[cb_a, cb_b, slot, x, y] {
+                        for &f in &[cb_a, cb_b, slot] {
                             *rcs.entry(f).or_insert(0) += 1;
                         }
                     }
@@ -222,21 +230,35 @@ impl Kernel {
                                 }
                             }
                         }
-                        TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. } => {
+                        TTOp::ReduceTile { cb_in, cb_sc, slot, .. } => {
                             dtypes.insert(op_id, dtypes[cb_in].clone());
-                            for f in [cb_in, cb_sc, slot, x, scaler] {
+                            for f in [cb_in, cb_sc, slot] {
                                 *rcs.entry(*f).or_insert(0) += 1;
                             }
                         }
-                        TTOp::LLKMatmul { cb_a, cb_b, slot, x, y } => {
+                        TTOp::FillTile { slot, val } => {
+                            let (dtype, _) = dtypes[val].clone();
+                            dtypes.insert(op_id, (dtype, vec![32, 32]));
+                            for f in [slot, val] {
+                                *rcs.entry(*f).or_insert(0) += 1;
+                            }
+                        }
+                        TTOp::LLKMatmul { cb_a, cb_b, slot } => {
                             dtypes.insert(op_id, dtypes[cb_a].clone());
-                            for f in [cb_a, cb_b, slot, x, y] {
+                            for f in [cb_a, cb_b, slot] {
                                 *rcs.entry(*f).or_insert(0) += 1;
                             }
                         }
                         TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. } => {
                             dtypes.insert(op_id, dtypes[cb_a].clone());
                             for f in [cb_a, cb_b, mx, plain] {
+                                *rcs.entry(*f).or_insert(0) += 1;
+                            }
+                        }
+                        TTOp::Copy { src, src_idx, dst, dst_idx, .. } => {
+                            // Traffic effect: no value, but the buffer
+                            // and index operands stay live.
+                            for f in [src, src_idx, dst, dst_idx] {
                                 *rcs.entry(*f).or_insert(0) += 1;
                             }
                         }
@@ -321,6 +343,7 @@ impl Kernel {
                 | Op::Range { .. } => true,
                 Op::Store { .. }
                 | Op::Copy { .. }
+                | Op::TT(TTOp::Copy { .. })
                 | Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
@@ -338,6 +361,7 @@ impl Kernel {
                 | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::LLK { .. })
                 | Op::TT(TTOp::ReduceTile { .. })
+                | Op::TT(TTOp::FillTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::LLKMatmul { .. })
                 | Op::EndLoop

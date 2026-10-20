@@ -25,10 +25,40 @@ use crate::Set;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Pat;
-use crate::kernel::{BOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp, TileDim, UOp};
+use crate::kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp, TileDim, UOp};
 use crate::shape::Dim;
 use crate::types::{TinyString, TinyVec};
 use super::split::SplitMode;
+
+/// Register allocator: lowered values share Register tiles by
+/// liveness. `alloc` mints (one tile) or reuses a dead value's
+/// storage; `release` returns it once its last use is emitted.
+/// Matches lower in program order with all uses emitted inline,
+/// so a value dies when its match is done — the free list is
+/// exact. Program order is execution order here (no pass
+/// reorders lowered code), so sequential reuse is sound.
+struct TtRegAlloc {
+    free: Vec<(DType, OpId)>,
+}
+
+impl TtRegAlloc {
+    fn alloc(&mut self, k: &mut Kernel, dtype: DType, prologue: OpId) -> OpId {
+        if let Some(i) = self.free.iter().position(|(d, _)| *d == dtype) {
+            return self.free.remove(i).1;
+        }
+        if prologue.is_null() {
+            k.push_back(Op::Storage { dtype, scope: MemScope::Register, len: 1024 })
+        } else {
+            k.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Register, len: 1024 })
+        }
+    }
+
+    fn release(&mut self, dtype: DType, storage: OpId) {
+        if !self.free.iter().any(|(_, s)| *s == storage) {
+            self.free.push((dtype, storage));
+        }
+    }
+}
 
 impl Kernel {
     /// CB sync constructor: `cb.reserve_back(n)` — open `n` back slots
@@ -143,32 +173,35 @@ impl Kernel {
         self.verify();
     }
 
-    /// General TT lowering + register allocation (sum-first): every
-    /// compute op becomes a structured LLK op with its Register
-    /// storages allocated at creation — only the creator knows the
-    /// size, dtype, and lifetime needed, and a slot-less intermediate
-    /// would poison every per-pass verify between passes. LLKs then
-    /// only ever reference storages; render only substitutes numbers.
+    /// General TT lowering + register allocation (matmul-first,
+    /// reduce carried). Traffic is part of emission: the pass matches
+    /// compute, creates the CBs (DRAM-backed reader/writer CBs plus
+    /// interior CBs), emits the DRAM↔CB movement as `TTOp::Copy`
+    /// (explicit bytes, scalar base indices — unrolls stripped),
+    /// places `EndReader`/`EndCompute`, lowers each match to a
+    /// structured LLK op over storages only, and allocates the
+    /// Register storages in the same step. Render only substitutes
+    /// numbers; stripped unrolls dangle into DCE.
     ///
-    /// This increment lowers `Reduce` only (rop `Add`/`Max` over a
-    /// `[32, 32]` CB-loaded tile): fresh const-1 scaler CB per match
-    /// (interior CB minting is this pass's job —
-    /// `tt_add_compute_cbs` dies here), one Register tile per lowered
-    /// result via the allocator below, users untouched (the lowered
-    /// op stays an SSA value; DST-threading needs no storage between
-    /// chained calls). Anything else (non-tile shapes, non-CB
-    /// feeders, other rops) is left in place for later increments —
-    /// the SSA render path still covers it.
+    /// This increment lowers `Reduce` (rop `Add`/`Max` over a
+    /// `[32, 32]` tile) and single-tile matmul (`Reduce(Add)` over a
+    /// `[32, 32, 32]` tiled Mul to `[32, 32]`). Anything else is left
+    /// in place for later increments.
     pub fn tt_lower_llks(&mut self) {
         if !self.device_info().tenstorrent {
             return;
         }
-        // Register allocator: lowered-result OpId -> Register
-        // storage. Mint-on-miss for now (one tile, result dtype);
-        // liveness-based reuse comes with multi-op lowering.
-        let mut regs: Map<OpId, OpId> = Map::default();
-        // CB Storage definitions live in the prologue (see
-        // tt_add_reader): inserting before `prologue` keeps it stable.
+        for (_, x) in self.iter_unordered() {
+            if let Op::Loop { .. } = x {
+                return;
+            }
+        }
+        // Register allocator: lowered values share Register tiles
+        // by liveness (free list + explicit release at last use).
+        let mut regs = TtRegAlloc { free: Vec::new() };
+        // CB Storage definitions live in the prologue (past leading
+        // params/storages, before everything else): inserting before
+        // `prologue` keeps it stable.
         let mut prologue = self.head;
         for _ in 0..250_000 {
             if prologue.is_null() {
@@ -179,10 +212,9 @@ impl Kernel {
                 _ => break,
             }
         }
-        let mut op_id = self.head;
-        // Compute match only: Reduce (Add/Max) over a [32, 32] tile
-        // to a [32] row or a scalar. The feeder CB resolves
-        // structurally below — traffic never enters the pattern.
+        // Phase 0 — match in head order. Compute patterns only;
+        // traffic never enters the pattern, feeders resolve
+        // structurally in phase 2.
         let tile = Pat::bind('t').shape([32i64, 32]);
         let pats = [
             (Pat::sum(tile.clone()).shape([32i64]), TileDim::Row),
@@ -190,87 +222,44 @@ impl Kernel {
             (Pat::sum(tile.clone()).shape([] as [i64; 0]), TileDim::Scalar),
             (Pat::reduce(tile, BOp::Max).shape([] as [i64; 0]), TileDim::Scalar),
         ];
+        let mut matches: Vec<(OpId, OpId, BOp, TileDim)> = Vec::new();
+        // Single-tile matmul: Reduce(Add) over a tiled Mul to a
+        // tiled root. Both orders (matmul is elementwise-commutative
+        // in IR; the A/B roles resolve structurally in phase 2).
+        let ma = Pat::bind('a').shape([32i64, 32]);
+        let mb = Pat::bind('b').shape([32i64, 32]);
+        let mmul = Pat::sum((ma.clone() * mb.clone()).shape([32i64, 32, 32])).shape([32i64, 32]);
+        let mmul_swap = Pat::sum((mb.clone() * ma.clone()).shape([32i64, 32, 32])).shape([32i64, 32]);
+        let mut mmatches: Vec<(OpId, OpId, OpId)> = Vec::new();
+        let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            let mut matched: Option<(OpId, BOp, TileDim, OpId)> = None;
             for (pat, kind) in pats.iter() {
                 if let Some(m) = self.match_pat(op_id, pat) {
                     if let Op::Reduce { x, rop, .. } = self.ops[op_id].op {
-                        matched = Some((x, rop, *kind, m.op('t')));
+                        debug_assert_eq!(x, m.op('t'), "tt_lower_llks: feeder bind drifted");
+                        matches.push((op_id, x, rop, *kind));
                         break;
                     }
                 }
             }
-            if let Some((x, rop, kind, feeder)) = matched {
-                debug_assert_eq!(x, feeder, "tt_lower_llks: feeder bind drifted from Reduce input");
-                // Feeder must be a reader-routed CB tile: the unpacker
-                // streams CBs only.
-                let cb_in = match self.ops[x].op {
-                    Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }) => src,
-                    _ => {
-                        op_id = next;
-                        continue;
+            for pat in [&mmul, &mmul_swap] {
+                if let Some(m) = self.match_pat(op_id, pat) {
+                    if let Op::Reduce { .. } = self.ops[op_id].op {
+                        mmatches.push((op_id, m.op('a'), m.op('b')));
+                        break;
                     }
-                };
-                let dtype = self.dtype(x);
-                // Scaler: fresh const-1 tile CB per match, filled by a
-                // publish store ahead of the lowered op (same Store +
-                // Load wrap `tt_add_compute_cbs` uses — sync counts the
-                // push the same way).
-                let cb_sc = if prologue.is_null() {
-                    self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
-                } else {
-                    self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
-                };
-                let one = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&1i64.to_le_bytes(), dtype)));
-                let one_lanes = self.lane_tree(one, &[32, 32]);
-                self.insert_before(op_id, Op::Store { dst: cb_sc, dst_idx: one_lanes, src: one });
-                let zero = self.insert_const_idx_before(op_id, 0i64);
-                let scaler = self.insert_before(op_id, Op::Load { src: cb_sc, src_idx: zero });
-                // Result slot: allocator-minted Register tile.
-                let slot = *regs.entry(op_id).or_insert_with(|| {
-                    if prologue.is_null() {
-                        self.push_back(Op::Storage { dtype, scope: MemScope::Register, len: 1024 })
-                    } else {
-                        self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Register, len: 1024 })
-                    }
-                });
-                self.ops[op_id].op = Op::TT(TTOp::ReduceTile { rop, kind, cb_in, cb_sc, slot, x, scaler });
+                }
             }
             op_id = next;
         }
-        self.verify();
-    }
-
-    /// Reader insertion: every tile `Load` over a DRAM param becomes a
-    /// CB pop, with a `Copy` publishing the tile in a reader section
-    /// closed by one `EndReader`.
-    ///
-    /// Runs on the [`Kernel::tt_tile`] output shape: no `Loop` ops
-    /// (groups are grid coords, hoisting reader index math before the
-    /// first load is sound), tiled DRAM traffic only. Bails (no-op)
-    /// on anything else — a half-rewritten kernel is worse than none,
-    /// so cones validate before anything mutates.
-    ///
-    /// Shape per load: the DRAM index cone (pure `Const`/`Binary`
-    /// arithmetic over `Range`/`Param` leaves) is cloned before the
-    /// anchor (the first tiled load); a `Copy` publishes
-    /// `param[cloned_off]` into the param's CB at the load's own slot
-    /// (indexed both sides, one slot per `Load` — duplicate pushes of
-    /// one tile, the softmax pattern); the load's index is repointed at
-    /// the CB slot. One CB per DRAM param, sized in tiles at the end.
-    /// Stores are untouched (the writer pass owns them).
-    pub fn tt_add_reader(&mut self) {
-        if !self.device_info().tenstorrent {
-            return;
-        }
-        for (_, x) in self.iter_unordered() {
-            if let Op::Loop { .. } = x {
-                return;
-            }
-        }
-        // Collect tiled DRAM loads in head order; any other DRAM
-        // traffic bails the pass.
+        // Phase 1 — reader publishes: every tile `Load` over a DRAM
+        // param gets a `TTOp::Copy` publishing the tile to the param's
+        // CB, base index stripped of lanes, explicit byte size. Loads
+        // stay in place and dangle once compute is lowered (DCE
+        // removes them with their index math). Tiled DRAM traffic
+        // only — anything else bails the whole pass, since a
+        // half-rewritten kernel is worse than none.
         let mut loads: Vec<(OpId, OpId, OpId)> = Vec::new();
         let mut id = self.head;
         for _ in 0..250_000 {
@@ -287,139 +276,200 @@ impl Kernel {
             }
             id = self.ops[id].next;
         }
-        if loads.is_empty() {
-            return;
-        }
-        // Validate every index cone: Const/Binary over Range/Param
-        // leaves only. Anything else (traffic, storage, control)
-        // cannot hoist.
-        for (_, _, off) in loads.iter() {
-            let mut stack = vec![*off];
-            for _ in 0..250_000 {
-                let Some(n) = stack.pop() else { break };
-                match self.ops[n].op {
-                    Op::Const(..) | Op::Range { .. } | Op::Param { .. } => {}
-                    Op::Binary { x, y, .. } => {
-                        stack.push(x);
-                        stack.push(y);
-                    }
-                    _ => return,
-                }
-            }
-        }
-        let anchor = loads[0].0;
-        // CB Storage definitions live in the prologue (past leading
-        // params/storages, before everything else): tt_init_math's
-        // startup triple references every compute CB right after
-        // EndReader, so a mid-kernel definition is a use before
-        // declaration. Inserting before `prologue` keeps it stable.
-        let mut prologue = self.head;
-        for _ in 0..250_000 {
-            if prologue.is_null() {
-                break;
-            }
-            match self.ops[prologue].op {
-                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
-                _ => break,
-            }
-        }
-        // One CB per DRAM param, in first-load order; slots counted up front.
-        let mut cbs: Vec<(OpId, DType, i64)> = Vec::new();
-        for (_, base, _) in loads.iter() {
-            if let Some(entry) = cbs.iter_mut().find(|(b, _, _)| *b == *base) {
-                entry.2 += 1;
-            } else {
-                let Op::Param { dtype, .. } = self.ops[*base].op else { return };
-                cbs.push((*base, dtype, 1));
-            }
-        }
-        let mut cb_of: Map<OpId, OpId> = Map::default();
-        let mut slot_of: Map<OpId, i64> = Map::default();
-        for (base, dtype, ntiles) in cbs.iter() {
-            let cb = if prologue.is_null() {
-                self.push_back(Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
-            } else {
-                self.insert_before(prologue, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
-            };
-            cb_of.insert(*base, cb);
-            slot_of.insert(*base, 0);
-        }
-        // Clone memo shared across loads: shared index math clones once.
-        let mut memo: Map<OpId, OpId> = Map::default();
-        for (load, base, off) in loads.iter() {
-            // Post-order clone of the index cone before the anchor.
-            let mut stack = vec![(*off, false)];
-            for _ in 0..250_000 {
-                let Some((n, expanded)) = stack.pop() else { break };
-                if memo.contains_key(&n) {
-                    continue;
-                }
-                match self.ops[n].op {
-                    Op::Range { .. } | Op::Param { .. } => {
-                        memo.insert(n, n);
-                    }
-                    Op::Const(c) => {
-                        let id = self.insert_before(anchor, Op::Const(c));
-                        memo.insert(n, id);
-                    }
-                    Op::Binary { x, y, bop } => {
-                        if !expanded {
-                            stack.push((n, true));
-                            stack.push((x, false));
-                            stack.push((y, false));
-                        } else {
-                            let nx = memo[&x];
-                            let ny = memo[&y];
-                            let id = self.insert_before(anchor, Op::Binary { x: nx, y: ny, bop });
-                            memo.insert(n, id);
+        // CB per DRAM param, in first-load order; slots counted up front.
+        // `reader_cb_of` survives for phase 2 (feeder → CB resolution).
+        let mut reader_cb_of: Map<OpId, OpId> = Map::default();
+        if !loads.is_empty() {
+            for (_, _, off) in loads.iter() {
+                let mut stack = vec![*off];
+                for _ in 0..250_000 {
+                    let Some(n) = stack.pop() else { break };
+                    match self.ops[n].op {
+                        Op::Const(..) | Op::Range { .. } | Op::Param { .. } | Op::Unroll { .. } => {}
+                        Op::Binary { x, y, .. } => {
+                            stack.push(x);
+                            stack.push(y);
                         }
+                        Op::Unary { x, .. } => stack.push(x),
+                        Op::Cast { x, .. } => stack.push(x),
+                        _ => return,
                     }
-                    _ => unreachable!("tt_add_reader: cone validated pure"),
                 }
             }
-            let slot = slot_of[base];
-            slot_of.insert(*base, slot + 1);
-            let cb = cb_of[base];
-            let cloned_off = memo[off];
-            // CB indices are elementwise (uniform with vector traffic):
-            // tile k lives at element offset k*1024.
-            let slot_c = self.insert_const_idx_before(anchor, slot * 1024);
-            // The tile traffic is lanes (32x32) over the indices.
-            let src_idx = self.lane_tree(cloned_off, &[32, 32]);
-            let dst_idx = self.lane_tree(slot_c, &[32, 32]);
-            self.insert_before(anchor, Op::Copy { src: *base, src_idx, dst: cb, dst_idx });
-            self.ops[*load].op = Op::Load { src: cb, src_idx: slot_c };
-        }
-        self.insert_before(anchor, Op::TT(TTOp::EndReader));
-        // No verify(): the kernel is mid-pipeline by design — verify
-        // demands exactly [EndReader, EndCompute] and EndCompute is the
-        // writer pass's marker.
-    }
-
-    /// Writer insertion: every tile `Store` into a DRAM param becomes
-    /// a CB push, drained by a `Copy` in a writer section closed by
-    /// `EndCompute`.
-    ///
-    /// Same contract as [`Kernel::tt_add_reader`] (TT-only, no
-    /// `Loop`s, pure index cones validated before mutating, one
-    /// indexed slot per `Store`, one CB per DRAM param). New ops
-    /// append at the tail: `EndCompute`, then per store the cloned
-    /// index cone and the drain `Copy`. The compute-side CB index
-    /// goes right before its store. If no `EndReader` is present
-    /// (store-only kernel, reader was a no-op) one is inserted
-    /// before the first store — an empty reader section. Stores
-    /// already targeting a CB are skipped.
-    pub fn tt_add_writer(&mut self) {
-        if !self.device_info().tenstorrent {
-            return;
-        }
-        for (_, x) in self.iter_unordered() {
-            if let Op::Loop { .. } = x {
-                return;
+            let anchor = loads[0].0;
+            // One CB per DRAM param, in first-load order; slots counted up front.
+            let mut cbs: Vec<(OpId, DType, i64)> = Vec::new();
+            for (_, base, _) in loads.iter() {
+                if let Some(entry) = cbs.iter_mut().find(|(b, _, _)| *b == *base) {
+                    entry.2 += 1;
+                } else {
+                    let Op::Param { dtype, .. } = self.ops[*base].op else { return };
+                    cbs.push((*base, dtype, 1));
+                }
             }
+            let mut cb_of: Map<OpId, OpId> = Map::default();
+            let mut slot_of: Map<OpId, i64> = Map::default();
+            for (base, dtype, ntiles) in cbs.iter() {
+                let cb = if prologue.is_null() {
+                    self.push_back(Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
+                } else {
+                    self.insert_before(prologue, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
+                };
+                cb_of.insert(*base, cb);
+                reader_cb_of.insert(*base, cb);
+                slot_of.insert(*base, 0);
+            }
+            for (_load, base, off) in loads.iter() {
+                let slot = slot_of[base];
+                slot_of.insert(*base, slot + 1);
+                let cb = cb_of[base];
+                let dtype = self.dtype(*base);
+                // CB indices are elementwise (uniform with vector traffic):
+                // tile k lives at element offset k*1024.
+                let slot_c = self.insert_const_idx_before(anchor, slot * 1024);
+                // Base address with lanes stripped; the transfer size is
+                // explicit, so no lane math rides along.
+                let Some(base_idx) = self.strip_unrolls(*off, anchor) else {
+                    return;
+                };
+                let bytes = (dtype.bit_size() as u32 / 8 * 1024);
+                self.insert_before(
+                    anchor,
+                    Op::TT(TTOp::Copy { src: *base, src_idx: base_idx, dst: cb, dst_idx: slot_c, bytes }),
+                );
+            }
+            self.insert_before(anchor, Op::TT(TTOp::EndReader));
         }
-        // Collect tiled DRAM stores in head order; any other DRAM
-        // traffic bails the pass.
+        // Phase 2 — compute: lower each match. Feeders resolve to
+        // reader CBs through the DRAM param (phase 1 owns all DRAM
+        // loads); the unpacker streams CBs only. Unmatched compute
+        // stays in place for later increments.
+        // Lowered root -> writer CB, for phase-3 drains.
+        let mut lowered: Map<OpId, OpId> = Map::default();
+        // Fresh writer CB + pack store for a lowered value. The pack
+        // carries a tile-shaped index so the store check sees a tile
+        // value into a tile access; render packs the whole DST segment
+        // regardless. Pack must follow the LLK in program order.
+        // (Single pack per CB for now; multi-pack sharing comes with
+        // multi-consumer values.)
+        for (root, x, rop, kind) in matches.iter() {
+            // Feeder resolves through its DRAM param (phase 1 owns
+            // all DRAM loads); the unpacker streams CBs only.
+            // Non-DRAM feeders stay for later increments.
+            let (base, dtype) = match self.ops[*x].op {
+                Op::Load { src: base, .. } => match self.ops[base].op {
+                    Op::Param { dtype, .. } => (base, dtype),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let Some(&cb_in) = reader_cb_of.get(&base) else {
+                continue;
+            };
+            // Scaler: fresh const-1 tile CB per match, filled on-device
+            // by a Fill plus a pack publish (no scaler load — nothing
+            // references the CB value in SSA).
+            let cb_sc = if prologue.is_null() {
+                self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+            } else {
+                self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+            };
+            let one = self.insert_before(*root, Op::Const(Constant::from_le_bytes(&1i64.to_le_bytes(), dtype)));
+            let fill_slot = regs.alloc(self, dtype, prologue);
+            let fill = self.insert_before(*root, Op::TT(TTOp::FillTile { slot: fill_slot, val: one }));
+            let zero_sc = self.insert_const_idx_before(*root, 0i64);
+            let one_lanes = self.lane_tree_before(zero_sc, &[32, 32], *root);
+            self.insert_before(*root, Op::Store { dst: cb_sc, dst_idx: one_lanes, src: fill });
+            regs.release(dtype, fill_slot);
+            // Result slot: allocator-minted Register tile.
+            let slot = regs.alloc(self, dtype, prologue);
+            self.ops[*root].op = Op::TT(TTOp::ReduceTile { rop: *rop, kind: *kind, cb_in, cb_sc, slot });
+            // Writer CB + pack after the LLK (program order is exact).
+            let writer_cb = if prologue.is_null() {
+                self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+            } else {
+                self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+            };
+            let zero_pack = self.insert_const_idx_before(*root, 0i64);
+            let pack_lanes = self.lane_tree_before(zero_pack, &[32, 32], *root);
+            let pack_at = self.next_op(*root);
+            let pack = Op::Store { dst: writer_cb, dst_idx: pack_lanes, src: *root };
+            if pack_at.is_null() {
+                self.push_back(pack);
+            } else {
+                self.insert_before(pack_at, pack);
+            }
+            regs.release(dtype, slot);
+            lowered.insert(*root, writer_cb);
+        }
+        // Matmul: Reduce(Add) over a tiled Mul. A/B roles resolve by
+        // unroll axis: the result's row axis (axis 1 here) marks A,
+        // the column axis (axis 2) marks B. Anything else is left for
+        // later increments (transposes, k-loops).
+        for (root, a, b) in mmatches.iter() {
+            let (la, lb) = match (&self.ops[*a].op, &self.ops[*b].op) {
+                (Op::Load { src_idx: oa, .. }, Op::Load { src_idx: ob, .. }) => (*oa, *ob),
+                _ => continue,
+            };
+            let (Some(aa), Some(ab)) = (self.unroll_axes(la), self.unroll_axes(lb)) else {
+                continue;
+            };
+            let (fa, fb) = match (
+                aa.contains(&1) && !aa.contains(&2),
+                ab.contains(&2) && !ab.contains(&1),
+            ) {
+                (true, true) => (*a, *b),
+                _ => match (
+                    ab.contains(&1) && !ab.contains(&2),
+                    aa.contains(&2) && !aa.contains(&1),
+                ) {
+                    (true, true) => (*b, *a),
+                    _ => continue,
+                },
+            };
+            let (pa, dtype_a) = match self.ops[fa].op {
+                Op::Load { src: base, .. } => match self.ops[base].op {
+                    Op::Param { dtype, .. } => (base, dtype),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let (pb, dtype_b) = match self.ops[fb].op {
+                Op::Load { src: base, .. } => match self.ops[base].op {
+                    Op::Param { dtype, .. } => (base, dtype),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let (Some(&cb_a), Some(&cb_b)) = (reader_cb_of.get(&pa), reader_cb_of.get(&pb)) else {
+                continue;
+            };
+            debug_assert_eq!(dtype_a, dtype_b, "tt_lower_llks: matmul dtype mismatch");
+            let slot = regs.alloc(self, dtype_a, prologue);
+            self.ops[*root].op = Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot });
+            let writer_cb = if prologue.is_null() {
+                self.push_back(Op::Storage { dtype: dtype_a, scope: MemScope::Circular, len: 1024 })
+            } else {
+                self.insert_before(prologue, Op::Storage { dtype: dtype_a, scope: MemScope::Circular, len: 1024 })
+            };
+            let zero_pack = self.insert_const_idx_before(*root, 0i64);
+            let pack_lanes = self.lane_tree_before(zero_pack, &[32, 32], *root);
+            let pack = Op::Store { dst: writer_cb, dst_idx: pack_lanes, src: *root };
+            let pack_at = self.next_op(*root);
+            if pack_at.is_null() {
+                self.push_back(pack);
+            } else {
+                self.insert_before(pack_at, pack);
+            }
+            regs.release(dtype_a, slot);
+            lowered.insert(*root, writer_cb);
+        }
+        // Phase 3 — writer drains: every DRAM store of a lowered
+        // value becomes a `TTOp::Copy` from its writer CB in a writer
+        // section closed by `EndCompute`. Base index stripped of
+        // lanes, explicit byte size; the store itself is unlinked.
+        // Stores of unlowered values stay for later increments (loud
+        // downstream: a DRAM store in compute renders nothing).
         let mut stores: Vec<(OpId, OpId, OpId, OpId)> = Vec::new();
         let mut id = self.head;
         for _ in 0..250_000 {
@@ -436,13 +486,15 @@ impl Kernel {
                 }
                 Op::Store { dst: base, dst_idx: off, src, .. } => {
                     if matches!(self.ops[base].op, Op::Storage { .. }) {
-                        // Already lowered; the writer pass owns nothing here.
+                        // Already lowered; nothing owned here.
                     } else if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
                         // Tiled stores and row stores (a reduce row is 32
                         // elements); anything else bails the pass.
                         match self.shape(id).as_slice() {
                             [32, 32] | [32] => stores.push((id, base, off, src)),
-                            _ => return,
+                            _ => {
+                                return;
+                            }
                         }
                     } else {
                         return;
@@ -452,245 +504,169 @@ impl Kernel {
             }
             id = self.ops[id].next;
         }
-        if stores.is_empty() {
-            return;
-        }
-        // Validate every index cone before mutating.
-        for (_, _, off, _) in stores.iter() {
-            let mut stack = vec![*off];
-            for _ in 0..250_000 {
-                let Some(n) = stack.pop() else { break };
-                match self.ops[n].op {
-                    Op::Const(..) | Op::Range { .. } | Op::Param { .. } => {}
-                    Op::Binary { x, y, .. } => {
-                        stack.push(x);
-                        stack.push(y);
-                    }
-                    _ => return,
-                }
-            }
-        }
-        let first = stores[0].0;
-        // Empty reader section for store-only kernels.
-        let mut scan = self.head;
-        let mut has_reader = false;
-        for _ in 0..250_000 {
-            if scan.is_null() {
-                break;
-            }
-            if matches!(self.ops[scan].op, Op::TT(TTOp::EndReader)) {
-                has_reader = true;
-                break;
-            }
-            scan = self.ops[scan].next;
-        }
-        if !has_reader {
-            // A tiled DRAM load without a reader section means the
-            // reader bailed: don't paper over it.
+        if !stores.is_empty() {
+            let first = stores[0].0;
+            // Empty reader section for store-only kernels.
             let mut scan = self.head;
+            let mut has_reader = false;
             for _ in 0..250_000 {
                 if scan.is_null() {
                     break;
                 }
-                if let Op::Load { src: base, .. } = self.ops[scan].op {
-                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
-                        && self.shape(scan) == vec![32, 32]
-                    {
-                        return;
-                    }
+                if matches!(self.ops[scan].op, Op::TT(TTOp::EndReader)) {
+                    has_reader = true;
+                    break;
                 }
                 scan = self.ops[scan].next;
             }
-            self.insert_before(first, Op::TT(TTOp::EndReader));
-        }
-        // One CB per DRAM param, in first-store order.
-        let mut cbs: Vec<(OpId, DType, i64)> = Vec::new();
-        for (_, base, _, _) in stores.iter() {
-            if let Some(entry) = cbs.iter_mut().find(|(b, _, _)| *b == *base) {
-                entry.2 += 1;
-            } else {
-                let Op::Param { dtype, .. } = self.ops[*base].op else { return };
-                cbs.push((*base, dtype, 1));
-            }
-        }
-        let mut cb_of: Map<OpId, OpId> = Map::default();
-        let mut slot_of: Map<OpId, i64> = Map::default();
-        // CB Storage definitions live in the prologue (see tt_add_reader).
-        let mut prologue = self.head;
-        for _ in 0..250_000 {
-            if prologue.is_null() {
-                break;
-            }
-            match self.ops[prologue].op {
-                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
-                _ => break,
-            }
-        }
-        for (base, dtype, ntiles) in cbs.iter() {
-            let cb = if prologue.is_null() {
-                self.push_back(Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
-            } else {
-                self.insert_before(prologue, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
-            };
-            cb_of.insert(*base, cb);
-            slot_of.insert(*base, 0);
-        }
-        // Compute-side rewrites in head order; drains append at the tail.
-        let mut memo: Map<OpId, OpId> = Map::default();
-        self.push_back(Op::TT(TTOp::EndCompute));
-        for (store, base, off, _) in stores.iter() {
-            let slot = slot_of[base];
-            slot_of.insert(*base, slot + 1);
-            let cb = cb_of[base];
-            // CB indices are elementwise (uniform with vector traffic):
-            // tile k lives at element offset k*1024.
-            let slot_c = self.insert_const_idx_before(*store, slot * 1024);
-            let Op::Store { src: v, .. } = self.ops[*store].op else {
-                return;
-            };
-            // Drain access shape follows the store: tile or row.
-            let block: Vec<Dim> = match self.shape(*store).as_slice() {
-                [32, 32] => vec![32, 32],
-                [32] => vec![32],
-                _ => unreachable!("tt_add_writer: gate admits only tile/row stores"),
-            };
-            let dst_idx = self.lane_tree(slot_c, &block);
-            self.ops[*store].op = Op::Store { dst: cb, dst_idx, src: v };
-            // Drain cone cloned at the tail (everything dominates it).
-            let mut stack = vec![(*off, false)];
-            for _ in 0..250_000 {
-                let Some((n, expanded)) = stack.pop() else { break };
-                if memo.contains_key(&n) {
-                    continue;
-                }
-                match self.ops[n].op {
-                    Op::Range { .. } | Op::Param { .. } => {
-                        memo.insert(n, n);
+            if !has_reader {
+                // A tiled DRAM load without a reader section means
+                // phase 1 bailed: don't paper over it.
+                let mut scan = self.head;
+                for _ in 0..250_000 {
+                    if scan.is_null() {
+                        break;
                     }
-                    Op::Const(c) => {
-                        let id = self.push_back(Op::Const(c));
-                        memo.insert(n, id);
-                    }
-                    Op::Binary { x, y, bop } => {
-                        if !expanded {
-                            stack.push((n, true));
-                            stack.push((x, false));
-                            stack.push((y, false));
-                        } else {
-                            let nx = memo[&x];
-                            let ny = memo[&y];
-                            let id = self.push_back(Op::Binary { x: nx, y: ny, bop });
-                            memo.insert(n, id);
+                    if let Op::Load { src: base, .. } = self.ops[scan].op {
+                        if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
+                            && self.shape(scan) == vec![32, 32]
+                        {
+                            return;
                         }
                     }
-                    _ => unreachable!("tt_add_writer: cone validated pure"),
+                    scan = self.ops[scan].next;
                 }
+                self.insert_before(first, Op::TT(TTOp::EndReader));
             }
-            let cloned_off = memo[off];
-            let src_idx = self.lane_tree(slot_c, &block);
-            let dst_idx = self.lane_tree(cloned_off, &block);
-            self.push_back(Op::Copy { src: cb, src_idx, dst: *base, dst_idx });
+            // Compute-side rewrites in head order; drains append at the tail.
+            self.push_back(Op::TT(TTOp::EndCompute));
+            // Single pack per writer CB: slot 0 throughout.
+            let slot_zero = self.push_back(Op::Const(Constant::idx(0i64)));
+            for (store, base, off, src) in stores.iter() {
+                let Some(&cb) = lowered.get(src) else {
+                    // Unlowered value: stays for later increments.
+                    continue;
+                };
+                let bytes: u32 = match self.shape(*store).as_slice() {
+                    [32, 32] => (self.dtype(*store).bit_size() as u32 / 8 * 1024),
+                    [32] => (self.dtype(*store).bit_size() / 8 * 32) as u32,
+                    _ => return,
+                };
+                let tail = self.tail;
+                let Some(base_idx) = self.strip_unrolls(*off, tail) else {
+                    return;
+                };
+                self.push_back(Op::TT(TTOp::Copy {
+                    src: cb,
+                    src_idx: slot_zero,
+                    dst: *base,
+                    dst_idx: base_idx,
+                    bytes,
+                }));
+                self.remove_op(*store);
+            }
         }
         self.verify();
     }
 
-    /// Mid-computation CB materialization: every tile-typed value feeding
-    /// a tile compute op must come from a CB load — the unpacker streams
-    /// CBs only, so a `Cast`/chain between load and consumer is a lowering
-    /// bug (loud in `tt_storage`, which resolves every tile operand to a
-    /// `Circular` storage). For each such input not already `Load` from a
-    /// storage (Circular input is ready; Register input is acc threading,
-    /// left alone), insert `Store(new CB)` + `Load(new CB)` feeding the op:
-    /// the manual-CB contract (one CB per intermediate, cf. the
-    /// `tenstorrent_exp_reduce` pattern) as a pass. One CB per wrapped
-    /// value, input dtype, single tile; duplicate traffic per consumer
-    /// keeps FIFO balance exact (one push per pop). Covers
-    /// tile-shaped elementwise `Unary`/`Binary`/`Cast`/`Bitcast` (scalar
-    /// lanes flow through untouched). Runs after `tt_add_writer` (traffic
-    /// edges first, interior second). TT-only, no `Loop`s — same contract
-    /// as reader/writer; tile-op inputs outside `[32, 32]` bail the whole
-    /// pass instead of half-rewriting.
-    pub fn tt_add_compute_cbs(&mut self) {
-        if !self.device_info().tenstorrent {
-            return;
-        }
-        for (_, x) in self.iter_unordered() {
-            if let Op::Loop { .. } = x {
-                return;
-            }
-        }
-        // (consumer, operand tag, input): tag 0 = x/a, 1 = y/b.
-        let mut wraps: Vec<(OpId, u8, OpId)> = Vec::new();
-        let mut id = self.head;
+    /// Unroll axes feeding an index expression. `None` on anything
+    /// but pure index math (the caller skips the match).
+    fn unroll_axes(&self, id: OpId) -> Option<Set<u32>> {
+        let mut out = Set::default();
+        let mut stack = vec![id];
         for _ in 0..250_000 {
-            if id.is_null() {
-                break;
+            let Some(n) = stack.pop() else { return Some(out) };
+            if n.is_null() {
+                continue;
             }
-            // Already storage-backed (Circular input ready, Register
-            // input is acc threading): nothing to do.
-            let backed = |input: OpId| {
-                if let Op::Load { src, .. } = self.ops[input].op {
-                    return matches!(self.ops[src].op, Op::Storage { .. });
-                }
-                false
-            };
-            match self.ops[id].op {
-                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
-                    if self.shape(x) == vec![32, 32] && !backed(x) {
-                        wraps.push((id, 0, x));
-                    }
+            match self.ops[n].op {
+                Op::Unroll { axis, .. } => {
+                    out.insert(axis);
                 }
                 Op::Binary { x, y, .. } => {
-                    if self.shape(x) == vec![32, 32] && !backed(x) {
-                        wraps.push((id, 0, x));
-                    }
-                    if self.shape(y) == vec![32, 32] && !backed(y) {
-                        wraps.push((id, 1, y));
-                    }
+                    stack.push(x);
+                    stack.push(y);
                 }
-                _ => {}
+                Op::Unary { x, .. } | Op::Cast { x, .. } => stack.push(x),
+                Op::Const(_) | Op::Range { .. } | Op::Param { .. } => {}
+                _ => return None,
             }
-            id = self.ops[id].next;
         }
-        // CB Storage definitions live in the prologue (see tt_add_reader).
-        // Computed once: inserting before `prologue` keeps it stable.
-        let mut prologue = self.head;
+        None
+    }
+
+    /// Base index with lanes stripped: clone the index expression
+    /// with every `Unroll` replaced by 0. No affinity assumption —
+    /// substitution works on any expression shape; uncloneable leaves
+    /// (traffic, control) bail the caller. Shared leaves are reused
+    /// (they dominate `before` exactly like the cloned index math
+    /// does); the rest is rebuilt before `before`.
+    fn strip_unrolls(&mut self, idx: OpId, before: OpId) -> Option<OpId> {
+        // Clone memo per call (index math is small).
+        let mut memo: Map<OpId, OpId> = Map::default();
+        let zero = self.insert_before(before, Op::Const(Constant::idx(0i64)));
+        memo.insert(zero, zero);
+        let mut stack = vec![(idx, false)];
         for _ in 0..250_000 {
-            if prologue.is_null() {
-                break;
+            let Some((n, expanded)) = stack.pop() else { break };
+            if memo.contains_key(&n) {
+                continue;
             }
-            match self.ops[prologue].op {
-                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
-                _ => break,
-            }
-        }
-        for (consumer, tag, input) in wraps {
-            let dtype = self.dtype(input);
-            let cb = if prologue.is_null() {
-                self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
-            } else {
-                self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
-            };
-            let zero = self.insert_const_idx_before(consumer, 0i64);
-            let zero_lanes = self.lane_tree(zero, &[32, 32]);
-            self.insert_before(consumer, Op::Store { dst: cb, dst_idx: zero_lanes, src: input });
-            let load = self.insert_before(consumer, Op::Load { src: cb, src_idx: zero });
-            match &mut self.ops[consumer].op {
-                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
-                    debug_assert!(tag == 0, "tt_add_compute_cbs: single-operand consumer with tag {tag}");
-                    *x = load;
+            match self.ops[n].op {
+                Op::Const(_) | Op::Range { .. } | Op::Param { .. } => {
+                    memo.insert(n, n);
                 }
-                Op::Binary { x, y, .. } => {
-                    if tag == 0 {
-                        *x = load;
+                Op::Unroll { .. } => {
+                    memo.insert(n, zero);
+                }
+                Op::Binary { x, y, bop } => {
+                    if !expanded {
+                        stack.push((n, true));
+                        stack.push((x, false));
+                        stack.push((y, false));
                     } else {
-                        *y = load;
+                        let nx = memo[&x];
+                        let ny = memo[&y];
+                        // Fold constant lanes away: the base is fully
+                        // static exactly when the index is.
+                        let id = match (&self.ops[nx].op, &self.ops[ny].op) {
+                            (Op::Const(cx), Op::Const(cy)) => {
+                                self.insert_before(before, Op::Const(Constant::binary(*cx, *cy, bop)))
+                            }
+                            _ => self.insert_before(before, Op::Binary { x: nx, y: ny, bop }),
+                        };
+                        memo.insert(n, id);
                     }
                 }
-                _ => unreachable!("tt_add_compute_cbs: consumer {consumer:?} vanished"),
+                Op::Unary { x, uop } => {
+                    if !expanded {
+                        stack.push((n, true));
+                        stack.push((x, false));
+                    } else {
+                        let nx = memo[&x];
+                        let id = match &self.ops[nx].op {
+                            Op::Const(cx) => {
+                                self.insert_before(before, Op::Const(cx.unary(uop)))
+                            }
+                            _ => self.insert_before(before, Op::Unary { x: nx, uop }),
+                        };
+                        memo.insert(n, id);
+                    }
+                }
+                Op::Cast { x, dtype } => {
+                    if !expanded {
+                        stack.push((n, true));
+                        stack.push((x, false));
+                    } else {
+                        let nx = memo[&x];
+                        let id = self.insert_before(before, Op::Cast { x: nx, dtype });
+                        memo.insert(n, id);
+                    }
+                }
+                _ => return None,
             }
         }
-        self.verify();
+        memo.get(&idx).copied()
     }
 
     /// DST lock constructor: `tile_regs_acquire()`.
@@ -790,7 +766,8 @@ impl Kernel {
             match op {
                 Op::Asm { .. } => true,
                 Op::Load { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } => {
-                    kernel.shape(id).len() == 2
+                    // Index math is scalar RISC work, never DST math.
+                    kernel.dtype(id) != IDX_T && kernel.shape(id).len() == 2
                 }
                 _ => false,
             }
@@ -1037,10 +1014,8 @@ impl Kernel {
                     !o.is_null()
                         && (matches!(kernel.at(o), Op::Storage { scope: MemScope::Circular, .. } if o == cb) || load_cb(o))
                 }),
-                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, x, scaler, .. }) => {
-                    *cb_in == cb || *cb_sc == cb || load_cb(*x) || load_cb(*scaler)
-                }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, x, y, .. }) => *cb_a == cb || *cb_b == cb || load_cb(*x) || load_cb(*y),
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, .. }) => *cb_in == cb || *cb_sc == cb,
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, .. }) => *cb_a == cb || *cb_b == cb,
                 Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
                     *cb_a == cb || *cb_b == cb || load_cb(*mx) || load_cb(*plain)
                 }
@@ -1409,6 +1384,13 @@ impl Kernel {
                                 feeds = true;
                                 break;
                             }
+                            // Storage-only LLKs name their CBs directly.
+                            if matches!(self.ops[o].op, Op::Storage { scope: MemScope::Circular, .. })
+                                && o == cb
+                            {
+                                feeds = true;
+                                break;
+                            }
                         }
                         if feeds {
                             held = false;
@@ -1698,26 +1680,50 @@ impl Kernel {
                         }
                     }
                 }
+                Op::TT(TTOp::Copy { src, dst, .. }) => {
+                    // Staged traffic: explicit size, no per-op tally.
+                    // Publish reserves and pushes one page; drain waits
+                    // one page (batched reads keep their bracket wait).
+                    let src_cb = if self.is_circular_base(src) { Some(src) } else { None };
+                    let dst_cb = if self.is_circular_base(dst) { Some(dst) } else { None };
+                    match (src_cb, dst_cb) {
+                        (None, Some(cb)) => {
+                            self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb, n: 1 }));
+                            self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
+                        }
+                        (Some(cb), None) => {
+                            if !batched_read.contains(&op_id) {
+                                self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb, n: 1 }));
+                            }
+                        }
+                        (Some(scb), Some(dcb)) => {
+                            self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb: scb, n: 1 }));
+                            self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb: dcb, n: 1 }));
+                            self.insert_after(op_id, Op::TT(TTOp::PushBack { cb: dcb, n: 1 }));
+                        }
+                        (None, None) => {
+                            panic!("tt_sync_cbs: staged copy {op_id:?} touches no CB");
+                        }
+                    }
+                }
                 Op::TT(TTOp::LLK { .. })
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::LLKMatmul { .. }) => {
                     // Provenance waits: the call consumes its input CBs
-                    // straight from the buffers, so each trailing feeder
-                    // load gets a wait immediately before the call.
+                    // straight from the buffers, so each Circular
+                    // storage operand gets a wait immediately before
+                    // the call. Storage-only operands: no feeder loads
+                    // to chase.
                     let mut wait_cbs: Vec<OpId> = Vec::new();
                     for o in self.at(op_id).parameters() {
                         if o.is_null() {
                             continue;
                         }
-                        if !matches!(self.ops[o].op, Op::Load { .. }) {
-                            continue;
-                        }
-                        let Op::Load { src: cb, .. } = self.ops[o].op else {
-                            unreachable!("tt_sync_cbs: provenance is a Load");
-                        };
-                        if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) {
-                            wait_cbs.push(cb);
+                        if matches!(self.ops[o].op, Op::Storage { scope: MemScope::Circular, .. })
+                            && !wait_cbs.contains(&o)
+                        {
+                            wait_cbs.push(o);
                         }
                     }
                     for cb in wait_cbs {
@@ -1741,7 +1747,7 @@ impl Kernel {
     }
 
     /// Engine-config init insertion: ports the old `init_math` +
-    /// `reconfig_pack` + `fill_out_cbs` + `close_reduce_cones` passes
+    /// `reconfig_pack` + `fill_out_cbs` + `close_reduce` passes
     /// plus the compute-startup insertion. Inits are [`Op::Asm`]
     /// statement templates (see the `tt_*_init` constructors), placed
     /// inline immediately before their op — always correct (LLK config
@@ -1773,7 +1779,7 @@ impl Kernel {
     ///   `<bop>_bcast_*_init_short(a, b)` (missing pack target errors
     ///   like the old unfilled-out error);
     /// - before every pack store: `pack_reconfig_data_format(cb)`;
-    /// - reduce cones: packing a pending reduce acc inserts
+    /// - closing a pending reduce acc: packing it inserts
     ///   `ReduceUninit` immediately before the nearest preceding
     ///   `MathUnlock` (none → loud error).
     ///
@@ -1796,7 +1802,7 @@ impl Kernel {
         let mut first_pack: Option<OpId> = None;
         let mut has_matmul = false;
         let mut has_matmul_block = false;
-        let mut startup_loads: Vec<OpId> = Vec::new();
+        let mut startup_cbs: Vec<OpId> = Vec::new();
         let mut end_reader: Option<OpId> = None;
         let mut in_compute = false;
         let mut scan = self.head;
@@ -1808,9 +1814,35 @@ impl Kernel {
                 }
                 Op::TT(TTOp::EndCompute) => in_compute = false,
                 Op::Load { src, .. } if in_compute => {
-                    if matches!(self.ops[*src].op, Op::Storage { scope: MemScope::Circular, .. }) && !startup_loads.contains(src)
+                    if matches!(self.ops[*src].op, Op::Storage { scope: MemScope::Circular, .. }) && !startup_cbs.contains(src)
                     {
-                        startup_loads.push(*src);
+                        startup_cbs.push(*src);
+                    }
+                }
+                // Structured lowered ops reference their CBs directly
+                // (no compute loads left); seed the startup triple in
+                // operand order. Legacy string templates keep the load
+                // path above; their defs precede uses, so walk order
+                // stays load-first wherever loads exist.
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, .. }) if in_compute => {
+                    for cb in [*cb_a, *cb_b] {
+                        if !startup_cbs.contains(&cb) {
+                            startup_cbs.push(cb);
+                        }
+                    }
+                }
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, .. }) if in_compute => {
+                    for cb in [*cb_in, *cb_sc] {
+                        if !startup_cbs.contains(&cb) {
+                            startup_cbs.push(cb);
+                        }
+                    }
+                }
+                Op::TT(TTOp::LLKBcast { cb_a, cb_b, .. }) if in_compute => {
+                    for cb in [*cb_a, *cb_b] {
+                        if !startup_cbs.contains(&cb) {
+                            startup_cbs.push(cb);
+                        }
                     }
                 }
                 op if in_compute && first_pack.is_none() => {
@@ -1831,8 +1863,8 @@ impl Kernel {
             }
             scan = self.next_op(scan);
         }
-        if let (Some(reader), Some(&in0), Some(out)) = (end_reader, startup_loads.first(), first_pack) {
-            let in1 = startup_loads.get(1).copied().unwrap_or(in0);
+        if let (Some(reader), Some(&in0), Some(out)) = (end_reader, startup_cbs.first(), first_pack) {
+            let in1 = startup_cbs.get(1).copied().unwrap_or(in0);
             if has_matmul_block {
                 // matmul needs in0->SrcB, in1->SrcA. The installed
                 // headers have no SrcOrder-templated startup overload
@@ -1859,7 +1891,7 @@ impl Kernel {
             }
         }
 
-        // Main walk: per-op inits, reduce cones, section discipline.
+        // Main walk: per-op inits, pending-acc closing, section discipline.
         let mut in_compute = false;
         let mut unpack_src: Option<OpId> = None;
         let mut pending_acc: Option<OpId> = None;
@@ -1900,8 +1932,14 @@ impl Kernel {
                         matches!(self.ops[*src].op, Op::Storage { scope: MemScope::Circular, .. })
                     }
                     op => {
+                        // Tile compute is float-typed and 2D-shaped;
+                        // integer-typed 2D index math (drain index
+                        // expressions, lane trees) is address arithmetic,
+                        // allowed in any section.
+                        // in any section.
                         matches!(op, Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Asm { .. })
                             && self.shape(op_id).len() == 2
+                            && self.dtype(op_id).is_float()
                     }
                 };
                 if bad {
@@ -1919,9 +1957,10 @@ impl Kernel {
                 BinScalarInit(BOp),
                 CastInit(DType, DType),
                 PackReconfig(OpId),
-                MatmulInit(OpId, OpId, OpId),
-                MatmulBlockInit(OpId, OpId, OpId),
-                TransposeInit(OpId, OpId),
+                    MatmulInit(OpId, OpId, OpId),
+                    MatmulShortInit(OpId, OpId, OpId),
+                    TransposeInit(OpId, OpId),
+                    FillInit,
                 ReduceInit(OpId, OpId, OpId, BOp, TileDim),
                 BcastInit(BOp, TileDim, OpId, OpId),
             }
@@ -1931,17 +1970,23 @@ impl Kernel {
                     let Op::Binary { x, y, bop } = self.ops[op_id].op else {
                         unreachable!("tt_init_math: not a Binary");
                     };
-                    match (self.shape(x).len() == 2, self.shape(y).len() == 2) {
-                        (true, true) => InitAction::BinaryInit(bop),
-                        (true, false) => {
-                            self.tt_check_scalar_lane(op_id, bop, false, y)?;
-                            InitAction::BinScalarInit(bop)
+                    // Integer-typed Binary is address math (index expressions,
+                    // lane trees), not tile compute: no init.
+                    if !self.dtype(op_id).is_float() {
+                        InitAction::None
+                    } else {
+                        match (self.shape(x).len() == 2, self.shape(y).len() == 2) {
+                            (true, true) => InitAction::BinaryInit(bop),
+                            (true, false) => {
+                                self.tt_check_scalar_lane(op_id, bop, false, y)?;
+                                InitAction::BinScalarInit(bop)
+                            }
+                            (false, true) => {
+                                self.tt_check_scalar_lane(op_id, bop, true, x)?;
+                                InitAction::BinScalarInit(bop)
+                            }
+                            (false, false) => panic!("tt_init_math: tiled binary {op_id:?} with no tile lane"),
                         }
-                        (false, true) => {
-                            self.tt_check_scalar_lane(op_id, bop, true, x)?;
-                            InitAction::BinScalarInit(bop)
-                        }
-                        (false, false) => panic!("tt_init_math: tiled binary {op_id:?} with no tile lane"),
                     }
                 }
                 Op::Cast { .. } => {
@@ -1958,6 +2003,9 @@ impl Kernel {
                         InitAction::None
                     }
                 }
+                // Staged traffic needs no engine init: the NOC calls
+                // carry their addresses inline.
+                Op::TT(TTOp::Copy { .. }) => InitAction::None,
                 Op::Store { .. } => match self.tt_pack_store_cb(op_id) {
                     Some(cb) => InitAction::PackReconfig(cb),
                     None => InitAction::None,
@@ -1967,10 +2015,11 @@ impl Kernel {
                     acc_values.clear();
                     InitAction::ReduceInit(*cb_in, *cb_sc, *slot, *rop, *kind)
                 }
+                Op::TT(TTOp::FillTile { .. }) => InitAction::FillInit,
                 Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, .. }) => InitAction::BcastInit(*bop, *kind, *cb_a, *cb_b),
                 Op::TT(TTOp::LLKMatmul { cb_a, cb_b, .. }) => {
                     let out = first_pack.unwrap_or_else(|| panic!("tt_init_math: matmul {op_id:?} with no packed CB"));
-                    InitAction::MatmulBlockInit(*cb_a, *cb_b, out)
+                    InitAction::MatmulShortInit(*cb_a, *cb_b, out)
                 }
                 Op::TT(TTOp::LLK { .. }) => {
                     let Op::TT(TTOp::LLK { asm, ops }) = &self.ops[op_id].op else {
@@ -2134,7 +2183,7 @@ impl Kernel {
                 }
                 InitAction::PackReconfig(cb) => {
                     asm_before(self, op_id, "pack_reconfig_data_format({0});", &[cb]);
-                    // Reduce cone: packing the pending acc closes it.
+                    // Packing the pending acc closes it.
                     if pending_acc.is_some() {
                         let Op::Store { src: x, .. } = self.ops[op_id].op else {
                             unreachable!("tt_init_math: pack is a Store");
@@ -2152,7 +2201,7 @@ impl Kernel {
                     unpack_src = Some(a);
                     asm_before(self, op_id, "mm_init({0}, {1}, {2});", &[a, b, out]);
                 }
-                InitAction::MatmulBlockInit(a, b, out) => {
+                InitAction::MatmulShortInit(a, b, out) => {
                     unpack_src = Some(a);
                     // mm_init_short = state_configure(in1, in0) [the
                     // Reverse mapping] + math/unpack matmul-mode init,
@@ -2193,6 +2242,9 @@ impl Kernel {
                     let template = format!("{init}({{0}}, {{1}});");
                     asm_before(self, op_id, &template, &[cb_a, cb_b]);
                 }
+                InitAction::FillInit => {
+                    asm_before(self, op_id, "fill_tile_init();", &[]);
+                }
             }
             op_id = next;
         }
@@ -2201,8 +2253,8 @@ impl Kernel {
         // programs the MATH unit once per config (sticky) — re-issuing
         // it per loop trip is at best redundant. Bubble each one
         // outward across enclosing loops whose bodies hold no lock ops
-        // (a lock in the body means per-trip cones; crossing it would
-        // move config out of its cone). Per-call unpacker/packer inits
+            // (a lock in the body means per-trip inits; crossing it would
+            // move config out of its region). Per-call unpacker/packer inits
         // (copy, transpose, reduce, bcast, reconfig) stay per-trip, like
         // the old pass. Never crosses a section marker. Lands after a
         // hoisted acquire (old acquire-then-init order).
@@ -2493,6 +2545,13 @@ impl Kernel {
                                 feeds = true;
                                 break;
                             }
+                            // Storage-only LLKs name their CBs directly.
+                            if matches!(self.ops[o].op, Op::Storage { scope: MemScope::Circular, .. })
+                                && o == cb
+                            {
+                                feeds = true;
+                                break;
+                            }
                         }
                         if feeds {
                             held = false;
@@ -2528,8 +2587,10 @@ impl Kernel {
             scan = self.next_op(scan);
         }
 
-        // Provenance remaining counts: (cb storage, load) -> calls.
-        let mut remaining: Map<(OpId, OpId), u32> = Map::default();
+        // Remaining pages per CB: each lowered LLK consumes one page
+        // of each Circular CB operand. Storage-only operands (no
+        // feeder loads to count through).
+        let mut remaining: Map<OpId, u32> = Map::default();
         let mut walk = self.head;
         while !walk.is_null() {
             if matches!(
@@ -2540,14 +2601,11 @@ impl Kernel {
                     | Op::TT(TTOp::LLKMatmul { .. })
             ) {
                 for o in self.at(walk).parameters() {
-                    if o.is_null() || !matches!(self.ops[o].op, Op::Load { .. }) {
+                    if o.is_null() {
                         continue;
                     }
-                    let Op::Load { src: cb, .. } = self.ops[o].op else {
-                        unreachable!("tt_place_pops: provenance is a Load");
-                    };
-                    if matches!(self.ops[cb].op, Op::Storage { scope: MemScope::Circular, .. }) {
-                        *remaining.entry((cb, o)).or_insert(0) += 1;
+                    if matches!(self.ops[o].op, Op::Storage { scope: MemScope::Circular, .. }) {
+                        *remaining.entry(o).or_insert(0) += 1;
                     }
                 }
             }
@@ -2627,28 +2685,39 @@ impl Kernel {
                         }
                     }
                 }
+                Op::TT(TTOp::Copy { src, dst, .. }) => {
+                    // Staged drain (CB→DRAM): pop the CB side. Publishes
+                    // hold no pop here — the LLK consumption above pops
+                    // input CBs after their last consuming call.
+                    let src_cb = matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. });
+                    let dst_cb = matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Circular, .. });
+                    match (src_cb, dst_cb) {
+                        (true, false) => {
+                            if !batched_read.contains(&op_id) {
+                                pops.push(src);
+                            }
+                        }
+                        (false, true) => {}
+                        _ => panic!("tt_place_pops: staged copy {op_id:?} is not DRAM↔CB traffic"),
+                    }
+                }
                 Op::TT(TTOp::LLK { .. })
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::LLKMatmul { .. }) => {
                     let mut seen: Vec<OpId> = Vec::new();
-                    let mut cbs: Vec<(OpId, OpId)> = Vec::new();
                     for o in self.at(op_id).parameters() {
-                        if o.is_null() || !matches!(self.ops[o].op, Op::Load { .. }) {
+                        if o.is_null() {
                             continue;
                         }
-                        let Op::Load { src, .. } = self.ops[o].op else {
-                            unreachable!("tt_place_pops: provenance is a Load");
-                        };
-                        if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }) && !seen.contains(&src) {
-                            seen.push(src);
-                            cbs.push((src, o));
+                        if matches!(self.ops[o].op, Op::Storage { scope: MemScope::Circular, .. }) && !seen.contains(&o) {
+                            seen.push(o);
                         }
                     }
-                    for (cb, load) in cbs {
+                    for cb in seen {
                         let left = remaining
-                            .get_mut(&(cb, load))
-                            .unwrap_or_else(|| panic!("tt_place_pops: LLK {op_id:?} consumes uncounted page ({cb:?}, {load:?})"));
+                            .get_mut(&cb)
+                            .unwrap_or_else(|| panic!("tt_place_pops: LLK {op_id:?} consumes uncounted page {cb:?}"));
                         if *left == 0 {
                             panic!("tt_place_pops: use beyond counted total on CB{cb:?}");
                         }
@@ -2784,6 +2853,69 @@ impl Kernel {
 
         self.tt_fifo_check();
         self.verify();
+    }
+
+    /// 64-byte congruence for one DRAM-touching copy: the board
+    /// crashes on incongruent NOC addresses, so both ends must agree
+    /// mod 64. Offsets are index x unit x elsize: tile transfers
+    /// count slots (1024 els), vector/scalar count elements — the
+    /// same units render_copy emits. Affine indices prove by stride
+    /// (get_strides, bare var = stride 1); anything else is
+    /// unprovable and rejected, never silently skipped.
+    fn fifo_check_copy(&self, op_id: OpId, src: OpId, src_idx: OpId, dst: OpId, dst_idx: OpId, unit: i64) {
+        let is_dram =
+            |base: OpId| matches!(self.at(base), Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
+        if !(is_dram(src) || is_dram(dst)) {
+            return;
+        }
+        let elsize = |base: OpId| match self.at(base) {
+            Op::Param { dtype, .. } | Op::Storage { dtype, .. } => {
+                let bits = dtype.bit_size();
+                if bits % 8 != 0 {
+                    panic!("tt_fifo_check: copy {op_id:?} side {base:?} has sub-byte dtype {dtype:?}");
+                }
+                (bits / 8) as i64
+            }
+            other => panic!("tt_fifo_check: copy {op_id:?} side {base:?} is not a buffer: {other:?}"),
+        };
+        // Affine decomposition: per-var element strides plus the
+        // const base (the NULL entry); a null index is const 0.
+        let decomp = |idx: OpId| -> Map<OpId, i64> {
+            if idx.is_null() {
+                return Map::default();
+            }
+            self.get_strides(idx)
+                .unwrap_or_else(|| panic!("tt_fifo_check: copy {op_id:?} has unprovable index {idx:?}"))
+                .into_iter()
+                .map(|(v, (_, st))| (v, st))
+                .collect()
+        };
+        let sm = decomp(src_idx);
+        let dm = decomp(dst_idx);
+        let es = elsize(src);
+        let ed = elsize(dst);
+        let check = |var: &str, ss: i64, ds: i64| {
+            if (ss * unit * es - ds * unit * ed).rem_euclid(64) != 0 {
+                panic!(
+                    "tt_fifo_check: copy {op_id:?} is 64-byte incongruent at {var}: src {ss} vs dst {ds} (unit {unit}, elsize {es}/{ed})"
+                );
+            }
+        };
+        for (v, ss) in sm.iter() {
+            if v.is_null() {
+                continue;
+            }
+            check(&std::format!("{v:?}"), *ss, dm.get(v).copied().unwrap_or(0));
+        }
+        for (v, ds) in dm.iter() {
+            if v.is_null() || sm.contains_key(v) {
+                continue;
+            }
+            check(&std::format!("{v:?}"), 0, *ds);
+        }
+        let bs = sm.get(&OpId::NULL).copied().unwrap_or(0);
+        let bd = dm.get(&OpId::NULL).copied().unwrap_or(0);
+        check("base", bs, bd);
     }
 
     /// FIFO simulation over the placed sync ops (ports the old
@@ -2927,73 +3059,16 @@ impl Kernel {
                     f.popped += need;
                 }
                 Op::Copy { src, src_idx, dst, dst_idx, .. } => {
-                    // 64-byte congruence on DRAM-touching traffic: the
-                    // board crashes on incongruent NOC addresses, so both
-                    // ends of every DRAM Copy must agree mod 64. Offsets
-                    // are index x unit x elsize: tile transfers count
-                    // slots (1024 els), vector/scalar count elements —
-                    // the same units render_copy emits. Affine indices
-                    // prove by stride (get_strides, bare var = stride 1);
-                    // anything else is unprovable and rejected, never
-                    // silently skipped.
-                    let is_dram =
-                        |base: OpId| matches!(self.at(base), Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
-                    if is_dram(src) || is_dram(dst) {
-                        let elsize = |base: OpId| match self.at(base) {
-                            Op::Param { dtype, .. } | Op::Storage { dtype, .. } => {
-                                let bits = dtype.bit_size();
-                                if bits % 8 != 0 {
-                                    panic!("tt_fifo_check: copy {op_id:?} side {base:?} has sub-byte dtype {dtype:?}");
-                                }
-                                (bits / 8) as i64
-                            }
-                            other => panic!("tt_fifo_check: copy {op_id:?} side {base:?} is not a buffer: {other:?}"),
-                        };
-                        let unit: i64 = match self.shape(op_id).as_slice() {
-                            [_, _] => 1024,
-                            [] | [_] => 1,
-                            _ => panic!("tt_fifo_check: copy {op_id:?} has non-tile/vector access shape"),
-                        };
-                        // Affine decomposition: per-var element strides
-                        // plus the const base (the NULL entry); a null
-                        // index is const 0.
-                        let decomp = |idx: OpId| -> Map<OpId, i64> {
-                            if idx.is_null() {
-                                return Map::default();
-                            }
-                            self.get_strides(idx)
-                                .unwrap_or_else(|| panic!("tt_fifo_check: copy {op_id:?} has unprovable index {idx:?}"))
-                                .into_iter()
-                                .map(|(v, (_, st))| (v, st))
-                                .collect()
-                        };
-                        let sm = decomp(src_idx);
-                        let dm = decomp(dst_idx);
-                        let es = elsize(src);
-                        let ed = elsize(dst);
-                        let check = |var: &str, ss: i64, ds: i64| {
-                            if (ss * unit * es - ds * unit * ed).rem_euclid(64) != 0 {
-                                panic!(
-                                    "tt_fifo_check: copy {op_id:?} is 64-byte incongruent at {var}: src {ss} vs dst {ds} (unit {unit}, elsize {es}/{ed})"
-                                );
-                            }
-                        };
-                        for (v, ss) in sm.iter() {
-                            if v.is_null() {
-                                continue;
-                            }
-                            check(&std::format!("{v:?}"), *ss, dm.get(v).copied().unwrap_or(0));
-                        }
-                        for (v, ds) in dm.iter() {
-                            if v.is_null() || sm.contains_key(v) {
-                                continue;
-                            }
-                            check(&std::format!("{v:?}"), 0, *ds);
-                        }
-                        let bs = sm.get(&OpId::NULL).copied().unwrap_or(0);
-                        let bd = dm.get(&OpId::NULL).copied().unwrap_or(0);
-                        check("base", bs, bd);
-                    }
+                    let unit: i64 = match self.shape(op_id).as_slice() {
+                        [_, _] => 1024,
+                        [] | [_] => 1,
+                        _ => panic!("tt_fifo_check: copy {op_id:?} has non-tile/vector access shape"),
+                    };
+                    self.fifo_check_copy(op_id, src, src_idx, dst, dst_idx, unit);
+                }
+                Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => {
+                    // Staged traffic: lane-free bases, unit elementwise.
+                    self.fifo_check_copy(op_id, src, src_idx, dst, dst_idx, 1);
                 }
                 _ => {}
             }

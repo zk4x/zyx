@@ -129,14 +129,14 @@ impl Kernel {
                 // program-ordered like a barrier for placement (never
                 // crosses one), but not a barrier itself.
                 Op::Asm { .. } | Op::TT(TTOp::LLK { .. }) => structural[i] = true,
-                Op::TT(TTOp::ReduceTile { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => {
+                Op::TT(TTOp::ReduceTile { .. }) | Op::TT(TTOp::FillTile { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => {
                     structural[i] = true
                 }
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
                 // A copy reads its src and writes its dst: it pins like a
                 // load (barriers, asm, loops) and orders like a store.
-                Op::Copy { .. } => {
+                Op::Copy { .. } | Op::TT(TTOp::Copy { .. }) => {
                     store[i] = true;
                     load[i] = true;
                 }
@@ -234,6 +234,12 @@ impl Kernel {
                     add_param!(dst);
                     add_param!(dst_idx);
                 }
+                Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => {
+                    add_param!(src);
+                    add_param!(src_idx);
+                    add_param!(dst);
+                    add_param!(dst_idx);
+                }
                 Op::Load { src, src_idx } => {
                     add_param!(src);
                     add_param!(src_idx);
@@ -249,19 +255,19 @@ impl Kernel {
                         add_param!(p);
                     }
                 }
-                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => {
                     add_param!(cb_in);
                     add_param!(cb_sc);
                     add_param!(slot);
-                    add_param!(x);
-                    add_param!(scaler);
                 }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
+                Op::TT(TTOp::FillTile { slot, val }) => {
+                    add_param!(slot);
+                    add_param!(val);
+                }
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
                     add_param!(cb_a);
                     add_param!(cb_b);
                     add_param!(slot);
-                    add_param!(x);
-                    add_param!(y);
                 }
                 Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
                     add_param!(cb_a);
@@ -296,6 +302,10 @@ impl Kernel {
                     by_memory_target.entry(*src).or_default().push(i);
                     by_memory_target.entry(*dst).or_default().push(i);
                 }
+                Op::TT(TTOp::Copy { src, dst, .. }) => {
+                    by_memory_target.entry(*src).or_default().push(i);
+                    by_memory_target.entry(*dst).or_default().push(i);
+                }
                 // CB sync ops name their buffer directly: same FIFO group
                 // as the CB's loads/stores/copies, or sync
                 // could reorder across the traffic it guards.
@@ -314,13 +324,18 @@ impl Kernel {
                         by_memory_target.entry(x).or_default().push(i);
                     }
                 }
-                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => {
-                    for &f in [cb_in, cb_sc, slot, x, scaler] {
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => {
+                    for &f in [cb_in, cb_sc, slot] {
                         by_memory_target.entry(f).or_default().push(i);
                     }
                 }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => {
-                    for &f in [cb_a, cb_b, slot, x, y] {
+                Op::TT(TTOp::FillTile { slot, val }) => {
+                    for &f in [slot, val] {
+                        by_memory_target.entry(f).or_default().push(i);
+                    }
+                }
+                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
+                    for &f in [cb_a, cb_b, slot] {
                         by_memory_target.entry(f).or_default().push(i);
                     }
                 }
@@ -481,7 +496,7 @@ impl Kernel {
                     Op::EndLoop => {
                         open_stack.pop();
                     }
-                    Op::Store { dst, .. } | Op::Copy { dst, .. } => {
+                    Op::Store { dst, .. } | Op::Copy { dst, .. } | Op::TT(TTOp::Copy { dst, .. }) => {
                         // Writes name their buffer directly.
                         let buf = *dst;
                         for &opener in &open_stack {
@@ -531,7 +546,7 @@ impl Kernel {
             // the base names the buffer. A copy reading from Circular
             // pops the same way and pins identically.
             let buf = match self.at(rest[i]) {
-                Op::Load { src, .. } | Op::Copy { src, .. } => *src,
+                Op::Load { src, .. } | Op::Copy { src, .. } | Op::TT(TTOp::Copy { src, .. }) => *src,
                 _ => continue,
             };
             if !matches!(self.at(buf), Op::Storage { scope: MemScope::Circular, .. }) {

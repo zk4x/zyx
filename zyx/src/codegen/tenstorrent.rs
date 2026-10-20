@@ -198,17 +198,26 @@ impl Kernel {
             if scan.is_null() {
                 break;
             }
-            let touched = match k.at(scan) {
-                Op::Load { src, .. } | Op::Copy { src, .. } => Some(k.tt_storage_of(*src)),
-                Op::Store { dst, .. } => Some(k.tt_storage_of(*dst)),
-                _ => None,
+            let mut touched: [Option<OpId>; 2] = [None, None];
+            match k.at(scan) {
+                Op::Load { src, .. } | Op::Copy { src, .. } => touched[0] = Some(k.tt_storage_of(*src)),
+                Op::Store { dst, .. } => touched[0] = Some(k.tt_storage_of(*dst)),
+                // Lowered traffic: publish/drain endpoints are bare
+                // storages (DRAM param or Circular CB), never wrapped
+                // in Load/Store, so `tt_storage_of` cannot see them.
+                Op::TT(TTOp::Copy { src, dst, .. }) => {
+                    touched[0] = Some(*src);
+                    touched[1] = Some(*dst);
+                }
+                _ => {}
             };
-            if let Some(st) = touched
-                && matches!(k.at(st), Op::Storage { scope: MemScope::Circular, .. })
-                && !cbs.contains_key(&st)
-            {
-                cbs.insert(st, cb_order.len() as u32);
-                cb_order.push(st);
+            for st in touched.into_iter().flatten() {
+                if matches!(k.at(st), Op::Storage { scope: MemScope::Circular, .. })
+                    && !cbs.contains_key(&st)
+                {
+                    cbs.insert(st, cb_order.len() as u32);
+                    cb_order.push(st);
+                }
             }
             scan = k.next_op(scan);
         }
@@ -536,6 +545,11 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
     for id in ops.iter().copied() {
         match sec.k.at(id) {
             Op::Const { .. } | Op::Param { .. } | Op::Storage { .. } | Op::Stack { .. } => {}
+            // Unrolled lanes emit no code: traffic addresses are
+            // lane-stripped bases at lowering, and tile-shaped pack
+            // indices are shape-only metadata. The defs stay alive
+            // only as long as something references them.
+            Op::Unroll { .. } => {}
             Op::Range { kind, .. } => match kind {
                 RangeKind::Group(_) => {}
                 _ => return Err(sec.err(format!("range {id:?} is not a group range"))),
@@ -560,10 +574,79 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.indent.pop();
             }
             Op::Copy { src, src_idx, dst, dst_idx, .. } => render_copy(sec, id, *src, *src_idx, *dst, *dst_idx)?,
+            Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, bytes }) => {
+                // Staged traffic: both indices are lane-free bases
+                // (unrolls stripped at lowering), size is explicit.
+                // Publish (DRAM→CB) lives in the reader, drain
+                // (CB→DRAM) in the writer.
+                let src_cb = if matches!(sec.k.at(*src), Op::Storage { scope: MemScope::Circular, .. }) {
+                    Some(*src)
+                } else {
+                    None
+                };
+                let dst_cb = if matches!(sec.k.at(*dst), Op::Storage { scope: MemScope::Circular, .. }) {
+                    Some(*dst)
+                } else {
+                    None
+                };
+                match (src_cb, dst_cb) {
+                    (None, Some(dcb)) => {
+                        if sec.section != 0 {
+                            return Err(sec.err(format!("publish {id:?} outside the reader")));
+                        }
+                        let dcb = sec.cb_num(dcb)?;
+                        let (param, base) = match sec.k.at(*src) {
+                            Op::Param { .. } => (*src, *src_idx),
+                            _ => return Err(sec.err(format!("publish {id:?} src is not a DRAM param"))),
+                        };
+                        let ord = sec.ord_of(param)?;
+                        let idx = sec.expr(base)?;
+                        let eb = elem_bytes(sec.k, param)?;
+                        let slot = cb_slot_expr(sec, *dst_idx, eb)?;
+                        let noc = sec.transfer;
+                        sec.transfer += 1;
+                        sec.out.push_str(&format!(
+                            "{}uint64_t rnoc{noc} = p{ord}.get_noc_addr((uint32_t)((( {idx} )*{eb})/{page}), (uint32_t)((( {idx} )*{eb})%{page}));\n",
+                            sec.indent,
+                            page = TT_DRAM_PAGE_BYTES
+                        ));
+                        sec.out.push_str(&format!("{}noc_async_read(rnoc{noc}, cb{dcb}.get_write_ptr(){slot}, {bytes});\n", sec.indent));
+                        sec.out.push_str(&format!("{}noc_async_read_barrier();\n", sec.indent));
+                        Ok(())
+                    }
+                    (Some(scb), None) => {
+                        if sec.section != 2 {
+                            return Err(sec.err(format!("drain {id:?} outside the writer")));
+                        }
+                        let scb = sec.cb_num(scb)?;
+                        let (param, base) = match sec.k.at(*dst) {
+                            Op::Param { .. } => (*dst, *dst_idx),
+                            _ => return Err(sec.err(format!("drain {id:?} dst is not a DRAM param"))),
+                        };
+                        let ord = sec.ord_of(param)?;
+                        let idx = sec.expr(base)?;
+                        let eb = elem_bytes(sec.k, param)?;
+                        let slot = cb_slot_expr(sec, *src_idx, eb)?;
+                        let noc = sec.transfer;
+                        sec.transfer += 1;
+                        sec.out.push_str(&format!(
+                            "{}uint64_t wnoc{noc} = p_out{ord}.get_noc_addr((uint32_t)((( {idx} )*{eb})/{page}), (uint32_t)((( {idx} )*{eb})%{page}));\n",
+                            sec.indent,
+                            page = TT_DRAM_PAGE_BYTES
+                        ));
+                        sec.out.push_str(&format!("{}noc_async_write(cb{scb}.get_read_ptr(){slot}, wnoc{noc}, {bytes});\n", sec.indent));
+                        sec.out.push_str(&format!("{}noc_async_write_barrier();\n", sec.indent));
+                        Ok(())
+                    }
+                    _ => Err(sec.err(format!("staged copy {id:?} is not DRAM↔CB traffic"))),
+                }?;
+            }
             Op::Load { src, .. } => render_load(sec, id, *src)?,
             Op::Store { src: x, dst, .. } => render_store(sec, id, *x, *dst)?,
             Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } => {
-                if sec.k.shape(id).len() == 2 {
+                // Index math is IDX_T-typed: address arithmetic, never
+                // tile compute. Only float 2D values render as LLKs.
+                if sec.k.shape(id).len() == 2 && sec.k.dtype(id).is_float() {
                     render_tile_op(sec, id)?;
                 }
             }
@@ -658,12 +741,28 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 }
                 sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
             }
+            Op::TT(TTOp::FillTile { slot, val }) => {
+                // Structured lowered fill: scalar literal across one
+                // DST segment. The literal substitutes directly (never
+                // a storage); the pack store moves the segment to a CB.
+                let dst = match sec.k.at(*slot) {
+                    Op::Storage { scope: MemScope::Register, .. } => sec.reg_slot(*slot)?,
+                    _ => return Err(sec.err(format!("FillTile {id:?} slot {slot:?} is not a Register storage"))),
+                };
+                let lit = match sec.k.at(*val) {
+                    Op::Const(c) => tt_const_lit(c)?,
+                    _ => return Err(sec.err(format!("FillTile {id:?} val {val:?} is not a Const"))),
+                };
+                sec.slots.insert(id, dst);
+                sec.out.push_str(&format!("{}fill_tile({dst}, {lit});\n", sec.indent));
+            }
             Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, .. }) => {
                 // Structured lowered matmul: rebuild the compute
                 // template from the fields (never parsed back).
-                // Single tile: tile indices 0, 0; transpose 0;
-                // ct_dim = rt_dim = kt_dim = 1.
-                let template = "matmul_block({0}, {1}, 0, 0, {2}, 0, 1, 1, 1);".to_string();
+                // Single tile: tile indices 0, 0; DST slot {2}.
+                // Doc-driven `matmul_tiles` (the single-tile call);
+                // init is the documented `mm_init_short` short init.
+                let template = "matmul_tiles({0}, {1}, 0, 0, {2});".to_string();
                 let mut rendered = template;
                 for (i, o) in [*cb_a, *cb_b, *slot].iter().copied().enumerate() {
                     let num = match sec.k.at(o) {

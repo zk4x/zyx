@@ -97,14 +97,11 @@ impl Kernel {
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
             self.tt_tile();
-            self.tt_add_reader();
-            self.tt_add_writer();
-            self.tt_add_compute_cbs();
             // Lowering (order-flexible; each pass tolerates the
             // others' legal output - not currently, but it's the idea):
             // structured LLK claiming + register allocation, locks,
             // duplicate-publish elimination, engine-config inits +
-            // startup + reduce cones, CB sync, pop placement.
+            // startup + reduce closing, CB sync, pop placement.
             self.tt_lower_llks();
             self.tt_lock_dst();
             self.tt_dedup_pushes();
@@ -112,12 +109,13 @@ impl Kernel {
             self.tt_sync_cbs();
             self.tt_place_pops();
             self.verify();
+            self.debug();
 
             self.common_subexpression_elimination();
             self.dead_code_elimination();
+        } else {
+            self.devectorize();
         }
-
-        self.devectorize();
     }
 
     /// Get a hash of the kernel for deduplication during autotuning.

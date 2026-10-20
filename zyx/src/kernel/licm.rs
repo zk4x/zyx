@@ -85,6 +85,7 @@ impl Kernel {
                 | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::LLK { .. })
                 | Op::TT(TTOp::ReduceTile { .. })
+                | Op::TT(TTOp::FillTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::LLKMatmul { .. }) => loop_depth,
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
@@ -117,6 +118,7 @@ impl Kernel {
                 | Op::Load { .. }
                 | Op::Store { .. }
                 | Op::Copy { .. }
+                | Op::TT(TTOp::Copy { .. })
                 | Op::Const(_)
                 | Op::Unroll { .. }
                 | Op::Storage { .. } => loop_depth,
@@ -178,6 +180,7 @@ impl Kernel {
                 | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::LLK { .. })
                 | Op::TT(TTOp::ReduceTile { .. })
+                | Op::TT(TTOp::FillTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::LLKMatmul { .. }) => loop_depth,
                 Op::Asm { ops, .. } => {
@@ -210,6 +213,7 @@ impl Kernel {
                 | Op::Load { .. }
                 | Op::Store { .. }
                 | Op::Copy { .. }
+                | Op::TT(TTOp::Copy { .. })
                 | Op::Const(_)
                 | Op::Unroll { .. }
                 | Op::Param { .. }
@@ -306,6 +310,7 @@ impl Kernel {
                         op,
                         Op::Store { .. }
                             | Op::Copy { .. }
+                            | Op::TT(TTOp::Copy { .. })
                             | Op::TT(TTOp::ReserveBack { .. })
                             | Op::TT(TTOp::PushBack { .. })
                             | Op::TT(TTOp::WaitFront { .. })
@@ -319,6 +324,7 @@ impl Kernel {
                             | Op::TT(TTOp::ReduceUninit)
                             | Op::TT(TTOp::LLK { .. })
                             | Op::TT(TTOp::ReduceTile { .. })
+                            | Op::TT(TTOp::FillTile { .. })
                             | Op::TT(TTOp::LLKBcast { .. })
                             | Op::TT(TTOp::LLKMatmul { .. })
                             | Op::Load { .. }
