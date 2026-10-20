@@ -300,7 +300,7 @@ pub enum Op {
         /// Slice length.
         len: OpId,
     },
-    /// Reduce `x` with `rop`, folding away the named lanes: if
+    /// Reduce `x` with `rop`, reducing away the named lanes: if
     /// `reduce_axis` is an `Op::Unroll`, its axis slot is zeroed,
     /// otherwise the last dim drops.
     Reduce {
@@ -308,7 +308,7 @@ pub enum Op {
         x: OpId,
         /// Reduce op.
         rop: BOp,
-        /// Axis expression naming the folded lanes (see above).
+        /// Axis expression naming the reduced lanes (see above).
         reduce_axis: OpId,
     },
     // Graph-only ops (former `Node` variants). They never appear in ordered
@@ -588,7 +588,7 @@ pub enum TTOp {
     /// and parsed back. Same effect/CSE rules as [`TTOp::LLK`]: a DCE
     /// root, pinned by LICM, never deduplicated.
     LLKReduce {
-        /// Reduce op (Max folds a MAX pool, Add a SUM).
+        /// Reduce op (Max reduces a MAX pool, Add a SUM).
         rop: BOp,
         /// Reduce dimension.
         kind: TileDim,

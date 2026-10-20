@@ -109,7 +109,7 @@ impl Kernel {
                     | Op::Bitcast { .. }
                     | Op::Unary { .. }
                     | Op::Binary { .. }
-                    // Post-linearize lane-space folds are legal until the
+                    // Post-linearize lane-space reduces are legal until the
                     // device epilogue devectorizes them.
                     | Op::Reduce { .. }
                     | Op::Stack { .. } => {}
@@ -317,9 +317,9 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                 }
                 Op::Reduce { x, reduce_axis, .. } => {
-                    // Lane-space fold: a value op whose operands are the
-                    // folded value and the axis expression naming the
-                    // folded lane space.
+                    // Lane-space reduce: a value op whose operands are the
+                    // reduced value and the axis expression naming the
+                    // reduced lane space.
                     check(op_id, x, &stack);
                     check(op_id, reduce_axis, &stack);
                     dtypes.insert(op_id, dtypes[&x]);

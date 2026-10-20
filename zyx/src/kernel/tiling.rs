@@ -69,7 +69,7 @@ impl Kernel {
         self.tilize_stores();
         self.debug();
 
-        // Fold dot-cone families into matmul tiles (see below).
+        // Reduce dot-cone families into matmul tiles (see below).
         self.vectorize_matmul_tile(32, 32, 32);
 
         self.default_epilogue();
@@ -88,7 +88,7 @@ impl Kernel {
     /// result tile carries the sums in its first row, so every reduce
     /// becomes an Index lane of row 0. Dead chains die in DCE.
     pub fn vectorize_reduce_tile(&mut self) {
-        // The matched lane folds rode the deleted vectorize IR; with
+        // The matched lane reduces rode the deleted vectorize IR; with
         // the tile matcher absent this lowering never fires.
         todo!("tiling: vectorize-based bundling is deleted");
     }
@@ -290,9 +290,9 @@ impl Kernel {
         self.dead_code_elimination();
     }
 
-    /// Split-IR lane fold -> MatmulTile, values only.
+    /// Split-IR lane reduce -> MatmulTile, values only.
     /// Matches the lane-vector matmul family split produces: a single
-    /// `Reduce` over one `Mul` of two 2D-shaped operands, folding to a
+    /// `Reduce` over one `Mul` of two 2D-shaped operands, reducing to a
     /// 2D result. Shapes only — `[m, k]` and `[k, n]` operands, `[m, n]`
     /// result. No memory op is ever matched: operands may be any op
     /// producing tile values.
@@ -309,7 +309,7 @@ impl Kernel {
         }
         for root in sites {
             // A single Reduce over one Mul of two 2D-shaped operands:
-            // split's loop arm folds the accumulation.
+            // split's loop arm reduces the accumulation.
             let prod = match self.ops[root].op {
                 Op::Reduce { x, rop, .. } if rop == BOp::Add => x,
                 _ => continue,
@@ -318,7 +318,7 @@ impl Kernel {
                 Op::Binary { x, y, bop } if bop == BOp::Mul => (x, y),
                 _ => continue,
             };
-            // Shapes only: [m, k] and [k, n] operands folding to [m, n].
+            // Shapes only: [m, k] and [k, n] operands reducing to [m, n].
             if self.shape(a) != vec![m, k] || self.shape(b) != vec![k, n] {
                 continue;
             }

@@ -365,7 +365,7 @@ impl Kernel {
                     }
                     Op::Loop { len: len_id } => {
                         // Loop unroll: strip-mine into Loop(len/factor) plus
-                        // Unroll lanes, folding the per-lane values with a
+                        // Unroll lanes, reducing the per-lane values with a
                         // Reduce. No replication: the body stays single,
                         // values widen to lane vectors through the shape
                         // algebra, and the loop-carried accumulation becomes
@@ -522,7 +522,7 @@ impl Kernel {
 
                         // The acc store must combine the acc load with a
                         // lane-varying prod via one Binary; anything else
-                        // is not a foldable accumulation.
+                        // is not a reducible accumulation.
                         let (acc_store_id, acc_store_idx, acc_store_src) = {
                             let mut found = None;
                             let mut op_id = self.next_op(axis_id);
@@ -605,7 +605,7 @@ impl Kernel {
                             lane_id
                         };
 
-                        // Fold the prod side; the acc side stays scalar.
+                        // Reduce the prod side; the acc side stays scalar.
                         let red = self.insert_before(
                             acc_store_id,
                             Op::Reduce { x: prod_side, rop: bop, reduce_axis: unroll_id },
@@ -625,7 +625,7 @@ impl Kernel {
             SplitMode::Loop => {
                 // Strip-mine into a nested loop: the new loop goes right
                 // after the split site, its end lands at the kernel tail.
-                // No fold: plain nesting needs no lane combine.
+                // No reduce: plain nesting needs no lane combine.
                 let (outer_len_id, is_loop) = match self.ops[axis_id].op {
                     Op::Range { kind: RangeKind::Group(len_id), .. } => (len_id, false),
                     Op::Loop { len: len_id } => (len_id, true),
@@ -780,7 +780,7 @@ impl Kernel {
                         }
                     }
                     // Plain nested loops (the deleted `SplitLoop`): large
-                    // loops strip-mine without lanes or folds.
+                    // loops strip-mine without lanes or reduces.
                     if len >= 16 {
                         for f in [8u64, 16, 4, 2] {
                             if len % f as Dim == 0 {
@@ -832,7 +832,7 @@ mod tests {
 
     /// A reduce loop over 64 iterations splits at factor 4: the loop
     /// strip-mines to 16 trips, the lane dimension becomes an
-    /// `Op::Unroll` vector, and the per-lane values fold through a
+    /// `Op::Unroll` vector, and the per-lane values reduce through a
     /// single `Op::Reduce`. The accumulator keeps length 1.
     #[test]
     fn split_reduce_loop_unrolls_into_tree() {
@@ -869,19 +869,19 @@ mod tests {
 
         // The accumulator stays scalar.
         assert!(matches!(k.at(acc), Op::Storage { len, scope: MemScope::Register, .. } if *len == 1));
-        // Vector form: one Add fold over the k-lane, unroll nodes
+        // Vector form: one Add reduce over the k-lane, unroll nodes
         // present for the lane dimension.
-        let mut folds = 0;
+        let mut reduces = 0;
         let mut unrolls = 0;
         for (_, op) in k.iter_unordered() {
             if matches!(op, Op::Reduce { rop, .. } if *rop == crate::kernel::BOp::Add) {
-                folds += 1;
+                reduces += 1;
             }
             if matches!(op, Op::Unroll { len, .. } if *len == 4) {
                 unrolls += 1;
             }
         }
-        assert_eq!(folds, 1);
+        assert_eq!(reduces, 1);
         assert!(unrolls >= 1);
         // The loop strip-mined to 16 trips.
         let mut sixteens = 0;

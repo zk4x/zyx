@@ -5,8 +5,8 @@
 //!
 //! One pass, running in the device epilogue right before codegen, with
 //! two mechanisms under a joint fixpoint: [`Kernel::devectorize`] expands
-//! each lane-space fold ([`Op::Reduce`] whose `reduce_axis` mentions
-//! unroll nodes) into the fold chain over its lanes, and unfolds every
+//! each lane-space reduce ([`Op::Reduce`] whose `reduce_axis` mentions
+//! unroll nodes) into the reduce chain over its lanes, and unfolds every
 //! remaining [`Op::Unroll`] node (a vector of constants `0..len`) into
 //! one scalar statement per element. Every transport backend only ever
 //! sees scalar IR.
@@ -21,15 +21,15 @@
 use crate::{Map, Set, dtype::Constant, kernel::{Kernel, Op, OpId}};
 
 impl Kernel {
-    /// Expand every lane-space fold into the fold chain over its lanes,
+    /// Expand every lane-space reduce into the reduce chain over its lanes,
     /// then unfold every remaining unroll node into scalar statements.
     /// Unused nodes die in DCE. Runs in the device epilogue, before
-    /// codegen. Folds take priority every round: a fold expansion can
-    /// leave lane-conditional ops behind (axes the fold does not
+    /// codegen. Reduces take priority every round: a reduce expansion can
+    /// leave lane-conditional ops behind (axes the reduce does not
     /// consume), and the unroll mechanism unfolds those next rounds.
     ///
-    /// The expansion creates fresh copies for each fold lane; nothing
-    /// runs after this joint with per-phase cleanups, so the folded
+    /// The expansion creates fresh copies for each reduce lane; nothing
+    /// runs after this joint with per-phase cleanups, so the reduced
     /// duplicates are cleaned once at the end: constant folding turns
     /// per-lane index expressions into literals, CSE merges the
     /// identical forms, DCE removes what is dead.
@@ -57,29 +57,29 @@ impl Kernel {
         self.verify();
     }
 
-    /// Expand one lane-space fold: substitute the fold axis' unroll nodes
-    /// with each lane's constant everywhere they are consumed, fold the
-    /// per-lane values with the fold op, and remove the fold node.
+    /// Expand one lane-space reduce: substitute the reduce axis' unroll nodes
+    /// with each lane's constant everywhere they are consumed, reduce the
+    /// per-lane values with the reduce op, and remove the reduce node.
     ///
     /// The axis expression may compose several unroll nodes (e.g.
-    /// `unroll(axis0) * 4 + unroll(axis1)`); the chain then folds their
+    /// `unroll(axis0) * 4 + unroll(axis1)`); the chain then reduces their
     /// product lexicographically (axis-ascending, first node most
     /// significant). Lane 0 rewrites the original ops in place; the
-    /// remaining lanes insert as clones. Lane axes the fold does NOT
-    /// consume are left untouched, so a multi-axis bundle folds along
-    /// the fold axes only and the result keeps its other lanes — the
-    /// fold-chain members stay lane-conditional on those surviving
+    /// remaining lanes insert as clones. Lane axes the reduce does NOT
+    /// consume are left untouched, so a multi-axis bundle reduces along
+    /// the reduce axes only and the result keeps its other lanes — the
+    /// reduce-chain members stay lane-conditional on those surviving
     /// unroll nodes for the unroll rounds to unfold.
     fn devectorize_reduce_one(&mut self, reduce_id: OpId) {
         let Op::Reduce { x, rop, reduce_axis } = self.ops[reduce_id].op.clone() else {
             unreachable!("devectorize: not a reduce")
         };
 
-        // The fold spaces: every unroll node mentioned by the axis
+        // The reduce spaces: every unroll node mentioned by the axis
         // expression, axis-ascending. The axis cone may only compose
         // unroll nodes with binary arithmetic and constants (e.g.
         // `unroll(axis0) * 4 + unroll(axis1)`); anything else is not a
-        // lane space this pass folds.
+                    // lane space this pass reduces.
         let mut ordered: Vec<(OpId, u16, u32)> = Vec::new();
         {
             let mut stack = vec![reduce_axis];
@@ -96,20 +96,20 @@ impl Kernel {
                         stack.push(*y);
                     }
                     Op::Const(_) => {}
-                    _ => todo!("devectorize: lane fold over a non-unroll axis"),
+                    _ => todo!("devectorize: lane reduce over a non-unroll axis"),
                 }
             }
         }
         if ordered.is_empty() {
-            todo!("devectorize: fold over no lane space");
+            todo!("devectorize: reduce over no lane space");
         }
         ordered.sort_by_key(|&(_, _, axis)| axis);
-        let fold_nodes: Vec<(OpId, u16)> = ordered.into_iter().map(|(id, len, _)| (id, len)).collect();
-        let mut strides: Vec<u64> = Vec::with_capacity(fold_nodes.len());
-        let fold_len: u64 = fold_nodes.iter().map(|&(_, l)| u64::from(l)).product();
-        for i in 0..fold_nodes.len() {
+        let reduce_nodes: Vec<(OpId, u16)> = ordered.into_iter().map(|(id, len, _)| (id, len)).collect();
+        let mut strides: Vec<u64> = Vec::with_capacity(reduce_nodes.len());
+        let reduce_len: u64 = reduce_nodes.iter().map(|&(_, l)| u64::from(l)).product();
+        for i in 0..reduce_nodes.len() {
             let mut st = 1u64;
-            for &(_, l) in &fold_nodes[i + 1..] {
+            for &(_, l) in &reduce_nodes[i + 1..] {
                 st *= u64::from(l);
             }
             strides.push(st);
@@ -118,8 +118,8 @@ impl Kernel {
         // Per-node lane constants; flat index `i` maps to node k's lane
         // `(i / stride_k) % len_k`, lane 0 first (the originals are
         // rewritten in place with lane 0).
-        let mut lane_consts: Vec<Vec<OpId>> = Vec::with_capacity(fold_nodes.len());
-        for &(node_id, len) in &fold_nodes {
+        let mut lane_consts: Vec<Vec<OpId>> = Vec::with_capacity(reduce_nodes.len());
+        for &(node_id, len) in &reduce_nodes {
             let mut consts = Vec::with_capacity(len as usize);
             for lane in 0..len {
                 consts.push(self.insert_before(node_id, Op::Const(Constant::idx(lane))));
@@ -133,12 +133,12 @@ impl Kernel {
         };
 
         // For remapping parameters: the per-op clones for flat lanes
-        // 1..fold_len (lane 0 rewrites the originals in place).
+        // 1..reduce_len (lane 0 rewrites the originals in place).
         let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
 
-        // Duplicate every fold-conditional op once per remaining fold
-        // lane: ops directly naming the fold's unroll nodes, and ops
-        // consuming earlier-rewritten (remapped) ones. The fold's own
+        // Duplicate every reduce-conditional op once per remaining reduce
+        // lane: ops directly naming the reduce's unroll nodes, and ops
+        // consuming earlier-rewritten (remapped) ones. The reduce's own
         // x-chain and everything downstream of it are covered by this
         // generic arm; the unroll nodes themselves are substituted away.
         // The walk is linear in IR order so a producer's clones are
@@ -149,8 +149,8 @@ impl Kernel {
         while !walk_id.is_null() {
             let next = self.next_op(walk_id);
             if walk_id == reduce_id {
-                // The fold being expanded never folds through itself;
-                // other folds in its cone would need their own expansion
+                // The reduce being expanded never reduces through itself;
+                // other reduces in its cone would need their own expansion
                 // first.
                 walk_id = next;
                 continue;
@@ -158,11 +158,11 @@ impl Kernel {
             match self.ops[walk_id].op.clone() {
                 Op::Storage { .. } | Op::Range { .. } | Op::Unroll { .. } | Op::Loop { .. } | Op::EndLoop
                 | Op::Barrier | Op::Param { .. } | Op::Const(_) => {}
-                Op::Reduce { .. } => todo!("devectorize: fold cone containing another fold {walk_id}"),
+                Op::Reduce { .. } => todo!("devectorize: reduce cone containing another reduce {walk_id}"),
                 ref op => {
                     let mut lane_cond = false;
                     for param in op.parameters() {
-                        if fold_nodes.iter().any(|&(f, _)| f == param) || remaps.contains_key(&param) {
+                        if reduce_nodes.iter().any(|&(f, _)| f == param) || remaps.contains_key(&param) {
                             lane_cond = true;
                             break;
                         }
@@ -171,13 +171,13 @@ impl Kernel {
                         walk_id = next;
                         continue;
                     }
-                    let mut ids = Vec::with_capacity(fold_len as usize - 1);
+                    let mut ids = Vec::with_capacity(reduce_len as usize - 1);
                     let mut at_id = walk_id;
-                    for flat in 1..fold_len {
+                    for flat in 1..reduce_len {
                         let mut lane_op = op.clone();
                         // Reindex the op.
                         for param in lane_op.parameters_mut() {
-                            if let Some(ix) = fold_nodes.iter().position(|&(f, _)| f == *param) {
+                            if let Some(ix) = reduce_nodes.iter().position(|&(f, _)| f == *param) {
                                 *param = lane_of(flat, ix);
                             } else if let Some(remap) = remaps.get(param) {
                                 *param = remap[flat as usize - 1];
@@ -188,7 +188,7 @@ impl Kernel {
                     }
                     // Lane 0 rewrites the original in place.
                     for param in self.ops[walk_id].op.parameters_mut() {
-                        if let Some(ix) = fold_nodes.iter().position(|&(f, _)| f == *param) {
+                        if let Some(ix) = reduce_nodes.iter().position(|&(f, _)| f == *param) {
                             *param = lane_of(0, ix);
                         }
                     }
@@ -199,10 +199,10 @@ impl Kernel {
             walk_id = next;
         }
 
-        // The fold chain over per-lane values: the original (lane-0)
-        // partial folds with every later lane's clone of the value.
+        // The reduce chain over per-lane values: the original (lane-0)
+        // partial reduces with every later lane's clone of the value.
         let mut acc = x;
-        for flat in 1..fold_len {
+        for flat in 1..reduce_len {
             let lane_val = match remaps.get(&x) {
                 Some(ids) => ids[flat as usize - 1],
                 None => x,
@@ -210,7 +210,7 @@ impl Kernel {
             acc = self.insert_before(reduce_id, Op::Binary { x: acc, y: lane_val, bop: rop });
         }
 
-        // Downstream consumers of the fold now read the chain tail.
+        // Downstream consumers of the reduce now read the chain tail.
         let op_ids: Vec<OpId> = self.ops.ids().collect();
         for walk_id in op_ids {
             for param in self.ops[walk_id].op.parameters_mut() {
@@ -226,7 +226,7 @@ impl Kernel {
     /// once per element with the node substituted by that element's
     /// constant, rewrite the originals in place as element 0, then remove
     /// the node. Returns false when the node must stay (none today).
-    /// A `Reduce` here is a driver bug: the joint loop expands folds
+    /// A `Reduce` here is a driver bug: the joint loop expands reduces
     /// first, so none survive to the unroll rounds.
     fn devectorize_unroll_one(&mut self, unroll_id: OpId) -> bool {
         let len = match self.at(unroll_id) {
@@ -265,7 +265,7 @@ impl Kernel {
             match self.ops[walk_id].op.clone() {
                 Op::Storage { .. } | Op::Range { .. } | Op::Unroll { .. } | Op::Loop { .. } | Op::EndLoop
                 | Op::Barrier | Op::Param { .. } | Op::Const(_) => {}
-                Op::Reduce { .. } => unreachable!("fold not devectorized before the unroll pass"),
+                Op::Reduce { .. } => unreachable!("reduce not devectorized before the unroll pass"),
                 ref op => {
                     let mut elem_cond = false;
                     for param in op.parameters() {

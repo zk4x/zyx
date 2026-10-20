@@ -316,7 +316,7 @@ pub enum Pat {
         /// Pattern for the stored value.
         x: Box<Pat>,
     },
-    /// Fold over a `bop` spine of vector lanes. Matches when the cone is a
+    /// Reduce over a `bop` spine of vector lanes. Matches when the cone is a
     /// chain of `bop` links (either operand order per link, `bop` being
     /// commutative) whose leaves are all `leaf`-matched lanes of ONE
     /// vector covering lanes `0..n` exactly, with `n` in `widths`.
@@ -325,7 +325,7 @@ pub enum Pat {
     /// every leaf must name the same vector op); the leaf's lane-number
     /// binder is set-collected, never bound — reading it panics.
     Seq {
-        /// Fold op of the spine links.
+        /// Reduce op of the spine links.
         bop: BOp,
         /// Leaf pattern (v1: must be [`Pat::Index`]).
         leaf: Box<Pat>,
@@ -333,7 +333,7 @@ pub enum Pat {
         widths: Box<[u8]>,
     },
     /// Matches a `Reduce` op with this `rop` (exact value or binder
-    /// name) over an operand matching `x`. The folded axis is NOT
+    /// name) over an operand matching `x`. The reduced axis is NOT
     /// matched: pin it with shapes (`.shape(...)` on the value and the
     /// result), like the matmul family does.
     Reduce {
@@ -842,7 +842,7 @@ impl Pat {
         Pat::Bitcast { x: Box::new(x.into()), dtype: dtype.into() }
     }
 
-    /// Fold over a `bop` spine of `leaf`-matched vector lanes covering one
+    /// Reduce over a `bop` spine of `leaf`-matched vector lanes covering one
     /// of `widths` exactly (see [`Pat::Seq`]).
     pub fn seq(bop: BOp, leaf: impl Into<Pat>, widths: &[u8]) -> Pat {
         Pat::Seq { bop, leaf: Box::new(leaf.into()), widths: widths.into() }
@@ -869,7 +869,7 @@ impl Pat {
     }
 
     /// Matches a `Reduce` with this `rop` (exact value or binder name)
-    /// over an operand matching `x`. The folded axis stays unconstrained;
+    /// over an operand matching `x`. The reduced axis stays unconstrained;
     /// pin it with `.shape(...)`.
     pub fn reduce(x: impl Into<Pat>, rop: impl Into<PMatch<BOp>>) -> Pat {
         Pat::Reduce { x: Box::new(x.into()), rop: rop.into() }
@@ -1391,7 +1391,7 @@ impl Kernel {
             },
             Pat::Seq { bop, leaf, widths } => {
                 // Lane-per-side matching is order-insensitive: only
-                // commutative folds are sound (an ordered fold would need
+                // commutative reduces are sound (an ordered reduce would need
                 // lane order in the contract). Anything else never matches.
                 if !bop.is_commutative() {
                     return false;

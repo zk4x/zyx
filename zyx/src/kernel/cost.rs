@@ -104,8 +104,8 @@ impl Kernel {
                         unreachable!()
                     }
                     Op::Reduce { x, reduce_axis, .. } => {
-                        // Lane-space fold: the fold's own value shape comes
-                        // from the shared shape machinery (the folded
+                        // Lane-space reduce: the reduce's own value shape comes
+                        // from the shared shape machinery (the reduced
                         // lanes leave the shape); x and the axis
                         // expression are consumed operands.
                         dtypes.insert(op_id, (dtypes[&x].0, self.shape(op_id)));
@@ -401,9 +401,9 @@ impl Kernel {
                         wi_compute_ops += loop_mult;
                     }
                 }
-                // The fold expands into one add per lane pair: the chain
+                // The reduce expands into one add per lane pair: the chain
                 // cost is (lane_len - 1) additions, lane_len the product
-                // of the fold's unroll lens.
+                // of the reduce's unroll lens.
                 Op::Reduce { reduce_axis, .. } => {
                     let mut lane_len: u64 = 1;
                     let mut stack = vec![reduce_axis];

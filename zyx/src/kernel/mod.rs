@@ -407,7 +407,7 @@ impl Kernel {
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 Op::Reduce { x, reduce_axis, .. } => {
-                    // Zero the folded lane's slot when the axis is an
+                    // Zero the reduced lane's slot when the axis is an
                     // `Op::Unroll`, otherwise drop the last dim.
                     let (dtype, mut dims) = dtypes[&x].clone();
                     match (!reduce_axis.is_null()).then(|| &self.ops[reduce_axis].op) {
@@ -1301,15 +1301,15 @@ impl Kernel {
                 }
                 Op::Reduce { x, reduce_axis, .. } => match visited.get(&x).cloned() {
                     Some(dims) => {
-                        // Lane-space fold: dims of x minus the dims of the
-                        // axes the fold iterates. The fold axes are the
+                        // Lane-space reduce: dims of x minus the dims of the
+                        // axes the reduce iterates. The reduce axes are the
                         // unroll nodes the axis expression names; dim/axis
                         // attribution rides the axes map. A legacy
                         // pre-linearize reduce (its axis is the loop being
                         // collapsed, no unroll nodes in the cone) keeps the
                         // old trailing-dim semantics: it drops the last
                         // value dim.
-                        let mut fold_axes: Vec<u32> = Vec::new();
+                        let mut reduce_axes: Vec<u32> = Vec::new();
                         let mut axis_stack = vec![reduce_axis];
                         let mut axis_seen: Set<OpId> = Set::default();
                         while let Some(id) = axis_stack.pop() {
@@ -1318,7 +1318,7 @@ impl Kernel {
                             }
                             let node_op = self.ops[id].op.clone();
                             match node_op {
-                                Op::Unroll { axis, .. } => fold_axes.push(axis),
+                                Op::Unroll { axis, .. } => reduce_axes.push(axis),
                                 Op::Binary { x: a, y: b, .. } => {
                                     axis_stack.push(a);
                                     axis_stack.push(b);
@@ -1327,7 +1327,7 @@ impl Kernel {
                                 _ => {}
                             }
                         }
-                        if fold_axes.is_empty() {
+                        if reduce_axes.is_empty() {
                             let mut legacy = dims;
                             legacy.truncate(legacy.len().saturating_sub(1));
                             visited.insert(op_id, legacy);
@@ -1335,12 +1335,12 @@ impl Kernel {
                             match axes.get(&x).cloned() {
                                 Some(xs) => {
                                     let xs: Vec<u32> = xs;
-                                    let surviving: Vec<u32> = xs.iter().copied().filter(|a| !fold_axes.contains(a)).collect();
+                                    let surviving: Vec<u32> = xs.iter().copied().filter(|a| !reduce_axes.contains(a)).collect();
                                     let surviving_dims: Vec<_> = dims
                                         .iter()
                                         .copied()
                                         .zip(xs)
-                                        .filter(|&(_, a)| !fold_axes.contains(&a))
+                                        .filter(|&(_, a)| !reduce_axes.contains(&a))
                                         .map(|(d, _)| d)
                                         .collect();
                                     visited.insert(op_id, surviving_dims);
@@ -1657,7 +1657,7 @@ impl Kernel {
                     }
                     visited.insert(id, dims);
                 }
-                // Reduce zeroes the folded lane's slot when the axis is
+                // Reduce zeroes the reduced lane's slot when the axis is
                 // an `Op::Unroll`, otherwise it drops the last dim.
                 Op::Reduce { x, reduce_axis, .. } => match visited.get(&x).cloned() {
                     Some(mut dims) => {
