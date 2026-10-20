@@ -1743,198 +1743,31 @@ impl Runtime {
         }
     }
 
-    /// Layout tilize (private; called only from `to_device`): pads any
-    /// rank to tiles and permutes to face order. Scalars tile first, 1D
-    /// tiles as a row. Concrete shapes only (transfers resolve first, so
-    /// symbolic dims fail loudly in `resolve_shape`). Minted const/shape
-    /// temps are released after use; slab expressions outlive them.
-    fn tilize(&mut self, x: TensorId) -> Result<TensorId, ZyxError> {
-        let shape = self.resolve_shape(x);
-        // Lift 0D/1D to rank 2 first (counts match exactly).
-        let x = match shape.len() {
-            0 => {
-                let a = self.new_constant_tensor(Constant::new(1i64));
-                let b = self.new_constant_tensor(Constant::new(1i64));
-                let s = self.stack(&[a, b])?;
-                let t = self.reshape(x, s)?;
-                self.release(a);
-                self.release(b);
-                self.release(s);
-                t
-            }
-            1 => {
-                let a = self.new_constant_tensor(Constant::new(1i64));
-                let b = self.new_constant_tensor(Constant::new(shape[0]));
-                let s = self.stack(&[a, b])?;
-                let t = self.reshape(x, s)?;
-                self.release(a);
-                self.release(b);
-                self.release(s);
-                t
-            }
-            _ => x,
-        };
-        let shape = self.resolve_shape(x);
-        let rank = shape.len();
-        debug_assert!(rank >= 2, "tilize: lifted rank {rank} < 2");
-        let (rows, cols) = (shape[rank - 2], shape[rank - 1]);
-        let (pr, pc) = ((rows + 31) / 32 * 32, (cols + 31) / 32 * 32);
-        // Pad up to tiles (real kernel; counts grow legitimately).
-        let zero = self.new_constant_tensor(Constant::new(0i64));
-        let prt = self.new_constant_tensor(Constant::new(pr));
-        let pct = self.new_constant_tensor(Constant::new(pc));
-        let x = self.pad_zeros(x, (rank - 2) as UAxis, zero, prt);
-        let x = self.pad_zeros(x, (rank - 1) as UAxis, zero, pct);
-        self.release(zero);
-        self.release(prt);
-        self.release(pct);
-        // Split into [..., ntr, 2, 16, ntc, 2, 16], permute to face
-        // order, merge back to padded. All counts match on physical.
-        let (ntr, ntc) = (pr / 32, pc / 32);
-        let mut dims = Vec::with_capacity(rank + 4);
-        for &d in &shape[..rank - 2] {
-            dims.push(self.new_constant_tensor(Constant::new(d)));
-        }
-        let mut consts = vec![
-            self.new_constant_tensor(Constant::new(ntr)),
-            self.new_constant_tensor(Constant::new(2i64)),
-            self.new_constant_tensor(Constant::new(16i64)),
-            self.new_constant_tensor(Constant::new(ntc)),
-            self.new_constant_tensor(Constant::new(2i64)),
-            self.new_constant_tensor(Constant::new(16i64)),
-        ];
-        dims.append(&mut consts);
-        let split = self.stack(&dims)?;
-        for &t in &dims {
-            self.release(t);
-        }
-        let x = self.reshape(x, split)?;
-        self.release(split);
-        let k = (rank - 2) as UAxis;
-        let axes: Vec<UAxis> = (0..k).chain([k, k + 3, k + 1, k + 4, k + 2, k + 5]).collect();
-        let x = self.permute(x, axes);
-        let mut dims = Vec::with_capacity(rank);
-        for &d in &shape[..rank - 2] {
-            dims.push(self.new_constant_tensor(Constant::new(d)));
-        }
-        dims.push(self.new_constant_tensor(Constant::new(pr)));
-        dims.push(self.new_constant_tensor(Constant::new(pc)));
-        let merged = self.stack(&dims)?;
-        for &t in &dims {
-            self.release(t);
-        }
-        let x = self.reshape(x, merged)?;
-        self.release(merged);
-        Ok(x)
-    }
-
-    /// TT-sourced transfer with implicit untilize (private; called only
-    /// from `to_device`): copies the whole physical tile buffers to
-    /// `device`, stages a padded-logical Leaf over them, then runs the
-    /// untilize movement chain down to the logical shape. The padded
-    /// intermediate never escapes: every reshape counts-match on
-    /// physical dims, the final narrows shrink to logical. No weird
-    /// reshapes, no assert exemptions.
-    fn untilize_transfer(&mut self, x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
-        let shape = self.resolve_shape(x);
-        let rank = shape.len();
-        if rank < 2 {
-            todo!("TT transfer of rank<2 tensor");
-        }
-        let dtype = self.dtype(x);
-        let (rows, cols) = (shape[rank - 2], shape[rank - 1]);
-        // Physical dims: deterministic tiling from the logical shape.
-        let (pr, pc) = ((rows + 31) / 32 * 32, (cols + 31) / 32 * 32);
-        let mut phys = shape.clone();
-        phys[rank - 2] = pr;
-        phys[rank - 1] = pc;
-        // Copy physical bytes (same queue shape as `to_device`).
-        let dst_pool = device.pool();
-        let mut queue = CmdQueue::new();
-        queue.push(Cmd::Copy {
-            src: OpId::from(0),
-            dst: OpId::from(1),
-            dst_pool,
-            dst_dtype: dtype,
-            dst_dims: phys.iter().map(|&d| PlanDim::Const(d)).collect(),
-        });
-        let buf = self.leaf_buffer(x).expect("untilize_transfer: TT tensor has no buffer");
-        let mut boundary = Map::default();
-        boundary.insert(OpId::from(0), buf);
-        let mut outputs = Set::default();
-        outputs.insert(OpId::from(1));
-        let plan = queue.schedule(&outputs);
-        let out = plan.replay(boundary, &Map::default())?;
-        let dst_placement = Arc::clone(&out[&OpId::from(1)]);
-        // Padded-logical Leaf over the physical buffer (transient).
-        let mut dims = Vec::with_capacity(rank);
-        for &d in &phys {
-            dims.push(self.new_constant_tensor(Constant::new(d)));
-        }
-        let phys_tid = self.stack(&dims)?;
-        for &t in &dims {
-            self.release(t);
-        }
-        let phys_expr = match self.tensors[phys_tid] {
-            TensorData::Symbolic { expr, .. } => expr,
-            ref t => panic!("untilize_transfer: physical shape is not symbolic: {t:?}"),
-        };
-        let tid = self.tensors.push(TensorData::Leaf { shape_id: phys_expr, dtype, buffer: dst_placement, rc: 1 });
-        self.release(phys_tid);
-        // Untilize chain on physical dims (counts match throughout).
-        let (ntr, ntc) = (pr / 32, pc / 32);
-        let mut dims = Vec::with_capacity(rank + 4);
-        for &d in &phys[..rank - 2] {
-            dims.push(self.new_constant_tensor(Constant::new(d)));
-        }
-        dims.push(self.new_constant_tensor(Constant::new(ntr)));
-        dims.push(self.new_constant_tensor(Constant::new(ntc)));
-        dims.push(self.new_constant_tensor(Constant::new(2i64)));
-        dims.push(self.new_constant_tensor(Constant::new(2i64)));
-        dims.push(self.new_constant_tensor(Constant::new(16i64)));
-        dims.push(self.new_constant_tensor(Constant::new(16i64)));
-        let split = self.stack(&dims)?;
-        for &t in &dims {
-            self.release(t);
-        }
-        let t = self.reshape(tid, split)?;
-        self.release(split);
-        self.release(tid);
-        let k = (rank - 2) as UAxis;
-        let axes: Vec<UAxis> = (0..k).chain([k, k + 2, k + 4, k + 1, k + 3, k + 5]).collect();
-        let t = self.permute(t, axes);
-        let mut dims = Vec::with_capacity(rank);
-        for &d in &phys[..rank - 2] {
-            dims.push(self.new_constant_tensor(Constant::new(d)));
-        }
-        dims.push(self.new_constant_tensor(Constant::new(pr)));
-        dims.push(self.new_constant_tensor(Constant::new(pc)));
-        let merged = self.stack(&dims)?;
-        for &t in &dims {
-            self.release(t);
-        }
-        let t = self.reshape(t, merged)?;
-        self.release(merged);
-        let zero = self.new_constant_tensor(Constant::new(0i64));
-        let rowst = self.new_constant_tensor(Constant::new(rows));
-        let t = self.narrow(t, (rank - 2) as UAxis, zero, rowst);
-        self.release(rowst);
-        let colst = self.new_constant_tensor(Constant::new(cols));
-        let t = self.narrow(t, (rank - 1) as UAxis, zero, colst);
-        self.release(zero);
-        self.release(colst);
-        Ok(t)
-    }
-
     #[allow(clippy::wrong_self_convention)] // naming convention from GPU API, not a conversion method
     pub fn to_device(&mut self, mut x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device={device:?})");
-        // Implicit layout: crossing onto TT tilizes (row-major in, face
-        // tiles out). Already-TT tensors skip: tilize is not idempotent.
+        // Implicit layout: crossing onto TT stages through the host
+        // (row-major in, face tiles out). Already-TT tensors skip:
+        // tilize is not idempotent.
         #[cfg(feature = "tenstorrent")]
         if matches!(device, Dev::TT(_)) && !matches!(self.device(x), Dev::TT(_)) {
-            x = self.tilize(x)?;
+            // Host-staged upload through the TT layout transfer: the
+            // Leaf keeps the logical shape, only its buffer is physical.
+            let h = self.to_device(x, Dev::Host)?;
+            let shape = self.resolve_shape(h);
+            let dtype = self.dtype(h);
+            let buf = self.leaf_buffer(h).expect("to_device: host-staged tensor has no buffer");
+            let placed = device.tilize_transfer(&buf, &shape, dtype)?;
+            let shape_id = match &self.tensors[h] {
+                TensorData::Leaf { shape_id, .. } => *shape_id,
+                TensorData::PendingLeaf { shape_id, .. } => *shape_id,
+                TensorData::Eager { shape_id, .. } => *shape_id,
+                ref t => panic!("to_device: host-staged tensor has no shape: {t:?}"),
+            };
+            self.release(h);
+            let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer: placed, rc: 1 });
+            return Ok(tid);
         }
         let dst_pool = device.pool();
         // Fast path: tensor already lives in the destination pool. Compares
@@ -1967,8 +1800,19 @@ impl Runtime {
                 // TT-sourced transfers untilize (physical tiles out,
                 // logical row-major back) inside the transfer.
                 #[cfg(feature = "tenstorrent")]
-                if matches!(&buf_id.shards[..], [Shard { pool: Pool::TT(_), .. }]) && !matches!(dst_pool, Pool::TT(_)) {
-                    return self.untilize_transfer(x, device);
+                if let [Shard { pool: Pool::TT(id), .. }] = &buf_id.shards[..] {
+                    // Host-staged download through the TT layout transfer.
+                    let shape = self.resolve_shape(x);
+                    let dtype = self.dtype(x);
+                    let placed = Dev::TT(*id).untilize_transfer(&buf_id, &shape, dtype, dst_pool)?;
+                    let shape_id = match &self.tensors[x] {
+                        TensorData::Leaf { shape_id, .. } => *shape_id,
+                        TensorData::PendingLeaf { shape_id, .. } => *shape_id,
+                        TensorData::Eager { shape_id, .. } => *shape_id,
+                        ref t => panic!("to_device: TT tensor has no shape: {t:?}"),
+                    };
+                    let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer: placed, rc: 1 });
+                    return Ok(tid);
                 }
                 let shape = self.resolve_shape(x);
                 // Single-copy queue: slot 0 is the source placement, slot 1
@@ -2020,8 +1864,19 @@ impl Runtime {
                 // TT-sourced transfers untilize (physical tiles out,
                 // logical row-major back) inside the transfer.
                 #[cfg(feature = "tenstorrent")]
-                if matches!(&buf_id.shards[..], [Shard { pool: Pool::TT(_), .. }]) && !matches!(dst_pool, Pool::TT(_)) {
-                    return self.untilize_transfer(x, device);
+                if let [Shard { pool: Pool::TT(id), .. }] = &buf_id.shards[..] {
+                    // Host-staged download through the TT layout transfer.
+                    let shape = self.resolve_shape(x);
+                    let dtype = self.dtype(x);
+                    let placed = Dev::TT(*id).untilize_transfer(&buf_id, &shape, dtype, dst_pool)?;
+                    let shape_id = match &self.tensors[x] {
+                        TensorData::Leaf { shape_id, .. } => *shape_id,
+                        TensorData::PendingLeaf { shape_id, .. } => *shape_id,
+                        TensorData::Eager { shape_id, .. } => *shape_id,
+                        ref t => panic!("to_device: TT tensor has no shape: {t:?}"),
+                    };
+                    let tid = self.tensors.push(TensorData::Leaf { shape_id, dtype, buffer: placed, rc: 1 });
+                    return Ok(tid);
                 }
                 let shape = self.resolve_shape(x);
                 // Single-copy queue: slot 0 is the source placement, slot 1

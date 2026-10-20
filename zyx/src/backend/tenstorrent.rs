@@ -22,9 +22,9 @@
 // UMD's CHIP_IN_USE robust mutex is owned by the creating thread, so
 // destroy + teardown must run there, never on the exiting thread.
 
-use super::{ChunkId, Cmd, Dev, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Placement, Pool, Shard};
+use super::{ChunkId, Cmd, CmdQueue, Dev, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Placement, PlanDim, Pool, Shard};
 use crate::{
-    DType, Map, Set,
+    DType, Map, Set, ZyxError,
     backend::DTypeCapability,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
@@ -1144,5 +1144,252 @@ impl TTPartition {
             }
         }
         Ok(())
+    }
+}
+
+// ── Host-side tile layout ─────────────────────────────────────────────────────
+// Row-major logical bytes <-> physical face-order tile bytes, executed on
+// the host during transfers (off-device; on-device tilize is later work).
+// A tilized buffer stores each 32x32 tile contiguously (1024 elements),
+// the four 16x16 faces inside each tile in face order (face row major:
+// face = face_row * 2 + face_col, 256 elements each), outer dims batched
+// outside the tiles. Sub-tile ranks lift historically: 0D -> [1, 1],
+// 1D [N] -> row [1, N]; halo zero-fills (K-halo correctness for matmul).
+// The two `Dev` layout transfers below are the only functions here:
+// everything (staging copies, swizzles, physical sizing) is inline.
+
+impl Dev {
+    /// Copy a logical tensor into this device, honoring its layout. TT
+    /// arm only, all other devices panic: layout transfers are a TT
+    /// operation. Row-major sources stage through host temps, swizzle
+    /// to face order on the host (zero-filled halo), and move as
+    /// physical bytes; TT sources are already tile layout and copy
+    /// physical bytes unchanged (tilize is not idempotent, tile layout
+    /// never reorders). `shape` is the logical shape.
+    pub(crate) fn tilize_transfer(
+        &self,
+        src: &Arc<Placement>,
+        shape: &[Dim],
+        dtype: DType,
+    ) -> Result<Arc<Placement>, ZyxError> {
+        let Dev::TT(_) = self else {
+            panic!("tilize_transfer: not a TT device: {self:?}");
+        };
+        let el = dtype.bit_size() as usize / 8;
+        debug_assert!(el > 0, "tilize_transfer: zero element width");
+        let (rows, cols) = match shape {
+            [.., r, c] => (*r, *c),
+            [c] => (1, *c),
+            [] => (1, 1),
+        };
+        debug_assert!(rows > 0 && cols > 0, "tilize_transfer: non-positive dims {rows}x{cols}");
+        let (pr, pc) =
+            self.info().expect("tilize_transfer: TT device has no info").tile_physical_dims(rows, cols);
+        let rank = shape.len();
+        let outer: Dim = if rank >= 2 { shape[..rank - 2].iter().product() } else { 1 };
+        let mut phys_dims: Vec<Dim> = Vec::with_capacity(rank.max(2));
+        if rank >= 2 {
+            phys_dims.extend_from_slice(&shape[..rank - 2]);
+        }
+        phys_dims.push(pr);
+        phys_dims.push(pc);
+        let [shard] = &src.shards[..] else {
+            todo!("tilize_transfer: multi-shard source");
+        };
+        debug_assert_eq!(shard.offset, 0, "tilize_transfer: nonzero-offset source shard");
+        if matches!(shard.pool, Pool::TT(_)) {
+            // Already tile layout: physical byte copy, no swizzle.
+            let mut queue = CmdQueue::new();
+            queue.push(Cmd::Copy {
+                src: OpId::from(0),
+                dst: OpId::from(1),
+                dst_pool: self.pool(),
+                dst_dtype: dtype,
+                dst_dims: phys_dims.iter().map(|&d| PlanDim::Const(d)).collect(),
+            });
+            let mut boundary = Map::default();
+            boundary.insert(OpId::from(0), Arc::clone(src));
+            let mut outputs = Set::default();
+            outputs.insert(OpId::from(1));
+            let plan = queue.schedule(&outputs);
+            let out = plan.replay(boundary, &Map::default())?;
+            return Ok(Arc::clone(&out[&OpId::from(1)]));
+        }
+        // Logical bytes to a host temp through the existing copy path.
+        let logical_len = (outer * rows * cols * el as Dim) as usize;
+        let mut queue = CmdQueue::new();
+        queue.push(Cmd::Copy {
+            src: OpId::from(0),
+            dst: OpId::from(1),
+            dst_pool: Pool::Host,
+            dst_dtype: dtype,
+            dst_dims: shape.iter().map(|&d| PlanDim::Const(d)).collect(),
+        });
+        let mut boundary = Map::default();
+        boundary.insert(OpId::from(0), Arc::clone(src));
+        let mut outputs = Set::default();
+        outputs.insert(OpId::from(1));
+        let plan = queue.schedule(&outputs);
+        let out = plan.replay(boundary, &Map::default())?;
+        let staged = Arc::clone(&out[&OpId::from(1)]);
+        let [staged_shard] = &staged.shards[..] else {
+            unreachable!("tilize_transfer: staged placement changed shape");
+        };
+        let mut logical = vec![0u8; logical_len];
+        Pool::Host.pool_to_host(staged_shard.chunk, &mut logical)?;
+        // Swizzle to face order on the host (zero-filled halo).
+        let (ntr, ntc) = ((rows + 31) / 32, (cols + 31) / 32);
+        let mut physical = vec![0u8; (outer * pr * pc * el as Dim) as usize];
+        for b in 0..outer {
+            for r in 0..rows {
+                for c in 0..cols {
+                    let (tr, tc) = (r / 32, c / 32);
+                    let face = (r % 32) / 16 * 2 + (c % 32) / 16;
+                    let within = (r % 16) * 16 + (c % 16);
+                    let srci = ((b * rows + r) * cols + c) * el as Dim;
+                    let dsti = (((b * ntr + tr) * ntc + tc) * 1024 + face * 256 + within) * el as Dim;
+                    physical[dsti as usize..dsti as usize + el]
+                        .copy_from_slice(&logical[srci as usize..srci as usize + el]);
+                }
+            }
+        }
+        // Physical bytes to this device.
+        let plen = physical.len();
+        let chunk = Pool::Host.insert_host(physical.into_boxed_slice());
+        let staged = Arc::new(Placement {
+            shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: plen }],
+        });
+        let mut queue = CmdQueue::new();
+        queue.push(Cmd::Copy {
+            src: OpId::from(0),
+            dst: OpId::from(1),
+            dst_pool: self.pool(),
+            dst_dtype: dtype,
+            dst_dims: phys_dims.iter().map(|&d| PlanDim::Const(d)).collect(),
+        });
+        let mut boundary = Map::default();
+        boundary.insert(OpId::from(0), staged);
+        let mut outputs = Set::default();
+        outputs.insert(OpId::from(1));
+        let plan = queue.schedule(&outputs);
+        let out = plan.replay(boundary, &Map::default())?;
+        Ok(Arc::clone(&out[&OpId::from(1)]))
+    }
+
+    /// Copy a TT buffer out of this device, honoring its layout. TT
+    /// arm only, all other devices panic: layout transfers are a TT
+    /// operation. TT destinations copy physical bytes unchanged; any
+    /// other destination downloads physical bytes, unswizzles to
+    /// logical row-major on the host, and moves logical bytes. `shape`
+    /// is the logical shape.
+    pub(crate) fn untilize_transfer(
+        &self,
+        src: &Arc<Placement>,
+        shape: &[Dim],
+        dtype: DType,
+        dst_pool: Pool,
+    ) -> Result<Arc<Placement>, ZyxError> {
+        let Dev::TT(_) = self else {
+            panic!("untilize_transfer: not a TT device: {self:?}");
+        };
+        let el = dtype.bit_size() as usize / 8;
+        debug_assert!(el > 0, "untilize_transfer: zero element width");
+        let (rows, cols) = match shape {
+            [.., r, c] => (*r, *c),
+            [c] => (1, *c),
+            [] => (1, 1),
+        };
+        debug_assert!(rows > 0 && cols > 0, "untilize_transfer: non-positive dims {rows}x{cols}");
+        let (pr, pc) =
+            self.info().expect("untilize_transfer: TT device has no info").tile_physical_dims(rows, cols);
+        let rank = shape.len();
+        let outer: Dim = if rank >= 2 { shape[..rank - 2].iter().product() } else { 1 };
+        let mut phys_dims: Vec<Dim> = Vec::with_capacity(rank.max(2));
+        if rank >= 2 {
+            phys_dims.extend_from_slice(&shape[..rank - 2]);
+        }
+        phys_dims.push(pr);
+        phys_dims.push(pc);
+        let [shard] = &src.shards[..] else {
+            todo!("untilize_transfer: multi-shard source");
+        };
+        debug_assert_eq!(shard.offset, 0, "untilize_transfer: nonzero-offset source shard");
+        if matches!(dst_pool, Pool::TT(_)) {
+            // Physical-to-physical: no layout change.
+            let mut queue = CmdQueue::new();
+            queue.push(Cmd::Copy {
+                src: OpId::from(0),
+                dst: OpId::from(1),
+                dst_pool,
+                dst_dtype: dtype,
+                dst_dims: phys_dims.iter().map(|&d| PlanDim::Const(d)).collect(),
+            });
+            let mut boundary = Map::default();
+            boundary.insert(OpId::from(0), Arc::clone(src));
+            let mut outputs = Set::default();
+            outputs.insert(OpId::from(1));
+            let plan = queue.schedule(&outputs);
+            let out = plan.replay(boundary, &Map::default())?;
+            return Ok(Arc::clone(&out[&OpId::from(1)]));
+        }
+        // Physical bytes to a host temp (the replay TT-source override
+        // counts shard bytes; dims size the staging buffer).
+        let mut queue = CmdQueue::new();
+        queue.push(Cmd::Copy {
+            src: OpId::from(0),
+            dst: OpId::from(1),
+            dst_pool: Pool::Host,
+            dst_dtype: dtype,
+            dst_dims: phys_dims.iter().map(|&d| PlanDim::Const(d)).collect(),
+        });
+        let mut boundary = Map::default();
+        boundary.insert(OpId::from(0), Arc::clone(src));
+        let mut outputs = Set::default();
+        outputs.insert(OpId::from(1));
+        let plan = queue.schedule(&outputs);
+        let out = plan.replay(boundary, &Map::default())?;
+        let staged = Arc::clone(&out[&OpId::from(1)]);
+        let [staged_shard] = &staged.shards[..] else {
+            unreachable!("untilize_transfer: staged placement changed shape");
+        };
+        let physical_len = (outer * pr * pc * el as Dim) as usize;
+        let mut physical = vec![0u8; physical_len];
+        Pool::Host.pool_to_host(staged_shard.chunk, &mut physical)?;
+        // Unswizzle on the host, then move logical bytes.
+        let (ntr, ntc) = ((rows + 31) / 32, (cols + 31) / 32);
+        let mut logical = vec![0u8; (outer * rows * cols * el as Dim) as usize];
+        for b in 0..outer {
+            for r in 0..rows {
+                for c in 0..cols {
+                    let (tr, tc) = (r / 32, c / 32);
+                    let face = (r % 32) / 16 * 2 + (c % 32) / 16;
+                    let within = (r % 16) * 16 + (c % 16);
+                    let srci = (((b * ntr + tr) * ntc + tc) * 1024 + face * 256 + within) * el as Dim;
+                    let dsti = ((b * rows + r) * cols + c) * el as Dim;
+                    logical[dsti as usize..dsti as usize + el]
+                        .copy_from_slice(&physical[srci as usize..srci as usize + el]);
+                }
+            }
+        }
+        let logical_len = logical.len();
+        let chunk = Pool::Host.insert_host(logical.into_boxed_slice());
+        let staged = Arc::new(Placement {
+            shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: logical_len }],
+        });
+        let mut queue = CmdQueue::new();
+        queue.push(Cmd::Copy {
+            src: OpId::from(0),
+            dst: OpId::from(1),
+            dst_pool,
+            dst_dtype: dtype,
+            dst_dims: shape.iter().map(|&d| PlanDim::Const(d)).collect(),
+        });
+        let mut boundary = Map::default();
+        boundary.insert(OpId::from(0), staged);
+        let mut outputs = Set::default();
+        outputs.insert(OpId::from(1));
+        let plan = queue.schedule(&outputs);
+        let out = plan.replay(boundary, &Map::default())?;
+        Ok(Arc::clone(&out[&OpId::from(1)]))
     }
 }

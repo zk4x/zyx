@@ -15,16 +15,15 @@
   (params, return, generics, `Result`), incl. private helpers.
 - ASK BEFORE CHANGING ANY DATA STRUCTURE'S SHAPE
   (fields, variants, aliases). Name field, type, placement, consumers.
-- `?`/interrogative = TEXT ANSWER ONLY, then stop. ZERO mutating or
-  executing tool calls in that turn: no edit, no bash, no build/test
-  runs. Reads to support the answer are allowed; nothing that changes
-  state or runs code is. Edits/launches/tests only after an explicit
-  verb (`fix`, `remove`, `rewrite`, `proceed`, ...) in a LATER message.
+- `?`/interrogative = NO EDITS in that turn, never. Reads AND runs
+  are allowed (read files, bash, build, test) to support the answer;
+  nothing that mutates files is. Edits only after an explicit verb
+  (`fix`, `remove`, `rewrite`, `proceed`, ...) in a LATER message.
 - A question ANYWHERE in a message (trailing `or not?`, `right?`,
-  `is X Y?`, `why ...?`) makes the whole message a question: TEXT
-  ANSWER ONLY, no edit in that turn even if the message also contains
-  an order-like verb. The order part is parked until restated or
-  confirmed in a LATER message. Never substitute implementation for
+  `is X Y?`, `why ...?`) makes the whole message a question: answer +
+  investigate freely, but no edit in that turn even if the message also
+  contains an order-like verb. The order part is parked until restated
+  or confirmed in a LATER message. Never substitute implementation for
   an explanation.
 - No inferring authorization from tone: frustration, rhetorical `why`,
   restated complaints, and obvious next steps NEVER count as an
@@ -33,11 +32,11 @@
   action. In doubt, the message is a question.
 - A question is NEVER an order, no matter how actionable the answer
   looks, no matter if work feels "owed" or is an obvious follow-through.
-   Answer the question, then STOP and wait for an explicit verb
-   (`fix`, `remove`, `rewrite`, `proceed`, ...). Answering and editing
-   in the same turn is PROHIBITED when the trigger was a question.
-   No exception for obvious one-line fixes, already-diagnosed causes,
-   or follow-up questions (`why TWICE?` is still a question).
+  Answer + investigate, then STOP and wait for an explicit verb
+  (`fix`, `remove`, `rewrite`, `proceed`, ...). Answering and editing
+  in the same turn is PROHIBITED when the trigger was a question.
+  No exception for obvious one-line fixes, already-diagnosed causes,
+  or follow-up questions (`why TWICE?` is still a question).
 - "Why did you X?" explains only, never undoes. Undo needs an explicit verb.
 - Literal ask only ("a test" = ONE test). Ambiguous scope: ask first.
 - NO design decisions, EVER. `todo!()` beats a guessed fix.

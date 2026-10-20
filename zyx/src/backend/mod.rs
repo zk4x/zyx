@@ -46,7 +46,7 @@ mod disk;
 mod host;
 mod opencl;
 #[cfg(feature = "tenstorrent")]
-mod tenstorrent;
+pub(crate) mod tenstorrent;
 mod vulkan;
 #[cfg(feature = "wgpu")]
 mod wgpu;
@@ -1489,5 +1489,18 @@ impl DeviceInfo {
     /// Returns operation capabilities for a dtype (none() if dtype is unsupported)
     pub const fn supports_dtype(&self, dtype: DType) -> DTypeCapability {
         self.dtype_capability[dtype as usize]
+    }
+
+    /// Physical tile extents for logical `(rows, cols)`: each dim ceiled
+    /// up to a multiple of the device tile (`self.tile`). Identity on
+    /// devices with a `[1, 1]` tile; on Tenstorrent this is the padded
+    /// physical shape backing a logical tensor (tile layout in buffers,
+    /// logical shape in metadata). Single shared helper for buffer
+    /// sizing, drain bytes, and CB lengths.
+    pub fn tile_physical_dims(&self, rows: Dim, cols: Dim) -> (Dim, Dim) {
+        let [tr, tc] = self.tile;
+        let pr = (rows + (tr - 1)) / tr * tr;
+        let pc = (cols + (tc - 1)) / tc * tc;
+        (pr, pc)
     }
 }
