@@ -195,11 +195,7 @@ impl Kernel {
             // Single-input heads retile their input (elementwise and
             // tile-native alike — all valid on tiles).
             let ins: Vec<OpId> = match k.at(v) {
-                Op::Unary { x, .. }
-                | Op::Cast { x, .. }
-                | Op::Bitcast { x, .. }
-                | Op::TT(TTOp::TransposeTile { x, .. })
-                | Op::TT(TTOp::ReduceTile { x, .. }) => vec![*x],
+                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => vec![*x],
                 Op::Binary { x, y, .. } => vec![*x, *y],
                 _ => {
                     active.remove(&v);
@@ -268,12 +264,7 @@ impl Kernel {
                     Target::Expanded(s) => expanded[&s],
                 };
                 match &mut self.ops[r.user].op {
-                    Op::Unary { x, .. }
-                    | Op::Cast { x, .. }
-                    | Op::Bitcast { x, .. }
-                    | Op::TT(TTOp::TransposeTile { x, .. })
-                    | Op::TT(TTOp::ReduceTile { x, .. })
-                    | Op::Index { vec: x, .. } => {
+                    Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Index { vec: x, .. } => {
                         if *x == r.input {
                             *x = t;
                         }
@@ -305,9 +296,9 @@ impl Kernel {
     /// 2D result. Shapes only — `[m, k]` and `[k, n]` operands, `[m, n]`
     /// result. No memory op is ever matched: operands may be any op
     /// producing tile values.
-    /// Emits by replacing the `Reduce` in place with
-    /// `MatmulTile { x: a, y: b }`, so consumers keep pointing at the
-    /// same `OpId`. Anything else keeps its shape (never fatal).
+    /// Emit is stubbed pending the redesign (reader/writer first, then
+    /// match directly to LLK): reaching it is a loud `todo!()`.
+    /// Anything else keeps its shape (never fatal).
     pub fn vectorize_matmul_tile(&mut self, m: Dim, n: Dim, k: Dim) {
         // Collect the Reduce sites first; mutation happens after the scan.
         let mut sites: Vec<OpId> = Vec::new();
@@ -334,9 +325,13 @@ impl Kernel {
             if self.shape(root) != vec![m, n] {
                 continue;
             }
-            // Emit: replace the Reduce in place. Consumers keep pointing
-            // at the same OpId; the operands stay.
-            self.ops[root].op = Op::TT(TTOp::MatmulTile { x: a, y: b });
+            // Emit: the matmul tile op is deleted pending the redesign
+            // (reader/writer first, then match directly to LLK).
+            // Reaching it is a loud `todo!()`.
+            todo!("vectorize_matmul_tile emit pending redesign");
+            // (obsolete Stack-matcher body removed by the merge
+            // resolution; HEAD's Reduce matcher above plus the stubbed
+            // emit stands.)
         }
         self.dead_code_elimination();
     }

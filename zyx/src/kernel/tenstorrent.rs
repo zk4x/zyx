@@ -448,8 +448,7 @@ impl Kernel {
     /// the manual-CB contract (one CB per intermediate, cf. the
     /// `tenstorrent_exp_reduce` pattern) as a pass. One CB per wrapped
     /// value, input dtype, single tile; duplicate traffic per consumer
-    /// keeps FIFO balance exact (one push per pop). Covers `ReduceTile`,
-    /// `MatmulTile` (`x`/`y`, never `acc`), `TransposeTile`, and
+    /// keeps FIFO balance exact (one push per pop). Covers
     /// tile-shaped elementwise `Unary`/`Binary`/`Cast`/`Bitcast` (scalar
     /// lanes flow through untouched). Runs after `tt_add_writer` (traffic
     /// edges first, interior second). TT-only, no `Loop`s — same contract
@@ -480,25 +479,6 @@ impl Kernel {
                 false
             };
             match self.ops[id].op {
-                Op::TT(TTOp::ReduceTile { x, .. }) | Op::TT(TTOp::TransposeTile { x }) => {
-                    if self.shape(x) != vec![32, 32] {
-                        return;
-                    }
-                    if !backed(x) {
-                        wraps.push((id, 0, x));
-                    }
-                }
-                Op::TT(TTOp::MatmulTile { x, y, .. }) => {
-                    if self.shape(x) != vec![32, 32] || self.shape(y) != vec![32, 32] {
-                        return;
-                    }
-                    if !backed(x) {
-                        wraps.push((id, 0, x));
-                    }
-                    if !backed(y) {
-                        wraps.push((id, 1, y));
-                    }
-                }
                 Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
                     if self.shape(x) == vec![32, 32] && !backed(x) {
                         wraps.push((id, 0, x));
@@ -540,15 +520,11 @@ impl Kernel {
             self.insert_before(consumer, Op::Store { dst: cb, dst_idx: zero_lanes, src: input });
             let load = self.insert_before(consumer, Op::Load { src: cb, src_idx: zero });
             match &mut self.ops[consumer].op {
-                Op::TT(TTOp::ReduceTile { x, .. })
-                | Op::TT(TTOp::TransposeTile { x })
-                | Op::Unary { x, .. }
-                | Op::Cast { x, .. }
-                | Op::Bitcast { x, .. } => {
+                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
                     debug_assert!(tag == 0, "tt_add_compute_cbs: single-operand consumer with tag {tag}");
                     *x = load;
                 }
-                Op::Binary { x, y, .. } | Op::TT(TTOp::MatmulTile { x, y, .. }) => {
+                Op::Binary { x, y, .. } => {
                     if tag == 0 {
                         *x = load;
                     } else {
@@ -636,10 +612,7 @@ impl Kernel {
             let op = kernel.at(id);
             if matches!(
                 op,
-                Op::TT(TTOp::MatmulTile { .. })
-                    | Op::TT(TTOp::ReduceTile { .. })
-                    | Op::TT(TTOp::TransposeTile { .. })
-                    | Op::TT(TTOp::LLKReduce { .. })
+                Op::TT(TTOp::LLKReduce { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLKMatmul { .. })
                     | Op::TT(TTOp::LLK { .. })
@@ -950,10 +923,9 @@ impl Kernel {
         self.verify();
     }
 
-    /// Storage lowering: the SSA tile-compute ops (`MatmulTile`/
-    /// `ReduceTile`/`TransposeTile`) are the stream's compute
-    /// the physical CB and DST slots are the `Op::Storage`s already in
-    /// the IR. This pass rewrites each compute op to a [`TTOp::LLK`]
+    /// Storage lowering: the SSA tile-compute ops are the stream's
+    /// compute; the physical CB and DST slots are the `Op::Storage`s
+    /// already in the IR. This pass rewrites each compute op to a [`TTOp::LLK`]
     /// call template over those bare storages. After this pass the
     /// compute ops are opaque effect calls; `tt_lock_dst`/
     /// `tt_sync_cbs`/render see only LLK.
@@ -998,95 +970,10 @@ impl Kernel {
                     continue;
                 }
             }
-            // Unscaled-reduce lowering: a pure ReduceTile becomes an
-            // LLKReduce over its input CB plus a device-filled ones CB
-            // as the identity scaler (fill + pack). A graph scaler mul
-            // is fuse_llks' fusion domain, later. Runs before the
-            // shared-borrow template match below (it mutates).
-            let reduce = match self.at(op_id) {
-                Op::TT(TTOp::ReduceTile { x, rop, kind }) => Some((*x, *rop, *kind)),
-                _ => None,
-            };
-            if let Some((x, rop, kind)) = reduce {
-                let cb_in = self.tt_storage_of(x);
-                debug_assert!(
-                    matches!(self.at(cb_in), Op::Storage { scope: MemScope::Circular, .. }),
-                    "tt_storage: reduce input {cb_in:?} is not a Circular storage"
-                );
-                let dtype = self.dtype(x);
-                if !dtype.is_float() {
-                    todo!("tt_storage: ones fill for non-float dtype {dtype:?}");
-                }
-                let ones_cb = if prologue.is_null() {
-                    self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
-                } else {
-                    self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
-                };
-                let fill_dst = self.insert_before(op_id, Op::Storage { dtype, scope: MemScope::Register, len: 1024 });
-                let slot = self.insert_before(op_id, Op::Storage { dtype, scope: MemScope::Register, len: 1024 });
-                let zero = self.insert_const_idx_before(op_id, 0i64);
-                // Plain Asm renders verbatim (no dispatch): fill the DST
-                // slot, read it back through a Register load, pack it.
-                self.insert_before(op_id, Op::Asm { asm: TinyString::new("fill_tile_init();"), ops: TinyVec::new(&[]) });
-                self.insert_before(
-                    op_id,
-                    Op::Asm { asm: TinyString::new("fill_tile({0}, 1.0);"), ops: TinyVec::new(&[fill_dst]) },
-                );
-                let ztile = self.lane_tree(zero, &[32, 32]);
-                let ones_val = self.insert_before(op_id, Op::Load { src: fill_dst, src_idx: ztile });
-                self.insert_before(op_id, Op::Store { dst: ones_cb, dst_idx: ztile, src: ones_val });
-                let scaler = self.insert_before(op_id, Op::Load { src: ones_cb, src_idx: zero });
-                self.ops[op_id].op = Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc: ones_cb, slot, x, scaler });
-                op_id = next;
-                continue;
-            }
-            // Matmul lowering: a MatmulTile becomes an LLKMatmul over
-            // its resolved input CBs plus a fresh result slot. Runs
-            // before the shared-borrow template match below (it mutates).
-            let matmul = match self.at(op_id) {
-                Op::TT(TTOp::MatmulTile { x, y }) => Some((*x, *y)),
-                _ => None,
-            };
-            if let Some((x, y)) = matmul {
-                let cb_a = self.tt_storage_of(x);
-                let cb_b = self.tt_storage_of(y);
-                debug_assert!(
-                    matches!(self.at(cb_a), Op::Storage { scope: MemScope::Circular, .. }),
-                    "tt_storage: matmul left {cb_a:?} is not a Circular storage"
-                );
-                debug_assert!(
-                    matches!(self.at(cb_b), Op::Storage { scope: MemScope::Circular, .. }),
-                    "tt_storage: matmul right {cb_b:?} is not a Circular storage"
-                );
-                let dtype = self.dtype(x);
-                let slot = self.insert_before(op_id, Op::Storage { dtype, scope: MemScope::Register, len: 1024 });
-                self.ops[op_id].op = Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y });
-                op_id = next;
-                continue;
-            }
+            // Tile-compute lowering (ReduceTile/MatmulTile/TransposeTile)
+            // is deleted pending the redesign: matching happens after
+            // reader/writer placement, directly to LLK ops.
             let (asm, ops) = match self.at(op_id) {
-                Op::TT(TTOp::MatmulTile { .. }) => {
-                    todo!("tt_storage: MatmulTile reached the template match unlowered");
-                }
-                Op::TT(TTOp::ReduceTile { x, .. }) => {
-                    let cb_in = self.tt_storage_of(*x);
-                    debug_assert!(
-                        matches!(self.at(cb_in), Op::Storage { scope: MemScope::Circular, .. }),
-                        "tt_storage: reduce input {cb_in:?} is not a Circular storage"
-                    );
-                    todo!("tt_storage: ReduceTile reached the template match unlowered");
-                }
-                Op::TT(TTOp::TransposeTile { x }) => {
-                    let cb = self.tt_storage_of(*x);
-                    debug_assert!(
-                        matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }),
-                        "tt_storage: transpose input {cb:?} is not a Circular storage"
-                    );
-                    // The transpose result lands in a DST slot filled by
-                    // render (`{1}`); the trailing entry is the feeder
-                    // load, for sync accounting only.
-                    (TinyString::new("transpose_wh_tile({0}, 0, {1});"), TinyVec::new(&[cb, OpId::NULL, *x]))
-                }
                 Op::Binary { .. } => {
                     // Broadcast fusion via markers is gone (Expand-based
                     // broadcast pending); plain binaries lower elsewhere.
@@ -1190,10 +1077,7 @@ impl Kernel {
                     *cb_a == cb || *cb_b == cb || load_cb(*mx) || load_cb(*plain)
                 }
                 Op::TT(
-                    TTOp::MatmulTile { .. }
-                    | TTOp::TransposeTile { .. }
-                    | TTOp::ReduceTile { .. }
-                    | TTOp::ReserveBack { .. }
+                    TTOp::ReserveBack { .. }
                     | TTOp::PushBack { .. }
                     | TTOp::WaitFront { .. }
                     | TTOp::PopFront { .. },
@@ -1804,10 +1688,7 @@ impl Kernel {
                                 for &u in use_list {
                                     let ok = match &self.ops[u].op {
                                         Op::TT(
-                                            TTOp::MatmulTile { .. }
-                                            | TTOp::TransposeTile { .. }
-                                            | TTOp::ReduceTile { .. }
-                                            | TTOp::LLKReduce { .. }
+                                            TTOp::LLKReduce { .. }
                                             | TTOp::LLKBcast { .. }
                                             | TTOp::LLKMatmul { .. }
                                             | TTOp::LLK { .. },
@@ -3179,9 +3060,6 @@ impl Kernel {
             Op::Load { src, .. } | Op::Copy { src, .. } => self.tt_storage_of(*src),
             Op::Store { dst, .. } => self.tt_storage_of(*dst),
             Op::Storage { .. } | Op::Param { .. } => op_id,
-            Op::TT(TTOp::MatmulTile { .. }) => {
-                todo!("tt_storage_of: MatmulTile resolution pending redesign");
-            }
             Op::TT(TTOp::LLK { ops, .. }) => {
                 let mut slot = None;
                 for o in ops.iter().copied() {

@@ -111,38 +111,6 @@ impl Kernel {
                     )
                     .unwrap();
                 }
-                Op::TT(TTOp::ReduceTile { x, rop, .. }) => {
-                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
-                    dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id, &shapes);
-                    let x = id_map[&x];
-                    writeln!(
-                        f,
-                        "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {red}reduce_tile_{}{reset} r{x}",
-                        match rop {
-                            BOp::Add => "sum",
-                            BOp::Max => "max",
-                            BOp::Mul => "prod",
-                            _ => unreachable!(),
-                        },
-                    )
-                    .unwrap();
-                }
-                Op::TT(TTOp::MatmulTile { x, y }) => {
-                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
-                    dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id, &shapes);
-                    let x = id_map[&x];
-                    let y = id_map[&y];
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {red}matmul_tile{reset} r{x}, r{y}").unwrap();
-                }
-                Op::TT(TTOp::TransposeTile { x }) => {
-                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
-                    dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id, &shapes);
-                    let x = id_map[&x];
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {red}transpose_tile{reset} r{x}").unwrap();
-                }
                 Op::Unroll { axis, len } => {
                     dtypes.insert(op_id, IDX_T);
                     let shp = self.shape_suffix(op_id, &shapes);

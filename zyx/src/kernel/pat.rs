@@ -332,6 +332,35 @@ pub enum Pat {
         /// Allowed vector widths.
         widths: Box<[u8]>,
     },
+    /// Matches a `Reduce` op with this `rop` (exact value or binder
+    /// name) over an operand matching `x`. The folded axis is NOT
+    /// matched: pin it with shapes (`.shape(...)` on the value and the
+    /// result), like the matmul family does.
+    Reduce {
+        /// Pattern for the reduced value.
+        x: Box<Pat>,
+        /// Reduce op, exact or bound.
+        rop: PMatch<BOp>,
+    },
+    /// Asserts the matched op's value shape: rank pinned by the entry
+    /// count. Entries are evaluated over the [`Dim`] value itself:
+    /// `Bind`/`BindConst` capture it (first sight records — concrete
+    /// or dynamic alike — repeats assert equality through the shared
+    /// value bindings, so one name across positions is named equality
+    /// with no resolution to a concrete value); `Int`/`Value` assert
+    /// the literal (`-1` = don't care); `DimEq`/`DimLt` assert the
+    /// guard; `All` conjoins, so `bind('m').dim_eq(32)` works as an
+    /// entry directly. Anything else never matches (entry position
+    /// reinterprets value predicates over the `i64`, never over
+    /// `Const` ops). Dynamic (`-1`) equality is by value (`-1 == -1`),
+    /// provenance-blind. Entry binders ignore their dtype class (dims
+    /// have no dtype); don't reuse one char for an op and a dim.
+    Shape {
+        /// Pattern for the op whose shape is asserted.
+        of: Box<Pat>,
+        /// Expected entries, one [`Pat`] per axis.
+        dims: Box<[Pat]>,
+    },
 }
 
 /// Bindings produced by [`Kernel::match_pat`]: matched subexpression ids
@@ -837,6 +866,26 @@ impl Pat {
     /// Exponential of this pattern (`2^x`).
     pub fn exp(self) -> Pat {
         (self * std::f64::consts::LOG2_E).exp2()
+    }
+
+    /// Matches a `Reduce` with this `rop` (exact value or binder name)
+    /// over an operand matching `x`. The folded axis stays unconstrained;
+    /// pin it with `.shape(...)`.
+    pub fn reduce(x: impl Into<Pat>, rop: impl Into<PMatch<BOp>>) -> Pat {
+        Pat::Reduce { x: Box::new(x.into()), rop: rop.into() }
+    }
+
+    /// Matches an `Add`-`Reduce` over an operand matching `x`.
+    pub fn sum(x: impl Into<Pat>) -> Pat {
+        Pat::reduce(x, BOp::Add)
+    }
+
+    /// Asserts the matched value's shape: one entry per axis —
+    /// `Dim` literals (`32.into()`, `-1` = don't care), `Bind`
+    /// value binders for named equality, or `bind('m').dim_eq(32)`
+    /// entries combining both. Rank is pinned by the entry count.
+    pub fn shape(self, dims: impl IntoIterator<Item = impl Into<Pat>>) -> Pat {
+        Pat::Shape { of: Box::new(self), dims: dims.into_iter().map(Into::into).collect::<Box<[_]>>() }
     }
 }
 
@@ -1420,6 +1469,72 @@ impl Kernel {
                 *bindings = snap;
                 false
             }
+            Pat::Reduce { x, rop } => match self.at(id) {
+                Op::Reduce { x: xid, rop: r, .. } => match rop {
+                    PMatch::Exact(e) => *r == *e && self.match_node(x, *xid, bindings),
+                    PMatch::Bind(name) => {
+                        let snap = bindings.clone();
+                        if self.match_node(x, *xid, bindings) {
+                            if bindings.try_insert(*name, id, Binding::Bop(*r)) {
+                                return true;
+                            }
+                        }
+                        *bindings = snap;
+                        false
+                    }
+                },
+                _ => false,
+            },
+            Pat::Shape { of, dims } => {
+                let snap = bindings.clone();
+                if !self.match_node(of, id, bindings) {
+                    *bindings = snap;
+                    return false;
+                }
+                // Rank pinned by the entry count. Each entry is a
+                // mini-language over the `Dim` value: binders capture,
+                // literals and value guards assert, `All` conjoins.
+                // A symbolic (`-1`) shape entry never equals a concrete
+                // literal: unknown is not equal, it is unknown — while
+                // a captured `-1` still equals a later `-1` by value
+                // (named equality, provenance-blind, as ordered).
+                let shape = self.shape(id);
+                if shape.len() != dims.len() {
+                    *bindings = snap;
+                    return false;
+                }
+                for (d, e) in shape.iter().zip(dims.iter()) {
+                    let mut stack = vec![e];
+                    let mut ok = true;
+                    while let Some(p) = stack.pop() {
+                        let pass = match p {
+                            Pat::Bind { name, .. } | Pat::BindConst { name, .. } => {
+                                bindings.try_insert(*name, id, Binding::Int(*d))
+                            }
+                            Pat::Int(n) => *n == -1 || *n == *d,
+                            Pat::Value(c) => const_eq_int(*c, *d),
+                            Pat::DimEq(v) => *d >= 0 && *d == *v,
+                            Pat::DimLt(v) => *d >= 0 && *d < *v,
+                            Pat::All(ps) => {
+                                stack.extend(ps.iter());
+                                true
+                            }
+                            // Anything else is meaningless over dims:
+                            // never alias wrong, just never match.
+                            _ => false,
+                        };
+                        if !pass {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if !ok {
+                        *bindings = snap;
+                        return false;
+                    }
+                }
+                true
+            }
         }
     }
 }
@@ -1492,4 +1607,69 @@ fn const_eq_float(c: Constant, n: f64) -> bool {
 /// so the `as i64` conversion below is exact (no saturation edge at `MAX`).
 fn float_eq_int(v: f64, n: i64) -> bool {
     v.fract() == 0.0 && v >= -9223372036854775808.0 && v < 9223372036854775808.0 && v as i64 == n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DType;
+    use crate::kernel::Dev;
+
+    /// The matmul sketch end to end: `sum(A[m,n,k] * B[m,n,k])`
+    /// shaped `[m,n]`, with named equality across positions and no
+    /// literal anchoring. The broadcast `Expand`s make it true
+    /// contraction geometry (`k` contracted, shared across different
+    /// operand positions). Binds `A`/`B` to the operand ops and
+    /// `m`/`n`/`k` to the shared dims; a conflicting name, a wrong
+    /// literal, and a wrong rank all refuse.
+    #[test]
+    fn shape_sum_matmul_sketch() {
+        let mut kern = Kernel::new(Dev::Auto);
+        let s48 = kern.add_shape(&[4, 8]);
+        let p0 = kern.param(DType::F32);
+        let a0 = kern.reshape(p0, s48);
+        let s418 = kern.add_shape(&[4, 1, 8]);
+        let a1 = kern.reshape(a0, s418);
+        let s4168 = kern.add_shape(&[4, 16, 8]);
+        let a = kern.expand(a1, s4168);
+        let s816 = kern.add_shape(&[8, 16]);
+        let p1 = kern.param(DType::F32);
+        let b0 = kern.reshape(p1, s816);
+        let s1168 = kern.add_shape(&[1, 16, 8]);
+        let b1 = kern.reshape(b0, s1168);
+        let b = kern.expand(b1, s4168);
+        let prod = kern.mul(a, b);
+        let z = kern.const_idx(0);
+        let red = kern.reduce_sum(prod, z);
+
+        let m = Pat::bind('m').dim_eq(4);
+        let n = Pat::bind('n').dim_eq(16);
+        let k = Pat::bind('k').dim_eq(8);
+        let pat = Pat::sum(Pat::bind('A').shape([&m, &n, &k]) * Pat::bind('B').shape([&m, &n, &k])).shape([&m, &n]);
+        let found = kern.match_pat(red, &pat).expect("sketch matches Reduce over Mul of two 3D operands");
+        assert_eq!(found.op('A'), a);
+        assert_eq!(found.op('B'), b);
+        assert_eq!(found.int('m'), 4);
+        assert_eq!(found.int('n'), 16);
+        assert_eq!(found.int('k'), 8);
+
+        // Conflicting name (`o` can't be both 4 and 16): refuses.
+        let o = Pat::bind('o').dim_eq(4);
+        let bad_name = Pat::sum(Pat::bind('A').shape([&o, &n, &k]) * Pat::bind('B').shape([&o, &o, &k])).shape([&o, &n]);
+        assert!(kern.match_pat(red, &bad_name).is_none());
+
+        // Wrong literal on an operand: refuses.
+        let five = Pat::Int(5);
+        let bad_lit = Pat::sum(Pat::bind('A').shape([&m, &n, &k]) * Pat::bind('B').shape([&m, &five, &k])).shape([&m, &n]);
+        assert!(kern.match_pat(red, &bad_lit).is_none());
+
+        // Wrong rank on the result: refuses.
+        let bad_rank = Pat::sum(Pat::bind('A').shape([&m, &n, &k]) * Pat::bind('B').shape([&m, &n, &k])).shape([&m]);
+        assert!(kern.match_pat(red, &bad_rank).is_none());
+
+        // Wildcard entry matches everything, including the shared name.
+        let any = Pat::Int(-1);
+        let wild = Pat::sum(Pat::bind('A').shape([&m, &any, &k]) * Pat::bind('B').shape([&m, &any, &k])).shape([&m, &n]);
+        assert!(kern.match_pat(red, &wild).is_some());
+    }
 }

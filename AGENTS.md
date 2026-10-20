@@ -19,6 +19,11 @@
 - A `why` inside an order still gets a direct answer FIRST, in the same
   message, before any edit. Never substitute implementation for an
   explanation.
+- A question is NEVER an order, no matter how actionable the answer
+  looks, no matter if work feels "owed" or is an obvious follow-through.
+  Answer the question, then STOP and wait for an explicit verb
+  (`fix`, `remove`, `rewrite`, `proceed`, ...). Answering and editing
+  in the same turn is PROHIBITED when the trigger was a question.
 - "Why did you X?" explains only, never undoes. Undo needs an explicit verb.
 - Literal ask only ("a test" = ONE test). Ambiguous scope: ask first.
 - NO design decisions, EVER. `todo!()` beats a guessed fix.

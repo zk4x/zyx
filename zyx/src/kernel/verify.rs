@@ -75,9 +75,6 @@ impl Kernel {
                     | Op::Unroll { .. }
                     | Op::Barrier
                     | Op::Wmma { .. }
-                    | Op::TT(TTOp::ReduceTile { .. })
-                    | Op::TT(TTOp::MatmulTile { .. })
-                    | Op::TT(TTOp::TransposeTile { .. })
                     | Op::TT(TTOp::ReserveBack { .. })
                     | Op::TT(TTOp::PushBack { .. })
                     | Op::TT(TTOp::WaitFront { .. })
@@ -327,20 +324,6 @@ impl Kernel {
                     check(op_id, reduce_axis, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
-                Op::TT(TTOp::ReduceTile { x, .. }) => {
-                    check(op_id, x, &stack);
-                    dtypes.insert(op_id, dtypes[&x]);
-                }
-                Op::TT(TTOp::MatmulTile { x, y }) => {
-                    check(op_id, x, &stack);
-                    check(op_id, y, &stack);
-                    debug_assert_eq!(dtypes[&x], dtypes[&y], "MatmulTile x/y dtype mismatch");
-                    dtypes.insert(op_id, dtypes[&x]);
-                }
-                Op::TT(TTOp::TransposeTile { x }) => {
-                    check(op_id, x, &stack);
-                    dtypes.insert(op_id, dtypes[&x]);
-                }
                 Op::TT(TTOp::ReserveBack { cb, n })
                 | Op::TT(TTOp::PushBack { cb, n })
                 | Op::TT(TTOp::WaitFront { cb, n })
@@ -510,7 +493,7 @@ impl Kernel {
                 Op::Binary { x, y, bop } => {
                     check(op_id, x, &stack);
                     check(op_id, y, &stack);
-                    // C-like promotion: F16 x F32 -> F32. A MatmulTile is
+                    // C-like promotion: F16 x F32 -> F32. A tile matmul is
                     // typed by its inputs (F16) but holds F32 under 32-bit
                     // DST, and the emitted add_binary_tile is F32-correct.
                     let dtype = match (dtypes[&x], dtypes[&y]) {

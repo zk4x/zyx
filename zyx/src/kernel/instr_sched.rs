@@ -180,14 +180,6 @@ impl Kernel {
                 | Op::Reduce { x, .. } => {
                     add_param!(x)
                 }
-                Op::TT(TTOp::ReduceTile { x, .. }) => {
-                    add_param!(x);
-                }
-                Op::TT(TTOp::MatmulTile { x, y }) => {
-                    add_param!(x);
-                    add_param!(y);
-                }
-                Op::TT(TTOp::TransposeTile { x }) => add_param!(x),
                 Op::TT(TTOp::ReserveBack { cb, .. })
                 | Op::TT(TTOp::PushBack { cb, .. })
                 | Op::TT(TTOp::WaitFront { cb, .. })

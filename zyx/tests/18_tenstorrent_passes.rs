@@ -160,11 +160,13 @@ fn storage_lowering_rewrites_matmul() {
         }
         other => panic!("matmul not lowered to LLK, got {other:?}"),
     }
-    // No SSA tile-compute ops survive.
+    // No SSA tile-compute ops survive: the tile intermediaries are
+    // deleted pending the redesign (their builders panic above), so
+    // this scan is a loud marker until direct-LLK matching lands.
     let mut leftover = 0;
     let mut op_id = k.head;
     while !op_id.is_null() {
-        if matches!(k.at(op_id), Op::TT(TTOp::MatmulTile { .. } | TTOp::ReduceTile { .. })) {
+        if todo!("18: SSA tile-op leftover check pending redesign") {
             leftover += 1;
         }
         op_id = k.next_op(op_id);
