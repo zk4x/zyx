@@ -149,117 +149,114 @@ impl Kernel {
         // Invariant step: no body op mentions the loop id, so every
         // iteration repeats identically. Closed form per update op:
         // Add -> init + n*step, Mul -> init * step^n, Max -> max(init, step).
-        {
-            let &Op::Loop { len: loop_len_id } = self.at(loop_id) else { return false };
-            let Some(n) = self.resolve_const(loop_len_id).and_then(Constant::as_dim) else { return false };
-            // Strict gate: direct loop_id use nowhere in the body region.
-            let mut body = self.next_op(loop_id);
-            let mut depth = 0u32;
-            let mut endloop_id = OpId::NULL;
-            while !body.is_null() {
-                match self.at(body) {
-                    Op::Loop { .. } => depth += 1,
-                    Op::EndLoop if depth > 0 => depth -= 1,
-                    Op::EndLoop => {
-                        endloop_id = body;
-                        break;
-                    }
-                    _ => {}
+        let &Op::Loop { len: loop_len_id } = self.at(loop_id) else {
+            return false;
+        };
+        let Some(n) = self.resolve_const(loop_len_id).and_then(Constant::as_dim) else {
+            return false;
+        };
+        // Strict gate: direct loop_id use nowhere in the body region.
+        let mut body = self.next_op(loop_id);
+        let mut depth = 0u32;
+        let mut endloop_id = OpId::NULL;
+        while !body.is_null() {
+            match self.at(body) {
+                Op::Loop { .. } => depth += 1,
+                Op::EndLoop if depth > 0 => depth -= 1,
+                Op::EndLoop => {
+                    endloop_id = body;
+                    break;
                 }
-                if self.at(body).parameters().any(|p| p == loop_id) {
-                    return false;
-                }
-                body = self.next_op(body);
+                _ => {}
             }
-            if endloop_id.is_null() {
+            if self.at(body).parameters().any(|p| p == loop_id) {
                 return false;
             }
-            // No body-defined variant value used after the loop either.
-            let mut after = self.next_op(endloop_id);
-            while !after.is_null() {
-                if self.at(after).parameters().any(|p| p == loop_id) {
-                    return false;
-                }
-                after = self.next_op(after);
-            }
-            // Re-link the update op exactly through the body acc store.
-            let mut update_bop = None;
-            let mut op = self.next_op(loop_id);
-            while op != endloop_id {
-                if let Op::Store { dst, src, .. } = self.at(op)
-                    && *dst == acc_id
-                    && let Op::Binary { x, y, bop } = self.at(*src)
-                    && matches!(bop, BOp::Add | BOp::Mul | BOp::Max)
-                    && *x == accumulated_value_id
-                    && let Op::Load { src: load_src, .. } = self.at(*y)
-                    && *load_src == acc_id
-                {
-                    update_bop = Some(*bop);
-                    break;
-                }
-                op = self.next_op(op);
-            }
-            let Some(bop) = update_bop else { return false };
-            // The step must dominate the loop (defined before it); a body-
-            // defined step is LICM's job on a later round, not ours.
-            let mut op = self.next_op(loop_id);
-            while op != endloop_id {
-                if op == accumulated_value_id {
-                    return false;
-                }
-                op = self.next_op(op);
-            }
-            let &Op::Store { src: init_id, .. } = self.at(store_id) else { return false };
-            let step_id = accumulated_value_id;
-            // n == 0: the body never runs, the result is the init value.
-            // n >= 1: closed form per update op.
-            if n == 0 {
-                let init_op = self.at(init_id).clone();
-                self.ops[after_loop_load_id].op = init_op;
-            } else {
-                let result_id = match bop {
-                    BOp::Add => {
-                        let n_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(n)));
-                        let n_typed = self.insert_before(after_loop_load_id, Op::Cast { x: n_id, dtype: acc_dtype });
-                        let prod_id =
-                            self.insert_before(after_loop_load_id, Op::Binary { x: n_typed, y: step_id, bop: BOp::Mul });
-                        self.insert_before(after_loop_load_id, Op::Binary { x: init_id, y: prod_id, bop: BOp::Add })
-                    }
-                    BOp::Mul => {
-                        let n_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(n)));
-                        let n_typed = self.insert_before(after_loop_load_id, Op::Cast { x: n_id, dtype: acc_dtype });
-                        let pow_id =
-                            self.insert_before(after_loop_load_id, Op::Binary { x: step_id, y: n_typed, bop: BOp::Pow });
-                        self.insert_before(after_loop_load_id, Op::Binary { x: init_id, y: pow_id, bop: BOp::Mul })
-                    }
-                    BOp::Max => self.insert_before(
-                        after_loop_load_id,
-                        Op::Binary { x: init_id, y: step_id, bop: BOp::Max },
-                    ),
-                    _ => unreachable!("invariant fold gated to Add/Mul/Max"),
-                };
-                let result_op = self.at(result_id).clone();
-                self.ops[after_loop_load_id].op = result_op;
-            }
-            // Remove the loop body, the loop, the init store, the accumulator.
-            let mut current = self.next_op(loop_id);
-            while !current.is_null() {
-                let next = self.next_op(current);
-                if matches!(self.at(current), Op::EndLoop) {
-                    self.remove_op(current);
-                    break;
-                }
-                self.remove_op(current);
-                current = next;
-            }
-            self.remove_op(loop_id);
-            self.remove_op(store_id);
-            self.remove_op(acc_id);
-            self.verify();
-            return true;
+            body = self.next_op(body);
         }
-
-        false
+        if endloop_id.is_null() {
+            return false;
+        }
+        // No body-defined variant value used after the loop either.
+        let mut after = self.next_op(endloop_id);
+        while !after.is_null() {
+            if self.at(after).parameters().any(|p| p == loop_id) {
+                return false;
+            }
+            after = self.next_op(after);
+        }
+        // Re-link the update op exactly through the body acc store.
+        let mut update_bop = None;
+        let mut op = self.next_op(loop_id);
+        while op != endloop_id {
+            if let Op::Store { dst, src, .. } = self.at(op)
+                && *dst == acc_id
+                && let Op::Binary { x, y, bop } = self.at(*src)
+                && matches!(bop, BOp::Add | BOp::Mul | BOp::Max)
+                && *x == accumulated_value_id
+                && let Op::Load { src: load_src, .. } = self.at(*y)
+                && *load_src == acc_id
+            {
+                update_bop = Some(*bop);
+                break;
+            }
+            op = self.next_op(op);
+        }
+        let Some(bop) = update_bop else { return false };
+        // The step must dominate the loop (defined before it); a body-
+        // defined step is LICM's job on a later round, not ours.
+        let mut op = self.next_op(loop_id);
+        while op != endloop_id {
+            if op == accumulated_value_id {
+                return false;
+            }
+            op = self.next_op(op);
+        }
+        let &Op::Store { src: init_id, .. } = self.at(store_id) else {
+            return false;
+        };
+        let step_id = accumulated_value_id;
+        // n == 0: the body never runs, the result is the init value.
+        // n >= 1: closed form per update op.
+        if n == 0 {
+            let init_op = self.at(init_id).clone();
+            self.ops[after_loop_load_id].op = init_op;
+        } else {
+            let result_id = match bop {
+                BOp::Add => {
+                    let n_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(n)));
+                    let n_typed = self.insert_before(after_loop_load_id, Op::Cast { x: n_id, dtype: acc_dtype });
+                    let prod_id = self.insert_before(after_loop_load_id, Op::Binary { x: n_typed, y: step_id, bop: BOp::Mul });
+                    self.insert_before(after_loop_load_id, Op::Binary { x: init_id, y: prod_id, bop: BOp::Add })
+                }
+                BOp::Mul => {
+                    let n_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(n)));
+                    let n_typed = self.insert_before(after_loop_load_id, Op::Cast { x: n_id, dtype: acc_dtype });
+                    let pow_id = self.insert_before(after_loop_load_id, Op::Binary { x: step_id, y: n_typed, bop: BOp::Pow });
+                    self.insert_before(after_loop_load_id, Op::Binary { x: init_id, y: pow_id, bop: BOp::Mul })
+                }
+                BOp::Max => self.insert_before(after_loop_load_id, Op::Binary { x: init_id, y: step_id, bop: BOp::Max }),
+                _ => unreachable!("invariant fold gated to Add/Mul/Max"),
+            };
+            let result_op = self.at(result_id).clone();
+            self.ops[after_loop_load_id].op = result_op;
+        }
+        // Remove the loop body, the loop, the init store, the accumulator.
+        let mut current = self.next_op(loop_id);
+        while !current.is_null() {
+            let next = self.next_op(current);
+            if matches!(self.at(current), Op::EndLoop) {
+                self.remove_op(current);
+                break;
+            }
+            self.remove_op(current);
+            current = next;
+        }
+        self.remove_op(loop_id);
+        self.remove_op(store_id);
+        self.remove_op(acc_id);
+        self.verify();
+        true
     }
 
     /// Identifies the accumulate pattern inside a loop.

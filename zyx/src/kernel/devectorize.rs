@@ -35,11 +35,21 @@ impl Kernel {
     /// identical forms, DCE removes what is dead.
     pub fn devectorize(&mut self) {
         for _ in 0..10000 {
-            let found = self
-                .iter_unordered()
-                .find_map(|(op, x)| matches!(x, Op::Reduce { .. }).then_some(op));
-            if let Some(reduce_id) = found {
-                self.devectorize_reduce_one(reduce_id);
+            // Upstream first (IR order, not unordered): expanding an inner
+            // reduce before its consumers keeps nested reduces out of each
+            // other's cones. Disjoint reduces don't care about order; a
+            // genuinely shared lane space still halts loud in the walk.
+            let mut found = OpId::NULL;
+            let mut walk_id = self.head;
+            while !walk_id.is_null() {
+                if matches!(self.at(walk_id), Op::Reduce { .. }) {
+                    found = walk_id;
+                    break;
+                }
+                walk_id = self.next_op(walk_id);
+            }
+            if !found.is_null() {
+                self.devectorize_reduce_one(found);
                 continue;
             }
             let found =
@@ -158,7 +168,23 @@ impl Kernel {
             match self.ops[walk_id].op.clone() {
                 Op::Storage { .. } | Op::Range { .. } | Op::Unroll { .. } | Op::Loop { .. } | Op::EndLoop
                 | Op::Barrier | Op::Param { .. } | Op::Const(_) => {}
-                Op::Reduce { .. } => todo!("devectorize: reduce cone containing another reduce {walk_id}"),
+                Op::Reduce { .. } => {
+                    // Another reduce: independent of this lane space (neither
+                    // naming its nodes nor consuming its clones) expands on
+                    // its own round. A lane-conditional one shares the space
+                    // in a way split cannot produce; that needs joint expansion
+                    // and stays loud.
+                    let mut lane_cond = false;
+                    for param in self.ops[walk_id].op.parameters() {
+                        if reduce_nodes.iter().any(|&(f, _)| f == param) || remaps.contains_key(&param) {
+                            lane_cond = true;
+                            break;
+                        }
+                    }
+                    if lane_cond {
+                        todo!("devectorize: reduce cone containing another reduce {walk_id}");
+                    }
+                }
                 ref op => {
                     let mut lane_cond = false;
                     for param in op.parameters() {

@@ -21,7 +21,7 @@ use crate::{
     DType, Map, Set, ZyxError,
     backend::{Cmd, CmdQueue, Dev, LaunchArg, Placement, Plan, PlanDim, Pool, ProgramId, Shard},
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId, ParamKind, TTOp},
+    kernel::{BOp, IDX_T, Kernel, Op, OpId, ParamKind},
     runtime::{KernelId, Runtime, TensorData},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::{Dim, UAxis},
