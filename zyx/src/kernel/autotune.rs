@@ -102,11 +102,10 @@ impl Kernel {
             self.tt_add_compute_cbs();
             // Lowering (order-flexible; each pass tolerates the
             // others' legal output - not currently, but it's the idea):
-            // fused LLK claiming, storage,
-            // locks, duplicate-publish elimination, engine-config
-            // inits + startup + reduce cones, CB sync, pop placement.
-            self.tt_fuse_llks();
-            self.tt_storage();
+            // structured LLK claiming + register allocation, locks,
+            // duplicate-publish elimination, engine-config inits +
+            // startup + reduce cones, CB sync, pop placement.
+            self.tt_lower_llks();
             self.tt_lock_dst();
             self.tt_dedup_pushes();
             self.tt_init_math().expect("device_epilogue: tt_init_math");

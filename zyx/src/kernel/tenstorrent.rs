@@ -14,7 +14,7 @@
 //! CB-sync family (`ReserveBack`/`PushBack`/`WaitFront`/`PopFront` +
 //! `tt_sync_cbs`) is already here from slice 1.
 //!
-//! Pass pipeline order: `tt_fuse_llks` → `tt_storage` → `tt_lock_dst`
+//! Pass pipeline order: `tt_tile` → reader/writer → `tt_lower_llks` → `tt_lock_dst`
 //! → `tt_dedup_pushes` → `tt_init_math` → `tt_sync_cbs` → `tt_place_pops`, then `verify`. The passes are
 //! public so external pass authors can reuse or replace stages.
 //! Calling them out of order is a loud panic, never silent corruption.
@@ -25,9 +25,10 @@ use crate::Set;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Pat;
-use crate::kernel::{BOp, Kernel, MemScope, Op, OpId, ParamKind, TTOp, TileDim, UOp};
+use crate::kernel::{BOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp, TileDim, UOp};
 use crate::shape::Dim;
 use crate::types::{TinyString, TinyVec};
+use super::split::SplitMode;
 
 impl Kernel {
     /// CB sync constructor: `cb.reserve_back(n)` — open `n` back slots
@@ -84,6 +85,161 @@ impl Kernel {
     /// placement rules as [`Kernel::tt_end_reader`].
     pub fn tt_end_compute(&mut self) -> OpId {
         self.push_back(Op::TT(TTOp::EndCompute))
+    }
+
+    /// Tenstorrent tiling: pad to multiples of 32 and unroll loops
+    /// and group ranges to multiples of 32. No special tiling or
+    /// vectorization passes: the 32-wide `Unroll` lanes plus composed
+    /// indices are the tile IR the backend matchers read.
+    pub fn tt_tile(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        self.default_epilogue();
+        self.default_epilogue();
+
+        // Fold first: split replicates the body, so wrappers
+        // (x*1, casts of consts) must die before replication, not after.
+        self.constant_folding();
+        // Tree-unroll every counted loop with constant length divisible
+        // by 32 FIRST: split's loop arm allows exactly one acc store
+        // per body, so it must run before coarsening replicates the
+        // body. Non-reduce loops are a no-op inside (no acc found);
+        // anything else keeps its shape for later cuts.
+        let mut loops: Vec<OpId> = Vec::new();
+        for (op, x) in self.iter_unordered() {
+            if let Op::Loop { len, .. } = x {
+                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
+                    loops.push(op);
+                }
+            }
+        }
+        for l in loops {
+            self.split(l, SplitMode::Unroll, 32);
+        }
+
+        self.default_epilogue();
+        self.default_epilogue();
+
+        // Coarsen group ranges LAST: duplicate the vectorized body, one
+        // lane per row. Anything else (symbolic, indivisible) is
+        // skipped, never fatal.
+        let mut groups: Vec<OpId> = Vec::new();
+        for (op, x) in self.iter_unordered() {
+            if let Op::Range { kind: RangeKind::Group(len), .. } = x {
+                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
+                    groups.push(op);
+                }
+            }
+        }
+        for g in groups {
+            self.split(g, SplitMode::Unroll, 32);
+        }
+
+        self.default_epilogue();
+        self.default_epilogue();
+
+        self.debug();
+        self.verify();
+    }
+
+    /// General TT lowering + register allocation (sum-first): every
+    /// compute op becomes a structured LLK op with its Register
+    /// storages allocated at creation — only the creator knows the
+    /// size, dtype, and lifetime needed, and a slot-less intermediate
+    /// would poison every per-pass verify between passes. LLKs then
+    /// only ever reference storages; render only substitutes numbers.
+    ///
+    /// This increment lowers `Reduce` only (rop `Add`/`Max` over a
+    /// `[32, 32]` CB-loaded tile): fresh const-1 scaler CB per match
+    /// (interior CB minting is this pass's job —
+    /// `tt_add_compute_cbs` dies here), one Register tile per lowered
+    /// result via the allocator below, users untouched (the lowered
+    /// op stays an SSA value; DST-threading needs no storage between
+    /// chained calls). Anything else (non-tile shapes, non-CB
+    /// feeders, other rops) is left in place for later increments —
+    /// the SSA render path still covers it.
+    pub fn tt_lower_llks(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        // Register allocator: lowered-result OpId -> Register
+        // storage. Mint-on-miss for now (one tile, result dtype);
+        // liveness-based reuse comes with multi-op lowering.
+        let mut regs: Map<OpId, OpId> = Map::default();
+        // CB Storage definitions live in the prologue (see
+        // tt_add_reader): inserting before `prologue` keeps it stable.
+        let mut prologue = self.head;
+        for _ in 0..250_000 {
+            if prologue.is_null() {
+                break;
+            }
+            match self.ops[prologue].op {
+                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
+                _ => break,
+            }
+        }
+        let mut op_id = self.head;
+        // Compute match only: Reduce (Add/Max) over a [32, 32] tile
+        // to a [32] row or a scalar. The feeder CB resolves
+        // structurally below — traffic never enters the pattern.
+        let tile = Pat::bind('t').shape([32i64, 32]);
+        let pats = [
+            (Pat::sum(tile.clone()).shape([32i64]), TileDim::Row),
+            (Pat::reduce(tile.clone(), BOp::Max).shape([32i64]), TileDim::Row),
+            (Pat::sum(tile.clone()).shape([] as [i64; 0]), TileDim::Scalar),
+            (Pat::reduce(tile, BOp::Max).shape([] as [i64; 0]), TileDim::Scalar),
+        ];
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            let mut matched: Option<(OpId, BOp, TileDim, OpId)> = None;
+            for (pat, kind) in pats.iter() {
+                if let Some(m) = self.match_pat(op_id, pat) {
+                    if let Op::Reduce { x, rop, .. } = self.ops[op_id].op {
+                        matched = Some((x, rop, *kind, m.op('t')));
+                        break;
+                    }
+                }
+            }
+            if let Some((x, rop, kind, feeder)) = matched {
+                debug_assert_eq!(x, feeder, "tt_lower_llks: feeder bind drifted from Reduce input");
+                // Feeder must be a reader-routed CB tile: the unpacker
+                // streams CBs only.
+                let cb_in = match self.ops[x].op {
+                    Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }) => src,
+                    _ => {
+                        op_id = next;
+                        continue;
+                    }
+                };
+                let dtype = self.dtype(x);
+                // Scaler: fresh const-1 tile CB per match, filled by a
+                // publish store ahead of the lowered op (same Store +
+                // Load wrap `tt_add_compute_cbs` uses — sync counts the
+                // push the same way).
+                let cb_sc = if prologue.is_null() {
+                    self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+                } else {
+                    self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+                };
+                let one = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&1i64.to_le_bytes(), dtype)));
+                let one_lanes = self.lane_tree(one, &[32, 32]);
+                self.insert_before(op_id, Op::Store { dst: cb_sc, dst_idx: one_lanes, src: one });
+                let zero = self.insert_const_idx_before(op_id, 0i64);
+                let scaler = self.insert_before(op_id, Op::Load { src: cb_sc, src_idx: zero });
+                // Result slot: allocator-minted Register tile.
+                let slot = *regs.entry(op_id).or_insert_with(|| {
+                    if prologue.is_null() {
+                        self.push_back(Op::Storage { dtype, scope: MemScope::Register, len: 1024 })
+                    } else {
+                        self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Register, len: 1024 })
+                    }
+                });
+                self.ops[op_id].op = Op::TT(TTOp::ReduceTile { rop, kind, cb_in, cb_sc, slot, x, scaler });
+            }
+            op_id = next;
+        }
+        self.verify();
     }
 
     /// Reader insertion: every tile `Load` over a DRAM param becomes a
@@ -612,7 +768,7 @@ impl Kernel {
             let op = kernel.at(id);
             if matches!(
                 op,
-                Op::TT(TTOp::LLKReduce { .. })
+                Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLKMatmul { .. })
                     | Op::TT(TTOp::LLK { .. })
@@ -804,194 +960,6 @@ impl Kernel {
         self.verify();
     }
 
-    /// Fused unary LLK claiming: `sigmoid`/`silu` composites built by
-    /// the plain builders (`neg` → `exp` → `add` → `recip`, plus `mul`
-    /// for silu, with `exp` spelled as `exp2(x * log2(e))` per the
-    /// builders) become one `sigmoid_tile` / one `silu_tile` call.
-    /// Same approach as [`Kernel::fuse_rsqrt`](super::fuse): use counts
-    /// gate the rewrite, orphaned inners stay dead in place, `verify`.
-    ///
-    /// Biggest first: a silu cone contains a sigmoid cone, so the silu
-    /// pass walks the whole kernel before the sigmoid pass sees it.
-    /// Claiming the inner sigmoid first would rewrite it and the silu
-    /// pattern could never match. Each pass recomputes use counts from
-    /// the current IR (a rewrite changes them).
-    ///
-    /// Containment (the test's pattern-exclusive-input rule): every
-    /// non-const op of the pattern must have all its users inside the
-    /// pattern. A shared input (or a shared inner) correctly falls
-    /// back to the plain composite — fusing it would re-time CB page
-    /// traffic the second consumer still counts on. The pattern root
-    /// itself may have outside users; they read the fused tile value
-    /// exactly as they read the unfused one. Dead roots (no users —
-    /// orphaned inners of an already-fused bigger pattern) are skipped.
-    ///
-    /// The rewrite is an opaque [`TTOp::LLK`] over the feeder value
-    /// (the sigmoid input `x`): `sync_cbs` waits its CB page through
-    /// the trailing provenance operand, render copies it into a fresh
-    /// DST slot at the call (`operand_slot`, same as the unfused
-    /// `exp_tile(s)` path). The engine-config init
-    /// (`sigmoid_tile_init();` / `silu_tile_init();`) and the feeder
-    /// copy init go right before the call, mirroring `init_math`'s
-    /// `asm_before` shapes. Orphaned inner ops are pruned by
-    /// `dead_code_elimination` at the end of the pass, so downstream
-    /// sync accounting never sees them (a dead inner left in place
-    /// would draw a second CB wait for the feeder's page).
-    pub fn tt_fuse_llks(&mut self) {
-        let x = Pat::bind('x');
-        let sigmoid_pat = (x.neg().exp() + 1.).recip();
-        let silu_pat = &x * &sigmoid_pat;
-        for (pat, init, call) in [
-            (&silu_pat, "silu_tile_init();", "silu_tile({0});"),
-            (&sigmoid_pat, "sigmoid_tile_init();", "sigmoid_tile({0});"),
-            (&Pat::exp(x), "exp_tile_init();", "exp_tile({0});"),
-        ] {
-            // Total user counts: users[v] = ops taking v as a data operand.
-            let mut users: Map<OpId, Vec<OpId>> = Map::default();
-            let mut scan = self.head;
-            while !scan.is_null() {
-                for p in self.at(scan).parameters() {
-                    if !p.is_null() {
-                        users.entry(p).or_default().push(scan);
-                    }
-                }
-                scan = self.next_op(scan);
-            }
-            let mut op_id = self.head;
-            while !op_id.is_null() {
-                let next = self.next_op(op_id);
-                // Dead roots stay dead: without a user the fused call
-                // would wait a CB page nobody pushed.
-                if users.contains_key(&op_id)
-                    && let Some(m) = self.match_pat(op_id, pat)
-                {
-                    let feeder = m.op('x');
-                    // Cone: DFS from the root, stopping at consts (shared
-                    // consts are free) and the feeder (everything below it
-                    // is outside the pattern).
-                    let mut cone = Vec::new();
-                    let mut stack = vec![op_id];
-                    while let Some(id) = stack.pop() {
-                        if id.is_null() || id == feeder || matches!(self.at(id), Op::Const(_)) {
-                            continue;
-                        }
-                        if !cone.contains(&id) {
-                            cone.push(id);
-                            stack.extend(self.at(id).parameters());
-                        }
-                    }
-                    // Exclusive: the feeder and every cone op except the
-                    // root have all their users inside the cone (or at the
-                    // root). The root itself may feed outside readers.
-                    let feeder_ok =
-                        users.get(&feeder).map(|us| us.iter().all(|u| *u == op_id || cone.contains(u))).unwrap_or(true);
-                    let inners_ok = cone
-                        .iter()
-                        .filter(|c| **c != op_id)
-                        .all(|c| users.get(c).map(|us| us.iter().all(|u| cone.contains(u))).unwrap_or(true));
-                    if feeder_ok && inners_ok {
-                        // Quick gate: the fused unary renders its feeder
-                        // via `operand_slot` (Load or slotted value
-                        // only). A call-op feeder (e.g. exp over a fused
-                        // broadcast) is unrenderable — leave it unfused
-                        // for the general lowering. Sigmoid/silu keep
-                        // their existing shapes.
-                        if call == "exp_tile({0});" && !matches!(self.at(feeder), Op::Load { .. }) {
-                            op_id = next;
-                            continue;
-                        }
-                        self.insert_before(op_id, Op::Asm { asm: TinyString::new(init), ops: TinyVec::new(&[]) });
-                        self.ops[op_id].op = Op::TT(TTOp::LLK { asm: TinyString::new(call), ops: TinyVec::new(&[feeder]) });
-                    }
-                }
-                op_id = next;
-            }
-            // Prune orphaned inners before the next pattern: a fused
-            // bigger cone leaves its inner chain structurally linked,
-            // and the smaller pattern would otherwise match it and
-            // fuse a second traffic event for the same page.
-            self.common_subexpression_elimination();
-            self.dead_code_elimination();
-        }
-        // Prune the orphaned inner ops: downstream sync accounting
-        // counts structural users, and a dead inner left in place
-        // would draw CB waits for pages the fused call already covers.
-        // LLK calls and Asm inits are DCE roots, so the fused calls
-        // (and their inits) survive.
-        self.common_subexpression_elimination();
-        self.dead_code_elimination();
-        self.verify();
-    }
-
-    /// Storage lowering: the SSA tile-compute ops are the stream's
-    /// compute; the physical CB and DST slots are the `Op::Storage`s
-    /// already in the IR. This pass rewrites each compute op to a [`TTOp::LLK`]
-    /// call template over those bare storages. After this pass the
-    /// compute ops are opaque effect calls; `tt_lock_dst`/
-    /// `tt_sync_cbs`/render see only LLK.
-    ///
-    /// Operands are CB storages plus the register slot; the op/kind/bop
-    /// go into the template text (the render substitutes `{i}` for the
-    /// leading operands and emits the rest verbatim, mirroring the init
-    /// constructors). Trailing operands past the template's `{i}` range
-    /// are provenance only: the feeder `Load` ids the call consumes
-    /// from, for sync accounting (`tt_sync_cbs` waits,
-    /// `tt_place_pops` pops). Render ignores them. A `Load` that feeds
-    /// a compute op must chase through its index expression to a
-    /// `Storage`; a `Load` over a `Param` (DRAM) feeding a compute op
-    /// is a lowering bug — loud `panic!`.
-    pub fn tt_storage(&mut self) {
-        let mut op_id = self.head;
-        // CB Storage definitions live in the prologue (see tt_add_reader):
-        // tt_init_math's startup triple references every compute CB right
-        // after EndReader. Lowered CBs created mid-pass use this anchor.
-        let mut prologue = self.head;
-        for _ in 0..250_000 {
-            if prologue.is_null() {
-                break;
-            }
-            match self.ops[prologue].op {
-                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
-                _ => break,
-            }
-        }
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            // Canonicalize CB→CB moves to load+store spelling first: a
-            // fused copy would straddle the MATH/PACK cone boundary
-            // (unpack needs MATH-open, pack needs PACK-open), while the
-            // split form lowers each half under its own cone like
-            // every other pack. Same CBs, same indices, same traffic.
-            if let Op::Copy { src, src_idx, dst, dst_idx } = self.ops[op_id].op {
-                if self.is_circular_base(src) && self.is_circular_base(dst) {
-                    let load = self.insert_before(op_id, Op::Load { src, src_idx });
-                    self.ops[op_id].op = Op::Store { dst, dst_idx, src: load };
-                    op_id = next;
-                    continue;
-                }
-            }
-            // Tile-compute lowering (ReduceTile/MatmulTile/TransposeTile)
-            // is deleted pending the redesign: matching happens after
-            // reader/writer placement, directly to LLK ops.
-            let (asm, ops) = match self.at(op_id) {
-                Op::Binary { .. } => {
-                    // Broadcast fusion via markers is gone (Expand-based
-                    // broadcast pending); plain binaries lower elsewhere.
-                    op_id = next;
-                    continue;
-                }
-                _ => {
-                    op_id = next;
-                    continue;
-                }
-            };
-            self.ops[op_id].op = Op::TT(TTOp::LLK { asm, ops });
-            op_id = next;
-        }
-
-        self.verify();
-    }
-
     /// Duplicate-publish elimination: drop repeated identical publishes
     /// (`Copy` of one global tile into one circular slot) beyond what
     /// the consuming waits need, so pushed pages match waits/pops.
@@ -1069,7 +1037,7 @@ impl Kernel {
                     !o.is_null()
                         && (matches!(kernel.at(o), Op::Storage { scope: MemScope::Circular, .. } if o == cb) || load_cb(o))
                 }),
-                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, x, scaler, .. }) => {
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, x, scaler, .. }) => {
                     *cb_in == cb || *cb_sc == cb || load_cb(*x) || load_cb(*scaler)
                 }
                 Op::TT(TTOp::LLKMatmul { cb_a, cb_b, x, y, .. }) => *cb_a == cb || *cb_b == cb || load_cb(*x) || load_cb(*y),
@@ -1178,7 +1146,7 @@ impl Kernel {
                 let mut draws_load_wait = false;
                 for u in us {
                     match self.at(*u) {
-                        Op::TT(TTOp::LLK { .. } | TTOp::LLKReduce { .. } | TTOp::LLKBcast { .. } | TTOp::LLKMatmul { .. }) => {
+                        Op::TT(TTOp::LLK { .. } | TTOp::ReduceTile { .. } | TTOp::LLKBcast { .. } | TTOp::LLKMatmul { .. }) => {
                             call_waits += 1;
                         }
                         _ => {
@@ -1427,7 +1395,7 @@ impl Kernel {
                         }
                     }
                     Op::TT(TTOp::LLK { .. })
-                    | Op::TT(TTOp::LLKReduce { .. })
+                    | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLKMatmul { .. }) => {
                         let mut feeds = false;
@@ -1688,7 +1656,7 @@ impl Kernel {
                                 for &u in use_list {
                                     let ok = match &self.ops[u].op {
                                         Op::TT(
-                                            TTOp::LLKReduce { .. }
+                                            TTOp::ReduceTile { .. }
                                             | TTOp::LLKBcast { .. }
                                             | TTOp::LLKMatmul { .. }
                                             | TTOp::LLK { .. },
@@ -1718,7 +1686,7 @@ impl Kernel {
                                     matches!(
                                         self.ops[*u].op,
                                         Op::TT(TTOp::LLK { .. })
-                                            | Op::TT(TTOp::LLKReduce { .. })
+                                            | Op::TT(TTOp::ReduceTile { .. })
                                             | Op::TT(TTOp::LLKBcast { .. })
                                             | Op::TT(TTOp::LLKMatmul { .. })
                                     )
@@ -1731,7 +1699,7 @@ impl Kernel {
                     }
                 }
                 Op::TT(TTOp::LLK { .. })
-                | Op::TT(TTOp::LLKReduce { .. })
+                | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::LLKMatmul { .. }) => {
                     // Provenance waits: the call consumes its input CBs
@@ -1924,7 +1892,7 @@ impl Kernel {
                 // the compute section is malformed.
                 let bad = match &self.ops[op_id].op {
                     Op::TT(TTOp::LLK { .. })
-                    | Op::TT(TTOp::LLKReduce { .. })
+                    | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLKMatmul { .. }) => true,
                     Op::Store { .. } => self.tt_pack_store_cb(op_id).is_some(),
@@ -1994,7 +1962,7 @@ impl Kernel {
                     Some(cb) => InitAction::PackReconfig(cb),
                     None => InitAction::None,
                 },
-                Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, .. }) => {
+                Op::TT(TTOp::ReduceTile { rop, kind, cb_in, cb_sc, slot, .. }) => {
                     pending_acc = Some(*slot);
                     acc_values.clear();
                     InitAction::ReduceInit(*cb_in, *cb_sc, *slot, *rop, *kind)
@@ -2511,7 +2479,7 @@ impl Kernel {
                         }
                     }
                     Op::TT(TTOp::LLK { .. })
-                    | Op::TT(TTOp::LLKReduce { .. })
+                    | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLKMatmul { .. }) => {
                         let mut feeds = false;
@@ -2567,7 +2535,7 @@ impl Kernel {
             if matches!(
                 self.ops[walk].op,
                 Op::TT(TTOp::LLK { .. })
-                    | Op::TT(TTOp::LLKReduce { .. })
+                    | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLKMatmul { .. })
             ) {
@@ -2612,7 +2580,7 @@ impl Kernel {
                 if matches!(
                     self.ops[*u].op,
                     Op::TT(TTOp::LLK { .. })
-                        | Op::TT(TTOp::LLKReduce { .. })
+                        | Op::TT(TTOp::ReduceTile { .. })
                         | Op::TT(TTOp::LLKBcast { .. })
                         | Op::TT(TTOp::LLKMatmul { .. })
                 ) {
@@ -2660,7 +2628,7 @@ impl Kernel {
                     }
                 }
                 Op::TT(TTOp::LLK { .. })
-                | Op::TT(TTOp::LLKReduce { .. })
+                | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::LLKMatmul { .. }) => {
                     let mut seen: Vec<OpId> = Vec::new();
@@ -3073,7 +3041,7 @@ impl Kernel {
                 }
                 slot.unwrap_or_else(|| panic!("tt_storage_of: LLK {op_id:?} names no Register slot"))
             }
-            Op::TT(TTOp::LLKReduce { slot, .. }) => *slot,
+            Op::TT(TTOp::ReduceTile { slot, .. }) => *slot,
             Op::TT(TTOp::LLKMatmul { slot, .. }) => *slot,
             Op::TT(TTOp::LLKBcast { .. }) => panic!("tt_storage_of: LLKBcast {op_id:?} names no Register slot"),
             other => panic!("tt_storage_of: {op_id:?} is not a Load/Store/Copy, got {other:?}"),

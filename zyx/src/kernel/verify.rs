@@ -91,7 +91,7 @@ impl Kernel {
                     | Op::TT(TTOp::ProgramDesc(_))
                     | Op::TT(TTOp::TensixGrid(_))
                     | Op::TT(TTOp::LLK { .. })
-                    | Op::TT(TTOp::LLKReduce { .. })
+                    | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLKMatmul { .. })
                     | Op::Asm { .. } => has_post_linearize_ops = true,
@@ -380,7 +380,7 @@ impl Kernel {
                         dtypes.insert(op_id, dtypes[&ops[0]]);
                     }
                 }
-                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => {
                     // Lowered reduce: same operand rule as LLK — bare
                     // storages (input/scaler CBs, acc slot) and value
                     // ops (feeder loads). Result takes the input CB's
@@ -826,7 +826,7 @@ impl Kernel {
                         bounds.insert(op_id, (xl, xu));
                     }
                 }
-                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => {
                     let mut r = None;
                     for f in [cb_in, cb_sc, slot, x, scaler] {
                         if let Some(&(xl, xu)) = bounds.get(&f) {

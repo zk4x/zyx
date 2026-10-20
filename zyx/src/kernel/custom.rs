@@ -1075,8 +1075,8 @@ impl Kernel {
     /// returning the reduced tile. On TT (`reduce_tile`) the result
     /// tile carries the values in its first row, rest zeros (packer
     /// masks; closed by `ReduceUninit`). Scaling, when needed, is a
-    /// separate mul over the result, fused later (`tt_fuse_llks` wires
-    /// its CB as the LLK scale input). `x` is any rank-2 (tile-shaped) value;
+    /// separate mul over the result, lowered with its scaler CB by
+    /// `tt_lower_llks`). `x` is any rank-2 (tile-shaped) value;
     /// CB attachment is the transport passes' job, never the builder's.
     pub fn reduce_tile(&mut self, x: OpId, rop: BOp, kind: TileDim) -> OpId {
         debug_assert!(self.shape(x).len() == 2, "reduce_tile: x {x} is not a tile value");

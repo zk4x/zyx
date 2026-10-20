@@ -625,13 +625,13 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 }
                 sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
             }
-            Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, .. }) => {
+            Op::TT(TTOp::ReduceTile { rop, kind, cb_in, cb_sc, slot, .. }) => {
                 // Structured lowered reduce: rebuild the compute
                 // template from the fields (never parsed back).
                 let op_name = match rop {
                     BOp::Max => "PoolType::MAX",
                     BOp::Add => "PoolType::SUM",
-                    _ => return Err(sec.err(format!("LLKReduce {id:?} op {rop:?} has no LLK call"))),
+                    _ => return Err(sec.err(format!("ReduceTile {id:?} op {rop:?} has no LLK call"))),
                 };
                 let dim_name = match kind {
                     TileDim::Row => "ReduceDim::REDUCE_ROW",
@@ -646,7 +646,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                             sec.cbs.get(&o).copied().ok_or_else(|| sec.err(format!("CB {o:?} has no number")))?
                         }
                         Op::Storage { scope: MemScope::Register, .. } => sec.reg_slot(o)?,
-                        _ => return Err(sec.err(format!("LLKReduce {id:?} operand {o:?} is not a storage"))),
+                        _ => return Err(sec.err(format!("ReduceTile {id:?} operand {o:?} is not a storage"))),
                     };
                     rendered = rendered.replace(&format!("{{{i}}}"), &num.to_string());
                     if i == 2 {
@@ -654,7 +654,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     }
                 }
                 if rendered.contains('{') {
-                    return Err(sec.err(format!("LLKReduce left placeholders unsubstituted: {rendered}")));
+                    return Err(sec.err(format!("ReduceTile left placeholders unsubstituted: {rendered}")));
                 }
                 sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
             }

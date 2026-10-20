@@ -581,13 +581,13 @@ pub enum TTOp {
         /// CB + index operands.
         ops: TinyVec<OpId>,
     },
-    /// Lowered reduce call: a tile `Reduce` after `tt_storage`
-    /// resolved its CBs and DST slot. Carries the structured
-    /// `(rop, kind)` so `tt_init_math` matches them inline and render
-    /// rebuilds the `reduce_tile<...>` template — never baked to text
-    /// and parsed back. Same effect/CSE rules as [`TTOp::LLK`]: a DCE
-    /// root, pinned by LICM, never deduplicated.
-    LLKReduce {
+    /// Lowered reduce call: a tile `Reduce` after the TT lowering
+    /// pass resolved its CBs, scaler, and DST slot. Carries the
+    /// structured `(rop, kind)` so `tt_init_math` matches them inline
+    /// and render rebuilds the `reduce_tile<...>` template — never
+    /// baked to text and parsed back. Same effect/CSE rules as
+    /// [`TTOp::LLK`]: a DCE root, pinned by LICM, never deduplicated.
+    ReduceTile {
         /// Reduce op (Max reduces a MAX pool, Add a SUM).
         rop: BOp,
         /// Reduce dimension.
@@ -606,7 +606,7 @@ pub enum TTOp {
     /// Lowered fused-broadcast call: a tiled binary with a broadcast
     /// side over resolved CBs (built directly by builders now).
     /// Carries the structured `(bop, kind)`; same rules as
-    /// [`TTOp::LLKReduce`]. The result slot is DST (filled by render
+    /// [`TTOp::ReduceTile`]. The result slot is DST (filled by render
     /// with a fresh slot), so there is no `slot` field.
     LLKBcast {
         /// Binary op.
@@ -625,7 +625,7 @@ pub enum TTOp {
     /// Lowered tile matmul: `x @ y` over tile-shaped values, rendered
     /// as `matmul_block` (single tile: rt=ct=kt=1, transpose=0). Built
     /// by `tt_storage`: carries the resolved
-    /// input CBs plus the result slot, like [`TTOp::LLKReduce`]. Same
+    /// input CBs plus the result slot, like [`TTOp::ReduceTile`]. Same
     /// effect/CSE rules as [`TTOp::LLK`]: a DCE root, pinned by LICM,
     /// never deduplicated.
     LLKMatmul {
@@ -1297,7 +1297,7 @@ impl Op {
             &Op::Load { src, src_idx } => vec![src, src_idx],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().filter(|o| !o.is_null()).collect(),
-            &Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
+            &Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
             &Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => vec![cb_a, cb_b, slot, x, y],
             &Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
             Op::Stack { ops } => ops.iter().copied().collect(),
@@ -1398,7 +1398,7 @@ impl Op {
             | Op::TT(TTOp::TensixGrid(_)) => vec![],
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
             Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().filter(|o| !o.is_null()).collect(),
-            Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
+            Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => vec![cb_in, cb_sc, slot, x, scaler],
             Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, x, y }) => vec![cb_a, cb_b, slot, x, y],
             Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
         }

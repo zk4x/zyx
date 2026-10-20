@@ -71,7 +71,7 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                    Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => {
                         // Lowered reduce: same rule over cb_in.
                         let (dtype, shape) = dtypes[&cb_in].clone();
                         dtypes.insert(op_id, (dtype, shape));
@@ -222,7 +222,7 @@ impl Kernel {
                                 }
                             }
                         }
-                        TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. } => {
+                        TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. } => {
                             dtypes.insert(op_id, dtypes[cb_in].clone());
                             for f in [cb_in, cb_sc, slot, x, scaler] {
                                 *rcs.entry(*f).or_insert(0) += 1;
@@ -337,7 +337,7 @@ impl Kernel {
                 | Op::TT(TTOp::ProgramDesc(_))
                 | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::LLK { .. })
-                | Op::TT(TTOp::LLKReduce { .. })
+                | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::LLKMatmul { .. })
                 | Op::EndLoop

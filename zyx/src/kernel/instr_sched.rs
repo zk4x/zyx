@@ -129,7 +129,7 @@ impl Kernel {
                 // program-ordered like a barrier for placement (never
                 // crosses one), but not a barrier itself.
                 Op::Asm { .. } | Op::TT(TTOp::LLK { .. }) => structural[i] = true,
-                Op::TT(TTOp::LLKReduce { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => {
+                Op::TT(TTOp::ReduceTile { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => {
                     structural[i] = true
                 }
                 Op::Store { .. } => store[i] = true,
@@ -249,7 +249,7 @@ impl Kernel {
                         add_param!(p);
                     }
                 }
-                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => {
                     add_param!(cb_in);
                     add_param!(cb_sc);
                     add_param!(slot);
@@ -314,7 +314,7 @@ impl Kernel {
                         by_memory_target.entry(x).or_default().push(i);
                     }
                 }
-                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => {
                     for &f in [cb_in, cb_sc, slot, x, scaler] {
                         by_memory_target.entry(f).or_default().push(i);
                     }

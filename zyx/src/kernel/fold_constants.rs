@@ -645,7 +645,7 @@ impl Kernel {
                     | Op::TT(TTOp::ProgramDesc(_))
                     | Op::TT(TTOp::TensixGrid(_))
                     | Op::TT(TTOp::LLK { .. })
-                    | Op::TT(TTOp::LLKReduce { .. })
+                    | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::LLKMatmul { .. })
                     | Op::Param { .. }
@@ -720,7 +720,7 @@ impl Kernel {
                 | &mut Op::TT(TTOp::WaitFront { .. })
                 | &mut Op::TT(TTOp::PopFront { .. })
                 | &mut Op::TT(TTOp::LLK { .. })
-                | &mut Op::TT(TTOp::LLKReduce { .. })
+                | &mut Op::TT(TTOp::ReduceTile { .. })
                 | &mut Op::TT(TTOp::LLKBcast { .. })
                 | &mut Op::TT(TTOp::LLKMatmul { .. })
                 | &mut Op::TT(TTOp::MathLock)

@@ -98,7 +98,7 @@ fn sync_cbs_wraps_cb_traffic() {
 /// Pure-SSA `ReduceTile`: `x = load CB` then `r = reduce_tile(x)` with
 /// no acc/scaler operands. Accumulation is explicit SSA (store the
 /// result, reload it); scale, when needed, is a separate mul over the
-/// result, claimed later by `tt_fuse_llks`.
+/// result, lowered with its scaler CB by `tt_lower_llks`.
 #[test]
 fn pure_reduce_tile_threading() {
     let mut k = Kernel::new(Dev::Auto);
@@ -126,50 +126,4 @@ fn pure_reduce_tile_threading() {
     assert_eq!(ops.iter().filter(|op| matches!(op, Op::TT(TTOp::MathUnlock))).count(), 1);
     assert_eq!(ops.iter().filter(|op| matches!(op, Op::TT(TTOp::PackLock))).count(), 1);
     assert_eq!(ops.iter().filter(|op| matches!(op, Op::TT(TTOp::PackUnlock))).count(), 1);
-}
-
-/// `tt_storage` rewrites the SSA tile-compute matmul to an opaque
-/// `LLK` call template over the bare `Storage`s already in the IR.
-/// (Reduce lowering waits on `tt_fuse_llks` scale wiring, so no
-/// reduce op appears here.)
-#[test]
-fn storage_lowering_rewrites_matmul() {
-    let mut k = Kernel::new(Dev::Auto);
-    let cb_a = k.storage(DType::F32, MemScope::Circular, 1024);
-    let cb_b = k.storage(DType::F32, MemScope::Circular, 1024);
-    let acc = k.storage(DType::F32, MemScope::Register, 1);
-    let cout = k.storage(DType::F32, MemScope::Circular, 1024);
-    let zero = k.const_val(0i64);
-    k.tt_end_reader();
-    let va = k.load_cb(cb_a, zero);
-    let vb = k.load_cb(cb_b, zero);
-    let f = k.matmul_tile(va, vb);
-    // Pack drain: the Register slot is read out and stored to a
-    // CB. The matmul result is an effect op after lowering
-    // (no SSA value to thread).
-    let out = k.load_register_tile(acc, zero);
-    k.store_cb(cout, out, zero);
-    k.tt_end_compute();
-    k.tt_storage();
-
-    let matmul = k.at(f);
-    match matmul {
-        Op::TT(TTOp::LLK { asm, ops }) => {
-            assert_eq!(asm.as_str(), "matmul_tiles({0}, {1}, 0, 0, {2});");
-            assert_eq!(ops.as_slice(), &[cb_a, cb_b, acc, va, vb]);
-        }
-        other => panic!("matmul not lowered to LLK, got {other:?}"),
-    }
-    // No SSA tile-compute ops survive: the tile intermediaries are
-    // deleted pending the redesign (their builders panic above), so
-    // this scan is a loud marker until direct-LLK matching lands.
-    let mut leftover = 0;
-    let mut op_id = k.head;
-    while !op_id.is_null() {
-        if todo!("18: SSA tile-op leftover check pending redesign") {
-            leftover += 1;
-        }
-        op_id = k.next_op(op_id);
-    }
-    assert_eq!(leftover, 0, "no SSA tile-compute ops survive storage lowering");
 }

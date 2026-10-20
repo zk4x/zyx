@@ -720,6 +720,12 @@ impl Kernel {
 
         let mut configs = Vec::new();
 
+        // Tenstorrent tiles are architecturally 32-wide: 32 is the only
+        // factor, and the search explores which axes to tile instead.
+        let tt = dev_info.tenstorrent;
+        let group_unroll: &[u64] = if tt { &[32] } else { &[16, 8, 4] };
+        let loop_factors: &[u64] = if tt { &[32] } else { &[8, 16, 4, 2] };
+
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
@@ -732,7 +738,7 @@ impl Kernel {
                     // free local thread budget and the per-axis local limit.
                     if !bool_loop && !local_axis_sizes.contains_key(&axis) {
                         let max_per_axis = dev_info.max_local_work_dims[axis as usize];
-                        let mut l_factors: Vec<u32> = vec![64, 32, 16, 8, 4, 2];
+                        let mut l_factors: Vec<u32> = if tt { vec![32] } else { vec![64, 32, 16, 8, 4, 2] };
                         l_factors.retain(|&f| {
                             len % Dim::try_from(f).expect("lane factor overflows i64") == 0
                                 && f <= remaining_threads
@@ -748,7 +754,7 @@ impl Kernel {
                     // with a new lane axis; tile accesses would gain a third
                     // lane axis and barriers pin ordering around them.
                     if !tile_access && !barrier {
-                        for f in [16u64, 8, 4] {
+                        for &f in group_unroll {
                             if len % Dim::try_from(f).expect("lane factor overflows i64") == 0
                                 && len / Dim::try_from(f).expect("lane factor overflows i64") > 0
                                 && f * op_len <= 10_000
@@ -771,7 +777,7 @@ impl Kernel {
                         op_id = self.next_op(op_id);
                         continue;
                     }
-                    for f in [8u64, 16, 4, 2] {
+                    for &f in loop_factors {
                         if len % f as Dim != 0 {
                             continue;
                         }
@@ -782,7 +788,7 @@ impl Kernel {
                     // Plain nested loops (the deleted `SplitLoop`): large
                     // loops strip-mine without lanes or reduces.
                     if len >= 16 {
-                        for f in [8u64, 16, 4, 2] {
+                        for &f in loop_factors {
                             if len % f as Dim == 0 {
                                 configs.push((op_id, SplitMode::Loop, f as u16));
                             }

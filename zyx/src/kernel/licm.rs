@@ -84,7 +84,7 @@ impl Kernel {
                 | Op::TT(TTOp::ProgramDesc(_))
                 | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::LLK { .. })
-                | Op::TT(TTOp::LLKReduce { .. })
+                | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::LLKMatmul { .. }) => loop_depth,
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
@@ -177,7 +177,7 @@ impl Kernel {
                 | Op::TT(TTOp::ProgramDesc(_))
                 | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::LLK { .. })
-                | Op::TT(TTOp::LLKReduce { .. })
+                | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::LLKMatmul { .. }) => loop_depth,
                 Op::Asm { ops, .. } => {
@@ -318,7 +318,7 @@ impl Kernel {
                             | Op::TT(TTOp::NocWriteBarrier)
                             | Op::TT(TTOp::ReduceUninit)
                             | Op::TT(TTOp::LLK { .. })
-                            | Op::TT(TTOp::LLKReduce { .. })
+                            | Op::TT(TTOp::ReduceTile { .. })
                             | Op::TT(TTOp::LLKBcast { .. })
                             | Op::TT(TTOp::LLKMatmul { .. })
                             | Op::Load { .. }

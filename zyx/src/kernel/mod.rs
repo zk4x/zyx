@@ -136,7 +136,6 @@ mod pat;
 mod predict_cost;
 mod split;
 mod tenstorrent;
-mod tiling;
 mod verify;
 
 // TODO later make this dynamic u32 or u64 depending on max range
@@ -475,7 +474,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::TT(TTOp::LLKReduce { cb_in, cb_sc, slot, x, scaler, .. }) => {
+                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, x, scaler, .. }) => {
                     // Lowered reduce: result takes the input CB's
                     // dtype/layout, like the LLK form's ops[0].
                     dtypes.insert(op_id, dtypes[&cb_in].clone());
@@ -619,7 +618,7 @@ impl Kernel {
                     }
                     op_id = ops[0]
                 }
-                Op::TT(TTOp::LLKReduce { cb_in, .. }) => op_id = cb_in,
+                Op::TT(TTOp::ReduceTile { cb_in, .. }) => op_id = cb_in,
                 Op::TT(TTOp::LLKBcast { cb_a, .. }) => op_id = cb_a,
                 Op::TT(TTOp::LLKMatmul { cb_a, .. }) => op_id = cb_a,
                 Op::Index { vec, .. } => op_id = vec,
@@ -1405,7 +1404,7 @@ impl Kernel {
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
-                | Op::TT(TTOp::LLKReduce { x, .. })
+                | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
                 | Op::TT(TTOp::LLKMatmul { x, .. }) => match visited.get(&x) {
                     Some(dims) => {
@@ -1685,7 +1684,7 @@ impl Kernel {
                 | Op::Cast { x, .. }
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
-                | Op::TT(TTOp::LLKReduce { x, .. })
+                | Op::TT(TTOp::ReduceTile { x, .. })
                 | Op::TT(TTOp::LLKBcast { cb_a: x, .. })
                 | Op::TT(TTOp::LLKMatmul { x, .. }) => match visited.get(&x) {
                     Some(dims) => {

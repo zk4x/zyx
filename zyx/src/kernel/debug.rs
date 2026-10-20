@@ -194,7 +194,7 @@ impl Kernel {
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}llk{reset} {asm} {ops:?}").unwrap();
                 }
-                Op::TT(TTOp::LLKReduce { rop, kind, cb_in, cb_sc, slot, x, scaler }) => {
+                Op::TT(TTOp::ReduceTile { rop, kind, cb_in, cb_sc, slot, x, scaler }) => {
                     let dtype = dtypes.get(&cb_in).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let shp = self.shape_suffix(op_id, &shapes);

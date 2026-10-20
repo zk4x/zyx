@@ -365,10 +365,9 @@ mod tests {
     /// never execute per-iteration and must stay guard-free: a guard
     /// over the closed loop variable fails `verify` (use outside its
     /// scope reads as use-before-declaration).
-    #[cfg(feature = "tenstorrent")]
     #[test]
     fn pad_loop_guard_stays_in_body() {
-        let mut k = Kernel::new(Dev::TT(0));
+        let mut k = Kernel::new(Dev::Auto);
         let inp = k.param(DType::F32);
         let out = k.param_mut(DType::F32);
         let acc = k.storage(DType::F32, MemScope::Register, 1);
