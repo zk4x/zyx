@@ -1927,7 +1927,7 @@ impl Runtime {
     }
 
     #[allow(clippy::wrong_self_convention)] // naming convention from GPU API, not a conversion method
-    pub fn to_device(&mut self, x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
+    pub fn to_device(&mut self, mut x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device={device:?})");
         // Implicit layout: crossing onto TT tilizes (row-major in, face
