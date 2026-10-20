@@ -92,7 +92,7 @@ impl Kernel {
     pub fn device_epilogue(&mut self) {
         // Unroll vectors never survive to a backend: they unfold to
         // per-element statements.
-        self.devectorize_unrolls();
+        self.devectorize();
         // Non-TT backends need no device epilogue.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {

@@ -831,9 +831,9 @@ mod tests {
     }
 
     /// A reduce loop over 64 iterations splits at factor 4: the loop
-    /// becomes a 16-trip loop, the body duplicates per element, and the
-    /// per-element values chain into the accumulator store. No `Op::Reduce`,
-    /// no `Op::Unroll`; the accumulator keeps length 1.
+    /// strip-mines to 16 trips, the lane dimension becomes an
+    /// `Op::Unroll` vector, and the per-lane values fold through a
+    /// single `Op::Reduce`. The accumulator keeps length 1.
     #[test]
     fn split_reduce_loop_unrolls_into_tree() {
         let mut k = Kernel::new(Dev::Auto);
@@ -869,11 +869,20 @@ mod tests {
 
         // The accumulator stays scalar.
         assert!(matches!(k.at(acc), Op::Storage { len, scope: MemScope::Register, .. } if *len == 1));
-        // No fold, no unroll node: the body is duplicated per element and
-        // chained into the acc store.
+        // Vector form: one Add fold over the k-lane, unroll nodes
+        // present for the lane dimension.
+        let mut folds = 0;
+        let mut unrolls = 0;
         for (_, op) in k.iter_unordered() {
-            assert!(!matches!(op, Op::Reduce { .. } | Op::Unroll { .. }));
+            if matches!(op, Op::Reduce { rop, .. } if *rop == crate::kernel::BOp::Add) {
+                folds += 1;
+            }
+            if matches!(op, Op::Unroll { len, .. } if *len == 4) {
+                unrolls += 1;
+            }
         }
+        assert_eq!(folds, 1);
+        assert!(unrolls >= 1);
         // The loop strip-mined to 16 trips.
         let mut sixteens = 0;
         for (_, op) in k.iter_unordered() {

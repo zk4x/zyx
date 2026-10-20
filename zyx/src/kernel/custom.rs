@@ -1128,13 +1128,13 @@ impl Kernel {
     }
 
     /// Extract one element from a vectorized value.
-    pub fn devectorize_one(&mut self, vec: OpId, idx: usize) -> OpId {
+    pub fn index(&mut self, vec: OpId, idx: usize) -> OpId {
         self.push_back(Op::Index { vec, idx })
     }
 
     /// Extract all elements from a vectorized value.
-    pub fn devectorize<const N: usize>(&mut self, vec: OpId) -> [OpId; N] {
-        core::array::from_fn(|i| self.devectorize_one(vec, i))
+    pub fn unstack<const N: usize>(&mut self, vec: OpId) -> [OpId; N] {
+        core::array::from_fn(|i| self.index(vec, i))
     }
 
     /// Local thread barrier.
@@ -1994,7 +1994,7 @@ impl Kernel {
             let acc_final = self.load_vector(acc.frags[fi], idx0, 4);
             let mut elems = Vec::new();
             for i in 0..4usize {
-                elems.push(self.devectorize_one(acc_final, i));
+                elems.push(self.index(acc_final, i));
             }
             // Fragment offset within the logical tile.
             let row_f = if frag_row == 0 {
@@ -2806,8 +2806,8 @@ impl Kernel {
     /// `coords` covers every axis exactly once, in axis order.
     /// Private addressing primitive behind [`Kernel::load_view`] and
     /// [`Kernel::store_view`]; ignores the view's mask.
-    fn index<const N: usize>(&mut self, view: &View, coords: [impl IntoOp; N]) -> OpId {
-        assert!(N == view.shape.len(), "index: {} coords for rank {}", N, view.shape.len());
+    fn flat_index<const N: usize>(&mut self, view: &View, coords: [impl IntoOp; N]) -> OpId {
+        assert!(N == view.shape.len(), "flat_index: {} coords for rank {}", N, view.shape.len());
         let coords: [OpId; N] = coords.map(|c| c.into_op(self));
         let mut idx = view.offset;
         for (c, &s) in coords.into_iter().zip(view.strides.iter()) {
@@ -2828,7 +2828,7 @@ impl Kernel {
     pub fn load_view<const N: usize>(&mut self, view: &View, coords: [impl IntoOp; N]) -> OpId {
         let coords: [OpId; N] = coords.map(|c| c.into_op(self));
         let Some(mask) = &view.mask else {
-            let idx = self.index(view, coords);
+            let idx = self.flat_index(view, coords);
             return self.load(view.x, idx);
         };
         // Clamp into `[lo, hi - 1]` per axis (`min` via negated `max`);
@@ -2843,7 +2843,7 @@ impl Kernel {
             let m = self.max(na, nhi);
             *cc = self.neg(m);
         }
-        let idx = self.index(view, clamped);
+        let idx = self.flat_index(view, clamped);
         let v = self.load(view.x, idx);
         let mut pred: Option<OpId> = None;
         for (c, (lo, hi)) in coords.into_iter().zip(mask.iter().copied()) {
@@ -2867,7 +2867,7 @@ impl Kernel {
     pub fn store_view<const N: usize>(&mut self, view: &View, x: impl IntoOp, coords: [impl IntoOp; N]) {
         let x = x.into_op(self);
         let coords: [OpId; N] = coords.map(|c| c.into_op(self));
-        let idx = self.index(view, coords);
+        let idx = self.flat_index(view, coords);
         let Some(mask) = &view.mask else {
             self.store(view.x, x, idx);
             return;

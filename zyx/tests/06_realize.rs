@@ -91,7 +91,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
 
     // Store result to C
     let acc_final = kernel.load_vector(acc, c0, 4);
-    let [co, c1v, c2v, c3v] = kernel.devectorize(acc_final);
+    let [co, c1v, c2v, c3v] = kernel.unstack(acc_final);
 
     let c_col = kernel.add(tile_base_col, col_in_tile);
     let c_base = kernel.mad(a_row, n_const, c_col);
