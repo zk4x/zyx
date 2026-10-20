@@ -531,7 +531,7 @@ fn ensure_pool_table(
                 max_local_threads: 1024,
                 max_local_work_dims: vec![1, 1024, 1],
                 preferred_vector_size: 32,
-                local_mem_size: 1_500_000, // 1.5 MB L1 per Tensix core
+                local_mem_size: 0, // no thread-shared scratchpad; L1 is per-core private
                 max_register_bytes: 128,
                 tensor_cores: true,
                 warp_size: 1, // Tensix has no SIMT warps

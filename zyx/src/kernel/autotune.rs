@@ -90,10 +90,10 @@ impl Kernel {
 
     /// Device specific epilogue
     pub fn device_epilogue(&mut self) {
-        // Unroll vectors never survive to a backend: they unfold to
-        // per-element statements.
-        self.devectorize();
-        // Non-TT backends need no device epilogue.
+        // Unroll vectors never survive to a scalar backend: they unfold
+        // to per-element statements. Tenstorrent tiles the vector IR
+        // (there is no way to tile a devectorized kernel), so no
+        // devectorize runs on the TT path.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
             self.tt_tile();
@@ -117,6 +117,8 @@ impl Kernel {
             self.common_subexpression_elimination();
             self.dead_code_elimination();
         }
+
+        self.devectorize();
     }
 
     /// Get a hash of the kernel for deduplication during autotuning.

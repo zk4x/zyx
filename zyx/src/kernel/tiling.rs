@@ -65,16 +65,6 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
-        // Retile the reduce row (see below) on the final IR.
-        self.tilize_stores();
-        self.debug();
-
-        // Reduce dot-cone families into matmul tiles (see below).
-        self.vectorize_matmul_tile(32, 32, 32);
-
-        self.default_epilogue();
-        self.default_epilogue();
-
         self.debug();
         todo!();
 

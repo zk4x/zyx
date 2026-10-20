@@ -222,12 +222,28 @@ impl Kernel {
                 // 2. The original length doubles as the OOB guard comparison.
                 let limit = len_idx;
 
-                // 3. Walk all ops after this loop and guard the loads and
-                // stores depending on it (see the range arm: store wrapping
+                // 3. Walk the loop body and guard the loads and stores
+                // depending on it (see the range arm: store wrapping
                 // is unconditional so later index rewrites cannot detach it).
+                // Only the body: the trip count extension affects
+                // per-iteration stores, while stores after the loop never
+                // execute per-iteration. The guard references the loop
+                // variable, which leaves scope at the loop's own EndLoop,
+                // so wrapping past it is use-before-declaration.
                 let mut op_id = self.next_op(axis);
+                let mut depth = 1u32;
                 while !op_id.is_null() {
                     let next = self.next_op(op_id);
+                    match self.ops[op_id].op {
+                        Op::Loop { .. } => depth += 1,
+                        Op::EndLoop => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
 
                     // Skip OOB stores entirely (see the range arm; register
                     // destinations are thread-private, leave them alone).
@@ -335,5 +351,59 @@ impl Kernel {
             Op::Const(_) | Op::Range { .. } | Op::Storage { .. } | Op::Loop { .. } | Op::EndLoop => false,
             op => op.parameters().any(|p| self.depends_on(p, target, visited)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DType;
+    use crate::kernel::{Dev, MemScope};
+
+    /// Loop padding extends the trip count, so only the loop body may
+    /// reference the loop variable in a guard. Stores after the loop
+    /// never execute per-iteration and must stay guard-free: a guard
+    /// over the closed loop variable fails `verify` (use outside its
+    /// scope reads as use-before-declaration).
+    #[cfg(feature = "tenstorrent")]
+    #[test]
+    fn pad_loop_guard_stays_in_body() {
+        let mut k = Kernel::new(Dev::TT(0));
+        let inp = k.param(DType::F32);
+        let out = k.param_mut(DType::F32);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let init = k.const_val(0.0f32);
+        k.store(acc, init, 0i64);
+        k.loop_over(4i64, |k, lv| {
+            let x = k.load(inp, lv);
+            let prev = k.load(acc, 0i64);
+            let sum = k.add(prev, x);
+            k.store(acc, sum, 0i64);
+        });
+        let result = k.load(acc, 0i64);
+        k.store(out, result, 0i64);
+
+        let loop_id = k
+            .iter_unordered()
+            .find_map(|(id, op)| matches!(op, Op::Loop { .. }).then_some(id))
+            .expect("loop present");
+        k.pad_to(loop_id, 8);
+
+        // Every use of the loop variable must sit inside its body.
+        let mut stack: Vec<OpId> = Vec::new();
+        let mut id = k.head;
+        while !id.is_null() {
+            if matches!(k.at(id), Op::Loop { .. }) {
+                stack.push(id);
+            }
+            if id != loop_id && !stack.contains(&loop_id) && k.at(id).parameters().any(|p| p == loop_id) {
+                panic!("use of loop {loop_id:?} outside its body at {id:?}: {:?}", k.at(id));
+            }
+            if matches!(k.at(id), Op::EndLoop) {
+                stack.pop();
+            }
+            id = k.next_op(id);
+        }
+        k.verify();
     }
 }

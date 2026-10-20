@@ -162,6 +162,13 @@ impl Kernel {
             }
         }
         debug_assert!(!reg_acc.is_null());
+        // The tree stages `factor` accumulator elements in thread-shared
+        // local memory; refuse when they do not fit. This also excludes
+        // devices with no thread-shared local memory at all.
+        let required = factor as Dim * Dim::from(acc_dtype.bit_size() / 8);
+        if required > self.dev_info().local_mem_size {
+            return;
+        }
 
         // Find the reduce loop bop and the op that used to load from the register accumulator
         let mut reduce_bop_id = OpId::NULL;
