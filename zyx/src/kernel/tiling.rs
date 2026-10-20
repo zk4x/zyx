@@ -170,11 +170,7 @@ impl Kernel {
             // Single-input heads retile their input (elementwise and
             // tile-native alike — all valid on tiles).
             let ins: Vec<OpId> = match k.at(v) {
-                Op::Unary { x, .. }
-                | Op::Cast { x, .. }
-                | Op::Bitcast { x, .. }
-                | Op::TT(TTOp::TransposeTile { x, .. })
-                | Op::TT(TTOp::ReduceTile { x, .. }) => vec![*x],
+                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => vec![*x],
                 Op::Binary { x, y, .. } => vec![*x, *y],
                 _ => {
                     active.remove(&v);
@@ -243,12 +239,7 @@ impl Kernel {
                     Target::Expanded(s) => expanded[&s],
                 };
                 match &mut self.ops[r.user].op {
-                    Op::Unary { x, .. }
-                    | Op::Cast { x, .. }
-                    | Op::Bitcast { x, .. }
-                    | Op::TT(TTOp::TransposeTile { x, .. })
-                    | Op::TT(TTOp::ReduceTile { x, .. })
-                    | Op::Index { vec: x, .. } => {
+                    Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Index { vec: x, .. } => {
                         if *x == r.input {
                             *x = t;
                         }
@@ -282,10 +273,9 @@ impl Kernel {
     /// assembled [row][col] into an outer stack.
     /// The `a` root is whatever tile-shaped op the A-lane Index chains
     /// bottom out at (`shape == [m, k]`); the `b` root is whatever
-    /// tile-shaped op the prods share (`shape == [k, n]`). Emits by
-    /// replacing the outer stack op in place with
-    /// `MatmulTile { x: a_tile, y: b_tile }`, so consumers keep pointing
-    /// at the same `OpId`; the replaced family dies in DCE. Anything
+    /// tile-shaped op the prods share (`shape == [k, n]`). Emit is
+    /// stubbed pending the redesign (reader/writer first, then match
+    /// directly to LLK): reaching it is a loud `todo!()`. Anything
     /// else keeps its shape (never fatal).
     pub fn vectorize_matmul_tile(&mut self, m: Dim, n: Dim, k: Dim) {
         let (m_len, n_len, k_len) = (m as usize, n as usize, k as usize);
@@ -496,10 +486,10 @@ impl Kernel {
             if !tiled || a_tile.is_null() {
                 continue;
             }
-            // Emit: replace the outer stack in place with the matmul tile.
-            // Consumers keep pointing at the same OpId; the replaced
-            // family dies in DCE.
-            self.ops[outer].op = Op::TT(TTOp::MatmulTile { x: a_tile, y: b_tile });
+            // Emit: the matmul tile op is deleted pending the redesign
+            // (reader/writer first, then match directly to LLK). The
+            // replaced family dies in DCE.
+            todo!("vectorize_matmul_tile emit pending redesign");
         }
         self.dead_code_elimination();
     }

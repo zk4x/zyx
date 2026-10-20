@@ -476,31 +476,6 @@ pub struct TTProgramDesc {
 /// Tenstorrent backend op: section markers, DST locks, CB sync effects,
 /// and lowered LLK compute calls. Lives inside [`Op::TT`].
 pub enum TTOp {
-    /// Hardware tile reduce with `rop`: pure SSA over input tile `x`,
-    /// returning the reduced tile (TT: `reduce_tile`; the result tile
-    /// carries values in its first row, rest zeros by the packer masks).
-    /// Scaling, when needed, is a separate mul over the result, fused
-    /// later (`tt_fuse_llks` wires its CB as the LLK scale input).
-    ReduceTile {
-        /// Input tile.
-        x: OpId,
-        /// Reduce op.
-        rop: BOp,
-        /// Reduce dimension.
-        kind: TileDim,
-    },
-    /// Hardware tile matmul: `x @ y` over 32x32 tiles, result in a DST slot.
-    MatmulTile {
-        /// Left tile.
-        x: OpId,
-        /// Right tile.
-        y: OpId,
-    },
-    /// Hardware tile transpose (width-height swap).
-    TransposeTile {
-        /// Input tile.
-        x: OpId,
-    },
     /// CB sync: `cb.reserve_back(n)` — open `n` back slots of circular
     /// buffer `cb` for writing. Effect-only like [`Op::Store`]: produces
     /// no SSA value, is a DCE root, is never CSE'd or LICM-hoisted.
@@ -606,7 +581,7 @@ pub enum TTOp {
         /// CB + index operands.
         ops: TinyVec<OpId>,
     },
-    /// Lowered reduce call: a [`TTOp::ReduceTile`] after `tt_storage`
+    /// Lowered reduce call: a tile `Reduce` after `tt_storage`
     /// resolved its CBs and DST slot. Carries the structured
     /// `(rop, kind)` so `tt_init_math` matches them inline and render
     /// rebuilds the `reduce_tile<...>` template — never baked to text
@@ -649,7 +624,7 @@ pub enum TTOp {
     },
     /// Lowered tile matmul: `x @ y` over tile-shaped values, rendered
     /// as `matmul_block` (single tile: rt=ct=kt=1, transpose=0). Built
-    /// by `tt_storage` from [`TTOp::MatmulTile`]: carries the resolved
+    /// by `tt_storage`: carries the resolved
     /// input CBs plus the result slot, like [`TTOp::LLKReduce`]. Same
     /// effect/CSE rules as [`TTOp::LLK`]: a DCE root, pinned by LICM,
     /// never deduplicated.
@@ -1013,7 +988,7 @@ impl Ord for Op {
     }
 }
 
-/// Which dimension a `TTOp::ReduceTile` collapses within each 32x32
+/// Which dimension a tile reduce collapses within each 32x32
 /// tile (broadcast replication is [`Op::Expand`] now).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum TileDim {
@@ -1328,9 +1303,6 @@ impl Op {
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            &Op::TT(TTOp::MatmulTile { x, y }) => vec![x, y],
-            &Op::TT(TTOp::TransposeTile { x }) => vec![x],
-            &Op::TT(TTOp::ReduceTile { x, .. }) => vec![x],
             &Op::TT(TTOp::ReserveBack { cb, .. })
             | &Op::TT(TTOp::PushBack { cb, .. })
             | &Op::TT(TTOp::WaitFront { cb, .. })
@@ -1409,9 +1381,6 @@ impl Op {
             Op::Unroll { .. } => vec![],
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::TT(TTOp::MatmulTile { x, y }) => vec![x, y],
-            Op::TT(TTOp::ReduceTile { x, .. }) => vec![x],
-            Op::TT(TTOp::TransposeTile { x }) => vec![x],
             Op::TT(TTOp::ReserveBack { cb, .. })
             | Op::TT(TTOp::PushBack { cb, .. })
             | Op::TT(TTOp::WaitFront { cb, .. })

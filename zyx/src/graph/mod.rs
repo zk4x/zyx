@@ -1760,9 +1760,6 @@ impl Runtime {
                         }
                         stack.push(*src);
                     }
-                    Op::TT(TTOp::ReduceTile { x, .. }) => {
-                        stack.push(*x);
-                    }
                     Op::EndLoop
                     | Op::Barrier
                     | Op::Range { .. }

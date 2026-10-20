@@ -1068,7 +1068,7 @@ impl Kernel {
             matches!(self.ops[x].op, Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. })),
             "transpose_tile: x {x} is not a load_circular tile"
         );
-        self.push_back(Op::TT(TTOp::TransposeTile { x }))
+        todo!("transpose_tile builder pending redesign")
     }
 
     /// Hardware tile reduce: pure SSA over input tile `x` with `rop`,
@@ -1080,7 +1080,7 @@ impl Kernel {
     /// CB attachment is the transport passes' job, never the builder's.
     pub fn reduce_tile(&mut self, x: OpId, rop: BOp, kind: TileDim) -> OpId {
         debug_assert!(self.shape(x).len() == 2, "reduce_tile: x {x} is not a tile value");
-        self.push_back(Op::TT(TTOp::ReduceTile { x, rop, kind }))
+        todo!("reduce_tile builder pending redesign")
     }
 
     /// Fused broadcast binary: plain tile `a` from circular buffer

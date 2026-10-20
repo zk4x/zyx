@@ -204,19 +204,6 @@ impl Kernel {
                         }
                     }
                     Op::TT(ref ttop) => match ttop {
-                        TTOp::ReduceTile { x, .. } => {
-                            dtypes.insert(op_id, dtypes[x].clone());
-                            *rcs.entry(*x).or_insert(0) += 1;
-                        }
-                        TTOp::MatmulTile { x, y } => {
-                            dtypes.insert(op_id, dtypes[x].clone());
-                            *rcs.entry(*x).or_insert(0) += 1;
-                            *rcs.entry(*y).or_insert(0) += 1;
-                        }
-                        TTOp::TransposeTile { x } => {
-                            dtypes.insert(op_id, dtypes[x].clone());
-                            *rcs.entry(*x).or_insert(0) += 1;
-                        }
                         TTOp::ReserveBack { cb, .. }
                         | TTOp::PushBack { cb, .. }
                         | TTOp::WaitFront { cb, .. }
@@ -326,9 +313,6 @@ impl Kernel {
                 | Op::Binary { .. }
                 | Op::Stack { .. }
                 | Op::Wmma { .. }
-                | Op::TT(TTOp::ReduceTile { .. })
-                | Op::TT(TTOp::MatmulTile { .. })
-                | Op::TT(TTOp::TransposeTile { .. })
                 | Op::Index { .. }
                 | Op::Param { .. }
                 | Op::Storage { .. }

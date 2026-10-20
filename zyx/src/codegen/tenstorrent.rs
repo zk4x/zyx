@@ -721,9 +721,6 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 }
                 sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
             }
-            Op::TT(TTOp::MatmulTile { .. }) | Op::TT(TTOp::ReduceTile { .. }) | Op::TT(TTOp::TransposeTile { .. }) => {
-                return Err(sec.err(format!("{id:?} is not fully lowered (SSA remains)")));
-            }
             Op::TT(TTOp::ReserveBack { cb, n }) => {
                 let c = sec.cb_num(*cb)?;
                 sec.out.push_str(&format!("{}cb{c}.reserve_back({n});\n", sec.indent));
