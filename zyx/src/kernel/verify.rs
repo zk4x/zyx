@@ -816,6 +816,15 @@ impl Kernel {
                         bounds.insert(op_id, (0, len.saturating_sub(1)));
                     }
                 }
+                Op::Unroll { len, .. } => {
+                    // Lane vectors hold exactly 0..len-1; the width is an
+                    // immediate, no resolution needed. Zero lanes are
+                    // malformed — leave them unbounded (conservative)
+                    // rather than fabricate a range.
+                    if len > 0 {
+                        bounds.insert(op_id, (0, Dim::from(len - 1)));
+                    }
+                }
                 Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     let mut r = None;
                     for x in ops.iter() {

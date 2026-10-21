@@ -422,15 +422,21 @@ impl Kernel {
                         let kx = self.match_pat(la, &pat_a).map(|m| m.op('k'));
                         let ky = self.match_pat(lb, &pat_b).map(|m| m.op('k'));
                         if let (Some(x), Some(y)) = (kx, ky) {
-                            if x == y && matches!(self.ops[x].op, Op::Unroll { .. }) {
-                                fab = Some(((pa, da), (pb, db)));
-                                break;
-                            }
+                    if x == y && matches!(self.ops[x].op, Op::Unroll { .. }) {
+                        fab = Some(((pa, da), (pb, db), x));
+                        break;
+                    }
                         }
                     }
-                    let Some(((pa, dtype_a), (pb, dtype_b))) = fab else {
+                    let Some(((pa, dtype_a), (pb, dtype_b), k)) = fab else {
                         continue;
                     };
+                    // The reduced axis must be the shared K lane:
+                    // contracting any other axis is not a matmul.
+                    // Anything else is left for later increments.
+                    if !matches!(&self.ops[root].op, Op::Reduce { reduce_axis, .. } if *reduce_axis == k) {
+                        continue;
+                    }
                     let (Some(&cb_a), Some(&cb_b)) = (reader_cb_of.get(&pa), reader_cb_of.get(&pb)) else {
                         continue;
                     };

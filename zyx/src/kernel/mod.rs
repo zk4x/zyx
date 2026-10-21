@@ -347,8 +347,24 @@ impl Kernel {
                 Op::Const(x) => {
                     dtypes.insert(op_id, (x.dtype(), Vec::new()));
                 }
-                Op::Param { dtype, .. } => {
-                    dtypes.insert(op_id, (dtype, Vec::new()));
+                Op::Param { dtype, shape, .. } => {
+                    // DAG shapes (pre-linearize) resolve like movement
+                    // descriptors; NULL means converted-to-pointer
+                    // (scalar), same as before.
+                    if shape.is_null() {
+                        dtypes.insert(op_id, (dtype, Vec::new()));
+                    } else {
+                        let dims = match self.ops[shape].op {
+                            Op::Stack { ref ops } => ops
+                                .iter()
+                                .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
+                                .collect(),
+                            _ => {
+                                vec![self.resolve_const(shape).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)]
+                            }
+                        };
+                        dtypes.insert(op_id, (dtype, dims));
+                    }
                 }
                 Op::Storage { dtype, .. } => {
                     dtypes.insert(op_id, (dtype, Vec::new()));
