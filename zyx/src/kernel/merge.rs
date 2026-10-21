@@ -236,7 +236,6 @@ impl Kernel {
             }
             RangeKind::Local(len) => len as Dim,
             RangeKind::Warp(_) => return OpId::NULL,
-            RangeKind::Unroll(_) => return OpId::NULL,
         };
         let len_b: Dim = match kind_b {
             RangeKind::Group(len_id) => {
@@ -247,7 +246,6 @@ impl Kernel {
             }
             RangeKind::Local(len) => len as Dim,
             RangeKind::Warp(_) => return OpId::NULL,
-            RangeKind::Unroll(_) => return OpId::NULL,
         };
         let mut acc = 1;
         acc *= len_a;
@@ -258,7 +256,6 @@ impl Kernel {
             }
             RangeKind::Local(_) => RangeKind::Local(acc as u32),
             RangeKind::Warp(_) => return OpId::NULL,
-            RangeKind::Unroll(_) => return OpId::NULL,
         };
         let merged = self.insert_before(first, Op::Range { axis: axis_a, kind });
 

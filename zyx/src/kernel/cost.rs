@@ -672,8 +672,6 @@ impl Kernel {
                     RangeKind::Local(len) => lws[axis as usize] = len,
                     // A warp is a view over a local range — adds no threads.
                     RangeKind::Warp(_) => {}
-                    // Unroll lanes run inside one thread — they add no threads.
-                    RangeKind::Unroll(_) => {}
                 },
                 Op::Loop { len: len_id } => {
                     // Boolean length = the old `If`: branch cost, neutral

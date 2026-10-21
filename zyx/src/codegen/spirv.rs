@@ -1024,7 +1024,6 @@ impl Kernel {
                         }
                         // A warp is a view over a local range — adds no threads.
                         RangeKind::Warp(_) => {}
-                        RangeKind::Unroll(_) => unreachable!("should've been removed by devectorization"),
                     }
                 }
                 op_id = self.next_op(op_id);
@@ -1772,7 +1771,6 @@ impl Kernel {
                             RangeKind::Local(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
                             // Lane id: local invocation id mod warp size.
                             RangeKind::Warp(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
-                            RangeKind::Unroll(_) => unreachable!("should've been removed by devectorization"),
                         }
                         let elem = asm.id();
                         asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);

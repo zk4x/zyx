@@ -105,9 +105,6 @@ impl Kernel {
                 let mut next_lane_axis = 0u64;
                 for (_, op) in self.iter_unordered() {
                     match op {
-                        Op::Range { axis, kind: RangeKind::Unroll(_) } => {
-                            next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1);
-                        }
                         Op::Unroll { axis, .. } => next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1),
                         _ => {}
                     }
@@ -217,7 +214,6 @@ impl Kernel {
                                     RangeKind::Group(len) => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
                                     RangeKind::Local(len) => st *= i64::from(*len),
                                     RangeKind::Warp(_) => unreachable!("warp dims are never split"),
-                                    RangeKind::Unroll(len) => st *= Dim::from(*len),
                                 },
                                 Op::Unroll { len, .. } => st *= Dim::from(*len),
                                 _ => unreachable!("split can be only index or loop"),
@@ -572,9 +568,6 @@ impl Kernel {
                         let mut next_lane_axis = 0u64;
                         for (_, op) in self.iter_unordered() {
                             match op {
-                                Op::Range { axis, kind: RangeKind::Unroll(_) } => {
-                                    next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1);
-                                }
                                 Op::Unroll { axis, .. } => {
                                     next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1)
                                 }

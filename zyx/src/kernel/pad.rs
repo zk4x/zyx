@@ -121,9 +121,6 @@ impl Kernel {
                     RangeKind::Warp(_) => {
                         panic!("pad_to: cannot pad a warp view; pad its underlying local range instead")
                     }
-                    RangeKind::Unroll(_) => {
-                        panic!("pad_to: cannot pad an unroll range; pad its underlying group range instead")
-                    }
                 };
                 self.ops[axis].op = Op::Range { axis: range_axis, kind: new_kind };
 
@@ -324,8 +321,6 @@ impl Kernel {
                     }
                     // Warp views can't be padded — skip them entirely.
                     RangeKind::Warp(_) => {}
-                    // Unroll widths are exact lane counts — skip them entirely.
-                    RangeKind::Unroll(_) => {}
                 },
                 Op::Loop { len, .. } => {
                     if tt && self.dtype(len) != crate::DType::Bool {

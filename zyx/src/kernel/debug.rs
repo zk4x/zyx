@@ -483,14 +483,6 @@ impl Kernel {
                             )
                             .unwrap();
                         }
-                        RangeKind::Unroll(len) => {
-                            writeln!(
-                                f,
-                                "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}unroll_range({axis}){reset}, len={len}    // 0..={}",
-                                len - 1
-                            )
-                            .unwrap();
-                        }
                     }
                 }
                 Op::Loop { len } => {

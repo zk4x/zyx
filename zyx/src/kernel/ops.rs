@@ -1033,8 +1033,6 @@ pub enum RangeKind {
     /// range whose threads form hardware warps; the op's value is the lane
     /// id within the warp (`0..warp_size`, warp size from `DeviceInfo`).
     Warp(OpId),
-    /// Unroll
-    Unroll(u16),
 }
 
 impl std::fmt::Display for RangeKind {
@@ -1043,7 +1041,6 @@ impl std::fmt::Display for RangeKind {
             RangeKind::Group(x) => f.write_fmt(format_args!("group_r{x}")),
             RangeKind::Local(x) => f.write_fmt(format_args!("local_{x}")),
             RangeKind::Warp(x) => f.write_fmt(format_args!("warp_{x}")),
-            RangeKind::Unroll(x) => f.write_fmt(format_args!("unroll_{x}")),
         }
     }
 }
@@ -1285,7 +1282,6 @@ impl Op {
             &Op::Range { kind, .. } => match kind {
                 RangeKind::Group(len) => vec![len],
                 RangeKind::Local(_) => vec![],
-                RangeKind::Unroll(_) => vec![],
                 RangeKind::Warp(local_id) => vec![local_id],
             },
             &Op::Loop { len, .. } => vec![len],
@@ -1373,7 +1369,6 @@ impl Op {
             Op::Range { kind, .. } => match kind {
                 RangeKind::Group(len) => vec![len],
                 RangeKind::Local(_) => vec![],
-                RangeKind::Unroll(_) => vec![],
                 RangeKind::Warp(local_id) => vec![local_id],
             },
             Op::Loop { len, .. } => vec![len],

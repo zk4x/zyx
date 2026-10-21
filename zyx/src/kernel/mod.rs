@@ -1055,10 +1055,6 @@ impl Kernel {
                         local_prod = local_prod.saturating_mul(*n as u64);
                     }
                     RangeKind::Warp(_) => {}
-                    // Unroll lanes each execute the body ops — scale like local threads.
-                    RangeKind::Unroll(w) => {
-                        local_prod = local_prod.saturating_mul(*w as u64);
-                    }
                 },
                 Op::Unary { .. } => {
                     if self.dtype(op_id).is_float() {
@@ -1860,8 +1856,6 @@ impl Kernel {
                     RangeKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim),
                     RangeKind::Local(len) => Some(i64::from(*len)),
                     RangeKind::Warp(_) => Some(i64::from(self.dev_info().warp_size)),
-                    // Unroll widths are immediates — no resolution needed.
-                    RangeKind::Unroll(w) => Some(i64::from(*w)),
                 },
                 Op::Loop { len, .. } => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim),
                 _ => unreachable!(),
@@ -2061,8 +2055,6 @@ impl Kernel {
                 &Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => stack.push((len, false)),
                     RangeKind::Local(_) | RangeKind::Warp(_) => {}
-                    // Unroll widths are immediates — no length operand to visit.
-                    RangeKind::Unroll(_) => {}
                 },
                 _ => {}
             }
@@ -2095,8 +2087,6 @@ impl Kernel {
                     RangeKind::Local(len) => Some(Constant::idx(len)),
                     // The warp op's value is the lane id — runtime data.
                     RangeKind::Warp(_) => None,
-                    // The unroll range's value is the lane id — runtime data, like a warp lane.
-                    RangeKind::Unroll(_) => None,
                 },
                 // Param is dynamic
                 Op::Param { .. } => None,

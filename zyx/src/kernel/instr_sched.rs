@@ -220,8 +220,6 @@ impl Kernel {
                     RangeKind::Group(len) => add_param!(len),
                     RangeKind::Warp(local_id) => add_param!(local_id),
                     RangeKind::Local(_) => {}
-                    // Unroll widths are immediates — no length operand to add.
-                    RangeKind::Unroll(_) => {}
                 },
                 Op::Store { dst, dst_idx, src: x } => {
                     add_param!(dst);

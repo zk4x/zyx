@@ -432,7 +432,6 @@ impl Kernel {
                     RangeKind::Local(len) => lws[axis as usize] = Dim::from(len),
                     // A warp is a view over a local range — adds no threads.
                     RangeKind::Warp(_) => {}
-                    RangeKind::Unroll(_) => unreachable!("should've been removed by devectorization"),
                 }
             }
             op_id = self.next_op(op_id);
@@ -524,7 +523,6 @@ impl Kernel {
                         RangeKind::Group(_) => "%ctaid",
                         RangeKind::Local(_) => "%tid",
                         RangeKind::Warp(_) => "",
-                        RangeKind::Unroll(_) => unreachable!("should've been removed by devectorization"),
                     };
                     match scope {
                         RangeKind::Group(_) | RangeKind::Local(_) => {
@@ -537,7 +535,6 @@ impl Kernel {
                             _ = writeln!(comp.body, "{}cvt.u32.s64 %r{t}, %r{local_reg};", comp.indent);
                             _ = writeln!(comp.body, "{}rem.u32 %r{t}, %r{t}, {warp_size};", comp.indent);
                         }
-                        RangeKind::Unroll(_) => unreachable!("should've been removed by devectorization"),
                     }
                     match IDX_T {
                         DType::U32 => _ = writeln!(comp.body, "{}mov.u32 %r{reg}, %r{t};", comp.indent),

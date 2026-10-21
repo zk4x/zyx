@@ -570,7 +570,6 @@ impl Kernel {
                             let warp_size = self.dev_info().warp_size;
                             (format!("idx{lidx} % {warp_size}"), i64::from(warp_size) - 1)
                         }
-                        RangeKind::Unroll(_) => unreachable!("should've been removed by devectorization"),
                     };
                     let idx_type = self.dtype(op_id).cu();
                     _ = writeln!(source, "{indent}{idx_type} idx{loop_id} = {idx_expr}; // 0..={max_idx}");

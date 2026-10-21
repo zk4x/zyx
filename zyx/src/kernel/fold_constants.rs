@@ -360,11 +360,7 @@ impl Kernel {
                         // covers the storage. Scalar accesses only: the
                         // index must resolve to a plain scalar (a lane
                         // tree's shape is non-empty).
-                        let lane_index = match self.at(dst_idx) {
-                            Op::Const(_) => true,
-                            Op::Range { kind: RangeKind::Unroll(w), .. } => (*w as usize) == latest_stores.len(),
-                            _ => false,
-                        };
+                        let lane_index = matches!(self.at(dst_idx), Op::Const(_));
                         if !self.shape(dst_idx).is_empty() || !lane_index {
                             return;
                         }
@@ -372,11 +368,7 @@ impl Kernel {
                 }
                 Op::Load { src, src_idx } => {
                     if src == storage_id {
-                        let lane_index = match self.at(src_idx) {
-                            Op::Const(_) => true,
-                            Op::Range { kind: RangeKind::Unroll(w), .. } => (*w as usize) == latest_stores.len(),
-                            _ => false,
-                        };
+                        let lane_index = matches!(self.at(src_idx), Op::Const(_));
                         if !self.shape(src_idx).is_empty() || !lane_index {
                             return;
                         }
@@ -411,16 +403,11 @@ impl Kernel {
                     }
                     self.remove_op(op_id);
                     if self.ops.contains_id(x) {
-                        if let Op::Const(index_c) = self.ops[dst_idx].op {
-                            let index = index_c.as_dim().expect("store index must be a non-negative integer constant") as usize;
-                            latest_stores[index] = x;
-                        } else {
-                            // Pre-check admitted only a width-covering
-                            // unroll index here: one store writes every
-                            // lane the same value at once.
-                            debug_assert!(matches!(self.ops[dst_idx].op, Op::Range { kind: RangeKind::Unroll(_), .. }));
-                            latest_stores.fill(x);
-                        }
+                        let Op::Const(index_c) = self.ops[dst_idx].op else {
+                            unreachable!("fold_constants pre-check admits only const store indices");
+                        };
+                        let index = index_c.as_dim().expect("store index must be a non-negative integer constant") as usize;
+                        latest_stores[index] = x;
                     }
                     op_id = next;
                     continue;
@@ -435,20 +422,6 @@ impl Kernel {
                         remaps.insert(op_id, latest_stores[index]);
                         op_id = next;
                         continue;
-                    }
-                    if src == storage_id
-                        && self.shape(src_idx).is_empty()
-                        && matches!(self.ops[src_idx].op, Op::Range { kind: RangeKind::Unroll(_), .. })
-                    {
-                        // All-or-nothing across lanes: remap only when
-                        // every lane holds the same value.
-                        let first = latest_stores[0];
-                        if latest_stores.iter().all(|&s| s == first) {
-                            self.remove_op(op_id);
-                            remaps.insert(op_id, first);
-                            op_id = next;
-                            continue;
-                        }
                     }
                 }
                 _ => {}
@@ -513,8 +486,6 @@ impl Kernel {
                     }
                     // A warp is a view over a local range — never a removable len-1 index.
                     RangeKind::Warp(_) => {}
-                    // An unroll range is lanes, not an index — never a removable len-1 index.
-                    RangeKind::Unroll(_) => {}
                 },
                 _ => {}
             }
@@ -867,8 +838,6 @@ impl Kernel {
                     RangeKind::Group(len) => self.resolve_const(len).is_some() || matches!(self.at(len), Op::Param { .. }),
                     RangeKind::Warp(_) => true,
                     RangeKind::Local(_) => true,
-                    // Unroll widths are immediates — trivially hoistable.
-                    RangeKind::Unroll(_) => true,
                 };
                 if hoistable {
                     self.move_op_after(op_id, start);
