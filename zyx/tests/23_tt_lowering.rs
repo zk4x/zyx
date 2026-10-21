@@ -113,3 +113,31 @@ fn softmax() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn transfer_roundtrip() -> Result<(), ZyxError> {
+    // Transfer-only probe: tilize to TT and untilize back, no kernel
+    // in between. Exact bf16 equality is expected (tilize is a
+    // permutation plus zero halo; untilize narrows to logical).
+    let x = Tensor::rand([10, 20], DType::BF16)?;
+
+    let z = x.to(Dev::TT(0))?.to(Dev::C)?;
+
+    let xv: Vec<bf16> = x.try_into().unwrap();
+    let zv: Vec<bf16> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 10 * 20);
+    assert_eq!(zv.len(), 10 * 20);
+    let mut bad = 0;
+    for i in 0..10 * 20 {
+        if !zv[i].is_equal(xv[i]) {
+            if bad < 10 {
+                println!("z[{i}] = {}, expected {}", zv[i], xv[i]);
+            }
+            bad += 1;
+        }
+    }
+    println!("transfer_roundtrip bad: {bad} / {}", 10 * 20);
+    assert_eq!(bad, 0);
+
+    Ok(())
+}

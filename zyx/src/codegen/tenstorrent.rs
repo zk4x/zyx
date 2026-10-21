@@ -756,7 +756,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.slots.insert(id, dst);
                 sec.out.push_str(&format!("{}fill_tile({dst}, {lit});\n", sec.indent));
             }
-            Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot, .. }) => {
+            Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot, .. }) => {
                 // Structured lowered matmul: rebuild the compute
                 // template from the fields (never parsed back).
                 // Single tile: tile indices 0, 0; DST slot {2}.
@@ -770,7 +770,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                             sec.cbs.get(&o).copied().ok_or_else(|| sec.err(format!("CB {o:?} has no number")))?
                         }
                         Op::Storage { scope: MemScope::Register, .. } => sec.reg_slot(o)?,
-                        _ => return Err(sec.err(format!("LLKMatmul {id:?} operand {o:?} is not a storage"))),
+                        _ => return Err(sec.err(format!("MatmulTiles {id:?} operand {o:?} is not a storage"))),
                     };
                     rendered = rendered.replace(&format!("{{{i}}}"), &num.to_string());
                     if i == 2 {
@@ -778,7 +778,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     }
                 }
                 if rendered.contains('{') {
-                    return Err(sec.err(format!("LLKMatmul left placeholders unsubstituted: {rendered}")));
+                    return Err(sec.err(format!("MatmulTiles left placeholders unsubstituted: {rendered}")));
                 }
                 sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
             }

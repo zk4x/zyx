@@ -504,7 +504,7 @@ impl Kernel {
                         *rcs.entry(f).or_insert(0) += 1;
                     }
                 }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
+                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
                     // Lowered matmul: one tile out; result takes the
                     // left CB's dtype.
                     let (dtype, _) = dtypes[&cb_a].clone();
@@ -637,7 +637,7 @@ impl Kernel {
                 Op::TT(TTOp::ReduceTile { cb_in, .. }) => op_id = cb_in,
                 Op::TT(TTOp::FillTile { val, .. }) => op_id = val,
                 Op::TT(TTOp::LLKBcast { cb_a, .. }) => op_id = cb_a,
-                Op::TT(TTOp::LLKMatmul { cb_a, .. }) => op_id = cb_a,
+                Op::TT(TTOp::MatmulTiles { cb_a, .. }) => op_id = cb_a,
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
@@ -1074,7 +1074,7 @@ impl Kernel {
                     let loop_prod: u64 = loop_stack.iter().product::<u64>().max(1);
                     flops = flops.saturating_add(2 * m * n * k * warps * loop_prod);
                 }
-                Op::TT(TTOp::LLKMatmul { .. }) => {
+                Op::TT(TTOp::MatmulTiles { .. }) => {
                     // Lowered matmul: single 32x32x32 tile MAC.
                     flops = flops.saturating_add(2 * 32 * 32 * 32 * mult);
                 }
@@ -1433,9 +1433,9 @@ impl Kernel {
                 // Lowered calls report no shape ids: no buffer is ever
                 // sized from them (writer CBs are pre-sized). `shape`
                 // and the dtype map carry their tile shapes.
-                Op::TT(TTOp::LLKMatmul { .. }) | Op::TT(TTOp::ReduceTile { .. }) => {
+                Op::TT(TTOp::MatmulTiles { .. }) | Op::TT(TTOp::ReduceTile { .. }) => {
                     visited.insert(op_id, Vec::new());
-                },
+                }
                 Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     if ops.is_empty() {
                         todo!("shape: operand-free Asm/LLK produces no value")
@@ -1722,7 +1722,7 @@ impl Kernel {
                     }
                     visited.insert(id, out);
                 }
-                Op::TT(TTOp::LLKMatmul { .. }) => {
+                Op::TT(TTOp::MatmulTiles { .. }) => {
                     visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);
                 }
                 // A fill produces one full tile: fixed [32, 32], no

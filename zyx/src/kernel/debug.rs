@@ -114,7 +114,8 @@ impl Kernel {
                 Op::Unroll { axis, len } => {
                     dtypes.insert(op_id, IDX_T);
                     let shp = self.shape_suffix(op_id, &shapes);
-                    writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{shp}{reset} = {red}unroll{reset} axis{axis} lanes {len}").unwrap();
+                    writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{shp}{reset} = {red}unroll{reset} axis{axis} lanes {len}")
+                        .unwrap();
                 }
                 Op::TT(TTOp::ReserveBack { cb, n }) => {
                     let dtype = dtypes.get(&cb).copied().unwrap_or(DType::U8);
@@ -221,7 +222,7 @@ impl Kernel {
                     )
                     .unwrap();
                 }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
+                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
                     let dtype = dtypes.get(&cb_a).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let shp = self.shape_suffix(op_id, &shapes);
@@ -377,7 +378,8 @@ impl Kernel {
                     let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map.get(&x).copied().unwrap_or(x);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = bits({dtype})r{x}    // {lb}..={ub}").unwrap();
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = bits({dtype})r{x}    // {lb}..={ub}")
+                            .unwrap();
                     } else {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = bits({dtype})r{x}").unwrap();
                     }
@@ -521,8 +523,11 @@ impl Kernel {
                     let shp = self.shape_suffix(op_id, &shapes);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}stack{reset}{ops:?}    // {lb}..={ub}")
-                            .unwrap();
+                        writeln!(
+                            f,
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}stack{reset}{ops:?}    // {lb}..={ub}"
+                        )
+                        .unwrap();
                     } else {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}stack{reset}{ops:?}").unwrap();
                     }
@@ -533,7 +538,10 @@ impl Kernel {
                     let shp = self.shape_suffix(op_id, &shapes);
                     let vec = id_map.get(&vec).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = r{vec}{orange}.s{idx}{reset}    // {l}..={u}",)
+                        writeln!(
+                            f,
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = r{vec}{orange}.s{idx}{reset}    // {l}..={u}",
+                        )
                         .unwrap();
                     } else {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = r{vec}{orange}.s{idx}{reset}").unwrap();
@@ -560,7 +568,8 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {cyan}permute{reset} r{x} axes={axes:?}").unwrap();
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {cyan}permute{reset} r{x} axes={axes:?}")
+                        .unwrap();
                 }
                 Op::Pad { x, ref axis, lp, len } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);

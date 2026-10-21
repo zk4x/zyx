@@ -652,7 +652,7 @@ pub enum TTOp {
     /// input CBs plus the result slot, like [`TTOp::ReduceTile`]. Same
     /// effect/CSE rules as [`TTOp::LLK`]: a DCE root, pinned by LICM,
     /// never deduplicated.
-    LLKMatmul {
+    MatmulTiles {
         /// Left input circular buffer.
         cb_a: OpId,
         /// Right input circular buffer.
@@ -1316,7 +1316,7 @@ impl Op {
             &Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => vec![cb_in, cb_sc, slot],
             &Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
             &Op::TT(TTOp::FillTile { slot, val }) => vec![slot, val],
-            &Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => vec![cb_a, cb_b, slot],
+            &Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => vec![cb_a, cb_b, slot],
             &Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
@@ -1418,7 +1418,7 @@ impl Op {
             Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => vec![cb_in, cb_sc, slot],
             Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
             Op::TT(TTOp::FillTile { slot, val }) => vec![slot, val],
-            Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => vec![cb_a, cb_b, slot],
+            Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => vec![cb_a, cb_b, slot],
             Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
         }
         .into_iter()

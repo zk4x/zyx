@@ -87,7 +87,7 @@ impl Kernel {
                             *rcs.entry(f).or_insert(0) += 1;
                         }
                     }
-                    Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
+                    Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
                         // Lowered matmul: same rule over cb_a.
                         let (dtype, shape) = dtypes[&cb_a].clone();
                         dtypes.insert(op_id, (dtype, shape));
@@ -243,7 +243,7 @@ impl Kernel {
                                 *rcs.entry(*f).or_insert(0) += 1;
                             }
                         }
-                        TTOp::LLKMatmul { cb_a, cb_b, slot } => {
+                        TTOp::MatmulTiles { cb_a, cb_b, slot } => {
                             dtypes.insert(op_id, dtypes[cb_a].clone());
                             for f in [cb_a, cb_b, slot] {
                                 *rcs.entry(*f).or_insert(0) += 1;
@@ -363,7 +363,7 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::FillTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::LLKMatmul { .. })
+                | Op::TT(TTOp::MatmulTiles { .. })
                 | Op::EndLoop
                 | Op::Barrier => false,
                 // Counted loops produce the induction value; boolean

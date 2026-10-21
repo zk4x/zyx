@@ -87,7 +87,7 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::FillTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::LLKMatmul { .. }) => loop_depth,
+                | Op::TT(TTOp::MatmulTiles { .. }) => loop_depth,
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -97,9 +97,7 @@ impl Kernel {
                     loop_depth -= 1;
                     loop_depth
                 }
-                Op::Reduce { x, .. } | Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
-                    loop_dep[&x]
-                }
+                Op::Reduce { x, .. } | Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => loop_dep[&x],
                 Op::Binary { x, y, bop } => {
                     if bop.is_commutative()
                         && !self.ops[x].op.is_const()
@@ -182,7 +180,7 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::FillTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::LLKMatmul { .. }) => loop_depth,
+                | Op::TT(TTOp::MatmulTiles { .. }) => loop_depth,
                 Op::Asm { ops, .. } => {
                     let mut max = 0;
                     for op in ops.iter() {
@@ -326,7 +324,7 @@ impl Kernel {
                             | Op::TT(TTOp::ReduceTile { .. })
                             | Op::TT(TTOp::FillTile { .. })
                             | Op::TT(TTOp::LLKBcast { .. })
-                            | Op::TT(TTOp::LLKMatmul { .. })
+                            | Op::TT(TTOp::MatmulTiles { .. })
                             | Op::Load { .. }
                             | Op::Loop { .. }
                             | Op::EndLoop

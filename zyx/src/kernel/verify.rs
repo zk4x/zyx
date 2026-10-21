@@ -94,7 +94,7 @@ impl Kernel {
                     | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::FillTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
-                    | Op::TT(TTOp::LLKMatmul { .. })
+                    | Op::TT(TTOp::MatmulTiles { .. })
                     | Op::Asm { .. } => has_post_linearize_ops = true,
                     Op::Permute { .. }
                     | Op::Expand { .. }
@@ -399,10 +399,7 @@ impl Kernel {
                     // Result is the fill value broadcast to one tile.
                     for &f in &[slot, val] {
                         check(op_id, f, &stack);
-                        if !matches!(
-                            self.at(f),
-                            Op::Storage { scope: MemScope::Register, .. } | Op::Const(_)
-                        ) {
+                        if !matches!(self.at(f), Op::Storage { scope: MemScope::Register, .. } | Op::Const(_)) {
                             println!("tt fill tile op={op_id} has non-slot/non-const operand {f}");
                             self.debug();
                             panic!();
@@ -410,7 +407,7 @@ impl Kernel {
                     }
                     dtypes.insert(op_id, dtypes[&val]);
                 }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
+                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
                     // Lowered matmul: bare storages only (input CBs,
                     // result slot). Result takes the left CB's dtype.
                     for &f in &[cb_a, cb_b, slot] {
@@ -861,7 +858,7 @@ impl Kernel {
                         bounds.insert(op_id, (xl, xu));
                     }
                 }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
+                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
                     let mut r = None;
                     for f in [cb_a, cb_b, slot] {
                         if let Some(&(xl, xu)) = bounds.get(&f) {

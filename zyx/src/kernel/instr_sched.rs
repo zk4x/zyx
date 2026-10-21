@@ -129,9 +129,10 @@ impl Kernel {
                 // program-ordered like a barrier for placement (never
                 // crosses one), but not a barrier itself.
                 Op::Asm { .. } | Op::TT(TTOp::LLK { .. }) => structural[i] = true,
-                Op::TT(TTOp::ReduceTile { .. }) | Op::TT(TTOp::FillTile { .. }) | Op::TT(TTOp::LLKBcast { .. }) | Op::TT(TTOp::LLKMatmul { .. }) => {
-                    structural[i] = true
-                }
+                Op::TT(TTOp::ReduceTile { .. })
+                | Op::TT(TTOp::FillTile { .. })
+                | Op::TT(TTOp::LLKBcast { .. })
+                | Op::TT(TTOp::MatmulTiles { .. }) => structural[i] = true,
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
                 // A copy reads its src and writes its dst: it pins like a
@@ -262,7 +263,7 @@ impl Kernel {
                     add_param!(slot);
                     add_param!(val);
                 }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
+                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
                     add_param!(cb_a);
                     add_param!(cb_b);
                     add_param!(slot);
@@ -332,7 +333,7 @@ impl Kernel {
                         by_memory_target.entry(f).or_default().push(i);
                     }
                 }
-                Op::TT(TTOp::LLKMatmul { cb_a, cb_b, slot }) => {
+                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
                     for &f in [cb_a, cb_b, slot] {
                         by_memory_target.entry(f).or_default().push(i);
                     }
