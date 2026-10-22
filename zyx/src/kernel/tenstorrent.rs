@@ -172,33 +172,42 @@ impl Kernel {
             todo!("tt_tile: more than two group ranges");
         }
         if pad_groups.len() == 1 {
-            // A lone flat group (e.g. Group(1024)) cannot reach tile
-            // loads with one unroll level: pre-split it into two nested
-            // groups of roughly equal size, then pad and unroll normally
-            // below. Only when no loop will supply the second lane axis
-            // and the length needs exactly two unroll levels (a multiple
-            // of 1024); anything else keeps today's behavior.
+            // One group range: split into two nested groups of roughly
+            // equal size (user spec, unconditional — no loop check, no
+            // length threshold), then pad and unroll each normally below.
             let g = pad_groups[0];
-            let has_loop = self.iter_unordered().any(|(_, x)| matches!(x, Op::Loop { .. }));
             self.pad_to(g, 32);
-            let (axis, len) = match self.ops[g].op {
-                Op::Range { axis, kind: RangeKind::Group(len) } => {
-                    (axis, self.resolve_const(len).and_then(|c| c.as_dim()))
+            let len = match self.ops[g].op {
+                Op::Range { kind: RangeKind::Group(len), .. } => {
+                    self.resolve_const(len).and_then(|c| c.as_dim())
                 }
                 _ => unreachable!("pad_to preserves the Group range"),
             };
-            if !has_loop {
-                if let Some(len) = len {
-                    if len % 1024 == 0 {
-                        // Largest divisor at or below sqrt(len): the two
-                        // factors are as equal as possible.
-                        let mut f = (len as f64).sqrt() as Dim;
-                        while f > 1 && len % f != 0 {
-                            f -= 1;
+            if let Some(len) = len {
+                // Largest divisor at or below sqrt(len): the two
+                // factors are as equal as possible.
+                let mut f = (len as f64).sqrt() as Dim;
+                while f > 1 && len % f != 0 {
+                    f -= 1;
+                }
+                if f > 1 {
+                    let factor = u16::try_from(f).expect("tt_tile: group split factor overflows u16");
+                    // The inner group takes a new axis: highest group
+                    // axis + 1 (user spec; verify requires unique group
+                    // axes, and split reuses the axis). TT-local: split
+                    // itself is generic across backends.
+                    let mut max_group_axis = 0u32;
+                    for (_, x) in self.iter_unordered() {
+                        if let Op::Range { axis, kind: RangeKind::Group(_) } = x {
+                            max_group_axis = max_group_axis.max(*axis);
                         }
-                        if f > 1 {
-                            let factor = u16::try_from(f).expect("tt_tile: group split factor overflows u16");
-                            self.split(g, SplitMode::Group, factor);
+                    }
+                    let inner = self.split(g, SplitMode::Group, factor);
+                    if !inner.is_null() {
+                        let new_axis = max_group_axis.checked_add(1).expect("tt_tile: group axis overflows u32");
+                        match &mut self.ops[inner].op {
+                            Op::Range { axis, kind: RangeKind::Group(_) } => *axis = new_axis,
+                            _ => unreachable!("split Group returns the inner group range"),
                         }
                     }
                 }
