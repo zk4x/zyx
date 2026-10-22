@@ -567,9 +567,29 @@ impl Kernel {
                     // Unlowered value: stays for later increments.
                     continue;
                 };
-                let bytes: u32 = match self.shape(*store).as_slice() {
-                    [32, 32] => self.dtype(*store).bit_size() as u32 / 8 * 1024,
-                    [32] => (self.dtype(*store).bit_size() / 8 * 32) as u32,
+                // Drain the whole packed producer page, sized from the
+                // writer CB allocation — not the seed store width. The
+                // packer writes full tiles (`pack_tile`), and the
+                // face-ordered column layout means a seed-width drain
+                // starves `untilize` gathers (a `[32]` reduce row lives
+                // at column 0 across the tile, not in a contiguous row).
+                // Single-tile shapes only; anything else bails the pass.
+                match self.shape(*store).as_slice() {
+                    [32, 32] | [32] => {}
+                    _ => return,
+                };
+                let (cb_dtype, cb_len) = match self.ops[cb].op {
+                    Op::Storage { dtype, scope: MemScope::Circular, len } => (dtype, len),
+                    _ => return,
+                };
+                if self.dtype(*store) != cb_dtype {
+                    return;
+                }
+                let Ok(page_elems) = u32::try_from(cb_len) else {
+                    return;
+                };
+                let bytes = match (cb_dtype.bit_size() as u32 / 8).checked_mul(page_elems) {
+                    Some(b) if b > 0 => b,
                     _ => return,
                 };
                 let tail = self.tail;

@@ -96,11 +96,7 @@ impl Kernel {
         // devectorize runs on the TT path.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
-            eprintln!("=== BEFORE TT_TILE ===");
-            self.debug();
             self.tt_tile();
-            eprintln!("=== AFTER TT_TILE ===");
-            self.debug();
             // Lowering (order-flexible; each pass tolerates the
             // others' legal output - not currently, but it's the idea):
             // structured LLK claiming + register allocation, locks,
