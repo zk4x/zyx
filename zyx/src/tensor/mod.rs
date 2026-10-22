@@ -3020,20 +3020,11 @@ impl Tensor {
     }
 
     /// Triangular matrix with `1`s on and below the `diagonal` and `0`s above
-    /// (shape `[r, c]`).
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use zyx::{Tensor, DType};
-    /// let t = Tensor::tri(3, 3, 0, DType::I32);
-    /// assert_eq!(t.to_vec::<i32>().unwrap(),
-    ///     vec![1, 1, 1, 0, 1, 1, 0, 0, 1]);
-    /// ```
+    /// (shape `[r, c]`). Mask builder for `triu`/`tril`, not public API.
     #[must_use]
     #[track_caller]
     #[allow(clippy::missing_panics_doc)]
-    pub fn tri(r: Dim, c: Dim, diagonal: i64, dtype: DType) -> Tensor {
+    fn tri(r: Dim, c: Dim, diagonal: i64, dtype: DType) -> Tensor {
         if r == 0 || c == 0 || diagonal >= c as i64 {
             return Tensor::zeros([r, c], dtype);
         }

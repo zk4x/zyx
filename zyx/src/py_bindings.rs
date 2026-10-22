@@ -294,8 +294,25 @@ impl Tensor {
         let shape = self.resolve_shape();
         let np = py.import("numpy")?;
         Ok(match self.dtype() {
-            DType::BF16 => todo!(),
-            DType::F16 => todo!(),
+            DType::BF16 => {
+                let data: Vec<crate::scalar::bf16> = self.clone().try_into()?;
+                let raw: Vec<u8> = data.into_iter().flat_map(crate::scalar::bf16::to_le_bytes).collect();
+                let mld = py.import("ml_dtypes")?;
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("dtype", mld.getattr("bfloat16")?)?;
+                np.getattr("frombuffer")?
+                    .call((pyo3::types::PyBytes::new(py, &raw),), Some(&kwargs))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::F16 => {
+                let data: Vec<crate::scalar::f16> = self.clone().try_into()?;
+                let raw: Vec<u8> = data.into_iter().flat_map(crate::scalar::f16::to_le_bytes).collect();
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("dtype", "float16")?;
+                np.getattr("frombuffer")?
+                    .call((pyo3::types::PyBytes::new(py, &raw),), Some(&kwargs))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
             DType::F32 => {
                 let data: Vec<f32> = self.clone().try_into()?;
                 np.getattr("array")?.call1((data, "float32"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
@@ -364,10 +381,20 @@ impl Tensor {
         Tensor::set_training(training);
     }
 
-    // symbolic shape: returns Vec<Tensor>
+    // resolved shape: plain ints, always resolvable host-side (no launch).
+    // Symbolic dims only decide what gets compiled into kernels, never
+    // whether the value is known, so this never forces execution.
+    #[getter]
     #[must_use]
     #[pyo3(name = "shape")]
-    pub fn shape_py(&self) -> Vec<Tensor> {
+    pub fn shape_py(&self) -> Vec<Dim> {
+        self.resolve_shape()
+    }
+
+    // symbolic shape: dim tensors for kernel-building paths that need them
+    #[must_use]
+    #[pyo3(name = "symbolic_shape")]
+    pub fn symbolic_shape_py(&self) -> Vec<Tensor> {
         self.shape()
     }
 
@@ -1689,12 +1716,6 @@ impl Tensor {
             .transpose()?
             .unwrap_or_else(|| ks.clone());
         self.pool(ks.clone(), st.clone(), vec![1; ks.len()])
-    }
-
-    #[pyo3(name = "tri")]
-    #[staticmethod]
-    pub fn tri_py(r: Dim, c: Dim, diagonal: i64, dtype: DType) -> Tensor {
-        Tensor::tri(r, c, diagonal, dtype)
     }
 
     #[pyo3(name = "triu")]
