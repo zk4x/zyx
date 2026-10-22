@@ -452,7 +452,7 @@ impl Kernel {
                         } else {
                             self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
                         };
-                        let one = self.insert_before(root, Op::Const(Constant::from_le_bytes(&1i64.to_le_bytes(), dtype)));
+                        let one = self.insert_before(root, Op::Const(dtype.one_constant()));
                         let fill_slot = regs.alloc(self, dtype, prologue);
                         let fill = self.insert_before(root, Op::TT(TTOp::FillTile { slot: fill_slot, val: one }));
                         let zero_sc = self.insert_const_idx_before(root, 0i64);
@@ -733,6 +733,7 @@ impl Kernel {
                 Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::MatmulTiles { .. })
+                    | Op::TT(TTOp::FillTile { .. })
                     | Op::TT(TTOp::LLK { .. })
             ) {
                 return true;
@@ -2827,6 +2828,79 @@ impl Kernel {
 
         self.tt_fifo_check();
         self.verify();
+    }
+
+    /// DST lock firewall: port of the tenstorrent2 stream verifier's
+    /// lock half (the FIFO half already lives in `tt_fifo_check`;
+    /// both died with tenstorrent2.rs in 67bb272a "cleanup" and only
+    /// FIFO was ported back). Runs at the end of the TT
+    /// device-epilogue branch: whatever lowering did, lock pairing
+    /// must hold, or the sim wedges at launch with no message.
+    /// Loud panic at the exact op.
+    ///
+    /// Checks (compute section only): MathLock acquires from Unlocked
+    /// (or Pack), MathUnlock commits a held MATH lock, PackLock waits
+    /// from Unlocked, PackUnlock releases a held PACK lock; no lock
+    /// op outside the compute section; no section ends (or stream
+    /// ends) with the DST held. Lock ORDER (commit-before-wait) is
+    /// NOT checked here — known gap, needs its own rule.
+    pub fn tt_verify(&self) {
+        #[derive(PartialEq)]
+        enum Lock {
+            Unlocked,
+            Math,
+            Pack,
+        }
+        let mut lock = Lock::Unlocked;
+        let mut section = 0usize;
+        let mut seen_reader = false;
+        let mut id = self.head;
+        while !id.is_null() {
+            match self.at(id) {
+                Op::TT(TTOp::EndReader) => {
+                    assert!(section == 0, "tt_verify: duplicate EndReader at {id:?}");
+                    assert!(
+                        lock == Lock::Unlocked,
+                        "tt_verify: reader section ends with DST locked at {id:?}"
+                    );
+                    section = 1;
+                    seen_reader = true;
+                }
+                Op::TT(TTOp::EndCompute) => {
+                    assert!(seen_reader, "tt_verify: EndCompute without EndReader at {id:?}");
+                    assert!(section == 1, "tt_verify: duplicate EndCompute at {id:?}");
+                    assert!(
+                        lock == Lock::Unlocked,
+                        "tt_verify: compute section ends with DST locked at {id:?}"
+                    );
+                    section = 2;
+                }
+                Op::TT(TTOp::MathLock) => {
+                    assert!(section == 1, "tt_verify: DST lock outside compute at {id:?}");
+                    assert!(
+                        lock == Lock::Unlocked || lock == Lock::Pack,
+                        "tt_verify: acquire with DST already held at {id:?}"
+                    );
+                    lock = Lock::Math;
+                }
+                Op::TT(TTOp::MathUnlock) => {
+                    assert!(lock == Lock::Math, "tt_verify: commit without MATH lock at {id:?}");
+                    lock = Lock::Unlocked;
+                }
+                Op::TT(TTOp::PackLock) => {
+                    assert!(section == 1, "tt_verify: DST lock outside compute at {id:?}");
+                    assert!(lock == Lock::Unlocked, "tt_verify: pack wait without release at {id:?}");
+                    lock = Lock::Pack;
+                }
+                Op::TT(TTOp::PackUnlock) => {
+                    assert!(lock == Lock::Pack, "tt_verify: release without PACK lock at {id:?}");
+                    lock = Lock::Unlocked;
+                }
+                _ => {}
+            }
+            id = self.next_op(id);
+        }
+        assert!(lock == Lock::Unlocked, "tt_verify: stream ends with DST locked");
     }
 
     /// 64-byte congruence for one DRAM-touching copy: the board

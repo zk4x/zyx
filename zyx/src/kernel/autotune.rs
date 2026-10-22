@@ -117,6 +117,7 @@ impl Kernel {
 
             self.common_subexpression_elimination();
             self.dead_code_elimination();
+            self.tt_verify();
         } else {
             self.devectorize();
         }
