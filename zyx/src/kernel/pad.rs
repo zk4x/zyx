@@ -124,6 +124,18 @@ impl Kernel {
                 };
                 self.ops[axis].op = Op::Range { axis: range_axis, kind: new_kind };
 
+                // TT pads lengths only: physical tile buffers absorb halo
+                // by construction, and guard loops would make split refuse
+                // the axis (see tt_tile). Other backends execute seed
+                // indices literally, so guards stay load-bearing there.
+                #[cfg(feature = "tenstorrent")]
+                let tt = matches!(self.dev, crate::backend::Dev::TT(_));
+                #[cfg(not(feature = "tenstorrent"))]
+                let tt = false;
+                if tt {
+                    return;
+                }
+
                 // 2. Walk all ops after this axis and guard the loads and
                 // stores depending on it. Stores are wrapped unconditionally:
                 // the guard condition tests the thread position, never the
@@ -215,6 +227,11 @@ impl Kernel {
                 let q = self.insert_before(axis, Op::Binary { x: up, y: multiple_c, bop: BOp::Div });
                 let new_len = self.insert_before(axis, Op::Binary { x: q, y: multiple_c, bop: BOp::Mul });
                 self.ops[axis].op = Op::Loop { len: new_len };
+                // TT pads lengths only (see the range arm): guard loops
+                // would make split refuse the axis.
+                if tt {
+                    return;
+                }
 
                 // 2. The original length doubles as the OOB guard comparison.
                 let limit = len_idx;

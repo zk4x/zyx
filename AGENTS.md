@@ -72,6 +72,8 @@ cd zyx && cargo fmt
 - TT sim: export `TT_METAL_SIMULATOR=~/Dev/cpp/tt-sim/libttsim_bh.so`
   + `TT_METAL_SLOW_DISPATCH_MODE=1` before `cargo test --features tenstorrent`.
 - Clippy is NOT a gate. Python: `python3.12`. Tests return `Result<(), ZyxError>`.
+- Timeout cap: 10s MAX everywhere (tool `timeout` param, shell `timeout N`).
+  No exceptions, no stacking.
 - If all backends fail init, tests print nothing (C is always on;
   CUDA/HIP/etc. skip silently without drivers).
 
@@ -111,7 +113,7 @@ zyx/src/kernel/   kernel IR, codegen, ALL optimization passes
 - Aborted/hung run strands cores (heat): afterwards NO device access at all.
 - Invalid IR REJECTED at compile time, never wedged at runtime.
 - Passing compile = gate to launch. `ZYX_DRY_RUN=1`: launches are no-ops.
-- Custom-kernel tests: seconds or hung (>60s = abort).
+- Custom-kernel tests: seconds or hung (>10s = abort).
 
 ## gws (backend-only)
 - `Group` length per dim: `Const` -> `GwsDim::Const`,
@@ -149,7 +151,7 @@ zyx/src/kernel/   kernel IR, codegen, ALL optimization passes
    failure = NEW task: stop, report panic + location, ask first.
 8. Output needs `-- --nocapture`; never pipe it through grep/head.
 - Segfault: reproducer + `panic!("A")`/`panic!("B")` (panics flush).
-  Hang: `println!` + `-- --nocapture` + `timeout N`; LAST marker localizes.
+  Hang: `println!` + `-- --nocapture` + `timeout 10`; LAST marker localizes.
 - A `-1` dim as loop/group length hangs (~4.29e9 loop). `verify` must
   catch it loudly, never hang.
 - Lock watchdog in `src/mutex.rs` (commented out): uncomment to name holder.

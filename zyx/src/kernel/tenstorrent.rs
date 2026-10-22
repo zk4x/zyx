@@ -128,100 +128,58 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
-        // Fold first: split replicates the body, so wrappers
-        // (x*1, casts of consts) must die before replication, not after.
-        self.constant_folding();
-        // Pad every counted length up to a multiple of 32 FIRST: TT
-        // tiles are 32-wide, so split can only tile full tiles.
-        // Lengths only, no guards: physical tile buffers absorb halo
-        // by construction (zero-filled halo reads correct, halo writes
-        // land in padding narrowed away by untilize), and pad's guard
-        // loops would make split refuse the axis. Loops pad only here
-        // on TT (tile loops must run full-tile trip counts). Symbolic
-        // lengths round up in IR; the trailing multiply keeps them
-        // provably multiple, so no axis pads twice.
-        let m: Dim = 32;
-        let mut pad_groups: Vec<(OpId, u32, OpId)> = Vec::new();
+        // Gather loops, pad to 32, split unroll-32 FIRST: split's
+        // loop arm allows exactly one acc store per body, so it must
+        // run before coarsening replicates the body. pad_to pads
+        // lengths only on TT (no guards); already-multiples are
+        // untouched. Non-reduce loops are a no-op inside (no acc
+        // found); anything else keeps its shape for later cuts.
+        let mut pad_loops: Vec<OpId> = Vec::new();
         for (op, x) in self.iter_unordered() {
-            if let Op::Range { axis: range_axis, kind: RangeKind::Group(len) } = x {
-                if self.dtype(*len) == DType::Bool || self.is_sym_multiple(*len, m) {
-                    continue;
-                }
-                pad_groups.push((op, *range_axis, *len));
+            if matches!(x, Op::Loop { .. }) {
+                pad_loops.push(op);
             }
         }
-        for (axis, range_axis, len) in pad_groups {
-            let len_idx = match self.resolve_const(len).and_then(Constant::as_dim) {
-                Some(l) => self.insert_before(axis, Op::Const(Constant::idx(l))),
-                None => self.insert_before(axis, Op::Cast { x: len, dtype: IDX_T }),
+        for l in pad_loops {
+            self.pad_to(l, 32);
+            let len = match self.ops[l].op {
+                Op::Loop { len, .. } => len,
+                _ => unreachable!("pad_to preserves the Loop variant"),
             };
-            let multiple_c = self.insert_before(axis, Op::Const(Constant::idx(m)));
-            let m1 = self.insert_before(axis, Op::Const(Constant::idx(m - 1)));
-            let up = self.insert_before(axis, Op::Binary { x: len_idx, y: m1, bop: BOp::Add });
-            let q = self.insert_before(axis, Op::Binary { x: up, y: multiple_c, bop: BOp::Div });
-            let new_len = self.insert_before(axis, Op::Binary { x: q, y: multiple_c, bop: BOp::Mul });
-            self.ops[axis].op = Op::Range { axis: range_axis, kind: RangeKind::Group(new_len) };
-        }
-        let mut pad_loops: Vec<(OpId, OpId)> = Vec::new();
-        for (op, x) in self.iter_unordered() {
-            if let Op::Loop { len } = x {
-                if self.dtype(*len) == DType::Bool || self.is_sym_multiple(*len, m) {
-                    continue;
-                }
-                pad_loops.push((op, *len));
+            // resolve_const evaluates const-expr lengths on demand, so
+            // freshly padded (unfolded) round-ups resolve directly.
+            if self.resolve_const(len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
+                self.split(l, SplitMode::Unroll, 32);
             }
         }
-        for (axis, len) in pad_loops {
-            let len_idx = match self.resolve_const(len).and_then(Constant::as_dim) {
-                Some(l) => self.insert_before(axis, Op::Const(Constant::idx(l))),
-                None => self.insert_before(axis, Op::Cast { x: len, dtype: IDX_T }),
+
+        self.default_epilogue();
+        self.default_epilogue();
+
+        // Gather group ranges, pad to 32, coarsen LAST: duplicate
+        // the vectorized body, one lane per row. Anything else
+        // (symbolic, indivisible) is skipped, never fatal.
+        let mut pad_groups: Vec<OpId> = Vec::new();
+        for (op, x) in self.iter_unordered() {
+            if matches!(x, Op::Range { kind: RangeKind::Group(_), .. }) {
+                pad_groups.push(op);
+            }
+        }
+        for g in pad_groups {
+            self.pad_to(g, 32);
+            let len = match self.ops[g].op {
+                Op::Range { kind: RangeKind::Group(len), .. } => len,
+                _ => unreachable!("pad_to preserves the Group range"),
             };
-            let multiple_c = self.insert_before(axis, Op::Const(Constant::idx(m)));
-            let m1 = self.insert_before(axis, Op::Const(Constant::idx(m - 1)));
-            let up = self.insert_before(axis, Op::Binary { x: len_idx, y: m1, bop: BOp::Add });
-            let q = self.insert_before(axis, Op::Binary { x: up, y: multiple_c, bop: BOp::Div });
-            let new_len = self.insert_before(axis, Op::Binary { x: q, y: multiple_c, bop: BOp::Mul });
-            self.ops[axis].op = Op::Loop { len: new_len };
-        }
-        // Tree-unroll every counted loop with constant length divisible
-        // by 32 FIRST: split's loop arm allows exactly one acc store
-        // per body, so it must run before coarsening replicates the
-        // body. Non-reduce loops are a no-op inside (no acc found);
-        // anything else keeps its shape for later cuts.
-        let mut loops: Vec<OpId> = Vec::new();
-        for (op, x) in self.iter_unordered() {
-            if let Op::Loop { len, .. } = x {
-                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
-                    loops.push(op);
-                }
+            if self.resolve_const(len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
+                self.split(g, SplitMode::Unroll, 32);
             }
         }
-        for l in loops {
-            self.split(l, SplitMode::Unroll, 32);
-        }
 
         self.default_epilogue();
         self.default_epilogue();
 
-        // Coarsen group ranges LAST: duplicate the vectorized body, one
-        // lane per row. Anything else (symbolic, indivisible) is
-        // skipped, never fatal.
-        let mut groups: Vec<OpId> = Vec::new();
-        for (op, x) in self.iter_unordered() {
-            if let Op::Range { kind: RangeKind::Group(len), .. } = x {
-                if self.resolve_const(*len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
-                    groups.push(op);
-                }
-            }
-        }
-        for g in groups {
-            self.split(g, SplitMode::Unroll, 32);
-        }
-
-        self.default_epilogue();
-        self.default_epilogue();
-
-        self.debug();
+        // TEMP(sum-diag): silenced — self.debug();
         self.verify();
     }
 
