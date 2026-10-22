@@ -25,6 +25,7 @@ use crate::{
 /// The kind of the split's secondary part. The site kind (a [`Op::Range`]
 /// group or an [`Op::Loop`]) and this variant together decide the split:
 /// `Local` splits a group into a smaller group plus local threads;
+/// `Group` splits a group into two nested groups (outer and inner);
 /// `Unroll` splits a group into a smaller part plus unroll lanes, or
 /// unrolls a reduce loop per element with the per-element values chained
 /// into the accumulator store. A group split grows only the register
@@ -33,6 +34,8 @@ use crate::{
 pub enum SplitMode {
     /// Secondary part is a local thread range.
     Local,
+    /// Secondary part is a nested group range.
+    Group,
     /// Secondary part is unroll lanes; the lane axis is the next free one
     /// at apply time.
     Unroll,
@@ -66,7 +69,7 @@ impl Optimization for OptSplit {
 impl Kernel {
     /// Single split of one axis into `split_mode` by `factor`.
     ///
-    /// Returns the new secondary node (`Local`/`Unroll`/`Loop`);
+    /// Returns the new secondary node (`Local`/`Group`/`Unroll`/`Loop`);
     /// `OpId::NULL` when the config cannot apply. All validity gates
     /// live here so `OptSplit::apply` stays a straight call.
     pub(crate) fn split(&mut self, axis_id: OpId, split_mode: SplitMode, factor: u16) -> OpId {
@@ -98,6 +101,30 @@ impl Kernel {
                 // the shape verifier; the caller verifies.
                 self.ops[axis_id].op = Op::Binary { x: acc, y: local_id, bop: BOp::Add };
                 local_id
+            }
+            SplitMode::Group => {
+                let Op::Range { axis, kind: RangeKind::Group(len_id) } = self.ops[axis_id].op else {
+                    return OpId::NULL;
+                };
+                if !self.is_sym_multiple(len_id, factor_dim) {
+                    return OpId::NULL;
+                }
+                let Some(len) = self.resolve_const(len_id).and_then(Constant::as_dim) else {
+                    return OpId::NULL;
+                };
+                // Same composition as the Local arm, but the secondary
+                // part stays a group range: splitting a group into two
+                // nested groups (outer and inner), no lanes involved.
+                let group_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                let zero = self.insert_before(axis_id, Op::Const(Constant::idx(0)));
+                let scale = self.insert_before(axis_id, Op::Const(Constant::idx(factor_dim)));
+                let group_id = self.insert_before(axis_id, Op::Range { axis, kind: RangeKind::Group(group_len) });
+                let scaled = self.insert_before(axis_id, Op::Binary { x: scale, y: group_id, bop: BOp::Mul });
+                let acc = self.insert_before(axis_id, Op::Binary { x: scaled, y: zero, bop: BOp::Add });
+                let inner_len = self.insert_const_idx_before(axis_id, factor_dim);
+                let inner_id = self.insert_before(axis_id, Op::Range { axis, kind: RangeKind::Group(inner_len) });
+                self.ops[axis_id].op = Op::Binary { x: acc, y: inner_id, bop: BOp::Add };
+                inner_id
             }
             SplitMode::Unroll => {
                 // The lane axis is the next free one; nothing runs between

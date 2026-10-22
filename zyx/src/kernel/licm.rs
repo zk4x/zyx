@@ -87,7 +87,9 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::FillTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::MatmulTiles { .. }) => loop_depth,
+                | Op::TT(TTOp::MatmulTiles { .. })
+                | Op::TT(TTOp::SigmoidTile { .. })
+                | Op::TT(TTOp::SiluTile { .. }) => loop_depth,
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -180,7 +182,9 @@ impl Kernel {
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::FillTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::MatmulTiles { .. }) => loop_depth,
+                | Op::TT(TTOp::MatmulTiles { .. })
+                | Op::TT(TTOp::SigmoidTile { .. })
+                | Op::TT(TTOp::SiluTile { .. }) => loop_depth,
                 Op::Asm { ops, .. } => {
                     let mut max = 0;
                     for op in ops.iter() {
@@ -325,6 +329,8 @@ impl Kernel {
                             | Op::TT(TTOp::FillTile { .. })
                             | Op::TT(TTOp::LLKBcast { .. })
                             | Op::TT(TTOp::MatmulTiles { .. })
+                            | Op::TT(TTOp::SigmoidTile { .. })
+                            | Op::TT(TTOp::SiluTile { .. })
                             | Op::Load { .. }
                             | Op::Loop { .. }
                             | Op::EndLoop

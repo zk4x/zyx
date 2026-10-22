@@ -660,6 +660,28 @@ pub enum TTOp {
         /// Result (Register) storage.
         slot: OpId,
     },
+    /// Lowered fused sigmoid: the `(x.neg().exp() + 1).recip()` composite
+    /// over a tile-shaped value, rendered as doc-driven `sigmoid_tile`
+    /// (single tile). Carries the resolved input CB plus the result
+    /// slot, like [`TTOp::ReduceTile`]. Same effect/CSE rules as
+    /// [`TTOp::LLK`]: a DCE root, pinned by LICM, never deduplicated.
+    SigmoidTile {
+        /// Input circular buffer.
+        cb_in: OpId,
+        /// Result (Register) storage.
+        slot: OpId,
+    },
+    /// Lowered fused silu: the `x * sigmoid(x)` composite over
+    /// tile-shaped values, rendered as doc-driven `silu_tile` (single
+    /// tile). Carries the resolved input CB plus the result slot, like
+    /// [`TTOp::ReduceTile`]. Same effect/CSE rules as [`TTOp::LLK`]:
+    /// a DCE root, pinned by LICM, never deduplicated.
+    SiluTile {
+        /// Input circular buffer.
+        cb_in: OpId,
+        /// Result (Register) storage.
+        slot: OpId,
+    },
 }
 
 /// Boxed payload of [`Op::Custom`]: a custom kernel boundary's inputs,
@@ -1317,6 +1339,8 @@ impl Op {
             &Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
             &Op::TT(TTOp::FillTile { slot, val }) => vec![slot, val],
             &Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => vec![cb_a, cb_b, slot],
+            &Op::TT(TTOp::SigmoidTile { cb_in, slot }) => vec![cb_in, slot],
+            &Op::TT(TTOp::SiluTile { cb_in, slot }) => vec![cb_in, slot],
             &Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
@@ -1419,6 +1443,8 @@ impl Op {
             Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
             Op::TT(TTOp::FillTile { slot, val }) => vec![slot, val],
             Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => vec![cb_a, cb_b, slot],
+            Op::TT(TTOp::SigmoidTile { cb_in, slot }) => vec![cb_in, slot],
+            Op::TT(TTOp::SiluTile { cb_in, slot }) => vec![cb_in, slot],
             Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
         }
         .into_iter()

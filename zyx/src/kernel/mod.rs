@@ -529,6 +529,24 @@ impl Kernel {
                         *rcs.entry(f).or_insert(0) += 1;
                     }
                 }
+                Op::TT(TTOp::SigmoidTile { cb_in, slot }) => {
+                    // Lowered fused sigmoid: one tile out; result takes
+                    // the input CB's dtype.
+                    let (dtype, _) = dtypes[&cb_in].clone();
+                    dtypes.insert(op_id, (dtype, vec![32, 32]));
+                    for &f in &[cb_in, slot] {
+                        *rcs.entry(f).or_insert(0) += 1;
+                    }
+                }
+                Op::TT(TTOp::SiluTile { cb_in, slot }) => {
+                    // Lowered fused silu: one tile out; result takes
+                    // the input CB's dtype.
+                    let (dtype, _) = dtypes[&cb_in].clone();
+                    dtypes.insert(op_id, (dtype, vec![32, 32]));
+                    for &f in &[cb_in, slot] {
+                        *rcs.entry(f).or_insert(0) += 1;
+                    }
+                }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes[&ops[0]].0;
                     dtypes.insert(op_id, (dtype, vec![ops.len() as Dim]));
@@ -654,6 +672,8 @@ impl Kernel {
                 Op::TT(TTOp::FillTile { val, .. }) => op_id = val,
                 Op::TT(TTOp::LLKBcast { cb_a, .. }) => op_id = cb_a,
                 Op::TT(TTOp::MatmulTiles { cb_a, .. }) => op_id = cb_a,
+                Op::TT(TTOp::SigmoidTile { cb_in, .. }) => op_id = cb_in,
+                Op::TT(TTOp::SiluTile { cb_in, .. }) => op_id = cb_in,
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
@@ -1094,6 +1114,15 @@ impl Kernel {
                     // Lowered matmul: single 32x32x32 tile MAC.
                     flops = flops.saturating_add(2 * 32 * 32 * 32 * mult);
                 }
+                Op::TT(TTOp::SigmoidTile { .. }) => {
+                    // Lowered fused sigmoid: the 5 replaced elementwise
+                    // ops (neg, mul, exp2, add, recip) at one flop each.
+                    flops = flops.saturating_add(5 * mult);
+                }
+                Op::TT(TTOp::SiluTile { .. }) => {
+                    // Lowered fused silu: sigmoid's 5 plus the final mul.
+                    flops = flops.saturating_add(6 * mult);
+                }
                 Op::Load { src, .. } => {
                     if let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*src].op {
                         let n_elems: Dim = self
@@ -1449,7 +1478,10 @@ impl Kernel {
                 // Lowered calls report no shape ids: no buffer is ever
                 // sized from them (writer CBs are pre-sized). `shape`
                 // and the dtype map carry their tile shapes.
-                Op::TT(TTOp::MatmulTiles { .. }) | Op::TT(TTOp::ReduceTile { .. }) => {
+                Op::TT(TTOp::MatmulTiles { .. })
+                | Op::TT(TTOp::ReduceTile { .. })
+                | Op::TT(TTOp::SigmoidTile { .. })
+                | Op::TT(TTOp::SiluTile { .. }) => {
                     visited.insert(op_id, Vec::new());
                 }
                 Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
@@ -1739,6 +1771,15 @@ impl Kernel {
                     visited.insert(id, out);
                 }
                 Op::TT(TTOp::MatmulTiles { .. }) => {
+                    visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);
+                }
+                // A fused sigmoid yields one [32, 32] tile:
+                // kind-constant, like the matmul.
+                Op::TT(TTOp::SigmoidTile { .. }) => {
+                    visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);
+                }
+                // A fused silu yields one [32, 32] tile: kind-constant.
+                Op::TT(TTOp::SiluTile { .. }) => {
                     visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);
                 }
                 // A fill produces one full tile: fixed [32, 32], no

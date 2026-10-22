@@ -10,6 +10,8 @@
 ## Read first, ask before editing
 - READ CODE FIRST. Only STOP and ask when the code underdetermines
   the answer (multiple designs, missing spec, intended semantics).
+- NEVER use the question tool. Ask in plain text when the code
+  underdetermines the answer; wait for a plain-text verb.
 - User owns design. Analysis: thorough. Implementation: ask, don't choose.
 - ASK BEFORE ADDING ANY FUNCTION OR CHANGING A SIGNATURE
   (params, return, generics, `Result`), incl. private helpers.
@@ -72,7 +74,8 @@ cd zyx && cargo fmt
 - TT sim: export `TT_METAL_SIMULATOR=~/Dev/cpp/tt-sim/libttsim_bh.so`
   + `TT_METAL_SLOW_DISPATCH_MODE=1` before `cargo test --features tenstorrent`.
 - Clippy is NOT a gate. Python: `python3.12`. Tests return `Result<(), ZyxError>`.
-- Timeout cap: 10s MAX everywhere (tool `timeout` param, shell `timeout N`).
+- Timeout cap: 10s MAX per individual test RUN (one test only, not the suite).
+  Test execution only, not compilation, not tool use in general.
   No exceptions, no stacking.
 - If all backends fail init, tests print nothing (C is always on;
   CUDA/HIP/etc. skip silently without drivers).

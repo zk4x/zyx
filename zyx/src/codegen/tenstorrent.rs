@@ -782,6 +782,39 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 }
                 sec.out.push_str(&format!("{}{rendered}\n", sec.indent));
             }
+            Op::TT(TTOp::SigmoidTile { cb_in, slot }) => {
+                // Structured lowered fused sigmoid: copy the input tile
+                // into the DST slot, then the single-tile call.
+                let cb = match sec.k.at(*cb_in) {
+                    Op::Storage { scope: MemScope::Circular, .. } => {
+                        sec.cbs.get(cb_in).copied().ok_or_else(|| sec.err(format!("CB {cb_in:?} has no number")))?
+                    }
+                    _ => return Err(sec.err(format!("SigmoidTile {id:?} operand {cb_in:?} is not a circular storage"))),
+                };
+                let dst = match sec.k.at(*slot) {
+                    Op::Storage { scope: MemScope::Register, .. } => sec.reg_slot(*slot)?,
+                    _ => return Err(sec.err(format!("SigmoidTile {id:?} slot {slot:?} is not a Register storage"))),
+                };
+                sec.out.push_str(&format!("{}copy_tile({cb}, 0, {dst});\n", sec.indent));
+                sec.out.push_str(&format!("{}sigmoid_tile({dst});\n", sec.indent));
+                sec.slots.insert(id, dst);
+            }
+            Op::TT(TTOp::SiluTile { cb_in, slot }) => {
+                // Structured lowered fused silu: same copy-then-call shape.
+                let cb = match sec.k.at(*cb_in) {
+                    Op::Storage { scope: MemScope::Circular, .. } => {
+                        sec.cbs.get(cb_in).copied().ok_or_else(|| sec.err(format!("CB {cb_in:?} has no number")))?
+                    }
+                    _ => return Err(sec.err(format!("SiluTile {id:?} operand {cb_in:?} is not a circular storage"))),
+                };
+                let dst = match sec.k.at(*slot) {
+                    Op::Storage { scope: MemScope::Register, .. } => sec.reg_slot(*slot)?,
+                    _ => return Err(sec.err(format!("SiluTile {id:?} slot {slot:?} is not a Register storage"))),
+                };
+                sec.out.push_str(&format!("{}copy_tile({cb}, 0, {dst});\n", sec.indent));
+                sec.out.push_str(&format!("{}silu_tile({dst});\n", sec.indent));
+                sec.slots.insert(id, dst);
+            }
             Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, .. }) => {
                 // Structured lowered fused broadcast: same rebuild; the
                 // result slot is DST (fresh slot, like the LLK NULL).

@@ -109,7 +109,6 @@ impl Kernel {
             self.tt_sync_cbs();
             self.tt_place_pops();
             self.verify();
-            // TEMP(sum-diag): silenced — self.debug();
 
             self.common_subexpression_elimination();
             self.dead_code_elimination();

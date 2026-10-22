@@ -621,6 +621,8 @@ impl Kernel {
                     | Op::TT(TTOp::FillTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::MatmulTiles { .. })
+                    | Op::TT(TTOp::SigmoidTile { .. })
+                    | Op::TT(TTOp::SiluTile { .. })
                     | Op::Param { .. }
                     | Op::Storage { .. }
                     | Op::Wmma { .. }
@@ -698,6 +700,8 @@ impl Kernel {
                 | &mut Op::TT(TTOp::FillTile { .. })
                 | &mut Op::TT(TTOp::LLKBcast { .. })
                 | &mut Op::TT(TTOp::MatmulTiles { .. })
+                | &mut Op::TT(TTOp::SigmoidTile { .. })
+                | &mut Op::TT(TTOp::SiluTile { .. })
                 | &mut Op::TT(TTOp::MathLock)
                 | &mut Op::TT(TTOp::MathUnlock)
                 | &mut Op::TT(TTOp::PackLock)

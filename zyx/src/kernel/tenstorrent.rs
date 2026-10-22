@@ -158,11 +158,56 @@ impl Kernel {
 
         // Gather group ranges, pad to 32, coarsen LAST: duplicate
         // the vectorized body, one lane per row. Anything else
-        // (symbolic, indivisible) is skipped, never fatal.
+        // (symbolic, indivisible) is skipped, never fatal. The device
+        // grid is 2D: one group range is pre-split into two nested
+        // groups below, two proceed as-is, more than two is a later
+        // increment.
         let mut pad_groups: Vec<OpId> = Vec::new();
         for (op, x) in self.iter_unordered() {
             if matches!(x, Op::Range { kind: RangeKind::Group(_), .. }) {
                 pad_groups.push(op);
+            }
+        }
+        if pad_groups.len() > 2 {
+            todo!("tt_tile: more than two group ranges");
+        }
+        if pad_groups.len() == 1 {
+            // A lone flat group (e.g. Group(1024)) cannot reach tile
+            // loads with one unroll level: pre-split it into two nested
+            // groups of roughly equal size, then pad and unroll normally
+            // below. Only when no loop will supply the second lane axis
+            // and the length needs exactly two unroll levels (a multiple
+            // of 1024); anything else keeps today's behavior.
+            let g = pad_groups[0];
+            let has_loop = self.iter_unordered().any(|(_, x)| matches!(x, Op::Loop { .. }));
+            self.pad_to(g, 32);
+            let (axis, len) = match self.ops[g].op {
+                Op::Range { axis, kind: RangeKind::Group(len) } => {
+                    (axis, self.resolve_const(len).and_then(|c| c.as_dim()))
+                }
+                _ => unreachable!("pad_to preserves the Group range"),
+            };
+            if !has_loop {
+                if let Some(len) = len {
+                    if len % 1024 == 0 {
+                        // Largest divisor at or below sqrt(len): the two
+                        // factors are as equal as possible.
+                        let mut f = (len as f64).sqrt() as Dim;
+                        while f > 1 && len % f != 0 {
+                            f -= 1;
+                        }
+                        if f > 1 {
+                            let factor = u16::try_from(f).expect("tt_tile: group split factor overflows u16");
+                            self.split(g, SplitMode::Group, factor);
+                        }
+                    }
+                }
+            }
+            pad_groups.clear();
+            for (op, x) in self.iter_unordered() {
+                if matches!(x, Op::Range { kind: RangeKind::Group(_), .. }) {
+                    pad_groups.push(op);
+                }
             }
         }
         for g in pad_groups {
@@ -179,7 +224,6 @@ impl Kernel {
         self.default_epilogue();
         self.default_epilogue();
 
-        // TEMP(sum-diag): silenced — self.debug();
         self.verify();
     }
 
@@ -343,6 +387,62 @@ impl Kernel {
         // regardless. Pack must follow the LLK in program order.
         // (Single pack per CB for now; multi-pack sharing comes with
         // multi-consumer values.)
+        // Fused sigmoid/silu composites, single tile. Builder spelling
+        // (`tensor/elementwise.rs`): `sigmoid = recip(add(exp2(mul(neg(x),
+        // LOG2_E)), 1))`, `silu = x * sigmoid(x)`; the scalar consts
+        // match any `Const` (builders cast them to the tile dtype).
+        // Silu contains a sigmoid cone, so silu gets its own walk
+        // first: claiming an inner sigmoid first would rewrite it and
+        // the silu root could never match. A CSE+DCE between the walks
+        // prunes orphaned inners (same as the old fuse pass).
+        let sx = Pat::bind('x').shape([32i64, 32]);
+        let sigmoid_pat = (sx.neg().exp() + Pat::Const).recip().shape([32i64, 32]);
+        let silu_pat = (&sx * &sigmoid_pat).shape([32i64, 32]);
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if let Some(m) = self.match_pat(op_id, &silu_pat) {
+                let feeder = m.op('x');
+                // Feeder resolves through its DRAM param (phase 1 owns
+                // all DRAM loads); the unpacker streams CBs only.
+                // Non-DRAM feeders stay for later increments.
+                let resolved = match self.ops[feeder].op {
+                    Op::Load { src: base, .. } => match self.ops[base].op {
+                        Op::Param { dtype, .. } => Some((base, dtype)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some((base, dtype)) = resolved {
+                    if let Some(&cb_in) = reader_cb_of.get(&base) {
+                        let root = op_id;
+                        // Result slot: allocator-minted Register tile.
+                        let slot = regs.alloc(self, dtype, prologue);
+                        self.ops[root].op = Op::TT(TTOp::SiluTile { cb_in, slot });
+                        // Writer CB + pack after the LLK (program order is exact).
+                        let writer_cb = if prologue.is_null() {
+                            self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+                        } else {
+                            self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+                        };
+                        let zero_pack = self.insert_const_idx_before(root, 0i64);
+                        let pack_lanes = self.lane_tree_before(zero_pack, &[32, 32], root);
+                        let pack_at = self.next_op(root);
+                        let pack = Op::Store { dst: writer_cb, dst_idx: pack_lanes, src: root };
+                        if pack_at.is_null() {
+                            self.push_back(pack);
+                        } else {
+                            self.insert_before(pack_at, pack);
+                        }
+                        regs.release(dtype, slot);
+                        lowered.insert(root, writer_cb);
+                    }
+                }
+            }
+            op_id = next;
+        }
+        self.common_subexpression_elimination();
+        self.dead_code_elimination();
         // Single pass, biggest first: at each Reduce, try matmul,
         // then reduces. Installs consume their root and create no
         // matchable roots, so one head-order walk suffices.
@@ -463,6 +563,42 @@ impl Kernel {
                         let slot = regs.alloc(self, dtype, prologue);
                         self.ops[root].op = Op::TT(TTOp::ReduceTile { rop, kind, cb_in, cb_sc, slot });
                         // Writer CB + pack after the LLK (program order is exact).
+                        let writer_cb = if prologue.is_null() {
+                            self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+                        } else {
+                            self.insert_before(prologue, Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
+                        };
+                        let zero_pack = self.insert_const_idx_before(root, 0i64);
+                        let pack_lanes = self.lane_tree_before(zero_pack, &[32, 32], root);
+                        let pack_at = self.next_op(root);
+                        let pack = Op::Store { dst: writer_cb, dst_idx: pack_lanes, src: root };
+                        if pack_at.is_null() {
+                            self.push_back(pack);
+                        } else {
+                            self.insert_before(pack_at, pack);
+                        }
+                        regs.release(dtype, slot);
+                        lowered.insert(root, writer_cb);
+                    }
+                }
+            }
+            // — fused sigmoid attempt (single tile). Silu cones were
+            // claimed by the walk above, so any sigmoid left is a plain
+            // one. Runs for every op: the root is a Recip, not a Reduce.
+            if let Some(m) = self.match_pat(op_id, &sigmoid_pat) {
+                let feeder = m.op('x');
+                let resolved = match self.ops[feeder].op {
+                    Op::Load { src: base, .. } => match self.ops[base].op {
+                        Op::Param { dtype, .. } => Some((base, dtype)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some((base, dtype)) = resolved {
+                    if let Some(&cb_in) = reader_cb_of.get(&base) {
+                        let root = op_id;
+                        let slot = regs.alloc(self, dtype, prologue);
+                        self.ops[root].op = Op::TT(TTOp::SigmoidTile { cb_in, slot });
                         let writer_cb = if prologue.is_null() {
                             self.push_back(Op::Storage { dtype, scope: MemScope::Circular, len: 1024 })
                         } else {
@@ -753,6 +889,8 @@ impl Kernel {
                 Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::MatmulTiles { .. })
+                    | Op::TT(TTOp::SigmoidTile { .. })
+                    | Op::TT(TTOp::SiluTile { .. })
                     | Op::TT(TTOp::FillTile { .. })
                     | Op::TT(TTOp::LLK { .. })
             ) {
@@ -1023,6 +1161,8 @@ impl Kernel {
                 }),
                 Op::TT(TTOp::ReduceTile { cb_in, cb_sc, .. }) => *cb_in == cb || *cb_sc == cb,
                 Op::TT(TTOp::MatmulTiles { cb_a, cb_b, .. }) => *cb_a == cb || *cb_b == cb,
+                Op::TT(TTOp::SigmoidTile { cb_in, .. }) => *cb_in == cb,
+                Op::TT(TTOp::SiluTile { cb_in, .. }) => *cb_in == cb,
                 Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
                     *cb_a == cb || *cb_b == cb || load_cb(*mx) || load_cb(*plain)
                 }
@@ -1374,7 +1514,9 @@ impl Kernel {
                     Op::TT(TTOp::LLK { .. })
                     | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
-                    | Op::TT(TTOp::MatmulTiles { .. }) => {
+                    | Op::TT(TTOp::MatmulTiles { .. })
+                    | Op::TT(TTOp::SigmoidTile { .. })
+                    | Op::TT(TTOp::SiluTile { .. }) => {
                         let mut feeds = false;
                         for o in self.at(cur).parameters() {
                             if o.is_null() {
@@ -1641,6 +1783,8 @@ impl Kernel {
                                             TTOp::ReduceTile { .. }
                                             | TTOp::LLKBcast { .. }
                                             | TTOp::MatmulTiles { .. }
+                                            | TTOp::SigmoidTile { .. }
+                                            | TTOp::SiluTile { .. }
                                             | TTOp::LLK { .. },
                                         ) => true,
                                         Op::Store { .. } | Op::Asm { .. } => true,
@@ -1671,6 +1815,8 @@ impl Kernel {
                                             | Op::TT(TTOp::ReduceTile { .. })
                                             | Op::TT(TTOp::LLKBcast { .. })
                                             | Op::TT(TTOp::MatmulTiles { .. })
+                                            | Op::TT(TTOp::SigmoidTile { .. })
+                                            | Op::TT(TTOp::SiluTile { .. })
                                     )
                                 });
                                 if !fused_only && !batched_read.contains(&op_id) {
@@ -1709,7 +1855,9 @@ impl Kernel {
                 Op::TT(TTOp::LLK { .. })
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::MatmulTiles { .. }) => {
+                | Op::TT(TTOp::MatmulTiles { .. })
+                | Op::TT(TTOp::SigmoidTile { .. })
+                | Op::TT(TTOp::SiluTile { .. }) => {
                     // Provenance waits: the call consumes its input CBs
                     // straight from the buffers, so each Circular
                     // storage operand gets a wait immediately before
@@ -1842,6 +1990,16 @@ impl Kernel {
                         }
                     }
                 }
+                Op::TT(TTOp::SigmoidTile { cb_in, .. }) if in_compute => {
+                    if !startup_cbs.contains(&cb_in) {
+                        startup_cbs.push(*cb_in);
+                    }
+                }
+                Op::TT(TTOp::SiluTile { cb_in, .. }) if in_compute => {
+                    if !startup_cbs.contains(&cb_in) {
+                        startup_cbs.push(*cb_in);
+                    }
+                }
                 op if in_compute && first_pack.is_none() => {
                     if let Some(cb) = self.tt_pack_store_cb(scan) {
                         let _ = op;
@@ -1919,11 +2077,13 @@ impl Kernel {
                 // Reader/writer move through `Copy` only; any tile
                 // compute, fused call, pack store, or CB load outside
                 // the compute section is malformed.
-                let bad = match &self.ops[op_id].op {
-                    Op::TT(TTOp::LLK { .. })
-                    | Op::TT(TTOp::ReduceTile { .. })
-                    | Op::TT(TTOp::LLKBcast { .. })
-                    | Op::TT(TTOp::MatmulTiles { .. }) => true,
+                    let bad = match &self.ops[op_id].op {
+                        Op::TT(TTOp::LLK { .. })
+                        | Op::TT(TTOp::ReduceTile { .. })
+                        | Op::TT(TTOp::LLKBcast { .. })
+                        | Op::TT(TTOp::MatmulTiles { .. })
+                        | Op::TT(TTOp::SigmoidTile { .. })
+                        | Op::TT(TTOp::SiluTile { .. }) => true,
                     Op::Store { .. } => self.tt_pack_store_cb(op_id).is_some(),
                     Op::Load { src, .. } => {
                         matches!(self.ops[*src].op, Op::Storage { scope: MemScope::Circular, .. })
@@ -1960,6 +2120,8 @@ impl Kernel {
                 FillInit,
                 ReduceInit(OpId, OpId, OpId, BOp, TileDim),
                 BcastInit(BOp, TileDim, OpId, OpId),
+                SigmoidInit(OpId),
+                SiluInit(OpId),
             }
             let action = match &self.ops[op_id].op {
                 Op::Unary { uop, .. } => InitAction::UnaryInit(*uop),
@@ -2014,6 +2176,8 @@ impl Kernel {
                 }
                 Op::TT(TTOp::FillTile { .. }) => InitAction::FillInit,
                 Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, .. }) => InitAction::BcastInit(*bop, *kind, *cb_a, *cb_b),
+                Op::TT(TTOp::SigmoidTile { cb_in, .. }) => InitAction::SigmoidInit(*cb_in),
+                Op::TT(TTOp::SiluTile { cb_in, .. }) => InitAction::SiluInit(*cb_in),
                 Op::TT(TTOp::MatmulTiles { cb_a, cb_b, .. }) => {
                     let out = first_pack.unwrap_or_else(|| panic!("tt_init_math: matmul {op_id:?} with no packed CB"));
                     InitAction::MatmulShortInit(*cb_a, *cb_b, out)
@@ -2241,6 +2405,19 @@ impl Kernel {
                 }
                 InitAction::FillInit => {
                     asm_before(self, op_id, "fill_tile_init();", &[]);
+                }
+                InitAction::SigmoidInit(cb) => {
+                    // The render copies the CB tile into DST before the
+                    // call: configure the unpacker for that copy, then
+                    // the MATH init. (The fused LLK's DRAM feeder load is
+                    // dead by now, so the load-scan unpack init that
+                    // served the old template form does not fire.)
+                    asm_before(self, op_id, "copy_tile_init({0});", &[cb]);
+                    asm_before(self, op_id, "sigmoid_tile_init();", &[]);
+                }
+                InitAction::SiluInit(cb) => {
+                    asm_before(self, op_id, "copy_tile_init({0});", &[cb]);
+                    asm_before(self, op_id, "silu_tile_init();", &[]);
                 }
             }
             op_id = next;
@@ -2530,7 +2707,9 @@ impl Kernel {
                     Op::TT(TTOp::LLK { .. })
                     | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
-                    | Op::TT(TTOp::MatmulTiles { .. }) => {
+                    | Op::TT(TTOp::MatmulTiles { .. })
+                    | Op::TT(TTOp::SigmoidTile { .. })
+                    | Op::TT(TTOp::SiluTile { .. }) => {
                         let mut feeds = false;
                         for o in self.at(cur).parameters() {
                             if o.is_null() {
@@ -2594,6 +2773,8 @@ impl Kernel {
                     | Op::TT(TTOp::ReduceTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::MatmulTiles { .. })
+                    | Op::TT(TTOp::SigmoidTile { .. })
+                    | Op::TT(TTOp::SiluTile { .. })
             ) {
                 for o in self.at(walk).parameters() {
                     if o.is_null() {
@@ -2636,6 +2817,8 @@ impl Kernel {
                         | Op::TT(TTOp::ReduceTile { .. })
                         | Op::TT(TTOp::LLKBcast { .. })
                         | Op::TT(TTOp::MatmulTiles { .. })
+                        | Op::TT(TTOp::SigmoidTile { .. })
+                        | Op::TT(TTOp::SiluTile { .. })
                 ) {
                     continue;
                 }
@@ -2699,7 +2882,9 @@ impl Kernel {
                 Op::TT(TTOp::LLK { .. })
                 | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::MatmulTiles { .. }) => {
+                | Op::TT(TTOp::MatmulTiles { .. })
+                | Op::TT(TTOp::SigmoidTile { .. })
+                | Op::TT(TTOp::SiluTile { .. }) => {
                     let mut seen: Vec<OpId> = Vec::new();
                     for o in self.at(op_id).parameters() {
                         if o.is_null() {

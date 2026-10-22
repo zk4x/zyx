@@ -236,6 +236,32 @@ impl Kernel {
                     )
                     .unwrap();
                 }
+                Op::TT(TTOp::SigmoidTile { cb_in, slot }) => {
+                    let dtype = dtypes.get(&cb_in).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let shp = self.shape_suffix(op_id, &shapes);
+                    let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}sigmoid_tile{reset} r{}, r{}",
+                        map(cb_in),
+                        map(slot),
+                    )
+                    .unwrap();
+                }
+                Op::TT(TTOp::SiluTile { cb_in, slot }) => {
+                    let dtype = dtypes.get(&cb_in).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let shp = self.shape_suffix(op_id, &shapes);
+                    let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}silu_tile{reset} r{}, r{}",
+                        map(cb_in),
+                        map(slot),
+                    )
+                    .unwrap();
+                }
                 Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, bytes }) => {
                     let shp = self.shape_suffix(op_id, &shapes);
                     let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);

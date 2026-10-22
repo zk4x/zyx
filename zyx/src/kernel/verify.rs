@@ -95,6 +95,8 @@ impl Kernel {
                     | Op::TT(TTOp::FillTile { .. })
                     | Op::TT(TTOp::LLKBcast { .. })
                     | Op::TT(TTOp::MatmulTiles { .. })
+                    | Op::TT(TTOp::SigmoidTile { .. })
+                    | Op::TT(TTOp::SiluTile { .. })
                     | Op::Asm { .. } => has_post_linearize_ops = true,
                     Op::Permute { .. }
                     | Op::Expand { .. }
@@ -419,6 +421,32 @@ impl Kernel {
                         }
                     }
                     dtypes.insert(op_id, dtypes[&cb_a]);
+                }
+                Op::TT(TTOp::SigmoidTile { cb_in, slot }) => {
+                    // Lowered fused sigmoid: bare storages only (input
+                    // CB, result slot). Result takes the CB's dtype.
+                    for &f in &[cb_in, slot] {
+                        check(op_id, f, &stack);
+                        if !matches!(self.at(f), Op::Storage { .. }) {
+                            println!("tt fused sigmoid op={op_id} has non-storage operand {f}");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    dtypes.insert(op_id, dtypes[&cb_in]);
+                }
+                Op::TT(TTOp::SiluTile { cb_in, slot }) => {
+                    // Lowered fused silu: bare storages only (input CB,
+                    // result slot). Result takes the CB's dtype.
+                    for &f in &[cb_in, slot] {
+                        check(op_id, f, &stack);
+                        if !matches!(self.at(f), Op::Storage { .. }) {
+                            println!("tt fused silu op={op_id} has non-storage operand {f}");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    dtypes.insert(op_id, dtypes[&cb_in]);
                 }
                 Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, bytes }) => {
                     // Lowered traffic copy: DRAM param or Circular
@@ -870,6 +898,34 @@ impl Kernel {
                 Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
                     let mut r = None;
                     for f in [cb_a, cb_b, slot] {
+                        if let Some(&(xl, xu)) = bounds.get(&f) {
+                            r = Some(match r {
+                                Some((l, u)) => (xl.min(l), xu.max(u)),
+                                None => (xl, xu),
+                            });
+                        }
+                    }
+                    if let Some((xl, xu)) = r {
+                        bounds.insert(op_id, (xl, xu));
+                    }
+                }
+                Op::TT(TTOp::SigmoidTile { cb_in, slot, .. }) => {
+                    let mut r = None;
+                    for f in [cb_in, slot] {
+                        if let Some(&(xl, xu)) = bounds.get(&f) {
+                            r = Some(match r {
+                                Some((l, u)) => (xl.min(l), xu.max(u)),
+                                None => (xl, xu),
+                            });
+                        }
+                    }
+                    if let Some((xl, xu)) = r {
+                        bounds.insert(op_id, (xl, xu));
+                    }
+                }
+                Op::TT(TTOp::SiluTile { cb_in, slot, .. }) => {
+                    let mut r = None;
+                    for f in [cb_in, slot] {
                         if let Some(&(xl, xu)) = bounds.get(&f) {
                             r = Some(match r {
                                 Some((l, u)) => (xl.min(l), xu.max(u)),

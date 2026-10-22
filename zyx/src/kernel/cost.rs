@@ -249,6 +249,18 @@ impl Kernel {
                                 *rcs.entry(*f).or_insert(0) += 1;
                             }
                         }
+                        TTOp::SigmoidTile { cb_in, slot, .. } => {
+                            dtypes.insert(op_id, dtypes[cb_in].clone());
+                            for f in [cb_in, slot] {
+                                *rcs.entry(*f).or_insert(0) += 1;
+                            }
+                        }
+                        TTOp::SiluTile { cb_in, slot, .. } => {
+                            dtypes.insert(op_id, dtypes[cb_in].clone());
+                            for f in [cb_in, slot] {
+                                *rcs.entry(*f).or_insert(0) += 1;
+                            }
+                        }
                         TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. } => {
                             dtypes.insert(op_id, dtypes[cb_a].clone());
                             for f in [cb_a, cb_b, mx, plain] {
@@ -364,6 +376,8 @@ impl Kernel {
                 | Op::TT(TTOp::FillTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
                 | Op::TT(TTOp::MatmulTiles { .. })
+                | Op::TT(TTOp::SigmoidTile { .. })
+                | Op::TT(TTOp::SiluTile { .. })
                 | Op::EndLoop
                 | Op::Barrier => false,
                 // Counted loops produce the induction value; boolean

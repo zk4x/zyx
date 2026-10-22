@@ -132,7 +132,9 @@ impl Kernel {
                 Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::FillTile { .. })
                 | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::MatmulTiles { .. }) => structural[i] = true,
+                | Op::TT(TTOp::MatmulTiles { .. })
+                | Op::TT(TTOp::SigmoidTile { .. })
+                | Op::TT(TTOp::SiluTile { .. }) => structural[i] = true,
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
                 // A copy reads its src and writes its dst: it pins like a
@@ -274,6 +276,14 @@ impl Kernel {
                     add_param!(mx);
                     add_param!(plain);
                 }
+                Op::TT(TTOp::SigmoidTile { cb_in, slot, .. }) => {
+                    add_param!(cb_in);
+                    add_param!(slot);
+                }
+                Op::TT(TTOp::SiluTile { cb_in, slot, .. }) => {
+                    add_param!(cb_in);
+                    add_param!(slot);
+                }
                 Op::Stack { ops } => {
                     for &p in ops.iter() {
                         add_param!(p);
@@ -340,6 +350,16 @@ impl Kernel {
                 }
                 Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
                     for &f in [cb_a, cb_b, mx, plain] {
+                        by_memory_target.entry(f).or_default().push(i);
+                    }
+                }
+                Op::TT(TTOp::SigmoidTile { cb_in, slot, .. }) => {
+                    for &f in [cb_in, slot] {
+                        by_memory_target.entry(f).or_default().push(i);
+                    }
+                }
+                Op::TT(TTOp::SiluTile { cb_in, slot, .. }) => {
+                    for &f in [cb_in, slot] {
                         by_memory_target.entry(f).or_default().push(i);
                     }
                 }
