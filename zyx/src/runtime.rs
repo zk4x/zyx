@@ -2265,6 +2265,35 @@ impl Runtime {
                     return Ok(tid);
                 }
 
+                // Reshape of an unrealized reduce result is metadata, not a
+                // kernel: re-home x itself as the stored PendingLeaf with
+                // the new shape (same tid, no new kernel, no duplicate).
+                // add_store keeps the normal store path — buffer creation,
+                // launch conversion, and reads all work unchanged — and the
+                // store uses the op's own shape, which has the same element
+                // count. Only when the store would fire due to a reduce on
+                // a store-free kernel; kernels that already store keep the
+                // old path.
+                if let TensorData::Eager { kernel_id, op_id, .. } = self.tensors[x] {
+                    let reduce_src = {
+                        let kernel = &self.kernels[kernel_id].kernel;
+                        self.leaf_buffer(x).is_none()
+                            && !kernel.contains_stores()
+                            && kernel.is_preceded_by_reduce(op_id)
+                    };
+                    if reduce_src {
+                        self.add_store(x)?;
+                        match &mut self.tensors[x] {
+                            TensorData::PendingLeaf { shape_id, .. } | TensorData::Leaf { shape_id, .. } => {
+                                *shape_id = shape_expr
+                            }
+                            ref t => panic!("reshape: stored reduce result {x} is not a leaf: {t:?}"),
+                        }
+                        self.retain(x);
+                        return Ok(x);
+                    }
+                }
+
                 let (kernel_id, op_id) = self.duplicate_or_store(x, false)?;
 
                 debug_assert_eq!(

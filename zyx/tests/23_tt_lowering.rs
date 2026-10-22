@@ -73,18 +73,17 @@ fn sum() -> Result<(), ZyxError> {
 
     let z = x.to(Dev::TT(0))?.sum_keepdim([1])?.to(Dev::C)?;
 
-    // Host reference: per-row sums over k=0..20, padding is zero.
-    // The output is a row-major [32, 1] vec (one sum per tilized row).
+    // Host reference: per-row sums over k=0..20. The transfer narrows
+    // the physical tile to the logical [10, 1] shape.
     let xv: Vec<bf16> = x.try_into().unwrap();
     let zv: Vec<bf16> = z.try_into().unwrap();
     assert_eq!(xv.len(), 10 * 20);
-    assert_eq!(zv.len(), 32);
+    assert_eq!(zv.len(), 10);
     let mut bad = 0;
-    for r in 0..32 {
+    for r in 0..10 {
         let mut acc = 0f32;
         for k in 0..20 {
-            let xi: f32 = if r < 10 { xv[r * 20 + k].into() } else { 0.0 };
-            acc += xi;
+            acc += f32::from(xv[r * 20 + k]);
         }
         let v: f32 = zv[r].into();
         if (v - acc).abs() >= 1e-1 {
@@ -94,7 +93,7 @@ fn sum() -> Result<(), ZyxError> {
             bad += 1;
         }
     }
-    println!("sum bad: {bad} / 32");
+    println!("sum bad: {bad} / 10");
     assert_eq!(bad, 0);
 
     Ok(())
