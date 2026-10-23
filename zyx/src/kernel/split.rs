@@ -241,38 +241,44 @@ impl Kernel {
                         self.ops[axis_id].op = Op::Binary { x: acc, y, bop: BOp::Add };
                         let unroll_id = split_ids[1];
 
-                        // Lane-dependent ops: everything transitively consuming
-                        // the unroll node.
-                        let mut varies: Set<OpId> = Set::default();
-                        varies.insert(unroll_id);
-                        for _ in 0..10_000 {
-                            let mut grown = false;
-                            for (op, _) in self.iter_unordered() {
-                                if !varies.contains(&op) && self.at(op).parameters().any(|p| varies.contains(&p)) {
-                                    varies.insert(op);
-                                    grown = true;
-                                }
-                            }
-                            if !grown {
-                                break;
-                            }
-                        }
-
-                        // Register storages receiving lane-dependent values or
-                        // accessed at lane-dependent addresses grow to one slot
-                        // block per lane (coarsen's `len *= factor`); nothing
-                        // else does. One pass: `grows` is itself consulted, so
-                        // a single lane-varying access grows the storage it
-                        // belongs to.
+                        // Lane-dependent ops in a single program-order pass:
+                        // everything consuming the unroll node, plus everything
+                        // downstream of a load from an already-grown storage
+                        // (values that become lane-varying through grown
+                        // storages). Program order visits producers before
+                        // consumers, so one pass computes the full closure;
+                        // `grows` is consulted inline, so a single
+                        // lane-varying access grows the storage it belongs to.
+                        let mut lane: Set<OpId> = Set::default();
+                        lane.insert(unroll_id);
                         let op_ids: Vec<OpId> = self.ops.ids().collect();
                         let mut grows: Set<OpId> = Set::default();
-                        for &walk_id in &op_ids {
+                        #[cfg(debug_assertions)]
+                        let mut visited: Set<OpId> = Set::default();
+                        let mut walk_id = self.head;
+                        while !walk_id.is_null() {
+                            #[cfg(debug_assertions)]
+                            {
+                                for p in self.at(walk_id).parameters() {
+                                    debug_assert!(
+                                        p.is_null() || visited.contains(&p),
+                                        "split: use before def in program order"
+                                    );
+                                }
+                                visited.insert(walk_id);
+                            }
+                            if !lane.contains(&walk_id)
+                                && (self.at(walk_id).parameters().any(|p| lane.contains(&p))
+                                    || matches!(self.at(walk_id), Op::Load { src, .. } if grows.contains(src)))
+                            {
+                                lane.insert(walk_id);
+                            }
                             match self.at(walk_id) {
                                 Op::Store { dst, dst_idx, src, .. } => {
                                     let is_register =
                                         matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. });
-                                    let lane_dep = varies.contains(src)
-                                        || (!dst_idx.is_null() && varies.contains(dst_idx))
+                                    let lane_dep = lane.contains(src)
+                                        || (!dst_idx.is_null() && lane.contains(dst_idx))
                                         || grows.contains(dst);
                                     if is_register && lane_dep {
                                         grows.insert(*dst);
@@ -282,7 +288,7 @@ impl Kernel {
                                     let is_register =
                                         matches!(self.at(*src), Op::Storage { scope: MemScope::Register, .. });
                                     let lane_dep =
-                                        (!src_idx.is_null() && varies.contains(src_idx)) || grows.contains(src);
+                                        (!src_idx.is_null() && lane.contains(src_idx)) || grows.contains(src);
                                     if is_register && lane_dep {
                                         grows.insert(*src);
                                     }
@@ -290,13 +296,14 @@ impl Kernel {
                                 Op::Copy { dst, dst_idx, .. } => {
                                     let is_register =
                                         matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. });
-                                    let lane_dep = (!dst_idx.is_null() && varies.contains(dst_idx)) || grows.contains(dst);
+                                    let lane_dep = (!dst_idx.is_null() && lane.contains(dst_idx)) || grows.contains(dst);
                                     if is_register && lane_dep {
                                         grows.insert(*dst);
                                     }
                                 }
                                 _ => {}
                             }
+                            walk_id = self.next_op(walk_id);
                         }
                         // Grow the storages themselves: one slot block
                         // per lane.
