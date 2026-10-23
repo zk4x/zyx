@@ -815,7 +815,16 @@ impl Tensor {
         let cdf = &cw / cw.slice((.., -1))?.unsqueeze(1)?;
         let cdf_sh = cdf.resolve_shape();
         let unif_samples = Tensor::rand([num_samples, cdf_sh[0], 1], DType::F32)?;
-        let indices = unif_samples.expand([num_samples, cdf_sh[0], cdf_sh[1]])?.cmplt(cdf)?.not().sum([2])?.permute([1, 0])?;
+        // Inversion sampling (tinygrad): count the cdf entries the uniform
+        // sample exceeds. The mask is bool, and bool reduce is rejected, so
+        // cast to I32 first — the counts are identical to summing bools.
+        let indices = unif_samples
+            .expand([num_samples, cdf_sh[0], cdf_sh[1]])?
+            .cmplt(cdf)?
+            .not()
+            .cast(DType::I32)
+            .sum([2])?
+            .permute([1, 0])?;
         Ok((if rank == 1 { indices.squeeze([0]) } else { indices }).cast(DType::I32))
     }
 
@@ -1950,15 +1959,16 @@ impl Tensor {
         (left_side * right_side).sum([-1])
     }
 
-    /// Compute the matmul of this tensor and `rhs` in the output dtype
-    /// `out_dtype`.
+    /// Compute the matmul of this tensor and `rhs`, accumulating the
+    /// contraction in dtype `acc_dtype`. The output keeps the inputs'
+    /// least-upper dtype.
     ///
     /// # Example
     ///
     /// ```rust
     /// # use zyx::{Tensor, DType};
     /// let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
-    /// let b = Tensor::from([[5.0, 6.0], [7.0, 8.0]]);
+    /// let b = Tensor::from([[5.0f32, 6.0], [7.0, 8.0]]);
     /// let c = a.dot_dtype(b, DType::F32).unwrap();
     /// assert_eq!(c.to_vec::<f32>().unwrap(), vec![19.0f32, 22.0, 43.0, 50.0]);
     /// ```
