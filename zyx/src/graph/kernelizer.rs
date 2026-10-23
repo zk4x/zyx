@@ -178,6 +178,11 @@ impl Graph {
                     _ => todo!(),
                 };
                 for child in data_slots {
+                    // NULL = absent (scalar shape): never a materialization
+                    // edge. Guarded once here so no op arm matches null.
+                    if child.is_null() {
+                        continue;
+                    }
                     *rcs.entry(child).or_default() += 1;
                 }
             }
@@ -602,6 +607,10 @@ impl Graph {
                         // position. Every replayed param keeps its load class,
                         // aligned in param order (positional args law).
                         let mut op_map: Map<OpId, OpId> = Map::default();
+                        // NULL maps to itself: shape operands of scalar
+                        // movement ops (Reshape/Expand to scalar) pass
+                        // through instead of panicking on lookup.
+                        op_map.insert(OpId::NULL, OpId::NULL);
                         let mut new_def_loads: Vec<OpId> = Vec::new();
                         let mut def_i = 0usize;
                         let mut op_id = dst_kernel.head;
@@ -776,7 +785,11 @@ impl Graph {
                         // The shape descriptor is pure metadata — replay its
                         // symbolic expression directly into this kernel.
                         let sop = self.replay_shape_into_kernel(kid, shape);
-                        *rcs.get_mut(&shape).unwrap() -= 1;
+                        // Null shape was never counted (see the rc walk):
+                        // nothing to decrement.
+                        if !shape.is_null() {
+                            *rcs.get_mut(&shape).unwrap() -= 1;
+                        }
                         let result_op = self.jit_kernels[kid].kernel.push_back(Op::Expand { x: op_id, shape: sop });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
@@ -837,7 +850,11 @@ impl Graph {
                         // The shape descriptor is pure metadata — replay its
                         // symbolic expression directly into this kernel.
                         let sop = self.replay_shape_into_kernel(kid, shape);
-                        *rcs.get_mut(&shape).unwrap() -= 1;
+                        // Null shape was never counted (see the rc walk):
+                        // nothing to decrement.
+                        if !shape.is_null() {
+                            *rcs.get_mut(&shape).unwrap() -= 1;
+                        }
                         let result_op = self.jit_kernels[kid].kernel.push_back(Op::Reshape { x: op_id, shape: sop });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));

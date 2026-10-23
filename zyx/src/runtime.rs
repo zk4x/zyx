@@ -1306,8 +1306,8 @@ impl Runtime {
                 let class_id = self.push_op(graph_id, Op::Cast { x: class_id, dtype });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
-                debug_assert!(!shape_id.is_scalar(), "cast: input graph tensor {x} has no shape expression");
-
+                // Scalars (ExprId::SCALAR) stay scalar — a fully-reduced graph
+                // tensor legitimately carries the scalar marker.
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
@@ -1355,8 +1355,8 @@ impl Runtime {
                 let class_id = self.push_op(graph_id, Op::Bitcast { x: class_id, dtype });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
-                debug_assert!(!shape_id.is_scalar(), "bitcast: input graph tensor {x} has no shape expression");
-
+                // Scalars (ExprId::SCALAR) stay scalar — a fully-reduced graph
+                // tensor legitimately carries the scalar marker.
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
@@ -1418,8 +1418,8 @@ impl Runtime {
                 let class_id = self.push_op(graph_id, Op::Unary { x: class_id, uop });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
-                debug_assert!(!shape_id.is_scalar(), "unary: input graph tensor {x} has no shape expression");
-
+                // Scalars (ExprId::SCALAR) stay scalar — a fully-reduced graph
+                // tensor legitimately carries the scalar marker.
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, cid={class_id:?}");

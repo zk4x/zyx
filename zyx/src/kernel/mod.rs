@@ -309,13 +309,18 @@ impl Kernel {
                 // descriptor operands: resolve each dim, `-1` where
                 // symbolic (same convention as `Kernel::shape`).
                 Op::Reshape { x, shape } | Op::Expand { x, shape } => {
-                    let dims = match self.ops[shape].op {
-                        Op::Stack { ref ops } => ops
-                            .iter()
-                            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
-                            .collect(),
-                        _ => {
-                            vec![self.resolve_const(shape).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)]
+                    // NULL shape = scalar (see `shape_class`): no dims.
+                    let dims = if shape.is_null() {
+                        Vec::new()
+                    } else {
+                        match self.ops[shape].op {
+                            Op::Stack { ref ops } => ops
+                                .iter()
+                                .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
+                                .collect(),
+                            _ => {
+                                vec![self.resolve_const(shape).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)]
+                            }
                         }
                     };
                     let dtype = dtypes[&x].0;

@@ -1285,7 +1285,11 @@ impl Op {
                 RangeKind::Warp(local_id) => vec![local_id],
             },
             &Op::Loop { len, .. } => vec![len],
-            &Op::Reshape { x, shape, .. } | &Op::Expand { x, shape } => vec![x, shape],
+            &Op::Reshape { x, shape, .. } | &Op::Expand { x, shape } => {
+                // Null shape = scalar (see `shape_class`): no shape operand,
+                // same as `Param` below.
+                if shape.is_null() { vec![x] } else { vec![x, shape] }
+            }
             &Op::Permute { x, .. } | &Op::Flip { x, .. } => vec![x],
             &Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             &Op::Narrow { x, start, len, .. } => vec![x, start, len],
@@ -1372,7 +1376,11 @@ impl Op {
                 RangeKind::Warp(local_id) => vec![local_id],
             },
             Op::Loop { len, .. } => vec![len],
-            Op::Reshape { x, shape, .. } | Op::Expand { x, shape } => vec![x, shape],
+            Op::Reshape { x, shape, .. } | Op::Expand { x, shape } => {
+                // Null shape = scalar (see `shape_class`): no shape operand,
+                // same as `Param` below.
+                if shape.is_null() { vec![x] } else { vec![x, shape] }
+            }
             Op::Permute { x, .. } | Op::Flip { x, .. } => vec![x],
             Op::Pad { x, lp, len, .. } => vec![x, lp, len],
             Op::Narrow { x, start, len, .. } => vec![x, start, len],

@@ -1102,6 +1102,11 @@ impl Graph {
     /// for static dims or a symbolic dim leaf otherwise. Empty vec for
     /// scalars.
     pub fn shape(&self, class: OpId) -> Vec<OpId> {
+        if class.is_null() {
+            // NULL class = scalar shape (see `shape_class`): no dims.
+            // Centralized here so callers never match null themselves.
+            return Vec::new();
+        }
         match &self.ops[class].op {
             Op::Const(_) | Op::Stack { .. } => Vec::new(),
             Op::Index { vec, idx } => match &self.ops[*vec].op {
