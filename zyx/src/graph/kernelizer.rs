@@ -271,16 +271,24 @@ impl Graph {
                                 *rcs.get_mut(&e).unwrap() -= 1;
                             }
                         } else {
-                            // Anchor: first materialized element's kernel is
-                            // the merge destination, mirroring `Runtime::stack`.
-                            let anchor = ops[ops.iter().zip(sym.iter()).position(|(_, &s)| !s).unwrap()];
-                            let (kid, _) = visited[&anchor];
-                            // All inputs merge into one kernel with one shared
-                            // gws grid derived from the elements' shapes — they
-                            // must agree.
+                            // Isolate every materialized input like the other movement
+                            // ops: duplicate_or_store_class returns a single-output,
+                            // store-free kernel, so the fused stack kernel holds only
+                            // the result. Merging raw input kernels would leave live
+                            // inputs ([2x3]) next to the result ([2x2x3]) as sibling
+                            // outputs — one kernel, two grids, which linearize
+                            // cannot grid (eager parity: runtime::stack duplicates
+                            // every input for the same reason).
+                            let s0 = {
+                                let (&first, _) = ops
+                                    .iter()
+                                    .zip(sym.iter())
+                                    .find(|(_, s)| !**s)
+                                    .expect("stack: no materialized element");
+                                self.shape(first)
+                            };
                             if cfg!(debug_assertions) {
-                                let s0 = self.shape(anchor);
-                                for (&e, &s) in ops.iter().zip(sym.iter()).skip(1) {
+                                for (&e, &s) in ops.iter().zip(sym.iter()) {
                                     if !s {
                                         debug_assert_eq!(
                                             self.shape(e),
@@ -291,34 +299,54 @@ impl Graph {
                                     }
                                 }
                             }
-                            let mut op_ids: Vec<OpId> = Vec::with_capacity(ops.len());
+                            let mut op_ids: Vec<Option<OpId>> = Vec::with_capacity(ops.len());
+                            let mut keep_kid: Option<JitKernelId> = None;
                             for (&elem, &s) in ops.iter().zip(sym.iter()) {
                                 if s {
-                                    *rcs.get_mut(&elem).unwrap() -= 1;
-                                    let op = self.replay_shape_into_kernel(kid, elem);
-                                    op_ids.push(op);
+                                    // Scalar elements replay into the result
+                                    // kernel below, preserving order.
+                                    op_ids.push(None);
                                     continue;
                                 }
-                                let (mut ekid, mut eop) = visited[&elem];
-                                if ekid != kid {
-                                    if self.jit_kernels[ekid].kernel.contains_stores() {
-                                        (ekid, eop) = self.add_store(elem, ekid, eop, &mut visited, &rcs);
+                                let (kid, op_id) = visited[&elem];
+                                let (kid, op_id) =
+                                    self.duplicate_or_store_class(elem, kid, op_id, &mut visited, &mut rcs, false);
+                                // Route the merge repointing through the duplicate
+                                // home; merge_kernels repoints every visited entry
+                                // of the merged kernel onto the destination. The
+                                // class still owns this edge (consumed below), so
+                                // recording its current home cannot trip the
+                                // zero-rc invariant.
+                                visited.insert(elem, (kid, op_id));
+                                match keep_kid {
+                                    Some(dst) if dst != kid => {
+                                        self.merge_kernels(kid, dst, &mut visited);
                                     }
-                                    if ekid != kid {
-                                        self.merge_kernels(ekid, kid, &mut visited);
-                                        (_, eop) = visited[&elem];
-                                    }
+                                    None => keep_kid = Some(kid),
+                                    _ => {}
                                 }
-                                op_ids.push(eop);
+                                op_ids.push(Some(visited[&elem].1));
                             }
+                            let keep_kid = keep_kid.expect("stack: no materialized element");
                             for (&elem, &s) in ops.iter().zip(sym.iter()) {
                                 if !s {
-                                    self.consume(elem, kid, &mut visited, &mut rcs);
+                                    self.consume(elem, keep_kid, &mut visited, &mut rcs);
                                 }
                             }
-                            let result_op = self.jit_kernels[kid].kernel.stack(&op_ids);
-                            self.push_outputs(kid, cid, rcs[&cid]);
-                            visited.insert(cid, (kid, result_op));
+                            let mut elts: Vec<OpId> = Vec::with_capacity(ops.len());
+                            for (slot, (&elem, &s)) in op_ids.into_iter().zip(ops.iter().zip(sym.iter())) {
+                                match slot {
+                                    Some(op) => elts.push(op),
+                                    None => {
+                                        debug_assert!(s);
+                                        *rcs.get_mut(&elem).unwrap() -= 1;
+                                        elts.push(self.replay_shape_into_kernel(keep_kid, elem));
+                                    }
+                                }
+                            }
+                            let result_op = self.jit_kernels[keep_kid].kernel.stack(&elts);
+                            self.push_outputs(keep_kid, cid, rcs[&cid]);
+                            visited.insert(cid, (keep_kid, result_op));
                         }
                     }
                     Op::Unary { x, uop } => {

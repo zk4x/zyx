@@ -1108,7 +1108,23 @@ impl Graph {
             return Vec::new();
         }
         match &self.ops[class].op {
-            Op::Const(_) | Op::Stack { .. } => Vec::new(),
+            Op::Const(_) => Vec::new(),
+            Op::Stack { ops } => {
+                // Shape-descriptor stacks (scalar dims) have no tensor shape.
+                // A data stack's shape is the actual tensor shape, [len] ++
+                // element shape (scalar elements still add the rank). The
+                // leading dim class is interned by the constructor (egraph
+                // consts are never removed), so it is resolved by value here;
+                // absent (foreign stacks) keeps today's [].
+                if let Some(&e) = ops.iter().find(|&&e| !self.shape(e).is_empty()) {
+                    if let Some(&nid) = self.hashcons.get(&Op::Const(Constant::idx(ops.len() as i64))) {
+                        let mut s = self.shape(e);
+                        s.insert(0, self.ops[nid].class_of);
+                        return s;
+                    }
+                }
+                Vec::new()
+            }
             Op::Index { vec, idx } => match &self.ops[*vec].op {
                 Op::Stack { ops } => self.shape(ops[*idx]),
                 // Projection of a multi-output kernel: the shape metadata of

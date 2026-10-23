@@ -2104,6 +2104,10 @@ impl Runtime {
                 });
             }
             let class_id = self.push_op(graph_id, Op::Stack { ops: ops.into_boxed_slice() });
+            // The data stack's leading dim must resolve for Graph::shape
+            // (which cannot mint classes): intern it so shape() finds it by
+            // value. Egraph consts are never removed, so the lookup holds.
+            let _ = self.push_const(graph_id, Constant::idx(tensors.len() as i64));
             {
                 // Result shape mirrors the eager arm: [len] ++ first operand's
                 // dims. Same reachable set as the ops loop above: graph
