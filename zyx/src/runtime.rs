@@ -2121,53 +2121,29 @@ impl Runtime {
                 Ok(tid)
             }
         } else {
-            let (keep_kid, first_shape) = match self.tensors[tensors[0]] {
-                TensorData::Eager { kernel_id, shape_id, .. } => (kernel_id, shape_id),
-                TensorData::Leaf { shape_id, .. } | TensorData::PendingLeaf { shape_id, .. } => {
-                    (self.new_kernel_from_leaf(tensors[0]).0, shape_id)
-                }
-                TensorData::Graph { .. }
-                | TensorData::GraphLeaf { .. }
-                | TensorData::Promoted { .. }
-                | TensorData::Symbolic { .. } => {
-                    panic!("stack: operand tid {} is not an eager tensor: {:?}", tensors[0], self.tensors[tensors[0]])
-                }
+            // Isolate every input like the other movement ops: duplicate_or_store
+            // returns a store-free, outputs-empty kernel, so the fused stack
+            // kernel holds only the result. Fusing raw input kernels would leave
+            // live inputs ([2x3]) next to the result ([2x2x3]) as sibling outputs,
+            // and the first load spills them all into one kernel that linearize
+            // cannot grid (group axis lengths 3 vs 2).
+            let first_shape = match self.tensors[tensors[0]] {
+                TensorData::Eager { shape_id, .. }
+                | TensorData::Leaf { shape_id, .. }
+                | TensorData::PendingLeaf { shape_id, .. } => shape_id,
+                ref t => panic!("stack: operand tid {} is not an eager tensor: {:?}", tensors[0], t),
             };
             let mut ops = Vec::with_capacity(tensors.len());
-            for &t in tensors {
-                let (mut kid, mut op) = match self.tensors[t] {
-                    TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
-                    TensorData::Graph { .. }
-                    | TensorData::GraphLeaf { .. }
-                    | TensorData::Promoted { .. }
-                    | TensorData::Symbolic { .. } => {
-                        panic!("stack: operand is not an eager tensor: {:?}", self.tensors[t])
-                    }
-                };
-                if kid != keep_kid {
-                    if !self.kernels[kid].stores.is_empty() {
-                        self.add_store(t)?;
-                        (kid, op) = match self.tensors[t] {
-                            TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                            TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
-                            TensorData::Graph { .. }
-                            | TensorData::GraphLeaf { .. }
-                            | TensorData::Promoted { .. }
-                            | TensorData::Symbolic { .. } => unreachable!("{:?}", self.tensors[t]),
-                        };
-                    }
-                    if kid != keep_kid {
-                        let op_map = self.merge_kernel(keep_kid, kid)?;
-                        op = op_map[&op];
-                    }
-                }
-                ops.push(op);
+            let (keep_kid, op) = self.duplicate_or_store(tensors[0], false)?;
+            ops.push(op);
+            for &t in &tensors[1..] {
+                let (kid, op) = self.duplicate_or_store(t, false)?;
+                let op_map = self.merge_kernel(keep_kid, kid)?;
+                ops.push(op_map[&op]);
             }
             let op_id = self.kernels[keep_kid].kernel.stack(&ops);
 
-            // Result shape: [len] ++ first operand's dims (`first_shape`
-            // bound in the keep_kid match above).
+            // Result shape: [len] ++ first operand's dims.
             let len_expr = self.push(Expr::Constant { value: Constant::idx(tensors.len() as i64) });
             let shape_id = self.stack_prefix_shape(len_expr, first_shape);
 
