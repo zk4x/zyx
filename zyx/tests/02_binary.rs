@@ -146,3 +146,20 @@ fn pow_neg_f32() -> Result<(), ZyxError> {
     println!("{z}");
     Ok(())
 }
+
+#[test]
+fn bool_scalar_promotes() -> Result<(), ZyxError> {
+    // Bool never absorbs the other dtype: scalars keep their values and the
+    // result promotes (torch/tinygrad semantics). Used to collapse both 1.0
+    // and -1.0 to `true`.
+    let m = Tensor::from([true, false, true, false]);
+    let neg = &m * -1.0f32;
+    assert_eq!(neg.dtype(), DType::F32);
+    let data: Vec<f32> = neg.try_into()?;
+    assert_eq!(data, [-1.0, -0.0, -1.0, -0.0]);
+    let one_minus = 1.0f32 - &m;
+    assert_eq!(one_minus.dtype(), DType::F32);
+    let data: Vec<f32> = one_minus.try_into()?;
+    assert_eq!(data, [0.0, 1.0, 0.0, 1.0]);
+    Ok(())
+}
