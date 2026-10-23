@@ -366,6 +366,97 @@ impl Tensor {
         Ok(result)
     }
 
+    /// Copy values from `src` into a copy of `self` along `axis` per `indices`
+    /// (torch `scatter` with `reduce=None` semantics). Negative indices wrap
+    /// to the end. If several index entries map to the same output position,
+    /// the last one in `indices` order wins.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let x = Tensor::zeros([4], DType::F32);
+    /// let y = x.scatter(0, Tensor::from(vec![1i32, 1]), Tensor::from(vec![5.0f32, 2.0]))?;
+    /// assert_eq!(y.to_vec::<f32>().unwrap(), vec![0.0, 2.0, 0.0, 0.0]);
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a shape error if the `indices`/`src` shapes mismatch, or a
+    /// non-scatter dim of `self` is smaller than the corresponding dim.
+    pub fn scatter(&self, axis: Axis, indices: impl Into<Tensor>, src: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let indices = indices.into();
+        let src = src.into();
+        let shape = self.resolve_shape();
+        let index_shape = indices.resolve_shape();
+        let dim = into_axis(axis, shape.len() as u32)? as usize;
+        let dim_size = shape[dim];
+
+        if shape.len() != index_shape.len() {
+            return Err(ZyxError::shape_error(
+                format!("self.rank({}) != indices.rank({})", shape.len(), index_shape.len()).into(),
+            ));
+        }
+
+        if index_shape != src.resolve_shape() {
+            return Err(ZyxError::shape_error(
+                format!("indices shape {:?} != src shape {:?}", index_shape, src.resolve_shape()).into(),
+            ));
+        }
+
+        for (d, (&s, &i)) in shape.iter().zip(index_shape.iter()).enumerate() {
+            if d != dim && s < i {
+                return Err(ZyxError::shape_error(
+                    format!("Shape mismatch at dimension {d}: self.shape[{d}] = {s} < indices.shape[{d}] = {i}").into(),
+                ));
+            }
+        }
+
+        // No index entries: nothing is replaced.
+        if index_shape[dim] == 0 {
+            return Ok(self.clone());
+        }
+
+        let is_negative = indices.cmplt(0)?.cast(indices.dtype());
+        let indices = indices + is_negative.mul(dim_size as i32);
+
+        let mask = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size, -1)?;
+        let values = mask.clone().mul(&src.unsqueeze(-1)?);
+
+        let mask = mask.transpose(-1, dim as i32)?;
+        let values = values.transpose(-1, dim as i32)?;
+
+        let rank = self.rank() as usize;
+        let mut padding = Vec::new();
+        for d in (0..=rank).rev() {
+            if d == dim || d == rank {
+                padding.push((0i64, 0i64));
+            } else {
+                padding.push((0i64, (shape[d] - index_shape[d]) as i64));
+            }
+        }
+        let mask = mask.rpad_zeros(padding.clone())?;
+        let values = values.rpad_zeros(padding)?;
+
+        // Last index entry wins: fold the trailing index axis front to back,
+        // keeping the later value wherever its mask bit is set. The running
+        // OR is `a + b - a * b`, exact for 0/1 in integer arithmetic.
+        let ones = vec![1i32; index_shape[dim] as usize];
+        let mut masks = mask.split(ones.clone(), -1)?.into_iter();
+        let mut vals = values.split(ones, -1)?.into_iter();
+        let mut acc_m = masks.next().expect("scatter split produced no mask entries").cast(DType::I32);
+        let mut acc_v = vals.next().expect("scatter split produced no value entries");
+        for (m, v) in masks.zip(vals) {
+            acc_v = m.where_(v, acc_v)?;
+            let m32 = m.cast(DType::I32);
+            acc_m = acc_m.clone() + m32.clone() - acc_m * m32;
+        }
+        let acc_m = acc_m.squeeze([-1]);
+        let acc_v = acc_v.squeeze([-1]).cast(self.dtype());
+        acc_m.where_(acc_v, self.clone())
+    }
+
     /// Add values from `src` into a copy of `self` along `axis` per `indices`;
     /// indices mapping to the same output position are summed. Negative
     /// indices wrap to the end.
@@ -375,7 +466,8 @@ impl Tensor {
     /// ```rust
     /// # use zyx::{Tensor, DType};
     /// let x = Tensor::zeros([4], DType::F32);
-    /// let y = x.scatter(0, Tensor::from(vec![1i32, 1]), Tensor::from(vec![5.0f32, 2.0]))?;
+    /// let y = x.scatter_add(0, Tensor::from(vec![1i32, 1]), Tensor::from(vec![5.0f32, 2.0]))?;
+    /// assert_eq!(y.to_vec::<f32>().unwrap(), vec![0.0, 7.0, 0.0, 0.0]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -383,7 +475,7 @@ impl Tensor {
     ///
     /// Returns a shape error if the `indices`/`src` shapes mismatch, or a
     /// non-scatter dim of `self` is smaller than the corresponding dim.
-    pub fn scatter(&self, axis: Axis, indices: impl Into<Tensor>, src: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+    pub fn scatter_add(&self, axis: Axis, indices: impl Into<Tensor>, src: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let indices = indices.into();
         let src = src.into();
         let shape = self.resolve_shape();
@@ -432,6 +524,84 @@ impl Tensor {
         let contrib = contrib.rpad_zeros(padding)?;
 
         let result = contrib.sum_dtype([-1], self.dtype())? + self;
+
+        Ok(result)
+    }
+
+    /// Multiply values from `src` into a copy of `self` along `axis` per
+    /// `indices`; indices mapping to the same output position multiply
+    /// repeatedly, positions no index entry maps to keep `self`. Negative
+    /// indices wrap to the end.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let x = Tensor::ones([4], DType::F32);
+    /// let y = x.scatter_mul(0, Tensor::from(vec![1i32, 1]), Tensor::from(vec![5.0f32, 2.0]))?;
+    /// assert_eq!(y.to_vec::<f32>().unwrap(), vec![1.0, 10.0, 1.0, 1.0]);
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a shape error if the `indices`/`src` shapes mismatch, or a
+    /// non-scatter dim of `self` is smaller than the corresponding dim.
+    pub fn scatter_mul(&self, axis: Axis, indices: impl Into<Tensor>, src: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let indices = indices.into();
+        let src = src.into();
+        let shape = self.resolve_shape();
+        let index_shape = indices.resolve_shape();
+        let dim = into_axis(axis, shape.len() as u32)? as usize;
+        let dim_size = shape[dim];
+
+        if shape.len() != index_shape.len() {
+            return Err(ZyxError::shape_error(
+                format!("self.rank({}) != indices.rank({})", shape.len(), index_shape.len()).into(),
+            ));
+        }
+
+        if index_shape != src.resolve_shape() {
+            return Err(ZyxError::shape_error(
+                format!("indices shape {:?} != src shape {:?}", index_shape, src.resolve_shape()).into(),
+            ));
+        }
+
+        for (d, (&s, &i)) in shape.iter().zip(index_shape.iter()).enumerate() {
+            if d != dim && s < i {
+                return Err(ZyxError::shape_error(
+                    format!("Shape mismatch at dimension {d}: self.shape[{d}] = {s} < indices.shape[{d}] = {i}").into(),
+                ));
+            }
+        }
+
+        let is_negative = indices.cmplt(0)?.cast(indices.dtype());
+        let indices = indices + is_negative.mul(dim_size as i32);
+
+        let mask = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size, -1)?;
+
+        let src_exp = src.unsqueeze(-1)?;
+        let src_shape = src_exp.resolve_shape();
+        let values = mask.where_(src_exp, Tensor::ones(src_shape, src.dtype()))?;
+
+        let values = values.transpose(-1, dim as i32)?;
+
+        let rank = self.rank() as usize;
+        let mut padding = Vec::new();
+        for d in (0..=rank).rev() {
+            if d == dim || d == rank {
+                padding.push((0i64, 0i64));
+            } else {
+                padding.push((0i64, (shape[d] - index_shape[d]) as i64));
+            }
+        }
+        // Pad with the multiplicative identity: zero padding would zero the
+        // product. `pad` takes dims in forward order, `rpad_zeros` in reverse.
+        let fwd: Vec<(i64, i64)> = padding.into_iter().rev().collect();
+        let one = Tensor::from(1i32).cast(src.dtype());
+        let values = values.pad(fwd, one)?;
+
+        let result = values.prod_dtype([-1], self.dtype())? * self.clone();
 
         Ok(result)
     }

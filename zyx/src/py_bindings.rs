@@ -1704,6 +1704,20 @@ impl Tensor {
         self.scatter(dim, index, src)
     }
 
+    #[pyo3(name = "scatter_add")]
+    pub fn scatter_add_py(&self, dim: Axis, index: &Bound<'_, PyAny>, src: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        let index = extract_tensor_or_scalar(index).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        let src = extract_tensor_or_scalar(src).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.scatter_add(dim, index, src)
+    }
+
+    #[pyo3(name = "scatter_mul")]
+    pub fn scatter_mul_py(&self, dim: Axis, index: &Bound<'_, PyAny>, src: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        let index = extract_tensor_or_scalar(index).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        let src = extract_tensor_or_scalar(src).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.scatter_mul(dim, index, src)
+    }
+
     #[pyo3(name = "index_select")]
     pub fn index_select_py(&self, dim: Axis, index: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         let index = extract_tensor_or_scalar(index).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
