@@ -84,7 +84,9 @@ def args_for(spec, dtype_name):
         outs.append(rand_arr(shapes[0] if len(shapes) == 1 else shapes[0], dtype_name, low, high, rng))
     else:
         ranges = spec.get("ranges") or None
-        for i, s in enumerate([shapes[0]] * 2):
+        # per-input shapes when the spec gives them, else reuse shapes[0]
+        pair = [shapes[i] if i < len(shapes) else shapes[0] for i in range(2)]
+        for i, s in enumerate(pair):
             low, high = (ranges and ranges[i]) or DEFAULT_RANGE[dtype_name]
             outs.append(rand_arr(s, dtype_name, low, high, rng))
     return tuple(outs)
@@ -492,11 +494,11 @@ CREAT_OPS = [
      "dtypes": ALL_DTYPES, "shapes": [(2, 3)]},
     {"name": "full", "ary": 1, "zyx": lambda a: a.full(*a.shape, a=1.5), "torch": lambda a: torch.full_like(a, 1.5),
      "dtypes": FLOAT_DTYPES, "shapes": [(2, 3)]},
-    {"name": "eye", "ary": 1, "zyx": lambda a: a.eye(), "torch": lambda a: torch.eye(a.shape[0]),
+    {"name": "eye", "ary": 1, "zyx": lambda a: zyx.Tensor.eye(a.shape[0], a.dtype()), "torch": lambda a: torch.eye(a.shape[0], dtype=a.dtype),
      "dtypes": FLOAT_DTYPES, "shapes": [(3, 3)]},
-    {"name": "tril", "ary": 1, "zyx": lambda a: a.tril(), "torch": lambda a: torch.tril(a),
+    {"name": "tril", "ary": 1, "zyx": lambda a: a.tril(0), "torch": lambda a: torch.tril(a),
      "dtypes": FLOAT_DTYPES, "shapes": [(3, 3)]},
-    {"name": "triu", "ary": 1, "zyx": lambda a: a.triu(), "torch": lambda a: torch.triu(a),
+    {"name": "triu", "ary": 1, "zyx": lambda a: a.triu(0), "torch": lambda a: torch.triu(a),
      "dtypes": FLOAT_DTYPES, "shapes": [(3, 3)]},
 ]
 # stochastic (randn/rand/uniform/randint) — check shape/dtype only

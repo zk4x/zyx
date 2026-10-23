@@ -278,6 +278,8 @@ impl Tensor {
             Ok(Tensor::from(mat))
         } else if let Ok(mat) = py_obj.extract::<Vec<Vec<f64>>>() {
             Ok(Tensor::from(mat))
+        } else if let Ok(tensor) = from_numpy_nd(py_obj) {
+            Ok(tensor)
         } else {
             Err(PyTypeError::new_err("Unsupported input type for Tensor"))
         }?;
@@ -1656,22 +1658,49 @@ impl Tensor {
     }
 
     #[pyo3(name = "conv")]
+    #[pyo3(signature = (weight, bias=None, groups=1, stride=None, dilation=None, padding=None))]
     pub fn conv_py(
         &self,
         weight: &Bound<'_, PyAny>,
         bias: Option<&Bound<'_, PyAny>>,
         groups: u64,
-        stride: &Bound<'_, PyTuple>,
-        dilation: &Bound<'_, PyTuple>,
-        padding: &Bound<'_, PyTuple>,
+        stride: Option<&Bound<'_, PyAny>>,
+        dilation: Option<&Bound<'_, PyAny>>,
+        padding: Option<&Bound<'_, PyAny>>,
     ) -> Result<Tensor, ZyxError> {
         let weight = weight.extract::<Tensor>().map_err(|e| ZyxError::DTypeError(format!("weight: {e}").into()))?;
         let bias = bias.and_then(|b| b.extract::<Tensor>().ok());
-        // to_sh for conv expects Vec<Dim> but handle symbolic similarly
-        let to_sh_vec = |t: &Bound<'_, PyTuple>| -> Result<Vec<Dim>, ZyxError> {
-            t.iter().map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim)).collect()
+        // Ints broadcast over spatial dims (torch parity); tuples/lists pass
+        // through. Symbolic (Tensor) values are NOT accepted here.
+        let ndims = self.resolve_shape().len().saturating_sub(2).max(1);
+        let to_sh = |t: Option<&Bound<'_, PyAny>>, default: i64| -> Result<Vec<Dim>, ZyxError> {
+            match t {
+                None => Ok(vec![default as Dim; ndims]),
+                Some(v) => {
+                    if let Ok(n) = v.extract::<i64>() {
+                        Ok(vec![n as Dim; ndims])
+                    } else if let Ok(tup) = v.cast::<PyTuple>() {
+                        tup.iter()
+                            .map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim))
+                            .collect()
+                    } else if let Ok(lst) = v.cast::<PyList>() {
+                        lst.iter()
+                            .map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim))
+                            .collect()
+                    } else {
+                        Err(ZyxError::ParseError("conv stride/dilation/padding must be int or tuple/list of ints".into()))
+                    }
+                }
+            }
         };
-        self.conv(&weight, bias.as_ref(), groups, to_sh_vec(stride)?, to_sh_vec(dilation)?, to_sh_vec(padding)?)
+        self.conv(
+            &weight,
+            bias.as_ref(),
+            groups,
+            to_sh(stride, 1)?,
+            to_sh(dilation, 1)?,
+            to_sh(padding, 0)?,
+        )
     }
 
     #[pyo3(name = "max_pool")]
@@ -2114,4 +2143,47 @@ fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) 
         }
     }
     Ok(Tensor::from(result).reshape(shape.iter().map(|&d| Tensor::from(d)).collect::<Vec<_>>()).unwrap())
+}
+
+/// N-D fallback for array-likes whose dtype has no buffer `Element` impl
+/// (f16, bf16, bool, ...): flatten to 1-D, reuse the exact 1-D typed paths,
+/// reshape back. Anything without `.shape`/`.flatten` (lists, scalars) fails
+/// here and falls through to the error arm. Values are never widened on the
+/// way in: flat extraction is per-dtype and the constructor casts to the
+/// requested dtype afterwards, both exact.
+fn from_numpy_nd(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+    let shape: Vec<Dim> = obj
+        .getattr("shape")?
+        .extract::<Vec<i64>>()
+        .map_err(|_| PyTypeError::new_err("expected tuple of ints for shape"))?
+        .into_iter()
+        .map(|d| d as Dim)
+        .collect();
+    let flat = obj.getattr("flatten")?.call0()?;
+    let t = if let Ok(v) = flat.extract::<Vec<f32>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<f64>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<i8>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<i16>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<i32>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<i64>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<u8>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<u16>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<u32>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<u64>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<bool>>() {
+        Tensor::from(v)
+    } else {
+        return Err(PyTypeError::new_err("Unsupported input type for Tensor"));
+    };
+    Ok(t.reshape(shape.iter().map(|&d| Tensor::from(d)).collect::<Vec<_>>()).unwrap())
 }

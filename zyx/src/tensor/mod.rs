@@ -1880,6 +1880,8 @@ impl Tensor {
     /// Compute the dot product (matmul) of this tensor and `rhs`.
     ///
     /// Contracts the last dimension of `self` with the first dimension of `rhs`.
+    /// A 1-D operand contracts directly with no movement nodes, so
+    /// vector-vector gives a scalar.
     ///
     /// # Example
     ///
@@ -1893,32 +1895,43 @@ impl Tensor {
     ///
     /// # Errors
     ///
-    /// Returns a shape error if the last/first dimensions do not match.
+    /// Returns a shape error if the inputs are scalars or the last/first
+    /// dimensions do not match.
     pub fn dot(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let rhs = rhs.into();
-        let org_y_shape = rhs.resolve_shape();
-        let y = rhs.t();
-        // User-side validation resolves (always resolvable, errors on
-        // mismatch); the computation's reshapes compose the inputs' dim
-        // tensors so symbolic dims stay symbolic (no recompile per value).
         let xres = self.resolve_shape();
-        let yres = y.resolve_shape();
-        let xshape = self.shape();
-        let yshape = y.shape();
+        let yres = rhs.resolve_shape();
         let xrank = xres.len();
         let yrank = yres.len();
-        if xres[xrank - 1] != yres[yrank - 1] {
-            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xres:?} and {org_y_shape:?}").into()));
+        if xrank == 0 || yrank == 0 {
+            return Err(ZyxError::ShapeError("Cannot dot scalars, inputs must be at least 1-D".into()));
         }
-        let mut x_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
-        x_shape.push(Tensor::from(1i64));
-        x_shape.push(xshape[xrank - 1].clone());
-        let mut y_shape: Vec<Tensor> = yshape[..yrank.saturating_sub(2)].to_vec();
-        y_shape.push(Tensor::from(1i64));
-        y_shape.extend(yshape[yrank - yrank.min(2)..].iter().cloned());
-        let mut out_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
-        out_shape.push(yshape[yrank - 2].clone());
-        (self.reshape(x_shape)? * y.reshape(y_shape)?).sum([-1])?.reshape(out_shape)
+        // Validate before building any graph nodes: a mismatch fails here,
+        // leaving no dead transpose/reshape nodes behind. A 1-D rhs contracts
+        // its last dim, otherwise the second-to-last.
+        let contracted = if yrank == 1 { yres[yrank - 1] } else { yres[yrank - 2] };
+        if xres[xrank - 1] != contracted {
+            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xres:?} and {yres:?}").into()));
+        }
+        if xrank == 1 || yrank == 1 {
+            // vector path: broadcast multiply + contract, no movement nodes.
+            return (self.clone() * rhs).sum([-1]);
+        }
+        let y = rhs.t();
+        // The computation's reshapes compose the inputs' dim tensors so
+        // symbolic dims stay symbolic (no recompile per value).
+        // Post-transpose values are index remaps of the pre-transpose
+        // resolve (t swaps the last two axes): rank >= 2 on both sides here
+        // so `yrank - 2` cannot underflow.
+        let xsh = self.shape();
+        let ysh = rhs.shape();
+        let k_dim = xsh[xrank - 1].clone();
+        let yk_dim = ysh[yrank - 2].clone();
+        let n_dim = ysh[yrank - 1].clone();
+        let one = Tensor::from(1i64);
+        let left_side = self.reshape(xsh.into_iter().take(xrank - 1).chain([one.clone(), k_dim]))?;
+        let right_side = y.reshape(ysh.into_iter().take(yrank - 2).chain([one, n_dim, yk_dim]))?;
+        (left_side * right_side).sum([-1])
     }
 
     /// Compute the matmul of this tensor and `rhs` in the output dtype
@@ -1937,29 +1950,42 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns a shape error if the tensors have incompatible shapes.
-    pub fn dot_dtype(&self, rhs: impl Into<Tensor>, out_dtype: DType) -> Result<Tensor, ZyxError> {
-        let rhs: Tensor = rhs.into();
-        let org_y_shape = rhs.resolve_shape();
-        let y = rhs.t();
-        // See dot: resolve for validation, compose dim tensors for computation.
+    pub fn dot_dtype(&self, rhs: impl Into<Tensor>, acc_dtype: DType) -> Result<Tensor, ZyxError> {
+        let rhs = rhs.into();
         let xres = self.resolve_shape();
-        let yres = y.resolve_shape();
-        let xshape = self.shape();
-        let yshape = y.shape();
+        let yres = rhs.resolve_shape();
+        let out_dtype = self.dtype().least_upper_dtype(rhs.dtype());
         let xrank = xres.len();
         let yrank = yres.len();
-        if xres[xrank - 1] != yres[yrank - 1] {
-            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xres:?} and {org_y_shape:?}").into()));
+        if xrank == 0 || yrank == 0 {
+            return Err(ZyxError::ShapeError("Cannot dot scalars, inputs must be at least 1-D".into()));
         }
-        let mut x_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
-        x_shape.push(Tensor::from(1i64));
-        x_shape.push(xshape[xrank - 1].clone());
-        let mut y_shape: Vec<Tensor> = yshape[..yrank.saturating_sub(2)].to_vec();
-        y_shape.push(Tensor::from(1i64));
-        y_shape.extend(yshape[yrank - yrank.min(2)..].iter().cloned());
-        let mut out_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
-        out_shape.push(yshape[yrank - 2].clone());
-        (self.reshape(x_shape)?.cast(out_dtype) * y.reshape(y_shape)?.cast(out_dtype)).sum([-1])?.reshape(out_shape)
+        // Validate before building any graph nodes: a mismatch fails here,
+        // leaving no dead transpose/reshape nodes behind. A 1-D rhs contracts
+        // its last dim, otherwise the second-to-last.
+        let contracted = if yrank == 1 { yres[yrank - 1] } else { yres[yrank - 2] };
+        if xres[xrank - 1] != contracted {
+            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xres:?} and {yres:?}").into()));
+        }
+        if xrank == 1 || yrank == 1 {
+            // vector path: broadcast multiply + contract, no movement nodes.
+            return Ok((self.clone() * rhs).sum_dtype([-1], acc_dtype)?.cast(out_dtype));
+        }
+        let y = rhs.t();
+        // The computation's reshapes compose the inputs' dim tensors so
+        // symbolic dims stay symbolic (no recompile per value).
+        // Post-transpose values are index remaps of the pre-transpose
+        // resolve (t swaps the last two axes): rank >= 2 on both sides here
+        // so `yrank - 2` cannot underflow.
+        let xsh = self.shape();
+        let ysh = rhs.shape();
+        let k_dim = xsh[xrank - 1].clone();
+        let yk_dim = ysh[yrank - 2].clone();
+        let n_dim = ysh[yrank - 1].clone();
+        let one = Tensor::from(1i64);
+        let left_side = self.reshape(xsh.into_iter().take(xrank - 1).chain([one.clone(), k_dim]))?;
+        let right_side = y.reshape(ysh.into_iter().take(yrank - 2).chain([one, n_dim, yk_dim]))?;
+        Ok((left_side * right_side).sum_dtype([-1], acc_dtype)?.cast(out_dtype))
     }
 
     /// Compute the matrix multiplication of this tensor and `rhs` (alias of
