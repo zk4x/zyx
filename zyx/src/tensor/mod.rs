@@ -24,7 +24,7 @@ use std::path::Path;
 
 #[cfg(feature = "py")]
 pub use index_ops::DimIndex;
-pub use reduce_ops::ReduceOp;
+pub use reduce_ops::Reduction;
 mod binary_ops;
 
 mod dequantize;
@@ -2187,7 +2187,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns a shape error if `self` and `target` are incompatible.
-    pub fn cross_entropy(&self, target: impl Into<Tensor>, reduction: ReduceOp) -> Result<Tensor, ZyxError> {
+    pub fn cross_entropy(&self, target: impl Into<Tensor>, reduction: Reduction) -> Result<Tensor, ZyxError> {
         let target = target.into();
         let classes_dim = if self.rank() <= 1 { 0 } else { 1 };
         let target = if self.resolve_shape() != target.resolve_shape() {
@@ -2198,9 +2198,9 @@ impl Tensor {
         let ln_softmax = self.ln_softmax([classes_dim])?;
         let per_sample = (-ln_softmax * target).sum([classes_dim])?;
         match reduction {
-            ReduceOp::Mean => Ok(per_sample.mean_all()),
-            ReduceOp::Sum => Ok(per_sample.sum_all()),
-            ReduceOp::None => Ok(per_sample),
+            Reduction::Mean => Ok(per_sample.mean_all()),
+            Reduction::Sum => Ok(per_sample.sum_all()),
+            Reduction::None => Ok(per_sample),
             _ => Err(ZyxError::ParseError("invalid reduction for cross_entropy, expected Mean, Sum, or None".into())),
         }
     }
@@ -2229,7 +2229,7 @@ impl Tensor {
         target: impl Into<Tensor>,
         weight: Option<Tensor>,
         ignore_index: Option<i64>,
-        reduction: ReduceOp,
+        reduction: Reduction,
     ) -> Result<Tensor, ZyxError> {
         let target = target.into();
         let classes_dim: Axis = if self.rank() <= 1 { 0 } else { 1 };
@@ -2251,9 +2251,9 @@ impl Tensor {
         let nll = (-gathered) * masked_weight.clone();
 
         match reduction {
-            ReduceOp::Mean => Ok(nll.sum_all() / masked_weight.sum_all()),
-            ReduceOp::Sum => Ok(nll.sum_all()),
-            ReduceOp::None => Ok(nll),
+            Reduction::Mean => Ok(nll.sum_all() / masked_weight.sum_all()),
+            Reduction::Sum => Ok(nll.sum_all()),
+            Reduction::None => Ok(nll),
             _ => Err(ZyxError::ParseError("invalid reduction for nll_loss".into())),
         }
     }
@@ -2276,7 +2276,7 @@ impl Tensor {
     ///
     /// Returns an error if the input shapes or dtypes are incompatible.
     #[allow(clippy::missing_panics_doc)]
-    pub fn ctc_loss(&self, targets: impl Into<Tensor>, blank: i64, reduction: ReduceOp) -> Result<Tensor, ZyxError> {
+    pub fn ctc_loss(&self, targets: impl Into<Tensor>, blank: i64, reduction: Reduction) -> Result<Tensor, ZyxError> {
         let target = targets.into();
         let shape = self.resolve_shape();
         let t_dim = shape[0];
@@ -2360,8 +2360,8 @@ impl Tensor {
         let log_sum = log_add(&a1, &a2);
 
         match reduction {
-            ReduceOp::Mean | ReduceOp::Sum => Ok(-log_sum),
-            ReduceOp::None => Err(ZyxError::ParseError("CTC loss with 'None' reduction is not supported".into())),
+            Reduction::Mean | Reduction::Sum => Ok(-log_sum),
+            Reduction::None => Err(ZyxError::ParseError("CTC loss with 'None' reduction is not supported".into())),
             _ => Err(ZyxError::ParseError("invalid reduction for ctc_loss".into())),
         }
     }
@@ -2395,7 +2395,7 @@ impl Tensor {
         margin: f32,
         p: i32,
         swap: bool,
-        reduction: ReduceOp,
+        reduction: Reduction,
     ) -> Result<Tensor, ZyxError> {
         let anchor = self;
         let dtype = anchor.dtype();
@@ -2425,9 +2425,9 @@ impl Tensor {
         let loss = (dist_pos_final - &dist_neg + Tensor::from(margin)).relu();
 
         match reduction {
-            ReduceOp::Mean => Ok(loss.mean_all()),
-            ReduceOp::Sum => Ok(loss.sum_all()),
-            ReduceOp::None => Ok(loss),
+            Reduction::Mean => Ok(loss.mean_all()),
+            Reduction::Sum => Ok(loss.sum_all()),
+            Reduction::None => Ok(loss),
             _ => Err(ZyxError::ParseError("invalid reduction for triplet_margin_loss".into())),
         }
     }
@@ -2610,13 +2610,13 @@ impl Tensor {
         &self,
         rhs: impl Into<Tensor>,
         eps: impl Into<Tensor>,
-        reduction: ReduceOp,
+        reduction: Reduction,
     ) -> Result<Tensor, ZyxError> {
         let rhs: Tensor = rhs.into();
         let eps: Tensor = eps.into();
         let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
         match reduction {
-            ReduceOp::Sum | ReduceOp::Mean => {
+            Reduction::Sum | Reduction::Mean => {
                 let dot = (self * &rhs).sum(axes.clone())?;
                 let nx = (self * self).sum(axes.clone())?.sqrt();
                 let ny = (&rhs * &rhs).sum(axes)?.sqrt();

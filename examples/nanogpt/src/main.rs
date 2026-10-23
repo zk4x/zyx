@@ -7,7 +7,7 @@
 #![allow(unused)]
 
 use std::collections::HashMap;
-use zyx::{DType, Module, ReduceOp, Tape, Tensor, ZyxError};
+use zyx::{DType, Module, Reduction, Tape, Tensor, ZyxError};
 use zyx_nn::{CausalSelfAttention, Embedding, LayerNorm, Linear, Module};
 use zyx_optim::AdamW;
 
@@ -262,7 +262,7 @@ fn main() -> Result<(), ZyxError> {
         let x = Tensor::cat(&x_batch, 0)?;
         let y = Tensor::cat(&y_batch, 0)?;
         let logits = model.forward(&x)?;
-        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+        let loss = logits.cross_entropy(y, Reduction::Mean)?;
         println!("{name} loss {:.4}", loss.item::<f32>());
     }
 
@@ -284,7 +284,7 @@ fn main() -> Result<(), ZyxError> {
         let y = Tensor::cat(&y_batch, 0)?;
 
         let logits = model.forward(&x)?;
-        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+        let loss = logits.cross_entropy(y, Reduction::Mean)?;
         let grads = tape.gradient(&loss, &model);
         optim.update(model.iter_mut(), grads);
         tape.realize(model.iter().chain(optim.iter()).chain([&loss]))?;

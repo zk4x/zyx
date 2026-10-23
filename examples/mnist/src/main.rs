@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use std::{collections::HashMap, time::Instant};
-use zyx::{DType, Module, ReduceOp, Tape, Tensor, ZyxError};
+use zyx::{DType, Module, Reduction, Tape, Tensor, ZyxError};
 use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
@@ -65,7 +65,7 @@ fn main() -> Result<(), ZyxError> {
         let y = train_y.index_select(0, &samples)?;
 
         let logits = net.forward(&x);
-        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+        let loss = logits.cross_entropy(y, Reduction::Mean)?;
         let grads: Vec<_> = tape.gradient(&loss, &net);
         optim.update(&mut net, grads);
 

@@ -1252,6 +1252,11 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::cast(x={x}, dtype={dtype:?})");
 
+        if self.dtype(x) == dtype {
+            self.retain(x);
+            return x;
+        }
+
         match self.tensors[x] {
             TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
                 Expr::Constant { value } => self.new_constant_tensor(value.cast(dtype)),

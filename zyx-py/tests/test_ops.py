@@ -47,9 +47,10 @@ DEFAULT_RANGE = {
     "i64": (-32, 32),
     "u32": (0, 32),
 }
-# Forward tolerance (rtol, atol) per dtype.
-FRTOL = {"f16": 2e-2, "f32": 1e-5}
-FATOL = {"f16": 1e-2, "f32": 1e-6}
+# Forward tolerance (rtol, atol) per dtype. Integer inputs can produce float
+# outputs (div, mean-ref); they compare at f32 precision.
+FRTOL = {"f16": 2e-2, "f32": 1e-5, "i32": 1e-5, "i64": 1e-5, "u32": 1e-5}
+FATOL = {"f16": 1e-2, "f32": 1e-6, "i32": 1e-6, "i64": 1e-6, "u32": 1e-6}
 # Gradient tolerance per dtype.
 GRTOL = {"f16": 2e-2, "f32": 1e-5}
 GATOL = {"f16": 2e-2, "f32": 1e-6}
@@ -105,6 +106,12 @@ def _fail(name, dtype_name, msg, a, b):
     )
 
 
+def _pick(o, idx):
+    """Index a result for failure display; 0-d scalars pass through."""
+    o = np.asarray(o)
+    return o[idx] if o.ndim > 0 else o
+
+
 def compare_arrays(name, dtype_name, out_z, out_t):
     """Compare a zyx numpy result to a torch numpy result."""
     z64 = np.array(out_z, dtype=np.float64)
@@ -116,13 +123,13 @@ def compare_arrays(name, dtype_name, out_z, out_t):
         # exact (both integer-valued); compare as float64 to be safe across dtypes
         if not np.all(z64 == t64):
             bad = np.argwhere(z64 != t64).flatten()
-            _fail(name, dtype_name, "value mismatch (integer-like)", out_z[bad], out_t[bad])
+            _fail(name, dtype_name, "value mismatch (integer-like)", _pick(out_z, bad), _pick(out_t, bad))
     else:
         rtol, atol = FRTOL[dtype_name], FATOL[dtype_name]
         if not np.allclose(z64, t64, rtol=rtol, atol=atol, equal_nan=True):
             bad = ~(np.isfinite(z64) & np.isfinite(t64)) & ~np.isclose(z64, t64, rtol=rtol, atol=atol, equal_nan=True)
             _fail(name, dtype_name, f"value mismatch (rtol={rtol} atol={atol}) n_bad={int(bad.sum())}",
-                  out_z[np.argmax(bad)] if bad.any() else out_z, out_t[np.argmax(bad)] if bad.any() else out_t)
+                  _pick(out_z, np.argmax(bad)) if bad.any() else out_z, _pick(out_t, np.argmax(bad)) if bad.any() else out_t)
 
 
 def _torch_reduce(r):
@@ -388,7 +395,7 @@ ACTIV_OPS = [
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "selu", "ary": 1, "zyx": lambda a: a.selu(), "torch": lambda a: torch.nn.functional.selu(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
-    {"name": "swish", "ary": 1, "zyx": lambda a: a.swish(), "torch": lambda a: torch.nn.functional.swish(a),
+    {"name": "swish", "ary": 1, "zyx": lambda a: a.swish(), "torch": lambda a: torch.nn.functional.silu(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "mish", "ary": 1, "zyx": lambda a: a.mish(), "torch": lambda a: torch.tanh(a * torch.sigmoid(a)),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
@@ -413,7 +420,7 @@ LOSS_OPS = [
     {"name": "bce_loss", "ary": 2, "zyx": lambda a, b: a.bce_loss(b), "torch": lambda a, b: torch.nn.functional.binary_cross_entropy(a, b),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4,)],
      "ranges": [(0.01, 0.99), (0.01, 0.99)]},
-    {"name": "huber_loss", "ary": 2, "zyx": lambda a, b: a.huber_loss(b, 1.0), "torch": lambda a, b: torch.nn.functional.huber_loss(a, b, 1.0),
+    {"name": "huber_loss", "ary": 2, "zyx": lambda a, b: a.huber_loss(b, 1.0), "torch": lambda a, b: torch.nn.functional.huber_loss(a, b, delta=1.0),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4,)], "ranges": [(-5, 5), (-5, 5)]},
     {"name": "smooth_l1_loss", "ary": 2, "zyx": lambda a, b: a.smooth_l1_loss(b), "torch": lambda a, b: torch.nn.functional.smooth_l1_loss(a, b),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4,)], "ranges": [(-5, 5), (-5, 5)]},

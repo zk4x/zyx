@@ -9,8 +9,9 @@ use crate::{
 };
 
 /// Specifies how to reduce per-sample losses or values.
-#[derive(Clone, Copy)]
-pub enum ReduceOp {
+#[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int, from_py_object))]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Reduction {
     /// Sum all values.
     Sum,
     /// Compute the mean (average) of all values.
@@ -64,7 +65,7 @@ impl Tensor {
     /// Reduce implementation
     pub(crate) fn reduce_impl<const KEEPDIM: bool>(
         &self,
-        op: ReduceOp,
+        op: Reduction,
         axes: impl IntoIterator<Item = Axis>,
         dtype: Option<DType>,
         correction: Dim,
@@ -77,12 +78,22 @@ impl Tensor {
         let shape_dims = self.shape();
         let rank = shape.len();
         let x_dtype = self.dtype();
+        // Bool has no sum-like definition and the framework never casts
+        // under the caller: refuse loudly, the caller casts first.
+        // Min/Max stay allowed (AND/OR), None is a passthrough.
+        if x_dtype == DType::Bool
+            && matches!(op, Reduction::Sum | Reduction::Mean | Reduction::Var | Reduction::Std | Reduction::Prod)
+        {
+            return Err(ZyxError::DTypeError(
+                "cannot reduce bool tensor with Sum/Mean/Var/Std/Prod, cast to an integer dtype first".into(),
+            ));
+        }
         let axes: Vec<_> = axes.into_iter().collect();
         let axes_vec: Vec<UAxis> = into_axes(axes.clone(), rank as UAxis)?;
 
         // Start with the base reduction for ops runtime supports
         let mut tensor = match op {
-            ReduceOp::Sum => {
+            Reduction::Sum => {
                 // Torch semantics: accumulate in the input dtype; only
                 // an explicit `dtype` (sum_dtype) changes it.
                 let x = if let Some(dtype) = dtype {
@@ -92,7 +103,7 @@ impl Tensor {
                 };
                 x.reduce_axes(axes_vec.clone(), BOp::Add)?
             }
-            ReduceOp::Max => {
+            Reduction::Max => {
                 let x = if let Some(dtype) = dtype {
                     self.cast(dtype)
                 } else {
@@ -100,7 +111,7 @@ impl Tensor {
                 };
                 x.reduce_axes(axes_vec.clone(), BOp::Max)?
             }
-            ReduceOp::Prod => {
+            Reduction::Prod => {
                 let x = if let Some(dtype) = dtype {
                     self.cast(dtype)
                 } else {
@@ -108,14 +119,14 @@ impl Tensor {
                 };
                 x.reduce_axes(axes_vec.clone(), BOp::Mul)?
             }
-            ReduceOp::Min => {
+            Reduction::Min => {
                 if let Some(dtype) = dtype {
                     self.inverse().max_dtype(axes, dtype)?.inverse()
                 } else {
                     self.inverse().max(axes)?.inverse()
                 }
             }
-            ReduceOp::Mean => {
+            Reduction::Mean => {
                 // The divisor is computation — keep it SYMBOLIC: the product
                 // of the reduced dims as dim tensors. Compile-time-constant
                 // dims fold back to a constant in the kernel; variable-backed
@@ -132,7 +143,7 @@ impl Tensor {
                 let xd = x.dtype();
                 x / n_t.cast(xd)
             }
-            ReduceOp::Var => {
+            Reduction::Var => {
                 if let Some(dtype) = dtype {
                     let x = self - self.mean_keepdim_dtype(axes.clone(), dtype)?;
                     let shape_dims: Vec<Dim> = axes_vec.iter().map(|&a| shape[a as usize]).collect();
@@ -149,14 +160,14 @@ impl Tensor {
                     num / Tensor::from(d).cast(nd)
                 }
             }
-            ReduceOp::Std => {
+            Reduction::Std => {
                 if let Some(dtype) = dtype {
                     self.var_dtype(axes, dtype)?.sqrt()
                 } else {
                     self.var(axes)?.sqrt()
                 }
             }
-            ReduceOp::None => self.clone(),
+            Reduction::None => self.clone(),
         };
 
         if dtype.is_none() && x_dtype != tensor.dtype() {
@@ -199,7 +210,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn sum_all(&self) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Sum, [], None, 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Sum, [], None, 1).unwrap()
     }
 
     /// Compute the `sum` reduction over all elements, keeping reduced
@@ -214,7 +225,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn sum_all_keepdim(&self) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Sum, [], None, 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Sum, [], None, 1).unwrap()
     }
 
     /// Compute the `sum` reduction along the given `axes`.
@@ -231,7 +242,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn sum(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Sum, axes, None, 1)
+        self.reduce_impl::<false>(Reduction::Sum, axes, None, 1)
     }
 
     /// Compute the `sum` reduction along the given `axes`, keeping reduced
@@ -249,7 +260,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn sum_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Sum, axes, None, 1)
+        self.reduce_impl::<true>(Reduction::Sum, axes, None, 1)
     }
 
     /// Compute the `sum` reduction over all elements and cast the result to
@@ -264,7 +275,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn sum_all_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Sum, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Sum, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the `sum` reduction over all elements, keeping reduced
@@ -279,7 +290,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn sum_all_keepdim_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Sum, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Sum, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the `sum` reduction along the given `axes` and cast the
@@ -297,7 +308,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn sum_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Sum, axes, Some(dtype), 1)
+        self.reduce_impl::<false>(Reduction::Sum, axes, Some(dtype), 1)
     }
 
     /// Compute the `sum` reduction along the given `axes`, keeping reduced
@@ -315,7 +326,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn sum_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Sum, axes, Some(dtype), 1)
+        self.reduce_impl::<true>(Reduction::Sum, axes, Some(dtype), 1)
     }
 }
 
@@ -335,7 +346,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn mean_all(&self) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Mean, [], None, 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Mean, [], None, 1).unwrap()
     }
 
     /// Compute the `mean` reduction over all elements, keeping reduced
@@ -350,7 +361,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn mean_all_keepdim(&self) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Mean, [], None, 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Mean, [], None, 1).unwrap()
     }
 
     /// Compute the `mean` reduction along the given `axes`.
@@ -367,7 +378,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn mean(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Mean, axes, None, 1)
+        self.reduce_impl::<false>(Reduction::Mean, axes, None, 1)
     }
 
     /// Compute the `mean` reduction along the given `axes`, keeping reduced
@@ -385,7 +396,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn mean_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Mean, axes, None, 1)
+        self.reduce_impl::<true>(Reduction::Mean, axes, None, 1)
     }
 
     /// Compute the `mean` reduction over all elements and cast the result to
@@ -400,7 +411,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn mean_all_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Mean, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Mean, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the `mean` reduction over all elements, keeping reduced
@@ -415,7 +426,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn mean_all_keepdim_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Mean, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Mean, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the `mean` reduction along the given `axes` and cast the
@@ -433,7 +444,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn mean_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Mean, axes, Some(dtype), 1)
+        self.reduce_impl::<false>(Reduction::Mean, axes, Some(dtype), 1)
     }
 
     /// Compute the `mean` reduction along the given `axes`, keeping reduced
@@ -451,7 +462,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn mean_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Mean, axes, Some(dtype), 1)
+        self.reduce_impl::<true>(Reduction::Mean, axes, Some(dtype), 1)
     }
 }
 
@@ -471,7 +482,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn max_all(&self) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Max, [], None, 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Max, [], None, 1).unwrap()
     }
 
     /// Compute the `max` reduction over all elements, keeping reduced
@@ -486,7 +497,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn max_all_keepdim(&self) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Max, [], None, 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Max, [], None, 1).unwrap()
     }
 
     /// Compute the `max` reduction along the given `axes`.
@@ -503,7 +514,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn max(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Max, axes, None, 1)
+        self.reduce_impl::<false>(Reduction::Max, axes, None, 1)
     }
 
     /// Compute the `max` reduction along the given `axes`, keeping reduced
@@ -521,7 +532,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn max_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Max, axes, None, 1)
+        self.reduce_impl::<true>(Reduction::Max, axes, None, 1)
     }
 
     /// Compute the `max` reduction over all elements and cast the result to
@@ -536,7 +547,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn max_all_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Max, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Max, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the `max` reduction over all elements, keeping reduced
@@ -551,7 +562,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn max_all_keepdim_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Max, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Max, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the `max` reduction along the given `axes` and cast the
@@ -569,7 +580,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn max_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Max, axes, Some(dtype), 1)
+        self.reduce_impl::<false>(Reduction::Max, axes, Some(dtype), 1)
     }
 
     /// Compute the `max` reduction along the given `axes`, keeping reduced
@@ -587,7 +598,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn max_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Max, axes, Some(dtype), 1)
+        self.reduce_impl::<true>(Reduction::Max, axes, Some(dtype), 1)
     }
 }
 
@@ -607,7 +618,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn min_all(&self) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Min, [], None, 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Min, [], None, 1).unwrap()
     }
 
     /// Compute the `min` reduction over all elements, keeping reduced
@@ -622,7 +633,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn min_all_keepdim(&self) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Min, [], None, 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Min, [], None, 1).unwrap()
     }
 
     /// Compute the `min` reduction along the given `axes`.
@@ -639,7 +650,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn min(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Min, axes, None, 1)
+        self.reduce_impl::<false>(Reduction::Min, axes, None, 1)
     }
 
     /// Compute the `min` reduction along the given `axes`, keeping reduced
@@ -657,7 +668,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn min_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Min, axes, None, 1)
+        self.reduce_impl::<true>(Reduction::Min, axes, None, 1)
     }
 
     /// Compute the `min` reduction over all elements and cast the result to
@@ -672,7 +683,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn min_all_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Min, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Min, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the `min` reduction over all elements, keeping reduced
@@ -687,7 +698,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn min_all_keepdim_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Min, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Min, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the `min` reduction along the given `axes` and cast the
@@ -705,7 +716,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn min_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Min, axes, Some(dtype), 1)
+        self.reduce_impl::<false>(Reduction::Min, axes, Some(dtype), 1)
     }
 
     /// Compute the `min` reduction along the given `axes`, keeping reduced
@@ -723,7 +734,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn min_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Min, axes, Some(dtype), 1)
+        self.reduce_impl::<true>(Reduction::Min, axes, Some(dtype), 1)
     }
 }
 
@@ -743,7 +754,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn prod_all(&self) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Prod, [], None, 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Prod, [], None, 1).unwrap()
     }
 
     /// Compute the `prod` reduction over all elements, keeping reduced
@@ -758,7 +769,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn prod_all_keepdim(&self) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Prod, [], None, 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Prod, [], None, 1).unwrap()
     }
 
     /// Compute the `prod` reduction along the given `axes`.
@@ -775,7 +786,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn prod(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Prod, axes, None, 1)
+        self.reduce_impl::<false>(Reduction::Prod, axes, None, 1)
     }
 
     /// Compute the `prod` reduction along the given `axes`, keeping reduced
@@ -793,7 +804,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn prod_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Prod, axes, None, 1)
+        self.reduce_impl::<true>(Reduction::Prod, axes, None, 1)
     }
 
     /// Compute the `prod` reduction over all elements and cast the result to
@@ -808,7 +819,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn prod_all_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Prod, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Prod, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the `prod` reduction over all elements, keeping reduced
@@ -823,7 +834,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn prod_all_keepdim_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Prod, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Prod, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the `prod` reduction along the given `axes` and cast the
@@ -841,7 +852,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn prod_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Prod, axes, Some(dtype), 1)
+        self.reduce_impl::<false>(Reduction::Prod, axes, Some(dtype), 1)
     }
 
     /// Compute the `prod` reduction along the given `axes`, keeping reduced
@@ -859,7 +870,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn prod_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Prod, axes, Some(dtype), 1)
+        self.reduce_impl::<true>(Reduction::Prod, axes, Some(dtype), 1)
     }
 }
 
@@ -879,7 +890,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn var_all(&self) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Var, [], None, 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Var, [], None, 1).unwrap()
     }
 
     /// Compute the variance reduction over all elements, keeping reduced
@@ -894,7 +905,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn var_all_keepdim(&self) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Var, [], None, 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Var, [], None, 1).unwrap()
     }
 
     /// Compute the variance reduction over all elements and cast the result
@@ -909,7 +920,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn var_all_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Var, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Var, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the variance reduction along the given `axes`.
@@ -926,7 +937,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn var(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Var, axes, None, 1)
+        self.reduce_impl::<false>(Reduction::Var, axes, None, 1)
     }
 
     /// Compute the variance reduction along the given `axes`, keeping reduced
@@ -944,7 +955,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn var_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Var, axes, None, 1)
+        self.reduce_impl::<true>(Reduction::Var, axes, None, 1)
     }
 
     /// Compute the variance reduction along the given `axes` and cast the
@@ -962,7 +973,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn var_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Var, axes, Some(dtype), 1)
+        self.reduce_impl::<false>(Reduction::Var, axes, Some(dtype), 1)
     }
 
     /// Compute the variance reduction along the given `axes` with a
@@ -980,7 +991,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn var_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Var, axes, None, correction)
+        self.reduce_impl::<false>(Reduction::Var, axes, None, correction)
     }
 
     /// Compute the variance reduction over all elements with a `correction`
@@ -998,7 +1009,7 @@ impl Tensor {
     ///
     /// Returns an error when the correction is out of range.
     pub fn var_all_correction(&self, correction: Dim) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Var, [], None, correction)
+        self.reduce_impl::<false>(Reduction::Var, [], None, correction)
     }
 
     /// Compute the variance reduction over all elements, keeping reduced
@@ -1013,7 +1024,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn var_keepdim_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Var, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Var, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the variance reduction over all elements, keeping reduced
@@ -1028,7 +1039,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn var_all_keepdim_correction(&self, correction: Dim) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Var, [], None, correction).unwrap()
+        self.reduce_impl::<true>(Reduction::Var, [], None, correction).unwrap()
     }
 
     /// Compute the variance reduction over all elements, cast to `dtype`,
@@ -1043,7 +1054,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn var_all_dtype_correction(&self, dtype: DType, correction: Dim) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Var, [], Some(dtype), correction).unwrap()
+        self.reduce_impl::<false>(Reduction::Var, [], Some(dtype), correction).unwrap()
     }
 
     /// Compute the variance reduction along `axes`, keeping reduced
@@ -1061,7 +1072,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn var_axes_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Var, axes, Some(dtype), 1)
+        self.reduce_impl::<true>(Reduction::Var, axes, Some(dtype), 1)
     }
 
     /// Compute the variance reduction along `axes`, keeping reduced
@@ -1079,7 +1090,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn var_keepdim_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Var, axes, None, correction)
+        self.reduce_impl::<true>(Reduction::Var, axes, None, correction)
     }
 
     /// Compute the variance reduction along `axes`, cast the result to
@@ -1102,7 +1113,7 @@ impl Tensor {
         dtype: DType,
         correction: Dim,
     ) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Var, axes, Some(dtype), correction)
+        self.reduce_impl::<false>(Reduction::Var, axes, Some(dtype), correction)
     }
 
     /// Compute the variance reduction over all elements, keeping reduced
@@ -1118,7 +1129,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn var_all_keepdim_dtype_correction(&self, dtype: DType, correction: Dim) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Var, [], Some(dtype), correction).unwrap()
+        self.reduce_impl::<true>(Reduction::Var, [], Some(dtype), correction).unwrap()
     }
 
     /// Compute the variance reduction along `axes`, keeping reduced
@@ -1142,7 +1153,7 @@ impl Tensor {
         dtype: DType,
         correction: Dim,
     ) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Var, axes, Some(dtype), correction)
+        self.reduce_impl::<true>(Reduction::Var, axes, Some(dtype), correction)
     }
 }
 
@@ -1162,7 +1173,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn std_all(&self) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Std, [], None, 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Std, [], None, 1).unwrap()
     }
 
     /// Compute the standard deviation reduction over all elements, keeping
@@ -1177,7 +1188,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn std_all_keepdim(&self) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Std, [], None, 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Std, [], None, 1).unwrap()
     }
 
     /// Compute the standard deviation reduction over all elements and cast
@@ -1192,7 +1203,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn std_all_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Std, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<false>(Reduction::Std, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the standard deviation reduction along the given `axes`.
@@ -1209,7 +1220,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn std(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Std, axes, None, 1)
+        self.reduce_impl::<false>(Reduction::Std, axes, None, 1)
     }
 
     /// Compute the standard deviation reduction along the given `axes`,
@@ -1227,7 +1238,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn std_keepdim(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Std, axes, None, 1)
+        self.reduce_impl::<true>(Reduction::Std, axes, None, 1)
     }
 
     /// Compute the standard deviation reduction along the given `axes` and
@@ -1245,7 +1256,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn std_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Std, axes, Some(dtype), 1)
+        self.reduce_impl::<false>(Reduction::Std, axes, Some(dtype), 1)
     }
 
     /// Compute the standard deviation reduction along the given `axes` with
@@ -1263,7 +1274,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn std_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Std, axes, None, correction)
+        self.reduce_impl::<false>(Reduction::Std, axes, None, correction)
     }
 
     /// Compute the standard deviation reduction over all elements with a
@@ -1281,7 +1292,7 @@ impl Tensor {
     ///
     /// Returns an error when the correction is out of range.
     pub fn std_all_correction(&self, correction: Dim) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Std, [], None, correction)
+        self.reduce_impl::<false>(Reduction::Std, [], None, correction)
     }
 
     /// Compute the standard deviation reduction over all elements, keeping
@@ -1296,7 +1307,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn std_keepdim_dtype(&self, dtype: DType) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Std, [], Some(dtype), 1).unwrap()
+        self.reduce_impl::<true>(Reduction::Std, [], Some(dtype), 1).unwrap()
     }
 
     /// Compute the standard deviation reduction over all elements, keeping
@@ -1311,7 +1322,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn std_all_keepdim_correction(&self, correction: Dim) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Std, [], None, correction).unwrap()
+        self.reduce_impl::<true>(Reduction::Std, [], None, correction).unwrap()
     }
 
     /// Compute the standard deviation reduction over all elements, cast the
@@ -1326,7 +1337,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn std_all_dtype_correction(&self, dtype: DType, correction: Dim) -> Tensor {
-        self.reduce_impl::<false>(ReduceOp::Std, [], Some(dtype), correction).unwrap()
+        self.reduce_impl::<false>(Reduction::Std, [], Some(dtype), correction).unwrap()
     }
 
     /// Compute the standard deviation reduction along `axes`, keeping reduced
@@ -1344,7 +1355,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn std_axes_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Std, axes, Some(dtype), 1)
+        self.reduce_impl::<true>(Reduction::Std, axes, Some(dtype), 1)
     }
 
     /// Compute the standard deviation reduction along `axes`, keeping reduced
@@ -1362,7 +1373,7 @@ impl Tensor {
     ///
     /// Returns an error when an axis is out of range.
     pub fn std_keepdim_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Std, axes, None, correction)
+        self.reduce_impl::<true>(Reduction::Std, axes, None, correction)
     }
 
     /// Compute the standard deviation reduction along `axes`, cast the result
@@ -1385,7 +1396,7 @@ impl Tensor {
         dtype: DType,
         correction: Dim,
     ) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<false>(ReduceOp::Std, axes, Some(dtype), correction)
+        self.reduce_impl::<false>(Reduction::Std, axes, Some(dtype), correction)
     }
 
     /// Compute the standard deviation reduction over all elements, keeping
@@ -1401,7 +1412,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn std_all_keepdim_dtype_correction(&self, dtype: DType, correction: Dim) -> Tensor {
-        self.reduce_impl::<true>(ReduceOp::Std, [], Some(dtype), correction).unwrap()
+        self.reduce_impl::<true>(Reduction::Std, [], Some(dtype), correction).unwrap()
     }
 
     /// Compute the standard deviation reduction along `axes`, keeping reduced
@@ -1424,7 +1435,7 @@ impl Tensor {
         dtype: DType,
         correction: Dim,
     ) -> Result<Tensor, ZyxError> {
-        self.reduce_impl::<true>(ReduceOp::Std, axes, Some(dtype), correction)
+        self.reduce_impl::<true>(Reduction::Std, axes, Some(dtype), correction)
     }
 
     /// Compute the cumulative sum reduction along the given `axis`.
