@@ -517,9 +517,34 @@ impl Graph {
                 && rc == *internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1)
             {
                 order.push(cid);
-                for p in self.ops[cid].op.parameters() {
-                    if !stack.contains(&p) {
-                        stack.push(p);
+                // Same comparison/logical skip as the counting walk above:
+                // comparison operands are not gradient paths, so the
+                // reference counts only cover non-comparison edges. Pushing
+                // comparison operands here would over-visit shared nodes
+                // (e.g. a diff feeding both a mask and a quadratic term),
+                // order them early, and drop real paths in the filter below.
+                let node = &self.ops[cid].op;
+                if !matches!(
+                    node,
+                    Op::Binary {
+                        bop: BOp::Cmpgt
+                            | BOp::Cmplt
+                            | BOp::Eq
+                            | BOp::NotEq
+                            | BOp::Or
+                            | BOp::And
+                            | BOp::BitAnd
+                            | BOp::BitOr
+                            | BOp::BitXor
+                            | BOp::BitShiftLeft
+                            | BOp::BitShiftRight,
+                        ..
+                    }
+                ) {
+                    for p in node.parameters() {
+                        if !stack.contains(&p) {
+                            stack.push(p);
+                        }
                     }
                 }
             }
