@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use zyx::{DType, ReduceOp, Tape, Tensor, ZyxError};
+use zyx::{DType, Reduction, Tape, Tensor, ZyxError};
 
 #[test]
 fn mnist() -> Result<(), ZyxError> {
@@ -53,7 +53,7 @@ fn mnist() -> Result<(), ZyxError> {
 
             let tape = Tape::new([&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias])?;
             let logits = net.forward(&x);
-            let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+            let loss = logits.cross_entropy(y, Reduction::Mean)?;
             let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias, &loss]);
 
             // Simulate SGD update

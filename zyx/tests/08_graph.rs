@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use std::result::Result;
-use zyx::{DType, ReduceOp, Scalar, Tape, Tensor, ZyxError};
+use zyx::{DType, Reduction, Scalar, Tape, Tensor, ZyxError};
 
 // ============================================================================
 // Symbolic-dim / kernelize invariants
@@ -193,7 +193,7 @@ fn h_cross_entropy_loss_only() -> Result<(), ZyxError> {
     let x = Tensor::randn([2, 3], DType::F32)?;
     let y = Tensor::from([0u32, 1]);
     let logits = x.dot(w.t())?;
-    let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+    let loss = logits.cross_entropy(y, Reduction::Mean)?;
     tape.realize([&loss])?;
     Ok(())
 }
@@ -405,7 +405,7 @@ fn ce_one_layer() -> Result<(), ZyxError> {
     let x = Tensor::randn([2, 4], DType::F32)?;
     let y = Tensor::from([0u32, 1]);
     let logits = x.dot(w1.t())? + &b1;
-    let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+    let loss = logits.cross_entropy(y, Reduction::Mean)?;
     let grads = tape.gradient(&loss, [&w1, &b1]);
     tape.realize([&(&w1 + &grads[0] * -0.01f32), &(&b1 + &grads[1] * -0.01f32)])?;
     Ok(())
@@ -420,7 +420,7 @@ fn ce_bare() -> Result<(), ZyxError> {
     let x = Tensor::randn([2, 4], DType::F32)?;
     let y = Tensor::from([0u32, 1]);
     let logits = x.dot(w1.t())?;
-    let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+    let loss = logits.cross_entropy(y, Reduction::Mean)?;
     let grads = tape.gradient(&loss, [&w1]);
     tape.realize([&(&w1 + &grads[0] * -0.01f32)])?;
     Ok(())
@@ -437,7 +437,7 @@ fn ce_iterated() -> Result<(), ZyxError> {
         let x = Tensor::randn([2, 4], DType::F32)?;
         let y = Tensor::from([0u32, 1]);
         let logits = x.dot(w1.t())? + &b1;
-        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+        let loss = logits.cross_entropy(y, Reduction::Mean)?;
         let grads = tape.gradient(&loss, [&w1, &b1]);
         let lr = 0.01f32;
         let nw = &w1 - &grads[0] * lr;
@@ -461,7 +461,7 @@ fn ce_two_layer() -> Result<(), ZyxError> {
         let y = Tensor::from([0u32, 1]);
         let h = (x.dot(w1.t())? + &b1).relu();
         let logits = h.dot(w2.t())? + &b2;
-        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+        let loss = logits.cross_entropy(y, Reduction::Mean)?;
         let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2]);
         let lr = 0.01f32;
         let nw1 = &w1 - &grads[0] * lr;

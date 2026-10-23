@@ -17,7 +17,7 @@ pub enum Reduction {
     /// Compute the mean (average) of all values.
     Mean,
     /// No reduction, return per-sample values.
-    None,
+    NoReduction,
     /// Compute the variance.
     Var,
     /// Compute the standard deviation.
@@ -28,6 +28,10 @@ pub enum Reduction {
     Min,
     /// Compute the product of all values.
     Prod,
+    /// Logical AND reduction (true iff all values are nonzero).
+    All,
+    /// Logical OR reduction (true iff any value is nonzero).
+    Any,
 }
 
 impl Tensor {
@@ -119,6 +123,30 @@ impl Tensor {
                 };
                 x.reduce_axes(axes_vec.clone(), BOp::Mul)?
             }
+            Reduction::All => {
+                // Torch semantics: true iff all elements are nonzero.
+                // Bool tensors reduce directly; other dtypes compare
+                // against zero first (the scalar takes the input dtype
+                // in `broadcast`, so this works for every dtype).
+                let x = if x_dtype == DType::Bool {
+                    self.clone()
+                } else {
+                    self.ne(Tensor::from(0))?
+                };
+                x.reduce_axes(axes_vec.clone(), BOp::And)?
+            }
+            Reduction::Any => {
+                // Torch semantics: true iff any element is nonzero.
+                // Bool tensors reduce directly; other dtypes compare
+                // against zero first (the scalar takes the input dtype
+                // in `broadcast`, so this works for every dtype).
+                let x = if x_dtype == DType::Bool {
+                    self.clone()
+                } else {
+                    self.ne(Tensor::from(0))?
+                };
+                x.reduce_axes(axes_vec.clone(), BOp::Or)?
+            }
             Reduction::Min => {
                 if let Some(dtype) = dtype {
                     self.inverse().max_dtype(axes, dtype)?.inverse()
@@ -167,10 +195,10 @@ impl Tensor {
                     self.var(axes)?.sqrt()
                 }
             }
-            Reduction::None => self.clone(),
+            Reduction::NoReduction => self.clone(),
         };
 
-        if dtype.is_none() && x_dtype != tensor.dtype() {
+        if dtype.is_none() && x_dtype != tensor.dtype() && !matches!(op, Reduction::All | Reduction::Any) {
             tensor = tensor.cast(x_dtype);
         }
 
@@ -875,6 +903,46 @@ impl Tensor {
 }
 
 // ---------------------------------------------------------------------------
+// all / any
+// ---------------------------------------------------------------------------
+
+impl Tensor {
+    /// Compute the `all` reduction (logical AND) over all elements.
+    ///
+    /// True iff every element is nonzero (torch.all semantics); bool
+    /// tensors reduce directly.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([true, true, false]);
+    /// assert_eq!(t.all().to_vec::<bool>().unwrap(), vec![false]);
+    /// ```
+    #[must_use]
+    pub fn all(&self) -> Tensor {
+        self.reduce_impl::<false>(Reduction::All, [], None, 1).unwrap()
+    }
+
+    /// Compute the `any` reduction (logical OR) over all elements.
+    ///
+    /// True iff any element is nonzero (torch.any semantics); bool
+    /// tensors reduce directly.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::Tensor;
+    /// let t = Tensor::from([false, false, true]);
+    /// assert_eq!(t.any().to_vec::<bool>().unwrap(), vec![true]);
+    /// ```
+    #[must_use]
+    pub fn any(&self) -> Tensor {
+        self.reduce_impl::<false>(Reduction::Any, [], None, 1).unwrap()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // var
 // ---------------------------------------------------------------------------
 
@@ -1498,7 +1566,27 @@ impl Tensor {
         let uaxis = into_axis(axis, shape.len() as UAxis)?;
         let pl_sz = i64::try_from(shape[uaxis as usize] - 1).unwrap();
         let mut x = self.transpose(axis, -1)?;
-        x = x.rpad_zeros([(pl_sz, 0i64)])?;
+        // Pad with the reduction identity, not zeros: a Max scan over
+        // zero-padded negatives (or a Mul scan over any zero pad) reads
+        // the padding as data. Mirrors tinygrad's identity_element.
+        // NOTE: blocked on branchless where_ (-inf * 0 = nan in pad lanes).
+        let dtype = self.dtype();
+        let identity = match rop {
+            BOp::Add => Tensor::from(0i32).cast(dtype),
+            BOp::Mul => Tensor::from(1i32).cast(dtype),
+            BOp::Max => match dtype {
+                DType::F16 | DType::F32 | DType::F64 | DType::BF16 | DType::F8E4M3 | DType::F8E5M2 => Tensor::from(f32::NEG_INFINITY).cast(dtype),
+                DType::I8 => Tensor::from(i8::MIN).cast(dtype),
+                DType::I16 => Tensor::from(i16::MIN).cast(dtype),
+                DType::I32 => Tensor::from(i32::MIN).cast(dtype),
+                DType::I64 => Tensor::from(i64::MIN).cast(dtype),
+                DType::U8 | DType::U16 | DType::U32 | DType::U64 | DType::Bool => Tensor::from(0u32).cast(dtype),
+            },
+            _ => unreachable!(),
+        };
+        let mut padding = vec![(0i64, 0i64); shape.len() - 1];
+        padding.push((pl_sz, 0i64));
+        x = x.pad(padding, identity)?;
         x = x.pool([shape[uaxis as usize]], [1i64], [1i64])?;
         x = match rop {
             BOp::Add => x.sum([-1])?,

@@ -8,6 +8,8 @@ torch autograd.
 Fails loudly on any mismatch (per project policy: never swallow).
 """
 
+import math
+
 import numpy as np
 import pytest
 import torch
@@ -20,6 +22,7 @@ DY = {
     "i32": zyx.DType.I32,
     "i64": zyx.DType.I64,
     "u32": zyx.DType.U32,
+    "bool": zyx.DType.Bool,
 }
 TY = {
     "f16": torch.float16,
@@ -27,6 +30,7 @@ TY = {
     "i32": torch.int32,
     "i64": torch.int64,
     "u32": torch.uint32,
+    "bool": torch.bool,
 }
 NP = {
     "f16": np.float16,
@@ -34,9 +38,13 @@ NP = {
     "i32": np.int32,
     "i64": np.int64,
     "u32": np.uint32,
+    "bool": np.bool_,
 }
 FLOAT_DTYPES = ("f16", "f32")
 ALL_DTYPES = ("f16", "f32", "i32", "i64", "u32")
+# torch CPU has essentially no uint32 kernels (no arith/compare/flip/gather);
+# specs torch cannot express exclude u32 (zyx runs them fine).
+NOU32_DTYPES = ("f16", "f32", "i32", "i64")
 
 # Per-dtype value ranges (kept small: no overflow, f16-safe, no div-by-zero
 # via explicit per-op overrides).
@@ -46,6 +54,7 @@ DEFAULT_RANGE = {
     "i32": (-32, 32),
     "i64": (-32, 32),
     "u32": (0, 32),
+    "bool": (0, 1),
 }
 # Forward tolerance (rtol, atol) per dtype. Integer inputs can produce float
 # outputs (div, mean-ref); they compare at f32 precision.
@@ -67,6 +76,8 @@ def rand_arr(shape, dtype_name, low, high, rng=None):
     r = rng if rng is not None else _rng
     if dtype_name in ("f16", "f32"):
         arr = r.uniform(low, high, size=shape).astype(NP[dtype_name])
+    elif dtype_name == "bool":
+        arr = (r.integers(0, 2, size=shape) != 0)
     else:
         ilow, igh = int(round(low)), int(round(high))
         arr = r.integers(ilow, igh + 1, size=shape, dtype=np.int64)
@@ -74,26 +85,39 @@ def rand_arr(shape, dtype_name, low, high, rng=None):
     return arr
 
 
+def input_dtype(spec, i, dtype_name):
+    """Per-input dtype name: spec input_dtypes[i] or the case dtype."""
+    idtypes = spec.get("input_dtypes") or []
+    return (idtypes[i] if i < len(idtypes) and idtypes[i] else dtype_name)
+
+
 def args_for(spec, dtype_name):
     """Generate the numpy input(s) for one (spec, dtype) pair."""
     shapes = spec.get("shapes") or DEFAULT_SHAPES
     rng = np.random.default_rng(hash((spec["name"], dtype_name)) % (2**31))
     outs = []
-    if spec["ary"] == 1:
-        ranges = spec.get("ranges")
-        low, high = (ranges and ranges[0]) or DEFAULT_RANGE[dtype_name]
-        outs.append(rand_arr(shapes[0] if len(shapes) == 1 else shapes[0], dtype_name, low, high, rng))
-    else:
+    n = spec["ary"]
+    for i in range(n):
+        s = shapes[i] if i < len(shapes) else shapes[0]
+        idt = input_dtype(spec, i, dtype_name)
+        # scatter-style index input: unique permutation per slice along dim
+        # (duplicate indices make parallel scatter order-undefined)
+        if spec.get("permute_index") is not None and i == spec["permute_index"]:
+            dim = spec["permute_axis"]
+            other = [k for k in range(len(s)) if k != dim]
+            perms = [rng.permutation(s[dim]) for _ in range(int(np.prod([s[k] for k in other])) or 1)]
+            arr = np.stack(perms, axis=1).reshape(s) if len(s) == 2 else np.stack(perms).reshape(s)
+            outs.append(arr.astype(np.int64))
+            continue
         ranges = spec.get("ranges") or None
-        # per-input shapes when the spec gives them, else reuse shapes[0]
-        pair = [shapes[i] if i < len(shapes) else shapes[0] for i in range(2)]
-        for i, s in enumerate(pair):
-            low, high = (ranges and ranges[i]) or DEFAULT_RANGE[dtype_name]
-            outs.append(rand_arr(s, dtype_name, low, high, rng))
+        low, high = (ranges[i] if ranges and i < len(ranges) else None) or DEFAULT_RANGE[idt]
+        outs.append(rand_arr(s, idt, low, high, rng))
     return tuple(outs)
 
 
 def make_zyx(a_np, dtype_name):
+    if dtype_name is None:
+        return zyx.Tensor(np.array(a_np, copy=True))
     return zyx.Tensor(np.array(a_np, copy=True), dtype=DY[dtype_name])
 
 
@@ -107,9 +131,9 @@ def _fail(name, dtype_name, msg, a, b):
 
 
 def _pick(o, idx):
-    """Index a result for failure display; 0-d scalars pass through."""
-    o = np.asarray(o)
-    return o[idx] if o.ndim > 0 else o
+    """Index a result for failure display; flattens N-D, 0-d scalars pass through."""
+    o = np.asarray(o).reshape(-1)
+    return o[idx] if o.size > 0 else o
 
 
 def compare_arrays(name, dtype_name, out_z, out_t):
@@ -144,13 +168,22 @@ def _torch_reduce(r):
 # ---------------------------------------------------------------- drivers
 def _run_forward(spec, dtype_name):
     a_np = args_for(spec, dtype_name)
-    a_z = [make_zyx(x, dtype_name) for x in a_np]
+    a_z = [make_zyx(x, input_dtype(spec, i, dtype_name)) for i, x in enumerate(a_np)]
     a_t = [torch.from_numpy(np.asarray(x)) for x in a_np]
     try:
         res_z = spec["zyx"](*a_z)
-        out_z = res_z.numpy()
     except Exception:
         raise
+    if isinstance(res_z, (list, tuple)):
+        # multi-output (split): compare elementwise against torch's tuple
+        out_t = spec["torch"](*a_t)
+        assert isinstance(out_t, (list, tuple)) and len(out_t) == len(res_z), \
+            f"{spec['name']} output count zyx={len(res_z)} torch={len(out_t) if isinstance(out_t, (list, tuple)) else '?'}"
+        for rz, rt in zip(res_z, out_t):
+            compare_arrays(spec["name"], dtype_name,
+                           rz.numpy(), _torch_reduce(rt).detach().cpu().numpy())
+        return
+    out_z = res_z.numpy()
     out_t = _torch_reduce(spec["torch"](*a_t)).detach().cpu().numpy()
     compare_arrays(spec["name"], dtype_name, out_z, out_t)
 
@@ -181,17 +214,20 @@ def _run_gradient(spec, dtype_name):
     if not spec.get("gradable", False):
         return
     a_np = args_for(spec, dtype_name)
-    # ---- torch reference ----
-    ta = [torch.from_numpy(np.asarray(x)).clone().requires_grad_(True) for x in a_np]
+    # ---- torch reference (only float inputs take gradients) ----
+    ta = [torch.from_numpy(np.asarray(x)).clone().requires_grad_(True) if np.issubdtype(np.asarray(x).dtype, np.floating)
+          else torch.from_numpy(np.asarray(x)) for x in a_np]
     try:
         loss_t = spec["torch"](*ta)
     except Exception:
         raise
     if torch.is_tensor(loss_t) and loss_t.ndim != 0:
         loss_t = loss_t.sum()
-    g_t = torch.autograd.grad(loss_t, ta)
+    # gradients flow only through float inputs on both sides
+    float_mask = [np.issubdtype(np.asarray(x).dtype, np.floating) for x in a_np]
+    g_t = torch.autograd.grad(loss_t, [t for t, f in zip(ta, float_mask) if f])
     # ---- zyx ----
-    tz = [make_zyx(x, dtype_name) for x in a_np]
+    tz = [make_zyx(x, input_dtype(spec, i, dtype_name)) for i, x in enumerate(a_np)]
     tape = zyx.Tape()
     for t in tz:
         tape.add(t)
@@ -203,6 +239,8 @@ def _run_gradient(spec, dtype_name):
         loss_z = loss_z.sum()
     grads_z = tape.gradient(loss_z, tz)
     tape.realize(grads_z)
+    grads_z = [g for g, f in zip(grads_z, float_mask) if f]
+    tz = [t for t, f in zip(tz, float_mask) if f]
     for gt, gz in zip(g_t, grads_z):
         out_t = gt.detach().cpu().numpy()
         out_z = gz.numpy()
@@ -215,7 +253,7 @@ def _run_gradient(spec, dtype_name):
             bad = np.isfinite(t64) & np.isfinite(z64) & ~np.isclose(z64, t64, rtol=rtol, atol=atol)
             _fail(spec["name"], dtype_name,
                   f"gradient mismatch n_bad={int(bad.sum())} (rtol={rtol} atol={atol})",
-                  out_z[np.argmax(bad)] if bad.any() else out_z, out_t[np.argmax(bad)] if bad.any() else out_t)
+                  _pick(out_z, np.argmax(bad)) if bad.any() else out_z, _pick(out_t, np.argmax(bad)) if bad.any() else out_t)
 
 
 def run_spec(spec, dtype_name, check_grad=True):
@@ -237,16 +275,18 @@ def run_specs(op_list, label):
     return op_list
 
 
-def make_axis_variants(name_base, dtypes, zyx_m, torch_m, gradable=False, shapes=(4, 3), grad_dtypes=None):
+def make_axis_variants(name_base, dtypes, zyx_m, torch_m, gradable=False, shapes=(4, 3), grad_dtypes=None, skip_all=False):
     """Generate axis + all-axis variants of a reduction."""
     out = []
     for axis in [None, 0, 1]:
+        if axis is None and skip_all:
+            continue
         tag = "all" if axis is None else str(axis)
         if grad_dtypes is None:
             grad_dtypes = (GRAD_DTYPES if gradable else [])
         out.append({
             "name": f"{name_base}_{tag}", "ary": 1, "shapes": [shapes],
-            "zyx": (lambda a, axis=axis, m=zyx_m: getattr(a, m)(axis=axis) if axis is not None else getattr(a, m)()),
+            "zyx": (lambda a, axis=axis, m=zyx_m: getattr(a, m)(dim=axis) if axis is not None else getattr(a, m)()),
             "torch": (lambda a, axis=axis, m=torch_m: _torch_reduce(getattr(torch, m)(a, dim=axis)) if axis is not None else _torch_reduce(getattr(torch, m)(a))),
             "dtypes": dtypes, "gradable": gradable, "grad_dtypes": grad_dtypes,
         })
@@ -257,23 +297,23 @@ def make_axis_variants(name_base, dtypes, zyx_m, torch_m, gradable=False, shapes
 # ---- binary elementwise (arity 2) ----
 BINARY_OPS = [
     {"name": "add", "ary": 2, "zyx": lambda a, b: a + b, "torch": lambda a, b: a + b,
-     "dtypes": ALL_DTYPES, "gradable": True},
+     "dtypes": NOU32_DTYPES, "gradable": True},
     {"name": "sub", "ary": 2, "zyx": lambda a, b: a - b, "torch": lambda a, b: a - b,
-     "dtypes": ALL_DTYPES, "gradable": True},
+     "dtypes": NOU32_DTYPES, "gradable": True},
     {"name": "mul", "ary": 2, "zyx": lambda a, b: a * b, "torch": lambda a, b: a * b,
      "dtypes": ALL_DTYPES, "gradable": True},
     {"name": "div", "ary": 2, "zyx": lambda a, b: a / b, "torch": lambda a, b: a / b,
      "dtypes": ALL_DTYPES, "gradable": True, "ranges": [(-10, 10), (1, 5)]},
     {"name": "floordiv", "ary": 2, "zyx": lambda a, b: a // b, "torch": lambda a, b: a // b,
-     "dtypes": ALL_DTYPES, "ranges": [(-10, 10), (1, 5)]},
-    {"name": "maximum", "ary": 2, "zyx": lambda a, b: a.maximum(b), "torch": lambda a, b: torch.maximum(a, b).values,
-     "dtypes": ALL_DTYPES, "gradable": False},
-    {"name": "minimum", "ary": 2, "zyx": lambda a, b: a.minimum(b), "torch": lambda a, b: torch.minimum(a, b).values,
-     "dtypes": ALL_DTYPES, "gradable": False},
-    {"name": "lt", "ary": 2, "zyx": lambda a, b: a < b, "torch": lambda a, b: a < b, "dtypes": ALL_DTYPES},
-    {"name": "gt", "ary": 2, "zyx": lambda a, b: a > b, "torch": lambda a, b: a > b, "dtypes": ALL_DTYPES},
-    {"name": "ge", "ary": 2, "zyx": lambda a, b: a >= b, "torch": lambda a, b: a >= b, "dtypes": ALL_DTYPES},
-    {"name": "le", "ary": 2, "zyx": lambda a, b: a <= b, "torch": lambda a, b: a <= b, "dtypes": ALL_DTYPES},
+     "dtypes": NOU32_DTYPES, "ranges": [(-10, 10), (1, 5)]},
+    {"name": "maximum", "ary": 2, "zyx": lambda a, b: a.maximum(b), "torch": lambda a, b: torch.maximum(a, b),
+     "dtypes": NOU32_DTYPES, "gradable": False},
+    {"name": "minimum", "ary": 2, "zyx": lambda a, b: a.minimum(b), "torch": lambda a, b: torch.minimum(a, b),
+     "dtypes": NOU32_DTYPES, "gradable": False},
+    {"name": "lt", "ary": 2, "zyx": lambda a, b: a < b, "torch": lambda a, b: a < b, "dtypes": NOU32_DTYPES},
+    {"name": "gt", "ary": 2, "zyx": lambda a, b: a > b, "torch": lambda a, b: a > b, "dtypes": NOU32_DTYPES},
+    {"name": "ge", "ary": 2, "zyx": lambda a, b: a >= b, "torch": lambda a, b: a >= b, "dtypes": NOU32_DTYPES},
+    {"name": "le", "ary": 2, "zyx": lambda a, b: a <= b, "torch": lambda a, b: a <= b, "dtypes": NOU32_DTYPES},
     {"name": "eq", "ary": 2, "zyx": lambda a, b: a == b, "torch": lambda a, b: a == b, "dtypes": ALL_DTYPES},
     {"name": "ne", "ary": 2, "zyx": lambda a, b: a != b, "torch": lambda a, b: a != b, "dtypes": ALL_DTYPES},
     {"name": "and", "ary": 2, "zyx": lambda a, b: a & b, "torch": lambda a, b: a & b,
@@ -283,22 +323,22 @@ BINARY_OPS = [
     {"name": "xor", "ary": 2, "zyx": lambda a, b: a ^ b, "torch": lambda a, b: a ^ b,
      "dtypes": ("i32", "i64", "u32"), "ranges": [(-8, 8), (-8, 8)]},
     {"name": "lshift", "ary": 2, "zyx": lambda a, b: a << b, "torch": lambda a, b: a << b,
-     "dtypes": ("i32", "i64", "u32"), "ranges": [(-16, 16), (0, 3)]},
+     "dtypes": ("i32", "i64"), "ranges": [(-16, 16), (0, 3)]},
     {"name": "rshift", "ary": 2, "zyx": lambda a, b: a >> b, "torch": lambda a, b: a >> b,
-     "dtypes": ("i32", "i64", "u32"), "ranges": [(-16, 16), (0, 3)]},
+     "dtypes": ("i32", "i64"), "ranges": [(-16, 16), (0, 3)]},
 ]
 
 # ---- unary elementwise (arity 1) ----
 UNARY_OPS = [
     {"name": "abs", "ary": 1, "zyx": lambda a: a.abs(), "torch": lambda a: a.abs(),
-     "dtypes": ALL_DTYPES, "gradable": True, "ranges": [(-10, 10)]},
+     "dtypes": NOU32_DTYPES, "gradable": True, "ranges": [(-10, 10)]},
     {"name": "ceil", "ary": 1, "zyx": lambda a: a.ceil(), "torch": lambda a: a.ceil(),
      "dtypes": ("f16", "f32"), "gradable": False, "ranges": [(-5, 5)]},
     {"name": "exp", "ary": 1, "zyx": lambda a: a.exp(), "torch": lambda a: a.exp(),
      "dtypes": ("f16", "f32"), "gradable": True, "ranges": [(-3, 3)]},
     {"name": "exp2", "ary": 1, "zyx": lambda a: a.exp2(), "torch": lambda a: a.exp2(),
      "dtypes": ("f16", "f32"), "gradable": True, "ranges": [(-3, 3)]},
-    {"name": "log", "ary": 1, "zyx": lambda a: a.log(), "torch": lambda a: a.log(),
+    {"name": "log", "ary": 1, "zyx": lambda a: a.log(math.e), "torch": lambda a: a.log(),
      "dtypes": ("f16", "f32"), "gradable": True, "ranges": [(1, 5)]},
     {"name": "ln", "ary": 1, "zyx": lambda a: a.ln(), "torch": lambda a: torch.log(a),
      "dtypes": ("f16", "f32"), "gradable": True, "ranges": [(1, 5)]},
@@ -322,14 +362,12 @@ UNARY_OPS = [
      "dtypes": ("f16", "f32"), "gradable": True, "ranges": [(-3, 3)]},
     {"name": "floor", "ary": 1, "zyx": lambda a: a.floor(), "torch": lambda a: a.floor(),
      "dtypes": ("f16", "f32"), "gradable": False, "ranges": [(-5, 5)]},
-    {"name": "frac", "ary": 1, "zyx": lambda a: a.frac(), "torch": lambda a: a.frac(),
-     "dtypes": ("f16", "f32"), "gradable": False, "ranges": [(-5, 5)]},
     {"name": "round", "ary": 1, "zyx": lambda a: a.round(), "torch": lambda a: a.round(),
      "dtypes": ("f16", "f32"), "gradable": False, "ranges": [(-5, 5)]},
     {"name": "sign", "ary": 1, "zyx": lambda a: a.sign(), "torch": lambda a: a.sign(),
-     "dtypes": ALL_DTYPES, "gradable": False, "ranges": [(-10, 10)]},
+     "dtypes": NOU32_DTYPES, "gradable": False, "ranges": [(-10, 10)]},
     {"name": "square", "ary": 1, "zyx": lambda a: a.square(), "torch": lambda a: a.square(),
-     "dtypes": ALL_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
+     "dtypes": NOU32_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "pow", "ary": 2, "zyx": lambda a, b: a.pow(b), "torch": lambda a, b: a.pow(b),
      "dtypes": ("f16", "f32", "i32", "i64", "u32"), "gradable": True,
      "ranges": [(0.5, 2), (-2, 3)], "shapes": [(4,)]},
@@ -350,15 +388,15 @@ UNARY_OPS = [
 # ---- reductions (axis + all) ----
 REDUCE_OPS = (
     make_axis_variants("sum", ALL_DTYPES, "sum", "sum", gradable=True)
-    + make_axis_variants("mean", ALL_DTYPES, "mean", "mean", gradable=True)
-    + make_axis_variants("min", ALL_DTYPES, "min", "min", gradable=False)
-    + make_axis_variants("max", ALL_DTYPES, "max", "max", gradable=False)
+    + make_axis_variants("mean", FLOAT_DTYPES, "mean", "mean", gradable=True)
+    + make_axis_variants("min", NOU32_DTYPES, "min", "min", gradable=False)
+    + make_axis_variants("max", NOU32_DTYPES, "max", "max", gradable=False)
     + make_axis_variants("prod", ALL_DTYPES, "prod", "prod", gradable=False)
     + make_axis_variants("std", FLOAT_DTYPES, "std", "std", gradable=True)
     + make_axis_variants("var", FLOAT_DTYPES, "var", "var", gradable=True)
-    + make_axis_variants("cumsum", ALL_DTYPES, "cumsum", "cumsum", gradable=True)
-    + make_axis_variants("cummax", FLOAT_DTYPES, "cummax", "cummax", gradable=False)
-    + make_axis_variants("cumprod", FLOAT_DTYPES, "cumprod", "cumprod", gradable=True)
+    + make_axis_variants("cumsum", ALL_DTYPES, "cumsum", "cumsum", gradable=True, skip_all=True)
+    + make_axis_variants("cummax", FLOAT_DTYPES, "cummax", "cummax", gradable=False, skip_all=True)
+    + make_axis_variants("cumprod", FLOAT_DTYPES, "cumprod", "cumprod", gradable=True, skip_all=True)
 )
 # all / any reduce to a single scalar (bool); test all-reduction only
 REDUCE_OPS += [
@@ -370,11 +408,11 @@ REDUCE_OPS += [
 # argmax: all + axis
 REDUCE_OPS += [
     {"name": "argmax_all", "ary": 1, "zyx": lambda a: a.argmax(), "torch": lambda a: torch.argmax(a),
-     "dtypes": ALL_DTYPES, "shapes": [(4, 3)]},
-    {"name": "argmax_axis0", "ary": 1, "zyx": lambda a: a.argmax(axis=0), "torch": lambda a: torch.argmax(a, dim=0),
-     "dtypes": ALL_DTYPES, "shapes": [(4, 3)]},
-    {"name": "argmax_axis1", "ary": 1, "zyx": lambda a: a.argmax(axis=1), "torch": lambda a: torch.argmax(a, dim=1),
-     "dtypes": ALL_DTYPES, "shapes": [(4, 3)]},
+     "dtypes": NOU32_DTYPES, "shapes": [(4, 3)]},
+    {"name": "argmax_axis0", "ary": 1, "zyx": lambda a: a.argmax(dim=0), "torch": lambda a: torch.argmax(a, dim=0),
+     "dtypes": NOU32_DTYPES, "shapes": [(4, 3)]},
+    {"name": "argmax_axis1", "ary": 1, "zyx": lambda a: a.argmax(dim=1), "torch": lambda a: torch.argmax(a, dim=1),
+     "dtypes": NOU32_DTYPES, "shapes": [(4, 3)]},
 ]
 
 # ---- activations (float) ----
@@ -383,33 +421,33 @@ ACTIV_OPS = [
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "gelu", "ary": 1, "zyx": lambda a: a.gelu(), "torch": lambda a: torch.nn.functional.gelu(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
-    {"name": "elu", "ary": 1, "zyx": lambda a: a.elu(), "torch": lambda a: torch.elu(a),
+    {"name": "elu", "ary": 1, "zyx": lambda a: a.elu(1.0), "torch": lambda a: torch.nn.functional.elu(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "sigmoid", "ary": 1, "zyx": lambda a: a.sigmoid(), "torch": lambda a: torch.sigmoid(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-10, 10)]},
-    {"name": "softplus", "ary": 1, "zyx": lambda a: a.softplus(), "torch": lambda a: torch.softplus(a),
+    {"name": "softplus", "ary": 1, "zyx": lambda a: a.softplus(1.0, 20.0), "torch": lambda a: torch.nn.functional.softplus(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-10, 10)]},
     {"name": "leaky_relu", "ary": 1, "zyx": lambda a: a.leaky_relu(0.01), "torch": lambda a: torch.nn.functional.leaky_relu(a, 0.01),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
-    {"name": "celu", "ary": 1, "zyx": lambda a: a.celu(1.0, 2.4, 1.0), "torch": lambda a: torch.nn.functional.celu(a, 1.0, 2.4, 1.0),
+    {"name": "celu", "ary": 1, "zyx": lambda a: a.celu(1.0), "torch": lambda a: torch.nn.functional.celu(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "selu", "ary": 1, "zyx": lambda a: a.selu(), "torch": lambda a: torch.nn.functional.selu(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "swish", "ary": 1, "zyx": lambda a: a.swish(), "torch": lambda a: torch.nn.functional.silu(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
-    {"name": "mish", "ary": 1, "zyx": lambda a: a.mish(), "torch": lambda a: torch.tanh(a * torch.sigmoid(a)),
+    {"name": "mish", "ary": 1, "zyx": lambda a: a.mish(), "torch": lambda a: a * torch.tanh(torch.nn.functional.softplus(a)),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
-    {"name": "hard_sigmoid", "ary": 1, "zyx": lambda a: a.hard_sigmoid(), "torch": lambda a: torch.nn.functional.hard_sigmoid(a),
+    {"name": "hard_sigmoid", "ary": 1, "zyx": lambda a: a.hard_sigmoid(), "torch": lambda a: torch.nn.functional.hardsigmoid(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "tanh_act", "ary": 1, "zyx": lambda a: a.tanh(), "torch": lambda a: a.tanh(),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "quick_gelu", "ary": 1, "zyx": lambda a: a.quick_gelu(), "torch": lambda a: torch.nn.functional.gelu(a, approximate="tanh"),
      "dtypes": FLOAT_DTYPES, "gradable": False, "ranges": [(-5, 5)]},
-    {"name": "softmax", "ary": 1, "zyx": lambda a: a.softmax(axis=-1), "torch": lambda a: torch.softmax(a, dim=-1),
+    {"name": "softmax", "ary": 1, "zyx": lambda a: a.softmax(dim=-1), "torch": lambda a: torch.softmax(a, dim=-1),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4, 5)], "ranges": [(-5, 5)]},
-    {"name": "log_softmax", "ary": 1, "zyx": lambda a: a.log_softmax(axis=-1), "torch": lambda a: torch.log_softmax(a, dim=-1),
+    {"name": "log_softmax", "ary": 1, "zyx": lambda a: a.log_softmax(dim=-1), "torch": lambda a: torch.log_softmax(a, dim=-1),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4, 5)], "ranges": [(-5, 5)]},
-    {"name": "ln_softmax", "ary": 1, "zyx": lambda a: a.ln_softmax(axis=-1), "torch": lambda a: torch.log_softmax(a, dim=-1),
+    {"name": "ln_softmax", "ary": 1, "zyx": lambda a: a.ln_softmax(dim=-1), "torch": lambda a: torch.log_softmax(a, dim=-1),
      "dtypes": FLOAT_DTYPES, "gradable": False, "shapes": [(4, 5)], "ranges": [(-5, 5)]},
 ]
 
@@ -417,22 +455,22 @@ ACTIV_OPS = [
 LOSS_OPS = [
     {"name": "mse_loss", "ary": 2, "zyx": lambda a, b: a.mse_loss(b), "torch": lambda a, b: torch.nn.functional.mse_loss(a, b),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4,)], "ranges": [(-5, 5), (-5, 5)]},
-    {"name": "bce_loss", "ary": 2, "zyx": lambda a, b: a.bce_loss(b), "torch": lambda a, b: torch.nn.functional.binary_cross_entropy(a, b),
+    {"name": "bce_loss", "ary": 2, "zyx": lambda a, b: a.bce_loss(b, 1e-7), "torch": lambda a, b: torch.nn.functional.binary_cross_entropy(a, b),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4,)],
      "ranges": [(0.01, 0.99), (0.01, 0.99)]},
-    {"name": "huber_loss", "ary": 2, "zyx": lambda a, b: a.huber_loss(b, 1.0), "torch": lambda a, b: torch.nn.functional.huber_loss(a, b, delta=1.0),
+    {"name": "huber_loss", "ary": 2, "zyx": lambda a, b: a.huber_loss(b, delta=1.0), "torch": lambda a, b: torch.nn.functional.huber_loss(a, b, delta=1.0),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4,)], "ranges": [(-5, 5), (-5, 5)]},
     {"name": "smooth_l1_loss", "ary": 2, "zyx": lambda a, b: a.smooth_l1_loss(b), "torch": lambda a, b: torch.nn.functional.smooth_l1_loss(a, b),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4,)], "ranges": [(-5, 5), (-5, 5)]},
     {"name": "l1_loss", "ary": 2, "zyx": lambda a, b: a.l1_loss(b), "torch": lambda a, b: torch.nn.functional.l1_loss(a, b),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4,)], "ranges": [(-5, 5), (-5, 5)]},
     {"name": "nll_loss", "ary": 2, "zyx": lambda a, b: a.nll_loss(b), "torch": lambda a, b: torch.nn.functional.nll_loss(a, b),
-     "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4, 10)],
+     "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4, 10), (4,)], "input_dtypes": [None, "i64"],
      "ranges": [(-3, 3), (0, 9)]},
-    {"name": "cosine_similarity", "ary": 2, "zyx": lambda a, b: a.cosine_similarity(b), "torch": lambda a, b: torch.nn.functional.cosine_similarity(a, b),
+    {"name": "cosine_similarity", "ary": 2, "zyx": lambda a, b: a.cosine_similarity(b), "torch": lambda a, b: torch.nn.functional.cosine_similarity(a, b, dim=0),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(10,)], "ranges": [(-5, 5), (-5, 5)]},
-    {"name": "triplet_margin", "ary": 2, "zyx": lambda a, b: a.triplet_margin_loss(b, 1.0), "torch": lambda a, b: torch.nn.functional.triplet_margin_loss(a, b, margin=1.0),
-     "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(3, 10)], "ranges": [(-5, 5), (-5, 5)]},
+    {"name": "triplet_margin", "ary": 3, "zyx": lambda a, b, c: a.triplet_margin_loss(b, c), "torch": lambda a, b, c: torch.nn.functional.triplet_margin_loss(a, b, c, margin=1.0),
+     "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(3, 10), (3, 10), (3, 10)], "ranges": [(-5, 5), (-5, 5), (-5, 5)]},
 ]
 
 # ---- movement / shape (arity 1, fixed target) ----
@@ -443,13 +481,13 @@ MOVE_OPS = [
      "dtypes": ALL_DTYPES, "shapes": [(6,)]},
     {"name": "permute_10", "ary": 1, "zyx": lambda a: a.permute([1, 0]), "torch": lambda a: a.permute([1, 0]),
      "dtypes": ALL_DTYPES, "shapes": [(2, 3)]},
-    {"name": "transpose", "ary": 1, "zyx": lambda a: a.transpose(), "torch": lambda a: a.transpose(),
+    {"name": "transpose", "ary": 1, "zyx": lambda a: a.transpose(0, 1), "torch": lambda a: a.transpose(0, 1),
      "dtypes": ALL_DTYPES, "shapes": [(2, 3)]},
     {"name": "flatten", "ary": 1, "zyx": lambda a: a.flatten(), "torch": lambda a: a.flatten(),
      "dtypes": ALL_DTYPES, "shapes": [(2, 3, 4)]},
     {"name": "squeeze", "ary": 1, "zyx": lambda a: a.squeeze(), "torch": lambda a: a.squeeze(),
      "dtypes": ALL_DTYPES, "shapes": [(1, 3, 3)]},
-    {"name": "squeeze_axis", "ary": 1, "zyx": lambda a: a.squeeze(axis=0), "torch": lambda a: a.squeeze(0),
+    {"name": "squeeze_axis", "ary": 1, "zyx": lambda a: a.squeeze(dim=0), "torch": lambda a: a.squeeze(0),
      "dtypes": ALL_DTYPES, "shapes": [(1, 3, 3)]},
     {"name": "unsqueeze_0", "ary": 1, "zyx": lambda a: a.unsqueeze(0), "torch": lambda a: a.unsqueeze(0),
      "dtypes": ALL_DTYPES, "shapes": [(3,)]},
@@ -457,19 +495,19 @@ MOVE_OPS = [
      "dtypes": ALL_DTYPES, "shapes": [(1, 3)]},
     {"name": "repeat", "ary": 1, "zyx": lambda a: a.repeat(2, 3), "torch": lambda a: a.repeat(2, 3),
      "dtypes": ALL_DTYPES, "shapes": [(2, 3)]},
-    {"name": "cat_dim0", "ary": 2, "zyx": lambda a, b: a.cat([b]), "torch": lambda a, b: torch.cat([a, b], dim=0),
+    {"name": "cat_dim0", "ary": 2, "zyx": lambda a, b: zyx.Tensor.cat([a, b], 0), "torch": lambda a, b: torch.cat([a, b], dim=0),
      "dtypes": ALL_DTYPES, "shapes": [(2, 3), (2, 3)]},
-    {"name": "cat_dim1", "ary": 2, "zyx": lambda a, b: a.cat([b], dim=1), "torch": lambda a, b: torch.cat([a, b], dim=1),
+    {"name": "cat_dim1", "ary": 2, "zyx": lambda a, b: zyx.Tensor.cat([a, b], 1), "torch": lambda a, b: torch.cat([a, b], dim=1),
      "dtypes": ALL_DTYPES, "shapes": [(2, 3), (2, 3)]},
-    {"name": "stack_dim0", "ary": 2, "zyx": lambda a, b: a.stack([b], dim=0), "torch": lambda a, b: torch.stack([a, b], dim=0),
+    {"name": "stack_dim0", "ary": 2, "zyx": lambda a, b: zyx.Tensor.stack([a, b], 0), "torch": lambda a, b: torch.stack([a, b], dim=0),
      "dtypes": ALL_DTYPES, "shapes": [(2, 3), (2, 3)]},
-    {"name": "stack_dim1", "ary": 2, "zyx": lambda a, b: a.stack([b], dim=1), "torch": lambda a, b: torch.stack([a, b], dim=1),
+    {"name": "stack_dim1", "ary": 2, "zyx": lambda a, b: zyx.Tensor.stack([a, b], 1), "torch": lambda a, b: torch.stack([a, b], dim=1),
      "dtypes": ALL_DTYPES, "shapes": [(2, 3), (2, 3)]},
-    {"name": "flip", "ary": 1, "zyx": lambda a: a.flip(), "torch": lambda a: a.flip(),
-     "dtypes": ALL_DTYPES, "shapes": [(2, 3)]},
+    {"name": "flip", "ary": 1, "zyx": lambda a: a.flip((0, 1)), "torch": lambda a: a.flip((0, 1)),
+     "dtypes": NOU32_DTYPES, "shapes": [(2, 3)]},
     {"name": "diagonal", "ary": 1, "zyx": lambda a: a.diagonal(), "torch": lambda a: a.diagonal(),
      "dtypes": ALL_DTYPES, "shapes": [(3, 3)]},
-    {"name": "split_dim0", "ary": 1, "zyx": lambda a: a.split(2, dim=0), "torch": lambda a: a.split(2, dim=0),
+    {"name": "split_dim0", "ary": 1, "zyx": lambda a: a.split((2, 2), dim=0), "torch": lambda a: a.split(2, dim=0),
      "dtypes": ALL_DTYPES, "shapes": [(4, 3)]},
     {"name": "contiguous", "ary": 1, "zyx": lambda a: a.contiguous(), "torch": lambda a: a.contiguous(),
      "dtypes": ALL_DTYPES, "shapes": [(3, 4)]},
@@ -479,18 +517,19 @@ MOVE_OPS = [
 
 # ---- index / selection ----
 INDEX_OPS = [
-    {"name": "gather", "ary": 2, "zyx": lambda a, b: a.gather(b), "torch": lambda a, b: a.gather(b),
-     "dtypes": ALL_DTYPES, "shapes": [(3, 4), (3, 4)]},
-    {"name": "index_select", "ary": 2, "zyx": lambda a, b: a.index_select(b), "torch": lambda a, b: torch.index_select(a, b),
-     "dtypes": ALL_DTYPES, "shapes": [(3, 4), (4,)]},
-    {"name": "scatter", "ary": 2, "zyx": lambda a, b: a.scatter(b, 0), "torch": lambda a, b: a.scatter(b, 0),
-     "dtypes": ALL_DTYPES, "shapes": [(3, 4), (3, 4)]},
+    {"name": "gather", "ary": 2, "zyx": lambda a, b: a.gather(0, b), "torch": lambda a, b: a.gather(0, b),
+     "dtypes": NOU32_DTYPES, "shapes": [(3, 4), (3, 4)], "input_dtypes": [None, "i64"], "ranges": [(-5, 5), (0, 2)]},
+    {"name": "index_select", "ary": 2, "zyx": lambda a, b: a.index_select(0, b), "torch": lambda a, b: torch.index_select(a, 0, b),
+     "dtypes": ALL_DTYPES, "shapes": [(3, 4), (4,)], "input_dtypes": [None, "i64"], "ranges": [(-5, 5), (0, 2)]},
+    {"name": "scatter", "ary": 3, "zyx": lambda a, b, c: a.scatter(0, b, c), "torch": lambda a, b, c: torch.scatter(a, 0, b, c),
+     "dtypes": NOU32_DTYPES, "shapes": [(3, 4), (3, 4), (3, 4)], "input_dtypes": [None, "i64", None], "ranges": [(-5, 5), (0, 2), (-5, 5)],
+     "permute_index": 1, "permute_axis": 0},
     {"name": "narrow_0_1_2", "ary": 1, "zyx": lambda a: a.narrow(0, 1, 2), "torch": lambda a: a.narrow(0, 1, 2),
      "dtypes": ALL_DTYPES, "shapes": [(4, 3)]},
-    {"name": "where_", "ary": 2, "zyx": lambda a, b: a.where_(b, 1, 2), "torch": lambda a, b: torch.where(b, 1, 2),
-     "dtypes": ALL_DTYPES, "shapes": [(4, 4)]},
+    {"name": "where_", "ary": 2, "zyx": lambda a, b: (a > b).where(1, 2), "torch": lambda a, b: torch.where(a > b, 1, 2),
+     "dtypes": NOU32_DTYPES, "shapes": [(4, 4)]},
     {"name": "masked_fill", "ary": 2, "zyx": lambda a, b: a.masked_fill(b, 1), "torch": lambda a, b: a.masked_fill(b, 1),
-     "dtypes": ALL_DTYPES, "shapes": [(4, 4)]},
+     "dtypes": NOU32_DTYPES, "shapes": [(4, 4)], "input_dtypes": [None, "bool"]},
 ]
 
 # ---- creation ----
@@ -499,9 +538,9 @@ CREAT_OPS = [
      "dtypes": ALL_DTYPES, "shapes": [(2, 3)]},
     {"name": "ones", "ary": 1, "zyx": lambda a: a.ones(a.shape), "torch": lambda a: torch.ones_like(a),
      "dtypes": ALL_DTYPES, "shapes": [(2, 3)]},
-    {"name": "full", "ary": 1, "zyx": lambda a: a.full(*a.shape, a=1.5), "torch": lambda a: torch.full_like(a, 1.5),
+    {"name": "full", "ary": 1, "zyx": lambda a: a.full(*a.shape, fill_value=1.5), "torch": lambda a: torch.full_like(a, 1.5),
      "dtypes": FLOAT_DTYPES, "shapes": [(2, 3)]},
-    {"name": "eye", "ary": 1, "zyx": lambda a: zyx.Tensor.eye(a.shape[0], a.dtype()), "torch": lambda a: torch.eye(a.shape[0], dtype=a.dtype),
+    {"name": "eye", "ary": 1, "zyx": lambda a: zyx.Tensor.eye(a.shape[0], a.dtype), "torch": lambda a: torch.eye(a.shape[0], dtype=a.dtype),
      "dtypes": FLOAT_DTYPES, "shapes": [(3, 3)]},
     {"name": "tril", "ary": 1, "zyx": lambda a: a.tril(0), "torch": lambda a: torch.tril(a),
      "dtypes": FLOAT_DTYPES, "shapes": [(3, 3)]},

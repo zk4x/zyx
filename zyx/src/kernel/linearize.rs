@@ -1326,6 +1326,8 @@ impl Kernel {
                     BOp::Add => acc_dtype.zero_constant(),
                     BOp::Max => acc_dtype.min_constant(),
                     BOp::Mul => acc_dtype.one_constant(),
+                    BOp::And => acc_dtype.one_constant(),
+                    BOp::Or => acc_dtype.zero_constant(),
                     _ => unreachable!(),
                 }),
             );

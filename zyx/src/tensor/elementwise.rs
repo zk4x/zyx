@@ -1,9 +1,9 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use std::ops::{Neg, Not};
+use std::ops::Neg;
 
-use crate::{DType, Float, RT, Scalar, Tensor, error::ZyxError, kernel::UOp};
+use crate::{Float, RT, Scalar, Tensor, error::ZyxError, kernel::UOp};
 
 impl Tensor {
     #[allow(clippy::needless_pass_by_value)]
@@ -405,44 +405,14 @@ impl Tensor {
         let x = self.float_cast().unwrap();
         let original_dtype = self.dtype();
 
-        // Round half to even (banker's rounding), matching torch.round and numpy.
-        let floor_x = x.floor();
-        let frac = x - floor_x.clone();
-
-        // Round up when the fraction is past the midpoint.
-        let round_up = frac.cmpgt(0.5f32).unwrap().cast(DType::F32);
-        // On a tie, round to the nearest even integer.
-        let is_half = frac.equal(0.5f32).unwrap().cast(DType::F32);
-        let floor_odd = (floor_x.clone() / 2.0f32).frac().ne(0.0f32).unwrap().cast(DType::F32);
-
-        let add = round_up + is_half * floor_odd;
-        let rounded = floor_x + add;
-
+        // Round half to even (banker's rounding), matching torch.round:
+        // exact when the halved truncation is integral, otherwise push
+        // away from the .5 line with ceil/floor. No frac involved.
+        let half = x.trunc() / 2.0f32;
+        let half_is_int = half.trunc().equal(half).unwrap();
+        let cond = x.cmpgt(0.0f32).unwrap().equal(half_is_int).unwrap();
+        let rounded = cond.where_((x.clone() - 0.5f32).ceil(), (x + 0.5f32).floor()).unwrap();
         rounded.cast(original_dtype)
-    }
-
-    /// Element-wise fractional part: `x - floor(x)`, always non-negative.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use zyx::Tensor;
-    /// let t = Tensor::from([1.2f32, 2.7, 3.5, -1.7, -2.3]);
-    /// let y = t.frac();
-    /// ```
-    #[must_use]
-    pub fn frac(&self) -> Tensor {
-        let x = self.float_cast().unwrap();
-        let original_dtype = self.dtype();
-
-        // Fractional part = x - floor(x)
-        let fractional = x.clone() - x.floor();
-
-        // For negative numbers, add 1 to make fractional part positive
-        // For positive numbers, keep as is
-        let is_negative = fractional.cmplt(0).unwrap();
-        let fractional_positive = is_negative.clone() * (fractional.clone() + 1) + is_negative.not() * fractional;
-        fractional_positive.cast(original_dtype)
     }
 
     /// Element-wise ceiling: smallest integer greater than or equal to each
@@ -778,6 +748,26 @@ impl Tensor {
     pub fn cmpgt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Cmpgt)?;
+        Ok(Tensor { id })
+    }
+
+    /// Element-wise `self >= rhs` (broadcastable), as a bool tensor.
+    ///
+    /// # Example
+    ///
+    /// ```rust no_run
+    /// # use zyx::{Tensor, DType};
+    /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let y = a.cmpge(Tensor::from([2.0f32, 2.0, 3.0]))?;
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tensors are non-broadcastable.
+    pub fn cmpge(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
+        let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Cmpge)?;
         Ok(Tensor { id })
     }
 

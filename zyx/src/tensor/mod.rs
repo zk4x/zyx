@@ -1278,14 +1278,14 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::Tensor;
+    /// # use zyx::{Tensor, Reduction};
     /// let p = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let t = Tensor::from([1.5, 2.5, 2.8]);
-    /// let loss = p.smooth_l1_loss(&t);
+    /// let loss = p.smooth_l1_loss(&t, Reduction::Sum);
     /// assert!((loss.item::<f32>() - 0.27).abs() < 1e-4);
     /// ```
     #[must_use]
-    pub fn smooth_l1_loss(&self, target: &Tensor) -> Tensor {
+    pub fn smooth_l1_loss(&self, target: &Tensor, reduction: Reduction) -> Tensor {
         let input = self.float_cast().unwrap();
         let target = target.float_cast().unwrap();
         let original_dtype = self.dtype();
@@ -1303,10 +1303,15 @@ impl Tensor {
         // Combine based on the mask
         let loss = mask.clone() * quadratic_loss + mask.not() * linear_loss;
 
-        // Sum all elements to get the total loss
-        let total_loss = loss.sum([0]).unwrap();
+        // Reduce over all elements like the other losses
+        let reduced = match reduction {
+            Reduction::Mean => loss.mean_all(),
+            Reduction::Sum => loss.sum_all(),
+            Reduction::NoReduction => loss,
+            _ => todo!("smooth_l1_loss with this reduction"),
+        };
 
-        total_loss.cast(original_dtype)
+        reduced.cast(original_dtype)
     }
 
     /// Compute the Huber loss between this tensor and `target` with threshold
@@ -1318,15 +1323,15 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::Tensor;
+    /// # use zyx::{Tensor, Reduction};
     /// let p = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let t = Tensor::from([1.5, 2.5, 2.8]);
-    /// let loss = p.huber_loss(&t, 1.0f32);
+    /// let loss = p.huber_loss(&t, 1.0f32, Reduction::Sum);
     /// assert!((loss.item::<f32>() - 0.27).abs() < 1e-4);
     /// ```
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
-    pub fn huber_loss(&self, target: &Tensor, delta: impl Scalar) -> Tensor {
+    pub fn huber_loss(&self, target: &Tensor, delta: impl Scalar, reduction: Reduction) -> Tensor {
         let input = self.float_cast().unwrap();
         let target = target.float_cast().unwrap();
         let original_dtype = self.dtype();
@@ -1355,10 +1360,15 @@ impl Tensor {
         // Combine: use quadratic_loss where |diff| ≤ delta, linear_loss otherwise
         let result = quadratic_mask.clone() * quadratic_loss + quadratic_mask.not() * linear_loss;
 
-        // Sum all elements to get total loss (like smooth_l1_loss does)
-        let total_loss = result.sum([0]).unwrap();
+        // Reduce over all elements like the other losses
+        let reduced = match reduction {
+            Reduction::Mean => result.mean_all(),
+            Reduction::Sum => result.sum_all(),
+            Reduction::NoReduction => result,
+            _ => todo!("huber_loss with this reduction"),
+        };
 
-        total_loss.cast(original_dtype)
+        reduced.cast(original_dtype)
     }
 
     // movement
@@ -2178,9 +2188,9 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, ReduceOp};
+    /// # use zyx::{Tensor, Reduction};
     /// let logits = Tensor::from([[1.0f32, 2.0, 0.0]]);
-    /// let loss = logits.cross_entropy(Tensor::from([1i32]), ReduceOp::Mean).unwrap();
+    /// let loss = logits.cross_entropy(Tensor::from([1i32]), Reduction::Mean).unwrap();
     /// assert!((loss.item::<f32>() - 0.4076).abs() < 1e-3);
     /// ```
     ///
@@ -2200,7 +2210,7 @@ impl Tensor {
         match reduction {
             Reduction::Mean => Ok(per_sample.mean_all()),
             Reduction::Sum => Ok(per_sample.sum_all()),
-            Reduction::None => Ok(per_sample),
+            Reduction::NoReduction => Ok(per_sample),
             _ => Err(ZyxError::ParseError("invalid reduction for cross_entropy, expected Mean, Sum, or None".into())),
         }
     }
@@ -2212,10 +2222,10 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, ReduceOp};
+    /// # use zyx::{Tensor, Reduction};
     /// let logits = Tensor::from([[2.0f32, 1.0, 0.0]]);
     /// let loss = logits.nll_loss(
-    ///     Tensor::from([1i32]), None, None, ReduceOp::Mean,
+    ///     Tensor::from([1i32]), None, None, Reduction::Mean,
     /// ).unwrap();
     /// assert!((loss.item::<f32>() + 1.0).abs() < 1e-3);
     /// ```
@@ -2253,7 +2263,7 @@ impl Tensor {
         match reduction {
             Reduction::Mean => Ok(nll.sum_all() / masked_weight.sum_all()),
             Reduction::Sum => Ok(nll.sum_all()),
-            Reduction::None => Ok(nll),
+            Reduction::NoReduction => Ok(nll),
             _ => Err(ZyxError::ParseError("invalid reduction for nll_loss".into())),
         }
     }
@@ -2266,9 +2276,9 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, DType, ReduceOp};
+    /// # use zyx::{Tensor, DType, Reduction};
     /// let logp = Tensor::zeros([2, 2], DType::F32);
-    /// let l = logp.ctc_loss(Tensor::from([0i32, 1]), 0, ReduceOp::Mean).unwrap();
+    /// let l = logp.ctc_loss(Tensor::from([0i32, 1]), 0, Reduction::Mean).unwrap();
     /// assert!(l.item::<f32>().is_finite());
     /// ```
     ///
@@ -2361,7 +2371,7 @@ impl Tensor {
 
         match reduction {
             Reduction::Mean | Reduction::Sum => Ok(-log_sum),
-            Reduction::None => Err(ZyxError::ParseError("CTC loss with 'None' reduction is not supported".into())),
+            Reduction::NoReduction => Err(ZyxError::ParseError("CTC loss with 'NoReduction' reduction is not supported".into())),
             _ => Err(ZyxError::ParseError("invalid reduction for ctc_loss".into())),
         }
     }
@@ -2376,11 +2386,11 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, ReduceOp};
+    /// # use zyx::{Tensor, Reduction};
     /// let anchor = Tensor::from([[0.0f32, 0.0]]);
     /// let pos = Tensor::from([[0.1f32, 0.1]]);
     /// let neg = Tensor::from([[1.0f32, 1.0]]);
-    /// let l = anchor.triplet_margin_loss(&pos, &neg, 0.5, 2, false, ReduceOp::Mean).unwrap();
+    /// let l = anchor.triplet_margin_loss(&pos, &neg, 0.5, 2, 1e-6, false, Reduction::Mean).unwrap();
     /// assert!((l.item::<f32>() - 0.0).abs() < 1e-3);
     /// ```
     ///
@@ -2394,12 +2404,12 @@ impl Tensor {
         negative: &Tensor,
         margin: f32,
         p: i32,
+        eps: f32,
         swap: bool,
         reduction: Reduction,
     ) -> Result<Tensor, ZyxError> {
         let anchor = self;
         let dtype = anchor.dtype();
-        let eps: f32 = 1e-6;
 
         // Helper: p-norm distance along axis 1
         let dist = |a: &Tensor, b: &Tensor| -> Result<Tensor, ZyxError> {
@@ -2427,7 +2437,7 @@ impl Tensor {
         match reduction {
             Reduction::Mean => Ok(loss.mean_all()),
             Reduction::Sum => Ok(loss.sum_all()),
-            Reduction::None => Ok(loss),
+            Reduction::NoReduction => Ok(loss),
             _ => Err(ZyxError::ParseError("invalid reduction for triplet_margin_loss".into())),
         }
     }
@@ -2531,14 +2541,20 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::Tensor;
+    /// # use zyx::{Tensor, Reduction};
     /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let b = Tensor::from([2.0f32, 3.0, 4.0]);
-    /// assert_eq!(a.l1_loss(b).to_vec::<f32>().unwrap(), vec![1.0f32, 1.0, 1.0]);
+    /// assert_eq!(a.l1_loss(b, Reduction::NoReduction).to_vec::<f32>().unwrap(), vec![1.0f32, 1.0, 1.0]);
     /// ```
     #[must_use]
-    pub fn l1_loss(&self, target: impl Into<Tensor>) -> Tensor {
-        (self - target).abs()
+    pub fn l1_loss(&self, target: impl Into<Tensor>, reduction: Reduction) -> Tensor {
+        let loss = (self - target).abs();
+        match reduction {
+            Reduction::Mean => loss.mean_all(),
+            Reduction::Sum => loss.sum_all(),
+            Reduction::NoReduction => loss,
+            _ => todo!("l1_loss with this reduction"),
+        }
     }
 
     /// Mean squared error loss between `self` and `target` (scalar mean of
@@ -2595,10 +2611,10 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, ReduceOp};
+    /// # use zyx::{Tensor, Reduction};
     /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let b = Tensor::from([4.0f32, 5.0, 6.0]);
-    /// let s = a.cosine_similarity(b, Tensor::from([1e-9f32]), ReduceOp::Sum).unwrap();
+    /// let s = a.cosine_similarity(b, Tensor::from([1e-9f32]), Reduction::Sum).unwrap();
     /// assert!((s.item::<f32>() - 0.9747).abs() < 1e-4);
     /// ```
     ///
