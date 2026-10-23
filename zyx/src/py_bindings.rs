@@ -1521,14 +1521,26 @@ impl Tensor {
         Ok(self * rhs)
     }
 
+    /// True division: `x / y`. Integer (and bool) inputs are cast to
+    /// float first (torch/tinygrad semantics: `div` performs true division).
     fn __div__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        Ok(self / rhs)
+        let xd = self.dtype();
+        let x = if xd.is_int() || xd == DType::Bool { self.cast(DType::F32) } else { self.clone() };
+        let yd = rhs.dtype();
+        let y = if yd.is_int() || yd == DType::Bool { rhs.cast(DType::F32) } else { rhs };
+        Ok(x / y)
     }
 
+    /// True division: `x / y`. Integer (and bool) inputs are cast to
+    /// float first (torch/tinygrad semantics: `div` performs true division).
     fn __truediv__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        Ok(self / rhs)
+        let xd = self.dtype();
+        let x = if xd.is_int() || xd == DType::Bool { self.cast(DType::F32) } else { self.clone() };
+        let yd = rhs.dtype();
+        let y = if yd.is_int() || yd == DType::Bool { rhs.cast(DType::F32) } else { rhs };
+        Ok(x / y)
     }
 
     /// Floor division: `x // y`, rounding toward negative infinity
