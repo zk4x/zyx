@@ -1925,6 +1925,12 @@ impl Tensor {
         }
         if xrank == 1 || yrank == 1 {
             // vector path: broadcast multiply + contract, no movement nodes.
+            // A rank-1 lhs contracts the rhs's second-to-last dim (columns),
+            // so a rank-2+ rhs is transposed first; a rank-1 rhs contracts
+            // its last dim and needs no transpose.
+            if xrank == 1 && yrank > 1 {
+                return (self.clone() * rhs.t()).sum([-1]);
+            }
             return (self.clone() * rhs).sum([-1]);
         }
         let y = rhs.t();
@@ -1979,6 +1985,12 @@ impl Tensor {
         }
         if xrank == 1 || yrank == 1 {
             // vector path: broadcast multiply + contract, no movement nodes.
+            // A rank-1 lhs contracts the rhs's second-to-last dim (columns),
+            // so a rank-2+ rhs is transposed first; a rank-1 rhs contracts
+            // its last dim and needs no transpose.
+            if xrank == 1 && yrank > 1 {
+                return Ok((self.clone() * rhs.t()).sum_dtype([-1], acc_dtype)?.cast(out_dtype));
+            }
             return Ok((self.clone() * rhs).sum_dtype([-1], acc_dtype)?.cast(out_dtype));
         }
         let y = rhs.t();
