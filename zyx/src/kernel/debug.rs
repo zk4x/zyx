@@ -344,14 +344,14 @@ impl Kernel {
                             )
                             .unwrap();
                         }
-                        [x, y] => {
+                        dims => {
+                            let t = dims.iter().map(|d| format!("{d}")).collect::<Vec<_>>().join("x");
                             writeln!(
                                 f,
-                                "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {green}load{reset} tile {x}x{y} r{src}[r{src_idx}]    // {lb}..={ub}",
+                                "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {green}load{reset} tile {t} r{src}[r{src_idx}]    // {lb}..={ub}",
                             )
                             .unwrap();
                         }
-                        _ => todo!("debug: rank>2 access"),
                     }
                 }
                 Op::Store { dst, dst_idx, src: x, .. } => {
@@ -384,8 +384,7 @@ impl Kernel {
                     let kind = match self.shape(op_id).as_slice() {
                         [] => String::from("copy"),
                         [len] => format!("copy vec{len}"),
-                        [x, y] => format!("copy tile {x}x{y}"),
-                        _ => todo!("debug: rank>2 access"),
+                        dims => format!("copy tile {}", dims.iter().map(|d| format!("{d}")).collect::<Vec<_>>().join("x")),
                     };
                     writeln!(f, "{indent}{red}{kind}{reset} r{dst}[r{dst_idx}] = r{src}[r{src_idx}]").unwrap();
                 }

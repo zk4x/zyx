@@ -754,9 +754,18 @@ impl Kernel {
     /// (traffic, control) bail the caller. Shared leaves are reused
     /// (they dominate `before` exactly like the cloned index math
     /// does); the rest is rebuilt before `before`.
+    ///
+    /// Group ids rebase to physical tiles: DRAM traffic addresses
+    /// tile-layout buffers, so a const-scaled group id takes the
+    /// physical tile stride (one full [32, 32] tile per step, times
+    /// inner-group extents) and a bare group id inside Add/Sub wraps
+    /// to id * stride. Symbolic extents bail the caller.
     fn strip_unrolls(&mut self, idx: OpId, before: OpId) -> Option<OpId> {
         // Clone memo per call (index math is small).
         let mut memo: Map<OpId, OpId> = Map::default();
+        // Group axis -> physical tile stride (element units), built
+        // lazily on first group use inside the walk below.
+        let mut strides: Option<Map<u32, Dim>> = None;
         let zero = self.insert_before(before, Op::Const(Constant::idx(0i64)));
         memo.insert(zero, zero);
         let mut stack = vec![(idx, false)];
@@ -780,13 +789,92 @@ impl Kernel {
                     } else {
                         let nx = memo[&x];
                         let ny = memo[&y];
+                        // Group-leaf axes of the memo images (owned
+                        // copies; every borrow ends before inserts).
+                        let gx: Option<u32> = match &self.ops[nx].op {
+                            Op::Range { axis, kind: RangeKind::Group(_) } => Some(*axis),
+                            _ => None,
+                        };
+                        let gy: Option<u32> = match &self.ops[ny].op {
+                            Op::Range { axis, kind: RangeKind::Group(_) } => Some(*axis),
+                            _ => None,
+                        };
+                        // Axis -> physical tile stride, built on first
+                        // group use. One group step is one full
+                        // [32, 32] tile (1024 elems, the unit phase 1
+                        // sizes CBs, slots and byte counts in) times
+                        // the extents of all inner (higher-axis) groups;
+                        // split keeps the outer on the original axis.
+                        // Unresolvable (symbolic) extents bail the pass:
+                        // never silent wrong code.
+                        if (gx.is_some() || gy.is_some()) && strides.is_none() {
+                            let mut axes: Vec<(u32, Dim)> = Vec::new();
+                            for (_, op) in self.iter_unordered() {
+                                if let Op::Range { axis, kind: RangeKind::Group(len) } = op {
+                                    let Some(e) = self.resolve_const(*len).and_then(Constant::as_dim) else {
+                                        return None;
+                                    };
+                                    axes.push((*axis, e));
+                                }
+                            }
+                            axes.sort();
+                            let mut map: Map<u32, Dim> = Map::default();
+                            let mut suffix: Dim = 1024;
+                            for (a, e) in axes.iter().rev() {
+                                map.insert(*a, suffix);
+                                suffix = match suffix.checked_mul(*e) {
+                                    Some(s) => s,
+                                    None => return None,
+                                };
+                            }
+                            strides = Some(map);
+                        }
+                        // Physical group bases: a const-scaled group id
+                        // takes the tile stride; a bare group id inside
+                        // Add/Sub wraps to id * stride. These are the
+                        // forms split/pad composition emits; anything
+                        // else keeps the faithful clone and trips the
+                        // downstream checks loudly.
+                        let mut ax = nx;
+                        let mut ay = ny;
+                        match bop {
+                            BOp::Mul => {
+                                if let Some(a) = gx {
+                                    if gy.is_none() && matches!(self.ops[ny].op, Op::Const(_)) {
+                                        let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
+                                        let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
+                                        ax = self.insert_before(before, Op::Binary { x: nx, y: sc, bop });
+                                    }
+                                }
+                                if let Some(a) = gy {
+                                    if gx.is_none() && matches!(self.ops[nx].op, Op::Const(_)) {
+                                        let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
+                                        let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
+                                        ay = self.insert_before(before, Op::Binary { x: sc, y: ny, bop });
+                                    }
+                                }
+                            }
+                            BOp::Add | BOp::Sub => {
+                                if let Some(a) = gx {
+                                    let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
+                                    let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
+                                    ax = self.insert_before(before, Op::Binary { x: nx, y: sc, bop: BOp::Mul });
+                                }
+                                if let Some(a) = gy {
+                                    let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
+                                    let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
+                                    ay = self.insert_before(before, Op::Binary { x: ny, y: sc, bop: BOp::Mul });
+                                }
+                            }
+                            _ => {}
+                        }
                         // Fold constant lanes away: the base is fully
                         // static exactly when the index is.
-                        let id = match (&self.ops[nx].op, &self.ops[ny].op) {
+                        let id = match (&self.ops[ax].op, &self.ops[ay].op) {
                             (Op::Const(cx), Op::Const(cy)) => {
                                 self.insert_before(before, Op::Const(Constant::binary(*cx, *cy, bop)))
                             }
-                            _ => self.insert_before(before, Op::Binary { x: nx, y: ny, bop }),
+                            _ => self.insert_before(before, Op::Binary { x: ax, y: ay, bop }),
                         };
                         memo.insert(n, id);
                     }

@@ -3879,6 +3879,9 @@ impl Runtime {
             Kernel::base_cost,
         )?;
 
+        if crate::debug_mask().ir() {
+            winner.debug();
+        }
         let program_id = device_id.compile(&winner, crate::debug_mask().asm())?;
         self.programs.insert(kernel_id, program_id);
         self.timings.insert(ProgramId { dev: device_id, program_id }, timing);
@@ -4341,13 +4344,24 @@ impl Runtime {
                 continue;
             }
             let bytes = (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
-            // TT buffers are physical (whole tiles); logical shapes stay.
+            // TT buffers are physical (whole tiles, row-padded to 32);
+            // logical shapes stay. Mirrors tilize_transfer: outer * pr
+            // * pc. Flat round-up under-allocates whenever rows are not
+            // a multiple of 32 (halo rows need full tiles).
             #[cfg(feature = "tenstorrent")]
             let bytes = {
                 let el = dtypes[&tid].bit_size() as usize / 8;
-                let tile = 1024 * el;
                 if matches!(pool_id, Pool::TT(_)) {
-                    (bytes + tile - 1) / tile * tile
+                    let shape = self.resolve_shape(tid);
+                    let (rows, cols) = match shape.as_slice() {
+                        [.., r, c] => (*r, *c),
+                        [c] => (1, *c),
+                        [] => (1, 1),
+                    };
+                    let outer: Dim = if shape.len() >= 2 { shape[..shape.len() - 2].iter().product() } else { 1 };
+                    let pr = ((rows + 31) / 32) * 32;
+                    let pc = ((cols + 31) / 32) * 32;
+                    ((outer * pr * pc) as usize) * el
                 } else {
                     bytes
                 }

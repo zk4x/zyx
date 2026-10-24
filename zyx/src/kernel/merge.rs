@@ -304,7 +304,23 @@ impl Kernel {
     /// chain or one range pair into a single flat axis.
     pub fn opt_merge(&self) -> Box<dyn Optimization> {
         let mut groups = self.find_nested_loop_groups();
-        groups.extend(self.find_range_pairs());
+        // Group-range pairs fuse grid axes into one flat axis with
+        // div/mod index recovery (user spec): propose them only when
+        // the kernel holds more than 2 group ranges (excess to reduce
+        // toward the grid); 1-2 groups are the legal tiled end-state.
+        // Loop chains and Local pairs keep today's behavior.
+        let mut n_groups = 0;
+        for (_, x) in self.iter_unordered() {
+            if matches!(x, Op::Range { kind: RangeKind::Group(_), .. }) {
+                n_groups += 1;
+            }
+        }
+        for pair in self.find_range_pairs() {
+            let is_group_pair = matches!(self.ops[pair[0]].op, Op::Range { kind: RangeKind::Group(_), .. });
+            if !is_group_pair || n_groups > 2 {
+                groups.push(pair);
+            }
+        }
         Box::new(Merge { groups })
     }
 

@@ -464,10 +464,6 @@ impl BeamSearch {
                 // launches — never inside the search loop above.
                 kernel.device_epilogue();
                 if launched.insert(kernel.get_hash()) {
-                    if debug.ir() {
-                        kernel.debug();
-                    }
-
                     match kernel.launch_with_timings(&args, dev, debug) {
                         Ok((program_id, time)) => {
                             programs.push(program_id);
