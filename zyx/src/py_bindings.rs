@@ -274,10 +274,16 @@ impl Tensor {
             Ok(Tensor::from(val))
         } else if let Ok(val) = py_obj.extract::<f64>() {
             Ok(Tensor::from(val))
+        } else if let Ok(vec) = py_obj.extract::<Vec<bool>>() {
+            // Bool lists before ints: pyo3 converts True -> 1 in Vec<i64>.
+            Ok(Tensor::from(vec))
         } else if let Ok(vec) = py_obj.extract::<Vec<i64>>() {
             Ok(Tensor::from(vec))
         } else if let Ok(vec) = py_obj.extract::<Vec<f64>>() {
             Ok(Tensor::from(vec))
+        } else if let Ok(mat) = py_obj.extract::<Vec<Vec<bool>>>() {
+            // Bool mats before ints, same True -> 1 reason as above.
+            Ok(Tensor::from(mat))
         } else if let Ok(mat) = py_obj.extract::<Vec<Vec<i64>>>() {
             Ok(Tensor::from(mat))
         } else if let Ok(mat) = py_obj.extract::<Vec<Vec<f64>>>() {

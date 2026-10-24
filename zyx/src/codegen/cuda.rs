@@ -269,14 +269,18 @@ impl Kernel {
                     let if_true = get_var(if_true, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let if_false = get_var(if_false, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
+                    // NVRTC rejects mixed-type ternary arms (e.g. a half
+                    // const zero against a double grad arm from autograd),
+                    // so both arms cast to the select result type.
+                    let ctype = dtype.0.cu();
                     match dtype.1.as_slice() {
                         [len] => {
                             for &c in VEC_COMPONENTS.iter().take(width(len) as usize) {
-                                _ = writeln!(source, "{indent}r{reg}.{c} = {cond}.{c} ? {if_true}.{c} : {if_false}.{c};");
+                                _ = writeln!(source, "{indent}r{reg}.{c} = {cond}.{c} ? ({ctype}){if_true}.{c} : ({ctype}){if_false}.{c};");
                             }
                         }
                         [] => {
-                            _ = writeln!(source, "{indent}r{reg} = {cond} ? {if_true} : {if_false};");
+                            _ = writeln!(source, "{indent}r{reg} = {cond} ? ({ctype}){if_true} : ({ctype}){if_false};");
                         }
                         _ => {
                             return Err(BackendError {

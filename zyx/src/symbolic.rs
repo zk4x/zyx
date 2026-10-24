@@ -123,6 +123,18 @@ pub enum Expr {
         /// The op.
         bop: BOp,
     },
+    /// Branchless select over scalar expressions: `cond ? if_true :
+    /// if_false`. The cond must fold to bool; the arms must share a
+    /// dtype (same rule as `Op::Select`: select is not arithmetic,
+    /// no promotion).
+    Select {
+        /// Bool condition expression.
+        cond: ExprId,
+        /// Value when the cond folds to true.
+        if_true: ExprId,
+        /// Value when the cond folds to false.
+        if_false: ExprId,
+    },
     /// Heap-allocated stack of expressions (shapes of rank 6+).
     Stack {
         /// Child expressions.
@@ -211,6 +223,18 @@ impl Runtime {
                 let (vb, tb) = self.fold_dim(b, memo);
                 (Constant::binary(va, vb, bop), ta || tb)
             }
+            Expr::Select { cond: c, if_true: t, if_false: f } => {
+                // A constant predicate picks its arm outright (same as
+                // the kernel-level fold); only the taken arm is visited,
+                // so the dead side stays dead.
+                let (vc, tc) = self.fold_dim(c, memo);
+                let p = match vc {
+                    Constant::Bool(p) => p,
+                    ref v => panic!("select condition {c:?} does not evaluate to bool: {v:?}"),
+                };
+                let (v, tt) = self.fold_dim(if p { t } else { f }, memo);
+                (v, tc || tt)
+            }
             ref e => panic!("dim expression {root:?} is not a scalar expression: {e:?}"),
         };
         memo.insert(root, v);
@@ -232,6 +256,8 @@ impl Runtime {
                     self.expr_dtype(x)
                 }
             }
+            // Arms share a dtype by construction (same rule as Op::Select).
+            Expr::Select { if_true, .. } => self.expr_dtype(if_true),
             ref e => panic!("expression {root:?} has no scalar dtype: {e:?}"),
         }
     }
@@ -460,6 +486,11 @@ impl Runtime {
                     flatten(rt, *a, order);
                     flatten(rt, *b, order);
                 }
+                Expr::Select { cond: c, if_true: t, if_false: f } => {
+                    flatten(rt, *c, order);
+                    flatten(rt, *t, order);
+                    flatten(rt, *f, order);
+                }
                 Expr::Stack { exprs } => {
                     for &e in exprs.iter() {
                         flatten(rt, e, order);
@@ -526,6 +557,10 @@ impl Runtime {
                     let (a, b) = (op_map[&x], op_map[&y]);
                     self.kernels[kid].kernel.binary(a, b, bop)
                 }
+                Expr::Select { cond: c, if_true: t, if_false: f } => {
+                    let (a, b, d) = (op_map[&c], op_map[&t], op_map[&f]);
+                    self.kernels[kid].kernel.select(a, b, d)
+                }
                 Expr::Stack { exprs } => {
                     let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
                     self.kernels[kid].kernel.stack(&ops)
@@ -572,6 +607,11 @@ impl Runtime {
                 Expr::Binary { x: a, y: b, .. } => {
                     flatten(rt, *a, order);
                     flatten(rt, *b, order);
+                }
+                Expr::Select { cond: c, if_true: t, if_false: f } => {
+                    flatten(rt, *c, order);
+                    flatten(rt, *t, order);
+                    flatten(rt, *f, order);
                 }
                 Expr::Stack { exprs } => {
                     for &e in exprs.iter() {
@@ -634,6 +674,10 @@ impl Runtime {
                 Expr::Binary { x, y, bop } => {
                     let (a, b) = (op_map[&x], op_map[&y]);
                     self.kernels[kid].kernel.binary(a, b, bop)
+                }
+                Expr::Select { cond: c, if_true: t, if_false: f } => {
+                    let (a, b, d) = (op_map[&c], op_map[&t], op_map[&f]);
+                    self.kernels[kid].kernel.select(a, b, d)
                 }
                 Expr::Stack { exprs } => {
                     let ops: Vec<OpId> = exprs.iter().map(|e| op_map[e]).collect();
@@ -700,6 +744,11 @@ impl Runtime {
                 Expr::Binary { x: a, y: b, .. } => {
                     flatten(rt, *a, order);
                     flatten(rt, *b, order);
+                }
+                Expr::Select { cond: c, if_true: t, if_false: f } => {
+                    flatten(rt, *c, order);
+                    flatten(rt, *t, order);
+                    flatten(rt, *f, order);
                 }
                 Expr::Stack { exprs } => {
                     for &e in exprs.iter() {
@@ -780,6 +829,10 @@ impl Runtime {
                     let b = class_map[&y];
                     self.push_binary_node(graph_id, a, b, bop)
                 }
+                Expr::Select { cond: c, if_true: t, if_false: f } => {
+                    let (a, b, d) = (class_map[&c], class_map[&t], class_map[&f]);
+                    self.push_op(graph_id, Op::Select { cond: a, if_true: b, if_false: d })
+                }
                 Expr::Stack { ref exprs } => {
                     let ops: Vec<OpId> = exprs.iter().map(|e| class_map[e]).collect();
                     match ops.len() {
@@ -830,7 +883,7 @@ impl Runtime {
     /// Returns shape for reduce that reduces over the last axis
     pub fn reduce_last_axis_shape(&mut self, shape_id: ExprId) -> ExprId {
         match self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
                 ExprId::SCALAR
             }
             Expr::Stack2 { exprs } => exprs[0],
@@ -852,7 +905,7 @@ impl Runtime {
             return ExprId::SCALAR;
         }
         match self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
                 shape_id
             }
             Expr::Stack2 { exprs } => {
@@ -897,7 +950,7 @@ impl Runtime {
             panic!("pad_zeros of scalar tensor");
         }
         match self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
                 debug_assert_eq!(axis, 0, "pad_zeros axis {axis} out of bounds for rank 1");
                 len
             }
@@ -937,7 +990,7 @@ impl Runtime {
             panic!("narrow of scalar tensor");
         }
         match self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
                 debug_assert_eq!(axis, 0, "narrow axis {axis} out of bounds for rank 1");
                 len
             }
@@ -977,7 +1030,7 @@ impl Runtime {
             return len;
         }
         match self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
                 self.push(Expr::Stack2 { exprs: [len, shape_id] })
             }
             Expr::Stack2 { exprs } => self.push(Expr::Stack3 { exprs: [len, exprs[0], exprs[1]] }),
@@ -1003,7 +1056,7 @@ impl Runtime {
             return 0;
         }
         match &self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => 1,
+            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => 1,
             Expr::Stack2 { .. } => 2,
             Expr::Stack3 { .. } => 3,
             Expr::Stack4 { .. } => 4,
@@ -1029,7 +1082,7 @@ impl Runtime {
                 Expr::Stack { .. } | Expr::Stack2 { .. } | Expr::Stack3 { .. } | Expr::Stack4 { .. } | Expr::Stack5 { .. } => {
                     return 1;
                 }
-                Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } => {
+                Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
                     return 0;
                 }
             },

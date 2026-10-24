@@ -1264,6 +1264,7 @@ impl Runtime {
                 | Expr::Cast { .. }
                 | Expr::Unary { .. }
                 | Expr::Binary { .. }
+                | Expr::Select { .. }
                 | Expr::Stack { .. }
                 | Expr::Stack2 { .. }
                 | Expr::Stack3 { .. }
@@ -1379,6 +1380,7 @@ impl Runtime {
                 | Expr::Cast { .. }
                 | Expr::Unary { .. }
                 | Expr::Binary { .. }
+                | Expr::Select { .. }
                 | Expr::Stack { .. }
                 | Expr::Stack2 { .. }
                 | Expr::Stack3 { .. }
@@ -1743,15 +1745,31 @@ impl Runtime {
                 }
             }
         }
-        // Symbolic operands: no Expr::Select exists yet; wiring symbolic
-        // selects rides with the where_ integration.
-        let any_graph = self.is_graph(cond) || self.is_graph(if_true) || self.is_graph(if_false);
-        let n_sym = [cond, if_true, if_false]
-            .iter()
-            .filter(|&&t| matches!(self.tensors[t], TensorData::Symbolic { .. }))
-            .count();
-        if n_sym > 0 && !any_graph {
-            todo!("select with symbolic operands")
+        // Symbolic operands are pure-slab scalars (e.g. a reduced-then-
+        // sqrt'd scalar): the all-symbolic case builds a slab Select
+        // node, mirroring binary's slab path. Mixed symbolic+eager
+        // replays each slab operand into the merged kernel below
+        // (mirroring binary's replay path).
+        let is_sym = |t: TensorId| matches!(self.tensors[t], TensorData::Symbolic { .. });
+        let n_sym = [cond, if_true, if_false].iter().filter(|&&t| is_sym(t)).count();
+        if n_sym == 3 {
+            let ec = match self.tensors[cond] {
+                TensorData::Symbolic { expr, .. } => expr,
+                ref t => panic!("select: symbolic operand tid {cond} is not Symbolic: {t:?}"),
+            };
+            let et = match self.tensors[if_true] {
+                TensorData::Symbolic { expr, .. } => expr,
+                ref t => panic!("select: symbolic operand tid {if_true} is not Symbolic: {t:?}"),
+            };
+            let ef = match self.tensors[if_false] {
+                TensorData::Symbolic { expr, .. } => expr,
+                ref t => panic!("select: symbolic operand tid {if_false} is not Symbolic: {t:?}"),
+            };
+            let root = self.push(Expr::Select { cond: ec, if_true: et, if_false: ef });
+            let tid = self.tensors.push(TensorData::Symbolic { expr: root, rc: 1 });
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> symbolic: tid={tid}");
+            return Ok(tid);
         }
 
         // Result shape: the arms' shared shape expression (both arms are
@@ -1836,61 +1854,87 @@ impl Runtime {
             }
             let shape_id = result_shape(self, if_true, if_false);
 
-            // Resolve each operand to its kernel (Leaf → fresh load kernel).
+            // Resolve each eager operand to its kernel (Leaf → fresh load
+            // kernel). Symbolic slab scalars have no kernel: they replay
+            // into the destination after merging (mirroring binary's
+            // replay path). Graph operands cannot appear here (handled
+            // above); the all-symbolic case returned above.
             let mut kos = [cond, if_true, if_false].map(|t| match self.tensors[t] {
-                TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
+                TensorData::Eager { kernel_id, op_id, .. } => Some((kernel_id, op_id)),
+                TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => Some(self.new_kernel_from_leaf(t)),
+                TensorData::Symbolic { .. } => None,
                 TensorData::Graph { .. }
                 | TensorData::GraphLeaf { .. }
-                | TensorData::Promoted { .. }
-                | TensorData::Symbolic { .. } => {
+                | TensorData::Promoted { .. } => {
                     panic!("select: operand tid {t} is not an eager tensor: {:?}", self.tensors[t])
                 }
             });
-            // Store arbitration per operand, like binary: flush storing
-            // kernels via add_store (which may re-create operands —
-            // including ones sharing the flushed kernel — as Leafs).
+            // Store arbitration per eager operand, like binary: flush
+            // storing kernels via add_store (which may re-create operands
+            // — including ones sharing the flushed kernel — as Leafs).
             // Kids come from the upfront resolve; never re-read between
             // flushes, then re-resolve everything below.
-            for (i, &t) in [cond, if_true, if_false].iter().enumerate() {
-                let kid = kos[i].0;
-                if !self.kernels[kid].stores.is_empty() {
+            for (slot, t) in kos.iter().zip([cond, if_true, if_false]) {
+                if let Some((kid, _)) = slot
+                    && !self.kernels[*kid].stores.is_empty()
+                {
                     self.add_store(t)?;
                 }
             }
-            // Re-resolve: add_store may have re-created operands as Leafs.
+            // Re-resolve: add_store may have re-created operands as Leafs
+            // (symbolic operands have no kernel and are untouched).
             for (slot, t) in kos.iter_mut().zip([cond, if_true, if_false]) {
-                *slot = match self.tensors[t] {
-                    TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
-                    TensorData::Graph { .. }
-                    | TensorData::GraphLeaf { .. }
-                    | TensorData::Promoted { .. }
-                    | TensorData::Symbolic { .. } => {
-                        unreachable!("add_store turned operand into unexpected data: {:?}", self.tensors[t])
-                    }
-                };
+                if slot.is_some() {
+                    *slot = match self.tensors[t] {
+                        TensorData::Eager { kernel_id, op_id, .. } => Some((kernel_id, op_id)),
+                        TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
+                            Some(self.new_kernel_from_leaf(t))
+                        }
+                        TensorData::Graph { .. }
+                        | TensorData::GraphLeaf { .. }
+                        | TensorData::Promoted { .. }
+                        | TensorData::Symbolic { .. } => {
+                            unreachable!("add_store turned operand into unexpected data: {:?}", self.tensors[t])
+                        }
+                    };
+                }
             }
             // Destination: the reduce kernel wins (same rule as binary's
-            // swap); otherwise the first kernel. Operand order is
-            // positional, so no operand swap — only destination choice.
-            // Positions travel through merge_kernel's op map (like
-            // binary): Leaf operands stay Leaf in the slab, only their
-            // kernel ops are repointed — never re-read the tensors.
-            let keep_idx = kos.iter().position(|&(kid, _)| self.kernels[kid].kernel.is_reduce()).unwrap_or(0);
-            let keep_kid = kos[keep_idx].0;
-            let mut kids = [kos[0].0, kos[1].0, kos[2].0];
-            let mut ops = [kos[0].1, kos[1].1, kos[2].1];
+            // swap); otherwise the first eager kernel. All-symbolic
+            // returned above, so an eager operand always exists.
+            let keep_kid = kos
+                .iter()
+                .flatten()
+                .map(|&(kid, _)| kid)
+                .find(|&kid| self.kernels[kid].kernel.is_reduce())
+                .or(kos.iter().flatten().map(|&(kid, _)| kid).next())
+                .expect("select: no eager operand to host the merged kernel");
+            // Merge eager operands into the destination (positions travel
+            // through merge_kernel's op map, like binary); then replay
+            // each slab operand into the destination kernel.
+            let mut kids = kos.map(|s| s.map(|(kid, _)| kid));
+            let mut ops = [OpId::NULL, OpId::NULL, OpId::NULL];
+            for (i, slot) in kos.iter().enumerate() {
+                if let Some((_, op)) = slot {
+                    ops[i] = *op;
+                }
+            }
             for i in 0..3 {
-                if kids[i] != keep_kid {
-                    let merged = kids[i];
-                    let op_map = self.merge_kernel(keep_kid, merged)?;
+                if let Some(kid) = kids[i]
+                    && kid != keep_kid
+                {
+                    let op_map = self.merge_kernel(keep_kid, kid)?;
                     for j in 0..3 {
-                        if kids[j] == merged {
+                        if kids[j] == Some(kid) {
                             ops[j] = op_map[&ops[j]];
-                            kids[j] = keep_kid;
+                            kids[j] = Some(keep_kid);
                         }
                     }
+                }
+            }
+            for (i, &t) in [cond, if_true, if_false].iter().enumerate() {
+                if kos[i].is_none() {
+                    ops[i] = self.replay_symbolic_into_kernel(keep_kid, t);
                 }
             }
             let op_id = self.kernels[keep_kid].kernel.select(ops[0], ops[1], ops[2]);
