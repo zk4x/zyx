@@ -148,8 +148,28 @@ impl Kernel {
                 Op::Spirv(_) => todo!(),
                 Op::PTX(_) => todo!(),
                 Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before C codegen"),
-                // Select lowering (ternary) lands with the where_ integration.
-                Op::Select { .. } => todo!("C codegen of Select"),
+                // Branchless select: the ternary copies the winning arm's
+                // bits, so ±inf on the dead side stays dead (unlike the
+                // old sel*a + (1-sel)*b decomposition).
+                Op::Select { cond, if_true, if_false } => {
+                    let dtype = dtypes[&op_id].clone();
+                    let cond = get_var(cond, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let if_true = get_var(if_true, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let if_false = get_var(if_false, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
+                    match dtype.1.as_slice() {
+                        [n] => {
+                            for i in 0..width(n) {
+                                let cl = lane_access(&cond, i as usize);
+                                let tl = lane_access(&if_true, i as usize);
+                                let fl = lane_access(&if_false, i as usize);
+                                let dst = lane_access(&format!("r{reg}"), i as usize);
+                                _ = writeln!(source, "{indent}{dst} = {cl} ? {tl} : {fl};");
+                            }
+                        }
+                        _ => _ = writeln!(source, "{indent}r{reg} = {cond} ? {if_true} : {if_false};"),
+                    }
+                }
                 Op::Range { kind: scope, .. } => {
                     let RangeKind::Group(len) = scope else {
                         return Err(BackendError {

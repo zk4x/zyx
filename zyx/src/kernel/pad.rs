@@ -170,7 +170,11 @@ impl Kernel {
                         self.insert_after(op_id, Op::EndLoop);
                     }
 
-                    // Guard loads: redirect OOB reads to element 0 (safe)
+                    // Guard loads: redirect OOB reads to element 0 (safe).
+                    // A Select on the index keeps the guard a straight-line
+                    // value op (no conditional scope for later passes to
+                    // reason about); OOB threads load element 0 and their
+                    // garbage never reaches memory (stores stay guarded).
                     if let Op::Load { src, src_idx: load_idx } = self.ops[op_id].op.clone() {
                         if !self.shape(load_idx).is_empty() {
                             // non-scalar accesses stay scalar-guardable only
@@ -179,8 +183,8 @@ impl Kernel {
                         }
                         if self.depends_on(load_idx, axis, &mut Set::default()) {
                             let cond = self.insert_before(op_id, Op::Binary { x: axis, y: limit, bop: BOp::Cmplt });
-                            let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
-                            let safe_idx = self.insert_before(op_id, Op::Binary { x: load_idx, y: cast_idx, bop: BOp::Mul });
+                            let zero = self.insert_before(op_id, Op::Const(Constant::idx(0)));
+                            let safe_idx = self.insert_before(op_id, Op::Select { cond, if_true: load_idx, if_false: zero });
                             let safe_load = self.insert_before(op_id, Op::Load { src, src_idx: safe_idx });
                             self.remap(op_id, safe_load);
                             self.remove_op(op_id);
@@ -278,7 +282,9 @@ impl Kernel {
                         self.insert_after(op_id, Op::EndLoop);
                     }
 
-                    // Guard loads: redirect OOB reads to element 0 (safe)
+                    // Guard loads: redirect OOB reads to element 0 (safe,
+                    // Select-on-index like the range arm: no conditional
+                    // scope, OOB garbage never reaches guarded stores).
                     if let Op::Load { src, src_idx: load_idx } = self.ops[op_id].op.clone() {
                         if !self.shape(load_idx).is_empty() {
                             // non-scalar accesses stay scalar-guardable only
@@ -287,8 +293,8 @@ impl Kernel {
                         }
                         if self.depends_on(load_idx, axis, &mut Set::default()) {
                             let cond = self.insert_before(op_id, Op::Binary { x: axis, y: limit, bop: BOp::Cmplt });
-                            let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
-                            let safe_idx = self.insert_before(op_id, Op::Binary { x: load_idx, y: cast_idx, bop: BOp::Mul });
+                            let zero = self.insert_before(op_id, Op::Const(Constant::idx(0)));
+                            let safe_idx = self.insert_before(op_id, Op::Select { cond, if_true: load_idx, if_false: zero });
                             let safe_load = self.insert_before(op_id, Op::Load { src, src_idx: safe_idx });
                             self.remap(op_id, safe_load);
                             self.remove_op(op_id);

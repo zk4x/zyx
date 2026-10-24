@@ -261,8 +261,31 @@ impl Kernel {
                 Op::Spirv(_) => todo!(),
                 Op::PTX(_) => todo!(),
                 Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before CUDA codegen"),
-                // Select lowering (ternary/selp) lands with the where_ integration.
-                Op::Select { .. } => todo!("CUDA codegen of Select"),
+                // Branchless select via the ternary (see the C backend):
+                // per-component copy, so ±inf on the dead side stays dead.
+                Op::Select { cond, if_true, if_false } => {
+                    let dtype = dtypes[&op_id].clone();
+                    let cond = get_var(cond, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let if_true = get_var(if_true, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let if_false = get_var(if_false, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
+                    match dtype.1.as_slice() {
+                        [len] => {
+                            for &c in VEC_COMPONENTS.iter().take(width(len) as usize) {
+                                _ = writeln!(source, "{indent}r{reg}.{c} = {cond}.{c} ? {if_true}.{c} : {if_false}.{c};");
+                            }
+                        }
+                        [] => {
+                            _ = writeln!(source, "{indent}r{reg} = {cond} ? {if_true} : {if_false};");
+                        }
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("CUDA codegen: unsupported select shape {:?}", dtype.1).into(),
+                            });
+                        }
+                    }
+                }
                 Op::TT { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }

@@ -823,6 +823,21 @@ impl Kernel {
                         type_ext,
                     );
                 }
+                // Branchless select as a predicated mov-pair (tinygrad's
+                // WHERE lowers the same way): the winning arm's bits are
+                // copied, so ±inf on the dead side stays dead. The mov
+                // suffix is the register type (reg_ptx), matching the
+                // declaration; predication keeps it branchless.
+                Op::Select { cond, if_true, if_false } => {
+                    let dtype = dtypes[&op_id].0;
+                    let cond = comp.get_var(cond);
+                    let t = comp.get_var(if_true);
+                    let f = comp.get_var(if_false);
+                    let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
+                    let mt = dtype.reg_ptx();
+                    _ = writeln!(comp.body, "{}@%r{cond} mov.{mt} %r{reg}, %r{t};", comp.indent);
+                    _ = writeln!(comp.body, "{}@!%r{cond} mov.{mt} %r{reg}, %r{f};", comp.indent);
+                }
                 Op::Loop { len } => {
                     comp.loop_level += 1;
                     // Boolean length = conditional (the old `If`); the

@@ -1257,8 +1257,17 @@ impl Kernel {
                     Op::Spirv(_) => todo!(),
                     Op::PTX(_) => todo!(),
                     Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before SPIR-V codegen"),
-                    // Select lowering (OpSelect) lands with the where_ integration.
-                    Op::Select { .. } => todo!("SPIR-V codegen of Select"),
+                    // Branchless select: OpSelect copies the winning arm's
+                    // bits, so ±inf on the dead side stays dead. The
+                    // condition is a Bool value like every comparison result.
+                    Op::Select { cond, if_true, if_false } => {
+                        let (res_dt, res_shape) = dtypes[&op_id].clone();
+                        let result_type =
+                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, res_dt, &res_shape);
+                        let rid = asm.id();
+                        asm.emit_typed(OpSelect, result_type, rid, &[spv_values[&cond], spv_values[&if_true], spv_values[&if_false]]);
+                        spv_values.insert(op_id, rid);
+                    }
                     Op::TT { .. }
                     | Op::Expand { .. }
                     | Op::Permute { .. }
