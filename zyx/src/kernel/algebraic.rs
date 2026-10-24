@@ -334,6 +334,24 @@ impl Kernel {
                         self.remap(op_id, if_true);
                     }
                 }
+            } else if let &Op::Binary { x, y, bop: BOp::And } = self.at(op_id)
+                && self.dtype(op_id) == DType::Bool
+            {
+                // A conjunction with a bounds-decided side resolves
+                // outright: false absorbs, true is identity. Same
+                // short-circuit as the Select rule above: narrowed
+                // Cmp/And bounds decide the side without waiting for it
+                // to fold to a constant op first (which would take
+                // another whole epilogue round per link of the chain).
+                if let (Some(&(xlo, xhi)), Some(&(ylo, yhi))) = (bounds.get(&x), bounds.get(&y)) {
+                    if (xlo == 0 && xhi == 0) || (ylo == 0 && yhi == 0) {
+                        self.ops[op_id].op = Op::Const(Constant::Bool(false));
+                    } else if xlo == 1 && xhi == 1 {
+                        self.remap(op_id, y);
+                    } else if ylo == 1 && yhi == 1 {
+                        self.remap(op_id, x);
+                    }
+                }
             } else if let &Op::Binary { x, y, bop } = self.at(op_id)
                 && !self.dtype(x).is_float()
             {

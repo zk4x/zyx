@@ -984,6 +984,33 @@ impl Kernel {
                         bounds.insert(op_id, (xl, xu));
                     }
                 }
+                Op::Select { cond, if_true, if_false } => {
+                    // A predicate decided by bounds takes its arm's range
+                    // outright; otherwise the union (conservative). Program
+                    // order guarantees the cond entry is ready here, so a
+                    // decided outer guard narrows the whole guarded chain
+                    // in this same walk (no second bounds pass needed for
+                    // a bounds-clamped index select to collapse).
+                    if let Some(&(lo, hi)) = bounds.get(&cond) {
+                        if lo == 1 && hi == 1 {
+                            if let Some(&b) = bounds.get(&if_true) {
+                                bounds.insert(op_id, b);
+                            }
+                        } else if lo == 0 && hi == 0 {
+                            if let Some(&b) = bounds.get(&if_false) {
+                                bounds.insert(op_id, b);
+                            }
+                        } else if let (Some(&(tlo, thi)), Some(&(flo, fhi))) =
+                            (bounds.get(&if_true), bounds.get(&if_false))
+                        {
+                            bounds.insert(op_id, (tlo.min(flo), thi.max(fhi)));
+                        }
+                    } else if let (Some(&(tlo, thi)), Some(&(flo, fhi))) =
+                        (bounds.get(&if_true), bounds.get(&if_false))
+                    {
+                        bounds.insert(op_id, (tlo.min(flo), thi.max(fhi)));
+                    }
+                }
                 _ => {}
             }
             op_id = self.ops[op_id].next;
