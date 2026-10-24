@@ -1582,6 +1582,22 @@ impl Kernel {
                     let dim = self.const_idx(len);
                     visited.insert(op_id, vec![dim]);
                 }
+                // Select takes its value shape from the true arm (both
+                // arms share the value dtype; the cond is a broadcast
+                // mask, scalar or arm-shaped, and carries no dims).
+                Op::Select { if_true: x, .. } => match visited.get(&x).cloned() {
+                    Some(dims) => {
+                        visited.insert(op_id, dims);
+                        if let Some(a) = axes.get(&x).cloned() {
+                            axes.insert(op_id, a);
+                        }
+                    }
+                    None => {
+                        stack.push(op_id);
+                        stack.push(x);
+                        continue;
+                    }
+                },
                 ref op => todo!("shape_ids of {op:?}"),
             }
         }
@@ -1785,6 +1801,20 @@ impl Kernel {
                 | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
                 | Op::TT(TTOp::LLKBcast { cb_a: x, .. }) => match visited.get(&x) {
+                    Some(dims) => {
+                        visited.insert(id, *dims);
+                    }
+                    None => {
+                        stack.push(id);
+                        stack.push(x);
+                    }
+                },
+                // Select takes its value shape from the true arm (same
+                // rule as shape_ids: the cond is a broadcast mask that
+                // carries no dims). Without this the catch-all below
+                // reports scalar, and view propagation treats a vector
+                // select as a scalar read.
+                Op::Select { if_true: x, .. } => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(id, *dims);
                     }

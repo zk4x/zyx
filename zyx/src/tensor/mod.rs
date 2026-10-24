@@ -376,7 +376,9 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn rank(&self) -> Dim {
-        self.resolve_shape().len() as i64
+        // Cheap: shape-id arity only, no dim folding (resolve_shape cascades
+        // symbolic evaluation just to count axes).
+        RT.lock().tensor_rank(self.id)
     }
 
     /// Return the data type of the tensor.
@@ -1462,7 +1464,7 @@ impl Tensor {
     ///
     /// Returns a shape error if the axis is out of bounds.
     pub fn expand_axis(&self, axis: Axis, dim: Dim) -> Result<Tensor, ZyxError> {
-        let rank = self.resolve_shape().len();
+        let rank = self.rank() as usize;
         let axis = into_axis(axis, rank as u32)? as usize;
         let mut dims = self.shape();
         // Only the NEW dim is a fresh constant — the user passed it concretely.
@@ -1590,7 +1592,7 @@ impl Tensor {
     #[track_caller]
     pub fn pad_zeros(&self, padding: impl IntoIterator<Item = (i64, i64)>) -> Result<Tensor, ZyxError> {
         let mut padding: Vec<(i64, i64)> = padding.into_iter().collect();
-        let rank = self.resolve_shape().len();
+        let rank = self.rank() as usize;
 
         if padding.len() > rank {
             return Err(ZyxError::shape_error(
@@ -1628,7 +1630,7 @@ impl Tensor {
     #[track_caller]
     pub fn rpad_zeros(&self, padding: impl IntoIterator<Item = (i64, i64)>) -> Result<Tensor, ZyxError> {
         let mut padding: Vec<(i64, i64)> = padding.into_iter().collect();
-        let rank = self.resolve_shape().len();
+        let rank = self.rank() as usize;
 
         if padding.len() > rank {
             return Err(ZyxError::shape_error(
@@ -1679,7 +1681,9 @@ impl Tensor {
             return Err(ZyxError::shape_error(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}").into()));
         }
         let t0 = self.pad_zeros(padding.clone())?;
-        let ones = Tensor::ones(sh.clone(), dtype);
+        // 0/1 validity mask: bool (select requires a bool cond; the old
+        // arithmetic where_ accepted any dtype by casting).
+        let ones = Tensor::ones(sh.clone(), DType::Bool);
         crate::shape::pad(&mut sh, &padding);
         let zeros = Tensor::zeros(sh, dtype);
         Ok(t0 + ones.pad_zeros(padding)?.select(zeros, value)?)
@@ -2172,8 +2176,9 @@ impl Tensor {
     ///
     /// # Note
     ///
-    /// Implemented branchlessly as `cond * if_true + (1 - cond) * if_false`;
-    /// this yields `NaN` on a `0 * ±inf` product — do not pass infinities.
+    /// Exact and branchless: the winning arm's bits are copied, never
+    /// multiplied, so `±inf` on the dead side stays dead (unlike arithmetic
+    /// masking `cond * x + (1 - cond) * y`, which yields `NaN` on `0 * ±inf`).
     ///
     /// # Example
     ///
@@ -2186,18 +2191,40 @@ impl Tensor {
     ///
     /// # Errors
     ///
-    /// Returns a shape error if the tensors have non broadcastable shapes.
-    // TODO: possibly for some models in the future a ternary where op will be
-    // needed (graph node + kernel IR + backends); the branchless decomposition
-    // below cannot support ±inf values.
+    /// Returns a dtype error if `self` is not bool, and a shape error if the
+    /// tensors have non broadcastable shapes. The arms unify dtype and shape
+    /// through broadcast; the cond keeps its bool dtype and is only
+    /// shape-expanded.
     #[allow(clippy::missing_panics_doc)]
     pub fn select(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let if_true = if_true.into();
         let if_false = if_false.into();
-        let dtype = if_true.dtype();
-        let x = self.cast(dtype);
+        // The arms unify dtype and shape together; the bool cond keeps its
+        // dtype and is only shape-expanded below (broadcasting a bool cond
+        // through Tensor::broadcast would cast it away).
         let (if_true, if_false) = Tensor::broadcast(if_true, if_false)?;
-        Ok(x.clone() * if_true + (Tensor::ones(if_false.resolve_shape(), dtype) - x) * if_false)
+        let (cond, if_true, if_false) = if self.rank() == 0 {
+            // Scalar conds pass through; RT broadcasts them implicitly.
+            (self.clone(), if_true, if_false)
+        } else {
+            // Full three-way broadcast (torch.where semantics: the result
+            // follows the common shape, whichever side is bigger). Shape
+            // only, never dtypes: the bool cond joins the broadcast
+            // without being cast away.
+            let (target, expand_cond, expand_arms) = Self::broadcast_shape(self, &if_true)?;
+            let cond = if expand_cond { self.expand(target.iter())? } else { self.clone() };
+            let (if_true, if_false) = if expand_arms {
+                (if_true.expand(target.iter())?, if_false.expand(target.iter())?)
+            } else {
+                (if_true, if_false)
+            };
+            (cond, if_true, if_false)
+        };
+        // Bind plain ids first: a live RT guard must never overlap a
+        // Tensor drop, and the temporaries drop at fall-out of scope.
+        let (cid, tid, fid) = (cond.id, if_true.id, if_false.id);
+        let nid = RT.lock().select(cid, tid, fid)?;
+        Ok(Tensor { id: nid })
     }
 
     // loss functions
@@ -2341,19 +2368,20 @@ impl Tensor {
         let neg_inf_tensor = Tensor::full([n_ext as i64], neg_inf).cast(dtype);
         let neg_inf_val = Tensor::from(neg_inf).cast(dtype);
 
-        // Initialize alpha[0]: [-inf, ..., -inf] with first two set
+        // Initialize alpha[0]: [-inf, ..., -inf] with first two set.
+        // The mask is bool (select requires a bool cond).
         let lp0 = lp.clone().slice(0..1)?.squeeze([0]);
-        let init_vals: Vec<i32> = (0..n_ext).map(|i| if i <= 1 { 1 } else { 0 }).collect();
-        let init_mask = Tensor::from(init_vals).cast(dtype);
+        let init_vals: Vec<bool> = (0..n_ext).map(|i| i <= 1).collect();
+        let init_mask = Tensor::from(init_vals);
         let alpha0 = init_mask.select(&lp0, &neg_inf_tensor)?;
         let mut alpha = vec![alpha0];
 
         // Skip mask: positions s >= 2 where ext_labels[s-2] != ext_labels[s]
         let labels_prev = ext_labels.clone().slice(0..((n_ext - 2) as i64))?;
         let labels_curr = ext_labels.clone().slice(2..(n_ext as i64))?;
-        let skip_inner = labels_prev.ne(&labels_curr)?.cast(dtype);
+        let skip_inner = labels_prev.ne(&labels_curr)?;
         let skip_mask = if n_ext >= 3 {
-            let zeros_pad = Tensor::zeros([2], dtype);
+            let zeros_pad = Tensor::zeros([2], DType::Bool);
             let cat_tensors: Vec<&Tensor> = vec![&zeros_pad, &skip_inner];
             Tensor::cat(cat_tensors, 0)?
         } else {
@@ -3347,7 +3375,7 @@ impl Tensor {
         let padding_dim: Vec<Dim> = padding.into_iter().map(|s| s.into().item::<i64>()).collect();
         let padding_: Vec<i64> = resolve_pool_pads(&padding_dim, hw.len());
 
-        if (groups as Dim * cin != cin_) || (self.resolve_shape().len() != wsh.len()) {
+        if (groups as Dim * cin != cin_) || (self.rank() as usize != wsh.len()) {
             return Err(ZyxError::shape_error(
                 format!(
                     "Input Tensor shape {:?} does not match the shape of the weights {:?}. ({} vs. {cin_})",
@@ -3831,6 +3859,27 @@ impl Tensor {
             }
         }
 
+        // Shape half shared with select (which must not cast a bool cond):
+        // target shape plus per-side expand flags.
+        let (eshape, expand_x, expand_y) = Self::broadcast_shape(&x, &y)?;
+        if expand_x {
+            x = x.expand(eshape.iter())?;
+        }
+        if expand_y {
+            y = y.expand(eshape.iter())?;
+        }
+        Ok((x, y))
+    }
+
+    /// Shared shape-broadcast core: compatibility-checked folded shapes,
+    /// symbolic-safe target dim tensors, per-side expand flags. Pure shape
+    /// logic, never touches dtypes (so bool masks can join a broadcast
+    /// without being cast away). Used by [`Tensor::broadcast`] and
+    /// [`Tensor::select`].
+    #[track_caller]
+    fn broadcast_shape(x: &Tensor, y: &Tensor) -> Result<(Vec<Tensor>, bool, bool), ZyxError> {
+        let x_shape = x.resolve_shape();
+        let y_shape = y.resolve_shape();
         for (&x, &y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y && x != 1 && y != 1 {
                 return Err(ZyxError::shape_error(
@@ -3920,13 +3969,7 @@ impl Tensor {
                         && !matches!((d, &e), (ResolvedDim::Symbolic(a), ResolvedDim::Symbolic(b)) if a == b)
                 })
         };
-        if needs_expand(&rdx) {
-            x = x.expand(eshape_sym.iter())?;
-        }
-        if needs_expand(&rdy) {
-            y = y.expand(eshape_sym.iter())?;
-        }
-        Ok((x, y))
+        Ok((eshape_sym, needs_expand(&rdx), needs_expand(&rdy)))
     }
 
     /// Tensor id

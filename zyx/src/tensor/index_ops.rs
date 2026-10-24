@@ -454,7 +454,8 @@ impl Tensor {
         }
         let acc_m = acc_m.squeeze([-1]);
         let acc_v = acc_v.squeeze([-1]).cast(self.dtype());
-        acc_m.select(acc_v, self.clone())
+        // acc_m is 0/1 integer: nonzero test makes the bool select cond.
+        acc_m.ne(0)?.select(acc_v, self.clone())
     }
 
     /// Add values from `src` into a copy of `self` along `axis` per `indices`;

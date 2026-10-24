@@ -955,6 +955,22 @@ impl Kernel {
                         }
                     }
                 }
+                Op::Select { cond, if_true, if_false } => {
+                    if let Some(view) = views.get(&op_id).cloned() {
+                        // Like Binary: per-element operands share the output
+                        // view, scalar operands read a single element (empty
+                        // view), and the output mask is inherited so padded
+                        // regions still read zero. The cond is a broadcast
+                        // mask over the same elements.
+                        for &o in &[cond, if_true, if_false] {
+                            if self.shape(o).is_empty() {
+                                views.insert(o, SView { dims: Vec::new(), mask: view.mask.clone() });
+                            } else {
+                                views.insert(o, view.clone());
+                            }
+                        }
+                    }
+                }
                 Op::Range { .. } => {}
                 Op::Index { vec: _, idx: _ } => {
                     // Vector element extraction is a metadata-only scalar

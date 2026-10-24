@@ -1739,7 +1739,7 @@ impl Tensor {
         let bias = bias.and_then(|b| b.extract::<Tensor>().ok());
         // Ints broadcast over spatial dims (torch parity); tuples/lists pass
         // through. Symbolic (Tensor) values are NOT accepted here.
-        let ndims = self.resolve_shape().len().saturating_sub(2).max(1);
+        let ndims = (self.rank() as usize).saturating_sub(2).max(1);
         let to_sh = |t: Option<&Bound<'_, PyAny>>, default: i64| -> Result<Vec<Dim>, ZyxError> {
             match t {
                 None => Ok(vec![default as Dim; ndims]),

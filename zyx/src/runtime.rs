@@ -1847,13 +1847,13 @@ impl Runtime {
                     panic!("select: operand tid {t} is not an eager tensor: {:?}", self.tensors[t])
                 }
             });
-            // Store arbitration per operand, like binary: a storing kernel
-            // is flushed via add_store (which may re-create Leafs).
-            for &t in &[cond, if_true, if_false] {
-                let kid = match self.tensors[t] {
-                    TensorData::Eager { kernel_id, .. } => kernel_id,
-                    ref t => unreachable!("add_store turned operand into unexpected data: {t:?}"),
-                };
+            // Store arbitration per operand, like binary: flush storing
+            // kernels via add_store (which may re-create operands —
+            // including ones sharing the flushed kernel — as Leafs).
+            // Kids come from the upfront resolve; never re-read between
+            // flushes, then re-resolve everything below.
+            for (i, &t) in [cond, if_true, if_false].iter().enumerate() {
+                let kid = kos[i].0;
                 if !self.kernels[kid].stores.is_empty() {
                     self.add_store(t)?;
                 }
@@ -1874,22 +1874,25 @@ impl Runtime {
             // Destination: the reduce kernel wins (same rule as binary's
             // swap); otherwise the first kernel. Operand order is
             // positional, so no operand swap — only destination choice.
+            // Positions travel through merge_kernel's op map (like
+            // binary): Leaf operands stay Leaf in the slab, only their
+            // kernel ops are repointed — never re-read the tensors.
             let keep_idx = kos.iter().position(|&(kid, _)| self.kernels[kid].kernel.is_reduce()).unwrap_or(0);
             let keep_kid = kos[keep_idx].0;
-            for &(kid, _) in kos.iter() {
-                if kid != keep_kid {
-                    self.merge_kernel(keep_kid, kid)?;
+            let mut kids = [kos[0].0, kos[1].0, kos[2].0];
+            let mut ops = [kos[0].1, kos[1].1, kos[2].1];
+            for i in 0..3 {
+                if kids[i] != keep_kid {
+                    let merged = kids[i];
+                    let op_map = self.merge_kernel(keep_kid, merged)?;
+                    for j in 0..3 {
+                        if kids[j] == merged {
+                            ops[j] = op_map[&ops[j]];
+                            kids[j] = keep_kid;
+                        }
+                    }
                 }
             }
-            // Re-read positions: merging repoints operand tensors into the
-            // destination kernel.
-            let ops = [cond, if_true, if_false].map(|t| match self.tensors[t] {
-                TensorData::Eager { kernel_id, op_id, .. } => {
-                    debug_assert_eq!(kernel_id, keep_kid, "select: operand {t} not in destination kernel");
-                    op_id
-                }
-                ref td => panic!("select: operand tid {t} is not an eager tensor after merge: {td:?}"),
-            });
             let op_id = self.kernels[keep_kid].kernel.select(ops[0], ops[1], ops[2]);
 
             let dtype = self.dtype(if_true);

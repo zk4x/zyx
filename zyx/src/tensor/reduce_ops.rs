@@ -38,7 +38,7 @@ impl Tensor {
     /// Reduce resolved `axes` via one permute (kept axes first, summed
     /// axes trailing) followed by `reduce_last_axis` steps.
     pub(crate) fn reduce_axes(&self, axes: Vec<UAxis>, rop: BOp) -> Result<Tensor, ZyxError> {
-        let rank = self.resolve_shape().len();
+        let rank = self.rank() as usize;
         let perm: Vec<Axis> =
             (0..rank as UAxis).filter(|i| !axes.contains(i)).chain(axes.iter().copied()).map(|i| i as Axis).collect();
         let mut cur = self.clone();
