@@ -53,9 +53,12 @@ NOU32_DTYPES = ("f16", "f32", "i32", "i64")
 
 # Per-dtype value ranges (kept small: no overflow, f16-safe, no div-by-zero
 # via explicit per-op overrides).
+# f32 default widened to (-10, 10): only linear elementwise ops use it
+# (add/sub/mul/min/max/comparisons), all safe at that magnitude in f32.
+# f16 stays tight: mul/pow/exp chains overflow f16 above small magnitudes.
 DEFAULT_RANGE = {
     "f16": (-2.0, 2.0),
-    "f32": (-5.0, 5.0),
+    "f32": (-10.0, 10.0),
     "i32": (-32, 32),
     "i64": (-32, 32),
     "u32": (0, 32),
@@ -69,7 +72,10 @@ FATOL = {"f16": 1e-2, "f32": 1e-6, "i32": 1e-6, "i64": 1e-6, "u32": 1e-6}
 GRTOL = {"f16": 2e-2, "f32": 1e-5}
 GATOL = {"f16": 2e-2, "f32": 1e-6}
 
-DEFAULT_SHAPES = [(4,), (3, 4), (2, 3, 4)]
+# Prime/odd geometries (not powers of two) stress tiling and edge handling;
+# each new shape extends the old draws (same seed stream prefix), so coverage
+# only grows, never shifts. Per-test runtime unchanged.
+DEFAULT_SHAPES = [(7,), (5, 7), (2, 5, 7)]
 GRAD_DTYPES = ("f16", "f32")  # gradients meaningful on floats
 
 _rng = np.random.default_rng(12345)
@@ -412,6 +418,12 @@ UNARY_OPS = [
      "dtypes": ("f16", "f32"), "gradable": False, "ranges": [(-5, 5)]},
     {"name": "sign", "ary": 1, "zyx": lambda a: a.sign(), "torch": lambda a: a.sign(),
      "dtypes": NOU32_DTYPES, "gradable": False, "ranges": [(-10, 10)]},
+    {"name": "neg", "ary": 1, "zyx": lambda a: -a, "torch": lambda a: torch.neg(a),
+     "dtypes": NOU32_DTYPES, "gradable": True, "ranges": [(-10, 10)]},
+    {"name": "trunc", "ary": 1, "zyx": lambda a: a.trunc(), "torch": lambda a: torch.trunc(a),
+     "dtypes": ("f16", "f32"), "gradable": False, "ranges": [(-5, 5)]},
+    {"name": "clamp", "ary": 1, "zyx": lambda a: a.clamp(-1.0, 1.0), "torch": lambda a: torch.clamp(a, -1.0, 1.0),
+     "dtypes": NOU32_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "square", "ary": 1, "zyx": lambda a: a.square(), "torch": lambda a: a.square(),
      "dtypes": NOU32_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "pow", "ary": 2, "zyx": lambda a, b: a.pow(b), "torch": lambda a, b: a.pow(b),
@@ -519,6 +531,10 @@ LOSS_OPS = [
     {"name": "nll_loss", "ary": 2, "zyx": lambda a, b: a.nll_loss(b), "torch": lambda a, b: torch.nn.functional.nll_loss(a, b),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4, 10), (4,)], "input_dtypes": [None, "i64"],
      "ranges": [(-3, 3), (0, 9)]},
+    {"name": "cross_entropy", "ary": 2, "zyx": lambda a, b: a.cross_entropy(b, zyx.Reduction.Mean),
+     "torch": lambda a, b: torch.nn.functional.cross_entropy(a, b),
+     "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4, 10), (4,)], "input_dtypes": [None, "i64"],
+     "ranges": [(-3, 3), (0, 9)]},
     {"name": "cosine_similarity", "ary": 2, "zyx": lambda a, b: a.cosine_similarity(b), "torch": lambda a, b: torch.nn.functional.cosine_similarity(a, b, dim=0),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(10,)], "ranges": [(-5, 5), (-5, 5)]},
     {"name": "triplet_margin", "ary": 3, "zyx": lambda a, b, c: a.triplet_margin_loss(b, c), "torch": lambda a, b, c: torch.nn.functional.triplet_margin_loss(a, b, c, margin=1.0),
@@ -594,6 +610,8 @@ CREAT_OPS = [
      "dtypes": FLOAT_DTYPES, "shapes": [(2, 3)]},
     {"name": "eye", "ary": 1, "zyx": lambda a: zyx.Tensor.eye(a.shape[0], a.dtype), "torch": lambda a: torch.eye(a.shape[0], dtype=a.dtype),
      "dtypes": FLOAT_DTYPES, "shapes": [(3, 3)]},
+    {"name": "arange", "ary": 1, "zyx": lambda a: zyx.Tensor.arange(0, 8, 2), "torch": lambda a: torch.arange(0, 8, 2),
+     "dtypes": ("i64",), "shapes": [(4,)]},
     {"name": "tril", "ary": 1, "zyx": lambda a: a.tril(0), "torch": lambda a: torch.tril(a),
      "dtypes": FLOAT_DTYPES, "shapes": [(3, 3)]},
     {"name": "triu", "ary": 1, "zyx": lambda a: a.triu(0), "torch": lambda a: torch.triu(a),
@@ -615,6 +633,14 @@ MM_OPS = [
      "dtypes": FLOAT_DTYPES + ("i32", "i64"), "gradable": True, "shapes": [(4,)]},
     {"name": "matmul_2d", "ary": 2, "zyx": lambda a, b: a.matmul(b), "torch": lambda a, b: torch.matmul(a, b),
      "dtypes": FLOAT_DTYPES + ("i32", "i64"), "gradable": True, "shapes": [(3, 4), (4, 5)]},
+    {"name": "matmul_batched", "ary": 2, "zyx": lambda a, b: a.matmul(b), "torch": lambda a, b: torch.matmul(a, b),
+     "dtypes": FLOAT_DTYPES + ("i32", "i64"), "gradable": True, "shapes": [(2, 3, 4), (2, 4, 5)]},
+    {"name": "max_pool_2d", "ary": 1, "zyx": lambda a: a.max_pool((2, 2), (2, 2), (0, 0)),
+     "torch": lambda a: torch.nn.functional.max_pool2d(a, 2, 2, 0),
+     "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(1, 1, 6, 6)], "ranges": [(-5, 5)]},
+    {"name": "pad_const", "ary": 1, "zyx": lambda a: a.pad((1, 1, 1, 1), 0.0),
+     "torch": lambda a: torch.nn.functional.pad(a, (1, 1, 1, 1), value=0.0),
+     "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(2, 3)], "ranges": [(-5, 5)]},
 ]
 
 # ---- conv (float) ----

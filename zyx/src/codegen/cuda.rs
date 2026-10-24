@@ -865,9 +865,9 @@ impl Constant {
             Self::I16(x) => format!("{x}"),
             Self::U16(x) => format!("{x}"),
             Self::U32(x) => format!("{x}U"),
-            &Self::U64(x) => format!("{}", u64::from_le_bytes(x)),
+            &Self::U64(x) => format!("{}UL", u64::from_le_bytes(x)),
             Self::I32(x) => format!("(int){x}"),
-            &Self::I64(x) => format!("{}", i64::from_le_bytes(x)),
+            &Self::I64(x) => format!("{}L", i64::from_le_bytes(x)),
             &Self::Bool(x) => format!("{}", x as i32),
             Self::F8E4M3(_) | Self::F8E5M2(_) => todo!("fp8 not yet supported on CUDA"),
         }
