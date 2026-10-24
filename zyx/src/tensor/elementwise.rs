@@ -582,7 +582,14 @@ impl Tensor {
         self.sin() / self.cos()
     }
 
-    /// Element-wise hyperbolic tangent: `tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)`.
+    /// Element-wise hyperbolic tangent: `tanh(x) = 2 * sigmoid(2x) - 1`.
+    ///
+    /// The `(exp(2x) - 1) / (exp(2x) + 1)` form overflows to INF/INF = NaN
+    /// for x > ~5.5 in f16, and its automatic backward overflows the same
+    /// way (yielding 0 or 2 instead of ~0 at saturation, which blew up
+    /// mish gradients ~8x). The sigmoid form inherits sigmoid's
+    /// stability: exp(-x) overflows only where the result correctly
+    /// rounds to +/-1, and the backward 4*s*(1-s) is bounded by 1.
     ///
     /// # Example
     ///
@@ -593,8 +600,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn tanh(&self) -> Tensor {
-        let exp2x = (self + self).exp();
-        (exp2x.clone() - 1) / (exp2x + 1)
+        (self + self).sigmoid() * 2 - 1
     }
 
     /// Element-wise conversion of angles from degrees to radians.

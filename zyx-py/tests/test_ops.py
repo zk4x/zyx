@@ -10,6 +10,7 @@ Fails loudly on any mismatch (per project policy: never swallow).
 
 import math
 
+import hashlib
 import numpy as np
 import pytest
 import torch
@@ -94,7 +95,11 @@ def input_dtype(spec, i, dtype_name):
 def args_for(spec, dtype_name):
     """Generate the numpy input(s) for one (spec, dtype) pair."""
     shapes = spec.get("shapes") or DEFAULT_SHAPES
-    rng = np.random.default_rng(hash((spec["name"], dtype_name)) % (2**31))
+    # Stable across processes (unlike builtin hash(), which is salted per
+    # process and made every run draw different inputs): deterministic draws
+    # turn flakes into reproducible pass/fail.
+    digest = hashlib.sha256(f"{spec['name']}|{dtype_name}".encode()).hexdigest()
+    rng = np.random.default_rng(int(digest, 16) % (2**31))
     outs = []
     n = spec["ary"]
     for i in range(n):

@@ -2886,11 +2886,15 @@ impl Tensor {
         reshape_shape[uaxis as usize] = shape[uaxis as usize];
         let reshaped_range = range.reshape(reshape_shape)?;
 
-        // mask * range -> positions of max values
-        let idx = mask * reshaped_range;
+        // mask * range -> positions of max values. Non-max positions carry
+        // N (larger than any valid index) so min selects the FIRST maximum,
+        // matching torch/numpy first-wins tie-breaking (max would pick last).
+        let n = shape[uaxis as usize] as i32;
+        let m = mask.cast(DType::I32);
+        let idx = m.clone() * reshaped_range + (Tensor::from(1i32) - m) * n;
 
-        // max along axis gives argmax
-        let res = if keepdim { idx.max_keepdim([axis])? } else { idx.max([axis])? };
+        // min along axis gives argmax
+        let res = if keepdim { idx.min_keepdim([axis])? } else { idx.min([axis])? };
 
         Ok(res.cast(DType::I32))
     }
