@@ -130,6 +130,10 @@ impl Kernel {
                     | Op::Kernel(_) => {
                         todo!()
                     }
+                    // Graph-only marker, erased at kernelization: never present.
+                    Op::Detach { .. } => {
+                        todo!()
+                    }
                 }
                 scan = self.next_op(scan);
             }
@@ -740,6 +744,10 @@ impl Kernel {
                 | Op::Contiguous { .. }
                 | Op::Program { .. }
                 | Op::Kernel(_) => {
+                    todo!()
+                }
+                // Graph-only marker, erased at kernelization: never present.
+                Op::Detach { .. } => {
                     todo!()
                 }
             }

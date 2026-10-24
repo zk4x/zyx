@@ -123,6 +123,10 @@ impl Kernel {
                     Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                         unreachable!()
                     }
+                    // Graph-only marker, erased at kernelization: never present.
+                    Op::Detach { .. } => {
+                        unreachable!()
+                    }
                     Op::Stack { ref ops } => {
                         let dtype = dtypes[&ops[0]].0;
                         dtypes.insert(op_id, (dtype, vec![ops.len() as Dim]));
@@ -400,6 +404,10 @@ impl Kernel {
                 Op::Reduce { .. } => true,
                 Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
+                    todo!()
+                }
+                // Graph-only marker, erased at kernelization: never present.
+                Op::Detach { .. } => {
                     todo!()
                 }
             };
@@ -745,6 +753,10 @@ impl Kernel {
                 }
                 Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => todo!(),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
+                    todo!()
+                }
+                // Graph-only marker, erased at kernelization: never present.
+                Op::Detach { .. } => {
                     todo!()
                 }
             }

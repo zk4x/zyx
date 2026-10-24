@@ -551,6 +551,14 @@ impl Kernel {
                         context: "C codegen: ConstView/LoadView/StoreView/Move/Reduce should not appear".into(),
                     });
                 }
+                // Graph-only marker, erased at kernelization: reaching
+                // codegen means the kernelizer failed to erase it.
+                Op::Detach { .. } => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "C codegen: Detach should be erased at kernelization".into(),
+                    });
+                }
             }
             op_id = self.next_op(op_id);
         }

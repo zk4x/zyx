@@ -305,6 +305,8 @@ impl Kernel {
                 | Op::Program { .. }
                 | Op::Kernel(_)
                 | Op::TT(TTOp::Copy { .. }) => {}
+                // Graph-only marker, erased at kernelization: never present.
+                Op::Detach { .. } => todo!("Detach in ordered kernel"),
                 // Movement ops carry their output shape in their
                 // descriptor operands: resolve each dim, `-1` where
                 // symbolic (same convention as `Kernel::shape`).
@@ -687,6 +689,8 @@ impl Kernel {
                     op_id = y;
                 }
                 Op::Select { if_true, .. } => op_id = if_true,
+                // Graph-only marker, erased at kernelization: never present.
+                Op::Detach { .. } => todo!("Detach in ordered kernel"),
                 Op::Wmma { dtype, .. } => match dtype {
                     MMADType::f16_f16_f16_f32 => return DType::F32,
                     MMADType::f16_f16_f16_f16 => return DType::F16,
@@ -1608,7 +1612,7 @@ impl Kernel {
                     if !merged_axes.is_empty() {
                         axes.insert(op_id, merged_axes);
                     }
-                },
+                }
                 ref op => todo!("shape_ids of {op:?}"),
             }
         }
@@ -1853,7 +1857,7 @@ impl Kernel {
                         };
                     }
                     visited.insert(id, dims);
-                },
+                }
                 // A reduce over a 32-tile yields one [32] row (Row/Col)
                 // or a scalar (Scalar): kind-constant, since the
                 // slot-indexed feeder load itself shapes scalar.

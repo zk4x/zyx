@@ -224,6 +224,10 @@ impl Kernel {
                 | Op::Kernel(_) => {
                     todo!()
                 }
+                // Graph-only marker, erased at kernelization: never present.
+                Op::Detach { .. } => {
+                    todo!()
+                }
                 Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => add_param!(len),
                     RangeKind::Warp(local_id) => add_param!(local_id),

@@ -1287,6 +1287,14 @@ impl Kernel {
                             context: "SPIR-V: unexpected kernel op (should be unfolded)".into(),
                         });
                     }
+                    // Graph-only marker, erased at kernelization: reaching
+                    // codegen means the kernelizer failed to erase it.
+                    Op::Detach { .. } => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "SPIR-V: Detach should be erased at kernelization".into(),
+                        });
+                    }
                     Op::Asm { .. } => todo!(),
                     Op::Stack { ref ops } => {
                         let (dt, shape) = dtypes[&op_id].clone();

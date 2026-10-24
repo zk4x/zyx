@@ -26,6 +26,9 @@ pub enum ZyxError {
     KernelLaunchFailure,
     /// Tried to load a graph tensor without calling realize first
     GraphTensorNotRealized(Box<str>),
+    /// Detach called on a non-graph tensor (eager, realized leaf, pending
+    /// or symbolic): a stop-gradient cut is meaningless without a graph.
+    DetachError(Box<str>),
     /// A frozen tape's leaf bindings (buffer pools) changed since `freeze` —
     /// the compiled plan no longer matches the inputs. The tape must be
     /// re-frozen.
@@ -118,6 +121,7 @@ impl std::fmt::Display for ZyxError {
                 "Multiple kernel variations failed to launch. Could be autotuner issue, but more likely faulty hardware driver."
             )),
             ZyxError::GraphTensorNotRealized(e) => f.write_str(e),
+            ZyxError::DetachError(e) => f.write_str(e),
             ZyxError::FrozenPlanStale(e) => f.write_str(e),
             ZyxError::KernelError(e) => f.write_str(e),
         }

@@ -308,6 +308,14 @@ impl Kernel {
                         context: "CUDA codegen: unexpected kernel op (should be unfolded)".into(),
                     });
                 }
+                // Graph-only marker, erased at kernelization: reaching
+                // codegen means the kernelizer failed to erase it.
+                Op::Detach { .. } => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "CUDA codegen: Detach should be erased at kernelization".into(),
+                    });
+                }
                 Op::Copy { .. } => {
                     todo!("Copy lowering for CUDA (tenstorrent phase)");
                 }

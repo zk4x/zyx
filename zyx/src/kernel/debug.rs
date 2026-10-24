@@ -89,6 +89,10 @@ impl Kernel {
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
+                // Graph-only marker, erased at kernelization: never present.
+                Op::Detach { .. } => {
+                    todo!()
+                }
                 Op::Reduce { x, rop, reduce_axis } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);

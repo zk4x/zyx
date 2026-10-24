@@ -68,6 +68,10 @@ impl Kernel {
                 | Op::Kernel(_) => {
                     unreachable!()
                 }
+                // Graph-only marker, erased at kernelization: never present.
+                Op::Detach { .. } => {
+                    unreachable!()
+                }
                 Op::TT(TTOp::ReserveBack { .. })
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
@@ -163,6 +167,10 @@ impl Kernel {
                 | Op::Contiguous { .. }
                 | Op::Program { .. }
                 | Op::Kernel(_) => {
+                    unreachable!()
+                }
+                // Graph-only marker, erased at kernelization: never present.
+                Op::Detach { .. } => {
                     unreachable!()
                 }
                 // Effect-only TT ops: pinned like Store/Copy, never hoisted.

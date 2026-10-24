@@ -161,6 +161,8 @@ impl Graph {
                     }
                     Op::After { x, dep } => vec![x, dep],
                     Op::ToDevice { x, .. } | Op::Contiguous { x, .. } => vec![x],
+                    // Detach is value identity: the input is a data edge.
+                    Op::Detach { x } => vec![x],
                     // For Index over a Stack the vec edge is shape metadata
                     // (a dim the consumer consumes). For Index over a
                     // multi-output kernel (Custom) the vec edge is the
@@ -1007,7 +1009,23 @@ impl Graph {
                         let cast_op = self.jit_kernels[kid].kernel.cast(op_id, dtype);
                         let rc = rcs.get(&cid).copied().unwrap_or_else(|| panic!("contiguous: class {cid:?} has no rc entry"));
                         self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(cid, rc as usize));
-                        let (kid, op_id) = self.add_store(cid, kid, cast_op, &mut visited, &mut rcs);
+                        let (kid, op_id) = self.add_store(cid, kid, cast_op, &mut visited, &rcs);
+                        visited.insert(cid, (kid, op_id));
+                    }
+                    Op::Detach { x } => {
+                        // Pure alias, no new op and no store: `cid` names
+                        // `x`'s kernel op. The detach edge consumes `x` once
+                        // (per-edge accounting, like every other arm); `cid`
+                        // gets its own output slots so downstream consumes
+                        // and final stores track the detached class, while
+                        // value identity means both classes read the same op.
+                        let (kid, op_id) = match visited.get(&x) {
+                            Some(&kv) => kv,
+                            None => todo!("Detach of symbolic scalar {x:?}"),
+                        };
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        let rc = rcs.get(&cid).copied().unwrap_or_else(|| panic!("detach: class {cid:?} has no rc entry"));
+                        self.push_outputs(kid, cid, rc);
                         visited.insert(cid, (kid, op_id));
                     }
                     Op::Program { .. } => {}

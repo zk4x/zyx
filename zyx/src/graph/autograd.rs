@@ -401,6 +401,12 @@ impl Runtime {
                 Op::Contiguous { x } => {
                     accum_grad(self, graph_id, &mut grads, x, grad);
                 }
+                // Detach is the autograd cut: the value flows forward
+                // unchanged, but no gradient propagates back through it.
+                // grads[x] keeps whatever other (non-detached) paths
+                // accumulated; a source reached only through detach
+                // reads back as zeros (see the missing-entry arm below).
+                Op::Detach { .. } => {}
                 Op::Store { src, .. } => {
                     accum_grad(self, graph_id, &mut grads, src, grad);
                 }

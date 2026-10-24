@@ -2247,6 +2247,39 @@ impl Runtime {
         }
     }
 
+    /// Stop-gradient cut: value identity forward, no gradient backward.
+    ///
+    /// - **Graph (unrealized, incl. leaves and promoted)**: pushes an
+    ///   `Op::Detach` node sharing `x`'s shape expression and dtype. The
+    ///   kernelizer erases it (remaps to `x`), so no kernel op is emitted
+    ///   and fusion flows through; autograd skips propagation through it,
+    ///   so a source reached only through the cut reads back as zeros.
+    /// - Anything else (eager, realized leaves, symbolic): errors. Detach
+    ///   is a graph cut and meaningless without a graph; failing loudly
+    ///   instead of silently returning the input.
+    pub fn detach(&mut self, x: TensorId) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::detach(x={x})");
+        self.verify_tensor_invariants();
+
+        match self.tensors[x] {
+            TensorData::Graph { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::Promoted { class_id, graph_id, shape_id, dtype, .. }
+            | TensorData::GraphLeaf { class_id, graph_id, shape_id, dtype, .. } => {
+                self.assert_graph_alive(graph_id);
+                let cid = self.push_op(graph_id, Op::Detach { x: class_id });
+                self.graphs[graph_id].ref_count += 1;
+                // Shape- and dtype-preserving: share the input's shape
+                // expression (scalar graph tensors keep their null shape).
+                let tid = self.tensors.push(TensorData::Graph { class_id: cid, graph_id, shape_id, dtype, rc: 1 });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, graph_id={graph_id:?}, cid={cid:?}");
+                Ok(tid)
+            }
+            _ => Err(ZyxError::DetachError(format!("detach on non-graph tensor {x}").into())),
+        }
+    }
+
     pub fn reduce_last_axis(&mut self, x: TensorId, rop: BOp) -> Result<TensorId, ZyxError> {
         self.verify_tensor_invariants();
         match self.tensors[x] {

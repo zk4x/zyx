@@ -603,6 +603,7 @@ impl Graph {
                     Op::Index { vec, idx } => format!("Index {vec:?}[{idx}]"),
                     Op::ToDevice { device, time, .. } => format!("ToDevice {:?} time={}", device, time),
                     Op::Contiguous { .. } => "Contiguous".into(),
+                    Op::Detach { .. } => "Detach".into(),
                     Op::Const(v) => format!("Const {:?}", v),
                     Op::Param { dtype, .. } => format!("Param {:?}", dtype),
                     _ => todo!(),
@@ -1163,6 +1164,8 @@ impl Graph {
             | Op::After { x, .. }
             | Op::ToDevice { x, .. }
             | Op::Contiguous { x } => self.shape(*x),
+            // Detach is value identity: same shape as its input.
+            Op::Detach { x } => self.shape(*x),
             // Scalars broadcast implicitly (see `push_binary_node`): the
             // result takes the shape of the non-scalar operand. Both scalars
             // → rank 0.
@@ -1393,6 +1396,8 @@ impl Graph {
             | Op::ToDevice { x, .. }
             | Op::Contiguous { x }
             | Op::Binary { x, .. } => self.dtype(*x),
+            // Detach is value identity: same dtype as its input.
+            Op::Detach { x } => self.dtype(*x),
             Op::Select { if_true, .. } => self.dtype(*if_true),
             Op::Storage { .. }
             | Op::Source(_)
@@ -1473,8 +1478,10 @@ impl Graph {
                 | Op::GPU(_)
                 | Op::Spirv(_)
                 | Op::PTX(_)
-                | Op::Program { .. }
-                | Op::Kernel { .. } => return None,
+                    | Op::Program { .. }
+                    | Op::Kernel { .. } => return None,
+                    // Detach is value identity, not const-foldable.
+                    Op::Detach { .. } => return None,
             }
             order.push(node_id);
         }
@@ -1768,6 +1775,8 @@ impl Runtime {
                         stack.push(*if_true);
                         stack.push(*if_false);
                     }
+                    // Detach is value identity: replay its input.
+                    Op::Detach { x } => stack.push(*x),
                     Op::Cast { x, .. } => stack.push(*x),
                     Op::Bitcast { x, .. } => stack.push(*x),
                     Op::Reduce { x, .. } => stack.push(*x),
@@ -1987,6 +1996,9 @@ impl Runtime {
                                     | Op::Program { .. }
                                     | Op::Kernel(_) => {
                                         unreachable!("promote_to_graph: dim op {entry:?} in param shape stack")
+                                    }
+                                    Op::Detach { .. } => {
+                                        unreachable!("promote_to_graph: detach in param shape stack {entry:?}")
                                     }
                                     Op::Unroll { .. } => {
                                         unreachable!("promote_to_graph: unroll in param shape stack, dim op {entry:?}")

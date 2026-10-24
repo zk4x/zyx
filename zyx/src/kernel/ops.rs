@@ -353,6 +353,13 @@ pub enum Op {
         /// Value to materialize.
         x: OpId,
     },
+    /// Autograd-break hint: value identity forward (`Detach(x) == x`), but
+    /// the gradient does not propagate through it. The kernelizer erases it
+    /// (remaps to `x`), so it never reaches ordered kernels.
+    Detach {
+        /// Value to detach from the backpropagation graph.
+        x: OpId,
+    },
 
     /// Unroll lane vector: the lane constants `0..len` as a single
     /// post-linearize value, tagged with the axis it was split from.
@@ -762,6 +769,7 @@ impl Op {
             // in-declaration-order number would reorder existing variants.
             Op::Unroll { .. } => 41,
             Op::Select { .. } => 42,
+            Op::Detach { .. } => 43,
         }
     }
 }
@@ -814,6 +822,7 @@ impl PartialEq for Op {
             (Op::After { .. }, Op::After { .. }) => false,
             (Op::ToDevice { x: a, device: ad, .. }, Op::ToDevice { x: b, device: bd, .. }) => a == b && ad == bd,
             (Op::Contiguous { x: a }, Op::Contiguous { x: b }) => a == b,
+            (Op::Detach { x: a }, Op::Detach { x: b }) => a == b,
             (Op::Program { inputs: ai, outputs: ao, info: a }, Op::Program { inputs: bi, outputs: bo, info: b }) => {
                 ai == bi && ao == bo && a.0 == b.0
             }
@@ -936,6 +945,7 @@ impl Hash for Op {
                 device.hash(state);
             }
             Op::Contiguous { x } => x.hash(state),
+            Op::Detach { x } => x.hash(state),
             Op::Unroll { axis, len } => {
                 axis.hash(state);
                 len.hash(state);
@@ -1036,6 +1046,7 @@ impl Ord for Op {
             (Op::After { .. }, Op::After { .. }) => std::cmp::Ordering::Equal,
             (Op::ToDevice { x: a, device: ad, .. }, Op::ToDevice { x: b, device: bd, .. }) => (a, ad).cmp(&(b, bd)),
             (Op::Contiguous { x: a }, Op::Contiguous { x: b }) => a.cmp(b),
+            (Op::Detach { x: a }, Op::Detach { x: b }) => a.cmp(b),
             (Op::Program { inputs: ai, outputs: ao, info: a }, Op::Program { inputs: bi, outputs: bo, info: b }) => {
                 (ai, ao, a.0).cmp(&(bi, bo, b.0))
             }
@@ -1394,6 +1405,7 @@ impl Op {
             Op::After { x, dep } => vec![*x, *dep],
             Op::ToDevice { x, .. } => vec![*x],
             Op::Contiguous { x } => vec![*x],
+            Op::Detach { x } => vec![*x],
             Op::Source(_) | Op::Program { .. } | Op::Kernel(_) | Op::GPU(_) => {
                 vec![]
             }
@@ -1414,6 +1426,7 @@ impl Op {
             | Op::EndLoop
             | Op::Barrier => vec![],
             Op::Contiguous { x, .. } => vec![x],
+            Op::Detach { x, .. } => vec![x],
             Op::Spirv(_) | Op::PTX(_) => vec![],
             Op::ToDevice { x, .. } => vec![x],
             Op::After { x, dep } => vec![x, dep],

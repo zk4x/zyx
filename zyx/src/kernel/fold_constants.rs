@@ -66,6 +66,10 @@ impl Kernel {
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
+                // Graph-only marker, erased at kernelization: never present.
+                Op::Detach { .. } => {
+                    todo!()
+                }
                 Op::Stack { ref ops } => {
                     // vectorize[devec(v,0), devec(v,1), ..., devec(v,n-1)] → v
                     if let Op::Index { vec, idx: 0 } = self.at(ops[0]) {

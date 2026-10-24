@@ -524,8 +524,11 @@ impl Tensor {
 
     /// Detach the tensor from the backpropagation graph.
     ///
-    /// Returns a new tensor with the same data but without the graph, so the
-    /// graph does not grow each iteration of a recurrent loop.
+    /// Returns a new tensor with the same data, cut from the graph:
+    /// gradients flowing into the detached tensor do not propagate back
+    /// to this tensor's producers, so the graph does not grow each
+    /// iteration of a recurrent loop. Forward values are identical (the
+    /// kernelizer erases the cut). Lazy: no realization.
     ///
     /// # Example
     ///
@@ -541,77 +544,10 @@ impl Tensor {
     ///
     /// # Errors
     ///
-    /// May return a device error if realizing the tensor fails.
+    /// Returns an error if the tensor is not a graph tensor (eager,
+    /// leaf, pending or symbolic tensors have no graph to detach from).
     pub fn detach(self) -> Result<Tensor, ZyxError> {
-        // TODO remove realization from here
-        let dims: Vec<Tensor> = self.resolve_shape().iter().map(|&d| Tensor::from(d)).collect();
-        let shape = if dims.is_empty() { None } else { Some(Tensor::stack(&dims)?) };
-        let shape_id = match &shape {
-            Some(s) => s.id,
-            None => TensorId::NULL,
-        };
-        let id = match self.dtype() {
-            DType::BF16 => {
-                let data: Vec<bf16> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::F16 => {
-                let data: Vec<f16> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::F32 => {
-                let data: Vec<f32> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::F64 => {
-                let data: Vec<f64> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::F8E4M3 => {
-                let data: Vec<f8e4m3> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::F8E5M2 => {
-                let data: Vec<f8e5m2> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::U8 => {
-                let data: Vec<u8> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::U16 => {
-                let data: Vec<u16> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::U32 => {
-                let data: Vec<u32> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::U64 => {
-                let data: Vec<u64> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::I8 => {
-                let data: Vec<i8> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::I16 => {
-                let data: Vec<i16> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::I32 => {
-                let data: Vec<i32> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::I64 => {
-                let data: Vec<i64> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-            DType::Bool => {
-                let data: Vec<bool> = self.try_into()?;
-                RT.lock().new_host_tensor(shape_id, data.into())
-            }
-        }?;
+        let id = RT.lock().detach(self.id)?;
         Ok(Tensor { id })
     }
 
