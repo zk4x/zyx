@@ -5,6 +5,9 @@ torch op across f16/f32/i32/i64/u32. Forward pass is compared value-for-value;
 differentiable ops are additionally checked with gradients (f32/f16) against
 torch autograd.
 
+Where zyx intentionally follows tinygrad semantics (gelu/quick_gelu
+approximations, integer prod wrapping), the reference is tinygrad instead.
+
 Fails loudly on any mismatch (per project policy: never swallow).
 """
 
@@ -15,6 +18,7 @@ import numpy as np
 import pytest
 import torch
 import zyx
+from tinygrad import Tensor as TinyTensor
 
 # ---------------------------------------------------------------- dtype maps
 DY = {
@@ -135,28 +139,6 @@ def _fail(name, dtype_name, msg, a, b):
     )
 
 
-def _wrap_int_ref(out_t, dtype_name):
-    """Wrap a torch integer reference into the case dtype width.
-
-    zyx accumulates integer prod at the input width (wrapping, same as
-    tinygrad); torch upcasts integer prod to int64. The reference is
-    therefore wrapped mod 2**bits (two's complement for signed) so the
-    test compares against the intended wrapping semantics, not torch's.
-    No-op for non-integer dtypes.
-    """
-    np_dt = NP.get(dtype_name)
-    if np_dt is None or np.dtype(np_dt).kind not in "iu":
-        return out_t
-    bits = np.dtype(np_dt).itemsize * 8
-    m = 1 << bits
-    a = np.asarray(out_t)
-    flat = [int(v) % m for v in a.reshape(-1)]
-    if np.dtype(np_dt).kind == "i":
-        half = 1 << (bits - 1)
-        flat = [v - m if v >= half else v for v in flat]
-    return np.array(flat, dtype=np_dt).reshape(a.shape)
-
-
 def _pick(o, idx):
     """Index a result for failure display; flattens N-D, 0-d scalars pass through."""
     o = np.asarray(o).reshape(-1)
@@ -224,9 +206,14 @@ def _run_forward(spec, dtype_name):
                            rtol=spec.get("frtol"), atol=spec.get("fratol"))
         return
     out_z = res_z.numpy()
-    out_t = _torch_reduce(spec["torch"](*a_t)).detach().cpu().numpy()
-    if spec.get("wrap_int"):
-        out_t = _wrap_int_ref(out_t, dtype_name)
+    if spec.get("tinygrad") is not None:
+        # zyx intentionally follows tinygrad semantics here (gelu/quick_gelu
+        # approximations, integer prod wrapping): the reference is tinygrad,
+        # compared at table tolerance with no loosening overrides.
+        a_g = [TinyTensor(np.asarray(x)) for x in a_np]
+        out_t = np.asarray(spec["tinygrad"](*a_g).numpy())
+    else:
+        out_t = _torch_reduce(spec["torch"](*a_t)).detach().cpu().numpy()
     compare_arrays(spec["name"], dtype_name, out_z, out_t,
                    rtol=spec.get("frtol"), atol=spec.get("fratol"))
 
@@ -257,18 +244,30 @@ def _run_gradient(spec, dtype_name):
     if not spec.get("gradable", False):
         return
     a_np = args_for(spec, dtype_name)
-    # ---- torch reference (only float inputs take gradients) ----
-    ta = [torch.from_numpy(np.asarray(x)).clone().requires_grad_(True) if np.issubdtype(np.asarray(x).dtype, np.floating)
-          else torch.from_numpy(np.asarray(x)) for x in a_np]
-    try:
-        loss_t = spec["torch"](*ta)
-    except Exception:
-        raise
-    if torch.is_tensor(loss_t) and loss_t.ndim != 0:
-        loss_t = loss_t.sum()
-    # gradients flow only through float inputs on both sides
+    # gradients flow only through float inputs on all sides
     float_mask = [np.issubdtype(np.asarray(x).dtype, np.floating) for x in a_np]
-    g_t = torch.autograd.grad(loss_t, [t for t, f in zip(ta, float_mask) if f])
+    if spec.get("tinygrad") is not None:
+        # ---- tinygrad reference (zyx follows tinygrad semantics) ----
+        ga = [TinyTensor(np.asarray(x)) for x in a_np]
+        for t, f in zip(ga, float_mask):
+            if f:
+                t.requires_grad_(True)
+        loss_g = spec["tinygrad"](*ga)
+        if loss_g.ndim != 0:
+            loss_g = loss_g.sum()
+        loss_g.backward()
+        g_t = [t.grad.numpy() for t, f in zip(ga, float_mask) if f]
+    else:
+        # ---- torch reference (only float inputs take gradients) ----
+        ta = [torch.from_numpy(np.asarray(x)).clone().requires_grad_(True) if np.issubdtype(np.asarray(x).dtype, np.floating)
+              else torch.from_numpy(np.asarray(x)) for x in a_np]
+        try:
+            loss_t = spec["torch"](*ta)
+        except Exception:
+            raise
+        if torch.is_tensor(loss_t) and loss_t.ndim != 0:
+            loss_t = loss_t.sum()
+        g_t = torch.autograd.grad(loss_t, [t for t, f in zip(ta, float_mask) if f])
     # ---- zyx ----
     tz = [make_zyx(x, input_dtype(spec, i, dtype_name)) for i, x in enumerate(a_np)]
     tape = zyx.Tape()
@@ -285,7 +284,7 @@ def _run_gradient(spec, dtype_name):
     grads_z = [g for g, f in zip(grads_z, float_mask) if f]
     tz = [t for t, f in zip(tz, float_mask) if f]
     for gt, gz in zip(g_t, grads_z):
-        out_t = gt.detach().cpu().numpy()
+        out_t = gt.detach().cpu().numpy() if torch.is_tensor(gt) else np.asarray(gt)
         out_z = gz.numpy()
         if out_z.shape != out_t.shape:
             _fail(spec["name"], dtype_name, f"grad shape mismatch {out_z.shape} vs {out_t.shape}", out_z, out_t)
@@ -441,7 +440,7 @@ REDUCE_OPS = (
     + make_axis_variants("mean", FLOAT_DTYPES, "mean", "mean", gradable=True)
     + make_axis_variants("min", NOU32_DTYPES, "min", "min", gradable=False)
     + make_axis_variants("max", NOU32_DTYPES, "max", "max", gradable=False)
-    + [dict(s, wrap_int=True) for s in
+    + [dict(s, tinygrad=(lambda a, tag=s["name"].rsplit("_", 1)[-1]: a.prod() if tag == "all" else a.prod(int(tag)))) for s in
        make_axis_variants("prod", ALL_DTYPES, "prod", "prod", gradable=False)]
     + make_axis_variants("std", FLOAT_DTYPES, "std", "std", gradable=True)
     + make_axis_variants("var", FLOAT_DTYPES, "var", "var", gradable=True)
@@ -471,8 +470,8 @@ ACTIV_OPS = [
     {"name": "relu", "ary": 1, "zyx": lambda a: a.relu(), "torch": lambda a: torch.relu(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "gelu", "ary": 1, "zyx": lambda a: a.gelu(), "torch": lambda a: torch.nn.functional.gelu(a),
-     "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)],
-     "frtol": 1e-3, "fratol": 1e-3, "grtol": 2e-3, "gratol": 2e-3},
+     "tinygrad": lambda a: a.gelu(),
+     "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "elu", "ary": 1, "zyx": lambda a: a.elu(1.0), "torch": lambda a: torch.nn.functional.elu(a),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "sigmoid", "ary": 1, "zyx": lambda a: a.sigmoid(), "torch": lambda a: torch.sigmoid(a),
@@ -494,8 +493,8 @@ ACTIV_OPS = [
     {"name": "tanh_act", "ary": 1, "zyx": lambda a: a.tanh(), "torch": lambda a: a.tanh(),
      "dtypes": FLOAT_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "quick_gelu", "ary": 1, "zyx": lambda a: a.quick_gelu(), "torch": lambda a: torch.nn.functional.gelu(a, approximate="tanh"),
-     "dtypes": FLOAT_DTYPES, "gradable": False, "ranges": [(-5, 5)],
-     "frtol": 5e-2, "fratol": 5e-2},
+     "tinygrad": lambda a: a.quick_gelu(),
+     "dtypes": FLOAT_DTYPES, "gradable": False, "ranges": [(-5, 5)]},
     {"name": "softmax", "ary": 1, "zyx": lambda a: a.softmax(dim=-1), "torch": lambda a: torch.softmax(a, dim=-1),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4, 5)], "ranges": [(-5, 5)]},
     {"name": "log_softmax", "ary": 1, "zyx": lambda a: a.log_softmax(dim=-1), "torch": lambda a: torch.log_softmax(a, dim=-1),
