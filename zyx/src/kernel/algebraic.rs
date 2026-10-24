@@ -319,6 +319,21 @@ impl Kernel {
                 }) {
                     self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmplt };
                 }
+            } else if let &Op::Select { cond, if_true, if_false } = self.at(op_id) {
+                // A predicate provably constant by bounds takes its arm
+                // outright (remap, never a guard). Bool bounds are 0/1:
+                // (0,0) is false, (1,1) is true. This collapses
+                // bounds-clamped index guards (linearize masked views)
+                // without waiting for the condition chain itself to fold
+                // to a constant op first: narrowed And/Cmp bounds already
+                // decide the predicate here.
+                if let Some(&(lo, hi)) = bounds.get(&cond) {
+                    if lo == 0 && hi == 0 {
+                        self.remap(op_id, if_false);
+                    } else if lo == 1 && hi == 1 {
+                        self.remap(op_id, if_true);
+                    }
+                }
             } else if let &Op::Binary { x, y, bop } = self.at(op_id)
                 && !self.dtype(x).is_float()
             {
