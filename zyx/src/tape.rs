@@ -262,10 +262,18 @@ impl Drop for Tape {
         // with a `Vec<TensorId>` of affiliated tensors kept on `Graph` and pushed
         // in every `promote_to_graph` path (leaf + non-buffer), iterating that
         // instead. A debug-only full scan can stay to assert the set is complete.
-        // Leaf edges: one per leaf_map OCCURRENCE — the same tensor id may be
+        // Leaf edges: one per leaf_classes OCCURRENCE — the same tensor id may be
         // promoted multiple times (e.g. as a tape param and again by an in-scope
-        // op), and each occurrence carries its own retain. Do NOT deduplicate.
-        let leafs: Vec<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
+        // op), and each occurrence carries its own retain. Do NOT deduplicate:
+        // resolving classes (not values) preserves duplicate edges to the same
+        // tensor, e.g. a variable dim shared by two promoted inputs.
+        let leafs: Vec<TensorId> = rt.graphs[graph_id]
+            .leaf_classes
+            .iter()
+            .map(|&cid| {
+                rt.graphs[graph_id].leaf_map.get(&cid).copied().expect("tape drop: leaf class has no leaf_map entry")
+            })
+            .collect();
         // A leaf that is already `Eager` was converted by `realize`'s output
         // eagerify — its graph affiliation (and the ref_count decrement) was
         // deleted then. The visit loop's `Eager` arm exists for tensors

@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use zyx::{DType, ReduceOp, Tape, Tensor, ZyxError};
+use zyx::{DType, Reduction, Tape, Tensor, ZyxError};
 
 #[test]
 fn grad_relu_1() -> Result<(), ZyxError> {
@@ -1011,7 +1011,7 @@ fn small_net() -> Result<(), ZyxError> {
         let y = Tensor::from([0u32, 1]);
         let h = (x.dot(w1.t())? + &b1).relu();
         let logits = h.dot(w2.t())? + &b2;
-        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+        let loss = logits.cross_entropy(y, Reduction::Mean)?;
         let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2]);
 
         let lr = 0.01f32;

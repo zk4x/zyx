@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use zyx::kernel::{Dev, Kernel, MMADType, MMADims, MMALayout, MemScope};
-use zyx::{DType, ReduceOp, Scalar, Tensor, ZyxError};
+use zyx::{DType, Reduction, Scalar, Tensor, ZyxError};
 
 /// Tensor-core matmul: C = A @ B where A(M×K, FP16), B(K×N, FP16), C(M×N, FP32).
 ///
@@ -203,7 +203,7 @@ fn t03() -> Result<(), ZyxError> {
 fn t04() -> Result<(), ZyxError> {
     let input = Tensor::from([5f32, 2., -3.]);
     let target = Tensor::from([1f32, 0., 0.]);
-    let loss = input.cross_entropy(target, ReduceOp::Mean)?;
+    let loss = input.cross_entropy(target, Reduction::Mean)?;
     assert_eq!(loss, 0.048907f32);
     Ok(())
 }
@@ -499,12 +499,12 @@ fn opt_local() -> Result<(), ZyxError> {
 
 #[test]
 fn ctc_loss_1() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     // Simple test: 3 time steps, 3 classes, target = [1]
     // log_probs (random but normalized):
     let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8], [-0.3, -1.0, -2.0]]);
     let target = Tensor::from([1i64]);
-    let loss = log_probs.ctc_loss(target, 0, ReduceOp::Mean)?;
+    let loss = log_probs.ctc_loss(target, 0, Reduction::Mean)?;
     let loss_val = loss.item::<f32>();
     // Loss should be positive
     assert!(loss_val > 0.0);
@@ -513,11 +513,11 @@ fn ctc_loss_1() -> Result<(), ZyxError> {
 
 #[test]
 fn ctc_loss_2() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     // Test that ctc_loss with same log_probs and target gives consistent results
     let log_probs = Tensor::from([[-1.0f32, -2.0, -3.0], [-2.0, -1.0, -3.0], [-3.0, -2.0, -1.0]]);
     let target = Tensor::from([1i64, 0]);
-    let loss = log_probs.ctc_loss(target, 0, ReduceOp::Mean)?;
+    let loss = log_probs.ctc_loss(target, 0, Reduction::Mean)?;
     let loss_val = loss.item::<f32>();
     assert!(loss_val.is_finite());
     assert!(loss_val > 0.0);

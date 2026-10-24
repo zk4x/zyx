@@ -1252,6 +1252,11 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::cast(x={x}, dtype={dtype:?})");
 
+        if self.dtype(x) == dtype {
+            self.retain(x);
+            return x;
+        }
+
         match self.tensors[x] {
             TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
                 Expr::Constant { value } => self.new_constant_tensor(value.cast(dtype)),
@@ -1301,8 +1306,8 @@ impl Runtime {
                 let class_id = self.push_op(graph_id, Op::Cast { x: class_id, dtype });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
-                debug_assert!(!shape_id.is_scalar(), "cast: input graph tensor {x} has no shape expression");
-
+                // Scalars (ExprId::SCALAR) stay scalar — a fully-reduced graph
+                // tensor legitimately carries the scalar marker.
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
@@ -1350,8 +1355,8 @@ impl Runtime {
                 let class_id = self.push_op(graph_id, Op::Bitcast { x: class_id, dtype });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
-                debug_assert!(!shape_id.is_scalar(), "bitcast: input graph tensor {x} has no shape expression");
-
+                // Scalars (ExprId::SCALAR) stay scalar — a fully-reduced graph
+                // tensor legitimately carries the scalar marker.
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
@@ -1413,8 +1418,8 @@ impl Runtime {
                 let class_id = self.push_op(graph_id, Op::Unary { x: class_id, uop });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
-                debug_assert!(!shape_id.is_scalar(), "unary: input graph tensor {x} has no shape expression");
-
+                // Scalars (ExprId::SCALAR) stay scalar — a fully-reduced graph
+                // tensor legitimately carries the scalar marker.
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> graph: tid={tid}, graph_id={graph_id:?}, cid={class_id:?}");
@@ -1684,6 +1689,215 @@ impl Runtime {
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            Ok(tid)
+        }
+    }
+
+    /// Branchless select: `cond ? if_true : if_false` as one [`Op::Select`]
+    /// node. Mirrors [`Runtime::binary`] path for path (pending flush,
+    /// graph promotion, eager merge); the kernelizer fuses `Select` later,
+    /// so this lands operands in shared kernels exactly like binary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a dtype error if `cond` is not bool or the arms differ in
+    /// dtype, and a shape error if the non-scalar operand shapes differ
+    /// (broadcasting is performed upstream by `Tensor::broadcast`).
+    pub fn select(&mut self, cond: TensorId, if_true: TensorId, if_false: TensorId) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::select(cond={cond}, if_true={if_true}, if_false={if_false})");
+        self.verify_tensor_invariants();
+        // Same pending-flush idiom as binary: a pending operand still owes
+        // its value to a live store kernel; flush first, take the Leaf path.
+        for tid in [cond, if_true, if_false] {
+            if let TensorData::PendingLeaf { depends_on, .. } = self.tensors[tid] {
+                debug_assert!(!depends_on.is_null(), "select: PendingLeaf {tid} with null depends_on");
+                let seen: Set<TensorId> = self.kernels[depends_on].outputs.iter().copied().collect();
+                for out in seen {
+                    self.add_store(out)?;
+                }
+            }
+        }
+        // The mask must be bool; the arms must share a dtype (no promotion:
+        // select is not arithmetic). Upstream `Tensor::broadcast` unifies.
+        if self.dtype(cond) != DType::Bool {
+            return Err(ZyxError::dtype_error(
+                format!("select: cond must be bool, got {:?}", self.dtype(cond)).into(),
+            ));
+        }
+        if self.dtype(if_true) != self.dtype(if_false) {
+            return Err(ZyxError::dtype_error(
+                format!("select: arm dtypes differ: {:?} vs {:?}", self.dtype(if_true), self.dtype(if_false)).into(),
+            ));
+        }
+        // Scalars broadcast implicitly; non-scalar operands must already be
+        // broadcast to equal shapes (same rule as binary, three ways).
+        let (rc, rt, rf) = (self.tensor_rank(cond), self.tensor_rank(if_true), self.tensor_rank(if_false));
+        let shapes = [cond, if_true, if_false].map(|t| self.resolve_shape(t));
+        if let Some(first) = shapes.iter().find(|s| !s.is_empty()) {
+            for s in shapes.iter() {
+                if !s.is_empty() && s != first {
+                    return Err(ZyxError::shape_error(
+                        format!("select: operand shapes differ: {shapes:?}").into(),
+                    ));
+                }
+            }
+        }
+        // Symbolic operands: no Expr::Select exists yet; wiring symbolic
+        // selects rides with the where_ integration.
+        let any_graph = self.is_graph(cond) || self.is_graph(if_true) || self.is_graph(if_false);
+        let n_sym = [cond, if_true, if_false]
+            .iter()
+            .filter(|&&t| matches!(self.tensors[t], TensorData::Symbolic { .. }))
+            .count();
+        if n_sym > 0 && !any_graph {
+            todo!("select with symbolic operands")
+        }
+
+        // Result shape: the arms' shared shape expression (both arms are
+        // asserted equal above); the cond is a broadcast mask.
+        fn result_shape(rt: &Runtime, t: TensorId, f: TensorId) -> ExprId {
+            let st = match rt.tensors[t] {
+                TensorData::Eager { shape_id, .. }
+                | TensorData::Leaf { shape_id, .. }
+                | TensorData::PendingLeaf { shape_id, .. }
+                | TensorData::GraphLeaf { shape_id, .. }
+                | TensorData::Graph { shape_id, .. }
+                | TensorData::Promoted { shape_id, .. } => shape_id,
+                TensorData::Symbolic { .. } => ExprId::SCALAR,
+            };
+            let sf = match rt.tensors[f] {
+                TensorData::Eager { shape_id, .. }
+                | TensorData::Leaf { shape_id, .. }
+                | TensorData::PendingLeaf { shape_id, .. }
+                | TensorData::GraphLeaf { shape_id, .. }
+                | TensorData::Graph { shape_id, .. }
+                | TensorData::Promoted { shape_id, .. } => shape_id,
+                TensorData::Symbolic { .. } => ExprId::SCALAR,
+            };
+            if st.is_scalar() { sf } else { st }
+        }
+
+        let cond_is_graph = self.is_graph(cond);
+        let t_is_graph = self.is_graph(if_true);
+        let f_is_graph = self.is_graph(if_false);
+        if cond_is_graph || t_is_graph || f_is_graph {
+            let graph_id = [cond, if_true, if_false]
+                .iter()
+                .find(|&&t| self.is_graph(t))
+                .map(|&t| match self.tensors[t] {
+                    TensorData::Graph { graph_id, .. }
+                    | TensorData::Promoted { graph_id, .. }
+                    | TensorData::GraphLeaf { graph_id, .. } => graph_id,
+                    ref t => unreachable!("{t:?}"),
+                })
+                .unwrap();
+            self.assert_graph_alive(graph_id);
+            for &t in &[cond, if_true, if_false] {
+                let t_sym = matches!(self.tensors[t], TensorData::Symbolic { .. });
+                if !self.is_graph(t) && !t_sym {
+                    self.promote_to_graph(t, graph_id)?;
+                }
+            }
+            let classes = [cond, if_true, if_false].map(|t| match self.tensors[t] {
+                TensorData::Graph { class_id, .. }
+                | TensorData::Promoted { class_id, .. }
+                | TensorData::GraphLeaf { class_id, .. } => class_id,
+                TensorData::Symbolic { expr, .. } => match self.exprs[expr].clone() {
+                    Expr::Constant { value } => self.push_const(graph_id, value),
+                    _ => self.replay_symbolic_into_graph(graph_id, t),
+                },
+                ref t => unreachable!("unreachable after promote: {t:?}"),
+            });
+            let [cc, ct, cf] = classes;
+            let class_id = self.push_op(graph_id, Op::Select { cond: cc, if_true: ct, if_false: cf });
+
+            {
+                let shape_id = result_shape(self, if_true, if_false);
+                debug_assert!(
+                    (rc == 0 && rt == 0 && rf == 0) || !shape_id.is_scalar(),
+                    "select: non-scalar operands {cond}/{if_true}/{if_false} have no shape expression"
+                );
+
+                self.graphs[graph_id].ref_count += 1;
+                let dtype = self.dtype(if_true);
+                let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: 1 });
+                Ok(tid)
+            }
+        } else {
+            // Merge-time shape rule, same as binary: folded shapes equal.
+            let sx = self.resolve_shape(cond);
+            let st = self.resolve_shape(if_true);
+            let sf = self.resolve_shape(if_false);
+            for (a, b) in [(&sx, &st), (&st, &sf)] {
+                if !a.is_empty() && !b.is_empty() && a != b {
+                    return Err(ZyxError::shape_error(format!("select: operand shapes differ: {a:?} vs {b:?}").into()));
+                }
+            }
+            let shape_id = result_shape(self, if_true, if_false);
+
+            // Resolve each operand to its kernel (Leaf → fresh load kernel).
+            let mut kos = [cond, if_true, if_false].map(|t| match self.tensors[t] {
+                TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
+                TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
+                TensorData::Graph { .. }
+                | TensorData::GraphLeaf { .. }
+                | TensorData::Promoted { .. }
+                | TensorData::Symbolic { .. } => {
+                    panic!("select: operand tid {t} is not an eager tensor: {:?}", self.tensors[t])
+                }
+            });
+            // Store arbitration per operand, like binary: a storing kernel
+            // is flushed via add_store (which may re-create Leafs).
+            for &t in &[cond, if_true, if_false] {
+                let kid = match self.tensors[t] {
+                    TensorData::Eager { kernel_id, .. } => kernel_id,
+                    ref t => unreachable!("add_store turned operand into unexpected data: {t:?}"),
+                };
+                if !self.kernels[kid].stores.is_empty() {
+                    self.add_store(t)?;
+                }
+            }
+            // Re-resolve: add_store may have re-created operands as Leafs.
+            for (slot, t) in kos.iter_mut().zip([cond, if_true, if_false]) {
+                *slot = match self.tensors[t] {
+                    TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
+                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
+                    TensorData::Graph { .. }
+                    | TensorData::GraphLeaf { .. }
+                    | TensorData::Promoted { .. }
+                    | TensorData::Symbolic { .. } => {
+                        unreachable!("add_store turned operand into unexpected data: {:?}", self.tensors[t])
+                    }
+                };
+            }
+            // Destination: the reduce kernel wins (same rule as binary's
+            // swap); otherwise the first kernel. Operand order is
+            // positional, so no operand swap — only destination choice.
+            let keep_idx = kos.iter().position(|&(kid, _)| self.kernels[kid].kernel.is_reduce()).unwrap_or(0);
+            let keep_kid = kos[keep_idx].0;
+            for &(kid, _) in kos.iter() {
+                if kid != keep_kid {
+                    self.merge_kernel(keep_kid, kid)?;
+                }
+            }
+            // Re-read positions: merging repoints operand tensors into the
+            // destination kernel.
+            let ops = [cond, if_true, if_false].map(|t| match self.tensors[t] {
+                TensorData::Eager { kernel_id, op_id, .. } => {
+                    debug_assert_eq!(kernel_id, keep_kid, "select: operand {t} not in destination kernel");
+                    op_id
+                }
+                ref td => panic!("select: operand tid {t} is not an eager tensor after merge: {td:?}"),
+            });
+            let op_id = self.kernels[keep_kid].kernel.select(ops[0], ops[1], ops[2]);
+
+            let dtype = self.dtype(if_true);
+            let tid = self.tensors.push(TensorData::Eager { kernel_id: keep_kid, op_id, shape_id, dtype, rc: 1 });
+            self.kernels[keep_kid].outputs.insert(tid);
+
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> eager: tid={tid}, kid={keep_kid:?}, op_id={op_id:?}");
             Ok(tid)
         }
     }
@@ -2099,6 +2313,10 @@ impl Runtime {
                 });
             }
             let class_id = self.push_op(graph_id, Op::Stack { ops: ops.into_boxed_slice() });
+            // The data stack's leading dim must resolve for Graph::shape
+            // (which cannot mint classes): intern it so shape() finds it by
+            // value. Egraph consts are never removed, so the lookup holds.
+            let _ = self.push_const(graph_id, Constant::idx(tensors.len() as i64));
             {
                 // Result shape mirrors the eager arm: [len] ++ first operand's
                 // dims. Same reachable set as the ops loop above: graph
@@ -2116,53 +2334,29 @@ impl Runtime {
                 Ok(tid)
             }
         } else {
-            let (keep_kid, first_shape) = match self.tensors[tensors[0]] {
-                TensorData::Eager { kernel_id, shape_id, .. } => (kernel_id, shape_id),
-                TensorData::Leaf { shape_id, .. } | TensorData::PendingLeaf { shape_id, .. } => {
-                    (self.new_kernel_from_leaf(tensors[0]).0, shape_id)
-                }
-                TensorData::Graph { .. }
-                | TensorData::GraphLeaf { .. }
-                | TensorData::Promoted { .. }
-                | TensorData::Symbolic { .. } => {
-                    panic!("stack: operand tid {} is not an eager tensor: {:?}", tensors[0], self.tensors[tensors[0]])
-                }
+            // Isolate every input like the other movement ops: duplicate_or_store
+            // returns a store-free, outputs-empty kernel, so the fused stack
+            // kernel holds only the result. Fusing raw input kernels would leave
+            // live inputs ([2x3]) next to the result ([2x2x3]) as sibling outputs,
+            // and the first load spills them all into one kernel that linearize
+            // cannot grid (group axis lengths 3 vs 2).
+            let first_shape = match self.tensors[tensors[0]] {
+                TensorData::Eager { shape_id, .. }
+                | TensorData::Leaf { shape_id, .. }
+                | TensorData::PendingLeaf { shape_id, .. } => shape_id,
+                ref t => panic!("stack: operand tid {} is not an eager tensor: {:?}", tensors[0], t),
             };
             let mut ops = Vec::with_capacity(tensors.len());
-            for &t in tensors {
-                let (mut kid, mut op) = match self.tensors[t] {
-                    TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                    TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
-                    TensorData::Graph { .. }
-                    | TensorData::GraphLeaf { .. }
-                    | TensorData::Promoted { .. }
-                    | TensorData::Symbolic { .. } => {
-                        panic!("stack: operand is not an eager tensor: {:?}", self.tensors[t])
-                    }
-                };
-                if kid != keep_kid {
-                    if !self.kernels[kid].stores.is_empty() {
-                        self.add_store(t)?;
-                        (kid, op) = match self.tensors[t] {
-                            TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                            TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => self.new_kernel_from_leaf(t),
-                            TensorData::Graph { .. }
-                            | TensorData::GraphLeaf { .. }
-                            | TensorData::Promoted { .. }
-                            | TensorData::Symbolic { .. } => unreachable!("{:?}", self.tensors[t]),
-                        };
-                    }
-                    if kid != keep_kid {
-                        let op_map = self.merge_kernel(keep_kid, kid)?;
-                        op = op_map[&op];
-                    }
-                }
-                ops.push(op);
+            let (keep_kid, op) = self.duplicate_or_store(tensors[0], false)?;
+            ops.push(op);
+            for &t in &tensors[1..] {
+                let (kid, op) = self.duplicate_or_store(t, false)?;
+                let op_map = self.merge_kernel(keep_kid, kid)?;
+                ops.push(op_map[&op]);
             }
             let op_id = self.kernels[keep_kid].kernel.stack(&ops);
 
-            // Result shape: [len] ++ first operand's dims (`first_shape`
-            // bound in the keep_kid match above).
+            // Result shape: [len] ++ first operand's dims.
             let len_expr = self.push(Expr::Constant { value: Constant::idx(tensors.len() as i64) });
             let shape_id = self.stack_prefix_shape(len_expr, first_shape);
 

@@ -141,6 +141,13 @@ impl Kernel {
                         self.ops[op_id].op = Op::Const(cx.unary(uop));
                     }
                 }
+                Op::Select { cond, if_true, if_false } => {
+                    // A constant predicate picks its arm outright.
+                    // (Select-then-compute fusion is later work.)
+                    if let Op::Const(Constant::Bool(p)) = self.at(cond) {
+                        self.remap(op_id, if *p { if_true } else { if_false });
+                    }
+                }
                 Op::Binary { x, y, bop } => match (self.at(x).clone(), self.at(y).clone()) {
                     (Op::Const(cx), Op::Const(cy)) => {
                         let folded = Constant::binary(cx, cy, bop);
@@ -293,7 +300,7 @@ impl Kernel {
         // We have to do constant folding before folding accs to guarantee indices are constants
         self.constant_folding();
         // Check if an accumulator storage exists without a scope that stores into it.
-        // Storages used inside `Loop`/`If` (e.g. `ternary_where` temporaries) must not be
+        // Storages used inside `Loop`/`If` must not be
         // folded — they are conditional/loop-carried, not dead accumulators.
         let mut accumulators = Map::default();
         let mut scope_level = 0u32;

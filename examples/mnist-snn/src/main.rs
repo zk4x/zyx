@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use zyx::{DType, ReduceOp, Tape, Tensor, ZyxError};
+use zyx::{DType, Reduction, Tape, Tensor, ZyxError};
 use zyx_optim::Adam;
 
 struct Snn {
@@ -253,7 +253,7 @@ fn train() -> Result<(), ZyxError> {
             (output, stored)
         };
 
-        let loss = output.cross_entropy(y.clone(), ReduceOp::Mean)?;
+        let loss = output.cross_entropy(y.clone(), Reduction::Mean)?;
         let pred = output.argmax_axis(-1)?;
         let correct_t = pred.equal(&y)?.cast(DType::F32).sum_all();
         let loss_val = loss.item::<f32>();

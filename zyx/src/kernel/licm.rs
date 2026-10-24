@@ -112,6 +112,9 @@ impl Kernel {
                     }
                     loop_dep[&x].max(loop_dep[&y])
                 }
+                Op::Select { cond, if_true, if_false } => {
+                    loop_dep[&cond].max(loop_dep[&if_true]).max(loop_dep[&if_false])
+                }
                 Op::Param { .. }
                 | Op::Barrier
                 | Op::Range { .. }
@@ -210,6 +213,7 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Reduce { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
+                Op::Select { cond, if_true, if_false } => loop_dep[cond].max(loop_dep[if_true]).max(loop_dep[if_false]),
                 Op::Range { .. }
                 | Op::Barrier
                 | Op::Load { .. }

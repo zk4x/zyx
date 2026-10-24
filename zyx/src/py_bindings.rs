@@ -9,7 +9,7 @@ use crate::GGUFMetadataValue;
 use crate::kernel::{CompiledKernel, Kernel, MemScope, OpId};
 use crate::shape::Dim;
 use crate::tape::FrozenTape;
-use crate::tensor::{Axis, DebugGuard, ReduceOp};
+use crate::tensor::{Axis, DebugGuard, Reduction};
 use crate::{DType, Tape, Tensor, ZyxError};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyIndexError;
@@ -246,7 +246,11 @@ impl Tensor {
     #[new]
     #[pyo3(signature = (py_obj, dtype=None))]
     fn new(py_obj: &Bound<'_, PyAny>, dtype: Option<DType>) -> PyResult<Self> {
-        let tensor = if let Ok(tensor) = from_numpy::<f32>(py_obj) {
+        // Bool has no pyo3 buffer Element: detect it up front so typed
+        // value-extracts below cannot silently convert it to a number.
+        let tensor = if is_bool_dtype(py_obj) {
+            from_numpy_nd(py_obj)
+        } else if let Ok(tensor) = from_numpy::<f32>(py_obj) {
             Ok(tensor)
         } else if let Ok(tensor) = from_numpy::<f64>(py_obj) {
             Ok(tensor)
@@ -278,6 +282,8 @@ impl Tensor {
             Ok(Tensor::from(mat))
         } else if let Ok(mat) = py_obj.extract::<Vec<Vec<f64>>>() {
             Ok(Tensor::from(mat))
+        } else if let Ok(tensor) = from_numpy_nd(py_obj) {
+            Ok(tensor)
         } else {
             Err(PyTypeError::new_err("Unsupported input type for Tensor"))
         }?;
@@ -294,8 +300,25 @@ impl Tensor {
         let shape = self.resolve_shape();
         let np = py.import("numpy")?;
         Ok(match self.dtype() {
-            DType::BF16 => todo!(),
-            DType::F16 => todo!(),
+            DType::BF16 => {
+                let data: Vec<crate::scalar::bf16> = self.clone().try_into()?;
+                let raw: Vec<u8> = data.into_iter().flat_map(crate::scalar::bf16::to_le_bytes).collect();
+                let mld = py.import("ml_dtypes")?;
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("dtype", mld.getattr("bfloat16")?)?;
+                np.getattr("frombuffer")?
+                    .call((pyo3::types::PyBytes::new(py, &raw),), Some(&kwargs))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::F16 => {
+                let data: Vec<crate::scalar::f16> = self.clone().try_into()?;
+                let raw: Vec<u8> = data.into_iter().flat_map(crate::scalar::f16::to_le_bytes).collect();
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("dtype", "float16")?;
+                np.getattr("frombuffer")?
+                    .call((pyo3::types::PyBytes::new(py, &raw),), Some(&kwargs))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
             DType::F32 => {
                 let data: Vec<f32> = self.clone().try_into()?;
                 np.getattr("array")?.call1((data, "float32"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
@@ -364,10 +387,20 @@ impl Tensor {
         Tensor::set_training(training);
     }
 
-    // symbolic shape: returns Vec<Tensor>
+    // resolved shape: plain ints, always resolvable host-side (no launch).
+    // Symbolic dims only decide what gets compiled into kernels, never
+    // whether the value is known, so this never forces execution.
+    #[getter]
     #[must_use]
     #[pyo3(name = "shape")]
-    pub fn shape_py(&self) -> Vec<Tensor> {
+    pub fn shape_py(&self) -> Vec<Dim> {
+        self.resolve_shape()
+    }
+
+    // symbolic shape: dim tensors for kernel-building paths that need them
+    #[must_use]
+    #[pyo3(name = "symbolic_shape")]
+    pub fn symbolic_shape_py(&self) -> Vec<Tensor> {
         self.shape()
     }
 
@@ -389,6 +422,7 @@ impl Tensor {
         self.rank()
     }
 
+    #[getter]
     #[must_use]
     #[pyo3(name = "dtype")]
     pub fn dtype_py(&self) -> DType {
@@ -528,10 +562,10 @@ impl Tensor {
 
     #[staticmethod]
     #[must_use]
-    #[pyo3(name = "full", signature = (*shape, a))]
-    pub fn full_py(shape: &Bound<'_, PyTuple>, a: f64) -> PyResult<Tensor> {
+    #[pyo3(name = "full", signature = (*shape, fill_value))]
+    pub fn full_py(shape: &Bound<'_, PyTuple>, fill_value: f64) -> PyResult<Tensor> {
         let shape_vec = parse_shape(shape).map_err(|e| PyOSError::new_err(format!("{e:?}")))?;
-        Ok(Tensor::full(shape_vec, a))
+        Ok(Tensor::full(shape_vec, fill_value))
     }
 
     #[staticmethod]
@@ -609,17 +643,17 @@ impl Tensor {
     }
 
     #[must_use]
-    #[pyo3(name = "smooth_l1_loss")]
-    pub fn smooth_l1_loss_py(&self, target: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+    #[pyo3(name = "smooth_l1_loss", signature = (target, reduction=None))]
+    pub fn smooth_l1_loss_py(&self, target: &Bound<'_, PyAny>, reduction: Option<Reduction>) -> PyResult<Tensor> {
         let target = extract_tensor_or_scalar(target).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
-        Ok(self.smooth_l1_loss(&target))
+        Ok(self.smooth_l1_loss(&target, reduction.unwrap_or(Reduction::Mean)))
     }
 
     #[must_use]
-    #[pyo3(name = "huber_loss")]
-    pub fn huber_loss_py(&self, target: &Bound<'_, PyAny>, delta: f64) -> PyResult<Tensor> {
+    #[pyo3(name = "huber_loss", signature = (target, *, delta, reduction=None))]
+    pub fn huber_loss_py(&self, target: &Bound<'_, PyAny>, delta: f64, reduction: Option<Reduction>) -> PyResult<Tensor> {
         let target = extract_tensor_or_scalar(target).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
-        Ok(self.huber_loss(&target, delta))
+        Ok(self.huber_loss(&target, delta, reduction.unwrap_or(Reduction::Mean)))
     }
 
     // elementwise
@@ -750,11 +784,6 @@ impl Tensor {
         self.ceil()
     }
     #[must_use]
-    #[pyo3(name = "frac")]
-    pub fn frac_py(&self) -> Tensor {
-        self.frac()
-    }
-    #[must_use]
     #[pyo3(name = "isnan")]
     pub fn isnan_py(&self) -> Tensor {
         self.isnan()
@@ -810,59 +839,50 @@ impl Tensor {
         self.swish()
     }
 
-    #[pyo3(name = "log")]
-    pub fn log_py(&self, base: &Bound<'_, PyAny>) -> PyResult<Tensor> {
-        let base = extract_tensor_or_scalar(base).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
+    #[pyo3(name = "log", signature = (base=None))]
+    pub fn log_py(&self, base: Option<&Bound<'_, PyAny>>) -> PyResult<Tensor> {
+        let base = match base {
+            Some(b) => extract_tensor_or_scalar(b).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?,
+            None => Tensor::from(std::f32::consts::E),
+        };
         Ok(self.log(base))
     }
 
     #[must_use]
     #[pyo3(name = "leaky_relu")]
-    pub fn leaky_relu_py(&self, neg_slope: &Bound<'_, PyAny>) -> Tensor {
-        if let Ok(ns) = neg_slope.extract::<f64>() {
+    pub fn leaky_relu_py(&self, negative_slope: &Bound<'_, PyAny>) -> Tensor {
+        if let Ok(ns) = negative_slope.extract::<f64>() {
             return self.leaky_relu(ns);
         }
-        if let Ok(ns) = neg_slope.extract::<i64>() {
+        if let Ok(ns) = negative_slope.extract::<i64>() {
             return self.leaky_relu(ns);
         }
         panic!("neg_slope must be numeric");
     }
 
-    #[pyo3(name = "celu")]
-    pub fn celu_py(&self, alpha: &Bound<'_, PyAny>) -> PyResult<Tensor> {
-        if let Ok(v) = alpha.extract::<f64>() {
-            Ok(self.celu(v))
-        } else if let Ok(v) = alpha.extract::<i64>() {
-            Ok(self.celu(v))
-        } else {
-            Err(PyTypeError::new_err("alpha must be numeric"))
-        }
+    #[pyo3(name = "celu", signature = (alpha=1.0))]
+    pub fn celu_py(&self, alpha: f64) -> PyResult<Tensor> {
+        Ok(self.celu(alpha))
     }
 
-    #[pyo3(name = "elu")]
-    pub fn elu_py(&self, alpha: &Bound<'_, PyAny>) -> PyResult<Tensor> {
-        if let Ok(v) = alpha.extract::<f64>() {
-            Ok(self.elu(v))
-        } else if let Ok(v) = alpha.extract::<i64>() {
-            Ok(self.elu(v))
-        } else {
-            Err(PyTypeError::new_err("alpha must be numeric"))
-        }
+    #[pyo3(name = "elu", signature = (alpha=1.0))]
+    pub fn elu_py(&self, alpha: f64) -> PyResult<Tensor> {
+        Ok(self.elu(alpha))
     }
 
     #[pyo3(name = "softmax")]
-    pub fn softmax_py(&self, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
-        self.softmax(to_ax(axes))
+    pub fn softmax_py(&self, dim: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        self.softmax(to_ax(dim))
     }
 
     #[pyo3(name = "ln_softmax")]
-    pub fn ln_softmax_py(&self, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
-        self.ln_softmax(to_ax(axes))
+    pub fn ln_softmax_py(&self, dim: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        self.ln_softmax(to_ax(dim))
     }
 
     #[pyo3(name = "log_softmax")]
-    pub fn log_softmax_py(&self, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
-        self.ln_softmax(to_ax(axes))
+    pub fn log_softmax_py(&self, dim: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        self.ln_softmax(to_ax(dim))
     }
 
     // reduce unified
@@ -872,16 +892,16 @@ impl Tensor {
         if let Some(d) = dim {
             let axes = to_ax(d);
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Sum, axes, dtype, 1)
+                self.reduce_impl::<true>(Reduction::Sum, axes, dtype, 1)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Sum, axes, dtype, 1)
+                self.reduce_impl::<false>(Reduction::Sum, axes, dtype, 1)
             }
         } else {
             let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Sum, axes, dtype, 1)
+                self.reduce_impl::<true>(Reduction::Sum, axes, dtype, 1)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Sum, axes, dtype, 1)
+                self.reduce_impl::<false>(Reduction::Sum, axes, dtype, 1)
             }
         }
     }
@@ -891,16 +911,16 @@ impl Tensor {
         if let Some(d) = dim {
             let axes = to_ax(d);
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Mean, axes, dtype, 1)
+                self.reduce_impl::<true>(Reduction::Mean, axes, dtype, 1)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Mean, axes, dtype, 1)
+                self.reduce_impl::<false>(Reduction::Mean, axes, dtype, 1)
             }
         } else {
             let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Mean, axes, dtype, 1)
+                self.reduce_impl::<true>(Reduction::Mean, axes, dtype, 1)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Mean, axes, dtype, 1)
+                self.reduce_impl::<false>(Reduction::Mean, axes, dtype, 1)
             }
         }
     }
@@ -917,16 +937,16 @@ impl Tensor {
         if let Some(d) = dim {
             let axes = to_ax(d);
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Var, axes, dtype, correction)
+                self.reduce_impl::<true>(Reduction::Var, axes, dtype, correction)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Var, axes, dtype, correction)
+                self.reduce_impl::<false>(Reduction::Var, axes, dtype, correction)
             }
         } else {
             let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Var, axes, dtype, correction)
+                self.reduce_impl::<true>(Reduction::Var, axes, dtype, correction)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Var, axes, dtype, correction)
+                self.reduce_impl::<false>(Reduction::Var, axes, dtype, correction)
             }
         }
     }
@@ -943,16 +963,16 @@ impl Tensor {
         if let Some(d) = dim {
             let axes = to_ax(d);
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Std, axes, dtype, correction)
+                self.reduce_impl::<true>(Reduction::Std, axes, dtype, correction)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Std, axes, dtype, correction)
+                self.reduce_impl::<false>(Reduction::Std, axes, dtype, correction)
             }
         } else {
             let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Std, axes, dtype, correction)
+                self.reduce_impl::<true>(Reduction::Std, axes, dtype, correction)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Std, axes, dtype, correction)
+                self.reduce_impl::<false>(Reduction::Std, axes, dtype, correction)
             }
         }
     }
@@ -962,16 +982,16 @@ impl Tensor {
         if let Some(d) = dim {
             let axes = to_ax(d);
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Min, axes, None, 1)
+                self.reduce_impl::<true>(Reduction::Min, axes, None, 1)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Min, axes, None, 1)
+                self.reduce_impl::<false>(Reduction::Min, axes, None, 1)
             }
         } else {
             let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Min, axes, None, 1)
+                self.reduce_impl::<true>(Reduction::Min, axes, None, 1)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Min, axes, None, 1)
+                self.reduce_impl::<false>(Reduction::Min, axes, None, 1)
             }
         }
     }
@@ -981,16 +1001,16 @@ impl Tensor {
         if let Some(d) = dim {
             let axes = to_ax(d);
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Max, axes, None, 1)
+                self.reduce_impl::<true>(Reduction::Max, axes, None, 1)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Max, axes, None, 1)
+                self.reduce_impl::<false>(Reduction::Max, axes, None, 1)
             }
         } else {
             let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Max, axes, None, 1)
+                self.reduce_impl::<true>(Reduction::Max, axes, None, 1)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Max, axes, None, 1)
+                self.reduce_impl::<false>(Reduction::Max, axes, None, 1)
             }
         }
     }
@@ -1000,46 +1020,79 @@ impl Tensor {
         if let Some(d) = dim {
             let axes = to_ax(d);
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Prod, axes, dtype, 1)
+                self.reduce_impl::<true>(Reduction::Prod, axes, dtype, 1)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Prod, axes, dtype, 1)
+                self.reduce_impl::<false>(Reduction::Prod, axes, dtype, 1)
             }
         } else {
             let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
             if keepdim {
-                self.reduce_impl::<true>(ReduceOp::Prod, axes, dtype, 1)
+                self.reduce_impl::<true>(Reduction::Prod, axes, dtype, 1)
             } else {
-                self.reduce_impl::<false>(ReduceOp::Prod, axes, dtype, 1)
+                self.reduce_impl::<false>(Reduction::Prod, axes, dtype, 1)
             }
         }
     }
 
-    #[pyo3(name = "cumsum")]
-    pub fn cumsum_py(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        self.cumsum(axis)
-    }
-
-    #[pyo3(name = "cummax")]
-    pub fn cummax_py(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        self.cummax(axis)
-    }
-
-    #[pyo3(name = "cumprod")]
-    pub fn cumprod_py(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        self.cumprod(axis)
-    }
-
-    #[pyo3(name = "softplus")]
-    pub fn softplus_py(&self, beta: &Bound<'_, PyAny>, threshold: &Bound<'_, PyAny>) -> PyResult<Tensor> {
-        if let Ok(beta_val) = beta.extract::<f64>() {
-            if let Ok(threshold_val) = threshold.extract::<f64>() {
-                Ok(self.softplus(beta_val, threshold_val))
+    #[pyo3(name = "all", signature = (dim=None, keepdim=false))]
+    pub fn all_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool) -> Result<Tensor, ZyxError> {
+        if let Some(d) = dim {
+            let axes = to_ax(d);
+            if keepdim {
+                self.reduce_impl::<true>(Reduction::All, axes, None, 1)
             } else {
-                Err(PyTypeError::new_err("threshold must be numeric"))
+                self.reduce_impl::<false>(Reduction::All, axes, None, 1)
             }
         } else {
-            Err(PyTypeError::new_err("beta must be numeric"))
+            let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
+            if keepdim {
+                self.reduce_impl::<true>(Reduction::All, axes, None, 1)
+            } else {
+                self.reduce_impl::<false>(Reduction::All, axes, None, 1)
+            }
         }
+    }
+
+    #[pyo3(name = "any", signature = (dim=None, keepdim=false))]
+    pub fn any_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool) -> Result<Tensor, ZyxError> {
+        if let Some(d) = dim {
+            let axes = to_ax(d);
+            if keepdim {
+                self.reduce_impl::<true>(Reduction::Any, axes, None, 1)
+            } else {
+                self.reduce_impl::<false>(Reduction::Any, axes, None, 1)
+            }
+        } else {
+            let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
+            if keepdim {
+                self.reduce_impl::<true>(Reduction::Any, axes, None, 1)
+            } else {
+                self.reduce_impl::<false>(Reduction::Any, axes, None, 1)
+            }
+        }
+    }
+
+    #[pyo3(name = "cumsum", signature = (dim, dtype=None))]
+    pub fn cumsum_py(&self, dim: Axis, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
+        x.cumsum(dim)
+    }
+
+    #[pyo3(name = "cummax", signature = (dim, dtype=None))]
+    pub fn cummax_py(&self, dim: Axis, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
+        x.cummax(dim)
+    }
+
+    #[pyo3(name = "cumprod", signature = (dim, dtype=None))]
+    pub fn cumprod_py(&self, dim: Axis, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
+        x.cumprod(dim)
+    }
+
+    #[pyo3(name = "softplus", signature = (beta=1.0, threshold=20.0))]
+    pub fn softplus_py(&self, beta: f64, threshold: f64) -> PyResult<Tensor> {
+        Ok(self.softplus(beta, threshold))
     }
 
     #[pyo3(name = "isclose")]
@@ -1130,17 +1183,17 @@ impl Tensor {
         self.nonzero()
     }
 
-    #[pyo3(name = "where_")]
+    #[pyo3(name = "where")]
     pub fn where_py(&self, if_true: &Bound<'_, PyAny>, if_false: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         let t = extract_tensor_or_scalar(if_true).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
         let f = extract_tensor_or_scalar(if_false).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
-        self.where_(t, f)
+        self.select(t, f)
     }
 
-    #[pyo3(name = "l1_loss")]
-    pub fn l1_loss_py(&self, target: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+    #[pyo3(name = "l1_loss", signature = (target, reduction=None))]
+    pub fn l1_loss_py(&self, target: &Bound<'_, PyAny>, reduction: Option<Reduction>) -> PyResult<Tensor> {
         let target = extract_tensor_or_scalar(target).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
-        Ok(self.l1_loss(target))
+        Ok(self.l1_loss(target, reduction.unwrap_or(Reduction::Mean)))
     }
 
     #[pyo3(name = "mse_loss")]
@@ -1149,30 +1202,21 @@ impl Tensor {
         self.mse_loss(target)
     }
 
-    #[pyo3(name = "bce_loss")]
+    #[pyo3(name = "bce_loss", signature = (target, eps=1e-7))]
     pub fn bce_loss_py(&self, target: &Bound<'_, PyAny>, eps: f32) -> Result<Tensor, ZyxError> {
         let target = extract_tensor_or_scalar(target).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
         self.bce_loss(target, eps)
     }
 
-    #[pyo3(name = "cosine_similarity")]
+    #[pyo3(name = "cosine_similarity", signature = (rhs, eps=1e-8, reduction=None))]
     pub fn cosine_similarity_py(
         &self,
         rhs: &Bound<'_, PyAny>,
-        eps: &Bound<'_, PyAny>,
-        reduction: &Bound<'_, PyAny>,
+        eps: f32,
+        reduction: Option<Reduction>,
     ) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
-        let eps = extract_tensor_or_scalar(eps).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
-        let r = if let Ok(s) = reduction.extract::<String>() {
-            match s.as_str() {
-                "mean" => ReduceOp::Mean,
-                "sum" => ReduceOp::Sum,
-                _ => return Err(ZyxError::ParseError("invalid reduction".into())),
-            }
-        } else {
-            ReduceOp::Sum
-        };
+        let r = reduction.unwrap_or(Reduction::Sum);
         self.cosine_similarity(rhs, eps, r)
     }
 
@@ -1246,8 +1290,8 @@ impl Tensor {
         self.narrow(axis, start, length)
     }
 
-    #[pyo3(name = "split")]
-    pub fn split_py(&self, sizes: &Bound<'_, PyTuple>, axis: isize) -> Result<Vec<Tensor>, ZyxError> {
+    #[pyo3(name = "split", signature = (sizes, dim=0))]
+    pub fn split_py(&self, sizes: &Bound<'_, PyTuple>, dim: Axis) -> Result<Vec<Tensor>, ZyxError> {
         // sizes can be list of int/Tensor
         let mut vec: Vec<Tensor> = Vec::new();
         for item in sizes.iter() {
@@ -1262,7 +1306,7 @@ impl Tensor {
                 t.clone().item::<i64>()
             })
             .collect();
-        self.split(dims, axis)
+        self.split(dims, dim as isize)
     }
 
     #[must_use]
@@ -1310,9 +1354,14 @@ impl Tensor {
     }
 
     #[must_use]
-    #[pyo3(name = "squeeze", signature = (axes=None))]
-    pub fn squeeze_py(&self, axes: Option<&Bound<'_, PyAny>>) -> Tensor {
-        let axes = axes.map(|a| to_ax(a)).unwrap_or_default();
+    #[pyo3(name = "squeeze", signature = (dim=None))]
+    pub fn squeeze_py(&self, dim: Option<&Bound<'_, PyAny>>) -> Tensor {
+        // None drops every size-1 dim (torch); an empty Rust axes vec is a
+        // no-op that slice relies on, so expand here, not in Tensor::squeeze.
+        let axes: Vec<Axis> = match dim {
+            Some(d) => to_ax(d),
+            None => (0..self.rank() as Axis).collect(),
+        };
         self.squeeze(axes)
     }
 
@@ -1336,8 +1385,8 @@ impl Tensor {
     }
 
     #[pyo3(name = "flip")]
-    pub fn flip_py(&self, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
-        self.flip(to_ax(axes))
+    pub fn flip_py(&self, dims: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        self.flip(to_ax(dims))
     }
 
     #[pyo3(name = "flatten", signature = (start_dim=0, end_dim=-1))]
@@ -1346,23 +1395,16 @@ impl Tensor {
     }
 
     #[staticmethod]
-    #[pyo3(name = "cat")]
-    pub fn cat_py(tensors: &Bound<'_, PyAny>, axis: Axis) -> PyResult<Tensor> {
+    #[pyo3(name = "cat", signature = (tensors, dim=0))]
+    pub fn cat_py(tensors: &Bound<'_, PyAny>, dim: Axis) -> PyResult<Tensor> {
         let list = extract_tensor_list(tensors)?;
         let refs: Vec<&Tensor> = list.iter().collect();
-        Tensor::cat(refs, axis).map_err(|e| e.into())
+        Tensor::cat(refs, dim).map_err(|e| e.into())
     }
 
     #[staticmethod]
-    #[pyo3(name = "stack")]
-    pub fn stack_py(tensors: &Bound<'_, PyAny>) -> PyResult<Tensor> {
-        let list = extract_tensor_list(tensors)?;
-        Tensor::stack(&list).map_err(|e| e.into())
-    }
-
-    #[staticmethod]
-    #[pyo3(name = "stack_axis")]
-    pub fn stack_axis_py(tensors: &Bound<'_, PyAny>, dim: Axis) -> PyResult<Tensor> {
+    #[pyo3(name = "stack", signature = (tensors, dim=0))]
+    pub fn stack_py(tensors: &Bound<'_, PyAny>, dim: Axis) -> PyResult<Tensor> {
         let list = extract_tensor_list(tensors)?;
         let refs: Vec<&Tensor> = list.iter().collect();
         Tensor::stack_axis(refs, dim).map_err(|e| e.into())
@@ -1479,21 +1521,42 @@ impl Tensor {
         Ok(self * rhs)
     }
 
+    /// True division: `x / y`. Integer (and bool) inputs are cast to
+    /// float first (torch/tinygrad semantics: `div` performs true division).
     fn __div__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        Ok(self / rhs)
+        let xd = self.dtype();
+        let x = if xd.is_int() || xd == DType::Bool { self.cast(DType::F32) } else { self.clone() };
+        let yd = rhs.dtype();
+        let y = if yd.is_int() || yd == DType::Bool { rhs.cast(DType::F32) } else { rhs };
+        Ok(x / y)
     }
 
+    /// True division: `x / y`. Integer (and bool) inputs are cast to
+    /// float first (torch/tinygrad semantics: `div` performs true division).
     fn __truediv__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        Ok(self / rhs)
+        let xd = self.dtype();
+        let x = if xd.is_int() || xd == DType::Bool { self.cast(DType::F32) } else { self.clone() };
+        let yd = rhs.dtype();
+        let y = if yd.is_int() || yd == DType::Bool { rhs.cast(DType::F32) } else { rhs };
+        Ok(x / y)
     }
 
-    /// Floor division: `x // y`, equivalent to `(x / y).trunc()` (truncation toward zero).
-    /// Mirrors tinygrad's `div(rounding_mode="trunc")` / `__floordiv__` semantics.
+    /// Floor division: `x // y`, rounding toward negative infinity
+    /// (torch/tinygrad semantics: `floordiv(a,b) = cdiv(a,b) - ((cmod(a,b) != 0) & ((a<0) != (b<0)))`).
     fn __floordiv__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        Ok((self / rhs).trunc())
+        if self.dtype().is_float() || rhs.dtype().is_float() {
+            return Ok((self / rhs).floor());
+        }
+        // Integer path: truncating quotient corrected down by one where the
+        // truncating remainder is nonzero and the signs differ.
+        let q = self / &rhs;
+        let r = self - q.clone() * &rhs;
+        let adjust = r.ne(Tensor::from(0))? & self.cmplt(0)?.ne(rhs.cmplt(0)?)?;
+        let qd = q.dtype();
+        Ok(q - adjust.cast(qd))
     }
 
     fn __pow__(&self, rhs: &Bound<PyAny>, _modulo: Option<&Bound<PyAny>>) -> Result<Tensor, ZyxError> {
@@ -1506,15 +1569,69 @@ impl Tensor {
         Tensor::from(0.0) - self.clone()
     }
 
-    #[must_use]
-    #[pyo3(name = "argmax")]
-    pub fn argmax_py(&self) -> Tensor {
-        self.argmax()
+    fn __and__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(self.clone() & rhs)
     }
 
-    #[pyo3(name = "argmax_axis")]
-    pub fn argmax_axis_py(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        self.argmax_axis(axis)
+    fn __or__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(self.clone() | rhs)
+    }
+
+    fn __xor__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(self.clone() ^ rhs)
+    }
+
+    fn __lshift__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(self.clone() << rhs)
+    }
+
+    fn __rshift__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(self.clone() >> rhs)
+    }
+
+    fn __lt__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.cmplt(rhs)
+    }
+
+    fn __gt__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.cmpgt(rhs)
+    }
+
+    fn __le__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(!(self.cmpgt(rhs)?))
+    }
+
+    fn __ge__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.cmpge(rhs)
+    }
+
+    fn __eq__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.equal(rhs)
+    }
+
+    fn __ne__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.ne(rhs)
+    }
+
+    #[must_use]
+    #[pyo3(name = "argmax", signature = (dim=None))]
+    pub fn argmax_py(&self, dim: Option<Axis>) -> Result<Tensor, ZyxError> {
+        if let Some(d) = dim {
+            self.argmax_axis(d)
+        } else {
+            Ok(self.argmax())
+        }
     }
 
     #[must_use]
@@ -1524,84 +1641,49 @@ impl Tensor {
     }
 
     #[pyo3(name = "cross_entropy")]
-    pub fn cross_entropy_py(&self, target: &Bound<'_, PyAny>, reduction: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+    pub fn cross_entropy_py(&self, target: &Bound<'_, PyAny>, reduction: Reduction) -> Result<Tensor, ZyxError> {
         let target = extract_tensor_or_scalar(target).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        let r = if let Ok(s) = reduction.extract::<String>() {
-            match s.as_str() {
-                "mean" => ReduceOp::Mean,
-                "sum" => ReduceOp::Sum,
-                _ => return Err(ZyxError::ParseError("invalid reduction".into())),
-            }
-        } else {
-            ReduceOp::Mean
-        };
-        self.cross_entropy(target, r)
+        self.cross_entropy(target, reduction)
     }
 
-    #[pyo3(name = "nll_loss")]
+    #[pyo3(name = "nll_loss", signature = (target, weight=None, ignore_index=-100, reduction=None))]
     pub fn nll_loss_py(
         &self,
         target: &Bound<'_, PyAny>,
         weight: Option<&Bound<'_, PyAny>>,
-        ignore_index: Option<i64>,
-        reduction: &Bound<'_, PyAny>,
+        ignore_index: i64,
+        reduction: Option<Reduction>,
     ) -> Result<Tensor, ZyxError> {
         let target = extract_tensor_or_scalar(target).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
         let weight = match weight {
             Some(w) => Some(w.extract::<Tensor>().map_err(|_| ZyxError::DTypeError("weight must be Tensor".into()))?),
             None => None,
         };
-        let r = if let Ok(s) = reduction.extract::<String>() {
-            match s.as_str() {
-                "mean" => ReduceOp::Mean,
-                "sum" => ReduceOp::Sum,
-                "none" => ReduceOp::None,
-                _ => return Err(ZyxError::ParseError("invalid reduction".into())),
-            }
-        } else {
-            ReduceOp::Mean
-        };
-        self.nll_loss(target, weight, ignore_index, r)
+        let r = reduction.unwrap_or(Reduction::Mean);
+        self.nll_loss(target, weight, Some(ignore_index), r)
     }
 
     #[pyo3(name = "ctc_loss")]
-    pub fn ctc_loss_py(&self, target: &Bound<'_, PyAny>, blank: i64, reduction: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+    pub fn ctc_loss_py(&self, target: &Bound<'_, PyAny>, blank: i64, reduction: Reduction) -> Result<Tensor, ZyxError> {
         let target = extract_tensor_or_scalar(target).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        let r = if let Ok(s) = reduction.extract::<String>() {
-            match s.as_str() {
-                "mean" => ReduceOp::Mean,
-                "sum" => ReduceOp::Sum,
-                _ => return Err(ZyxError::ParseError("invalid reduction".into())),
-            }
-        } else {
-            ReduceOp::Mean
-        };
-        self.ctc_loss(target, blank, r)
+        self.ctc_loss(target, blank, reduction)
     }
 
-    #[pyo3(name = "triplet_margin_loss")]
+    #[pyo3(name = "triplet_margin_loss", signature = (positive, negative, margin=1.0, p=2, eps=1e-6, swap=false, reduction=None))]
     pub fn triplet_margin_loss_py(
         &self,
         positive: &Bound<'_, PyAny>,
         negative: &Bound<'_, PyAny>,
         margin: f32,
         p: i32,
+        eps: f32,
         swap: bool,
-        reduction: &Bound<'_, PyAny>,
+        reduction: Option<Reduction>,
     ) -> Result<Tensor, ZyxError> {
         let positive = extract_tensor_or_scalar(positive).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
         let negative = extract_tensor_or_scalar(negative).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        let r = if let Ok(s) = reduction.extract::<String>() {
-            match s.as_str() {
-                "mean" => ReduceOp::Mean,
-                "sum" => ReduceOp::Sum,
-                "none" => ReduceOp::None,
-                _ => return Err(ZyxError::ParseError("invalid reduction".into())),
-            }
-        } else {
-            ReduceOp::Mean
-        };
-        self.triplet_margin_loss(&positive, &negative, margin, p, swap, r)
+        let r = reduction.unwrap_or(Reduction::Mean);
+        self.triplet_margin_loss(&positive, &negative, margin, p, eps, swap, r)
     }
 
     #[pyo3(name = "one_hot_along_dim")]
@@ -1610,16 +1692,30 @@ impl Tensor {
     }
 
     #[pyo3(name = "gather")]
-    pub fn gather_py(&self, axis: Axis, indices: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
-        let indices = extract_tensor_or_scalar(indices).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        self.gather(axis, indices)
+    pub fn gather_py(&self, dim: Axis, index: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        let index = extract_tensor_or_scalar(index).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.gather(dim, index)
     }
 
     #[pyo3(name = "scatter")]
-    pub fn scatter_py(&self, axis: Axis, indices: &Bound<'_, PyAny>, src: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
-        let indices = extract_tensor_or_scalar(indices).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+    pub fn scatter_py(&self, dim: Axis, index: &Bound<'_, PyAny>, src: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        let index = extract_tensor_or_scalar(index).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
         let src = extract_tensor_or_scalar(src).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        self.scatter(axis, indices, src)
+        self.scatter(dim, index, src)
+    }
+
+    #[pyo3(name = "scatter_add")]
+    pub fn scatter_add_py(&self, dim: Axis, index: &Bound<'_, PyAny>, src: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        let index = extract_tensor_or_scalar(index).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        let src = extract_tensor_or_scalar(src).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.scatter_add(dim, index, src)
+    }
+
+    #[pyo3(name = "scatter_mul")]
+    pub fn scatter_mul_py(&self, dim: Axis, index: &Bound<'_, PyAny>, src: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        let index = extract_tensor_or_scalar(index).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        let src = extract_tensor_or_scalar(src).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.scatter_mul(dim, index, src)
     }
 
     #[pyo3(name = "index_select")]
@@ -1629,22 +1725,49 @@ impl Tensor {
     }
 
     #[pyo3(name = "conv")]
+    #[pyo3(signature = (weight, bias=None, groups=1, stride=None, dilation=None, padding=None))]
     pub fn conv_py(
         &self,
         weight: &Bound<'_, PyAny>,
         bias: Option<&Bound<'_, PyAny>>,
         groups: u64,
-        stride: &Bound<'_, PyTuple>,
-        dilation: &Bound<'_, PyTuple>,
-        padding: &Bound<'_, PyTuple>,
+        stride: Option<&Bound<'_, PyAny>>,
+        dilation: Option<&Bound<'_, PyAny>>,
+        padding: Option<&Bound<'_, PyAny>>,
     ) -> Result<Tensor, ZyxError> {
         let weight = weight.extract::<Tensor>().map_err(|e| ZyxError::DTypeError(format!("weight: {e}").into()))?;
         let bias = bias.and_then(|b| b.extract::<Tensor>().ok());
-        // to_sh for conv expects Vec<Dim> but handle symbolic similarly
-        let to_sh_vec = |t: &Bound<'_, PyTuple>| -> Result<Vec<Dim>, ZyxError> {
-            t.iter().map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim)).collect()
+        // Ints broadcast over spatial dims (torch parity); tuples/lists pass
+        // through. Symbolic (Tensor) values are NOT accepted here.
+        let ndims = self.resolve_shape().len().saturating_sub(2).max(1);
+        let to_sh = |t: Option<&Bound<'_, PyAny>>, default: i64| -> Result<Vec<Dim>, ZyxError> {
+            match t {
+                None => Ok(vec![default as Dim; ndims]),
+                Some(v) => {
+                    if let Ok(n) = v.extract::<i64>() {
+                        Ok(vec![n as Dim; ndims])
+                    } else if let Ok(tup) = v.cast::<PyTuple>() {
+                        tup.iter()
+                            .map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim))
+                            .collect()
+                    } else if let Ok(lst) = v.cast::<PyList>() {
+                        lst.iter()
+                            .map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim))
+                            .collect()
+                    } else {
+                        Err(ZyxError::ParseError("conv stride/dilation/padding must be int or tuple/list of ints".into()))
+                    }
+                }
+            }
         };
-        self.conv(&weight, bias.as_ref(), groups, to_sh_vec(stride)?, to_sh_vec(dilation)?, to_sh_vec(padding)?)
+        self.conv(
+            &weight,
+            bias.as_ref(),
+            groups,
+            to_sh(stride, 1)?,
+            to_sh(dilation, 1)?,
+            to_sh(padding, 0)?,
+        )
     }
 
     #[pyo3(name = "max_pool")]
@@ -1689,12 +1812,6 @@ impl Tensor {
             .transpose()?
             .unwrap_or_else(|| ks.clone());
         self.pool(ks.clone(), st.clone(), vec![1; ks.len()])
-    }
-
-    #[pyo3(name = "tri")]
-    #[staticmethod]
-    pub fn tri_py(r: Dim, c: Dim, diagonal: i64, dtype: DType) -> Tensor {
-        Tensor::tri(r, c, diagonal, dtype)
     }
 
     #[pyo3(name = "triu")]
@@ -2048,6 +2165,7 @@ pub fn register_tensor(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Re-export helper for zyx-py to register DType class.
 pub fn register_dtype(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DType>()?;
+    m.add_class::<Reduction>()?;
     m.add_class::<DebugMask>()?;
     Ok(())
 }
@@ -2093,4 +2211,60 @@ fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) 
         }
     }
     Ok(Tensor::from(result).reshape(shape.iter().map(|&d| Tensor::from(d)).collect::<Vec<_>>()).unwrap())
+}
+
+/// N-D fallback for array-likes whose dtype has no buffer `Element` impl
+/// (f16, bf16, bool, ...): flatten to 1-D, reuse the exact 1-D typed paths,
+/// reshape back. Anything without `.shape`/`.flatten` (lists, scalars) fails
+/// here and falls through to the error arm. Values are never widened on the
+/// way in: flat extraction is per-dtype and the constructor casts to the
+/// requested dtype afterwards, both exact.
+fn is_bool_dtype(obj: &Bound<'_, PyAny>) -> bool {
+    obj.getattr("dtype")
+        .ok()
+        .and_then(|d| d.str().ok().map(|s| s.to_string() == "bool"))
+        .unwrap_or(false)
+}
+
+fn from_numpy_nd(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+    let shape: Vec<Dim> = obj
+        .getattr("shape")?
+        .extract::<Vec<i64>>()
+        .map_err(|_| PyTypeError::new_err("expected tuple of ints for shape"))?
+        .into_iter()
+        .map(|d| d as Dim)
+        .collect();
+    let flat = obj.getattr("flatten")?.call0()?;
+    // Bool first: typed value-extracts below would silently convert it.
+    let t = if is_bool_dtype(obj) {
+        match flat.extract::<Vec<bool>>() {
+            Ok(v) => Tensor::from(v),
+            Err(_) => return Err(PyTypeError::new_err("Unsupported input type for Tensor")),
+        }
+    } else if let Ok(v) = flat.extract::<Vec<f32>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<f64>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<i8>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<i16>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<i32>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<i64>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<u8>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<u16>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<u32>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<u64>>() {
+        Tensor::from(v)
+    } else if let Ok(v) = flat.extract::<Vec<bool>>() {
+        Tensor::from(v)
+    } else {
+        return Err(PyTypeError::new_err("Unsupported input type for Tensor"));
+    };
+    Ok(t.reshape(shape.iter().map(|&d| Tensor::from(d)).collect::<Vec<_>>()).unwrap())
 }

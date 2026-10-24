@@ -1102,8 +1102,30 @@ impl Graph {
     /// for static dims or a symbolic dim leaf otherwise. Empty vec for
     /// scalars.
     pub fn shape(&self, class: OpId) -> Vec<OpId> {
+        if class.is_null() {
+            // NULL class = scalar shape (see `shape_class`): no dims.
+            // Centralized here so callers never match null themselves.
+            return Vec::new();
+        }
         match &self.ops[class].op {
-            Op::Const(_) | Op::Stack { .. } => Vec::new(),
+            Op::Const(_) => Vec::new(),
+            Op::Select { if_true, .. } => self.shape(*if_true),
+            Op::Stack { ops } => {
+                // Shape-descriptor stacks (scalar dims) have no tensor shape.
+                // A data stack's shape is the actual tensor shape, [len] ++
+                // element shape (scalar elements still add the rank). The
+                // leading dim class is interned by the constructor (egraph
+                // consts are never removed), so it is resolved by value here;
+                // absent (foreign stacks) keeps today's [].
+                if let Some(&e) = ops.iter().find(|&&e| !self.shape(e).is_empty()) {
+                    if let Some(&nid) = self.hashcons.get(&Op::Const(Constant::idx(ops.len() as i64))) {
+                        let mut s = self.shape(e);
+                        s.insert(0, self.ops[nid].class_of);
+                        return s;
+                    }
+                }
+                Vec::new()
+            }
             Op::Index { vec, idx } => match &self.ops[*vec].op {
                 Op::Stack { ops } => self.shape(ops[*idx]),
                 // Projection of a multi-output kernel: the shape metadata of
@@ -1364,6 +1386,7 @@ impl Graph {
             | Op::ToDevice { x, .. }
             | Op::Contiguous { x }
             | Op::Binary { x, .. } => self.dtype(*x),
+            Op::Select { if_true, .. } => self.dtype(*if_true),
             Op::Storage { .. }
             | Op::Source(_)
             | Op::GPU(_)
@@ -1413,8 +1436,9 @@ impl Graph {
                 },
                 Op::Const(_) => {}
                 // Every other variant is a non-scalar / dynamic leaf: not
-                // resolvable to a constant.
+                // resolvable to a constant. Select is not const-foldable.
                 Op::Param { .. }
+                | Op::Select { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Reshape { .. }
@@ -1732,6 +1756,11 @@ impl Runtime {
                         stack.push(*x);
                         stack.push(*y);
                     }
+                    Op::Select { cond, if_true, if_false } => {
+                        stack.push(*cond);
+                        stack.push(*if_true);
+                        stack.push(*if_false);
+                    }
                     Op::Cast { x, .. } => stack.push(*x),
                     Op::Bitcast { x, .. } => stack.push(*x),
                     Op::Reduce { x, .. } => stack.push(*x),
@@ -1943,6 +1972,7 @@ impl Runtime {
                                     | Op::After { .. }
                                     | Op::ToDevice { .. }
                                     | Op::Contiguous { .. }
+                                    | Op::Select { .. }
                                     | Op::Source(_)
                                     | Op::GPU(_)
                                     | Op::Spirv(_)

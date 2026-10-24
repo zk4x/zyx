@@ -24,7 +24,7 @@ use std::path::Path;
 
 #[cfg(feature = "py")]
 pub use index_ops::DimIndex;
-pub use reduce_ops::ReduceOp;
+pub use reduce_ops::Reduction;
 mod binary_ops;
 
 mod dequantize;
@@ -815,7 +815,16 @@ impl Tensor {
         let cdf = &cw / cw.slice((.., -1))?.unsqueeze(1)?;
         let cdf_sh = cdf.resolve_shape();
         let unif_samples = Tensor::rand([num_samples, cdf_sh[0], 1], DType::F32)?;
-        let indices = unif_samples.expand([num_samples, cdf_sh[0], cdf_sh[1]])?.cmplt(cdf)?.not().sum([2])?.permute([1, 0])?;
+        // Inversion sampling (tinygrad): count the cdf entries the uniform
+        // sample exceeds. The mask is bool, and bool reduce is rejected, so
+        // cast to I32 first — the counts are identical to summing bools.
+        let indices = unif_samples
+            .expand([num_samples, cdf_sh[0], cdf_sh[1]])?
+            .cmplt(cdf)?
+            .not()
+            .cast(DType::I32)
+            .sum([2])?
+            .permute([1, 0])?;
         Ok((if rank == 1 { indices.squeeze([0]) } else { indices }).cast(DType::I32))
     }
 
@@ -1278,14 +1287,14 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::Tensor;
+    /// # use zyx::{Tensor, Reduction};
     /// let p = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let t = Tensor::from([1.5, 2.5, 2.8]);
-    /// let loss = p.smooth_l1_loss(&t);
+    /// let loss = p.smooth_l1_loss(&t, Reduction::Sum);
     /// assert!((loss.item::<f32>() - 0.27).abs() < 1e-4);
     /// ```
     #[must_use]
-    pub fn smooth_l1_loss(&self, target: &Tensor) -> Tensor {
+    pub fn smooth_l1_loss(&self, target: &Tensor, reduction: Reduction) -> Tensor {
         let input = self.float_cast().unwrap();
         let target = target.float_cast().unwrap();
         let original_dtype = self.dtype();
@@ -1303,10 +1312,15 @@ impl Tensor {
         // Combine based on the mask
         let loss = mask.clone() * quadratic_loss + mask.not() * linear_loss;
 
-        // Sum all elements to get the total loss
-        let total_loss = loss.sum([0]).unwrap();
+        // Reduce over all elements like the other losses
+        let reduced = match reduction {
+            Reduction::Mean => loss.mean_all(),
+            Reduction::Sum => loss.sum_all(),
+            Reduction::NoReduction => loss,
+            _ => todo!("smooth_l1_loss with this reduction"),
+        };
 
-        total_loss.cast(original_dtype)
+        reduced.cast(original_dtype)
     }
 
     /// Compute the Huber loss between this tensor and `target` with threshold
@@ -1318,15 +1332,15 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::Tensor;
+    /// # use zyx::{Tensor, Reduction};
     /// let p = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let t = Tensor::from([1.5, 2.5, 2.8]);
-    /// let loss = p.huber_loss(&t, 1.0f32);
+    /// let loss = p.huber_loss(&t, 1.0f32, Reduction::Sum);
     /// assert!((loss.item::<f32>() - 0.27).abs() < 1e-4);
     /// ```
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
-    pub fn huber_loss(&self, target: &Tensor, delta: impl Scalar) -> Tensor {
+    pub fn huber_loss(&self, target: &Tensor, delta: impl Scalar, reduction: Reduction) -> Tensor {
         let input = self.float_cast().unwrap();
         let target = target.float_cast().unwrap();
         let original_dtype = self.dtype();
@@ -1355,10 +1369,15 @@ impl Tensor {
         // Combine: use quadratic_loss where |diff| ≤ delta, linear_loss otherwise
         let result = quadratic_mask.clone() * quadratic_loss + quadratic_mask.not() * linear_loss;
 
-        // Sum all elements to get total loss (like smooth_l1_loss does)
-        let total_loss = result.sum([0]).unwrap();
+        // Reduce over all elements like the other losses
+        let reduced = match reduction {
+            Reduction::Mean => result.mean_all(),
+            Reduction::Sum => result.sum_all(),
+            Reduction::NoReduction => result,
+            _ => todo!("huber_loss with this reduction"),
+        };
 
-        total_loss.cast(original_dtype)
+        reduced.cast(original_dtype)
     }
 
     // movement
@@ -1663,7 +1682,7 @@ impl Tensor {
         let ones = Tensor::ones(sh.clone(), dtype);
         crate::shape::pad(&mut sh, &padding);
         let zeros = Tensor::zeros(sh, dtype);
-        Ok(t0 + ones.pad_zeros(padding)?.where_(zeros, value)?)
+        Ok(t0 + ones.pad_zeros(padding)?.select(zeros, value)?)
     }
 
     /// Collects a shape iterator into `Tensor`s, casting each to `IDX_T`.
@@ -1880,6 +1899,8 @@ impl Tensor {
     /// Compute the dot product (matmul) of this tensor and `rhs`.
     ///
     /// Contracts the last dimension of `self` with the first dimension of `rhs`.
+    /// A 1-D operand contracts directly with no movement nodes, so
+    /// vector-vector gives a scalar.
     ///
     /// # Example
     ///
@@ -1893,43 +1914,61 @@ impl Tensor {
     ///
     /// # Errors
     ///
-    /// Returns a shape error if the last/first dimensions do not match.
+    /// Returns a shape error if the inputs are scalars or the last/first
+    /// dimensions do not match.
     pub fn dot(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let rhs = rhs.into();
-        let org_y_shape = rhs.resolve_shape();
-        let y = rhs.t();
-        // User-side validation resolves (always resolvable, errors on
-        // mismatch); the computation's reshapes compose the inputs' dim
-        // tensors so symbolic dims stay symbolic (no recompile per value).
         let xres = self.resolve_shape();
-        let yres = y.resolve_shape();
-        let xshape = self.shape();
-        let yshape = y.shape();
+        let yres = rhs.resolve_shape();
         let xrank = xres.len();
         let yrank = yres.len();
-        if xres[xrank - 1] != yres[yrank - 1] {
-            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xres:?} and {org_y_shape:?}").into()));
+        if xrank == 0 || yrank == 0 {
+            return Err(ZyxError::ShapeError("Cannot dot scalars, inputs must be at least 1-D".into()));
         }
-        let mut x_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
-        x_shape.push(Tensor::from(1i64));
-        x_shape.push(xshape[xrank - 1].clone());
-        let mut y_shape: Vec<Tensor> = yshape[..yrank.saturating_sub(2)].to_vec();
-        y_shape.push(Tensor::from(1i64));
-        y_shape.extend(yshape[yrank - yrank.min(2)..].iter().cloned());
-        let mut out_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
-        out_shape.push(yshape[yrank - 2].clone());
-        (self.reshape(x_shape)? * y.reshape(y_shape)?).sum([-1])?.reshape(out_shape)
+        // Validate before building any graph nodes: a mismatch fails here,
+        // leaving no dead transpose/reshape nodes behind. A 1-D rhs contracts
+        // its last dim, otherwise the second-to-last.
+        let contracted = if yrank == 1 { yres[yrank - 1] } else { yres[yrank - 2] };
+        if xres[xrank - 1] != contracted {
+            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xres:?} and {yres:?}").into()));
+        }
+        if xrank == 1 || yrank == 1 {
+            // vector path: broadcast multiply + contract, no movement nodes.
+            // A rank-1 lhs contracts the rhs's second-to-last dim (columns),
+            // so a rank-2+ rhs is transposed first; a rank-1 rhs contracts
+            // its last dim and needs no transpose.
+            if xrank == 1 && yrank > 1 {
+                return (self.clone() * rhs.t()).sum([-1]);
+            }
+            return (self.clone() * rhs).sum([-1]);
+        }
+        let y = rhs.t();
+        // The computation's reshapes compose the inputs' dim tensors so
+        // symbolic dims stay symbolic (no recompile per value).
+        // Post-transpose values are index remaps of the pre-transpose
+        // resolve (t swaps the last two axes): rank >= 2 on both sides here
+        // so `yrank - 2` cannot underflow.
+        let xsh = self.shape();
+        let ysh = rhs.shape();
+        let k_dim = xsh[xrank - 1].clone();
+        let yk_dim = ysh[yrank - 2].clone();
+        let n_dim = ysh[yrank - 1].clone();
+        let one = Tensor::from(1i64);
+        let left_side = self.reshape(xsh.into_iter().take(xrank - 1).chain([one.clone(), k_dim]))?;
+        let right_side = y.reshape(ysh.into_iter().take(yrank - 2).chain([one, n_dim, yk_dim]))?;
+        (left_side * right_side).sum([-1])
     }
 
-    /// Compute the matmul of this tensor and `rhs` in the output dtype
-    /// `out_dtype`.
+    /// Compute the matmul of this tensor and `rhs`, accumulating the
+    /// contraction in dtype `acc_dtype`. The output keeps the inputs'
+    /// least-upper dtype.
     ///
     /// # Example
     ///
     /// ```rust
     /// # use zyx::{Tensor, DType};
     /// let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
-    /// let b = Tensor::from([[5.0, 6.0], [7.0, 8.0]]);
+    /// let b = Tensor::from([[5.0f32, 6.0], [7.0, 8.0]]);
     /// let c = a.dot_dtype(b, DType::F32).unwrap();
     /// assert_eq!(c.to_vec::<f32>().unwrap(), vec![19.0f32, 22.0, 43.0, 50.0]);
     /// ```
@@ -1937,29 +1976,48 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns a shape error if the tensors have incompatible shapes.
-    pub fn dot_dtype(&self, rhs: impl Into<Tensor>, out_dtype: DType) -> Result<Tensor, ZyxError> {
-        let rhs: Tensor = rhs.into();
-        let org_y_shape = rhs.resolve_shape();
-        let y = rhs.t();
-        // See dot: resolve for validation, compose dim tensors for computation.
+    pub fn dot_dtype(&self, rhs: impl Into<Tensor>, acc_dtype: DType) -> Result<Tensor, ZyxError> {
+        let rhs = rhs.into();
         let xres = self.resolve_shape();
-        let yres = y.resolve_shape();
-        let xshape = self.shape();
-        let yshape = y.shape();
+        let yres = rhs.resolve_shape();
+        let out_dtype = self.dtype().least_upper_dtype(rhs.dtype());
         let xrank = xres.len();
         let yrank = yres.len();
-        if xres[xrank - 1] != yres[yrank - 1] {
-            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xres:?} and {org_y_shape:?}").into()));
+        if xrank == 0 || yrank == 0 {
+            return Err(ZyxError::ShapeError("Cannot dot scalars, inputs must be at least 1-D".into()));
         }
-        let mut x_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
-        x_shape.push(Tensor::from(1i64));
-        x_shape.push(xshape[xrank - 1].clone());
-        let mut y_shape: Vec<Tensor> = yshape[..yrank.saturating_sub(2)].to_vec();
-        y_shape.push(Tensor::from(1i64));
-        y_shape.extend(yshape[yrank - yrank.min(2)..].iter().cloned());
-        let mut out_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
-        out_shape.push(yshape[yrank - 2].clone());
-        (self.reshape(x_shape)?.cast(out_dtype) * y.reshape(y_shape)?.cast(out_dtype)).sum([-1])?.reshape(out_shape)
+        // Validate before building any graph nodes: a mismatch fails here,
+        // leaving no dead transpose/reshape nodes behind. A 1-D rhs contracts
+        // its last dim, otherwise the second-to-last.
+        let contracted = if yrank == 1 { yres[yrank - 1] } else { yres[yrank - 2] };
+        if xres[xrank - 1] != contracted {
+            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xres:?} and {yres:?}").into()));
+        }
+        if xrank == 1 || yrank == 1 {
+            // vector path: broadcast multiply + contract, no movement nodes.
+            // A rank-1 lhs contracts the rhs's second-to-last dim (columns),
+            // so a rank-2+ rhs is transposed first; a rank-1 rhs contracts
+            // its last dim and needs no transpose.
+            if xrank == 1 && yrank > 1 {
+                return Ok((self.clone() * rhs.t()).sum_dtype([-1], acc_dtype)?.cast(out_dtype));
+            }
+            return Ok((self.clone() * rhs).sum_dtype([-1], acc_dtype)?.cast(out_dtype));
+        }
+        let y = rhs.t();
+        // The computation's reshapes compose the inputs' dim tensors so
+        // symbolic dims stay symbolic (no recompile per value).
+        // Post-transpose values are index remaps of the pre-transpose
+        // resolve (t swaps the last two axes): rank >= 2 on both sides here
+        // so `yrank - 2` cannot underflow.
+        let xsh = self.shape();
+        let ysh = rhs.shape();
+        let k_dim = xsh[xrank - 1].clone();
+        let yk_dim = ysh[yrank - 2].clone();
+        let n_dim = ysh[yrank - 1].clone();
+        let one = Tensor::from(1i64);
+        let left_side = self.reshape(xsh.into_iter().take(xrank - 1).chain([one.clone(), k_dim]))?;
+        let right_side = y.reshape(ysh.into_iter().take(yrank - 2).chain([one, n_dim, yk_dim]))?;
+        Ok((left_side * right_side).sum_dtype([-1], acc_dtype)?.cast(out_dtype))
     }
 
     /// Compute the matrix multiplication of this tensor and `rhs` (alias of
@@ -2122,7 +2180,7 @@ impl Tensor {
     /// ```rust
     /// # use zyx::Tensor;
     /// let cond = Tensor::from([true, false]);
-    /// let a = cond.where_(Tensor::from([1i32, 2]), Tensor::from([3, 4])).unwrap();
+    /// let a = cond.select(Tensor::from([1i32, 2]), Tensor::from([3, 4])).unwrap();
     /// assert_eq!(a.to_vec::<i32>().unwrap(), vec![1, 4]);
     /// ```
     ///
@@ -2133,7 +2191,7 @@ impl Tensor {
     // needed (graph node + kernel IR + backends); the branchless decomposition
     // below cannot support ±inf values.
     #[allow(clippy::missing_panics_doc)]
-    pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+    pub fn select(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let if_true = if_true.into();
         let if_false = if_false.into();
         let dtype = if_true.dtype();
@@ -2152,16 +2210,16 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, ReduceOp};
+    /// # use zyx::{Tensor, Reduction};
     /// let logits = Tensor::from([[1.0f32, 2.0, 0.0]]);
-    /// let loss = logits.cross_entropy(Tensor::from([1i32]), ReduceOp::Mean).unwrap();
+    /// let loss = logits.cross_entropy(Tensor::from([1i32]), Reduction::Mean).unwrap();
     /// assert!((loss.item::<f32>() - 0.4076).abs() < 1e-3);
     /// ```
     ///
     /// # Errors
     ///
     /// Returns a shape error if `self` and `target` are incompatible.
-    pub fn cross_entropy(&self, target: impl Into<Tensor>, reduction: ReduceOp) -> Result<Tensor, ZyxError> {
+    pub fn cross_entropy(&self, target: impl Into<Tensor>, reduction: Reduction) -> Result<Tensor, ZyxError> {
         let target = target.into();
         let classes_dim = if self.rank() <= 1 { 0 } else { 1 };
         let target = if self.resolve_shape() != target.resolve_shape() {
@@ -2172,9 +2230,9 @@ impl Tensor {
         let ln_softmax = self.ln_softmax([classes_dim])?;
         let per_sample = (-ln_softmax * target).sum([classes_dim])?;
         match reduction {
-            ReduceOp::Mean => Ok(per_sample.mean_all()),
-            ReduceOp::Sum => Ok(per_sample.sum_all()),
-            ReduceOp::None => Ok(per_sample),
+            Reduction::Mean => Ok(per_sample.mean_all()),
+            Reduction::Sum => Ok(per_sample.sum_all()),
+            Reduction::NoReduction => Ok(per_sample),
             _ => Err(ZyxError::ParseError("invalid reduction for cross_entropy, expected Mean, Sum, or None".into())),
         }
     }
@@ -2186,10 +2244,10 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, ReduceOp};
+    /// # use zyx::{Tensor, Reduction};
     /// let logits = Tensor::from([[2.0f32, 1.0, 0.0]]);
     /// let loss = logits.nll_loss(
-    ///     Tensor::from([1i32]), None, None, ReduceOp::Mean,
+    ///     Tensor::from([1i32]), None, None, Reduction::Mean,
     /// ).unwrap();
     /// assert!((loss.item::<f32>() + 1.0).abs() < 1e-3);
     /// ```
@@ -2203,7 +2261,7 @@ impl Tensor {
         target: impl Into<Tensor>,
         weight: Option<Tensor>,
         ignore_index: Option<i64>,
-        reduction: ReduceOp,
+        reduction: Reduction,
     ) -> Result<Tensor, ZyxError> {
         let target = target.into();
         let classes_dim: Axis = if self.rank() <= 1 { 0 } else { 1 };
@@ -2225,9 +2283,9 @@ impl Tensor {
         let nll = (-gathered) * masked_weight.clone();
 
         match reduction {
-            ReduceOp::Mean => Ok(nll.sum_all() / masked_weight.sum_all()),
-            ReduceOp::Sum => Ok(nll.sum_all()),
-            ReduceOp::None => Ok(nll),
+            Reduction::Mean => Ok(nll.sum_all() / masked_weight.sum_all()),
+            Reduction::Sum => Ok(nll.sum_all()),
+            Reduction::NoReduction => Ok(nll),
             _ => Err(ZyxError::ParseError("invalid reduction for nll_loss".into())),
         }
     }
@@ -2240,9 +2298,9 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, DType, ReduceOp};
+    /// # use zyx::{Tensor, DType, Reduction};
     /// let logp = Tensor::zeros([2, 2], DType::F32);
-    /// let l = logp.ctc_loss(Tensor::from([0i32, 1]), 0, ReduceOp::Mean).unwrap();
+    /// let l = logp.ctc_loss(Tensor::from([0i32, 1]), 0, Reduction::Mean).unwrap();
     /// assert!(l.item::<f32>().is_finite());
     /// ```
     ///
@@ -2250,7 +2308,7 @@ impl Tensor {
     ///
     /// Returns an error if the input shapes or dtypes are incompatible.
     #[allow(clippy::missing_panics_doc)]
-    pub fn ctc_loss(&self, targets: impl Into<Tensor>, blank: i64, reduction: ReduceOp) -> Result<Tensor, ZyxError> {
+    pub fn ctc_loss(&self, targets: impl Into<Tensor>, blank: i64, reduction: Reduction) -> Result<Tensor, ZyxError> {
         let target = targets.into();
         let shape = self.resolve_shape();
         let t_dim = shape[0];
@@ -2287,7 +2345,7 @@ impl Tensor {
         let lp0 = lp.clone().slice(0..1)?.squeeze([0]);
         let init_vals: Vec<i32> = (0..n_ext).map(|i| if i <= 1 { 1 } else { 0 }).collect();
         let init_mask = Tensor::from(init_vals).cast(dtype);
-        let alpha0 = init_mask.where_(&lp0, &neg_inf_tensor)?;
+        let alpha0 = init_mask.select(&lp0, &neg_inf_tensor)?;
         let mut alpha = vec![alpha0];
 
         // Skip mask: positions s >= 2 where ext_labels[s-2] != ext_labels[s]
@@ -2321,8 +2379,8 @@ impl Tensor {
             // skip = log_add(base, shifted2)
             let skip_val = log_add(&base, &shifted2);
 
-            // alpha_t = where_(skip_mask, skip_val, base)
-            let alpha_t = skip_mask.clone().where_(&skip_val, &base)?;
+            // alpha_t = select(skip_mask, skip_val, base)
+            let alpha_t = skip_mask.clone().select(&skip_val, &base)?;
             alpha.push(alpha_t);
         }
 
@@ -2334,8 +2392,8 @@ impl Tensor {
         let log_sum = log_add(&a1, &a2);
 
         match reduction {
-            ReduceOp::Mean | ReduceOp::Sum => Ok(-log_sum),
-            ReduceOp::None => Err(ZyxError::ParseError("CTC loss with 'None' reduction is not supported".into())),
+            Reduction::Mean | Reduction::Sum => Ok(-log_sum),
+            Reduction::NoReduction => Err(ZyxError::ParseError("CTC loss with 'NoReduction' reduction is not supported".into())),
             _ => Err(ZyxError::ParseError("invalid reduction for ctc_loss".into())),
         }
     }
@@ -2350,11 +2408,11 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, ReduceOp};
+    /// # use zyx::{Tensor, Reduction};
     /// let anchor = Tensor::from([[0.0f32, 0.0]]);
     /// let pos = Tensor::from([[0.1f32, 0.1]]);
     /// let neg = Tensor::from([[1.0f32, 1.0]]);
-    /// let l = anchor.triplet_margin_loss(&pos, &neg, 0.5, 2, false, ReduceOp::Mean).unwrap();
+    /// let l = anchor.triplet_margin_loss(&pos, &neg, 0.5, 2, 1e-6, false, Reduction::Mean).unwrap();
     /// assert!((l.item::<f32>() - 0.0).abs() < 1e-3);
     /// ```
     ///
@@ -2368,12 +2426,12 @@ impl Tensor {
         negative: &Tensor,
         margin: f32,
         p: i32,
+        eps: f32,
         swap: bool,
-        reduction: ReduceOp,
+        reduction: Reduction,
     ) -> Result<Tensor, ZyxError> {
         let anchor = self;
         let dtype = anchor.dtype();
-        let eps: f32 = 1e-6;
 
         // Helper: p-norm distance along axis 1
         let dist = |a: &Tensor, b: &Tensor| -> Result<Tensor, ZyxError> {
@@ -2399,9 +2457,9 @@ impl Tensor {
         let loss = (dist_pos_final - &dist_neg + Tensor::from(margin)).relu();
 
         match reduction {
-            ReduceOp::Mean => Ok(loss.mean_all()),
-            ReduceOp::Sum => Ok(loss.sum_all()),
-            ReduceOp::None => Ok(loss),
+            Reduction::Mean => Ok(loss.mean_all()),
+            Reduction::Sum => Ok(loss.sum_all()),
+            Reduction::NoReduction => Ok(loss),
             _ => Err(ZyxError::ParseError("invalid reduction for triplet_margin_loss".into())),
         }
     }
@@ -2460,7 +2518,7 @@ impl Tensor {
             .unwrap()
             .one_hot_along_dim(num_classes, -1)
             .unwrap()
-            .where_(Tensor::ones([1], dtype), Tensor::zeros([1], dtype))
+            .select(Tensor::ones([1], dtype), Tensor::zeros([1], dtype))
             .unwrap()
     }
 
@@ -2505,14 +2563,20 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::Tensor;
+    /// # use zyx::{Tensor, Reduction};
     /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let b = Tensor::from([2.0f32, 3.0, 4.0]);
-    /// assert_eq!(a.l1_loss(b).to_vec::<f32>().unwrap(), vec![1.0f32, 1.0, 1.0]);
+    /// assert_eq!(a.l1_loss(b, Reduction::NoReduction).to_vec::<f32>().unwrap(), vec![1.0f32, 1.0, 1.0]);
     /// ```
     #[must_use]
-    pub fn l1_loss(&self, target: impl Into<Tensor>) -> Tensor {
-        (self - target).abs()
+    pub fn l1_loss(&self, target: impl Into<Tensor>, reduction: Reduction) -> Tensor {
+        let loss = (self - target).abs();
+        match reduction {
+            Reduction::Mean => loss.mean_all(),
+            Reduction::Sum => loss.sum_all(),
+            Reduction::NoReduction => loss,
+            _ => todo!("l1_loss with this reduction"),
+        }
     }
 
     /// Mean squared error loss between `self` and `target` (scalar mean of
@@ -2569,10 +2633,10 @@ impl Tensor {
     /// # Example
     ///
     /// ```rust
-    /// # use zyx::{Tensor, ReduceOp};
+    /// # use zyx::{Tensor, Reduction};
     /// let a = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let b = Tensor::from([4.0f32, 5.0, 6.0]);
-    /// let s = a.cosine_similarity(b, Tensor::from([1e-9f32]), ReduceOp::Sum).unwrap();
+    /// let s = a.cosine_similarity(b, Tensor::from([1e-9f32]), Reduction::Sum).unwrap();
     /// assert!((s.item::<f32>() - 0.9747).abs() < 1e-4);
     /// ```
     ///
@@ -2584,18 +2648,18 @@ impl Tensor {
         &self,
         rhs: impl Into<Tensor>,
         eps: impl Into<Tensor>,
-        reduction: ReduceOp,
+        reduction: Reduction,
     ) -> Result<Tensor, ZyxError> {
         let rhs: Tensor = rhs.into();
         let eps: Tensor = eps.into();
         let axes: Vec<Axis> = (0..self.rank() as Axis).collect();
         match reduction {
-            ReduceOp::Sum | ReduceOp::Mean => {
+            Reduction::Sum | Reduction::Mean => {
                 let dot = (self * &rhs).sum(axes.clone())?;
                 let nx = (self * self).sum(axes.clone())?.sqrt();
                 let ny = (&rhs * &rhs).sum(axes)?.sqrt();
                 let denom = nx * ny;
-                let denom = denom.cmplt(eps.clone())?.where_(eps, denom)?;
+                let denom = denom.cmplt(eps.clone())?.select(eps, denom)?;
                 Ok(dot / denom)
             }
             _ => Err(ZyxError::ParseError("invalid reduction for cosine_similarity, expected Sum or Mean".into())),
@@ -3016,24 +3080,15 @@ impl Tensor {
     ///
     /// Returns a shape error if `self` and `mask` are not broadcastable.
     pub fn masked_fill(&self, mask: impl Into<Tensor>, value: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        mask.into().where_(value, self.clone())
+        mask.into().select(value, self.clone())
     }
 
     /// Triangular matrix with `1`s on and below the `diagonal` and `0`s above
-    /// (shape `[r, c]`).
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use zyx::{Tensor, DType};
-    /// let t = Tensor::tri(3, 3, 0, DType::I32);
-    /// assert_eq!(t.to_vec::<i32>().unwrap(),
-    ///     vec![1, 1, 1, 0, 1, 1, 0, 0, 1]);
-    /// ```
+    /// (shape `[r, c]`). Mask builder for `triu`/`tril`, not public API.
     #[must_use]
     #[track_caller]
     #[allow(clippy::missing_panics_doc)]
-    pub fn tri(r: Dim, c: Dim, diagonal: i64, dtype: DType) -> Tensor {
+    fn tri(r: Dim, c: Dim, diagonal: i64, dtype: DType) -> Tensor {
         if r == 0 || c == 0 || diagonal >= c as i64 {
             return Tensor::zeros([r, c], dtype);
         }
@@ -3071,7 +3126,7 @@ impl Tensor {
     pub fn triu(&self, diagonal: i64) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal, device=self.device, dtype=dtypes.bool).where(self, self.zeros_like())
         let [r, c] = self.rdims::<2>()?;
-        Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal, DType::Bool).where_(self, Tensor::zeros_like(self))
+        Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal, DType::Bool).select(self, Tensor::zeros_like(self))
     }
 
     /// Lower-triangular part of `self` (elements on/below `diagonal` kept, rest
@@ -3092,7 +3147,7 @@ impl Tensor {
     pub fn tril(&self, diagonal: i64) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal+1, device=self.device, dtype=dtypes.bool).where(self.zeros_like(), self)
         let [r, c] = self.rdims::<2>()?;
-        Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal + 1, DType::Bool).where_(Tensor::zeros_like(self), self)
+        Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal + 1, DType::Bool).select(Tensor::zeros_like(self), self)
     }
 
     /// Strided pooling over the last two dimensions using the given
@@ -3732,9 +3787,22 @@ impl Tensor {
             // Only a rank-0 tensor (shape []) is a scalar; it is cast to the other
             // operand's dtype rather than upcasting the tensor. A shape-[1] tensor
             // is a normal 1-D tensor and participates in implicit autocast.
+            // Exception: Bool never absorbs the other dtype. A scalar cast down
+            // to Bool loses its value irreversibly (1.0 and -1.0 both become
+            // `true`), so bool-involved pairs always promote through
+            // least_upper_dtype (torch/tinygrad semantics), whatever the shapes.
             let x_scalar = x_shape.is_empty();
             let y_scalar = y_shape.is_empty();
-            if RT.lock().implicit_casts && !x_scalar && !y_scalar {
+            let bool_pair = x_dtype == DType::Bool || y_dtype == DType::Bool;
+            if bool_pair && RT.lock().implicit_casts {
+                let common_dtype = x_dtype.least_upper_dtype(y_dtype);
+                if x_dtype != common_dtype {
+                    x = x.cast(common_dtype);
+                }
+                if y_dtype != common_dtype {
+                    y = y.cast(common_dtype);
+                }
+            } else if RT.lock().implicit_casts && !x_scalar && !y_scalar {
                 let common_dtype = x_dtype.least_upper_dtype(y_dtype);
                 if x_dtype != common_dtype {
                     x = x.cast(common_dtype);

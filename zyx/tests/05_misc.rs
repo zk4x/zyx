@@ -132,8 +132,8 @@ fn complex_binary() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn tri1() -> Result<(), ZyxError> {
-    let x = Tensor::tri(3, 5, 2, DType::I32);
+fn triu1() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1i32, 1, 1, 1, 1], [1, 1, 1, 1, 1], [1, 1, 1, 1, 1]]).triu(2)?;
     assert_eq!(x, [[0i32, 0, 1, 1, 1], [0, 0, 0, 1, 1], [0, 0, 0, 0, 1]]);
     Ok(())
 }

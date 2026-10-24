@@ -91,7 +91,7 @@ pub use error::ZyxError;
 pub use module::{GGUFMetadataValue, Module};
 pub use scalar::{Float, Scalar, bf16, f8e4m3, f8e5m2, f16};
 pub use tape::{FrozenTape, Tape};
-pub use tensor::ReduceOp;
+pub use tensor::Reduction;
 pub use tensor::{Dev, Tensor};
 
 // Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...

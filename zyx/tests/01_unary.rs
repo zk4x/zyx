@@ -3,7 +3,7 @@
 
 #![allow(clippy::approx_constant)] // 3.14159 is test input data, not an attempt to use π
 
-use zyx::{DType, Scalar, Tensor, ZyxError};
+use zyx::{DType, Reduction, Scalar, Tensor, ZyxError};
 
 #[test]
 fn relu_1() -> Result<(), ZyxError> {
@@ -133,10 +133,10 @@ fn nonzero() -> Result<(), ZyxError> {
 
 #[test]
 fn nll_loss_1() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8]]);
     let target = Tensor::from([1i64, 0]);
-    let loss = log_probs.nll_loss(target, None, None, ReduceOp::Mean)?;
+    let loss = log_probs.nll_loss(target, None, None, Reduction::Mean)?;
     // gathered: [-0.5, 0.1], nll = [0.5, -0.1], mean = 0.2
     assert!((loss.item::<f32>() - 0.2f32).abs() < 1e-5);
     Ok(())
@@ -144,10 +144,10 @@ fn nll_loss_1() -> Result<(), ZyxError> {
 
 #[test]
 fn nll_loss_2() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8]]);
     let target = Tensor::from([1i64, 0]);
-    let loss = log_probs.nll_loss(target, None, None, ReduceOp::None)?;
+    let loss = log_probs.nll_loss(target, None, None, Reduction::NoReduction)?;
     let vals: Vec<f32> = loss.cast(DType::F32).try_into()?;
     assert!(vals[0].is_equal(0.5f32));
     assert!(vals[1].is_equal(-0.1f32));
@@ -156,21 +156,21 @@ fn nll_loss_2() -> Result<(), ZyxError> {
 
 #[test]
 fn nll_loss_3() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8]]);
     let target = Tensor::from([1i64, 0]);
-    let loss = log_probs.nll_loss(target, None, None, ReduceOp::Sum)?;
+    let loss = log_probs.nll_loss(target, None, None, Reduction::Sum)?;
     assert!(loss.item::<f32>().is_equal(0.4f32));
     Ok(())
 }
 
 #[test]
 fn nll_loss_4() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8]]);
     let target = Tensor::from([1i64, 0]);
     let weight = Tensor::from([0.5f32, 2.0, 1.0]);
-    let loss = log_probs.nll_loss(target, Some(weight), None, ReduceOp::Mean)?;
+    let loss = log_probs.nll_loss(target, Some(weight), None, Reduction::Mean)?;
     // gathered weights: [2.0, 0.5], nll = [1.0, -0.05], mean = 0.95/2.5 = 0.38
     assert!((loss.item::<f32>() - 0.38f32).abs() < 1e-5);
     Ok(())
@@ -178,10 +178,10 @@ fn nll_loss_4() -> Result<(), ZyxError> {
 
 #[test]
 fn nll_loss_5() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8]]);
     let target = Tensor::from([1i64, 0]);
-    let loss = log_probs.nll_loss(target, None, Some(0), ReduceOp::Mean)?;
+    let loss = log_probs.nll_loss(target, None, Some(0), Reduction::Mean)?;
     // Sample 1 (target=0) is ignored. Only sample 0: nll=0.5, weight=1.0
     assert!((loss.item::<f32>() - 0.5f32).abs() < 1e-5);
     Ok(())
@@ -189,7 +189,7 @@ fn nll_loss_5() -> Result<(), ZyxError> {
 
 #[test]
 fn triplet_margin_loss_1() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     // Simple single-sample test
     // a = [0, 0], p = [2, 0], n = [0.5, 0]
     // dist_ap = sqrt(4 + eps) ~ 2.0, dist_an = sqrt(0.25 + eps) ~ 0.5
@@ -197,26 +197,26 @@ fn triplet_margin_loss_1() -> Result<(), ZyxError> {
     let anchor = Tensor::from([[0.0f32, 0.0]]);
     let positive = Tensor::from([[2.0f32, 0.0]]);
     let negative = Tensor::from([[0.5f32, 0.0]]);
-    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, false, ReduceOp::Mean)?;
+    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, 1e-6, false, Reduction::Mean)?;
     assert!((loss.item::<f32>() - 2.5f32).abs() < 1e-4);
     Ok(())
 }
 
 #[test]
 fn triplet_margin_loss_2() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     // Anchor == positive → dist_ap ~ 0 → loss should be 0 (margin satisfied)
     let anchor = Tensor::from([[0.0f32, 0.0]]);
     let positive = Tensor::from([[0.0f32, 0.0]]);
     let negative = Tensor::from([[5.0f32, 0.0]]);
-    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, false, ReduceOp::Mean)?;
+    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, 1e-6, false, Reduction::Mean)?;
     assert!(loss.item::<f32>() < 1e-3);
     Ok(())
 }
 
 #[test]
 fn triplet_margin_loss_3() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     // Two samples, Mean reduction
     // Sample 0: a=[0,0], p=[2,0], n=[0.5,0] → loss = max(2 - 0.5 + 1, 0) = 2.5
     // Sample 1: a=[0,0], p=[0,0], n=[5,0] → loss = max(~0 - ~5 + 1, 0) = 0
@@ -224,27 +224,27 @@ fn triplet_margin_loss_3() -> Result<(), ZyxError> {
     let anchor = Tensor::from([[0.0f32, 0.0], [0.0, 0.0]]);
     let positive = Tensor::from([[2.0f32, 0.0], [0.0, 0.0]]);
     let negative = Tensor::from([[0.5f32, 0.0], [5.0, 0.0]]);
-    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, false, ReduceOp::Mean)?;
+    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, 1e-6, false, Reduction::Mean)?;
     assert!((loss.item::<f32>() - 1.25f32).abs() < 1e-4);
     Ok(())
 }
 
 #[test]
 fn triplet_margin_loss_4() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     // Two samples, Sum reduction
     // loss = [2.5, 0.0] → sum = 2.5
     let anchor = Tensor::from([[0.0f32, 0.0], [0.0, 0.0]]);
     let positive = Tensor::from([[2.0f32, 0.0], [0.0, 0.0]]);
     let negative = Tensor::from([[0.5f32, 0.0], [5.0, 0.0]]);
-    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, false, ReduceOp::Sum)?;
+    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, 1e-6, false, Reduction::Sum)?;
     assert!((loss.item::<f32>() - 2.5f32).abs() < 1e-4);
     Ok(())
 }
 
 #[test]
 fn triplet_margin_loss_5() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     // Test with swap=true
     // a=[0,0], p=[1,0], n=[3,0], margin=3
     // dist_ap = 1, dist_an = 3, dist_pn = 2
@@ -253,14 +253,14 @@ fn triplet_margin_loss_5() -> Result<(), ZyxError> {
     let anchor = Tensor::from([[0.0f32, 0.0]]);
     let positive = Tensor::from([[1.0f32, 0.0]]);
     let negative = Tensor::from([[3.0f32, 0.0]]);
-    let loss = anchor.triplet_margin_loss(&positive, &negative, 3.0, 2, true, ReduceOp::Mean)?;
+    let loss = anchor.triplet_margin_loss(&positive, &negative, 3.0, 2, 1e-6, true, Reduction::Mean)?;
     assert!((loss.item::<f32>() - 2.0f32).abs() < 1e-4);
     Ok(())
 }
 
 #[test]
 fn triplet_margin_loss_6() -> Result<(), ZyxError> {
-    use zyx::ReduceOp;
+    use zyx::Reduction;
     // Verify swap does NOT change when dist_pn < dist_ap
     // a=[0,0], p=[10,0], n=[3,0], margin=1
     // dist_ap = 10, dist_an = 3, dist_pn = 7
@@ -269,8 +269,8 @@ fn triplet_margin_loss_6() -> Result<(), ZyxError> {
     let anchor = Tensor::from([[0.0f32, 0.0]]);
     let positive = Tensor::from([[10.0f32, 0.0]]);
     let negative = Tensor::from([[3.0f32, 0.0]]);
-    let loss_no_swap = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, false, ReduceOp::Mean)?;
-    let loss_swap = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, true, ReduceOp::Mean)?;
+    let loss_no_swap = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, 1e-6, false, Reduction::Mean)?;
+    let loss_swap = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, 1e-6, true, Reduction::Mean)?;
     assert!((loss_no_swap.item::<f32>() - 8.0f32).abs() < 1e-4);
     assert!((loss_swap.item::<f32>() - 8.0f32).abs() < 1e-4);
     Ok(())
@@ -355,7 +355,7 @@ fn huber_loss_1() -> Result<(), ZyxError> {
     // Test basic huber loss functionality
     let predictions = Tensor::from([1.0f32, 2.0f32, 3.0f32]);
     let targets = Tensor::from([1.0f32, 2.0f32, 3.0f32]); // Perfect match
-    let loss = predictions.huber_loss(&targets, 1.0f32);
+    let loss = predictions.huber_loss(&targets, 1.0f32, Reduction::Sum);
 
     // Loss should be zero when predictions match targets exactly
     assert!(loss.item::<f32>().abs() < 1e-6);
@@ -368,7 +368,7 @@ fn huber_loss_2() -> Result<(), ZyxError> {
     // Test huber loss with small differences (quadratic region)
     let predictions = Tensor::from([1.0f32]);
     let targets = Tensor::from([1.5]); // Difference = 0.5 < delta (1.0)
-    let loss = predictions.huber_loss(&targets, 1.0f32);
+    let loss = predictions.huber_loss(&targets, 1.0f32, Reduction::Sum);
 
     // Should be quadratic: 0.5 * (1.0 - 1.5)² = 0.5 * 0.25 = 0.125
     let expected_loss = 0.125f32;
@@ -382,7 +382,7 @@ fn huber_loss_3() -> Result<(), ZyxError> {
     // Test huber loss with large differences (linear region)
     let predictions = Tensor::from([1.0f32]);
     let targets = Tensor::from([3.0f32]); // Difference = 2.0 > delta (1.0)
-    let loss = predictions.huber_loss(&targets, 1.0f32);
+    let loss = predictions.huber_loss(&targets, 1.0f32, Reduction::Sum);
 
     // Should be linear: 1.0 * |1.0 - 3.0| - 0.5 * 1.0² = 2.0 - 0.5 = 1.5
     let expected_loss = 1.5f32;
@@ -398,10 +398,10 @@ fn huber_loss_4() -> Result<(), ZyxError> {
     let targets = Tensor::from([2.0f32, 3.0f32, 4.0f32]);
 
     // With delta = 1.0: first two are quadratic, third is linear
-    let loss_delta_1 = predictions.huber_loss(&targets, 1.0f32);
+    let loss_delta_1 = predictions.huber_loss(&targets, 1.0f32, Reduction::Sum);
 
     // With delta = 2.0: all are quadratic
-    let loss_delta_2 = predictions.huber_loss(&targets, 2.0f32);
+    let loss_delta_2 = predictions.huber_loss(&targets, 2.0f32, Reduction::Sum);
 
     // Loss with smaller delta should be larger for large differences
     let loss1_val = loss_delta_1.item::<f32>();
@@ -453,42 +453,6 @@ fn round_3() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn frac_1() -> Result<(), ZyxError> {
-    // Test basic fractional part functionality
-    let t = Tensor::from([1.2f32, 2.7, 3.5, -1.7, -2.3]);
-    let fractional = t.frac();
-
-    // Fractional parts should be: [0.2, 0.7, 0.5, 0.3, 0.7]
-    assert_eq!(fractional, [0.2f32, 0.7, 0.5, 0.3, 0.7]);
-
-    Ok(())
-}
-
-#[test]
-fn frac_2() -> Result<(), ZyxError> {
-    // Test with whole numbers
-    let t = Tensor::from([2.0f32, -3.0, 4.0, -5.0]);
-    let fractional = t.frac();
-
-    // Fractional parts should be zero for whole numbers
-    assert_eq!(fractional, [0.0f32, 0.0, 0.0, 0.0]);
-
-    Ok(())
-}
-
-#[test]
-fn frac_3() -> Result<(), ZyxError> {
-    // Test with numbers close to integers
-    let data = [1.0001f32, -2.9999, 3.9999, -4.0001];
-    let result: Vec<f32> = Tensor::from(data).frac().try_into()?;
-    let expected = [0.0001f32, 0.0001, 0.9999, 0.9999];
-    for (x, y) in expected.iter().zip(result) {
-        assert!(x.is_equal(y), "{x} != {y}");
-    }
-    Ok(())
-}
-
-#[test]
 fn ceil_1() -> Result<(), ZyxError> {
     // Test basic ceiling functionality
     let t = Tensor::from([1.2f32, 2.7, 3.0, -1.7, -2.3]);
@@ -529,7 +493,7 @@ fn smooth_l1_loss_1() -> Result<(), ZyxError> {
     // Test Smooth L1 loss with small differences (should use quadratic region)
     let predictions = Tensor::from([1.0f32, 2.0f32, 3.0f32]);
     let targets = Tensor::from([1.1f32, 2.2f32, 2.9f32]); // Small differences < 1.0
-    let loss = predictions.smooth_l1_loss(&targets);
+    let loss = predictions.smooth_l1_loss(&targets, Reduction::Sum);
 
     // Expected: 0.5 * (0.1)² + 0.5 * (0.2)² + 0.5 * (0.1)² = 0.005 + 0.02 + 0.005 = 0.03
     let expected_loss = 0.03f32;
@@ -544,7 +508,7 @@ fn smooth_l1_loss_2() -> Result<(), ZyxError> {
     // Test Smooth L1 loss with large differences (should use linear region)
     let predictions = Tensor::from([1.0f32, 2.0f32, 3.0f32]);
     let targets = Tensor::from([3.0f32, 5.0f32, 1.5f32]); // Large differences > 1.0
-    let loss = predictions.smooth_l1_loss(&targets);
+    let loss = predictions.smooth_l1_loss(&targets, Reduction::Sum);
 
     // Expected: |1-3|-0.5 + |2-5|-0.5 + |3-1.5|-0.5 = 1.5 + 2.5 + 1.0 = 5.0
     let expected_loss = 5.0f32;
@@ -559,7 +523,7 @@ fn smooth_l1_loss_3() -> Result<(), ZyxError> {
     // Test Smooth L1 loss with mixed differences
     let predictions = Tensor::from([1.0f32, 2.0f32, 3.0f32, 4.0f32]);
     let targets = Tensor::from([1.5f32, 2.8f32, 1.2f32, 6.0f32]); // Mixed differences
-    let loss = predictions.smooth_l1_loss(&targets);
+    let loss = predictions.smooth_l1_loss(&targets, Reduction::Sum);
 
     // Expected: 0.5*(0.5)² + |2-2.8|-0.5 + 0.5*(1.8)² + |4-6|-0.5
     //          = 0.125 + 0.3 + 1.62 + 1.5 = 3.545

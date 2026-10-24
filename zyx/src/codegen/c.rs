@@ -148,6 +148,8 @@ impl Kernel {
                 Op::Spirv(_) => todo!(),
                 Op::PTX(_) => todo!(),
                 Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before C codegen"),
+                // Select lowering (ternary) lands with the where_ integration.
+                Op::Select { .. } => todo!("C codegen of Select"),
                 Op::Range { kind: scope, .. } => {
                     let RangeKind::Group(len) = scope else {
                         return Err(BackendError {

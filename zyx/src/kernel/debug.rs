@@ -473,6 +473,27 @@ impl Kernel {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {op1}r{x}{op2}r{y}{op3}").unwrap();
                     }
                 }
+                Op::Select { cond, if_true, if_false } => {
+                    let dtype = dtypes.get(&if_true).copied().unwrap_or(DType::U8);
+                    dtypes.insert(op_id, dtype);
+                    let shp = self.shape_suffix(op_id, &shapes);
+                    let cond = id_map.get(&cond).copied().unwrap_or(cond);
+                    let if_true = id_map.get(&if_true).copied().unwrap_or(if_true);
+                    let if_false = id_map.get(&if_false).copied().unwrap_or(if_false);
+                    if let Some((lb, ub)) = bounds.get(&op_id) {
+                        writeln!(
+                            f,
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = select(r{cond}, r{if_true}, r{if_false})    // {lb}..={ub}"
+                        )
+                        .unwrap();
+                    } else {
+                        writeln!(
+                            f,
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = select(r{cond}, r{if_true}, r{if_false})"
+                        )
+                        .unwrap();
+                    }
+                }
                 Op::Wmma { dims, layout, dtype, c, a, b } => {
                     let cdtype = dtypes.get(&c).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, cdtype);
