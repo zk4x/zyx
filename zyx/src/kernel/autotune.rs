@@ -82,6 +82,14 @@ impl Kernel {
         self.unfold_pows();
         self.algebraic_simplifications();
         self.simplify_accumulating_loop();
+        self.simplify_accumulating_loop();
+        self.constant_folding();
+        self.move_constants_to_beginning();
+        self.loop_invariant_code_motion();
+        self.fold_accs();
+        self.unfold_pows();
+        self.algebraic_simplifications();
+        self.simplify_accumulating_loop();
         self.swap_commutative();
         self.common_subexpression_elimination();
         self.instruction_schedule();

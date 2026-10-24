@@ -55,18 +55,19 @@ def _init(name, zyx_factory, torch_factory, zyx_layer, torch_layer, in_shape,
 
 
 def test_linear():
-    n, m, k = 4, 6, 8
+    n, m = 4, 6
     # zyx
     xz = zyx.Tensor(np.random.default_rng(0).uniform(-2, 2, (1, n)).astype(np.float32), dtype=DT)
-    zyx_w = zyx.Tensor(np.random.default_rng(1).uniform(-2, 2, (m, k)).astype(np.float32), dtype=DT)
+    zyx_w = zyx.Tensor(np.random.default_rng(1).uniform(-2, 2, (m, n)).astype(np.float32), dtype=DT)
     zyx_b = zyx.Tensor(np.random.default_rng(2).uniform(-2, 2, (m,)).astype(np.float32), dtype=DT)
-    Lz = zyx.nn.Linear(m, n)
-    Lz.load(zyx_w, zyx_b)  # weight shape (out, in)? adjust
+    Lz = zyx.nn.Linear(n, m)
+    Lz.weight = zyx_w
+    Lz.bias = zyx_b
     # torch
     xt = torch.from_numpy(np.array(xz.numpy(), dtype=np.float32)).clone().requires_grad_(True)
     wt = torch.from_numpy(np.array(zyx_w.numpy(), dtype=np.float32)).clone().requires_grad_(True)
     bt = torch.from_numpy(np.array(zyx_b.numpy(), dtype=np.float32)).clone().requires_grad_(True)
-    Lt = torch.nn.Linear(m, n, bias=True)
+    Lt = torch.nn.Linear(n, m, bias=True)
     Lt.weight.data.copy_(wt)
     Lt.bias.data.copy_(bt)
 
@@ -77,20 +78,19 @@ def test_linear():
     yt = Lt(xt)
     _cmp("linear", yz.numpy(), yt.detach().cpu().numpy(), 1e-4, 1e-4)
 
-    # Gradient: build a small tape loss = (L(x) * x).sum()
-    # forward through Lz inside a tape
+    # Gradient: loss over aligned shapes, flows through L into x
     tape = zyx.Tape()
     tape.add(xz)
     yz_tape = Lz(xz)
-    loss_z = (yz_tape * xz).sum()
-    gxz = tape.gradient(loss_z, xz)
+    loss_z = (yz_tape * yz_tape).sum()
+    gxz = tape.gradient(loss_z, [xz])
     tape.realize(gxz)
 
     def f_t(tx, tw, tb):
-        return (Lt(tx) * tx).sum()
+        return (Lt(tx) * Lt(tx)).sum()
     yt = f_t(xt, wt, bt)
     gx = torch.autograd.grad(yt, xt)
-    _cmp("linear_grad", gxz.numpy(), gx.detach().cpu().numpy(), 1e-4, 1e-4)
+    _cmp("linear_grad", gxz[0].numpy(), gx[0].detach().cpu().numpy(), 1e-4, 1e-4)
 
 
 if __name__ == "__main__":

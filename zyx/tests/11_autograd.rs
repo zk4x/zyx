@@ -367,6 +367,44 @@ fn grad_dot() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn grad_dot_transpose_square() -> Result<(), ZyxError> {
+    // Transposed dot operand under a self-sourced cotangent: the square
+    // reuses the dot output, so the incoming cotangent shares lineage
+    // with the dot itself. y = x·wᵀ = [1, 2, 3, 4, 10, 20],
+    // d/dxⱼ = Σᵢ 2·yᵢ·wᵢⱼ, d/dwᵢⱼ = 2·yᵢ·xⱼ. The 4-wide inner dim is
+    // load-bearing: narrower inner dims pass by coincidence.
+    let x = Tensor::from([[1f32, 2., 3., 4.]]);
+    let w = Tensor::from([
+        [1f32, 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [0., 0., 1., 0.],
+        [0., 0., 0., 1.],
+        [1., 1., 1., 1.],
+        [2., 2., 2., 2.],
+    ]);
+    let tape = Tape::new([&x, &w])?;
+    let y = x.dot(&w.t())?;
+    let z = (&y * &y).sum_all();
+    let mut grads = tape.gradient(&z, [&x, &w]);
+    let w_grad = grads.pop().unwrap();
+    let x_grad = grads.pop().unwrap();
+    tape.realize([&x_grad, &w_grad])?;
+    assert_eq!(x_grad, [[102f32, 104., 106., 108.]]);
+    assert_eq!(
+        w_grad,
+        [
+            [2f32, 4., 6., 8.],
+            [4., 8., 12., 16.],
+            [6., 12., 18., 24.],
+            [8., 16., 24., 32.],
+            [20., 40., 60., 80.],
+            [40., 80., 120., 160.]
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn grad_linear_1() -> Result<(), ZyxError> {
     let x = Tensor::from([2, 3, 1]);
     let w = Tensor::from([2, 3, 1, 4, 5, 1, 6, 2, 3, 1, 6, 2, 4, 1, 4]).reshape([3, 5])?;

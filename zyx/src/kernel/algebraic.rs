@@ -437,10 +437,26 @@ impl Kernel {
                         // One side's root is not the loop — treat the whole other
                         // operand as an opaque constant term (it may carry its own
                         // scale, e.g. `4*loop`), never just its bare loop root.
+                        // The kept side's own constant (if any) joins the term:
+                        // dropping it would silently lose a summand.
                         if matches!(k.at(ls[0].root), Op::Loop { .. }) {
-                            return (ls, Some(y));
+                            let constant = match lc {
+                                Some(a) => Some(k.insert_before(
+                                    op_id,
+                                    Op::Binary { x: a, y, bop: BOp::Add },
+                                )),
+                                None => Some(y),
+                            };
+                            return (ls, constant);
                         } else {
-                            return (rs, Some(x));
+                            let constant = match rc {
+                                Some(b) => Some(k.insert_before(
+                                    op_id,
+                                    Op::Binary { x, y: b, bop: BOp::Add },
+                                )),
+                                None => Some(x),
+                            };
+                            return (rs, constant);
                         }
                     } else {
                         if ls.is_empty() {
@@ -468,6 +484,15 @@ impl Kernel {
                     for s in &mut slices {
                         s.shift += c;
                     }
+                    // (S + C) << k distributes exactly: the carried constant
+                    // shifts with the slices.
+                    let constant = match constant {
+                        Some(cc) if !is_zero_const(k, cc) => Some(k.insert_before(
+                            op_id,
+                            Op::Binary { x: cc, y, bop: BOp::BitShiftLeft },
+                        )),
+                        c => c,
+                    };
                     (slices, constant)
                 }
                 Op::Binary { x, y, bop: BOp::Mul } if is_const(k, y) => {
@@ -485,6 +510,16 @@ impl Kernel {
                     for s in &mut slices {
                         s.shift += kk;
                     }
+                    // (S + C) * c distributes exactly: the carried constant
+                    // scales with the multiply (keeping it unscaled would
+                    // silently drop the factor).
+                    let constant = match constant {
+                        Some(cc) if !is_zero_const(k, cc) => Some(k.insert_before(
+                            op_id,
+                            Op::Binary { x: cc, y, bop: BOp::Mul },
+                        )),
+                        c => c,
+                    };
                     (slices, constant)
                 }
                 Op::Binary { x, y, bop: BOp::Div } if is_const(k, y) => {
@@ -499,6 +534,12 @@ impl Kernel {
                     let (mut slices, constant) = collect_slices_inner(k, x);
                     for s in &mut slices {
                         s.lo += kk;
+                    }
+                    // Div does not distribute over addition: a carried
+                    // nonzero constant would leak into the quotient, so the
+                    // whole op demotes to an opaque constant term.
+                    if matches!(constant, Some(cc) if !is_zero_const(k, cc)) {
+                        return (vec![], Some(op_id));
                     }
                     (slices, constant)
                 }
@@ -526,6 +567,12 @@ impl Kernel {
                     for s in &mut slices {
                         s.width = s.width.min(width);
                     }
+                    // Mod does not distribute over addition: a carried
+                    // nonzero constant would leak into the residue, so the
+                    // whole op demotes to an opaque constant term.
+                    if matches!(constant, Some(cc) if !is_zero_const(k, cc)) {
+                        return (vec![], Some(op_id));
+                    }
                     (slices, constant)
                 }
                 _ => {
@@ -547,6 +594,12 @@ impl Kernel {
         }
         fn is_const(k: &Kernel, op_id: OpId) -> bool {
             matches!(k.at(op_id), Op::Const(_))
+        }
+        /// A const op holding numeric zero. A zero carried constant is the
+        /// identity for the slice roundtrip (slices + 0), so the div/mod
+        /// demote and mul/shl scaling below leave it untouched.
+        fn is_zero_const(k: &Kernel, op_id: OpId) -> bool {
+            matches!(k.at(op_id), Op::Const(c) if c.is_zero())
         }
 
         let mut op_id = self.head;
