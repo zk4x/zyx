@@ -536,7 +536,14 @@ impl Tensor {
     #[must_use]
     pub fn softplus(&self, beta: impl Float, threshold: impl Float) -> Tensor {
         let x = self * beta;
-        x.cmplt(threshold).unwrap().select(((x).exp() + 1).ln() * beta.reciprocal(), x).unwrap()
+        // Clamp the guarded branch's input at the threshold. Past it the
+        // branch is dead (select takes x), but its backward still runs as
+        // 0 * local-grad, and an overflowing exp would make that 0 * NaN.
+        // minimum is exact here: where the branch is live (x < threshold)
+        // it is x; where it is dead its upstream is literal 0, so the
+        // minimum's tie behavior at exactly threshold cannot leak.
+        let x_safe = x.minimum(threshold).unwrap();
+        x.cmplt(threshold).unwrap().select(((x_safe).exp() + 1).ln() * beta.reciprocal(), x).unwrap()
     }
 
     /// Element-wise square root: `sqrt(x)`.
@@ -659,7 +666,10 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn isinf(&self) -> Tensor {
-        self.equal(f32::INFINITY).unwrap()
+        // Both infinities: Eq is exact, so -inf needs its own arm
+        // (an `abs(x) == inf` form would do it in one op but rounds
+        // f16 max-magnitude values, risking false positives).
+        self.equal(f32::INFINITY).unwrap().logical_or(self.equal(f32::NEG_INFINITY).unwrap()).unwrap()
     }
 
     /// Boolean tensor true where elements are NaN.
@@ -673,7 +683,9 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn isnan(&self) -> Tensor {
-        self.equal(f32::NAN).unwrap()
+        // NaN != NaN in IEEE, so self-inequality detects it; Eq-based
+        // detection can never fire (Eq(NaN, NaN) is false).
+        self.ne(self.clone()).unwrap()
     }
 
     /// Element-wise base-10 logarithm: `log10(x)`.

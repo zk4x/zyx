@@ -104,6 +104,15 @@ def input_dtype(spec, i, dtype_name):
 
 def args_for(spec, dtype_name):
     """Generate the numpy input(s) for one (spec, dtype) pair."""
+    fixed = spec.get("fixed")
+    if fixed is not None:
+        # Literal edge-case inputs (inf/nan/ties/saturation): bypass the rng
+        # entirely. Values cast to the per-input dtype like drawn ones.
+        outs = []
+        for i, v in enumerate(fixed):
+            idt = input_dtype(spec, i, dtype_name)
+            outs.append(np.array(v, dtype=NP[idt]))
+        return tuple(outs)
     shapes = spec.get("shapes") or DEFAULT_SHAPES
     # Stable across processes (unlike builtin hash(), which is salted per
     # process and made every run draw different inputs): deterministic draws
@@ -424,6 +433,22 @@ UNARY_OPS = [
      "dtypes": ("f16", "f32"), "gradable": False, "ranges": [(-5, 5)]},
     {"name": "clamp", "ary": 1, "zyx": lambda a: a.clamp(-1.0, 1.0), "torch": lambda a: torch.clamp(a, -1.0, 1.0),
      "dtypes": NOU32_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
+    # Literal edge inputs: infinities, NaN, ties, saturation and overflow
+    # boundaries the rng draws never produce.
+    {"name": "isinf", "ary": 1, "zyx": lambda a: a.isinf(), "torch": lambda a: torch.isinf(a),
+     "dtypes": FLOAT_DTYPES, "gradable": False, "fixed": [[0.0, 1.0, float("inf"), float("-inf")]]},
+    {"name": "isnan", "ary": 1, "zyx": lambda a: a.isnan(), "torch": lambda a: torch.isnan(a),
+     "dtypes": FLOAT_DTYPES, "gradable": False, "fixed": [[0.0, 1.0, float("nan"), float("-inf")]]},
+    {"name": "isclose", "ary": 2, "zyx": lambda a, b: a.isclose(b, 1e-5, 1e-8),
+     "torch": lambda a, b: torch.isclose(a, b, 1e-5, 1e-8),
+     "dtypes": ("f32",), "gradable": False, "fixed": [[1.0, 1.0, 100.0], [1.0, 2.0, 100.0]]},
+    {"name": "pow_zero", "ary": 2, "zyx": lambda a, b: a.pow(b), "torch": lambda a, b: torch.pow(a, b),
+     "dtypes": ("f16", "f32", "i32", "i64"), "gradable": True, "fixed": [[2.0, 0.0], [3.0, 2.0]]},
+    {"name": "exp_overflow", "ary": 1, "zyx": lambda a: a.exp(), "torch": lambda a: torch.exp(a),
+     "dtypes": FLOAT_DTYPES, "gradable": True, "fixed": [[90.0, -90.0, 0.0]]},
+    {"name": "softplus_threshold", "ary": 1,
+     "zyx": lambda a: a.softplus(1.0, 20.0), "torch": lambda a: torch.nn.functional.softplus(a),
+     "dtypes": ("f32",), "gradable": True, "fixed": [[19.0, 20.0, 21.0, 100.0]]},
     {"name": "square", "ary": 1, "zyx": lambda a: a.square(), "torch": lambda a: a.square(),
      "dtypes": NOU32_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "pow", "ary": 2, "zyx": lambda a, b: a.pow(b), "torch": lambda a, b: a.pow(b),
@@ -475,6 +500,8 @@ REDUCE_OPS += [
      "dtypes": NOU32_DTYPES, "shapes": [(4, 3)]},
     {"name": "argmax_axis1", "ary": 1, "zyx": lambda a: a.argmax(dim=1), "torch": lambda a: torch.argmax(a, dim=1),
      "dtypes": NOU32_DTYPES, "shapes": [(4, 3)]},
+    {"name": "argmax_ties", "ary": 1, "zyx": lambda a: a.argmax(), "torch": lambda a: torch.argmax(a),
+     "dtypes": NOU32_DTYPES, "fixed": [[3, 1, 3, 2]]},
 ]
 
 # ---- activations (float) ----
@@ -509,6 +536,8 @@ ACTIV_OPS = [
      "dtypes": FLOAT_DTYPES, "gradable": False, "ranges": [(-5, 5)]},
     {"name": "softmax", "ary": 1, "zyx": lambda a: a.softmax(dim=-1), "torch": lambda a: torch.softmax(a, dim=-1),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4, 5)], "ranges": [(-5, 5)]},
+    {"name": "softmax_sat", "ary": 1, "zyx": lambda a: a.softmax(dim=-1), "torch": lambda a: torch.softmax(a, dim=-1),
+     "dtypes": FLOAT_DTYPES, "gradable": True, "fixed": [[-50.0, 0.0, 50.0]]},
     {"name": "log_softmax", "ary": 1, "zyx": lambda a: a.log_softmax(dim=-1), "torch": lambda a: torch.log_softmax(a, dim=-1),
      "dtypes": FLOAT_DTYPES, "gradable": True, "shapes": [(4, 5)], "ranges": [(-5, 5)]},
     {"name": "ln_softmax", "ary": 1, "zyx": lambda a: a.ln_softmax(dim=-1), "torch": lambda a: torch.log_softmax(a, dim=-1),

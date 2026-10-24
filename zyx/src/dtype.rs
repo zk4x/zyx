@@ -833,27 +833,11 @@ impl Constant {
                 binary_func(x, y, bop)
             }
         };
-        // A folded NaN is always a bug: some rewrite proved a guard
-        // degenerate and produced e.g. 0/0. Fail loudly at the fold site.
-        if Self::is_nan_const(&res) {
-            panic!("constant folding produced NaN: {bop:?}({x:?}, {y:?})");
-        }
+        // NaN propagates (IEEE): NaN inputs fold to NaN results. No
+        // fail-loud guard here: a folded NaN is legitimate data flow
+        // whenever any input is NaN, and the fold site cannot tell
+        // that apart from a degenerate proof.
         res
-    }
-
-    fn is_nan_const(c: &Constant) -> bool {
-        match c {
-            Constant::F32(x) => f32::from_le_bytes(*x).is_nan(),
-            Constant::F64(x) => f64::from_le_bytes(*x).is_nan(),
-            Constant::BF16(x) => u16::from_le_bytes(*x) & 0x7fff > 0x7f80,
-            Constant::F16(x) => {
-                let b = u16::from_le_bytes(*x);
-                b & 0x7c00 == 0x7c00 && b & 0x03ff != 0
-            }
-            Constant::F8E4M3(x) => *x == 0x7f || *x == 0xff,
-            Constant::F8E5M2(x) => *x & 0x7c == 0x7c && *x & 0x03 != 0,
-            _ => false,
-        }
     }
 }
 
