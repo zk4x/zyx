@@ -369,7 +369,10 @@ UNARY_OPS = [
     {"name": "square", "ary": 1, "zyx": lambda a: a.square(), "torch": lambda a: a.square(),
      "dtypes": NOU32_DTYPES, "gradable": True, "ranges": [(-5, 5)]},
     {"name": "pow", "ary": 2, "zyx": lambda a, b: a.pow(b), "torch": lambda a, b: a.pow(b),
-     "dtypes": ("f16", "f32", "i32", "i64", "u32"), "gradable": True,
+     # u32 excluded: torch has no uint32 pow (NotImplementedError), so no
+     # reference exists. zyx u32 lowering is exact (wrapping, verified
+     # against Python big-int modular arithmetic).
+     "dtypes": ("f16", "f32", "i32", "i64"), "gradable": True,
      "ranges": [(0.5, 2), (-2, 3)], "shapes": [(4,)]},
     {"name": "reciprocal", "ary": 1, "zyx": lambda a: a.reciprocal(), "torch": lambda a: 1 / a,
      "dtypes": ("f16", "f32"), "gradable": True, "ranges": [(1, 5)]},

@@ -891,22 +891,297 @@ impl Kernel {
         }
     }
 
-    /// Unfold power operations using log2 and exp2.
+    /// Unfold power operations.
     ///
-    /// This method replaces `x^y` with `exp2(y * log2(x))`,
-    /// which can be more efficiently compiled by the backend.
-    ///
-    /// The transformation is based on the mathematical identity:
-    /// `x^y = exp2(log2(x) * y)`
+    /// `x^y` with an integer-valued constant exponent unfolds to
+    /// multiplies (host-side binary exponentiation; negative exponents
+    /// via reciprocal for floats). Integer-dtype powers lower to a
+    /// square-and-multiply bit loop over the exponent bits in unsigned
+    /// arithmetic (wrapping is defined there; signed overflow is not),
+    /// with tinygrad `xpow_int` negative-exponent semantics (0, except
+    /// base ±1). Only genuinely dynamic float powers keep
+    /// `x^y = exp2(y * log2(x))`: integer `log2`/`exp2` match no NVRTC
+    /// overload and PTX has no `pow`, so every int `Pow` must lower here.
     pub(crate) fn unfold_pows(&mut self) {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let &Op::Binary { x, y, bop } = self.at(op_id)
                 && bop == BOp::Pow
             {
-                let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
-                let x = self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
-                self.ops[op_id].op = Op::Unary { x, uop: UOp::Exp2 };
+                let dt = self.dtype(x);
+                let edt = self.dtype(y);
+                // Float value of a constant exponent (int consts fold
+                // through `as_float` too). Range-checked before `as i64`.
+                let exp_f: Option<f64> = self.resolve_const(y).and_then(|c| c.as_float());
+                let exp_int: Option<i64> = exp_f.and_then(|f| {
+                    if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+                        Some(f as i64)
+                    } else {
+                        None
+                    }
+                });
+                if exp_int == Some(0) && dt.is_int() {
+                    // x^0 -> 1 via x*0+1: exact in int arithmetic (no
+                    // NaN domain), and the mul/add broadcast the vector
+                    // shape. Float x^0 stays on the legacy path below.
+                    let zero = self.insert_before(op_id, Op::Const(Constant::new(0i32)));
+                    let zero = self.insert_before(op_id, Op::Cast { x: zero, dtype: dt });
+                    let one = self.insert_before(op_id, Op::Const(Constant::new(1i32)));
+                    let one = self.insert_before(op_id, Op::Cast { x: one, dtype: dt });
+                    let z = self.insert_before(op_id, Op::Binary { x, y: zero, bop: BOp::Mul });
+                    self.ops[op_id].op = Op::Binary { x: z, y: one, bop: BOp::Add };
+                } else if dt.is_float() {
+                    match exp_int {
+                        Some(n) if n != 0 => {
+                            // Binary exponentiation over the host-side
+                            // magnitude: exact, no log2/exp2 rounding.
+                            let mag = n.unsigned_abs();
+                            let mut acc: Option<OpId> = None;
+                            let mut sq = x;
+                            let mut m = mag;
+                            while m > 0 {
+                                if m & 1 == 1 {
+                                    acc = Some(match acc {
+                                        Some(a) => self.insert_before(
+                                            op_id,
+                                            Op::Binary { x: a, y: sq, bop: BOp::Mul },
+                                        ),
+                                        None => sq,
+                                    });
+                                }
+                                m >>= 1;
+                                if m > 0 {
+                                    sq = self.insert_before(
+                                        op_id,
+                                        Op::Binary { x: sq, y: sq, bop: BOp::Mul },
+                                    );
+                                }
+                            }
+                            let p = acc.expect("nonzero pow magnitude leaves a nonempty chain");
+                            if n < 0 {
+                                let r = self.insert_before(
+                                    op_id,
+                                    Op::Unary { x: p, uop: UOp::Reciprocal },
+                                );
+                                self.ops[op_id].op = Op::Unary { x: r, uop: UOp::Reciprocal };
+                            } else {
+                                self.remap(op_id, p);
+                            }
+                        }
+                        _ => {
+                            // Dynamic (or zero) float exponent: keep
+                            // `x^y = exp2(y * log2(x))`.
+                            let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
+                            let x =
+                                self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
+                            self.ops[op_id].op = Op::Unary { x, uop: UOp::Exp2 };
+                        }
+                    }
+                } else if dt.is_int() && edt.is_int() {
+                    // Unsigned domain for defined wrapping; signed
+                    // dtypes bitcast there and back (equal widths).
+                    let udt = match dt {
+                        DType::I8 => DType::U8,
+                        DType::I16 => DType::U16,
+                        DType::I32 => DType::U32,
+                        DType::I64 => DType::U64,
+                        DType::U8 => DType::U8,
+                        DType::U16 => DType::U16,
+                        DType::U32 => DType::U32,
+                        DType::U64 => DType::U64,
+                        _ => unreachable!("int pow on non-int dtype {dt:?}"),
+                    };
+                    if let Some(n) = exp_int {
+                        if n > 0 {
+                            let mut b = x;
+                            if udt != dt {
+                                b = self.insert_before(op_id, Op::Bitcast { x, dtype: udt });
+                            }
+                            let mut acc: Option<OpId> = None;
+                            let mut sq = b;
+                            let mut m = n as u64;
+                            while m > 0 {
+                                if m & 1 == 1 {
+                                    acc = Some(match acc {
+                                        Some(a) => self.insert_before(
+                                            op_id,
+                                            Op::Binary { x: a, y: sq, bop: BOp::Mul },
+                                        ),
+                                        None => sq,
+                                    });
+                                }
+                                m >>= 1;
+                                if m > 0 {
+                                    sq = self.insert_before(
+                                        op_id,
+                                        Op::Binary { x: sq, y: sq, bop: BOp::Mul },
+                                    );
+                                }
+                            }
+                            let mut p = acc.expect("nonzero pow magnitude leaves a nonempty chain");
+                            if udt != dt {
+                                p = self.insert_before(op_id, Op::Bitcast { x: p, dtype: dt });
+                            }
+                            self.remap(op_id, p);
+                        } else {
+                            // Negative int exponent (torch semantics):
+                            // 0, except base 1 (1) and base -1 (±1 by
+                            // exponent parity, known at compile time).
+                            // The outer select carries `x` as its true
+                            // arm: where the condition holds the base is
+                            // 1, and `Select` takes its shape from there.
+                            let c0 = self.insert_before(op_id, Op::Const(Constant::new(0i32)));
+                            let c0 = self.insert_before(op_id, Op::Cast { x: c0, dtype: dt });
+                            let c1 = self.insert_before(op_id, Op::Const(Constant::new(1i32)));
+                            let c1 = self.insert_before(op_id, Op::Cast { x: c1, dtype: dt });
+                            let cm1 = self.insert_before(op_id, Op::Const(Constant::new(-1i32)));
+                            let cm1 = self.insert_before(op_id, Op::Cast { x: cm1, dtype: dt });
+                            let is_one = self.insert_before(
+                                op_id,
+                                Op::Binary { x, y: c1, bop: BOp::Eq },
+                            );
+                            let is_negone = self.insert_before(
+                                op_id,
+                                Op::Binary { x, y: cm1, bop: BOp::Eq },
+                            );
+                            let picked = if n & 1 == 1 { cm1 } else { c1 };
+                            let inner = self.insert_before(
+                                op_id,
+                                Op::Select { cond: is_negone, if_true: picked, if_false: c0 },
+                            );
+                            let result = self.insert_before(
+                                op_id,
+                                Op::Select { cond: is_one, if_true: x, if_false: inner },
+                            );
+                            self.remap(op_id, result);
+                        }
+                    } else {
+                        // Dynamic int exponent: square-and-multiply over
+                        // the exponent bits (tinygrad `xpow_int`). The
+                        // first select's true arm is already vector
+                        // (`ret` starts scalar but `prod` is vector from
+                        // the first set bit); the neg gate below keeps
+                        // the vector result as its true arm.
+                        let eone = self.insert_before(op_id, Op::Const(Constant::new(1i32)));
+                        let eone = if edt == DType::I32 {
+                            eone
+                        } else {
+                            self.insert_before(op_id, Op::Cast { x: eone, dtype: edt })
+                        };
+                        let ezero = self.insert_before(op_id, Op::Const(Constant::new(0i32)));
+                        let ezero = if edt == DType::I32 {
+                            ezero
+                        } else {
+                            self.insert_before(op_id, Op::Cast { x: ezero, dtype: edt })
+                        };
+                        let uone = self.insert_before(op_id, Op::Const(Constant::new(1i32)));
+                        let uone = if udt == DType::I32 {
+                            uone
+                        } else {
+                            self.insert_before(op_id, Op::Cast { x: uone, dtype: udt })
+                        };
+                        let mut b = x;
+                        if udt != dt {
+                            b = self.insert_before(op_id, Op::Bitcast { x, dtype: udt });
+                        }
+                        let mut ret = uone;
+                        let mut sq = b;
+                        let width = dt.bit_size();
+                        for i in 0..width {
+                            let ci =
+                                self.insert_before(op_id, Op::Const(Constant::idx(i as i64)));
+                            let ci = if edt == IDX_T {
+                                ci
+                            } else {
+                                self.insert_before(op_id, Op::Cast { x: ci, dtype: edt })
+                            };
+                            let shr = self.insert_before(
+                                op_id,
+                                Op::Binary { x: y, y: ci, bop: BOp::BitShiftRight },
+                            );
+                            let bit = self.insert_before(
+                                op_id,
+                                Op::Binary { x: shr, y: eone, bop: BOp::BitAnd },
+                            );
+                            let cond = self.insert_before(
+                                op_id,
+                                Op::Binary { x: bit, y: ezero, bop: BOp::NotEq },
+                            );
+                            let prod = self.insert_before(
+                                op_id,
+                                Op::Binary { x: ret, y: sq, bop: BOp::Mul },
+                            );
+                            ret = self.insert_before(
+                                op_id,
+                                Op::Select { cond, if_true: prod, if_false: ret },
+                            );
+                            if i + 1 < width {
+                                sq = self.insert_before(
+                                    op_id,
+                                    Op::Binary { x: sq, y: sq, bop: BOp::Mul },
+                                );
+                            }
+                        }
+                        let mut out = ret;
+                        if udt != dt {
+                            out = self.insert_before(op_id, Op::Bitcast { x: out, dtype: dt });
+                            // Signed: gate the negative-exponent result
+                            // (0, except base ±1; parity from the live
+                            // exponent). Unsigned exponents cannot be
+                            // negative, no gate needed.
+                            let c0 = self.insert_before(op_id, Op::Const(Constant::new(0i32)));
+                            let c0 = self.insert_before(op_id, Op::Cast { x: c0, dtype: dt });
+                            let c1 = self.insert_before(op_id, Op::Const(Constant::new(1i32)));
+                            let c1 = self.insert_before(op_id, Op::Cast { x: c1, dtype: dt });
+                            let cm1 = self.insert_before(op_id, Op::Const(Constant::new(-1i32)));
+                            let cm1 = self.insert_before(op_id, Op::Cast { x: cm1, dtype: dt });
+                            let is_one = self.insert_before(
+                                op_id,
+                                Op::Binary { x, y: c1, bop: BOp::Eq },
+                            );
+                            let is_negone = self.insert_before(
+                                op_id,
+                                Op::Binary { x, y: cm1, bop: BOp::Eq },
+                            );
+                            let masked = self.insert_before(
+                                op_id,
+                                Op::Binary { x: y, y: eone, bop: BOp::BitAnd },
+                            );
+                            let odd = self.insert_before(
+                                op_id,
+                                Op::Binary { x: masked, y: ezero, bop: BOp::NotEq },
+                            );
+                            let neg_odd = self.insert_before(
+                                op_id,
+                                Op::Select { cond: odd, if_true: cm1, if_false: c1 },
+                            );
+                            let inner = self.insert_before(
+                                op_id,
+                                Op::Select { cond: is_negone, if_true: neg_odd, if_false: c0 },
+                            );
+                            let negval = self.insert_before(
+                                op_id,
+                                Op::Select { cond: is_one, if_true: c1, if_false: inner },
+                            );
+                            // `Cmpge` (not negated `Cmplt`) so the
+                            // vector result stays the true arm: `Select`
+                            // takes its shape from there.
+                            let nonneg = self.insert_before(
+                                op_id,
+                                Op::Binary { x: y, y: ezero, bop: BOp::Cmpge },
+                            );
+                            out = self.insert_before(
+                                op_id,
+                                Op::Select { cond: nonneg, if_true: out, if_false: negval },
+                            );
+                        }
+                        self.remap(op_id, out);
+                    }
+                } else {
+                    let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
+                    let x = self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
+                    self.ops[op_id].op = Op::Unary { x, uop: UOp::Exp2 };
+                }
             }
             op_id = self.next_op(op_id);
         }
