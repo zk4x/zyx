@@ -82,8 +82,15 @@ impl Tensor {
         x.sign() * (1 - t * poly * (-x.clone() * x).exp())
     }
 
-    /// Inverse error function `erfinv(x)`, valid for `|x| < 1`
-    /// via the Winitzki approximation.
+    /// Inverse error function `erfinv(x)`, valid for `|x| < 1`.
+    ///
+    /// Winitzki seed (`a = 0.147`) polished with two Newton steps,
+    /// `g -= (erf(g) - x) * (sqrt(pi)/2) * exp(g^2)`. The seed's
+    /// backward has a `sqrt(t)` singularity at `x = 0`, so the seed is
+    /// detached: gradients flow only through the (smooth) Newton
+    /// corrections, which carry the exact implicit derivative at the
+    /// fixed point. Eager tensors skip the cut (nothing to cut: eager
+    /// never backpropagates).
     ///
     /// # Example
     ///
@@ -106,7 +113,20 @@ impl Tensor {
         let big_a = four_over_pi + a_val.clone() * l.clone();
         let inner = big_a.clone().square() - (Tensor::from(4.0f32) * a_val.clone() * l.clone());
         let t = (inner.sqrt() - big_a) / (Tensor::from(2.0f32) * a_val);
-        x.sign() * t.sqrt()
+        let seed = x.sign() * t.sqrt();
+        // Stop-gradient on the seed (graph tensors only): the backward
+        // must never route through the seed's singularity at x = 0.
+        let mut g = if RT.lock().is_graph(seed.id) {
+            seed.detach().unwrap()
+        } else {
+            seed
+        };
+        let c = Tensor::from(core::f32::consts::PI.sqrt() / 2.0);
+        for _ in 0..2 {
+            let g_prev = g.clone();
+            g = g_prev.clone() - ((g_prev.erf() - x.clone()) * c.clone() * g_prev.square().exp());
+        }
+        g
     }
 
     /// CELU activation: `max(0, x) + min(0, α*(exp(x/α) - 1))`.
