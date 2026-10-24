@@ -142,9 +142,12 @@ impl Kernel {
                     }
                 }
                 Op::Select { cond, if_true, if_false } => {
-                    // A constant predicate picks its arm outright.
+                    // Identical arms: the predicate is irrelevant.
                     // (Select-then-compute fusion is later work.)
-                    if let Op::Const(Constant::Bool(p)) = self.at(cond) {
+                    if if_true == if_false {
+                        self.remap(op_id, if_true);
+                    } else if let Op::Const(Constant::Bool(p)) = self.at(cond) {
+                        // A constant predicate picks its arm outright.
                         self.remap(op_id, if *p { if_true } else { if_false });
                     }
                 }

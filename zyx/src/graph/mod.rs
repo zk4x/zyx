@@ -2081,6 +2081,18 @@ impl Runtime {
                         let class_id = self.push_op(graph_id, Op::Stack { ops });
                         class_id
                     }
+                    Op::Select { cond, if_true, if_false } => {
+                        // Arms are already broadcast upstream
+                        // (Tensor::broadcast); the bool cond joins as a mask.
+                        let cond_class = op_to_class[&cond];
+                        let if_true_class = op_to_class[&if_true];
+                        let if_false_class = op_to_class[&if_false];
+                        let class_id = self.push_op(
+                            graph_id,
+                            Op::Select { cond: cond_class, if_true: if_true_class, if_false: if_false_class },
+                        );
+                        class_id
+                    }
                     Op::Reduce { x, rop, reduce_axis } => {
                         let x_class = op_to_class[&x];
                         let reduce_axis = if reduce_axis.is_null() {

@@ -200,9 +200,20 @@ impl Runtime {
                     | BOp::BitShiftLeft
                     | BOp::BitShiftRight => {}
                 },
-                // Select backward (masked grads to both arms, none to cond)
-                // lands with the where_ integration, not here.
-                Op::Select { .. } => todo!("autograd of Select"),
+                // Select backward: masked grads to both arms, none to
+                // the bool cond. grad where the arm was taken, zero
+                // elsewhere (mirrors the forward exactness: the dead arm
+                // contributed nothing, so it receives nothing).
+                Op::Select { cond, if_true, if_false } => {
+                    // Scalar consts broadcast implicitly in kernel IR, so
+                    // the zero arm stays a bare const (no Expand node).
+                    let grad_dtype = self.graphs[graph_id].dtype(grad);
+                    let zero = self.push_const(graph_id, grad_dtype.zero_constant());
+                    let gx = self.push_op(graph_id, Op::Select { cond, if_true: grad, if_false: zero });
+                    accum_grad(self, graph_id, &mut grads, if_true, gx);
+                    let gy = self.push_op(graph_id, Op::Select { cond, if_true: zero, if_false: grad });
+                    accum_grad(self, graph_id, &mut grads, if_false, gy);
+                }
                 Op::Cast { x, .. } => {
                     let g = self.push_op(graph_id, Op::Cast { x: grad, dtype: self.graphs[graph_id].dtype(x) });
                     accum_grad(self, graph_id, &mut grads, x, g);
