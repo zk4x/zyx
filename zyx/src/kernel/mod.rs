@@ -1582,20 +1582,31 @@ impl Kernel {
                     let dim = self.const_idx(len);
                     visited.insert(op_id, vec![dim]);
                 }
-                // Select takes its value shape from the true arm (both
-                // arms share the value dtype; the cond is a broadcast
-                // mask, scalar or arm-shaped, and carries no dims).
-                Op::Select { if_true: x, .. } => match visited.get(&x).cloned() {
-                    Some(dims) => {
-                        visited.insert(op_id, dims);
-                        if let Some(a) = axes.get(&x).cloned() {
-                            axes.insert(op_id, a);
-                        }
-                    }
-                    None => {
+                // Select takes its value shape from the non-scalar arm
+                // (scalars broadcast, same rule as Binary); the cond is a
+                // broadcast mask, scalar or arm-shaped, and carries no dims.
+                // Both non-scalar keeps today's behavior (the true arm).
+                Op::Select { if_true: x, if_false: y, .. } => {
+                    let x_done = visited.contains_key(&x);
+                    let y_done = visited.contains_key(&y);
+                    if !x_done || !y_done {
                         stack.push(op_id);
-                        stack.push(x);
+                        if !x_done {
+                            stack.push(x);
+                        }
+                        if !y_done {
+                            stack.push(y);
+                        }
                         continue;
+                    }
+                    let (dims, merged_axes) = match (visited[&x].as_slice(), visited[&y].as_slice()) {
+                        (&[], &[]) => (Vec::new(), Vec::new()),
+                        (&[], _) => (visited[&y].clone(), axes.get(&y).cloned().unwrap_or_default()),
+                        _ => (visited[&x].clone(), axes.get(&x).cloned().unwrap_or_default()),
+                    };
+                    visited.insert(op_id, dims);
+                    if !merged_axes.is_empty() {
+                        axes.insert(op_id, merged_axes);
                     }
                 },
                 ref op => todo!("shape_ids of {op:?}"),
@@ -1809,19 +1820,39 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                // Select takes its value shape from the true arm (same
-                // rule as shape_ids: the cond is a broadcast mask that
-                // carries no dims). Without this the catch-all below
-                // reports scalar, and view propagation treats a vector
-                // select as a scalar read.
-                Op::Select { if_true: x, .. } => match visited.get(&x) {
-                    Some(dims) => {
-                        visited.insert(id, *dims);
-                    }
-                    None => {
+                // Select takes its value shape from the two value arms
+                // (same broadcast merge as Binary above: scalars
+                // broadcast; the cond is a broadcast mask that carries
+                // no dims). Without this the catch-all below reports
+                // scalar for a scalar-true-arm select, and view
+                // propagation treats a vector select as a scalar read.
+                Op::Select { if_true: x, if_false: y, .. } => {
+                    let x_done = visited.contains_key(&x);
+                    let y_done = visited.contains_key(&y);
+                    if !x_done || !y_done {
                         stack.push(id);
-                        stack.push(x);
+                        if !x_done {
+                            stack.push(x);
+                        }
+                        if !y_done {
+                            stack.push(y);
+                        }
+                        continue;
                     }
+                    let xd = visited[&x];
+                    let yd = visited[&y];
+                    let mut dims = [0; 8];
+                    for i in 0..dims.len() {
+                        let (a, b) = (xd[i], yd[i]);
+                        dims[i] = if a == b {
+                            a
+                        } else if a == -1 || a == 0 || a == 1 || b == -1 || b == 0 || b == 1 {
+                            a.max(b)
+                        } else {
+                            panic!("select with unequal dims {a} vs {b}");
+                        };
+                    }
+                    visited.insert(id, dims);
                 },
                 // A reduce over a 32-tile yields one [32] row (Row/Col)
                 // or a scalar (Scalar): kind-constant, since the

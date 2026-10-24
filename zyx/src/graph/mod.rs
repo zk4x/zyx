@@ -1110,7 +1110,13 @@ impl Graph {
         }
         match &self.ops[class].op {
             Op::Const(_) => Vec::new(),
-            Op::Select { if_true, .. } => self.shape(*if_true),
+            Op::Select { if_true, if_false, .. } => {
+                // Scalars broadcast implicitly (same rule as `Binary` and
+                // the eager `result_shape`): the result takes the shape of
+                // the non-scalar arm. Both scalars → rank 0.
+                let st = self.shape(*if_true);
+                if !st.is_empty() { st } else { self.shape(*if_false) }
+            }
             Op::Stack { ops } => {
                 // Shape-descriptor stacks (scalar dims) have no tensor shape.
                 // A data stack's shape is the actual tensor shape, [len] ++
