@@ -246,9 +246,20 @@ impl Tensor {
     #[new]
     #[pyo3(signature = (py_obj, dtype=None))]
     fn new(py_obj: &Bound<'_, PyAny>, dtype: Option<DType>) -> PyResult<Self> {
+        // f16/bf16 numpy arrays must be routed by dtype name FIRST: the
+        // typed buffer extracts below succeed on them via a numpy-cast
+        // buffer, which widens every element (f16 input becomes an F64
+        // leaf plus a cast). from_numpy_nd narrows back exactly.
+        let src_dtype_name = py_obj
+            .getattr("dtype")
+            .ok()
+            .and_then(|d| d.str().ok().map(|s| s.to_string()))
+            .unwrap_or_default();
         // Bool has no pyo3 buffer Element: detect it up front so typed
         // value-extracts below cannot silently convert it to a number.
-        let tensor = if is_bool_dtype(py_obj) {
+        let tensor = if src_dtype_name == "float16" || src_dtype_name == "bfloat16" {
+            from_numpy_nd(py_obj)
+        } else if is_bool_dtype(py_obj) {
             from_numpy_nd(py_obj)
         } else if let Ok(tensor) = from_numpy::<f32>(py_obj) {
             Ok(tensor)
@@ -2222,9 +2233,9 @@ fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) 
 /// N-D fallback for array-likes whose dtype has no buffer `Element` impl
 /// (f16, bf16, bool, ...): flatten to 1-D, reuse the exact 1-D typed paths,
 /// reshape back. Anything without `.shape`/`.flatten` (lists, scalars) fails
-/// here and falls through to the error arm. Values are never widened on the
-/// way in: flat extraction is per-dtype and the constructor casts to the
-/// requested dtype afterwards, both exact.
+/// here and falls through to the error arm. f16/bf16 elements are narrowed
+/// back in Rust (f16->f32 and bf16->f32 are exact, so the round-trip recovers
+/// every value) and the leaf is built at its true dtype: no widen + cast.
 fn is_bool_dtype(obj: &Bound<'_, PyAny>) -> bool {
     obj.getattr("dtype")
         .ok()
@@ -2241,8 +2252,32 @@ fn from_numpy_nd(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         .map(|d| d as Dim)
         .collect();
     let flat = obj.getattr("flatten")?.call0()?;
-    // Bool first: typed value-extracts below would silently convert it.
-    let t = if is_bool_dtype(obj) {
+    // f16/bf16 numpy scalars widen on extract (Vec<f32>/Vec<f64>), so
+    // catch them by dtype name FIRST and narrow back in Rust. The
+    // generic Vec<f32>/Vec<f64> arms below would otherwise win and leave
+    // a widened leaf plus a cast in the graph.
+    let dtype_name = obj
+        .getattr("dtype")
+        .ok()
+        .and_then(|d| d.str().ok().map(|s| s.to_string()))
+        .unwrap_or_default();
+    let t = if dtype_name == "float16" {
+        if let Ok(v) = flat.extract::<Vec<f32>>() {
+            Tensor::from(v.into_iter().map(crate::scalar::f16::from_f32).collect::<Vec<_>>())
+        } else if let Ok(v) = flat.extract::<Vec<f64>>() {
+            Tensor::from(v.into_iter().map(crate::scalar::f16::from_f64).collect::<Vec<_>>())
+        } else {
+            return Err(PyTypeError::new_err("Unsupported input type for Tensor"));
+        }
+    } else if dtype_name == "bfloat16" {
+        if let Ok(v) = flat.extract::<Vec<f32>>() {
+            Tensor::from(v.into_iter().map(crate::scalar::bf16::from_f32).collect::<Vec<_>>())
+        } else if let Ok(v) = flat.extract::<Vec<f64>>() {
+            Tensor::from(v.into_iter().map(crate::scalar::bf16::from_f64).collect::<Vec<_>>())
+        } else {
+            return Err(PyTypeError::new_err("Unsupported input type for Tensor"));
+        }
+    } else if is_bool_dtype(obj) {
         match flat.extract::<Vec<bool>>() {
             Ok(v) => Tensor::from(v),
             Err(_) => return Err(PyTypeError::new_err("Unsupported input type for Tensor")),
