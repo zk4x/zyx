@@ -483,6 +483,31 @@ impl Kernel {
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                 }
+                Op::Select { cond, if_true, if_false } => {
+                    // Same broadcast merge as Binary, over the two values;
+                    // dtype is the value's (if_true), never the bool cond's.
+                    let dtype = dtypes[&if_true].0;
+                    let (td, fd) = (dtypes[&if_true].1.clone(), dtypes[&if_false].1.clone());
+                    let rank = td.len().max(fd.len());
+                    let mut dims = Vec::with_capacity(rank);
+                    for i in 0..rank {
+                        let (a, b) = (td.get(i).copied().unwrap_or(0), fd.get(i).copied().unwrap_or(0));
+                        dims.push(if a == b {
+                            a
+                        } else if a == -1 || a == 0 || a == 1 || b == -1 || b == 0 || b == 1 {
+                            a.max(b)
+                        } else {
+                            panic!("select with unequal dims {a} vs {b}");
+                        });
+                    }
+                    while dims.last() == Some(&0) {
+                        dims.pop();
+                    }
+                    dtypes.insert(op_id, (dtype, dims));
+                    *rcs.entry(cond).or_insert(0) += 1;
+                    *rcs.entry(if_true).or_insert(0) += 1;
+                    *rcs.entry(if_false).or_insert(0) += 1;
+                }
                 Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
                     // Result takes ops[0]'s dtype/layout; the template's
                     // `{i}` placeholders substitute the operand expressions.
@@ -634,12 +659,16 @@ impl Kernel {
                 Op::Copy { src, .. } => op_id = src,
                 Op::Unary { x, .. } => op_id = x,
                 Op::Unroll { .. } => return IDX_T,
-                Op::Binary { x, bop, .. } => {
+                Op::Binary { y, bop, .. } => {
                     if bop.returns_bool() {
                         return DType::Bool;
                     }
-                    op_id = x;
+                    // Binary operands share a dtype (builders cast
+                    // explicitly); Select's value is if_true, so it
+                    // follows if_true for the same reason.
+                    op_id = y;
                 }
+                Op::Select { if_true, .. } => op_id = if_true,
                 Op::Wmma { dtype, .. } => match dtype {
                     MMADType::f16_f16_f16_f32 => return DType::F32,
                     MMADType::f16_f16_f16_f16 => return DType::F16,

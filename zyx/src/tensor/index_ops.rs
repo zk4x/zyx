@@ -448,13 +448,13 @@ impl Tensor {
         let mut acc_m = masks.next().expect("scatter split produced no mask entries").cast(DType::I32);
         let mut acc_v = vals.next().expect("scatter split produced no value entries");
         for (m, v) in masks.zip(vals) {
-            acc_v = m.where_(v, acc_v)?;
+            acc_v = m.select(v, acc_v)?;
             let m32 = m.cast(DType::I32);
             acc_m = acc_m.clone() + m32.clone() - acc_m * m32;
         }
         let acc_m = acc_m.squeeze([-1]);
         let acc_v = acc_v.squeeze([-1]).cast(self.dtype());
-        acc_m.where_(acc_v, self.clone())
+        acc_m.select(acc_v, self.clone())
     }
 
     /// Add values from `src` into a copy of `self` along `axis` per `indices`;
@@ -582,7 +582,7 @@ impl Tensor {
 
         let src_exp = src.unsqueeze(-1)?;
         let src_shape = src_exp.resolve_shape();
-        let values = mask.where_(src_exp, Tensor::ones(src_shape, src.dtype()))?;
+        let values = mask.select(src_exp, Tensor::ones(src_shape, src.dtype()))?;
 
         let values = values.transpose(-1, dim as i32)?;
 

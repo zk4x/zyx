@@ -59,8 +59,8 @@ impl Tensor {
         let neg_one = Tensor::from(-1i32);
         let pos_one = Tensor::from(1i32);
         let is_neg = self.clone().cmplt(zero.clone()).unwrap();
-        let result = is_neg.where_(&neg_one, &pos_one).unwrap();
-        self.nonzero().where_(&result, &zero).unwrap()
+        let result = is_neg.select(&neg_one, &pos_one).unwrap();
+        self.nonzero().select(&result, &zero).unwrap()
     }
 
     /// Error function `erf(x)`.
@@ -411,7 +411,7 @@ impl Tensor {
         let half = x.trunc() / 2.0f32;
         let half_is_int = half.trunc().equal(half).unwrap();
         let cond = x.cmpgt(0.0f32).unwrap().equal(half_is_int).unwrap();
-        let rounded = cond.where_((x.clone() - 0.5f32).ceil(), (x + 0.5f32).floor()).unwrap();
+        let rounded = cond.select((x.clone() - 0.5f32).ceil(), (x + 0.5f32).floor()).unwrap();
         rounded.cast(original_dtype)
     }
 
@@ -516,7 +516,7 @@ impl Tensor {
     #[must_use]
     pub fn softplus(&self, beta: impl Float, threshold: impl Float) -> Tensor {
         let x = self * beta;
-        x.cmplt(threshold).unwrap().where_(((x).exp() + 1).ln() * beta.reciprocal(), x).unwrap()
+        x.cmplt(threshold).unwrap().select(((x).exp() + 1).ln() * beta.reciprocal(), x).unwrap()
     }
 
     /// Element-wise square root: `sqrt(x)`.

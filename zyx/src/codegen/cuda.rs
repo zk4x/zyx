@@ -261,6 +261,8 @@ impl Kernel {
                 Op::Spirv(_) => todo!(),
                 Op::PTX(_) => todo!(),
                 Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before CUDA codegen"),
+                // Select lowering (ternary/selp) lands with the where_ integration.
+                Op::Select { .. } => todo!("CUDA codegen of Select"),
                 Op::TT { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }

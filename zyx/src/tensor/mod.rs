@@ -1682,7 +1682,7 @@ impl Tensor {
         let ones = Tensor::ones(sh.clone(), dtype);
         crate::shape::pad(&mut sh, &padding);
         let zeros = Tensor::zeros(sh, dtype);
-        Ok(t0 + ones.pad_zeros(padding)?.where_(zeros, value)?)
+        Ok(t0 + ones.pad_zeros(padding)?.select(zeros, value)?)
     }
 
     /// Collects a shape iterator into `Tensor`s, casting each to `IDX_T`.
@@ -2180,7 +2180,7 @@ impl Tensor {
     /// ```rust
     /// # use zyx::Tensor;
     /// let cond = Tensor::from([true, false]);
-    /// let a = cond.where_(Tensor::from([1i32, 2]), Tensor::from([3, 4])).unwrap();
+    /// let a = cond.select(Tensor::from([1i32, 2]), Tensor::from([3, 4])).unwrap();
     /// assert_eq!(a.to_vec::<i32>().unwrap(), vec![1, 4]);
     /// ```
     ///
@@ -2191,7 +2191,7 @@ impl Tensor {
     // needed (graph node + kernel IR + backends); the branchless decomposition
     // below cannot support ±inf values.
     #[allow(clippy::missing_panics_doc)]
-    pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+    pub fn select(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let if_true = if_true.into();
         let if_false = if_false.into();
         let dtype = if_true.dtype();
@@ -2345,7 +2345,7 @@ impl Tensor {
         let lp0 = lp.clone().slice(0..1)?.squeeze([0]);
         let init_vals: Vec<i32> = (0..n_ext).map(|i| if i <= 1 { 1 } else { 0 }).collect();
         let init_mask = Tensor::from(init_vals).cast(dtype);
-        let alpha0 = init_mask.where_(&lp0, &neg_inf_tensor)?;
+        let alpha0 = init_mask.select(&lp0, &neg_inf_tensor)?;
         let mut alpha = vec![alpha0];
 
         // Skip mask: positions s >= 2 where ext_labels[s-2] != ext_labels[s]
@@ -2379,8 +2379,8 @@ impl Tensor {
             // skip = log_add(base, shifted2)
             let skip_val = log_add(&base, &shifted2);
 
-            // alpha_t = where_(skip_mask, skip_val, base)
-            let alpha_t = skip_mask.clone().where_(&skip_val, &base)?;
+            // alpha_t = select(skip_mask, skip_val, base)
+            let alpha_t = skip_mask.clone().select(&skip_val, &base)?;
             alpha.push(alpha_t);
         }
 
@@ -2518,7 +2518,7 @@ impl Tensor {
             .unwrap()
             .one_hot_along_dim(num_classes, -1)
             .unwrap()
-            .where_(Tensor::ones([1], dtype), Tensor::zeros([1], dtype))
+            .select(Tensor::ones([1], dtype), Tensor::zeros([1], dtype))
             .unwrap()
     }
 
@@ -2659,7 +2659,7 @@ impl Tensor {
                 let nx = (self * self).sum(axes.clone())?.sqrt();
                 let ny = (&rhs * &rhs).sum(axes)?.sqrt();
                 let denom = nx * ny;
-                let denom = denom.cmplt(eps.clone())?.where_(eps, denom)?;
+                let denom = denom.cmplt(eps.clone())?.select(eps, denom)?;
                 Ok(dot / denom)
             }
             _ => Err(ZyxError::ParseError("invalid reduction for cosine_similarity, expected Sum or Mean".into())),
@@ -3080,7 +3080,7 @@ impl Tensor {
     ///
     /// Returns a shape error if `self` and `mask` are not broadcastable.
     pub fn masked_fill(&self, mask: impl Into<Tensor>, value: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        mask.into().where_(value, self.clone())
+        mask.into().select(value, self.clone())
     }
 
     /// Triangular matrix with `1`s on and below the `diagonal` and `0`s above
@@ -3126,7 +3126,7 @@ impl Tensor {
     pub fn triu(&self, diagonal: i64) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal, device=self.device, dtype=dtypes.bool).where(self, self.zeros_like())
         let [r, c] = self.rdims::<2>()?;
-        Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal, DType::Bool).where_(self, Tensor::zeros_like(self))
+        Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal, DType::Bool).select(self, Tensor::zeros_like(self))
     }
 
     /// Lower-triangular part of `self` (elements on/below `diagonal` kept, rest
@@ -3147,7 +3147,7 @@ impl Tensor {
     pub fn tril(&self, diagonal: i64) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal+1, device=self.device, dtype=dtypes.bool).where(self.zeros_like(), self)
         let [r, c] = self.rdims::<2>()?;
-        Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal + 1, DType::Bool).where_(Tensor::zeros_like(self), self)
+        Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal + 1, DType::Bool).select(Tensor::zeros_like(self), self)
     }
 
     /// Strided pooling over the last two dimensions using the given

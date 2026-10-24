@@ -1109,6 +1109,7 @@ impl Graph {
         }
         match &self.ops[class].op {
             Op::Const(_) => Vec::new(),
+            Op::Select { if_true, .. } => self.shape(*if_true),
             Op::Stack { ops } => {
                 // Shape-descriptor stacks (scalar dims) have no tensor shape.
                 // A data stack's shape is the actual tensor shape, [len] ++
@@ -1385,6 +1386,7 @@ impl Graph {
             | Op::ToDevice { x, .. }
             | Op::Contiguous { x }
             | Op::Binary { x, .. } => self.dtype(*x),
+            Op::Select { if_true, .. } => self.dtype(*if_true),
             Op::Storage { .. }
             | Op::Source(_)
             | Op::GPU(_)
@@ -1434,8 +1436,9 @@ impl Graph {
                 },
                 Op::Const(_) => {}
                 // Every other variant is a non-scalar / dynamic leaf: not
-                // resolvable to a constant.
+                // resolvable to a constant. Select is not const-foldable.
                 Op::Param { .. }
+                | Op::Select { .. }
                 | Op::Expand { .. }
                 | Op::Permute { .. }
                 | Op::Reshape { .. }
@@ -1753,6 +1756,11 @@ impl Runtime {
                         stack.push(*x);
                         stack.push(*y);
                     }
+                    Op::Select { cond, if_true, if_false } => {
+                        stack.push(*cond);
+                        stack.push(*if_true);
+                        stack.push(*if_false);
+                    }
                     Op::Cast { x, .. } => stack.push(*x),
                     Op::Bitcast { x, .. } => stack.push(*x),
                     Op::Reduce { x, .. } => stack.push(*x),
@@ -1964,6 +1972,7 @@ impl Runtime {
                                     | Op::After { .. }
                                     | Op::ToDevice { .. }
                                     | Op::Contiguous { .. }
+                                    | Op::Select { .. }
                                     | Op::Source(_)
                                     | Op::GPU(_)
                                     | Op::Spirv(_)

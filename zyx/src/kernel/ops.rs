@@ -122,6 +122,20 @@ pub enum Op {
         /// The binary op.
         bop: BOp,
     },
+    /// Branchless select: `cond ? if_true : if_false`. `cond` must be bool;
+    /// result dtype and shape are `if_true`'s (`if_false` must match).
+    /// Unlike the arithmetic `where` decomposition (`sel*a + (1-sel)*b`)
+    /// this never multiplies by zero, so `±inf` on the dead side stays dead.
+    /// Fusion handling is a later task: until then the kernelizer leaves
+    /// this op alone (`todo!()`).
+    Select {
+        /// Boolean condition.
+        cond: OpId,
+        /// Value where `cond` is true.
+        if_true: OpId,
+        /// Value where `cond` is false.
+        if_false: OpId,
+    },
     // Vectorization, YAY!
     /// Vectorization: pack `ops` into one vector value.
     Stack {
@@ -725,6 +739,7 @@ impl Op {
             // Appended past every existing discriminant: inserting an
             // in-declaration-order number would reorder existing variants.
             Op::Unroll { .. } => 41,
+            Op::Select { .. } => 42,
         }
     }
 }
@@ -740,6 +755,9 @@ impl PartialEq for Op {
             (Op::Bitcast { x: a, dtype: ad }, Op::Bitcast { x: b, dtype: bd }) => a == b && ad == bd,
             (Op::Unary { x: a, uop: au }, Op::Unary { x: b, uop: bu }) => a == b && au == bu,
             (Op::Binary { x: a, y: ay, bop: ab }, Op::Binary { x: b, y: by, bop: bb }) => a == b && ay == by && ab == bb,
+            (Op::Select { cond: a, if_true: at, if_false: af }, Op::Select { cond: b, if_true: bt, if_false: bf }) => {
+                a == b && at == bt && af == bf
+            }
             (Op::Stack { ops: a }, Op::Stack { ops: b }) => a == b,
             (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
                 ad == bd && as_ == bs && al == bl
@@ -829,6 +847,11 @@ impl Hash for Op {
                 x.hash(state);
                 y.hash(state);
                 bop.hash(state);
+            }
+            Op::Select { cond, if_true, if_false } => {
+                cond.hash(state);
+                if_true.hash(state);
+                if_false.hash(state);
             }
             Op::Stack { ops } => ops.hash(state),
             Op::Storage { dtype, scope, len } => {
@@ -957,6 +980,9 @@ impl Ord for Op {
             (Op::Bitcast { x: a, dtype: ad }, Op::Bitcast { x: b, dtype: bd }) => (a, ad).cmp(&(b, bd)),
             (Op::Unary { x: a, uop: au }, Op::Unary { x: b, uop: bu }) => (a, au).cmp(&(b, bu)),
             (Op::Binary { x: a, y: ay, bop: ab }, Op::Binary { x: b, y: by, bop: bb }) => (a, ay, ab).cmp(&(b, by, bb)),
+            (Op::Select { cond: a, if_true: at, if_false: af }, Op::Select { cond: b, if_true: bt, if_false: bf }) => {
+                (a, at, af).cmp(&(b, bt, bf))
+            }
             (Op::Stack { ops: a }, Op::Stack { ops: b }) => a.cmp(b),
             (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
                 (ad, as_, al).cmp(&(bd, bs, bl))
@@ -1313,6 +1339,7 @@ impl Op {
             Op::Bitcast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             &Op::Binary { x, y, .. } => vec![x, y],
+            &Op::Select { cond, if_true, if_false } => vec![cond, if_true, if_false],
             // src_idx is NEVER null: every load names its element.
             &Op::Load { src, src_idx } => vec![src, src_idx],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
@@ -1400,6 +1427,7 @@ impl Op {
             Op::Bitcast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],
             Op::Binary { x, y, .. } => vec![x, y],
+            Op::Select { cond, if_true, if_false } => vec![cond, if_true, if_false],
             // src_idx is NEVER null: every load names its element.
             Op::Load { src, src_idx } => vec![src, src_idx],
             Op::Stack { ops } => ops.iter_mut().collect(),

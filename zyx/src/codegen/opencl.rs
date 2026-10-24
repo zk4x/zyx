@@ -138,6 +138,8 @@ impl Kernel {
                 Op::Spirv(_) => todo!(),
                 Op::PTX(_) => todo!(),
                 Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before OpenCL codegen"),
+                // Select lowering lands with the where_ integration.
+                Op::Select { .. } => todo!("OpenCL codegen of Select"),
                 Op::TT { .. }
                 | Op::Reduce { .. }
                 | Op::Expand { .. }

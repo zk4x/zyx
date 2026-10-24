@@ -200,6 +200,9 @@ impl Runtime {
                     | BOp::BitShiftLeft
                     | BOp::BitShiftRight => {}
                 },
+                // Select backward (masked grads to both arms, none to cond)
+                // lands with the where_ integration, not here.
+                Op::Select { .. } => todo!("autograd of Select"),
                 Op::Cast { x, .. } => {
                     let g = self.push_op(graph_id, Op::Cast { x: grad, dtype: self.graphs[graph_id].dtype(x) });
                     accum_grad(self, graph_id, &mut grads, x, g);

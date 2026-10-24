@@ -113,7 +113,8 @@ impl Kernel {
                     // Post-linearize lane-space reduces are legal until the
                     // device epilogue devectorizes them.
                     | Op::Reduce { .. }
-                    | Op::Stack { .. } => {}
+                    | Op::Stack { .. }
+                    | Op::Select { .. } => {}
                     // Graph-only and post-render ops must never reach
                     // kernel IR at this (pre-render) stage.
                     Op::Source(_)
@@ -530,6 +531,24 @@ impl Kernel {
                     // shape compatibility is the passes' own business
                     // (symbolic checks happen at tensor level, never in
                     // the kernel), so no shape proof is forced here.
+                }
+                Op::Select { cond, if_true, if_false } => {
+                    check(op_id, cond, &stack);
+                    check(op_id, if_true, &stack);
+                    check(op_id, if_false, &stack);
+                    if dtypes[&cond] != DType::Bool {
+                        println!("Select cond must be bool on op={op_id}.");
+                        self.debug();
+                        panic!();
+                    }
+                    // Both arms must share the value dtype (no promotion:
+                    // select is not arithmetic); result is that dtype.
+                    if dtypes[&if_true] != dtypes[&if_false] {
+                        println!("Select arm dtype mismatch on op={op_id}.");
+                        self.debug();
+                        panic!();
+                    }
+                    dtypes.insert(op_id, dtypes[&if_true]);
                 }
                 Op::Asm { ref ops, .. } => {
                     if ops.is_empty() {

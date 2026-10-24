@@ -1257,6 +1257,8 @@ impl Kernel {
                     Op::Spirv(_) => todo!(),
                     Op::PTX(_) => todo!(),
                     Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before SPIR-V codegen"),
+                    // Select lowering (OpSelect) lands with the where_ integration.
+                    Op::Select { .. } => todo!("SPIR-V codegen of Select"),
                     Op::TT { .. }
                     | Op::Expand { .. }
                     | Op::Permute { .. }

@@ -1187,7 +1187,7 @@ impl Tensor {
     pub fn where_py(&self, if_true: &Bound<'_, PyAny>, if_false: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         let t = extract_tensor_or_scalar(if_true).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
         let f = extract_tensor_or_scalar(if_false).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
-        self.where_(t, f)
+        self.select(t, f)
     }
 
     #[pyo3(name = "l1_loss", signature = (target, reduction=None))]

@@ -189,6 +189,11 @@ impl Kernel {
                     add_param!(x);
                     add_param!(y);
                 }
+                Op::Select { cond, if_true, if_false } => {
+                    add_param!(cond);
+                    add_param!(if_true);
+                    add_param!(if_false);
+                }
                 Op::Param { .. }
                 | Op::Const(_)
                 | Op::Unroll { .. }

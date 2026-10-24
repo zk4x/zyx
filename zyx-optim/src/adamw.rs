@@ -76,7 +76,7 @@ impl AdamW {
 
             if self.amsgrad {
                 if let Some(vm) = self.vm.get_mut(i) {
-                    *vm = vm.cmplt(&vh).unwrap().where_(vh, &*vm).unwrap();
+                    *vm = vm.cmplt(&vh).unwrap().select(vh, &*vm).unwrap();
                 } else {
                     self.vm.push(vh);
                 }

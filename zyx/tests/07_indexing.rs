@@ -305,6 +305,16 @@ fn scatter_basic() -> Result<(), ZyxError> {
     let src = Tensor::from([[1, 2, 3], [4, 5, 6]]);
     let indices = Tensor::from([[0u8, 1, 2], [0, 1, 2]]);
     let result = x.scatter(0, &indices, &src)?;
+    assert_eq!(result, [[4, 0, 0], [0, 5, 0], [0, 0, 6]]);
+    Ok(())
+}
+
+#[test]
+fn scatter_add_basic() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([3, 3], zyx::DType::I32);
+    let src = Tensor::from([[1, 2, 3], [4, 5, 6]]);
+    let indices = Tensor::from([[0u8, 1, 2], [0, 1, 2]]);
+    let result = x.scatter_add(0, &indices, &src)?;
     assert_eq!(result, [[5, 0, 0], [0, 7, 0], [0, 0, 9]]);
     Ok(())
 }
@@ -321,10 +331,21 @@ fn scatter_axis_1() -> Result<(), ZyxError> {
 
 #[test]
 fn scatter_duplicate_indices() -> Result<(), ZyxError> {
+    // Last index entry wins on duplicates.
     let x = Tensor::zeros([5], zyx::DType::I32);
     let src = Tensor::from([1, 2, 3, 4, 5, 6]);
     let indices = Tensor::from([0u8, 0, 1, 1, 2, 4]);
     let result = x.scatter(0, &indices, &src)?;
+    assert_eq!(result, [2, 4, 5, 0, 6]);
+    Ok(())
+}
+
+#[test]
+fn scatter_add_duplicate_indices() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([5], zyx::DType::I32);
+    let src = Tensor::from([1, 2, 3, 4, 5, 6]);
+    let indices = Tensor::from([0u8, 0, 1, 1, 2, 4]);
+    let result = x.scatter_add(0, &indices, &src)?;
     assert_eq!(result, [3, 7, 5, 0, 6]);
     Ok(())
 }
@@ -345,6 +366,16 @@ fn scatter_nonzero_self() -> Result<(), ZyxError> {
     let src = Tensor::from([[1, 2, 3]]);
     let indices = Tensor::from([[0u16, 1, 2]]);
     let result = x.scatter(1, &indices, &src)?;
+    assert_eq!(result, [[1, 2, 3], [10, 10, 10]]);
+    Ok(())
+}
+
+#[test]
+fn scatter_add_nonzero_self() -> Result<(), ZyxError> {
+    let x = Tensor::from([[10, 10, 10], [10, 10, 10]]);
+    let src = Tensor::from([[1, 2, 3]]);
+    let indices = Tensor::from([[0u16, 1, 2]]);
+    let result = x.scatter_add(1, &indices, &src)?;
     assert_eq!(result, [[11, 12, 13], [10, 10, 10]]);
     Ok(())
 }
@@ -382,6 +413,21 @@ fn scatter_large_1d() -> Result<(), ZyxError> {
     let indices = Tensor::from([0u16, 1, 5000, 9999, 0, 9999]);
     let src = Tensor::from([10, 20, 30, 40, 100, 200]);
     let result = x.scatter(0, &indices, &src)?;
+    let result_vec: Vec<i32> = result.try_into()?;
+    assert_eq!(result_vec[0], 100);
+    assert_eq!(result_vec[1], 20);
+    assert_eq!(result_vec[5000], 30);
+    assert_eq!(result_vec[9999], 200);
+    Ok(())
+}
+
+#[test]
+fn scatter_add_large_1d() -> Result<(), ZyxError> {
+    let n = 10000;
+    let x = Tensor::zeros([n], zyx::DType::I32);
+    let indices = Tensor::from([0u16, 1, 5000, 9999, 0, 9999]);
+    let src = Tensor::from([10, 20, 30, 40, 100, 200]);
+    let result = x.scatter_add(0, &indices, &src)?;
     let result_vec: Vec<i32> = result.try_into()?;
     assert_eq!(result_vec[0], 110);
     assert_eq!(result_vec[1], 20);

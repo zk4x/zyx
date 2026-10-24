@@ -931,7 +931,7 @@ impl Kernel {
         let one = self.cast(one, dtype);
         let sp_in = self.add(one, e);
         let small = self.ln(sp_in);
-        self.branchless_where(big, x, small)
+        self.select(big, x, small)
     }
 
     pub(crate) fn binary(&mut self, x: OpId, y: OpId, bop: BOp) -> OpId {
@@ -1190,47 +1190,19 @@ impl Kernel {
         self.push_back(Op::Cast { x, dtype })
     }
 
-    /// Branchless select: `cond ? a : b` as `a*sel + b*(1-sel)` where `sel` is
-    /// `cond` cast to `a`'s dtype. `cond` must be bool; `a` and `b` must share a
-    /// dtype (taken from `a`).
-    pub fn branchless_where(&mut self, cond: impl IntoOp, a: impl IntoOp, b: impl IntoOp) -> OpId {
+    /// Branchless select: `cond ? if_true : if_false` as a single
+    /// [`Op::Select`] node. `cond` must be bool; `if_true` and `if_false`
+    /// must share a dtype. Unlike the old arithmetic decomposition
+    /// (`a*sel + b*(1-sel)`) this never multiplies by zero, so `±inf` on
+    /// the dead side stays dead. Fusion of `Select` into surrounding
+    /// kernels is later work (kernelizer `todo!()`).
+    pub fn select(&mut self, cond: impl IntoOp, if_true: impl IntoOp, if_false: impl IntoOp) -> OpId {
         let cond = cond.into_op(self);
-        let a = a.into_op(self);
-        let b = b.into_op(self);
-        let dtype = self.dtype(a);
-        //debug_assert_eq!(self.dtype(cond), DType::Bool, "branchless_where: cond must be bool");
-        //debug_assert_eq!(self.dtype(b), dtype, "branchless_where: a and b must share a dtype");
-        let sel = self.cast(cond, dtype);
-        let one = self.push_back(Op::Const(dtype.one_constant()));
-        let term_a = self.push_back(Op::Binary { x: a, y: sel, bop: BOp::Mul });
-        let not_sel = self.push_back(Op::Binary { x: one, y: sel, bop: BOp::Sub });
-        let term_b = self.push_back(Op::Binary { x: b, y: not_sel, bop: BOp::Mul });
-        self.push_back(Op::Binary { x: term_a, y: term_b, bop: BOp::Add })
-    }
-
-    /// `cond ? a : b` as real control flow (boolean-length `Loop`).
-    ///
-    /// Unlike [`Kernel::branchless_where`] this works with any operand values,
-    /// including `±inf` (the arithmetic version computes `a*sel + b*(1-sel)`,
-    /// which turns `±inf * 0` into `NaN`). Returns the selected value (loaded
-    /// from a temporary register).
-    pub fn ternary_where(&mut self, cond: impl IntoOp, a: impl IntoOp, b: impl IntoOp) -> OpId {
-        let cond = cond.into_op(self);
-        let a = a.into_op(self);
-        let b = b.into_op(self);
-        let dtype = self.dtype(a);
-        let out = self.storage(dtype, MemScope::Register, 1);
-        let idx0 = self.const_idx(0);
-        let false_c = self.push_back(Op::Const(DType::Bool.zero_constant()));
-        let not_cond = self.equal(cond, false_c);
-
-        self.if_over(cond, |kernel| {
-            kernel.store(out, a, idx0);
-        });
-        self.if_over(not_cond, |kernel| {
-            kernel.store(out, b, idx0);
-        });
-        self.load(out, idx0)
+        let if_true = if_true.into_op(self);
+        let if_false = if_false.into_op(self);
+        //debug_assert_eq!(self.dtype(cond), DType::Bool, "select: cond must be bool");
+        //debug_assert_eq!(self.dtype(if_false), self.dtype(if_true), "select: arms must share a dtype");
+        self.push_back(Op::Select { cond, if_true, if_false })
     }
 
     /// Bitcast to a different dtype: reinterprets the raw bits of `x` without
@@ -2561,7 +2533,7 @@ impl Kernel {
                 let idx = kernel.mad(row, c_n, col);
                 let x_val = kernel.load(x.src, idx);
                 let s = kernel.mod_(row, c_s);
-                let safe_col = kernel.branchless_where(is_rot, col, c_zero);
+                let safe_col = kernel.select(is_rot, col, c_zero);
                 let cos_idx = kernel.mad(s, c_rot, safe_col);
                 let cos_val = kernel.load(cos.src, cos_idx);
                 let sin_val = kernel.load(sin.src, cos_idx);
@@ -2569,9 +2541,9 @@ impl Kernel {
                 let y1 = kernel.mul(x_val, cos_val);
                 let y2 = kernel.mul(rot_val, sin_val);
                 let rot_y = kernel.add(y1, y2);
-                let y = kernel.branchless_where(is_rot, rot_y, x_val);
+                let y = kernel.select(is_rot, rot_y, x_val);
                 let zero = kernel.push_back(crate::kernel::Op::Const(x.dtype.zero_constant()));
-                let y = kernel.branchless_where(valid, y, zero);
+                let y = kernel.select(valid, y, zero);
                 kernel.store(out.src, y, idx);
             });
         } else if vec_ok {
@@ -2592,25 +2564,25 @@ impl Kernel {
                 let idx = kernel.mad(row, c_n, col);
                 let x_val = kernel.load(x.src, idx);
                 let s = kernel.mod_(row, c_s);
-                let safe_col = kernel.branchless_where(is_rot, col, c_zero);
+                let safe_col = kernel.select(is_rot, col, c_zero);
                 let cos_idx = kernel.mad(s, c_rot, safe_col);
                 let cos_val = kernel.load(cos.src, cos_idx);
                 let sin_val = kernel.load(sin.src, cos_idx);
                 let is_first = kernel.cmplt(col, c_half);
                 let col_plus = kernel.add(col, c_half);
                 let col_minus = kernel.sub(col, c_half);
-                let rot_col = kernel.branchless_where(is_first, col_plus, col_minus);
-                let safe_rot = kernel.branchless_where(is_rot, rot_col, c_zero);
+                let rot_col = kernel.select(is_first, col_plus, col_minus);
+                let safe_rot = kernel.select(is_rot, rot_col, c_zero);
                 let rot_idx = kernel.mad(row, c_n, safe_rot);
                 let x_rot_raw = kernel.load(x.src, rot_idx);
                 let neg = kernel.neg(x_rot_raw);
-                let x_rot = kernel.branchless_where(is_first, neg, x_rot_raw);
+                let x_rot = kernel.select(is_first, neg, x_rot_raw);
                 let y1 = kernel.mul(x_val, cos_val);
                 let y2 = kernel.mul(x_rot, sin_val);
                 let rot_y = kernel.add(y1, y2);
-                let y = kernel.branchless_where(is_rot, rot_y, x_val);
+                let y = kernel.select(is_rot, rot_y, x_val);
                 let zero = kernel.push_back(crate::kernel::Op::Const(x.dtype.zero_constant()));
-                let y = kernel.branchless_where(valid, y, zero);
+                let y = kernel.select(valid, y, zero);
                 let _ = vec_len;
                 kernel.store(out.src, y, idx);
             });
@@ -2631,25 +2603,25 @@ impl Kernel {
                 let idx = kernel.mad(row, c_n, col);
                 let x_val = kernel.load(x.src, idx);
                 let s = kernel.mod_(row, c_s);
-                let safe_col = kernel.branchless_where(is_rot, col, c_zero);
+                let safe_col = kernel.select(is_rot, col, c_zero);
                 let cos_idx = kernel.mad(s, c_rot, safe_col);
                 let cos_val = kernel.load(cos.src, cos_idx);
                 let sin_val = kernel.load(sin.src, cos_idx);
                 let is_first = kernel.cmplt(col, c_half);
                 let col_plus = kernel.add(col, c_half);
                 let col_minus = kernel.sub(col, c_half);
-                let rot_col = kernel.branchless_where(is_first, col_plus, col_minus);
-                let safe_rot = kernel.branchless_where(is_rot, rot_col, c_zero);
+                let rot_col = kernel.select(is_first, col_plus, col_minus);
+                let safe_rot = kernel.select(is_rot, rot_col, c_zero);
                 let rot_idx = kernel.mad(row, c_n, safe_rot);
                 let x_rot_raw = kernel.load(x.src, rot_idx);
                 let neg = kernel.neg(x_rot_raw);
-                let x_rot = kernel.branchless_where(is_first, neg, x_rot_raw);
+                let x_rot = kernel.select(is_first, neg, x_rot_raw);
                 let y1 = kernel.mul(x_val, cos_val);
                 let y2 = kernel.mul(x_rot, sin_val);
                 let rot_y = kernel.add(y1, y2);
-                let y = kernel.branchless_where(is_rot, rot_y, x_val);
+                let y = kernel.select(is_rot, rot_y, x_val);
                 let zero = kernel.push_back(crate::kernel::Op::Const(x.dtype.zero_constant()));
-                let y = kernel.branchless_where(valid, y, zero);
+                let y = kernel.select(valid, y, zero);
                 kernel.store(out.src, y, idx);
             });
         }
@@ -2860,7 +2832,7 @@ impl Kernel {
     /// Load one element through a view: clamp coords into their valid
     /// windows, `index`, load, then predicate with the mask — masked-off
     /// coords read the source dtype's zero. The clamp keeps the issued load
-    /// in-bounds (a `branchless_where` alone would not: the OOB load would
+    /// in-bounds (a `select` alone would not: the OOB load would
     /// still execute). Unmasked views emit a plain load.
     pub fn load_view<const N: usize>(&mut self, view: &View, coords: [impl IntoOp; N]) -> OpId {
         let coords: [OpId; N] = coords.map(|c| c.into_op(self));
@@ -2895,7 +2867,7 @@ impl Kernel {
         let pred = pred.expect("load_view: masked view with no axes");
         let dtype = self.dtype(view.x);
         let zero = self.push_back(Op::Const(dtype.zero_constant()));
-        self.branchless_where(pred, v, zero)
+        self.select(pred, v, zero)
     }
 
     /// Store one element through a view: `index` the coords, then guard with

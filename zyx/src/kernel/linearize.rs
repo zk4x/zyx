@@ -766,7 +766,7 @@ impl Kernel {
                         };
                         let len = x_shape[a];
                         let invalid = self.add(len, one);
-                        let idx_expr = self.branchless_where(valid, idx_expr, invalid);
+                        let idx_expr = self.select(valid, idx_expr, invalid);
                         view.push(SDim::new(idx_expr, len));
                     }
                     views.insert(x, SView { dims: view, mask: out_view.mask });
@@ -986,7 +986,7 @@ impl Kernel {
                         for k in (0..n - 1).rev() {
                             let k_const = self.push_back(Op::Const(Constant::idx(k as i64)));
                             let eq = self.equal(leading, k_const);
-                            ret = self.branchless_where(eq, stacked[k], ret);
+                            ret = self.select(eq, stacked[k], ret);
                         }
                         self.remap(op_id, ret);
                     }

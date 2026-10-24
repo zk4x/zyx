@@ -199,6 +199,13 @@ impl Kernel {
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(y).or_insert(0) += 1;
                     }
+                    Op::Select { cond, if_true, if_false } => {
+                        let dtype = dtypes[&if_true].0;
+                        dtypes.insert(op_id, (dtype, self.shape(op_id)));
+                        *rcs.entry(cond).or_insert(0) += 1;
+                        *rcs.entry(if_true).or_insert(0) += 1;
+                        *rcs.entry(if_false).or_insert(0) += 1;
+                    }
                     Op::Range { .. } => {
                         dtypes.insert(op_id, (DType::U32, Vec::new()));
                     }
@@ -333,6 +340,7 @@ impl Kernel {
                 | Op::Bitcast { .. }
                 | Op::Unary { .. }
                 | Op::Binary { .. }
+                | Op::Select { .. }
                 | Op::Stack { .. }
                 | Op::Wmma { .. }
                 | Op::Index { .. }
@@ -419,7 +427,7 @@ impl Kernel {
 
             // Instruction counting
             match self.ops[op_id].op {
-                Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
+                Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Select { .. } => {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;

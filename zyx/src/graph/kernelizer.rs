@@ -175,6 +175,9 @@ impl Graph {
                         }
                     }
                     Op::Kernel(ref inner) => inner.inputs.to_vec(),
+                    // Select fusion (replay combos + 3-way merge) is later
+                    // work: dedupe via a params iterator, not per-op cases.
+                    Op::Select { .. } => todo!("kernelizer data_slots of Select"),
                     _ => todo!(),
                 };
                 for child in data_slots {
@@ -1015,6 +1018,8 @@ impl Graph {
                     // Custom class is always a region input (its output class is
                     // an active kernel output), so it is loaded, never fused.
                     Op::Kernel { .. } => {}
+                    // Select fusion is later work (see data_slots above).
+                    Op::Select { .. } => todo!("kernelizer materialization of Select"),
                     _ => todo!(),
                 }
             }
