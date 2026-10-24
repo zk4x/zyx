@@ -585,6 +585,7 @@ impl Graph {
                 let name = match self.ops[nid].op {
                     Op::Reduce { rop, .. } => format!("Reduce {:?}", rop),
                     Op::Binary { bop, .. } => format!("Binary {:?}", bop),
+                    Op::Select { .. } => "Select".into(),
                     Op::Store { .. } => "Store".into(),
                     Op::After { .. } => "After".into(),
                     Op::Unary { uop, .. } => format!("Unary {:?}", uop),

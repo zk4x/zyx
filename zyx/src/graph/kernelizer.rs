@@ -175,9 +175,7 @@ impl Graph {
                         }
                     }
                     Op::Kernel(ref inner) => inner.inputs.to_vec(),
-                    // Select fusion (replay combos + 3-way merge) is later
-                    // work: dedupe via a params iterator, not per-op cases.
-                    Op::Select { .. } => todo!("kernelizer data_slots of Select"),
+                    Op::Select { cond, if_true, if_false } => vec![cond, if_true, if_false],
                     _ => todo!(),
                 };
                 for child in data_slots {
@@ -1018,8 +1016,144 @@ impl Graph {
                     // Custom class is always a region input (its output class is
                     // an active kernel output), so it is loaded, never fused.
                     Op::Kernel { .. } => {}
-                    // Select fusion is later work (see data_slots above).
-                    Op::Select { .. } => todo!("kernelizer materialization of Select"),
+                    // Select fusion mirrors Binary three ways. Like Binary,
+                    // broadcasting is performed upstream (`Tensor::select`),
+                    // so by the time a select node reaches the kernelizer
+                    // its operands are already broadcast-compatible; the
+                    // kernelizer never broadcasts here — scalars replay
+                    // implicitly in kernel IR.
+                    Op::Select { cond, if_true, if_false } => {
+                        let c_missing = !visited.contains_key(&cond);
+                        let t_missing = !visited.contains_key(&if_true);
+                        let f_missing = !visited.contains_key(&if_false);
+                        if c_missing && t_missing && f_missing {
+                            // All operands scalar: the result is scalar and
+                            // is replayed on demand; only the edges are
+                            // consumed.
+                            *rcs.get_mut(&cond).unwrap() -= 1;
+                            *rcs.get_mut(&if_true).unwrap() -= 1;
+                            *rcs.get_mut(&if_false).unwrap() -= 1;
+                        } else {
+                            // Present operands in cond, if_true, if_false
+                            // order; the first owns the destination kernel
+                            // (Binary's first-operand-wins for x).
+                            let present: Vec<OpId> = [cond, if_true, if_false]
+                                .into_iter()
+                                .filter(|c| visited.contains_key(c))
+                                .collect();
+                            let owner = present[0];
+                            let mut kid = visited[&owner].0;
+                            // Merge every other present operand's kernel
+                            // into the destination, one pair at a time, with
+                            // Binary's rules verbatim (dynamism, stores,
+                            // reduce-wins-destination).
+                            for &scid in present[1..].iter() {
+                                let (mut skid, mut sop) = visited[&scid];
+                                if skid == kid {
+                                    continue;
+                                }
+                                let mut dop = visited[&owner].1;
+                                // Same dynamism rule as Binary: a static grid
+                                // length cannot drive a dynamic computation
+                                // (or vice versa) — materialize the static
+                                // side; `add_store` returns a fresh load
+                                // kernel which becomes the merge destination.
+                                match (
+                                    self.jit_kernels[kid].kernel.shape(dop).contains(&0),
+                                    self.jit_kernels[skid].kernel.shape(sop).contains(&0),
+                                ) {
+                                    (false, true) => {
+                                        (kid, dop) = self.add_store(owner, kid, dop, &mut visited, &rcs);
+                                    }
+                                    (true, false) => {
+                                        (skid, sop) = self.add_store(scid, skid, sop, &mut visited, &rcs);
+                                    }
+                                    (_, _) => {
+                                        // Same dynamism: operands must already
+                                        // be broadcast-compatible (upstream
+                                        // `Tensor::select`); scalars broadcast
+                                        // implicitly in kernel IR.
+                                        // Provably-equal rule (mirrors
+                                        // `Runtime::binary` and the Binary
+                                        // arm): per dim, the same resolved
+                                        // constant, or either dim is -1
+                                        // (symbolic), or either side scalar.
+                                        let sx = self.jit_kernels[kid].kernel.shape(dop);
+                                        let sy = self.jit_kernels[skid].kernel.shape(sop);
+                                        let compatible = sx.is_empty()
+                                            || sy.is_empty()
+                                            || (sx.len() == sy.len()
+                                                && sx.iter().zip(sy.iter()).all(|(&a, &b)| a == b || a < 0 || b < 0));
+                                        debug_assert!(
+                                            compatible,
+                                            "select operands {sx:?} vs {sy:?} are not broadcast-compatible"
+                                        );
+                                    }
+                                }
+
+                                let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
+                                let skid_stores = self.jit_kernels[skid].kernel.contains_stores();
+                                match (kid_stores, skid_stores) {
+                                    (true, true) => {
+                                        (kid, dop) = self.add_store(owner, kid, dop, &mut visited, &rcs);
+                                        (skid, _) = self.add_store(scid, skid, sop, &mut visited, &rcs);
+                                    }
+                                    (true, false) => {
+                                        (kid, dop) = self.add_store(owner, kid, dop, &mut visited, &rcs)
+                                    }
+                                    (false, true) => {
+                                        (skid, _) = self.add_store(scid, skid, sop, &mut visited, &rcs)
+                                    }
+                                    (false, false) => {}
+                                }
+
+                                // Same reduce rule as Binary (commit 7786c15):
+                                // the reduce kernel must be the merge
+                                // destination — pulling plain compute ops into
+                                // it is safe, the reverse corrupts the gws.
+                                if self.jit_kernels[kid].kernel.is_reduce()
+                                    && !self.jit_kernels[skid].kernel.is_reduce()
+                                {
+                                    std::mem::swap(&mut kid, &mut skid);
+                                    std::mem::swap(&mut dop, &mut sop);
+                                }
+
+                                self.merge_kernels(skid, kid, &mut visited);
+                            }
+                            // A mid-sequence destination switch (an `add_store`
+                            // above returning a fresh load kernel) can strand
+                            // an already-merged operand in the old kernel.
+                            // Re-home strays the Binary way: store the value,
+                            // merge its (rule-free, store-free) load kernel
+                            // into the destination — the same post-store merge
+                            // Binary performs after its own `add_store`s.
+                            for &pcid in present.iter() {
+                                if visited[&pcid].0 != kid {
+                                    let (skid, sop) = visited[&pcid];
+                                    let (lkid, _) = self.add_store(pcid, skid, sop, &mut visited, &rcs);
+                                    self.merge_kernels(lkid, kid, &mut visited);
+                                }
+                            }
+                            // Scalar operands replay into the settled
+                            // destination kernel; their edges are consumed
+                            // inline like Binary's missing side.
+                            let mut ops = [OpId::NULL; 3];
+                            for (i, &ocid) in [cond, if_true, if_false].iter().enumerate() {
+                                ops[i] = if visited.contains_key(&ocid) {
+                                    visited[&ocid].1
+                                } else {
+                                    *rcs.get_mut(&ocid).unwrap() -= 1;
+                                    self.replay_shape_into_kernel(kid, ocid)
+                                };
+                            }
+                            for &pcid in present.iter() {
+                                self.consume(pcid, kid, &mut visited, &mut rcs);
+                            }
+                            let result_op = self.jit_kernels[kid].kernel.select(ops[0], ops[1], ops[2]);
+                            self.push_outputs(kid, cid, rcs[&cid]);
+                            visited.insert(cid, (kid, result_op));
+                        }
+                    }
                     _ => todo!(),
                 }
             }
