@@ -666,3 +666,32 @@ fn promote_to_graph_stacked_shape_dims() -> Result<(), ZyxError> {
     assert_eq!(v.len(), 4);
     Ok(())
 }
+
+// ============================================================================
+// Nested selects (tinygrad's `pow` backward gy form)
+// ============================================================================
+
+// `where(x==0, where(y<0, -inf, 0), x^y * log2(x) * ln2)` through the graph
+// path: the inner select's cond must survive kernelization untouched. The
+// four lanes hit every branch combination, including the -inf arm, so a
+// rewired cond fails here by value (or loudly in `verify` at realize).
+#[test]
+fn nested_select_pow_gy_form() -> Result<(), ZyxError> {
+    let x = Tensor::from([0.0f32, 0.0, 2.0, 2.0]);
+    let y = Tensor::from([-1.0f32, 2.0, -1.0, 2.0]);
+    let tape = Tape::new([&x, &y])?;
+    let ret = x.pow(&y)?;
+    // f32 ln2, not f64: a raw f64 scalar upcasts through the all-scalar LUB
+    // rule wherever it flows and mistypes select arms (see `grad_pow_2`).
+    let live = &(&ret * x.log2()) * std::f32::consts::LN_2;
+    let inner = y.cmplt(0.0f32)?.select(Tensor::from(f32::NEG_INFINITY), Tensor::from(0.0f32))?;
+    let out = x.equal(0.0f32)?.select(&inner, &live)?;
+    tape.realize([&out])?;
+    let v: Vec<f32> = out.clone().try_into()?;
+    assert!(v[0].is_infinite() && v[0] < 0.0, "lane (0,-1) must be -inf, got {}", v[0]);
+    assert_eq!(v[1], 0.0);
+    let ln2 = std::f32::consts::LN_2;
+    assert!((v[2] - 0.5 * ln2).abs() < 1e-6, "lane (2,-1): {} != {}", v[2], 0.5 * ln2);
+    assert!((v[3] - 4.0 * ln2).abs() < 1e-6, "lane (2,2): {} != {}", v[3], 4.0 * ln2);
+    Ok(())
+}
