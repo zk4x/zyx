@@ -250,11 +250,7 @@ impl Tensor {
         // typed buffer extracts below succeed on them via a numpy-cast
         // buffer, which widens every element (f16 input becomes an F64
         // leaf plus a cast). from_numpy_nd narrows back exactly.
-        let src_dtype_name = py_obj
-            .getattr("dtype")
-            .ok()
-            .and_then(|d| d.str().ok().map(|s| s.to_string()))
-            .unwrap_or_default();
+        let src_dtype_name = py_obj.getattr("dtype").ok().and_then(|d| d.str().ok().map(|s| s.to_string())).unwrap_or_default();
         // Bool has no pyo3 buffer Element: detect it up front so typed
         // value-extracts below cannot silently convert it to a number.
         let tensor = if src_dtype_name == "float16" || src_dtype_name == "bfloat16" {
@@ -1091,19 +1087,31 @@ impl Tensor {
 
     #[pyo3(name = "cumsum", signature = (dim, dtype=None))]
     pub fn cumsum_py(&self, dim: Axis, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
-        let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
+        let x = if let Some(dtype) = dtype {
+            self.cast(dtype)
+        } else {
+            self.clone()
+        };
         x.cumsum(dim)
     }
 
     #[pyo3(name = "cummax", signature = (dim, dtype=None))]
     pub fn cummax_py(&self, dim: Axis, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
-        let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
+        let x = if let Some(dtype) = dtype {
+            self.cast(dtype)
+        } else {
+            self.clone()
+        };
         x.cummax(dim)
     }
 
     #[pyo3(name = "cumprod", signature = (dim, dtype=None))]
     pub fn cumprod_py(&self, dim: Axis, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
-        let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.clone() };
+        let x = if let Some(dtype) = dtype {
+            self.cast(dtype)
+        } else {
+            self.clone()
+        };
         x.cumprod(dim)
     }
 
@@ -1500,22 +1508,22 @@ impl Tensor {
         self.slice(ranges).map_err(|e| PyIndexError::new_err(format!("{e:?}")))
     }
 
-    #[pyo3(name = "dot")]
-    fn dot_py(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+    #[pyo3(name = "dot", signature = (rhs, out_dtype=None))]
+    fn dot_py(&self, rhs: &Bound<PyAny>, out_dtype: Option<DType>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        self.dot(rhs)
+        match out_dtype {
+            Some(dtype) => self.dot_dtype(rhs, dtype),
+            None => self.dot(rhs),
+        }
     }
 
-    #[pyo3(name = "dot_dtype")]
-    fn dot_dtype_py(&self, rhs: &Bound<PyAny>, out_dtype: DType) -> Result<Tensor, ZyxError> {
+    #[pyo3(name = "matmul", signature = (rhs, out_dtype=None))]
+    fn matmul_py(&self, rhs: &Bound<PyAny>, out_dtype: Option<DType>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        self.dot_dtype(rhs, out_dtype)
-    }
-
-    #[pyo3(name = "matmul")]
-    fn matmul_py(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
-        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        self.dot(rhs)
+        match out_dtype {
+            Some(dtype) => self.dot_dtype(rhs, dtype),
+            None => self.dot(rhs),
+        }
     }
 
     fn __matmul__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
@@ -1543,9 +1551,17 @@ impl Tensor {
     fn __div__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
         let xd = self.dtype();
-        let x = if xd.is_int() || xd == DType::Bool { self.cast(DType::F32) } else { self.clone() };
+        let x = if xd.is_int() || xd == DType::Bool {
+            self.cast(DType::F32)
+        } else {
+            self.clone()
+        };
         let yd = rhs.dtype();
-        let y = if yd.is_int() || yd == DType::Bool { rhs.cast(DType::F32) } else { rhs };
+        let y = if yd.is_int() || yd == DType::Bool {
+            rhs.cast(DType::F32)
+        } else {
+            rhs
+        };
         Ok(x / y)
     }
 
@@ -1554,9 +1570,17 @@ impl Tensor {
     fn __truediv__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
         let xd = self.dtype();
-        let x = if xd.is_int() || xd == DType::Bool { self.cast(DType::F32) } else { self.clone() };
+        let x = if xd.is_int() || xd == DType::Bool {
+            self.cast(DType::F32)
+        } else {
+            self.clone()
+        };
         let yd = rhs.dtype();
-        let y = if yd.is_int() || yd == DType::Bool { rhs.cast(DType::F32) } else { rhs };
+        let y = if yd.is_int() || yd == DType::Bool {
+            rhs.cast(DType::F32)
+        } else {
+            rhs
+        };
         Ok(x / y)
     }
 
@@ -1777,14 +1801,7 @@ impl Tensor {
                 }
             }
         };
-        self.conv(
-            &weight,
-            bias.as_ref(),
-            groups,
-            to_sh(stride, 1)?,
-            to_sh(dilation, 1)?,
-            to_sh(padding, 0)?,
-        )
+        self.conv(&weight, bias.as_ref(), groups, to_sh(stride, 1)?, to_sh(dilation, 1)?, to_sh(padding, 0)?)
     }
 
     #[pyo3(name = "max_pool")]
@@ -2237,10 +2254,7 @@ fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) 
 /// back in Rust (f16->f32 and bf16->f32 are exact, so the round-trip recovers
 /// every value) and the leaf is built at its true dtype: no widen + cast.
 fn is_bool_dtype(obj: &Bound<'_, PyAny>) -> bool {
-    obj.getattr("dtype")
-        .ok()
-        .and_then(|d| d.str().ok().map(|s| s.to_string() == "bool"))
-        .unwrap_or(false)
+    obj.getattr("dtype").ok().and_then(|d| d.str().ok().map(|s| s.to_string() == "bool")).unwrap_or(false)
 }
 
 fn from_numpy_nd(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
@@ -2256,11 +2270,7 @@ fn from_numpy_nd(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     // catch them by dtype name FIRST and narrow back in Rust. The
     // generic Vec<f32>/Vec<f64> arms below would otherwise win and leave
     // a widened leaf plus a cast in the graph.
-    let dtype_name = obj
-        .getattr("dtype")
-        .ok()
-        .and_then(|d| d.str().ok().map(|s| s.to_string()))
-        .unwrap_or_default();
+    let dtype_name = obj.getattr("dtype").ok().and_then(|d| d.str().ok().map(|s| s.to_string())).unwrap_or_default();
     let t = if dtype_name == "float16" {
         if let Ok(v) = flat.extract::<Vec<f32>>() {
             Tensor::from(v.into_iter().map(crate::scalar::f16::from_f32).collect::<Vec<_>>())

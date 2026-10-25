@@ -203,11 +203,23 @@ impl Runtime {
                         accum_grad(self, graph_id, &mut grads, y, gy);
                     }
                     BOp::Max => {
+                        // Mirrors tinygrad: ties split the gradient evenly.
+                        // gx = where(x>y, grad, where(x==y, grad/2, 0))
+                        // (`grad/2` is bitwise-identical to tinygrad's
+                        // `grad*0.5` and needs no dtype-specific const.)
+                        let g_dtype = self.graphs[graph_id].dtype(grad);
+                        let zero = self.push_const(graph_id, Constant::new(0u8).cast(g_dtype));
+                        let one = self.push_const(graph_id, Constant::new(1u8).cast(g_dtype));
+                        let two = self.push_binary_node(graph_id, one, one, BOp::Add);
+                        let grad_half = self.push_binary_node(graph_id, grad, two, BOp::Div);
                         let x_gt_y = self.push_binary_node(graph_id, x, y, BOp::Cmpgt);
-                        let x_lt_y = self.push_binary_node(graph_id, x, y, BOp::Cmplt);
-                        let gx = self.push_binary_node(graph_id, grad, x_gt_y, BOp::Mul);
+                        let x_eq_y = self.push_binary_node(graph_id, x, y, BOp::Eq);
+                        let tie = self.push_op(graph_id, Op::Select { cond: x_eq_y, if_true: grad_half, if_false: zero });
+                        let gx = self.push_op(graph_id, Op::Select { cond: x_gt_y, if_true: grad, if_false: tie });
                         accum_grad(self, graph_id, &mut grads, x, gx);
-                        let gy = self.push_binary_node(graph_id, grad, x_lt_y, BOp::Mul);
+                        let x_lt_y = self.push_binary_node(graph_id, x, y, BOp::Cmplt);
+                        let tie_y = self.push_op(graph_id, Op::Select { cond: x_eq_y, if_true: grad_half, if_false: zero });
+                        let gy = self.push_op(graph_id, Op::Select { cond: x_lt_y, if_true: grad, if_false: tie_y });
                         accum_grad(self, graph_id, &mut grads, y, gy);
                     }
                     BOp::Cmplt
@@ -362,9 +374,13 @@ impl Runtime {
                             accum_grad(self, graph_id, &mut grads, x, g);
                         }
                         BOp::Max => {
+                            // Mirrors tinygrad's reduce_gradient for MAX:
+                            // tied positions split the gradient evenly
+                            // (mask/count; count >= 1 always since the max
+                            // ties with itself).
                             let x_dims = self.graphs[graph_id].shape(x);
                             let dtype = self.graphs[graph_id].dtype(x);
-                            let one = self.push_const(graph_id, Constant::new(1u8).cast(dtype));
+                            let axis = *x_dims.last().expect("Reduce of scalar");
                             let one_dim = self.push_const(graph_id, Constant::new(1i64));
                             let kept: Vec<OpId> =
                                 x_dims.iter().enumerate().map(|(i, &d)| if i == last { one_dim } else { d }).collect();
@@ -372,13 +388,15 @@ impl Runtime {
                             let x_shape = self.shape_class(graph_id, x_dims);
                             let z_reshaped = self.push_op(graph_id, Op::Reshape { x: cid, shape: kept_shape });
                             let z_broadcasted = self.push_op(graph_id, Op::Expand { x: z_reshaped, shape: x_shape });
-                            let cmp = self.push_binary_node(graph_id, x, z_broadcasted, BOp::Cmplt);
-                            let cmp_f = self.push_op(graph_id, Op::Cast { x: cmp, dtype });
-                            let one_e = self.push_op(graph_id, Op::Expand { x: one, shape: x_shape });
-                            let mask = self.push_binary_node(graph_id, one_e, cmp_f, BOp::Sub);
+                            let eq = self.push_binary_node(graph_id, x, z_broadcasted, BOp::Eq);
+                            let mask = self.push_op(graph_id, Op::Cast { x: eq, dtype });
+                            let cnt = self.push_op(graph_id, Op::Reduce { x: mask, rop: BOp::Add, reduce_axis: axis });
+                            let cnt_r = self.push_op(graph_id, Op::Reshape { x: cnt, shape: kept_shape });
+                            let cnt_e = self.push_op(graph_id, Op::Expand { x: cnt_r, shape: x_shape });
                             let grad_r = self.push_op(graph_id, Op::Reshape { x: grad, shape: kept_shape });
                             let grad_e = self.push_op(graph_id, Op::Expand { x: grad_r, shape: x_shape });
-                            let grad_x = self.push_binary_node(graph_id, mask, grad_e, BOp::Mul);
+                            let grad_m = self.push_binary_node(graph_id, grad_e, mask, BOp::Mul);
+                            let grad_x = self.push_binary_node(graph_id, grad_m, cnt_e, BOp::Div);
                             accum_grad(self, graph_id, &mut grads, x, grad_x);
                         }
                         BOp::Mul => {
