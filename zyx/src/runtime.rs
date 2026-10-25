@@ -1723,9 +1723,7 @@ impl Runtime {
         // The mask must be bool; the arms must share a dtype (no promotion:
         // select is not arithmetic). Upstream `Tensor::broadcast` unifies.
         if self.dtype(cond) != DType::Bool {
-            return Err(ZyxError::dtype_error(
-                format!("select: cond must be bool, got {:?}", self.dtype(cond)).into(),
-            ));
+            return Err(ZyxError::dtype_error(format!("select: cond must be bool, got {:?}", self.dtype(cond)).into()));
         }
         if self.dtype(if_true) != self.dtype(if_false) {
             return Err(ZyxError::dtype_error(
@@ -1739,9 +1737,7 @@ impl Runtime {
         if let Some(first) = shapes.iter().find(|s| !s.is_empty()) {
             for s in shapes.iter() {
                 if !s.is_empty() && s != first {
-                    return Err(ZyxError::shape_error(
-                        format!("select: operand shapes differ: {shapes:?}").into(),
-                    ));
+                    return Err(ZyxError::shape_error(format!("select: operand shapes differ: {shapes:?}").into()));
                 }
             }
         }
@@ -1863,9 +1859,7 @@ impl Runtime {
                 TensorData::Eager { kernel_id, op_id, .. } => Some((kernel_id, op_id)),
                 TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => Some(self.new_kernel_from_leaf(t)),
                 TensorData::Symbolic { .. } => None,
-                TensorData::Graph { .. }
-                | TensorData::GraphLeaf { .. }
-                | TensorData::Promoted { .. } => {
+                TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Promoted { .. } => {
                     panic!("select: operand tid {t} is not an eager tensor: {:?}", self.tensors[t])
                 }
             });
@@ -1887,9 +1881,7 @@ impl Runtime {
                 if slot.is_some() {
                     *slot = match self.tensors[t] {
                         TensorData::Eager { kernel_id, op_id, .. } => Some((kernel_id, op_id)),
-                        TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => {
-                            Some(self.new_kernel_from_leaf(t))
-                        }
+                        TensorData::Leaf { .. } | TensorData::PendingLeaf { .. } => Some(self.new_kernel_from_leaf(t)),
                         TensorData::Graph { .. }
                         | TensorData::GraphLeaf { .. }
                         | TensorData::Promoted { .. }
@@ -2551,9 +2543,7 @@ impl Runtime {
                 if let TensorData::Eager { kernel_id, op_id, .. } = self.tensors[x] {
                     let reduce_src = {
                         let kernel = &self.kernels[kernel_id].kernel;
-                        self.leaf_buffer(x).is_none()
-                            && !kernel.contains_stores()
-                            && kernel.is_preceded_by_reduce(op_id)
+                        self.leaf_buffer(x).is_none() && !kernel.contains_stores() && kernel.is_preceded_by_reduce(op_id)
                     };
                     if reduce_src {
                         self.add_store(x)?;
@@ -4092,17 +4082,6 @@ impl Runtime {
             kernel.debug();
         }
 
-        // Debug bisect (`ZYX_DEBUG=256`): skip seed preparation, the
-        // epilogue and the search; run linearize + readability passes + DCE
-        // and compile the seed directly.
-        if crate::debug_mask().no_search() {
-            let device_id = kernel.dev;
-            let (_winner, program_id, timing) = crate::kernel::autotune::NoSearch.run_with_launch_args(kernel, buffers)?;
-            self.programs.insert(kernel_id, program_id);
-            self.timings.insert(ProgramId { dev: device_id, program_id }, timing);
-            return Ok((program_id, timing));
-        }
-
         let device_id = kernel.dev;
         #[cfg(feature = "viz")]
         let sched_kernel = kernel.clone();
@@ -4122,31 +4101,41 @@ impl Runtime {
             debug_assert_eq!(buffers.len(), n_params, "caller arg count must match kernel param count");
         }
         let dev_info = device_id.info()?;
-        let mut base = kernel;
-        base.linearize();
-        base.common_subexpression_elimination();
-        base.dead_code_elimination();
-        base.instruction_schedule();
+        kernel.linearize();
+        kernel.common_subexpression_elimination();
+        kernel.dead_code_elimination();
+        kernel.instruction_schedule();
         {
-            let global_indices = base.get_group_indices();
+            let global_indices = kernel.get_group_indices();
             let max_global_dims = dev_info.max_global_work_dims.len();
             if global_indices.len() > max_global_dims {
                 let n = global_indices.len() + 1 - max_global_dims;
                 let indices: Vec<OpId> = global_indices.values().copied().take(n).collect();
-                base.merge_indices(&indices);
+                kernel.merge_indices(&indices);
             }
-            base.renumber_indices();
-            base.verify();
+            kernel.renumber_indices();
+            kernel.verify();
         }
-        base.delete_useless_loops();
-        base.renumber_indices();
+        kernel.delete_useless_loops();
+        kernel.renumber_indices();
         for _ in 0..3 {
-            base.default_epilogue();
+            kernel.default_epilogue();
+        }
+
+        // Debug bisect (`ZYX_DEBUG=256`): skip seed preparation, the
+        // epilogue and the search; run linearize + readability passes + DCE
+        // and compile the seed directly.
+        if crate::debug_mask().no_search() {
+            let device_id = kernel.dev;
+            let (_winner, program_id, timing) = crate::kernel::autotune::NoSearch.run_with_launch_args(kernel, buffers)?;
+            self.programs.insert(kernel_id, program_id);
+            self.timings.insert(ProgramId { dev: device_id, program_id }, timing);
+            return Ok((program_id, timing));
         }
 
         let beam_search = crate::backend::autotune_config();
         let (winner, timing) = beam_search.run_with_launch_args(
-            [base],
+            [kernel],
             buffers,
             &Kernel::default_optimizations(),
             Kernel::default_epilogue,
@@ -4632,7 +4621,11 @@ impl Runtime {
                         [c] => (1, *c),
                         [] => (1, 1),
                     };
-                    let outer: Dim = if shape.len() >= 2 { shape[..shape.len() - 2].iter().product() } else { 1 };
+                    let outer: Dim = if shape.len() >= 2 {
+                        shape[..shape.len() - 2].iter().product()
+                    } else {
+                        1
+                    };
                     let pr = ((rows + 31) / 32) * 32;
                     let pc = ((cols + 31) / 32) * 32;
                     ((outer * pr * pc) as usize) * el
