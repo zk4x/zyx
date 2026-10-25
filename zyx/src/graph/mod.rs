@@ -1394,8 +1394,18 @@ impl Graph {
             | Op::Unary { x, .. }
             | Op::After { x, .. }
             | Op::ToDevice { x, .. }
-            | Op::Contiguous { x }
-            | Op::Binary { x, .. } => self.dtype(*x),
+            | Op::Contiguous { x } => self.dtype(*x),
+            // Comparison and logical binaries yield Bool, never the
+            // operand dtype: materializing such a class (e.g. a select
+            // cond split into its own kernel) through an operand-typed
+            // buffer silently retypes it and breaks every consumer.
+            Op::Binary { x, y: _, bop } => {
+                if bop.returns_bool() {
+                    DType::Bool
+                } else {
+                    self.dtype(*x)
+                }
+            }
             // Detach is value identity: same dtype as its input.
             Op::Detach { x } => self.dtype(*x),
             Op::Select { if_true, .. } => self.dtype(*if_true),

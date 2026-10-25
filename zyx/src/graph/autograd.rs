@@ -174,20 +174,34 @@ impl Runtime {
                             self.push_op(graph_id, Op::Select { cond: y_is_zero, if_true: y_zero, if_false: y_mul });
                         let gx = self.push_binary_node(graph_id, grad, gx_numer, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, gx);
-                        let log2_x = self.push_op(graph_id, Op::Unary { x, uop: UOp::Log2 });
-                        let ln2_cid = self.push_const(graph_id, Constant::new(std::f64::consts::LN_2));
-                        let z_log2 = self.push_binary_node(graph_id, cid, log2_x, BOp::Mul);
-                        let z_lnx = self.push_binary_node(graph_id, z_log2, ln2_cid, BOp::Mul);
-                        // d/dy = x==0 ? (y<0 ? -inf : 0) : cid*log2(x)*ln2
                         let x_dtype = self.graphs[graph_id].dtype(x);
                         let x_zero = self.push_const(graph_id, x_dtype.zero_constant());
                         let x_is_zero = self.push_binary_node(graph_id, x, x_zero, BOp::Eq);
+                        // TEMP-BISECT step 2: safe_x only.
+                        let x_one = self.push_const(graph_id, x_dtype.one_constant());
+                        let safe_inc =
+                            self.push_op(graph_id, Op::Select { cond: x_is_zero, if_true: x_one, if_false: x_zero });
+                        let safe_x = self.push_binary_node(graph_id, x, safe_inc, BOp::Add);
+                        let log2_x = self.push_op(graph_id, Op::Unary { x: safe_x, uop: UOp::Log2 });
+                        // f32, not f64: an f64 scalar upcasts through the
+                        // all-scalar LUB rule wherever z_log2 goes scalar
+                        // (masked const loads), poisoning select arms with
+                        // f64. Precision beyond f32 is moot here anyway.
+                        let ln2_cid = self.push_const(graph_id, Constant::new(std::f32::consts::LN_2));
+                        let z_log2 = self.push_binary_node(graph_id, cid, log2_x, BOp::Mul);
+                        let z_lnx = self.push_binary_node(graph_id, z_log2, ln2_cid, BOp::Mul);
+                        // d/dy = x==0 ? (y<0 ? -inf : 0) : cid*log2(x)*ln2
+                        // Flat selects only: at most one arm is nonzero in
+                        // every input region, so the sum stays exact without
+                        // nesting (nested selects mis-fuse in the kernelizer).
                         let y_is_neg = self.push_binary_node(graph_id, y, y_zero, BOp::Cmplt);
                         let neg_inf = self.push_const(graph_id, Constant::new(f32::NEG_INFINITY));
-                        let neg_branch =
-                            self.push_op(graph_id, Op::Select { cond: y_is_neg, if_true: neg_inf, if_false: y_zero });
-                        let gy_numer =
-                            self.push_op(graph_id, Op::Select { cond: x_is_zero, if_true: neg_branch, if_false: z_lnx });
+                        let both = self.push_binary_node(graph_id, x_is_zero, y_is_neg, BOp::And);
+                        let neg_part =
+                            self.push_op(graph_id, Op::Select { cond: both, if_true: neg_inf, if_false: y_zero });
+                        let pos_part =
+                            self.push_op(graph_id, Op::Select { cond: x_is_zero, if_true: y_zero, if_false: z_lnx });
+                        let gy_numer = self.push_binary_node(graph_id, neg_part, pos_part, BOp::Add);
                         let gy = self.push_binary_node(graph_id, grad, gy_numer, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, y, gy);
                     }

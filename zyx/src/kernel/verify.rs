@@ -576,7 +576,8 @@ impl Kernel {
                     // Both arms must share the value dtype (no promotion:
                     // select is not arithmetic); result is that dtype.
                     if dtypes[&if_true] != dtypes[&if_false] {
-                        println!("Select arm dtype mismatch on op={op_id}.");
+                        println!("Select arm dtype mismatch on op={op_id}: if_true={} ({:?}) if_false={} ({:?}).",
+                            dtypes[&if_true], self.ops[if_true].op, dtypes[&if_false], self.ops[if_false].op);
                         self.debug();
                         panic!();
                     }

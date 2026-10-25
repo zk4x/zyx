@@ -21,12 +21,19 @@
   are allowed (read files, bash, build, test) to support the answer;
   nothing that mutates files is. Edits only after an explicit verb
   (`fix`, `remove`, `rewrite`, `proceed`, ...) in a LATER message.
+- QUESTION = NO FILE MUTATIONS, no exceptions. A message that asks
+  anything — or states a puzzle/observation without an explicit verb —
+  authorizes reads and runs ONLY. It NEVER authorizes creating, editing,
+  or deleting any file: not product code, not tests, not `eprintln`
+  instrumentation, not temp files. "Investigate freely" means reads
+  and runs. A turn that starts with a question must leave the tree
+  identical to how it found it; violation = stop and revert.
 - A question ANYWHERE in a message (trailing `or not?`, `right?`,
   `is X Y?`, `why ...?`) makes the whole message a question: answer +
-  investigate freely, but no edit in that turn even if the message also
-  contains an order-like verb. The order part is parked until restated
-  or confirmed in a LATER message. Never substitute implementation for
-  an explanation.
+  investigate (reads and runs only) freely, but no edit in that turn
+  even if the message also contains an order-like verb. The order part
+  is parked until restated or confirmed in a LATER message. Never
+  substitute implementation for an explanation.
 - No inferring authorization from tone: frustration, rhetorical `why`,
   restated complaints, and obvious next steps NEVER count as an
   explicit verb. Only a verb-directed instruction (`fix X`, `remove Y`,
@@ -149,7 +156,8 @@ zyx/src/kernel/   kernel IR, codegen, ALL optimization passes
    archaeology (worktrees, bisection, banner greps) unless user orders a ref.
 5. `kernel.debug()` at pass START and END, compare. If `debug()` panics,
    dump ops manually. Never "fix" the printer.
-6. `eprintln` markers WITHOUT asking; remove before finishing.
+6. `eprintln` markers WITHOUT asking on order turns only — never on a
+   question turn (question = no file mutations); remove before finishing.
 7. Ask only what code cannot settle. One fix per question. Each new
    failure = NEW task: stop, report panic + location, ask first.
 8. Output needs `-- --nocapture`; never pipe it through grep/head.
