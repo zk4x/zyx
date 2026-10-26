@@ -487,15 +487,11 @@ impl Kernel {
                     if let Some((lb, ub)) = bounds.get(&op_id) {
                         writeln!(
                             f,
-                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = select(r{cond}, r{if_true}, r{if_false})    // {lb}..={ub}"
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = r{cond} ? r{if_true} : r{if_false}    // {lb}..={ub}"
                         )
                         .unwrap();
                     } else {
-                        writeln!(
-                            f,
-                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = select(r{cond}, r{if_true}, r{if_false})"
-                        )
-                        .unwrap();
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = r{cond} ? r{if_true} : r{if_false}").unwrap();
                     }
                 }
                 Op::Wmma { dims, layout, dtype, c, a, b } => {

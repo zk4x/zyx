@@ -557,6 +557,22 @@ impl Kernel {
             return self.trace_cmpgt(*x, 1, loop_id);
         }
 
+        if let Op::Select { cond, if_true, if_false } = self.at(accumulated_value_id) {
+            // Branchless mask from linearize: `select(cond, k, 0)` is the
+            // same 0/k indicator the old mask-multiply produced. Peel
+            // casts on the arms and require a const zero false arm; the
+            // const true arm scales the count.
+            let t = self.peel_casts(*if_true);
+            let f = self.peel_casts(*if_false);
+            let (Op::Const(one), Op::Const(zero)) = (self.at(t), self.at(f)) else {
+                return None;
+            };
+            let (Some(mul_const), Some(0)) = (one.as_dim(), zero.as_dim()) else {
+                return None;
+            };
+            return self.trace_cmpgt(self.peel_casts(*cond), mul_const, loop_id);
+        }
+
         if let Op::Binary { x: mul_x, y: mul_y, bop: BOp::Mul } = self.at(accumulated_value_id) {
             let mul_const = if let Op::Const(c) = self.at(*mul_x) {
                 c.as_dim().unwrap_or(1)
@@ -766,6 +782,19 @@ impl Kernel {
                 }
             }
             Op::Binary { bop: BOp::Cmpgt | BOp::Cmpge, .. } => true,
+            Op::Select { cond, if_true, if_false } => {
+                // Indicator `select(cond, k, 0)`: condition-based iff the
+                // arms are const (k, 0) and the cond itself is.
+                let t = self.peel_casts(*if_true);
+                let f = self.peel_casts(*if_false);
+                let (Op::Const(one), Op::Const(zero)) = (self.at(t), self.at(f)) else {
+                    return false;
+                };
+                if one.as_dim().is_none() || zero.as_dim() != Some(0) {
+                    return false;
+                }
+                self.is_condition_based_accumulation(*cond)
+            }
             _ => false,
         }
     }
