@@ -486,20 +486,34 @@ impl Kernel {
                     *rcs.entry(y).or_insert(0) += 1;
                 }
                 Op::Select { cond, if_true, if_false } => {
-                    // Same broadcast merge as Binary, over the two values;
-                    // dtype is the value's (if_true), never the bool cond's.
+                    // Three-way broadcast merge over the cond and both
+                    // values; dtype is the value's (if_true), never the
+                    // bool cond's. The cond contributes lanes exactly as
+                    // the old mask-multiply's pc operand did: a
+                    // lane-varying cond over scalar arms yields a
+                    // lane-varying select (same rule as Binary, applied
+                    // twice).
                     let dtype = dtypes[&if_true].0;
-                    let (td, fd) = (dtypes[&if_true].1.clone(), dtypes[&if_false].1.clone());
-                    let rank = td.len().max(fd.len());
+                    let (cd, td, fd) =
+                        (dtypes[&cond].1.clone(), dtypes[&if_true].1.clone(), dtypes[&if_false].1.clone());
+                    let rank = cd.len().max(td.len()).max(fd.len());
                     let mut dims = Vec::with_capacity(rank);
                     for i in 0..rank {
-                        let (a, b) = (td.get(i).copied().unwrap_or(0), fd.get(i).copied().unwrap_or(0));
-                        dims.push(if a == b {
+                        let (a, b) = (cd.get(i).copied().unwrap_or(0), td.get(i).copied().unwrap_or(0));
+                        let m = if a == b {
                             a
                         } else if a == -1 || a == 0 || a == 1 || b == -1 || b == 0 || b == 1 {
                             a.max(b)
                         } else {
                             panic!("select with unequal dims {a} vs {b}");
+                        };
+                        let c = fd.get(i).copied().unwrap_or(0);
+                        dims.push(if m == c {
+                            m
+                        } else if m == -1 || m == 0 || m == 1 || c == -1 || c == 0 || c == 1 {
+                            m.max(c)
+                        } else {
+                            panic!("select with unequal dims {m} vs {c}");
                         });
                     }
                     while dims.last() == Some(&0) {
@@ -1587,13 +1601,18 @@ impl Kernel {
                     visited.insert(op_id, vec![dim]);
                 }
                 // Select takes its value shape from the non-scalar arm
-                // (scalars broadcast, same rule as Binary); the cond is a
-                // broadcast mask, scalar or arm-shaped, and carries no dims.
-                // Both non-scalar keeps today's behavior (the true arm).
-                Op::Select { if_true: x, if_false: y, .. } => {
+                // (scalars broadcast, same rule as Binary); a non-scalar
+                // cond contributes its lanes exactly as the old
+                // mask-multiply's pc operand did. Priority is the true
+                // arm, then the false arm, then the cond: whenever the
+                // cond is scalar this keeps today's behavior, and a
+                // lane-varying cond over scalar arms yields the cond's
+                // lanes instead of collapsing to scalar.
+                Op::Select { cond: c, if_true: x, if_false: y } => {
                     let x_done = visited.contains_key(&x);
                     let y_done = visited.contains_key(&y);
-                    if !x_done || !y_done {
+                    let c_done = visited.contains_key(&c);
+                    if !x_done || !y_done || !c_done {
                         stack.push(op_id);
                         if !x_done {
                             stack.push(x);
@@ -1601,11 +1620,19 @@ impl Kernel {
                         if !y_done {
                             stack.push(y);
                         }
+                        if !c_done {
+                            stack.push(c);
+                        }
                         continue;
                     }
-                    let (dims, merged_axes) = match (visited[&x].as_slice(), visited[&y].as_slice()) {
-                        (&[], &[]) => (Vec::new(), Vec::new()),
-                        (&[], _) => (visited[&y].clone(), axes.get(&y).cloned().unwrap_or_default()),
+                    let (dims, merged_axes) = match (
+                        visited[&x].as_slice(),
+                        visited[&y].as_slice(),
+                        visited[&c].as_slice(),
+                    ) {
+                        (&[], &[], &[]) => (Vec::new(), Vec::new()),
+                        (&[], &[], _) => (visited[&c].clone(), axes.get(&c).cloned().unwrap_or_default()),
+                        (&[], _, _) => (visited[&y].clone(), axes.get(&y).cloned().unwrap_or_default()),
                         _ => (visited[&x].clone(), axes.get(&x).cloned().unwrap_or_default()),
                     };
                     visited.insert(op_id, dims);
@@ -1824,16 +1851,18 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                // Select takes its value shape from the two value arms
-                // (same broadcast merge as Binary above: scalars
-                // broadcast; the cond is a broadcast mask that carries
-                // no dims). Without this the catch-all below reports
-                // scalar for a scalar-true-arm select, and view
-                // propagation treats a vector select as a scalar read.
-                Op::Select { if_true: x, if_false: y, .. } => {
+                // Select merges the cond and both value arms (same
+                // broadcast merge as Binary above, applied twice:
+                // scalars broadcast). The cond contributes lanes exactly
+                // as the old mask-multiply's pc operand did: without this
+                // a lane-varying cond over scalar arms reports scalar,
+                // and view propagation treats a vector select as a scalar
+                // read.
+                Op::Select { cond: c, if_true: x, if_false: y } => {
                     let x_done = visited.contains_key(&x);
                     let y_done = visited.contains_key(&y);
-                    if !x_done || !y_done {
+                    let c_done = visited.contains_key(&c);
+                    if !x_done || !y_done || !c_done {
                         stack.push(id);
                         if !x_done {
                             stack.push(x);
@@ -1841,19 +1870,31 @@ impl Kernel {
                         if !y_done {
                             stack.push(y);
                         }
+                        if !c_done {
+                            stack.push(c);
+                        }
                         continue;
                     }
                     let xd = visited[&x];
                     let yd = visited[&y];
+                    let cd = visited[&c];
                     let mut dims = [0; 8];
                     for i in 0..dims.len() {
-                        let (a, b) = (xd[i], yd[i]);
-                        dims[i] = if a == b {
+                        let (a, b) = (cd[i], xd[i]);
+                        let m = if a == b {
                             a
                         } else if a == -1 || a == 0 || a == 1 || b == -1 || b == 0 || b == 1 {
                             a.max(b)
                         } else {
                             panic!("select with unequal dims {a} vs {b}");
+                        };
+                        let d = yd[i];
+                        dims[i] = if m == d {
+                            m
+                        } else if m == -1 || m == 0 || m == 1 || d == -1 || d == 0 || d == 1 {
+                            m.max(d)
+                        } else {
+                            panic!("select with unequal dims {m} vs {d}");
                         };
                     }
                     visited.insert(id, dims);
