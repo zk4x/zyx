@@ -178,9 +178,7 @@ impl Kernel {
             let g = pad_groups[0];
             self.pad_to(g, 32);
             let len = match self.ops[g].op {
-                Op::Range { kind: RangeKind::Group(len), .. } => {
-                    self.resolve_const(len).and_then(|c| c.as_dim())
-                }
+                Op::Range { kind: RangeKind::Group(len), .. } => self.resolve_const(len).and_then(|c| c.as_dim()),
                 _ => unreachable!("pad_to preserves the Group range"),
             };
             if let Some(len) = len {
@@ -472,9 +470,7 @@ impl Kernel {
                     let (ta, tb) = match (&self.ops[a].op, &self.ops[b].op) {
                         (Op::Load { src: pa, src_idx: la }, Op::Load { src: pb, src_idx: lb }) => {
                             match (&self.ops[*pa].op, &self.ops[*pb].op) {
-                                (Op::Param { dtype: da, .. }, Op::Param { dtype: db, .. }) => {
-                                    ((*pa, *la, *da), (*pb, *lb, *db))
-                                }
+                                (Op::Param { dtype: da, .. }, Op::Param { dtype: db, .. }) => ((*pa, *la, *da), (*pb, *lb, *db)),
                                 _ => continue,
                             }
                         }
@@ -489,10 +485,10 @@ impl Kernel {
                         let kx = self.match_pat(la, &pat_a).map(|m| m.op('k'));
                         let ky = self.match_pat(lb, &pat_b).map(|m| m.op('k'));
                         if let (Some(x), Some(y)) = (kx, ky) {
-                    if x == y && matches!(self.ops[x].op, Op::Unroll { .. }) {
-                        fab = Some(((pa, da), (pb, db), x));
-                        break;
-                    }
+                            if x == y && matches!(self.ops[x].op, Op::Unroll { .. }) {
+                                fab = Some(((pa, da), (pb, db), x));
+                                break;
+                            }
                         }
                     }
                     let Some(((pa, dtype_a), (pb, dtype_b), k)) = fab else {
@@ -2174,13 +2170,13 @@ impl Kernel {
                 // Reader/writer move through `Copy` only; any tile
                 // compute, fused call, pack store, or CB load outside
                 // the compute section is malformed.
-                    let bad = match &self.ops[op_id].op {
-                        Op::TT(TTOp::LLK { .. })
-                        | Op::TT(TTOp::ReduceTile { .. })
-                        | Op::TT(TTOp::LLKBcast { .. })
-                        | Op::TT(TTOp::MatmulTiles { .. })
-                        | Op::TT(TTOp::SigmoidTile { .. })
-                        | Op::TT(TTOp::SiluTile { .. }) => true,
+                let bad = match &self.ops[op_id].op {
+                    Op::TT(TTOp::LLK { .. })
+                    | Op::TT(TTOp::ReduceTile { .. })
+                    | Op::TT(TTOp::LLKBcast { .. })
+                    | Op::TT(TTOp::MatmulTiles { .. })
+                    | Op::TT(TTOp::SigmoidTile { .. })
+                    | Op::TT(TTOp::SiluTile { .. }) => true,
                     Op::Store { .. } => self.tt_pack_store_cb(op_id).is_some(),
                     Op::Load { src, .. } => {
                         matches!(self.ops[*src].op, Op::Storage { scope: MemScope::Circular, .. })
@@ -3161,28 +3157,19 @@ impl Kernel {
             match self.at(id) {
                 Op::TT(TTOp::EndReader) => {
                     assert!(section == 0, "tt_verify: duplicate EndReader at {id:?}");
-                    assert!(
-                        lock == Lock::Unlocked,
-                        "tt_verify: reader section ends with DST locked at {id:?}"
-                    );
+                    assert!(lock == Lock::Unlocked, "tt_verify: reader section ends with DST locked at {id:?}");
                     section = 1;
                     seen_reader = true;
                 }
                 Op::TT(TTOp::EndCompute) => {
                     assert!(seen_reader, "tt_verify: EndCompute without EndReader at {id:?}");
                     assert!(section == 1, "tt_verify: duplicate EndCompute at {id:?}");
-                    assert!(
-                        lock == Lock::Unlocked,
-                        "tt_verify: compute section ends with DST locked at {id:?}"
-                    );
+                    assert!(lock == Lock::Unlocked, "tt_verify: compute section ends with DST locked at {id:?}");
                     section = 2;
                 }
                 Op::TT(TTOp::MathLock) => {
                     assert!(section == 1, "tt_verify: DST lock outside compute at {id:?}");
-                    assert!(
-                        lock == Lock::Unlocked || lock == Lock::Pack,
-                        "tt_verify: acquire with DST already held at {id:?}"
-                    );
+                    assert!(lock == Lock::Unlocked || lock == Lock::Pack, "tt_verify: acquire with DST already held at {id:?}");
                     lock = Lock::Math;
                 }
                 Op::TT(TTOp::MathUnlock) => {
