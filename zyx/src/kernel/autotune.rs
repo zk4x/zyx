@@ -97,33 +97,34 @@ impl Kernel {
     }
 
     /// Device specific epilogue
-    pub fn device_epilogue(&mut self) {
+    pub fn device_epilogue(&mut self) -> Result<(), BackendError> {
         // Unroll vectors never survive to a scalar backend: they unfold
         // to per-element statements. Tenstorrent tiles the vector IR
         // (there is no way to tile a devectorized kernel), so no
         // devectorize runs on the TT path.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
-            self.tt_tile();
+            self.tt_tile()?;
             // Lowering (order-flexible; each pass tolerates the
             // others' legal output - not currently, but it's the idea):
             // structured LLK claiming + register allocation, locks,
             // duplicate-publish elimination, engine-config inits +
             // startup + reduce closing, CB sync, pop placement.
-            self.tt_lower_llks();
-            self.tt_lock_dst();
+            self.tt_lower_llks()?;
+            self.tt_lock_dst()?;
             self.tt_dedup_pushes();
-            self.tt_init_math().expect("device_epilogue: tt_init_math");
-            self.tt_sync_cbs();
-            self.tt_place_pops();
+            self.tt_init_math()?;
+            self.tt_sync_cbs()?;
+            self.tt_place_pops()?;
             self.verify();
 
             self.common_subexpression_elimination();
             self.dead_code_elimination();
-            self.tt_verify();
+            self.tt_verify()?;
         } else {
             self.devectorize();
         }
+        Ok(())
     }
 
     /// Get a hash of the kernel for deduplication during autotuning.
@@ -469,8 +470,13 @@ impl BeamSearch {
                 let mut kernel = base.clone();
                 apply_seq(&mut kernel, opt_seq, optimizations, &epilogue);
                 // Hardware lowering runs once here, right before timed
-                // launches — never inside the search loop above.
-                kernel.device_epilogue();
+                // launches — never inside the search loop above. A
+                // candidate the lowering rejects skips via the error
+                // path; only unexpected panics escape.
+                if let Err(e) = kernel.device_epilogue() {
+                    last_error = Some(e);
+                    continue;
+                }
                 if launched.insert(kernel.get_hash()) {
                     match kernel.launch_with_timings(&args, dev, debug) {
                         Ok((program_id, time)) => {
@@ -530,12 +536,12 @@ impl NoSearch {
         // TT tiling first: scalar row-major traffic becomes tile traffic
         // (tt_tile gates on the TT device itself, other devices skip).
         // Readability passes (relative order mirrors `default_epilogue`).
-        seed.tt_tile();
+        seed.tt_tile()?;
         for _ in 0..3 {
             seed.default_epilogue();
         }
 
-        seed.device_epilogue();
+        seed.device_epilogue()?;
         seed.dead_code_elimination();
 
         let debug = crate::debug_mask();

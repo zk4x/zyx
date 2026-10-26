@@ -30,7 +30,7 @@ fn lock_dst_wraps_math_and_pack() {
     let out = k.load_register_tile(acc, zero);
     k.store_cb(cout, out, zero);
     k.tt_end_compute();
-    k.tt_lock_dst();
+    k.tt_lock_dst().unwrap();
 
     let mut ops: Vec<Op> = Vec::new();
     let mut op_id = k.head;
@@ -75,7 +75,7 @@ fn sync_cbs_wraps_cb_traffic() {
     k.store_register_tile(acc, f, zero);
     k.tt_end_compute();
     let drain = k.store_cb_to_global(cout, zero, out, zero);
-    k.tt_sync_cbs();
+    k.tt_sync_cbs().unwrap();
 
     let mut order: Vec<OpId> = Vec::new();
     let mut op_id = k.head;
@@ -114,7 +114,7 @@ fn pure_reduce_tile_threading() {
     k.store_cb(cout, out, zero);
     k.tt_end_compute();
     k.verify();
-    k.tt_lock_dst();
+    k.tt_lock_dst().unwrap();
 
     let mut ops: Vec<Op> = Vec::new();
     let mut op_id = k.head;

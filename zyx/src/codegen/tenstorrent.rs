@@ -200,8 +200,8 @@ impl Kernel {
             }
             let mut touched: [Option<OpId>; 2] = [None, None];
             match k.at(scan) {
-                Op::Load { src, .. } | Op::Copy { src, .. } => touched[0] = Some(k.tt_storage_of(*src)),
-                Op::Store { dst, .. } => touched[0] = Some(k.tt_storage_of(*dst)),
+                Op::Load { src, .. } | Op::Copy { src, .. } => touched[0] = Some(k.tt_storage_of(*src)?),
+                Op::Store { dst, .. } => touched[0] = Some(k.tt_storage_of(*dst)?),
                 // Lowered traffic: publish/drain endpoints are bare
                 // storages (DRAM param or Circular CB), never wrapped
                 // in Load/Store, so `tt_storage_of` cannot see them.

@@ -121,9 +121,9 @@ impl Kernel {
     /// and group ranges to multiples of 32. No special tiling or
     /// vectorization passes: the 32-wide `Unroll` lanes plus composed
     /// indices are the tile IR the backend matchers read.
-    pub fn tt_tile(&mut self) {
+    pub fn tt_tile(&mut self) -> Result<(), BackendError> {
         if !self.device_info().tenstorrent {
-            return;
+            return Ok(());
         }
         self.default_epilogue();
         self.default_epilogue();
@@ -169,7 +169,10 @@ impl Kernel {
             }
         }
         if pad_groups.len() > 2 {
-            todo!("tt_tile: more than two group ranges");
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tt_tile: more than two group ranges").into(),
+            });
         }
         if pad_groups.len() == 1 {
             // One group range: split into two nested groups of roughly
@@ -230,8 +233,10 @@ impl Kernel {
 
         self.default_epilogue();
         self.default_epilogue();
+        self.default_epilogue();
 
         self.verify();
+        Ok(())
     }
 
     /// General TT lowering + register allocation (matmul-first,
@@ -248,13 +253,16 @@ impl Kernel {
     /// `[32, 32]` tile) and single-tile matmul (`Reduce(Add)` over a
     /// `[32, 32, 32]` tiled Mul to `[32, 32]`). Anything else is left
     /// in place for later increments.
-    pub fn tt_lower_llks(&mut self) {
+    pub fn tt_lower_llks(&mut self) -> Result<(), BackendError> {
         if !self.device_info().tenstorrent {
-            return;
+            return Ok(());
         }
         for (_, x) in self.iter_unordered() {
             if let Op::Loop { .. } = x {
-                return;
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tt_lower_llks: loop in kernel").into(),
+                });
             }
         }
         // Register allocator: lowered values share Register tiles
@@ -313,7 +321,10 @@ impl Kernel {
             if let Op::Load { src: base, src_idx: off, .. } = self.ops[id].op {
                 if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
                     if self.shape(id) != vec![32, 32] {
-                        return;
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_lower_llks: non-tile DRAM load").into(),
+                        });
                     }
                     loads.push((id, base, off));
                 }
@@ -336,7 +347,12 @@ impl Kernel {
                         }
                         Op::Unary { x, .. } => stack.push(x),
                         Op::Cast { x, .. } => stack.push(x),
-                        _ => return,
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_lower_llks: reader index has uncloneable leaf").into(),
+                            });
+                        }
                     }
                 }
             }
@@ -347,7 +363,9 @@ impl Kernel {
                 if let Some(entry) = cbs.iter_mut().find(|(b, _, _)| *b == *base) {
                     entry.2 += 1;
                 } else {
-                    let Op::Param { dtype, .. } = self.ops[*base].op else { return };
+                    let Op::Param { dtype, .. } = self.ops[*base].op else {
+                        unreachable!("tt_lower_llks: load base is a DRAM param");
+                    };
                     cbs.push((*base, dtype, 1));
                 }
             }
@@ -374,7 +392,10 @@ impl Kernel {
                 // Base address with lanes stripped; the transfer size is
                 // explicit, so no lane math rides along.
                 let Some(base_idx) = self.strip_unrolls(*off, anchor) else {
-                    return;
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tt_lower_llks: reader index is not strippable").into(),
+                    });
                 };
                 let bytes = dtype.bit_size() as u32 / 8 * 1024;
                 self.insert_before(anchor, Op::TT(TTOp::Copy { src: *base, src_idx: base_idx, dst: cb, dst_idx: slot_c, bytes }));
@@ -503,7 +524,9 @@ impl Kernel {
                     let (Some(&cb_a), Some(&cb_b)) = (reader_cb_of.get(&pa), reader_cb_of.get(&pb)) else {
                         continue;
                     };
-                    debug_assert_eq!(dtype_a, dtype_b, "tt_lower_llks: matmul dtype mismatch");
+                    if dtype_a != dtype_b {
+                        continue;
+                    }
                     let slot = regs.alloc(self, dtype_a, prologue);
                     self.ops[root].op = Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot });
                     let writer_cb = if prologue.is_null() {
@@ -528,7 +551,9 @@ impl Kernel {
                     for (pat, kind) in pats.iter() {
                         if let Some(m) = self.match_pat(op_id, pat) {
                             if let Op::Reduce { x, rop, .. } = self.ops[op_id].op {
-                                debug_assert_eq!(x, m.op('t'), "tt_lower_llks: feeder bind drifted");
+                                if x != m.op('t') {
+                                    continue;
+                                }
                                 hit = Some((x, rop, *kind));
                                 break;
                             }
@@ -642,7 +667,10 @@ impl Kernel {
                     if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
                         && self.shape(id) != vec![32, 32]
                     {
-                        return;
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_lower_llks: non-tile DRAM load").into(),
+                        });
                     }
                 }
                 Op::Store { dst: base, dst_idx: off, src, .. } => {
@@ -650,15 +678,21 @@ impl Kernel {
                         // Already lowered; nothing owned here.
                     } else if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
                         // Tiled stores and row stores (a reduce row is 32
-                        // elements); anything else bails the pass.
+                        // elements); anything else skips the candidate.
                         match self.shape(id).as_slice() {
                             [32, 32] | [32] => stores.push((id, base, off, src)),
                             _ => {
-                                return;
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tt_lower_llks: non-tile store shape").into(),
+                                });
                             }
                         }
                     } else {
-                        return;
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_lower_llks: store to non-DRAM, non-CB base").into(),
+                        });
                     }
                 }
                 _ => {}
@@ -692,7 +726,10 @@ impl Kernel {
                         if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
                             && self.shape(scan) == vec![32, 32]
                         {
-                            return;
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_lower_llks: tiled DRAM load without reader section").into(),
+                            });
                         }
                     }
                     scan = self.ops[scan].next;
@@ -714,34 +751,59 @@ impl Kernel {
                 // face-ordered column layout means a seed-width drain
                 // starves `untilize` gathers (a `[32]` reduce row lives
                 // at column 0 across the tile, not in a contiguous row).
-                // Single-tile shapes only; anything else bails the pass.
+                // Single-tile shapes only; anything else skips the candidate.
                 match self.shape(*store).as_slice() {
                     [32, 32] | [32] => {}
-                    _ => return,
+                    _ => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_lower_llks: drain of non-tile store").into(),
+                        });
+                    }
                 };
                 let (cb_dtype, cb_len) = match self.ops[cb].op {
                     Op::Storage { dtype, scope: MemScope::Circular, len } => (dtype, len),
-                    _ => return,
+                    _ => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_lower_llks: drain CB is not a circular storage").into(),
+                        });
+                    }
                 };
                 if self.dtype(*store) != cb_dtype {
-                    return;
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tt_lower_llks: drain dtype mismatch").into(),
+                    });
                 }
                 let Ok(page_elems) = u32::try_from(cb_len) else {
-                    return;
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tt_lower_llks: drain page count is not a u32").into(),
+                    });
                 };
                 let bytes = match (cb_dtype.bit_size() as u32 / 8).checked_mul(page_elems) {
                     Some(b) if b > 0 => b,
-                    _ => return,
+                    _ => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_lower_llks: drain byte size overflows or is zero").into(),
+                        });
+                    }
                 };
                 let tail = self.tail;
                 let Some(base_idx) = self.strip_unrolls(*off, tail) else {
-                    return;
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tt_lower_llks: drain index is not strippable").into(),
+                    });
                 };
                 self.push_back(Op::TT(TTOp::Copy { src: cb, src_idx: slot_zero, dst: *base, dst_idx: base_idx, bytes }));
                 self.remove_op(*store);
             }
         }
         self.verify();
+        Ok(())
     }
 
     /// Base index with lanes stripped: clone the index expression
@@ -963,7 +1025,7 @@ impl Kernel {
     /// Circular buffer: from a Register slot, from a circular load
     /// (CB→CB spelled load+store), or from SSA/`LLK`/`Asm` tile
     /// results.
-    pub fn tt_lock_dst(&mut self) {
+    pub fn tt_lock_dst(&mut self) -> Result<(), BackendError> {
         // Users: direct-pack loads (below) read it.
         let mut users: Map<OpId, Vec<OpId>> = Map::default();
         let mut scan = self.head;
@@ -1084,6 +1146,15 @@ impl Kernel {
             if !cur_run.is_empty() {
                 runs.push((cur_run, Vec::new()));
             }
+            // Back-to-back packs can push an empty math run; its
+            // pack/math positions below would index out of bounds.
+            // Candidate-arrangement-driven: skip via error, never panic.
+            if runs.iter().any(|(ms, _)| ms.is_empty()) {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tt_lock_dst: empty math run").into(),
+                });
+            }
             if !runs.is_empty() {
                 for p in packs.iter().copied() {
                     let qp = pos_of_op("pack", p);
@@ -1173,6 +1244,7 @@ impl Kernel {
         }
 
         self.verify();
+        Ok(())
     }
 
     /// Duplicate-publish elimination: drop repeated identical publishes
@@ -1447,7 +1519,7 @@ impl Kernel {
     /// each trailing provenance load gets a `WaitFront` immediately
     /// before the call (waits are level checks — sharing one page
     /// across calls stays correct; pops count it, see `tt_place_pops`).
-    pub fn tt_sync_cbs(&mut self) {
+    pub fn tt_sync_cbs(&mut self) -> Result<(), BackendError> {
         // Linear user map: users[v] = ops taking v as a data operand.
         let mut users: Map<OpId, Vec<OpId>> = Map::default();
         let mut scan = self.head;
@@ -1713,7 +1785,12 @@ impl Kernel {
                     Op::EndLoop => match stack.pop() {
                         Some(CountFrame::Trip { trips, .. }) => mult /= trips,
                         Some(CountFrame::Other) => uncountable -= 1,
-                        None => panic!("tt_sync_cbs: EndLoop without Loop at {scan:?}"),
+                        None => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_sync_cbs: EndLoop without Loop at {scan:?}").into(),
+                            });
+                        }
                     },
                     Op::Store { .. } | Op::Copy { .. } => {
                         // Elements published per execution, if this op
@@ -1849,8 +1926,8 @@ impl Kernel {
                     // alone (render rejects it loudly). Single source of
                     // truth is `tt_pack_store_cb`.
                     if self.is_circular_base(dst) && self.tt_pack_store_cb(op_id).is_some() {
-                        self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb: self.tt_storage_of(dst), n: 1 }));
-                        let cb = self.tt_storage_of(dst);
+                        self.insert_before(op_id, Op::TT(TTOp::ReserveBack { cb: self.tt_storage_of(dst)?, n: 1 }));
+                        let cb = self.tt_storage_of(dst)?;
                         self.insert_after(op_id, Op::TT(TTOp::PushBack { cb, n: 1 }));
                     }
                 }
@@ -1890,7 +1967,13 @@ impl Kernel {
                                         }
                                     };
                                     if !ok {
-                                        panic!("tt_sync_cbs: circular load {op_id:?} feeds non-compute {u:?}");
+                                        return Err(BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!(
+                                                "tt_sync_cbs: circular load {op_id:?} feeds non-compute {u:?}"
+                                            )
+                                            .into(),
+                                        });
                                     }
                                 }
                                 // Fusion-drained loads (every user a
@@ -1941,7 +2024,10 @@ impl Kernel {
                             self.insert_after(op_id, Op::TT(TTOp::PushBack { cb: dcb, n: 1 }));
                         }
                         (None, None) => {
-                            panic!("tt_sync_cbs: staged copy {op_id:?} touches no CB");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_sync_cbs: staged copy {op_id:?} touches no CB").into(),
+                            });
                         }
                     }
                 }
@@ -1983,6 +2069,7 @@ impl Kernel {
         }
 
         self.verify();
+        Ok(())
     }
 
     /// Engine-config init insertion: ports the old `init_math` +
@@ -2193,7 +2280,10 @@ impl Kernel {
                     }
                 };
                 if bad {
-                    panic!("tt_init_math: tile compute {op_id:?} outside the compute section");
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tt_init_math: tile compute {op_id:?} outside the compute section").into(),
+                    });
                 }
                 op_id = next;
                 continue;
@@ -2237,7 +2327,12 @@ impl Kernel {
                                 self.tt_check_scalar_lane(op_id, bop, true, x)?;
                                 InitAction::BinScalarInit(bop)
                             }
-                            (false, false) => panic!("tt_init_math: tiled binary {op_id:?} with no tile lane"),
+                            (false, false) => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tt_init_math: tiled binary {op_id:?} with no tile lane").into(),
+                                });
+                            }
                         }
                     }
                 }
@@ -2272,7 +2367,10 @@ impl Kernel {
                 Op::TT(TTOp::SigmoidTile { cb_in, .. }) => InitAction::SigmoidInit(*cb_in),
                 Op::TT(TTOp::SiluTile { cb_in, .. }) => InitAction::SiluInit(*cb_in),
                 Op::TT(TTOp::MatmulTiles { cb_a, cb_b, .. }) => {
-                    let out = first_pack.unwrap_or_else(|| panic!("tt_init_math: matmul {op_id:?} with no packed CB"));
+                    let out = first_pack.ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tt_init_math: matmul {op_id:?} with no packed CB").into(),
+                    })?;
                     InitAction::MatmulShortInit(*cb_a, *cb_b, out)
                 }
                 Op::TT(TTOp::LLK { .. }) => {
@@ -2281,10 +2379,16 @@ impl Kernel {
                     };
                     let text = asm.as_str();
                     if text.starts_with("matmul_tiles(") {
-                        let out = first_pack.unwrap_or_else(|| panic!("tt_init_math: matmul {op_id:?} with no packed CB"));
+                        let out = first_pack.ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_init_math: matmul {op_id:?} with no packed CB").into(),
+                        })?;
                         InitAction::MatmulInit(ops[0], ops[1], out)
                     } else if text.starts_with("transpose_wh_tile(") {
-                        let out = first_pack.unwrap_or_else(|| panic!("tt_init_math: transpose {op_id:?} with no packed CB"));
+                        let out = first_pack.ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_init_math: transpose {op_id:?} with no packed CB").into(),
+                        })?;
                         InitAction::TransposeInit(ops[0], out)
                     } else {
                         // User asm / startup template: no init.
@@ -2401,7 +2505,12 @@ impl Kernel {
                         BOp::Div => "div_binary_tile_init();",
                         BOp::Max => "binary_max_tile_init();",
                         BOp::BitShiftLeft | BOp::BitShiftRight => "binary_shift_tile_init();",
-                        _ => panic!("tt_init_math: {bop:?} has no init call"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_init_math: {bop:?} has no init call").into(),
+                            });
+                        }
                     };
                     asm_before(self, op_id, init, &[]);
                 }
@@ -2410,7 +2519,12 @@ impl Kernel {
                         BOp::Add | BOp::Sub | BOp::Mul | BOp::Div => "binop_with_scalar_tile_init();",
                         BOp::BitShiftLeft => "left_shift_tile_init();",
                         BOp::BitShiftRight => "right_shift_tile_init();",
-                        _ => panic!("tt_init_math: scalar init for {bop:?} has no init call"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_init_math: scalar init for {bop:?} has no init call").into(),
+                            });
+                        }
                     };
                     asm_before(self, op_id, init, &[]);
                 }
@@ -2419,20 +2533,23 @@ impl Kernel {
                     /// `typecast_tile_init<in, out>` template args). This is NOT the CB
                     /// descriptor code. An unmappable dtype panics — mirrors the old
                     /// render error at the constructor, the exact spot.
-                    fn tt_tile_fmt(dtype: DType) -> u32 {
+                    fn tt_tile_fmt(dtype: DType) -> Result<u32, BackendError> {
                         match dtype {
-                            DType::F32 => 0,
-                            DType::F16 | DType::BF16 => 5,
-                            DType::I32 => 8,
-                            DType::U16 => 9,
-                            DType::I8 => 14,
-                            DType::U32 => 24,
-                            DType::F8E4M3 => 26,
-                            DType::U8 => 30,
-                            dt => panic!("tt_tile_fmt: dtype {dt:?} has no tt tile format"),
+                            DType::F32 => Ok(0),
+                            DType::F16 | DType::BF16 => Ok(5),
+                            DType::I32 => Ok(8),
+                            DType::U16 => Ok(9),
+                            DType::I8 => Ok(14),
+                            DType::U32 => Ok(24),
+                            DType::F8E4M3 => Ok(26),
+                            DType::U8 => Ok(30),
+                            dt => Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_tile_fmt: dtype {dt:?} has no tt tile format").into(),
+                            }),
                         }
                     }
-                    let template = format!("typecast_tile_init<{}, {}>();", tt_tile_fmt(in_dtype), tt_tile_fmt(out_dtype));
+                    let template = format!("typecast_tile_init<{}, {}>();", tt_tile_fmt(in_dtype)?, tt_tile_fmt(out_dtype)?);
                     asm_before(self, op_id, &template, &[]);
                 }
                 InitAction::PackReconfig(cb) => {
@@ -2440,11 +2557,18 @@ impl Kernel {
                     // Packing the pending acc closes it.
                     if pending_acc.is_some() {
                         let Op::Store { src: x, .. } = self.ops[op_id].op else {
-                            unreachable!("tt_init_math: pack is a Store");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_init_math: pack {op_id:?} is not a Store").into(),
+                            });
                         };
                         if acc_values.contains(&x) {
-                            let unlock = last_math_unlock
-                                .unwrap_or_else(|| panic!("tt_init_math: pack {op_id:?} without an open MathUnlock"));
+                            let Some(unlock) = last_math_unlock else {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tt_init_math: pack {op_id:?} without an open MathUnlock").into(),
+                                });
+                            };
                             self.insert_before(unlock, Op::TT(TTOp::ReduceUninit));
                             pending_acc = None;
                             acc_values.clear();
@@ -2470,7 +2594,12 @@ impl Kernel {
                     let op_name = match rop {
                         BOp::Max => "PoolType::MAX",
                         BOp::Add => "PoolType::SUM",
-                        _ => panic!("tt_init_math: reduce op {rop:?} has no init call"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_init_math: reduce op {rop:?} has no init call").into(),
+                            });
+                        }
                     };
                     let dim_name = match kind {
                         TileDim::Row => "ReduceDim::REDUCE_ROW",
@@ -2491,7 +2620,12 @@ impl Kernel {
                         (BOp::Mul, TileDim::Row) => "mul_bcast_rows_init_short",
                         (BOp::Mul, TileDim::Col) => "mul_bcast_cols_init_short",
                         (BOp::Mul, TileDim::Scalar) => "mul_tiles_bcast_scalar_init_short",
-                        _ => panic!("tt_init_math: broadcast ({bop:?}, {kind:?}) has no init call"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_init_math: broadcast ({bop:?}, {kind:?}) has no init call").into(),
+                            });
+                        }
                     };
                     let template = format!("{init}({{0}}, {{1}});");
                     asm_before(self, op_id, &template, &[cb_a, cb_b]);
@@ -2630,7 +2764,7 @@ impl Kernel {
     ///   through provenance);
     /// - a circular load with no users at all is a drain pop: pop
     ///   after the load itself.
-    pub fn tt_place_pops(&mut self) {
+    pub fn tt_place_pops(&mut self) -> Result<(), BackendError> {
         // Users + positions + sections.
         let mut users: Map<OpId, Vec<OpId>> = Map::default();
         let mut pos_index: Map<OpId, usize> = Map::default();
@@ -2946,7 +3080,10 @@ impl Kernel {
                             // unpack — malformed.
                             let is_drain = matches!(self.ops[op_id].op, Op::Copy { dst, .. } if !self.is_circular_base(dst));
                             if !is_drain {
-                                panic!("tt_place_pops: CB→CB copy {op_id:?} outside the compute section");
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tt_place_pops: CB→CB copy {op_id:?} outside the compute section").into(),
+                                });
                             }
                         }
                         // Indexed-window reads carry no per-trip pop:
@@ -2969,7 +3106,12 @@ impl Kernel {
                             }
                         }
                         (false, true) => {}
-                        _ => panic!("tt_place_pops: staged copy {op_id:?} is not DRAM↔CB traffic"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_place_pops: staged copy {op_id:?} is not DRAM↔CB traffic").into(),
+                            });
+                        }
                     }
                 }
                 Op::TT(TTOp::LLK { .. })
@@ -2988,11 +3130,17 @@ impl Kernel {
                         }
                     }
                     for cb in seen {
-                        let left = remaining
-                            .get_mut(&cb)
-                            .unwrap_or_else(|| panic!("tt_place_pops: LLK {op_id:?} consumes uncounted page {cb:?}"));
+                        let Some(left) = remaining.get_mut(&cb) else {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_place_pops: LLK {op_id:?} consumes uncounted page {cb:?}").into(),
+                            });
+                        };
                         if *left == 0 {
-                            panic!("tt_place_pops: use beyond counted total on CB{cb:?}");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_place_pops: use beyond counted total on CB{cb:?}").into(),
+                            });
                         }
                         *left -= 1;
                         if *left == 0 {
@@ -3036,7 +3184,10 @@ impl Kernel {
             op_id = next;
         }
         if remaining.values().any(|r| *r != 0) {
-            panic!("tt_place_pops: partially consumed pages at end of stream");
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tt_place_pops: partially consumed pages at end of stream").into(),
+            });
         }
         for (wait, cb) in deferred_drains {
             self.insert_after(wait, Op::TT(TTOp::PopFront { cb, n: 1 }));
@@ -3064,7 +3215,10 @@ impl Kernel {
                 end = self.next_op(end);
             }
             if end.is_null() {
-                panic!("tt_place_pops: batch loop {loop_op:?} has no EndLoop");
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tt_place_pops: batch loop {loop_op:?} has no EndLoop").into(),
+                });
             }
             self.insert_after(end, Op::TT(TTOp::PopFront { cb, n: total as u8 }));
         }
@@ -3101,16 +3255,30 @@ impl Kernel {
                     && popped.get(&base).copied().unwrap_or(0) > 0
                 {
                     let pages = popped[&base];
-                    let dim = self
-                        .resolve_const(index)
-                        .and_then(|c| c.as_dim())
-                        .unwrap_or_else(|| panic!("tt_place_pops: rebase of non-const CB index at {scan:?}"));
+                    let dim = match self.resolve_const(index).and_then(|c| c.as_dim()) {
+                        Some(d) => d,
+                        None => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_place_pops: rebase of non-const CB index at {scan:?}").into(),
+                            });
+                        }
+                    };
                     if dim < 0 {
-                        panic!("tt_place_pops: negative CB index at {scan:?}");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_place_pops: negative CB index at {scan:?}").into(),
+                        });
                     }
-                    let rebased = (dim as u64)
-                        .checked_sub(pages * 1024)
-                        .unwrap_or_else(|| panic!("tt_place_pops: rebase underflows CB{base:?} at {scan:?}"));
+                    let rebased = match (dim as u64).checked_sub(pages * 1024) {
+                        Some(r) => r,
+                        None => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_place_pops: rebase underflows CB{base:?} at {scan:?}").into(),
+                            });
+                        }
+                    };
                     if rebased != dim as u64 {
                         let nc = self.insert_const_idx_before(scan, rebased as i64);
                         match &mut self.ops[scan].op {
@@ -3124,8 +3292,9 @@ impl Kernel {
             scan = next;
         }
 
-        self.tt_fifo_check();
+        self.tt_fifo_check()?;
         self.verify();
+        Ok(())
     }
 
     /// DST lock firewall: port of the tenstorrent2 stream verifier's
@@ -3134,7 +3303,7 @@ impl Kernel {
     /// FIFO was ported back). Runs at the end of the TT
     /// device-epilogue branch: whatever lowering did, lock pairing
     /// must hold, or the sim wedges at launch with no message.
-    /// Loud panic at the exact op.
+    /// Loud error at the exact op (skips the candidate in search).
     ///
     /// Checks (compute section only): MathLock acquires from Unlocked
     /// (or Pack), MathUnlock commits a held MATH lock, PackLock waits
@@ -3142,7 +3311,7 @@ impl Kernel {
     /// op outside the compute section; no section ends (or stream
     /// ends) with the DST held. Lock ORDER (commit-before-wait) is
     /// NOT checked here — known gap, needs its own rule.
-    pub fn tt_verify(&self) {
+    pub fn tt_verify(&self) -> Result<(), BackendError> {
         #[derive(PartialEq)]
         enum Lock {
             Unlocked,
@@ -3156,40 +3325,101 @@ impl Kernel {
         while !id.is_null() {
             match self.at(id) {
                 Op::TT(TTOp::EndReader) => {
-                    assert!(section == 0, "tt_verify: duplicate EndReader at {id:?}");
-                    assert!(lock == Lock::Unlocked, "tt_verify: reader section ends with DST locked at {id:?}");
+                    if section != 0 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: duplicate EndReader at {id:?}").into(),
+                        });
+                    }
+                    if lock != Lock::Unlocked {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: reader section ends with DST locked at {id:?}").into(),
+                        });
+                    }
                     section = 1;
                     seen_reader = true;
                 }
                 Op::TT(TTOp::EndCompute) => {
-                    assert!(seen_reader, "tt_verify: EndCompute without EndReader at {id:?}");
-                    assert!(section == 1, "tt_verify: duplicate EndCompute at {id:?}");
-                    assert!(lock == Lock::Unlocked, "tt_verify: compute section ends with DST locked at {id:?}");
+                    if !seen_reader {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: EndCompute without EndReader at {id:?}").into(),
+                        });
+                    }
+                    if section != 1 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: duplicate EndCompute at {id:?}").into(),
+                        });
+                    }
+                    if lock != Lock::Unlocked {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: compute section ends with DST locked at {id:?}").into(),
+                        });
+                    }
                     section = 2;
                 }
                 Op::TT(TTOp::MathLock) => {
-                    assert!(section == 1, "tt_verify: DST lock outside compute at {id:?}");
-                    assert!(lock == Lock::Unlocked || lock == Lock::Pack, "tt_verify: acquire with DST already held at {id:?}");
+                    if section != 1 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: DST lock outside compute at {id:?}").into(),
+                        });
+                    }
+                    if !(lock == Lock::Unlocked || lock == Lock::Pack) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: acquire with DST already held at {id:?}").into(),
+                        });
+                    }
                     lock = Lock::Math;
                 }
                 Op::TT(TTOp::MathUnlock) => {
-                    assert!(lock == Lock::Math, "tt_verify: commit without MATH lock at {id:?}");
+                    if lock != Lock::Math {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: commit without MATH lock at {id:?}").into(),
+                        });
+                    }
                     lock = Lock::Unlocked;
                 }
                 Op::TT(TTOp::PackLock) => {
-                    assert!(section == 1, "tt_verify: DST lock outside compute at {id:?}");
-                    assert!(lock == Lock::Unlocked, "tt_verify: pack wait without release at {id:?}");
+                    if section != 1 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: DST lock outside compute at {id:?}").into(),
+                        });
+                    }
+                    if lock != Lock::Unlocked {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: pack wait without release at {id:?}").into(),
+                        });
+                    }
                     lock = Lock::Pack;
                 }
                 Op::TT(TTOp::PackUnlock) => {
-                    assert!(lock == Lock::Pack, "tt_verify: release without PACK lock at {id:?}");
+                    if lock != Lock::Pack {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_verify: release without PACK lock at {id:?}").into(),
+                        });
+                    }
                     lock = Lock::Unlocked;
                 }
                 _ => {}
             }
             id = self.next_op(id);
         }
-        assert!(lock == Lock::Unlocked, "tt_verify: stream ends with DST locked");
+        if lock != Lock::Unlocked {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tt_verify: stream ends with DST locked").into(),
+            });
+        }
+        Ok(())
     }
 
     /// 64-byte congruence for one DRAM-touching copy: the board
@@ -3199,59 +3429,73 @@ impl Kernel {
     /// same units render_copy emits. Affine indices prove by stride
     /// (get_strides, bare var = stride 1); anything else is
     /// unprovable and rejected, never silently skipped.
-    fn fifo_check_copy(&self, op_id: OpId, src: OpId, src_idx: OpId, dst: OpId, dst_idx: OpId, unit: i64) {
+    fn fifo_check_copy(&self, op_id: OpId, src: OpId, src_idx: OpId, dst: OpId, dst_idx: OpId, unit: i64) -> Result<(), BackendError> {
         let is_dram = |base: OpId| matches!(self.at(base), Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
         if !(is_dram(src) || is_dram(dst)) {
-            return;
+            return Ok(());
         }
-        let elsize = |base: OpId| match self.at(base) {
-            Op::Param { dtype, .. } | Op::Storage { dtype, .. } => {
-                let bits = dtype.bit_size();
-                if bits % 8 != 0 {
-                    panic!("tt_fifo_check: copy {op_id:?} side {base:?} has sub-byte dtype {dtype:?}");
+        let elsize = |base: OpId| -> Result<i64, BackendError> {
+            match self.at(base) {
+                Op::Param { dtype, .. } | Op::Storage { dtype, .. } => {
+                    let bits = dtype.bit_size();
+                    if bits % 8 != 0 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_fifo_check: copy {op_id:?} side {base:?} has sub-byte dtype {dtype:?}").into(),
+                        });
+                    }
+                    Ok((bits / 8) as i64)
                 }
-                (bits / 8) as i64
+                other => Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tt_fifo_check: copy {op_id:?} side {base:?} is not a buffer: {other:?}").into(),
+                }),
             }
-            other => panic!("tt_fifo_check: copy {op_id:?} side {base:?} is not a buffer: {other:?}"),
         };
         // Affine decomposition: per-var element strides plus the
         // const base (the NULL entry); a null index is const 0.
-        let decomp = |idx: OpId| -> Map<OpId, i64> {
+        let decomp = |idx: OpId| -> Result<Map<OpId, i64>, BackendError> {
             if idx.is_null() {
-                return Map::default();
+                return Ok(Map::default());
             }
             self.get_strides(idx)
-                .unwrap_or_else(|| panic!("tt_fifo_check: copy {op_id:?} has unprovable index {idx:?}"))
-                .into_iter()
-                .map(|(v, (_, st))| (v, st))
-                .collect()
+                .map(|m| m.into_iter().map(|(v, (_, st))| (v, st)).collect())
+                .ok_or_else(|| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tt_fifo_check: copy {op_id:?} has unprovable index {idx:?}").into(),
+                })
         };
-        let sm = decomp(src_idx);
-        let dm = decomp(dst_idx);
-        let es = elsize(src);
-        let ed = elsize(dst);
-        let check = |var: &str, ss: i64, ds: i64| {
+        let sm = decomp(src_idx)?;
+        let dm = decomp(dst_idx)?;
+        let es = elsize(src)?;
+        let ed = elsize(dst)?;
+        let check = |var: &str, ss: i64, ds: i64| -> Result<(), BackendError> {
             if (ss * unit * es - ds * unit * ed).rem_euclid(64) != 0 {
-                panic!(
-                    "tt_fifo_check: copy {op_id:?} is 64-byte incongruent at {var}: src {ss} vs dst {ds} (unit {unit}, elsize {es}/{ed})"
-                );
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!(
+                        "tt_fifo_check: copy {op_id:?} is 64-byte incongruent at {var}: src {ss} vs dst {ds} (unit {unit}, elsize {es}/{ed})"
+                    )
+                    .into(),
+                });
             }
+            Ok(())
         };
         for (v, ss) in sm.iter() {
             if v.is_null() {
                 continue;
             }
-            check(&std::format!("{v:?}"), *ss, dm.get(v).copied().unwrap_or(0));
+            check(&std::format!("{v:?}"), *ss, dm.get(v).copied().unwrap_or(0))?;
         }
         for (v, ds) in dm.iter() {
             if v.is_null() || sm.contains_key(v) {
                 continue;
             }
-            check(&std::format!("{v:?}"), 0, *ds);
+            check(&std::format!("{v:?}"), 0, *ds)?;
         }
         let bs = sm.get(&OpId::NULL).copied().unwrap_or(0);
         let bd = dm.get(&OpId::NULL).copied().unwrap_or(0);
-        check("base", bs, bd);
+        check("base", bs, bd)
     }
 
     /// FIFO simulation over the placed sync ops (ports the old
@@ -3260,9 +3504,9 @@ impl Kernel {
     /// and the symbolic-loop traffic error. Loop trip counts multiply
     /// straight-line counts; boolean loops (conditionals) don't;
     /// non-const non-bool loop lengths are symbolic and reject any
-    /// sync traffic under them. Read-only; panics loudly, never
-    /// launches a stalled kernel.
-    pub(crate) fn tt_fifo_check(&self) {
+    /// sync traffic under them. Read-only; errors loudly, never
+    /// launches a stalled kernel (skips the candidate in search).
+    pub(crate) fn tt_fifo_check(&self) -> Result<(), BackendError> {
         #[derive(Default)]
         struct Fifo {
             reserved: u64,
@@ -3283,10 +3527,13 @@ impl Kernel {
         let mut sym_loops: u32 = 0;
         let mut run_cb: Option<OpId> = None;
         let mut run_tiles: u64 = 0;
-        let depth_of = |kernel: &Kernel, cb: OpId| -> u64 {
+        let depth_of = |kernel: &Kernel, cb: OpId| -> Result<u64, BackendError> {
             match kernel.at(cb) {
-                Op::Storage { len, .. } => (*len as u64) / 1024,
-                other => panic!("tt_fifo_check: CB {cb:?} is not a storage op, got {other:?}"),
+                Op::Storage { len, .. } => Ok((*len as u64) / 1024),
+                other => Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tt_fifo_check: CB {cb:?} is not a storage op, got {other:?}").into(),
+                }),
             }
         };
         let mut op_id = self.head;
@@ -3295,18 +3542,28 @@ impl Kernel {
                 Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) => {
                     for (cb, f) in fifos.iter() {
                         if f.reserved != 0 {
-                            panic!("tt_fifo_check: CB{cb:?} reserve open at section end");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_fifo_check: CB{cb:?} reserve open at section end").into(),
+                            });
                         }
                         if f.waited != 0 {
-                            panic!("tt_fifo_check: CB{cb:?} wait open at section end");
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_fifo_check: CB{cb:?} wait open at section end").into(),
+                            });
                         }
                     }
                     if let Some(prev) = run_cb {
-                        if run_tiles > depth_of(self, prev) {
-                            panic!(
-                                "tt_fifo_check: producer pushes {run_tiles} tiles to CB{prev:?} (depth {}) before any other CB",
-                                depth_of(self, prev)
-                            );
+                        let depth = depth_of(self, prev)?;
+                        if run_tiles > depth {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!(
+                                    "tt_fifo_check: producer pushes {run_tiles} tiles to CB{prev:?} (depth {depth}) before any other CB"
+                                )
+                                .into(),
+                            });
                         }
                         run_cb = None;
                         run_tiles = 0;
@@ -3319,7 +3576,12 @@ impl Kernel {
                                 mult *= t as u64;
                                 stack.push(Frame::Trip(t as u64));
                             }
-                            None => panic!("tt_fifo_check: negative loop length under {op_id:?}"),
+                            None => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("tt_fifo_check: negative loop length under {op_id:?}").into(),
+                                });
+                            }
                         }
                     } else if self.dtype(len) == DType::Bool {
                         stack.push(Frame::Conditional);
@@ -3332,37 +3594,58 @@ impl Kernel {
                     Some(Frame::Trip(t)) => mult /= t,
                     Some(Frame::Symbolic) => sym_loops -= 1,
                     Some(Frame::Conditional) => {}
-                    None => panic!("tt_fifo_check: EndLoop without Loop at {op_id:?}"),
+                    None => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_fifo_check: EndLoop without Loop at {op_id:?}").into(),
+                        });
+                    }
                 },
                 Op::TT(TTOp::ReserveBack { cb, n }) => {
                     if sym_loops != 0 {
-                        panic!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}").into(),
+                        });
                     }
                     let f = fifos.entry(cb).or_default();
                     if f.reserved != 0 || f.waited != 0 {
-                        panic!("tt_fifo_check: reserve CB{cb:?} with open transaction at {op_id:?}");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_fifo_check: reserve CB{cb:?} with open transaction at {op_id:?}").into(),
+                        });
                     }
                     f.reserved = u64::from(n) * mult;
                 }
                 Op::TT(TTOp::PushBack { cb, n }) => {
                     if sym_loops != 0 {
-                        panic!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}").into(),
+                        });
                     }
                     let need = u64::from(n) * mult;
                     let f = fifos.entry(cb).or_default();
                     if f.reserved < need {
-                        panic!("tt_fifo_check: push CB{cb:?} with {} reserved at {op_id:?}", f.reserved);
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_fifo_check: push CB{cb:?} with {} reserved at {op_id:?}", f.reserved).into(),
+                        });
                     }
                     f.reserved -= need;
                     f.avail += need;
                     f.pushed += need;
                     if run_cb != Some(cb) {
                         if let Some(prev) = run_cb {
-                            if run_tiles > depth_of(self, prev) {
-                                panic!(
-                                    "tt_fifo_check: producer pushes {run_tiles} tiles to CB{prev:?} (depth {}) before any other CB",
-                                    depth_of(self, prev)
-                                );
+                            let depth = depth_of(self, prev)?;
+                            if run_tiles > depth {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!(
+                                        "tt_fifo_check: producer pushes {run_tiles} tiles to CB{prev:?} (depth {depth}) before any other CB"
+                                    )
+                                    .into(),
+                                });
                             }
                         }
                         run_cb = Some(cb);
@@ -3372,24 +3655,36 @@ impl Kernel {
                 }
                 Op::TT(TTOp::WaitFront { cb, n }) => {
                     if sym_loops != 0 {
-                        panic!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}").into(),
+                        });
                     }
                     let need = u64::from(n) * mult;
                     let f = fifos.entry(cb).or_default();
                     if f.avail < need {
-                        panic!("tt_fifo_check: wait CB{cb:?} with {} available at {op_id:?}", f.avail);
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_fifo_check: wait CB{cb:?} with {} available at {op_id:?}", f.avail).into(),
+                        });
                     }
                     f.waited += need;
                     f.avail -= need;
                 }
                 Op::TT(TTOp::PopFront { cb, n }) => {
                     if sym_loops != 0 {
-                        panic!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}");
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}").into(),
+                        });
                     }
                     let need = u64::from(n) * mult;
                     let f = fifos.entry(cb).or_default();
                     if f.waited < need {
-                        panic!("tt_fifo_check: pop CB{cb:?} with {} waited at {op_id:?}", f.waited);
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tt_fifo_check: pop CB{cb:?} with {} waited at {op_id:?}", f.waited).into(),
+                        });
                     }
                     f.waited -= need;
                     f.popped += need;
@@ -3398,34 +3693,50 @@ impl Kernel {
                     let unit: i64 = match self.shape(op_id).as_slice() {
                         [_, _] => 1024,
                         [] | [_] => 1,
-                        _ => panic!("tt_fifo_check: copy {op_id:?} has non-tile/vector access shape"),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("tt_fifo_check: copy {op_id:?} has non-tile/vector access shape").into(),
+                            });
+                        }
                     };
-                    self.fifo_check_copy(op_id, src, src_idx, dst, dst_idx, unit);
+                    self.fifo_check_copy(op_id, src, src_idx, dst, dst_idx, unit)?;
                 }
                 Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => {
                     // Staged traffic: lane-free bases, unit elementwise.
-                    self.fifo_check_copy(op_id, src, src_idx, dst, dst_idx, 1);
+                    self.fifo_check_copy(op_id, src, src_idx, dst, dst_idx, 1)?;
                 }
                 _ => {}
             }
             op_id = self.next_op(op_id);
         }
         if !stack.is_empty() {
-            panic!("tt_fifo_check: kernel ends inside a loop");
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tt_fifo_check: kernel ends inside a loop").into(),
+            });
         }
         if let Some(prev) = run_cb {
-            if run_tiles > depth_of(self, prev) {
-                panic!(
-                    "tt_fifo_check: producer pushes {run_tiles} tiles to CB{prev:?} (depth {}) before any other CB",
-                    depth_of(self, prev)
-                );
+            let depth = depth_of(self, prev)?;
+            if run_tiles > depth {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!(
+                        "tt_fifo_check: producer pushes {run_tiles} tiles to CB{prev:?} (depth {depth}) before any other CB"
+                    )
+                    .into(),
+                });
             }
         }
         for (cb, f) in fifos.iter() {
             if f.pushed != f.popped {
-                panic!("tt_fifo_check: CB{cb:?} pushed {} but popped {}", f.pushed, f.popped);
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tt_fifo_check: CB{cb:?} pushed {} but popped {}", f.pushed, f.popped).into(),
+                });
             }
         }
+        Ok(())
     }
 
     /// Chase a `Load`/`Store`/`Copy` operand through its index expression
@@ -3434,11 +3745,11 @@ impl Kernel {
     /// the Register storage in its operands (its DST slot); an `LLK` with
     /// no Register operand names no slot — loud panic. The index is
     /// not needed (render uses slot 0).
-    pub(crate) fn tt_storage_of(&self, op_id: OpId) -> OpId {
+    pub(crate) fn tt_storage_of(&self, op_id: OpId) -> Result<OpId, BackendError> {
         match self.at(op_id) {
             Op::Load { src, .. } | Op::Copy { src, .. } => self.tt_storage_of(*src),
             Op::Store { dst, .. } => self.tt_storage_of(*dst),
-            Op::Storage { .. } | Op::Param { .. } => op_id,
+            Op::Storage { .. } | Op::Param { .. } => Ok(op_id),
             Op::TT(TTOp::LLK { ops, .. }) => {
                 let mut slot = None;
                 for o in ops.iter().copied() {
@@ -3450,12 +3761,21 @@ impl Kernel {
                         break;
                     }
                 }
-                slot.unwrap_or_else(|| panic!("tt_storage_of: LLK {op_id:?} names no Register slot"))
+                slot.ok_or_else(|| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("tt_storage_of: LLK {op_id:?} names no Register slot").into(),
+                })
             }
-            Op::TT(TTOp::ReduceTile { slot, .. }) => *slot,
-            Op::TT(TTOp::MatmulTiles { slot, .. }) => *slot,
-            Op::TT(TTOp::LLKBcast { .. }) => panic!("tt_storage_of: LLKBcast {op_id:?} names no Register slot"),
-            other => panic!("tt_storage_of: {op_id:?} is not a Load/Store/Copy, got {other:?}"),
+            Op::TT(TTOp::ReduceTile { slot, .. }) => Ok(*slot),
+            Op::TT(TTOp::MatmulTiles { slot, .. }) => Ok(*slot),
+            Op::TT(TTOp::LLKBcast { .. }) => Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tt_storage_of: LLKBcast {op_id:?} names no Register slot").into(),
+            }),
+            other => Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tt_storage_of: {op_id:?} is not a Load/Store/Copy, got {other:?}").into(),
+            }),
         }
     }
 
@@ -3560,23 +3880,36 @@ impl Kernel {
             }
             BOp::Add | BOp::Mul => {
                 if !matches!(self.resolve_const(s), Some(Constant::F32(_) | Constant::F16(_) | Constant::BF16(_))) {
-                    panic!("tt_init_math: scalar lane {s:?} is not a foldable float const");
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tt_init_math: scalar lane {s:?} is not a foldable float const").into(),
+                    });
                 }
                 Ok(())
             }
             BOp::Div => {
                 if left {
-                    panic!("tt_init_math: const-first div {id:?} has no scalar call");
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tt_init_math: const-first div {id:?} has no scalar call").into(),
+                    });
                 }
                 if !matches!(self.resolve_const(s), Some(Constant::F32(_) | Constant::F16(_) | Constant::BF16(_))) {
-                    panic!("tt_init_math: scalar lane {s:?} is not a foldable float const");
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("tt_init_math: scalar lane {s:?} is not a foldable float const").into(),
+                    });
                 }
                 Ok(())
             }
-            BOp::Sub => {
-                panic!("tt_init_math: scalar sub {id:?} has no LLK call (the old render rejected it too)")
-            }
-            _ => panic!("tt_init_math: scalar {bop:?} {id:?} has no scalar call"),
+            BOp::Sub => Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tt_init_math: scalar sub {id:?} has no LLK call (the old render rejected it too)").into(),
+            }),
+            _ => Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tt_init_math: scalar {bop:?} {id:?} has no scalar call").into(),
+            }),
         }
     }
 }
