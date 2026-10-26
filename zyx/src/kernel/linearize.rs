@@ -485,7 +485,8 @@ impl Kernel {
                         pc = self.and(m, pc);
                     }
                     let z = self.push_back(Op::Const(value));
-                    self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
+                    let zero = self.push_back(Op::Const(value.dtype().zero_constant()));
+                    self.ops[op_id].op = Op::Select { cond: pc, if_true: z, if_false: zero };
                 }
                 Op::Param { dtype, kind, shape, id } => {
                     // Metadata-only param: referenced only as a shape descriptor
@@ -565,9 +566,10 @@ impl Kernel {
                             // the pad mask — no storage insert, no load. A fresh
                             // param is inserted so the param order (which scalar
                             // args bind to) is preserved, then the value is
-                            // multiplied by the mask.
+                            // gated by the mask (zero where masked off).
                             let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, id });
-                            self.ops[op_id].op = Op::Binary { x: pc, y: src, bop: BOp::Mul };
+                            let zero = self.insert_before(op_id, Op::Const(dtype.zero_constant()));
+                            self.ops[op_id].op = Op::Select { cond: pc, if_true: src, if_false: zero };
                         }
                         ParamKind::Global => {
                             let view = views.remove(&op_id).unwrap();
@@ -610,11 +612,13 @@ impl Kernel {
                             // Insert the ro source storage immediately before this op so the
                             // global param order (which buffer args bind to) is preserved.
                             let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, id });
-                            // Zero the offset where the padding condition fails, so the load
-                            // always reads in-bounds, then zero the loaded value itself.
-                            let offset = self.mul(pc, index);
+                            // Clamp the offset where the padding condition fails, so the load
+                            // always reads in-bounds, then gate the loaded value itself.
+                            let zero_idx = self.push_back(Op::Const(Constant::idx(0)));
+                            let offset = self.select(pc, index, zero_idx);
                             let z = self.load(src, offset);
-                            self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
+                            let zero = self.push_back(Op::Const(dtype.zero_constant()));
+                            self.ops[op_id].op = Op::Select { cond: pc, if_true: z, if_false: zero };
                         }
                     }
                 }

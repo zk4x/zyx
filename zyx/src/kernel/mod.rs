@@ -2238,6 +2238,12 @@ impl Kernel {
                     })
                 }
                 Op::Loop { len } => values.get(len).copied().flatten(),
+                // A constant predicate picks its arm outright (same as
+                // folding); an unknown predicate is runtime data.
+                Op::Select { cond, if_true, if_false } => match values.get(cond).copied().flatten() {
+                    Some(Constant::Bool(p)) => values.get(if p { if_true } else { if_false }).copied().flatten(),
+                    _ => None,
+                },
                 &Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => values.get(&len).copied().flatten(),
                     RangeKind::Local(len) => Some(Constant::idx(len)),
