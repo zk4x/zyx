@@ -25,7 +25,7 @@
 use crate::{
     Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, RangeKind},
+    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
 };
 
@@ -124,16 +124,122 @@ impl Kernel {
                 };
                 self.ops[axis].op = Op::Range { axis: range_axis, kind: new_kind };
 
-                // TT pads lengths only: physical tile buffers absorb halo
-                // by construction, and guard loops would make split refuse
-                // the axis (see tt_tile). Other backends execute seed
-                // indices literally, so guards stay load-bearing there.
+                // TT skips guards only for axes indexing the last two
+                // logical dims (intra-tile halo, absorbed by tile buffers
+                // + narrowing; guard loops would also make split refuse
+                // the axis, see tt_tile). Anything else keeps the generic
+                // guards below, which TT lowering rejects loudly instead
+                // of aliasing into neighboring tiles' live data. Other
+                // backends execute seed indices literally, so guards stay
+                // load-bearing there.
                 #[cfg(feature = "tenstorrent")]
                 let tt = matches!(self.dev, crate::backend::Dev::TT(_));
                 #[cfg(not(feature = "tenstorrent"))]
                 let tt = false;
                 if tt {
-                    return;
+                    // Last-two-dims gate: every dependent DRAM traffic
+                    // index must address this axis at a last-two-dim
+                    // stride. Multiples, outer dims, symbolic dims,
+                    // unprovable indices, and non-DRAM traffic keep the
+                    // generic guards (loud in TT lowering).
+                    let mut skip = true;
+                    let mut op_id = self.next_op(axis);
+                    while !op_id.is_null() && skip {
+                        let next = self.next_op(op_id);
+                        let mut traffic: Vec<(OpId, OpId)> = Vec::new();
+                        match self.ops[op_id].op.clone() {
+                            Op::Load { src, src_idx } => traffic.push((src, src_idx)),
+                            Op::Store { dst, dst_idx, .. } => traffic.push((dst, dst_idx)),
+                            Op::Copy { src, src_idx, dst, dst_idx } => {
+                                traffic.push((src, src_idx));
+                                traffic.push((dst, dst_idx));
+                            }
+                            _ => {}
+                        }
+                        for (base, idx) in traffic {
+                            if idx.is_null() || !self.depends_on(idx, axis, &mut Set::default()) {
+                                continue;
+                            }
+                            // DRAM traffic only.
+                            let shape = match self.ops[base].op.clone() {
+                                Op::Param { shape, kind: ParamKind::Global | ParamKind::GlobalMut, .. } => shape,
+                                _ => {
+                                    skip = false;
+                                    break;
+                                }
+                            };
+                            if shape.is_null() {
+                                skip = false;
+                                break;
+                            }
+                            // Logical dims, all concrete.
+                            let desc = match self.ops[shape].op {
+                                Op::Stack { ref ops } => ops.iter().copied().collect::<Vec<_>>(),
+                                Op::Const(_) => vec![shape],
+                                _ => {
+                                    skip = false;
+                                    break;
+                                }
+                            };
+                            let mut dims: Vec<Dim> = Vec::new();
+                            for d in desc {
+                                match self.resolve_const(d).and_then(Constant::as_dim) {
+                                    Some(v) => dims.push(v),
+                                    None => {
+                                        skip = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !skip || dims.is_empty() {
+                                skip = false;
+                                break;
+                            }
+                            // Row-major strides; the safe set is the last
+                            // two (rank 1: the single dim). Checked
+                            // multiply: overflow keeps guards.
+                            let n = dims.len();
+                            let mut strides = vec![0 as Dim; n];
+                            strides[n - 1] = 1;
+                            let mut acc = 1 as Dim;
+                            let mut bad = false;
+                            for i in (0..n - 1).rev() {
+                                match acc.checked_mul(dims[i + 1]) {
+                                    Some(v) => {
+                                        acc = v;
+                                        strides[i] = v;
+                                    }
+                                    None => {
+                                        bad = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if bad {
+                                skip = false;
+                                break;
+                            }
+                            let Some(stride_map) = self.get_strides(idx) else {
+                                skip = false;
+                                break;
+                            };
+                            let axis_stride = match stride_map.get(&axis) {
+                                Some((_, s)) => *s,
+                                None => {
+                                    skip = false;
+                                    break;
+                                }
+                            };
+                            if axis_stride != strides[n - 1] && (n < 2 || axis_stride != strides[n - 2]) {
+                                skip = false;
+                                break;
+                            }
+                        }
+                        op_id = next;
+                    }
+                    if skip {
+                        return;
+                    }
                 }
 
                 // 2. Walk all ops after this axis and guard the loads and

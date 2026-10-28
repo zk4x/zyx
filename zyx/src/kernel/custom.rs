@@ -128,16 +128,8 @@ impl Kernel {
     /// ```
     pub fn compile(mut self) -> Result<CompiledKernel, ZyxError> {
         self.linearize();
-        // After linearization the parameter shapes are no longer meaningful
-        // (the same clear happens inside `linearize` for kernels it processes);
-        // clear them here too so kernels that skip linearization (already
-        // lowered by hand) don't require shape consts to be ordered before the
-        // params that reference them.
-        for node in self.ops.values_mut() {
-            if let Op::Param { shape, .. } = &mut node.op {
-                *shape = OpId::NULL;
-            }
-        }
+        // Parameter shapes are kept (see `linearize`); backends
+        // ignore them (bare-pointer convention).
 
         self.instruction_schedule();
         self.constant_folding();

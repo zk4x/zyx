@@ -239,6 +239,165 @@ impl Kernel {
         Ok(())
     }
 
+    /// TT reindex: canonicalize single-tile row reductions to the Row
+    /// shape the lowering consumes (`sum([32, 32] tile)` -> `[32]`).
+    /// Runs right after `tt_tile` (post-search: baked physical pitches
+    /// must never see `merge`/`algebraic` reassociation), before
+    /// `tt_lower_llks`.
+    ///
+    /// v1 handles one template only: a single `Reduce(Add)` over a
+    /// single rank-3 DRAM load (`[32, 32, 32]`), reducing over a
+    /// stride-1 lane axis of length 32, with exactly two further
+    /// length-32 lane axes (row stride `W > 1`, dropped stride a
+    /// multiple of `W`), in a kernel with no `Loop`/`Group` ranges
+    /// (single tile: every logical extent fits 32), one DRAM load,
+    /// one DRAM store. A logical-pitch Row template (rank-2 load,
+    /// result `[32]`) gets the same pitch substitution with no axis
+    /// dropped. Everything else passes through untouched and skips
+    /// downstream exactly as today.
+    ///
+    /// The rewrite keeps the stride-1 (K) and stride-`W` (row) axes
+    /// and rebuilds the traffic indices at the physical tile pitch:
+    /// load `row * 32 + k`, store `row`. Dropped lanes are
+    /// nonnegative and their stride is a multiple of `W`, so they
+    /// only ever shift rows upward: the kept 0..32 rows cover every
+    /// logical row of a single tile, and dropped positions are
+    /// padding/OOB by the single-tile gate. Anything unprovable
+    /// (non-affine index, ambiguous strides, extra traffic) passes
+    /// through; the lowering gates below stay loud.
+    pub fn tt_reindex(&mut self) -> Result<(), BackendError> {
+        if !self.device_info().tenstorrent {
+            return Ok(());
+        }
+        // Single-tile kernels only: loops and groups mean extents or
+        // multi-tile traffic this rewrite does not model.
+        for (_, x) in self.iter_unordered() {
+            match x {
+                Op::Loop { .. } => return Ok(()),
+                Op::Range { kind: RangeKind::Group(_), .. } => return Ok(()),
+                _ => {}
+            }
+        }
+        // Exactly one reduce, one DRAM load, one DRAM store.
+        let mut reduces: Vec<OpId> = Vec::new();
+        let mut loads: Vec<OpId> = Vec::new();
+        let mut stores: Vec<OpId> = Vec::new();
+        let mut id = self.head;
+        for _ in 0..250_000 {
+            if id.is_null() {
+                break;
+            }
+            match self.ops[id].op {
+                Op::Reduce { .. } => reduces.push(id),
+                Op::Load { src: base, .. } => {
+                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
+                        loads.push(id);
+                    }
+                }
+                Op::Store { dst: base, .. } => {
+                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
+                        stores.push(id);
+                    }
+                }
+                _ => {}
+            }
+            id = self.ops[id].next;
+        }
+        if reduces.len() != 1 || loads.len() != 1 || stores.len() != 1 {
+            return Ok(());
+        }
+        let root = reduces[0];
+        let load = loads[0];
+        let store = stores[0];
+        // Reduce(Add) over the DRAM load; the store drains the reduce.
+        let (x, k) = match &self.ops[root].op {
+            Op::Reduce { x, reduce_axis, rop } if matches!(rop, BOp::Add) => (*x, *reduce_axis),
+            _ => return Ok(()),
+        };
+        if x != load {
+            return Ok(());
+        }
+        let ssrc = match &self.ops[store].op {
+            Op::Store { src, .. } => *src,
+            _ => return Ok(()),
+        };
+        if ssrc != root {
+            return Ok(());
+        }
+        // Rank-3 cube to a rank-2 result (axis drop), or a
+        // logical-pitch rank-2 tile to a row (pitch substitution).
+        // Anything else (matmul cubes, scalars) is not this template.
+        let drop3 = self.shape(load) == vec![32, 32, 32] && self.shape(root) == vec![32, 32];
+        let row2 = self.shape(load) == vec![32, 32] && self.shape(root) == vec![32];
+        if !drop3 && !row2 {
+            return Ok(());
+        }
+        let lidx = match self.ops[load].op {
+            Op::Load { src_idx, .. } => src_idx,
+            _ => unreachable!("tt_reindex: load lost its index"),
+        };
+        // Stride anatomy of the load index: the reduce lane at stride
+        // 1, one row axis at stride W, and (cube only) dropped axes at
+        // multiples of W. A const offset must be zero (a nonzero
+        // logical offset is not a physical one); anything else bails.
+        let Some(strides) = self.get_strides(lidx) else {
+            return Ok(());
+        };
+        if !matches!(self.ops[k].op, Op::Unroll { len: 32, .. }) {
+            return Ok(());
+        }
+        match strides.get(&k) {
+            Some((32, 1)) => {}
+            _ => return Ok(()),
+        }
+        let mut rows: Vec<(OpId, Dim)> = Vec::new();
+        for (var, (len, stride)) in strides.iter() {
+            if *var == OpId::NULL {
+                if *stride != 0 {
+                    return Ok(());
+                }
+                continue;
+            }
+            if *var == k {
+                continue;
+            }
+            if !matches!(self.ops[*var].op, Op::Unroll { len: 32, .. }) {
+                return Ok(());
+            }
+            if *len != 32 || *stride <= 0 {
+                return Ok(());
+            }
+            rows.push((*var, *stride));
+        }
+        // Keep the smallest stride above 1 as the row axis; every
+        // other axis must stride a multiple of it (pure upward row
+        // shift, never a new column structure).
+        rows.sort_by_key(|&(_, s)| s);
+        let (row, w) = match rows.as_slice() {
+            [(r, w)] if row2 && *w != 32 && *w > 1 => (*r, *w),
+            [(r, w), (d, dw)] if drop3 && *w > 1 && *dw > *w && *dw % *w == 0 => {
+                let _ = d;
+                (*r, *w)
+            }
+            _ => return Ok(()),
+        };
+        let _ = w;
+        // Canonical traffic indices at the physical tile pitch.
+        let phys = self.insert_const_idx_before(load, 32i64);
+        let rk = self.insert_before(load, Op::Binary { x: row, y: phys, bop: BOp::Mul });
+        let new_idx = self.insert_before(load, Op::Binary { x: rk, y: k, bop: BOp::Add });
+        match &mut self.ops[load].op {
+            Op::Load { src_idx, .. } => *src_idx = new_idx,
+            _ => unreachable!("tt_reindex: load lost its index"),
+        }
+        match &mut self.ops[store].op {
+            Op::Store { dst_idx, .. } => *dst_idx = row,
+            _ => unreachable!("tt_reindex: store lost its index"),
+        }
+        self.verify();
+        Ok(())
+    }
+
     /// General TT lowering + register allocation (matmul-first,
     /// reduce carried). Traffic is part of emission: the pass matches
     /// compute, creates the CBs (DRAM-backed reader/writer CBs plus
@@ -268,16 +427,42 @@ impl Kernel {
         // Register allocator: lowered values share Register tiles
         // by liveness (free list + explicit release at last use).
         let mut regs = TtRegAlloc { free: Vec::new() };
-        // CB Storage definitions live in the prologue (past leading
-        // params/storages, before everything else): inserting before
-        // `prologue` keeps it stable.
+        // CB Storage definitions live in the prologue (past the leading
+        // params and the shape descriptors those params depend on,
+        // before everything else): inserting before `prologue` keeps it
+        // stable.
+        //
+        // The metadata region is dependency-derived (`Op::parameters`):
+        // a param's `shape` cone must stay with it, so the anchor is the
+        // first op that is neither a param, a storage, a const, nor a
+        // shape dependency.
+        let mut shape_deps: Set<OpId> = Set::default();
+        for (_, op) in self.iter_unordered() {
+            if let Op::Param { shape, .. } = op
+                && !shape.is_null()
+            {
+                let mut stack = vec![*shape];
+                for _ in 0..250_000 {
+                    let Some(d) = stack.pop() else { break };
+                    if !shape_deps.insert(d) {
+                        continue;
+                    }
+                    for q in self.ops[d].op.parameters() {
+                        if !q.is_null() {
+                            stack.push(q);
+                        }
+                    }
+                }
+            }
+        }
         let mut prologue = self.head;
         for _ in 0..250_000 {
             if prologue.is_null() {
                 break;
             }
             match self.ops[prologue].op {
-                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
+                Op::Param { .. } | Op::Storage { .. } | Op::Const(_) => prologue = self.ops[prologue].next,
+                _ if shape_deps.contains(&prologue) => prologue = self.ops[prologue].next,
                 _ => break,
             }
         }
@@ -471,6 +656,43 @@ impl Kernel {
         }
         self.common_subexpression_elimination();
         self.dead_code_elimination();
+        // CSE+DCE above can remove the prologue anchor itself (a
+        // dead head-adjacent node): re-resolve it before any install
+        // inserts below, or they panic on the stale id. Same
+        // metadata-aware rule as the first resolve: the anchor is the
+        // first op that is neither a param, a storage, a const, nor a
+        // shape dependency (`Op::parameters`), so descriptors stay
+        // with their params.
+        let mut shape_deps: Set<OpId> = Set::default();
+        for (_, op) in self.iter_unordered() {
+            if let Op::Param { shape, .. } = op
+                && !shape.is_null()
+            {
+                let mut stack = vec![*shape];
+                for _ in 0..250_000 {
+                    let Some(d) = stack.pop() else { break };
+                    if !shape_deps.insert(d) {
+                        continue;
+                    }
+                    for q in self.ops[d].op.parameters() {
+                        if !q.is_null() {
+                            stack.push(q);
+                        }
+                    }
+                }
+            }
+        }
+        prologue = self.head;
+        for _ in 0..250_000 {
+            if prologue.is_null() {
+                break;
+            }
+            match self.ops[prologue].op {
+                Op::Param { .. } | Op::Storage { .. } | Op::Const(_) => prologue = self.ops[prologue].next,
+                _ if shape_deps.contains(&prologue) => prologue = self.ops[prologue].next,
+                _ => break,
+            }
+        }
         // Single pass, biggest first: at each Reduce, try matmul,
         // then reduces. Installs consume their root and create no
         // matchable roots, so one head-order walk suffices.

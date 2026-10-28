@@ -105,6 +105,7 @@ impl Kernel {
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
             self.tt_tile()?;
+            self.tt_reindex()?;
             // Lowering (order-flexible; each pass tolerates the
             // others' legal output - not currently, but it's the idea):
             // structured LLK claiming + register allocation, locks,
@@ -123,8 +124,50 @@ impl Kernel {
             self.tt_verify()?;
         } else {
             self.devectorize();
+            // Shapes are lowering metadata, not part of the program:
+            // these backends render the linear IR 1:1 against their own
+            // language, and a shape descriptor must never surface as a
+            // device value. Every pass that reads logical dims has run
+            // by here.
+            //
+            // TT is excluded: its render already skips descriptors, and
+            // its section order forbids the reschedule that dropping
+            // forces (a lowered lock may not move relative to
+            // EndReader/EndCompute).
+            if self.drop_param_shapes() {
+                // Dropping the descriptors strands any body op that
+                // lived in the metadata front region (a const shared
+                // with a shape stack, say), so re-establish params-first
+                // before anything verifies the kernel; the dead
+                // descriptors go with the DCE.
+                self.instruction_schedule();
+                self.dead_code_elimination();
+            }
         }
         Ok(())
+    }
+
+    /// Drop every `Param { shape }` descriptor, returning whether any
+    /// were present.
+    ///
+    /// Logical dims are lowering metadata (for example the pad gate
+    /// that decides whether halo padding needs guards), not part of the
+    /// emitted program: backends render the linear IR 1:1 against
+    /// their own language, so a descriptor must never surface as a
+    /// device value. Call only once every pass that reads logical dims
+    /// has run; the now-unreferenced descriptors are dead code, so a
+    /// following DCE removes them.
+    pub(crate) fn drop_param_shapes(&mut self) -> bool {
+        let mut dropped = false;
+        for node in self.ops.values_mut() {
+            if let Op::Param { shape, .. } = &mut node.op
+                && !shape.is_null()
+            {
+                *shape = OpId::NULL;
+                dropped = true;
+            }
+        }
+        dropped
     }
 
     /// Get a hash of the kernel for deduplication during autotuning.

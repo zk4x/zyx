@@ -61,8 +61,9 @@ pub enum Op {
     /// Post-linearization the kernel is a linear SSA construct; Params remain
     /// as leaves and — together with [`Op::Storage`] — act as the SSA escape
     /// hatches: the mutable stuff values are read from and written to.
-    /// Linearize only nulls a Param's `shape` field, so buffer sizes must be
-    /// resolved BEFORE linearization (see `Kernel::alloc_buffers`).
+    /// Linearize keeps a Param's `shape` field (logical dims, read by
+    /// lowering gates), so buffer sizes must still be resolved BEFORE
+    /// linearization (see `Kernel::alloc_buffers`).
     ///
     /// - [`ParamKind::Variable`] — a single scalar argument (e.g. a dynamic
     ///   dim), passed by value.
@@ -1431,7 +1432,7 @@ impl Op {
             Op::ToDevice { x, .. } => vec![x],
             Op::After { x, dep } => vec![x, dep],
             Op::Param { shape, .. } => {
-                // Shape is null after linearize
+                // Null shape = scalar or unknown (eager params carry none)
                 if shape.is_null() { vec![] } else { vec![shape] }
             }
             Op::Range { kind, .. } => match kind {

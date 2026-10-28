@@ -808,6 +808,13 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
+        // CSE leaves the deduplicated originals dead in place. A dead op
+        // can sit before the params (a deduped shape const, say), which
+        // the positional ABI check in `verify` flags even though the op
+        // is about to vanish. Drop dead ops first so the check sees the
+        // list the caller will actually run.
+        self.dead_code_elimination();
+
         self.verify();
     }
 
@@ -819,8 +826,34 @@ impl Kernel {
     pub(crate) fn move_constants_to_beginning(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("move_constants_to_beginning");
+        // Leading metadata region: params, storages, consts, and the
+        // shape-descriptor ops params depend on (`Op::parameters`).
+        // Dependency-derived: a shape cone must stay with its params, so
+        // ranges are hoisted only past it — never above a param.
+        let mut shape_deps: Set<OpId> = Set::default();
+        for (_, op) in self.iter_unordered() {
+            if let Op::Param { shape, .. } = op
+                && !shape.is_null()
+            {
+                let mut stack = vec![*shape];
+                for _ in 0..250_000 {
+                    let Some(d) = stack.pop() else { break };
+                    if !shape_deps.insert(d) {
+                        continue;
+                    }
+                    for q in self.ops[d].op.parameters() {
+                        if !q.is_null() {
+                            stack.push(q);
+                        }
+                    }
+                }
+            }
+        }
+        let leading = |k: &Self, id: OpId| {
+            matches!(k.at(id), Op::Storage { .. } | Op::Param { .. } | Op::Const(_)) || shape_deps.contains(&id)
+        };
         let mut start = self.head;
-        while matches!(self.at(start), Op::Storage { .. } | Op::Param { .. }) {
+        while !start.is_null() && leading(self, start) {
             start = self.next_op(start);
         }
 
@@ -839,7 +872,7 @@ impl Kernel {
 
         // Find position after last Op::Const (skip past all params, storages and consts)
         let mut start = self.head;
-        while matches!(self.at(start), Op::Storage { .. } | Op::Param { .. } | Op::Const(_)) {
+        while !start.is_null() && leading(self, start) {
             start = self.next_op(start);
         }
 

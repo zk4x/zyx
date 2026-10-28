@@ -159,6 +159,12 @@ impl Kernel {
                 Done,
             }
             let mut phase = Phase::GlobalRo;
+            // The phase machine orders the ABI, not the body: only
+            // params and storages take part. Every other op's position
+            // is constrained by `check()` below (an op must follow its
+            // own `Op::parameters`), which is the real invariant — a
+            // shape descriptor or a body const sitting ahead of a param
+            // breaks nothing, so it is not this check's business.
             let mut scan = self.head;
             while !scan.is_null() {
                 match self.at(scan) {
@@ -189,11 +195,8 @@ impl Kernel {
                             phase = Phase::LocalRw;
                         }
                     }
-                    _ => {
-                        if phase != Phase::Done {
-                            phase = Phase::Done;
-                        }
-                    }
+                    // Body ops stay out of the ABI phase machine.
+                    _ => {}
                 }
                 scan = self.next_op(scan);
             }

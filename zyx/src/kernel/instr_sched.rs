@@ -16,7 +16,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use crate::{
-    Map,
+    Map, Set,
     kernel::{Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
 };
 
@@ -41,24 +41,86 @@ impl Kernel {
         let mut global_rw = Vec::new();
         let mut local_rw = Vec::new();
         let mut rest = Vec::new();
-
+        // Shape-descriptor ops (keepshapes): params now carry a `shape`
+        // operand, so hoisting them above their descriptors would break
+        // dominance. Gather each shape cone in dependency (post) order
+        // and emit it before the param buckets.
+        let mut cone: Set<OpId> = Set::default();
+        for (_, op) in self.iter_unordered() {
+            if let Op::Param { shape, .. } = op
+                && !shape.is_null()
+            {
+                let mut stack = vec![*shape];
+                for _ in 0..250_000 {
+                    let Some(id) = stack.pop() else { break };
+                    if !cone.insert(id) {
+                        continue;
+                    }
+                    for q in self.ops[id].op.parameters() {
+                        if !q.is_null() {
+                            stack.push(q);
+                        }
+                    }
+                }
+            }
+        }
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            match self.at(op_id) {
-                Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } => global_ro.push(op_id),
-                Op::Param { kind: ParamKind::GlobalMut, .. } => global_rw.push(op_id),
-                Op::Storage { scope: MemScope::Local, .. } => local_rw.push(op_id),
-                _ => rest.push(op_id),
+            if cone.contains(&op_id) && !matches!(self.at(op_id), Op::Param { .. }) {
+                // Emitted with the param that needs it, below. Params are
+                // never descriptors: they keep their ABI position.
+            } else {
+                match self.at(op_id) {
+                    Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } => global_ro.push(op_id),
+                    Op::Param { kind: ParamKind::GlobalMut, .. } => global_rw.push(op_id),
+                    Op::Storage { scope: MemScope::Local, .. } => local_rw.push(op_id),
+                    _ => rest.push(op_id),
+                }
             }
             op_id = next;
         }
 
         let sorted_rest = self.schedule_rest(&rest);
 
+        // Params in ABI order (ro then rw, list order), each preceded by
+        // its own shape cone: a param's `shape` operand must be declared
+        // before it, and a dim variable in that cone is itself an
+        // earlier kernel arg. Emitting the whole cone ahead of every
+        // param instead would hoist that variable out of the ABI
+        // sequence and shift the launch-arg ordinals.
         let mut order = Vec::with_capacity(global_ro.len() + global_rw.len() + local_rw.len() + sorted_rest.len());
-        order.extend(global_ro);
-        order.extend(global_rw);
+        let mut emitted: Set<OpId> = Set::default();
+        for p in global_ro.iter().copied().chain(global_rw.iter().copied()) {
+            let shape = match self.at(p) {
+                Op::Param { shape, .. } => *shape,
+                _ => unreachable!("instruction_schedule: global param must stay a param"),
+            };
+            if !shape.is_null() {
+                let mut stack = vec![(shape, false)];
+                for _ in 0..250_000 {
+                    let Some((id, expanded)) = stack.pop() else { break };
+                    if expanded {
+                        if emitted.insert(id) {
+                            order.push(id);
+                        }
+                        continue;
+                    }
+                    if emitted.contains(&id) {
+                        continue;
+                    }
+                    stack.push((id, true));
+                    for q in self.ops[id].op.parameters() {
+                        if !q.is_null() && !emitted.contains(&q) {
+                            stack.push((q, false));
+                        }
+                    }
+                }
+            }
+            if emitted.insert(p) {
+                order.push(p);
+            }
+        }
         order.extend(local_rw);
         order.extend(sorted_rest);
 

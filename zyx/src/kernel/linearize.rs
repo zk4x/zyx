@@ -179,14 +179,9 @@ impl Kernel {
 
         self.add_indexing();
 
-        // After linearization the parameter shapes are no longer meaningful;
-        // clear them so the verify below (and later passes) don't require shape
-        // consts to be ordered before the params that reference them.
-        for node in self.ops.values_mut() {
-            if let Op::Param { shape, .. } = &mut node.op {
-                *shape = OpId::NULL;
-            }
-        }
+        // Parameter shapes are kept: passes read logical dims from
+        // `Param { shape }` (the pad_to guard gate); backends ignore
+        // them (bare-pointer convention).
 
         // Read-only (Variable + Global) and writable (GlobalMut) params in
         // linked-list order. Since Phase 1 does not reorder params, forward order
@@ -246,19 +241,30 @@ impl Kernel {
         // The move handlers may leave dead constants (e.g. unused `one`/`total`
         // scaffold) and duplicate arithmetic behind; CSE and DCE clean those up
         // now that the ops are ordered.
-        assert!(
-            self.ops.values().all(|node| !matches!(
-                node.op,
+        // Shape descriptors (`Param { shape }` stacks) survive
+        // linearization now (keepshapes): metadata, not unlowered
+        // movement. Anything else movement-like is still malformed.
+        let mut shape_roots = Set::default();
+        for (_, op) in self.iter_unordered() {
+            if let Op::Param { shape, .. } = op
+                && !shape.is_null()
+            {
+                shape_roots.insert(*shape);
+            }
+        }
+        for (op_id, op) in self.iter_unordered() {
+            let movement = matches!(
+                op,
                 Op::Reshape { .. }
                     | Op::Pad { .. }
                     | Op::Permute { .. }
                     | Op::Expand { .. }
                     | Op::Flip { .. }
                     | Op::Narrow { .. }
-                    | Op::Stack { .. }
-            )),
-            "linearize left a movement or stack operation in the kernel"
-        );
+            );
+            let stray_stack = matches!(op, Op::Stack { .. }) && !shape_roots.contains(&op_id);
+            assert!(!movement && !stray_stack, "linearize left a movement or stack operation in the kernel: {op_id:?} {op:?}");
+        }
 
         // Dedup group-index ops: every store handler emits its own set of
         // `Op::Index { kind: Group }` per output axis, so N stores of the same
@@ -454,6 +460,16 @@ impl Kernel {
         // Const. The inserted arithmetic is appended at anchor positions; its
         // relative order is fixed up in Phase 2. Reductions are left intact
         // here (their loops are emitted in Phase 3).
+        // Shape descriptors (`Param { shape }`) survive (keepshapes): the
+        // Stack arm below must not eat them as movement.
+        let mut shape_roots = Set::default();
+        for (_, op) in self.iter_unordered() {
+            if let Op::Param { shape, .. } = op
+                && !shape.is_null()
+            {
+                shape_roots.insert(*shape);
+            }
+        }
         for &op_id in op_ids.iter().rev() {
             // Leave loop scopes as the reverse walk exits them. Popped after the
             // op is processed: the loop_start op itself sits inside the loop (it
@@ -983,6 +999,13 @@ impl Kernel {
                     debug_assert!(!views.contains_key(&op_id), "Devectorize: unexpected seeded view — metadata-only scalar");
                 }
                 Op::Stack { ref ops } => {
+                    // Shape descriptor, not movement: keepshapes keeps it
+                    // alive for lowering gates; no view is seeded on it.
+                    // (A shaped movement output takes the normal path
+                    // below and fails loudly on the dangling shape.)
+                    if shape_roots.contains(&op_id) && views.get(&op_id).is_none() {
+                        continue;
+                    }
                     // Stack produces `[n] + first_shape`: output element at leading
                     // index `i` and trailing indices `t` reads input `i` at `t`. So
                     // each input reads at the trailing axes of the output view (the
@@ -1050,6 +1073,13 @@ impl Kernel {
         // chain is dead and removed.
         let mut reachable = Set::default();
         let mut pending = roots;
+        // Params are kept unconditionally below; seed them so their
+        // shape subgraphs survive pruning too (keepshapes).
+        for (op_id, op) in self.iter_unordered() {
+            if matches!(op, Op::Param { .. }) {
+                pending.push(op_id);
+            }
+        }
         for _ in 0..50_000 {
             let Some(op_id) = pending.pop() else { break };
             if self.ops.contains_id(op_id) {
@@ -1216,15 +1246,52 @@ impl Kernel {
         if order.len() != reachable.len() {
             panic!("linearize dependency ordering contains a cycle or missing operation");
         }
-        order.retain(|op| !matches!(self.ops[*op].op, Op::Param { .. }));
-
-        // Move the params to the front: read-only (Variable + Global) first,
-        // then writable (GlobalMut), each in linked-list order. Unused
-        // params never enter the Kahn order at all; used ones are dropped
-        // here and reinserted.
-        let mut final_order = Vec::with_capacity(order.len() + ro_params.len() + rw_params.len());
-        final_order.extend(ro_params.iter().copied());
-        final_order.extend(rw_params.iter().copied());
+        // Params move to the front together with their shape descriptors:
+        // Kahn dropped params from the dependency order above, so
+        // re-prepend each param's shape cone (dependency order) directly
+        // before that param. The loop runs in ABI order (ro then rw,
+        // original order) and emits params in exactly that order — a
+        // param's cone may reference dim variables, and those already
+        // precede it precisely because they are earlier kernel args.
+        let mut front: Vec<OpId> = Vec::new();
+        let mut seen: Set<OpId> = Set::default();
+        for &p in ro_params.iter().chain(rw_params.iter()) {
+            let shape = match self.ops[p].op {
+                Op::Param { shape, .. } => shape,
+                _ => unreachable!("linearize: ro/rw params must stay params"),
+            };
+            if !shape.is_null() {
+                // Descriptor value ops in post-order (params are emitted
+                // at their own ABI position, never here).
+                let mut stack = vec![(shape, false)];
+                for _ in 0..250_000 {
+                    let Some((id, expanded)) = stack.pop() else { break };
+                    if expanded {
+                        if !matches!(self.ops[id].op, Op::Param { .. }) && seen.insert(id) {
+                            front.push(id);
+                        }
+                        continue;
+                    }
+                    if seen.contains(&id) {
+                        continue;
+                    }
+                    stack.push((id, true));
+                    for q in self.ops[id].op.parameters() {
+                        if !q.is_null() && !seen.contains(&q) {
+                            stack.push((q, false));
+                        }
+                    }
+                }
+            }
+            if seen.insert(p) {
+                front.push(p);
+            }
+        }
+        // The rest of the Kahn order, minus anything already emitted.
+        // (Params are gone from here by construction now.)
+        order.retain(|op| !seen.contains(op));
+        let mut final_order = Vec::with_capacity(front.len() + order.len());
+        final_order.extend(front);
         final_order.extend(order);
 
         // Rebuild the kernel's linked list in `final_order`.
