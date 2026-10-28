@@ -233,7 +233,7 @@ impl Kernel {
 
         self.default_epilogue();
         self.default_epilogue();
-        self.default_epilogue();
+        self.debug();
 
         self.verify();
         Ok(())
@@ -818,6 +818,12 @@ impl Kernel {
     /// physical tile stride (one full [32, 32] tile per step, times
     /// inner-group extents) and a bare group id inside Add/Sub wraps
     /// to id * stride. Symbolic extents bail the caller.
+    ///
+    /// A group-scale product nested under a FURTHER const multiply
+    /// cannot rebase locally (the outer scale would survive while
+    /// the inner jumps to the physical stride, with nothing
+    /// downstream compensating), so such products refuse loudly:
+    /// the candidate skips, never wrong code.
     fn strip_unrolls(&mut self, idx: OpId, before: OpId) -> Option<OpId> {
         // Clone memo per call (index math is small).
         let mut memo: Map<OpId, OpId> = Map::default();
@@ -826,6 +832,45 @@ impl Kernel {
         let mut strides: Option<Map<u32, Dim>> = None;
         let zero = self.insert_before(before, Op::Const(Constant::idx(0i64)));
         memo.insert(zero, zero);
+        // Const-scale context pre-pass over the ORIGINAL index tree:
+        // marks every node sitting under a const multiply. A later
+        // rebase of a marked group product would corrupt the address,
+        // so the main walk below refuses marked products. Monotonic
+        // flags (false -> true only): each node expands at most twice.
+        let mut under_scale: Map<OpId, bool> = Map::default();
+        {
+            let mut expanded: Map<OpId, bool> = Map::default();
+            let mut walk = vec![(idx, false)];
+            for _ in 0..250_000 {
+                let Some((m, under)) = walk.pop() else { break };
+                if under {
+                    under_scale.insert(m, true);
+                }
+                match expanded.get(&m) {
+                    Some(true) => continue,
+                    Some(false) if !under => continue,
+                    _ => {}
+                }
+                expanded.insert(m, under);
+                match self.ops[m].op {
+                    Op::Binary { x, y, bop: BOp::Mul } => {
+                        let xc = matches!(self.ops[x].op, Op::Const(_));
+                        let yc = matches!(self.ops[y].op, Op::Const(_));
+                        let inner = under || xc || yc;
+                        walk.push((x, inner));
+                        walk.push((y, inner));
+                    }
+                    Op::Binary { x, y, .. } => {
+                        walk.push((x, under));
+                        walk.push((y, under));
+                    }
+                    Op::Unary { x, .. } | Op::Cast { x, .. } => {
+                        walk.push((x, under));
+                    }
+                    _ => {}
+                }
+            }
+        }
         let mut stack = vec![(idx, false)];
         for _ in 0..250_000 {
             let Some((n, expanded)) = stack.pop() else { break };
@@ -892,9 +937,19 @@ impl Kernel {
                         // Add/Sub wraps to id * stride. These are the
                         // forms split/pad composition emits; anything
                         // else keeps the faithful clone and trips the
-                        // downstream checks loudly.
+                        // downstream checks loudly. A group product
+                        // under a further const scale refuses here: no
+                        // local rebase stays correct under it.
+                        if (gx.is_some() || gy.is_some()) && under_scale.contains_key(&n) {
+                            return None;
+                        }
                         let mut ax = nx;
                         let mut ay = ny;
+                        // A rebased group product REPLACES the logical
+                        // scale (one group step is one physical tile):
+                        // wrapping would keep the old factor alongside
+                        // the stride and double-scale the address.
+                        let mut rebased: Option<OpId> = None;
                         match bop {
                             BOp::Mul => {
                                 if let Some(a) = gx {
@@ -902,6 +957,7 @@ impl Kernel {
                                         let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
                                         let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
                                         ax = self.insert_before(before, Op::Binary { x: nx, y: sc, bop });
+                                        rebased = Some(ax);
                                     }
                                 }
                                 if let Some(a) = gy {
@@ -909,6 +965,7 @@ impl Kernel {
                                         let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
                                         let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
                                         ay = self.insert_before(before, Op::Binary { x: sc, y: ny, bop });
+                                        rebased = Some(ay);
                                     }
                                 }
                             }
@@ -925,6 +982,12 @@ impl Kernel {
                                 }
                             }
                             _ => {}
+                        }
+                        // A rebased product stands alone: the stride
+                        // already is the physical scale.
+                        if let Some(r) = rebased {
+                            memo.insert(n, r);
+                            continue;
                         }
                         // Fold constant lanes away: the base is fully
                         // static exactly when the index is.
@@ -1969,10 +2032,8 @@ impl Kernel {
                                     if !ok {
                                         return Err(BackendError {
                                             status: ErrorStatus::KernelCompilation,
-                                            context: format!(
-                                                "tt_sync_cbs: circular load {op_id:?} feeds non-compute {u:?}"
-                                            )
-                                            .into(),
+                                            context: format!("tt_sync_cbs: circular load {op_id:?} feeds non-compute {u:?}")
+                                                .into(),
                                         });
                                     }
                                 }
@@ -3429,7 +3490,15 @@ impl Kernel {
     /// same units render_copy emits. Affine indices prove by stride
     /// (get_strides, bare var = stride 1); anything else is
     /// unprovable and rejected, never silently skipped.
-    fn fifo_check_copy(&self, op_id: OpId, src: OpId, src_idx: OpId, dst: OpId, dst_idx: OpId, unit: i64) -> Result<(), BackendError> {
+    fn fifo_check_copy(
+        &self,
+        op_id: OpId,
+        src: OpId,
+        src_idx: OpId,
+        dst: OpId,
+        dst_idx: OpId,
+        unit: i64,
+    ) -> Result<(), BackendError> {
         let is_dram = |base: OpId| matches!(self.at(base), Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
         if !(is_dram(src) || is_dram(dst)) {
             return Ok(());
@@ -3458,12 +3527,10 @@ impl Kernel {
             if idx.is_null() {
                 return Ok(Map::default());
             }
-            self.get_strides(idx)
-                .map(|m| m.into_iter().map(|(v, (_, st))| (v, st)).collect())
-                .ok_or_else(|| BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("tt_fifo_check: copy {op_id:?} has unprovable index {idx:?}").into(),
-                })
+            self.get_strides(idx).map(|m| m.into_iter().map(|(v, (_, st))| (v, st)).collect()).ok_or_else(|| BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tt_fifo_check: copy {op_id:?} has unprovable index {idx:?}").into(),
+            })
         };
         let sm = decomp(src_idx)?;
         let dm = decomp(dst_idx)?;

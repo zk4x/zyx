@@ -2170,6 +2170,38 @@ impl Kernel {
                     _ => {}
                 }
             }
+            // Const-scaled compound: the factor distributes over the
+            // stride sum exactly (every term stride and the const
+            // offset scale uniformly), so descend with the folded
+            // scale. Both-const folds into the offset. Overflow bails.
+            // Proof-only: values elsewhere are untouched, so congruence
+            // verdicts on genuinely wrong traffic do not change.
+            if let Op::Binary { x, y, bop: BOp::Mul } = self.at(param) {
+                let (k, e) = match (self.at(*x), self.at(*y)) {
+                    (Op::Const(a), Op::Const(b)) => {
+                        let (Some(a), Some(b)) = (a.as_integer(), b.as_integer()) else {
+                            return None;
+                        };
+                        let Some(p) = a.checked_mul(b).and_then(|p| p.checked_mul(scale)) else {
+                            return None;
+                        };
+                        indices.entry(OpId::NULL).and_modify(|(_, v)| *v += p).or_insert((0, p));
+                        continue;
+                    }
+                    (Op::Const(a), _) => {
+                        let Some(k) = a.as_integer() else { return None };
+                        (k, *y)
+                    }
+                    (_, Op::Const(b)) => {
+                        let Some(k) = b.as_integer() else { return None };
+                        (k, *x)
+                    }
+                    _ => return None,
+                };
+                let Some(s) = k.checked_mul(scale) else { return None };
+                params.push((e, s));
+                continue;
+            }
             // Anything else (Div/Mod/Min/Max, dynamic factors,
             // data-dependent leaves) is not an affine index expression:
             // report unanalyzable explicitly instead of returning a
