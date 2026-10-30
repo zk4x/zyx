@@ -32,8 +32,8 @@ use crate::kernel::{
 use crate::scalar::{bf16, f16};
 use crate::slab::Slab;
 use tt_isa::isa::Instruction;
-use tt_kernels::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
-use tt_kernels::sfpu::reduce::{Axis, ReduceOp, accumulate, finish};
+use crate::backend::tenstorrent::kern::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
+use crate::backend::tenstorrent::kern::sfpu::reduce::{Axis, ReduceOp, accumulate, finish};
 
 /// DRAM page size in bytes.
 pub(crate) const TT_DRAM_PAGE_BYTES: u32 = 4096;
@@ -398,8 +398,8 @@ fn tt_row_remap(mut code: Vec<Instruction>, a_row: u32, b_row: Option<u32>, out_
 /// `kind` the lowering stored; the arity must match the operands the zyx op
 /// carries, otherwise the program would read a row that was never written.
 fn tt_sfpu_program(kind: u32, a_row: u32, b_row: Option<u32>, slot_row: u32) -> Result<Vec<Instruction>, BackendError> {
-    use tt_kernels::sfpu::kernel::Operands;
-    use tt_kernels::sfpu::ops::{Broadcast, program_for};
+    use crate::backend::tenstorrent::kern::sfpu::kernel::Operands;
+    use crate::backend::tenstorrent::kern::sfpu::ops::{Broadcast, program_for};
     let Some((operands, code)) = program_for(kind, [0.0, 0.0], Broadcast::None) else {
         return Err(tt_err(format!("tenstorrent: SFPU kind {kind:#x} has no metalium program")));
     };
@@ -417,7 +417,7 @@ fn tt_sfpu_program(kind: u32, a_row: u32, b_row: Option<u32>, slot_row: u32) -> 
 
 /// A bit-preserving DST -> DST copy of one tile (64 rows).
 fn tt_dst_copy(src: u32, dst: u32) -> Vec<Instruction> {
-    use tt_kernels::sfpu::{Format, LReg, Program};
+    use crate::backend::tenstorrent::kern::sfpu::{Format, LReg, Program};
     let mut p = Program::new();
     for o in 0..64 {
         p.load(LReg::L0, Format::Int32, src + o);
@@ -838,7 +838,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                             _ => return Err(sec.err(format!("unpack {id:?} dst is not a Register storage"))),
                         };
                         let l1 = sec.cb_l1(scb)?;
-                        let words = tt_kernels::datapath::unpack_tile_to_dst(l1, dst);
+                        let words = crate::backend::tenstorrent::kern::datapath::unpack_tile_to_dst(l1, dst);
                         sec.native_t0.extend(words.iter().map(|i| i.word()));
                         sec.last_role = 0;
                         sec.compute_ops += 1;
@@ -907,7 +907,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             Op::TT(TTOp::Unpacr { src, unit, count, flip }) => {
                 use tt_isa::backend::{Before, cond, stallwait, wait_for_unpacker0, wait_for_unpacker1};
                 use tt_isa::cfg::generated::{alu, thcon};
-                use tt_kernels::datapath::{Unpacker, config_program, set_adc_x, tile_base_units};
+                use crate::backend::tenstorrent::kern::datapath::{Unpacker, config_program, set_adc_x, tile_base_units};
                 if *count != 1024 {
                     return Err(sec.err(format!("unpacr {id:?} of {count} datums: only whole tiles are wired up")));
                 }
@@ -924,8 +924,8 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     // BF16 in L1 moves as is (`SrcRoute`).
                     let src_dtype = sec.k.dtype(*src);
                     let route = match src_dtype {
-                        DType::F32 => tt_kernels::matmul::SrcRoute::Tf32FromFp32,
-                        DType::BF16 => tt_kernels::matmul::SrcRoute::Bf16FromBf16,
+                        DType::F32 => crate::backend::tenstorrent::kern::matmul::SrcRoute::Tf32FromFp32,
+                        DType::BF16 => crate::backend::tenstorrent::kern::matmul::SrcRoute::Bf16FromBf16,
                         dt => {
                             return Err(sec.err(format!(
                                 "unpacr {id:?}: no Src route from {dt:?} (F32 and BF16 are wired up)"
@@ -933,10 +933,10 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                         }
                     };
                     let (in_fmt, out_fmt) = route.formats();
-                    tt_kernels::datapath::unpack_src_config(
+                    crate::backend::tenstorrent::kern::datapath::unpack_src_config(
                         &mut words,
                         unpacker,
-                        tt_kernels::matmul::tile_descriptor(in_fmt),
+                        crate::backend::tenstorrent::kern::matmul::tile_descriptor(in_fmt),
                         l1,
                         out_fmt,
                     );
@@ -965,10 +965,10 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 let mut code = config_program(&words);
                 if fresh {
                     // `matmul_items`: the X range is the whole face, set once.
-                    code.push(set_adc_x(unpacker, 0, tt_kernels::matmul::FACE_DATUMS - 1));
+                    code.push(set_adc_x(unpacker, 0, crate::backend::tenstorrent::kern::matmul::FACE_DATUMS - 1));
                     sec.src_unpacker_ready[*unit as usize] = true;
                 }
-                code.push(tt_kernels::datapath::unpack_src_instruction(unpacker, *flip));
+                code.push(crate::backend::tenstorrent::kern::datapath::unpack_src_instruction(unpacker, *flip));
                 sec.native_t0.extend(code.iter().map(|i| i.word()));
                 sec.last_role = 0;
                 sec.has_src_unpack = true;
@@ -977,8 +977,8 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 use tt_isa::isa::generated::encode;
                 let z = encode::Setadczw::ZERO.z0(1).z0_val(*face);
                 let insn = match tt_unpacker(*unit).map_err(|e| sec.err(format!("setadczw {id:?}: {e}")))? {
-                    tt_kernels::datapath::Unpacker::SrcA => z.u0(1),
-                    tt_kernels::datapath::Unpacker::SrcB => z.u1(1),
+                    crate::backend::tenstorrent::kern::datapath::Unpacker::SrcA => z.u0(1),
+                    crate::backend::tenstorrent::kern::datapath::Unpacker::SrcB => z.u1(1),
                 }
                 .encode()
                 .map_err(|e| sec.err(format!("setadczw {id:?}: {e:?}")))?;
@@ -989,7 +989,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 if *count == 0 {
                     return Err(sec.err(format!("setadcx {id:?}: empty datum range")));
                 }
-                let insn = tt_kernels::datapath::set_adc_x(
+                let insn = crate::backend::tenstorrent::kern::datapath::set_adc_x(
                     tt_unpacker(*unit).map_err(|e| sec.err(format!("setadcx {id:?}: {e}")))?,
                     *first,
                     first + count - 1,
@@ -1005,9 +1005,9 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 };
                 let insn = encode::Setrwc::ZERO
                     .src_a(1)
-                    .src_a_val(tt_kernels::matmul::SRC_A_ROW as u32)
+                    .src_a_val(crate::backend::tenstorrent::kern::matmul::SRC_A_ROW as u32)
                     .src_b(1)
-                    .src_b_val(tt_kernels::matmul::SRC_B_ROW as u32)
+                    .src_b_val(crate::backend::tenstorrent::kern::matmul::SRC_B_ROW as u32)
                     .dst(1)
                     .dst_val(row)
                     .fidelity(1)
@@ -1061,7 +1061,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 words
                     .seed(u16::try_from(*addr).map_err(|_| sec.err(format!("setcfg {id:?}: {addr:#x} is not a Config word")))?, *value)
                     .map_err(|e| sec.err(format!("setcfg {id:?}: {e:?}")))?;
-                let program = tt_kernels::datapath::config_program(&words);
+                let program = crate::backend::tenstorrent::kern::datapath::config_program(&words);
                 sec.native.extend(program.iter().map(|i| i.word()));
                 sec.last_role = 1;
             }
@@ -1255,10 +1255,10 @@ fn tt_src_base(cb: u64) -> u64 {
 }
 
 /// Unpacker index -> the metalium `Unpacker` (0 = SrcA, 1 = SrcB).
-fn tt_unpacker(unit: u8) -> Result<tt_kernels::datapath::Unpacker, String> {
+fn tt_unpacker(unit: u8) -> Result<crate::backend::tenstorrent::kern::datapath::Unpacker, String> {
     match unit {
-        0 => Ok(tt_kernels::datapath::Unpacker::SrcA),
-        1 => Ok(tt_kernels::datapath::Unpacker::SrcB),
+        0 => Ok(crate::backend::tenstorrent::kern::datapath::Unpacker::SrcA),
+        1 => Ok(crate::backend::tenstorrent::kern::datapath::Unpacker::SrcB),
         other => Err(format!("unpacker {other} is neither SrcA (0) nor SrcB (1)")),
     }
 }
@@ -1308,9 +1308,9 @@ fn tt_unpack_role(body: Vec<u32>, src_mode: bool) -> Vec<u32> {
         return Vec::new();
     }
     let config = if src_mode {
-        tt_kernels::datapath::src_thread_config()
+        crate::backend::tenstorrent::kern::datapath::src_thread_config()
     } else {
-        tt_kernels::datapath::thread_config()
+        crate::backend::tenstorrent::kern::datapath::thread_config()
     };
     let mut role: Vec<u32> = config.iter().map(|i| i.word()).collect();
     role.extend(body);
@@ -1330,7 +1330,7 @@ fn tt_math_role(body: Vec<u32>) -> Vec<u32> {
     if body.is_empty() {
         return Vec::new();
     }
-    let mut role: Vec<u32> = vec![tt_kernels::datapath::state_id().word()];
+    let mut role: Vec<u32> = vec![crate::backend::tenstorrent::kern::datapath::state_id().word()];
     role.extend(body);
     role.push(wait_for_sfpu(Before::EVERYTHING).expect("wait_for_sfpu(EVERYTHING) is encodable").word());
     role
@@ -1344,7 +1344,7 @@ fn tt_pack_role(body: Vec<u32>) -> Vec<u32> {
     if body.is_empty() {
         return Vec::new();
     }
-    let mut role: Vec<u32> = vec![tt_kernels::datapath::state_id().word()];
+    let mut role: Vec<u32> = vec![crate::backend::tenstorrent::kern::datapath::state_id().word()];
     role.extend(body);
     role.push(wait_for_packer(Before::EVERYTHING).expect("wait_for_packer(EVERYTHING) is encodable").word());
     role
@@ -2019,7 +2019,7 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
             use tt_isa::cfg::generated::{global, thcon};
             let l1 = sec.cb_l1(dst)?;
             let mut words = tt_isa::backend::ConfigWords::new();
-            tt_kernels::datapath::pack_config(&mut words, l1);
+            crate::backend::tenstorrent::kern::datapath::pack_config(&mut words, l1);
             words
                 .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, slot)
                 .map_err(|e| sec.err(format!("pack {id:?}: dst offset: {e:?}")))?;
@@ -2027,9 +2027,9 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
                 .set(thcon::THCON_SEC0_REG1_Out_data_format, out_fmt)
                 .map_err(|e| sec.err(format!("pack {id:?}: out format: {e:?}")))?;
             let mut code = vec![wait_for_packer(Before::CONFIG).map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?];
-            code.extend(tt_kernels::datapath::config_program(&words));
+            code.extend(crate::backend::tenstorrent::kern::datapath::config_program(&words));
             code.push(stallwait(block::PACKER | block::CONFIG, cond::CONFIG_BUSY).map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?);
-            code.extend(tt_kernels::datapath::pack_rows(tt_kernels::datapath::TILE_DST_ROWS));
+            code.extend(crate::backend::tenstorrent::kern::datapath::pack_rows(crate::backend::tenstorrent::kern::datapath::TILE_DST_ROWS));
             sec.native_t2.extend(code.iter().map(|i| i.word()));
             sec.last_role = 2;
             sec.out.push_str(&format!("{}pack_tile({slot}, {dcb});\n", sec.indent));

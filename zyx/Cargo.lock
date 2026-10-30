@@ -942,13 +942,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tt-device"
-version = "0.1.0"
-dependencies = [
- "tt-isa",
-]
-
-[[package]]
 name = "tt-firmware-images"
 version = "0.1.0"
 dependencies = [
@@ -958,51 +951,6 @@ dependencies = [
 [[package]]
 name = "tt-isa"
 version = "0.1.0"
-
-[[package]]
-name = "tt-kernels"
-version = "0.1.0"
-dependencies = [
- "libc",
- "libm",
- "tt-device",
- "tt-isa",
- "tt-kmd",
- "tt-layout",
-]
-
-[[package]]
-name = "tt-kmd"
-version = "0.1.0"
-dependencies = [
- "libc",
- "tt-device",
- "tt-isa",
-]
-
-[[package]]
-name = "tt-layout"
-version = "0.1.0"
-dependencies = [
- "tt-isa",
-]
-
-[[package]]
-name = "tt-ttsim"
-version = "0.1.0"
-dependencies = [
- "libc",
- "tt-device",
- "tt-isa",
- "tt-ttsim-sys",
-]
-
-[[package]]
-name = "tt-ttsim-sys"
-version = "0.1.0"
-dependencies = [
- "libloading 0.8.9",
-]
 
 [[package]]
 name = "unicode-ident"
@@ -1410,16 +1358,15 @@ dependencies = [
 name = "zyx"
 version = "0.17.0"
 dependencies = [
+ "libc",
  "libloading 0.9.0",
+ "libm",
  "matrixmultiply",
  "nanoserde",
  "pollster",
  "pyo3",
  "tiny_http",
- "tt-device",
  "tt-firmware-images",
  "tt-isa",
- "tt-kernels",
- "tt-ttsim",
  "wgpu",
 ]

@@ -3,6 +3,21 @@
 //
 // Tenstorrent backend for zyx.
 //
+// # Attribution
+//
+// The `dev/`, `kern/` and `sim/` subtrees are derived from **metalium-rs**
+// (https://github.com/Knight-Ops/metalium-rs) by **Carl Hurd (Knight-Ops)**,
+// licensed under the Apache License, Version 2.0
+// (https://www.apache.org/licenses/LICENSE-2.0). Only the parts zyx needs were
+// carried over; each file keeps its upstream documentation, and the derived
+// files stay under the Apache-2.0 terms they arrived with. `dev/` is
+// `crates/tt-device` (minus its ethernet module), `kern/` is the subset of
+// `crates/tt-kernels` zyx emits (`runtime`, `datapath`, `sfpu`, `l1`, `code`,
+// `loops`, `kind`, and the matmul constants), and `sim/` is
+// `crates/tt-ttsim` plus `crates/tt-ttsim-sys`. `tt-isa` stays an external
+// dependency: its instruction tables are generated from Tenstorrent's ISA
+// specification and auditing them is not work worth redoing.
+//
 // # Grid indexing (gidx)
 //
 // Two kernel-index dims map to the core's logical coordinate: gidx0 → row
@@ -10,11 +25,13 @@
 // workers minus the dispatch column; harvested boards shrink x). Source:
 // tt-metal `core_descriptors/blackhole_140_arch.yaml`.
 //
-// Device access goes through the native runtime (`super::ttsim`): `tt-device`
-// over `tt-ttsim`, held by one owner thread because the simulator is
-// `!Send`. Every op that touches the device blocks on that thread. There is
-// no C++ and no dlopen: a launch hands `runtime::run` the three role streams
-// the emitter staged, waits for every role's `DONE`, and returns.
+// Device access goes through the native runtime (`self::ttsim`): the ported
+// `dev/` layer over the ported `sim/` transport, held by one owner thread
+// because the simulator is `!Send`. Every op that touches the device blocks on
+// that thread. There is no C++ and no dlopen: a launch hands `kern::runtime::run`
+// the three role streams the emitter staged, waits for every role's `DONE`, and
+// returns. The simulator itself is a Tenstorrent binary blob, found through
+// `TT_TTSIM_LIB` or `vendor/libttsim_bh.so`; only its wrapper lives here.
 //
 // DRAM is host memory in this transport: a `Pool::TT` chunk is a `Vec<u8>`
 // owned by the pool, the boundary moves carry bytes in and out of it, and the
@@ -22,7 +39,7 @@
 // keeps the hard invariant intact — a kernel never round-trips through DRAM
 // while its roles run.
 
-use super::ttsim::{NativeRun, run as run_native};
+use self::ttsim::{NativeRun, run as run_native};
 use super::{ChunkId, Cmd, CmdQueue, Dev, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Placement, PlanDim, Pool, Shard};
 use crate::{
     DType, Map, Set, ZyxError, bf16, f16,
@@ -36,8 +53,20 @@ use crate::{
 use nanoserde::{DeJson, SerBin};
 use std::sync::{Arc, Mutex, OnceLock};
 use tt_isa::isa::Instruction;
-use tt_kernels::code::Loop;
-use tt_kernels::runtime::SemaphoreInit;
+
+// The ported layers are carried over whole so their behaviour matches
+// upstream bit for bit; only the pieces zyx calls are exercised, so the rest
+// is dead until a later pass prunes it.
+#[allow(dead_code, unused_imports, unused_variables)]
+pub(crate) mod dev;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub(crate) mod kern;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub(crate) mod sim;
+pub(crate) mod ttsim;
+
+use kern::code::Loop;
+use kern::runtime::SemaphoreInit;
 
 // ── Global state ──────────────────────────────────────────────────────────────
 

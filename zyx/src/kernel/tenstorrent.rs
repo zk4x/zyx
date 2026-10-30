@@ -53,7 +53,7 @@ enum TtEmit {
 /// zyx unary op -> metalium SFPU kind. `None` means no native kind yet;
 /// the value stays high-level instead of being mis-lowered.
 fn uop_kind(uop: UOp) -> Option<u32> {
-    use tt_kernels::sfpu::ops::kind_sfpu as sf;
+    use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
     Some(match uop {
         UOp::Neg => sf::NEG,
         UOp::Not => sf::BOOL_NOT,
@@ -76,8 +76,8 @@ fn uop_kind(uop: UOp) -> Option<u32> {
 /// zyx binary op -> metalium SFPU kind. The same table covers float,
 /// integer, and comparison kinds; `None` is "no native kind yet".
 fn bop_kind(bop: BOp) -> Option<u32> {
-    use tt_kernels::kind;
-    use tt_kernels::sfpu::ops::kind_sfpu as sf;
+    use crate::backend::tenstorrent::kern::kind;
+    use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
     Some(match bop {
         BOp::Add => kind::ADD,
         BOp::Sub => kind::SUB,
@@ -361,8 +361,8 @@ impl Kernel {
         let sx1 = Pat::bind('x').shape([32i64]);
         let sigmoid_pat1 = (sx1.neg().exp() + Pat::Const).recip().shape([32i64]);
         let mut pats: Vec<(Pat, TtEmit)> = vec![
-            (sigmoid_pat, TtEmit::Sfpu { kind: tt_kernels::sfpu::ops::kind_sfpu::SIGMOID, arity: 1 }),
-            (sigmoid_pat1, TtEmit::Sfpu { kind: tt_kernels::sfpu::ops::kind_sfpu::SIGMOID, arity: 1 }),
+            (sigmoid_pat, TtEmit::Sfpu { kind: crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu::SIGMOID, arity: 1 }),
+            (sigmoid_pat1, TtEmit::Sfpu { kind: crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu::SIGMOID, arity: 1 }),
             (mmul, TtEmit::Matmul),
             (mmul_swap, TtEmit::Matmul),
             (Pat::sum(tile.clone()).shape([32i64]), TtEmit::Reduce(TileDim::Row)),
@@ -842,7 +842,7 @@ impl Kernel {
                 // accumulator is the tile's slot directly.
                 use tt_isa::backend::ThreadConfigEntry;
                 use tt_isa::cfg::generated::thread;
-                use tt_kernels::matmul::{MATH_AM_FI, MATH_AM_GROUP, MATH_AM_HALF, MATH_AM_PHASE};
+                use crate::backend::tenstorrent::kern::matmul::{MATH_AM_FI, MATH_AM_GROUP, MATH_AM_HALF, MATH_AM_PHASE};
                 // `math_prelude`: one `SETC16` per single-field entry, and a
                 // whole-word `Setcfg` for SEC2..SEC4, which carry several
                 // fields of one word (`math_addr_mods`).

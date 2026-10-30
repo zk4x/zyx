@@ -46,7 +46,6 @@ mod disk;
 mod host;
 mod opencl;
 pub(crate) mod tenstorrent;
-mod ttsim;
 mod vulkan;
 #[cfg(feature = "wgpu")]
 mod wgpu;

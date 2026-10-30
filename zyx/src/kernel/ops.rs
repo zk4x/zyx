@@ -620,7 +620,7 @@ pub enum TTOp {
     },
     /// `MVMUL`: one Matrix Unit multiply of `SrcA` by `SrcB` into `Dst` row
     /// `dst_row` of the current `SETRWC` base, advancing by `addr_mod`
-    /// (fidelity phase, half, group, fi — see `tt_kernels::matmul::MATH_AM_*`).
+    /// (fidelity phase, half, group, fi — see `crate::backend::tenstorrent::kern::matmul::MATH_AM_*`).
     Mvmul {
         /// `Dst` row within the accumulator base.
         dst_row: u32,
@@ -683,7 +683,7 @@ pub enum TTOp {
         value: u8,
     },
     /// Lowered elementwise SFPU op. `kind` is the metalium opcode
-    /// (`tt_kernels::kind` or `tt_kernels::sfpu::ops::kind_sfpu`), so one
+    /// (`crate::backend::tenstorrent::kern::kind` or `crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu`), so one
     /// variant covers the whole elementwise op surface: adding an op is a
     /// table entry in lowering, not a new variant or a new match arm.
     /// `a` is the first DST input, `b` the second (`OpId::NULL` for a

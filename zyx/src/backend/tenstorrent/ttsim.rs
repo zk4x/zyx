@@ -20,11 +20,12 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
-use tt_device::Device;
+use super::dev::Device;
+use super::kern::code::Loop;
+use super::kern::runtime::{self, Schedule, SemaphoreInit};
+use super::sim::{self, Simulator};
 use tt_isa::isa::Instruction;
 use tt_isa::noc::{Noc0, NocCoord};
-use tt_kernels::code::Loop;
-use tt_kernels::runtime::{self, Schedule, SemaphoreInit};
 
 /// The Tensix tile every zyx kernel runs on.
 ///
@@ -104,7 +105,7 @@ fn owner() -> &'static Mutex<Sender<Cmd>> {
 /// The owner thread: open the simulator once, then answer runs.
 fn serve(rx: Receiver<Cmd>, ready: Sender<Result<(), String>>) {
     // `sim` must outlive `dev`: the transport borrows it.
-    let mut sim = match tt_ttsim::Simulator::open() {
+    let mut sim = match Simulator::open() {
         Ok(sim) => sim,
         Err(e) => {
             let _ = ready.send(Err(format!("cannot open the simulator: {e}")));
@@ -131,7 +132,7 @@ fn serve(rx: Receiver<Cmd>, ready: Sender<Result<(), String>>) {
 }
 
 /// One run: hand the roles to `runtime::run` and collect what it read back.
-fn execute(dev: &mut Device<tt_ttsim::LibTtsim<'_>>, run: &NativeRun) -> Result<NativeOutcome, String> {
+fn execute(dev: &mut Device<sim::LibTtsim<'_>>, run: &NativeRun) -> Result<NativeOutcome, String> {
     if std::env::var_os("ZYX_TT_DUMP").is_some() {
         for (role, words) in run.roles.iter().enumerate() {
             eprintln!("[tt] role T{role}: {} words", words.len());
