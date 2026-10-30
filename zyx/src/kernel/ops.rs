@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 
 use nanoserde::{DeBin, SerBin};
 
+use crate::backend::tenstorrent::TTNativeProgram;
 use crate::backend::{Dev, GwsDim, ProgramId};
 use crate::dtype::Constant;
 use crate::kernel::MemScope;
@@ -61,9 +62,8 @@ pub enum Op {
     /// Post-linearization the kernel is a linear SSA construct; Params remain
     /// as leaves and — together with [`Op::Storage`] — act as the SSA escape
     /// hatches: the mutable stuff values are read from and written to.
-    /// Linearize keeps a Param's `shape` field (logical dims, read by
-    /// lowering gates), so buffer sizes must still be resolved BEFORE
-    /// linearization (see `Kernel::alloc_buffers`).
+    /// Linearize only nulls a Param's `shape` field, so buffer sizes must be
+    /// resolved BEFORE linearization (see `Kernel::alloc_buffers`).
     ///
     /// - [`ParamKind::Variable`] — a single scalar argument (e.g. a dynamic
     ///   dim), passed by value.
@@ -476,6 +476,10 @@ pub struct TTCbConfig {
 /// launch only ever reads vector lengths. Lives inside
 /// [`TTOp::ProgramDesc`], boxed to keep `Op` in budget.
 pub struct TTProgramDesc {
+    /// The staged native program: reader/writer DM moves, the three role
+    /// instruction streams, semaphores, and the CB L1 placement. The
+    /// C++ source is only the not-yet-ported fallback.
+    pub native: TTNativeProgram,
     /// Global head-order ordinals of the reader section params.
     pub reader_params: Box<[u32]>,
     /// Global head-order ordinals of the compute section params.
@@ -490,86 +494,32 @@ pub struct TTProgramDesc {
     pub n_outputs: u32,
     /// Runtime CB config per CB, in CB index order.
     pub cb_config: Box<[TTCbConfig]>,
+    /// Raw native compute instruction words, in emission order. The native
+    /// backend stages these; the C++ source is only the not-yet-ported
+    /// fallback. Empty until the native emitter covers the kernel.
+    pub native_compute: Box<[u32]>,
     /// True iff the kernel touches F32 tiles (32-bit DST mode).
     pub fp32: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// Tenstorrent backend op: section markers, DST locks, CB sync effects,
-/// and lowered LLK compute calls. Lives inside [`Op::TT`].
+/// Tenstorrent backend op: section markers, run-level compute programs,
+/// and DRAM<->L1 traffic. Lives inside [`Op::TT`].
+///
+/// These are the native operations the backend emits. tt-metal's
+/// circular-buffer sync (`reserve_back`/`push_back`/`wait_front`/`pop_front`)
+/// and DST locks (`tile_regs_*`) are not Tensix instructions, so they do not
+/// exist here: the native builders carry their own semaphores and slots.
 pub enum TTOp {
-    /// CB sync: `cb.reserve_back(n)` — open `n` back slots of circular
-    /// buffer `cb` for writing. Effect-only like [`Op::Store`]: produces
-    /// no SSA value, is a DCE root, is never CSE'd or LICM-hoisted.
-    /// `cb` is the bare [`Op::Storage`] (whole-buffer op, like a
-    /// pre-linearize whole-view store — a reserve addresses no single
-    /// location — a reserve addresses no single location like a
-    /// pre-linearize whole-view store). Inserted by `tt_sync_cbs`, never
-    /// by user builders directly (use `Kernel::tt_reserve_back`).
-    ReserveBack {
-        /// Circular buffer.
-        cb: OpId,
-        /// Slots to open.
-        n: u8,
-    },
-    /// CB sync: `cb.push_back(n)` — publish `n` written slots. Same
-    /// effect-only rules as [`TTOp::ReserveBack`].
-    PushBack {
-        /// Circular buffer.
-        cb: OpId,
-        /// Slots to publish.
-        n: u8,
-    },
-    /// CB sync: `cb.wait_front(n)` — block until `n` front slots hold
-    /// data. Same effect-only rules as [`TTOp::ReserveBack`].
-    WaitFront {
-        /// Circular buffer.
-        cb: OpId,
-        /// Slots to wait for.
-        n: u8,
-    },
-    /// CB sync: `cb.pop_front(n)` — release `n` consumed slots. Same
-    /// effect-only rules as [`TTOp::ReserveBack`]. No producer in
-    /// slice 1 (waits only); lands with pop placement.
-    PopFront {
-        /// Circular buffer.
-        cb: OpId,
-        /// Slots to release.
-        n: u8,
-    },
-    // -- TT DST locks: operand-free effects --
-    /// TT DST lock: `tile_regs_acquire()`. Operand-free effect like
-    /// [`Op::Barrier`]: a DCE root, never CSE'd or LICM-hoisted.
-    MathLock,
-    /// TT DST unlock: `tile_regs_commit()`. Same effect rules as
-    /// [`TTOp::MathLock`].
-    MathUnlock,
-    /// TT pack lock: `tile_regs_wait()`. Same effect rules as
-    /// [`TTOp::MathLock`].
-    PackLock,
-    /// TT pack unlock: `tile_regs_release()`. Same effect rules as
-    /// [`TTOp::MathLock`].
-    PackUnlock,
-    // -- TT NOC barriers: operand-free effects --
-    /// TT NOC read barrier: `noc_async_read_barrier()`. Same effect
-    /// rules as [`TTOp::MathLock`].
-    NocReadBarrier,
-    /// TT NOC write barrier: `noc_async_write_barrier()`. Same effect
-    /// rules as [`TTOp::MathLock`].
-    NocWriteBarrier,
-    /// TT reduce uninit: `reduce_uninit();` — closes the reduce cone.
-    /// Operand-free; same effect rules as [`TTOp::MathLock`].
-    ReduceUninit,
     /// TT section split: end of the reader section. Operand-free
-    /// effect like [`TTOp::MathLock`]: a DCE root, never CSE'd or
-    /// LICM-hoisted, program-ordered by scheduling. Inserted by
-    /// builders (`Kernel::tt_end_reader`), never derived by render —
-    /// section assignment is a placement decision. `verify` enforces
-    /// exactly one `EndReader` followed by one `EndCompute`, and
-    /// rejects `Op::Barrier` in any kernel containing TT ops.
+    /// effect: a DCE root, never CSE'd or LICM-hoisted, program-ordered
+    /// by scheduling. Inserted by lowering, never by render — section
+    /// assignment is a placement decision. `tt_verify` enforces exactly
+    /// one `EndReader` followed by one `EndCompute`, and rejects
+    /// `Op::Barrier` in any kernel containing TT ops.
     EndReader,
-    /// TT section split: end of the compute section. Same effect
-    /// rules as [`TTOp::EndReader`].
+    /// TT section split: end of the compute section. Same effect rules
+    /// as [`TTOp::EndReader`].
     EndCompute,
     /// Rendered descriptor tables ([`TTProgramDesc`]): the per-section
     /// param ordinals, param/input/output counts, CB config, and DST
@@ -586,46 +536,27 @@ pub enum TTOp {
     /// launch args. Operand-free effect like [`TTOp::EndReader`].
     /// Boxed to keep `Op` in budget.
     TensixGrid(Box<[GwsDim; 2]>),
-    // -- TT LLK calls: opaque effect templates, excluded from CSE --
-    /// TT LLK call template (`copy_tile({0}, 0, 0);`, ...). The LLK
-    /// software wrappers are not hardware ops, so they live here as
-    /// emitted statement templates, never as structured variants.
-    /// Effect-only like [`Op::Barrier` but with buffer operands]: a
-    /// DCE root, pinned by LICM, and NEVER deduplicated by CSE (two
-    /// identical calls are two traffic events). Operands are bare
-    /// [`Op::Storage`] circular buffers plus index value ops — DST
-    /// slots are template immediates, never operands (the unpacker
-    /// streams CBs). TT `verify` re-checks the CB-only rule at
-    /// compile time.
-    LLK {
-        /// Call template (`{i}` substitutes the i-th operand).
-        asm: TinyString,
-        /// CB + index operands.
-        ops: TinyVec<OpId>,
-    },
-    /// Lowered reduce call: a tile `Reduce` after the TT lowering
-    /// pass resolved its CBs, scaler, and DST slot. Carries the
-    /// structured `(rop, kind)` so `tt_init_math` matches them inline
-    /// and render rebuilds the `reduce_tile<...>` template — never
-    /// baked to text and parsed back. Same effect/CSE rules as
-    /// [`TTOp::LLK`]: a DCE root, pinned by LICM, never deduplicated.
+    /// Lowered reduce program: a tile `Reduce` after lowering resolved
+    /// its DST input and DST accumulator. Carries the structured
+    /// `(rop, kind)` so codegen can build the native reduce program
+    /// directly. Effect-only: a DCE root, pinned by LICM, never
+    /// deduplicated.
     ReduceTile {
         /// Reduce op (Max reduces a MAX pool, Add a SUM).
         rop: BOp,
         /// Reduce dimension.
         kind: TileDim,
-        /// Input circular buffer.
-        cb_in: OpId,
-        /// Scaler circular buffer.
-        cb_sc: OpId,
+        /// Input (Register) storage, already unpacked into DST.
+        input: OpId,
         /// Accumulator (Register) storage.
         slot: OpId,
     },
-    /// TT traffic copy: DRAM↔CB and CB→DRAM movement with an
-    /// explicit transfer size. Both indices are lane-invariant bases
-    /// (unrolls stripped at lowering); the size carries the transfer,
-    /// never the index shape. Effect-only like [`Op::Copy`]: a DCE
-    /// root, never CSE'd.
+    /// TT copy: DRAM<->CB traffic, CB->DRAM drain, and the CB->DST
+    /// unpack. Both indices are lane-invariant bases (unrolls stripped
+    /// at lowering); the size carries the transfer, never the index
+    /// shape. A Register `dst` is the unpack destination; `dst_idx` is
+    /// unused there. Effect-only like [`Op::Copy`]: a DCE root, never
+    /// CSE'd.
     Copy {
         /// Source buffer (DRAM param or Circular storage).
         src: OpId,
@@ -638,69 +569,133 @@ pub enum TTOp {
         /// Transfer size in bytes.
         bytes: u32,
     },
-    /// Lowered fill call: `fill_tile(dst, lit)` writes a scalar
-    /// literal across a DST segment; a pack store moves it to a CB
-    /// (the reduce scaler ones). Produces the filled tile as an SSA
-    /// value so the pack orders after it. Same effect/CSE rules as
-    /// [`TTOp::LLK`]: a DCE root, pinned by LICM, never deduplicated.
-    FillTile {
-        /// Destination (Register) storage.
-        slot: OpId,
-        /// Scalar fill value (Const).
-        val: OpId,
+    /// `UNPACR`: unpacker `unit` (0 = SrcA, 1 = SrcB) moves `count` datums of
+    /// the tile image at `src` (a Circular storage) into its `Src` bank,
+    /// starting at the face the preceding [`TTOp::Setadczw`] selected. The
+    /// base address is `src`'s L1 placement, so the operand stays symbolic.
+    /// Effect-only: a DCE root, never deduplicated.
+    Unpacr {
+        /// Source circular buffer (the tile image in L1).
+        src: OpId,
+        /// Unpacker: 0 = SrcA (SEC0), 1 = SrcB (SEC1).
+        unit: u8,
+        /// Datums to unpack (`count - 1` in the instruction's ADC).
+        count: u32,
+        /// `FlipSrc`: hand the bank to the Matrix Unit when the operand is
+        /// complete (`Banks::unpack_a`/`unpack_b` set it; a partial fill does
+        /// not).
+        flip: bool,
     },
-    /// Lowered fused-broadcast call: a tiled binary with a broadcast
-    /// side over resolved CBs (built directly by builders now).
-    /// Carries the structured `(bop, kind)`; same rules as
-    /// [`TTOp::ReduceTile`]. The result slot is DST (filled by render
-    /// with a fresh slot), so there is no `slot` field.
-    LLKBcast {
-        /// Binary op.
-        bop: BOp,
-        /// Broadcast dimension.
-        kind: TileDim,
-        /// Plain-side circular buffer.
-        cb_a: OpId,
-        /// Marked (broadcast) side circular buffer.
-        cb_b: OpId,
-        /// Marked side tile value (provenance for sync accounting).
-        mx: OpId,
-        /// Plain side tile value (provenance for sync accounting).
-        plain: OpId,
+    /// `SETADCZW`: select face `face` of the source tile for unpacker `unit`.
+    Setadczw {
+        /// Unpacker: 0 = SrcA, 1 = SrcB.
+        unit: u8,
+        /// Face index within the tile image.
+        face: u32,
     },
-    /// Lowered tile matmul: `x @ y` over tile-shaped values, rendered
-    /// as doc-driven `matmul_tiles` (single tile). Built
-    /// by `tt_storage`: carries the resolved
-    /// input CBs plus the result slot, like [`TTOp::ReduceTile`]. Same
-    /// effect/CSE rules as [`TTOp::LLK`]: a DCE root, pinned by LICM,
-    /// never deduplicated.
-    MatmulTiles {
-        /// Left input circular buffer.
-        cb_a: OpId,
-        /// Right input circular buffer.
-        cb_b: OpId,
-        /// Result (Register) storage.
-        slot: OpId,
+    /// `SETADCX`: the datum range `first..first + count` unpacker `unit`
+    /// walks, set once per tile rather than before every unpack.
+    Setadcx {
+        /// Unpacker: 0 = SrcA, 1 = SrcB.
+        unit: u8,
+        /// First datum (a multiple of four).
+        first: u32,
+        /// Datums in the run.
+        count: u32,
     },
-    /// Lowered fused sigmoid: the `(x.neg().exp() + 1).recip()` composite
-    /// over a tile-shaped value, rendered as doc-driven `sigmoid_tile`
-    /// (single tile). Carries the resolved input CB plus the result
-    /// slot, like [`TTOp::ReduceTile`]. Same effect/CSE rules as
-    /// [`TTOp::LLK`]: a DCE root, pinned by LICM, never deduplicated.
-    SigmoidTile {
-        /// Input circular buffer.
-        cb_in: OpId,
-        /// Result (Register) storage.
-        slot: OpId,
+    /// `SETRWC`: point the `Dst` accumulator at `dst`'s row. `Setrwc` is also
+    /// where the operand rows and the fidelity phase are set; zyx only ever
+    /// moves the accumulator, so the rest stays at its prelude value.
+    Setrwc {
+        /// Accumulator (Register) storage.
+        dst: OpId,
     },
-    /// Lowered fused silu: the `x * sigmoid(x)` composite over
-    /// tile-shaped values, rendered as doc-driven `silu_tile` (single
-    /// tile). Carries the resolved input CB plus the result slot, like
-    /// [`TTOp::ReduceTile`]. Same effect/CSE rules as [`TTOp::LLK`]:
-    /// a DCE root, pinned by LICM, never deduplicated.
-    SiluTile {
-        /// Input circular buffer.
-        cb_in: OpId,
+    /// `ZEROACC`: the Matrix Unit's accumulator clear. `mode` 3 is `CLR_ALL`
+    /// (every `Dst` row) — the fused-kernel hazard the notes track.
+    Zeroacc {
+        /// Zero mode.
+        mode: u8,
+        /// Row count for the ranged modes.
+        imm10: u32,
+    },
+    /// `MVMUL`: one Matrix Unit multiply of `SrcA` by `SrcB` into `Dst` row
+    /// `dst_row` of the current `SETRWC` base, advancing by `addr_mod`
+    /// (fidelity phase, half, group, fi — see `tt_kernels::matmul::MATH_AM_*`).
+    Mvmul {
+        /// `Dst` row within the accumulator base.
+        dst_row: u32,
+        /// Address modifier.
+        addr_mod: u8,
+        /// Hand `SrcA` back after the multiply (`Banks::mvmul_release_a`).
+        flip_a: bool,
+        /// Hand `SrcB` back after the multiply (`Banks::mvmul_release_b`).
+        flip_b: bool,
+        /// `BroadcastSrcBRow`: every lane reads `SrcB` row 0 (row broadcast).
+        broadcast_b: bool,
+    },
+    /// `SETC16`: one `ThreadConfig` field. This is how the matmul's address
+    /// modifiers, fidelity phase, and `ALU_ACC_CTRL` bits reach the math
+    /// thread; `field` is the metalium `thread::*` field id.
+    Setc16 {
+        /// `ThreadConfig` field address (`tt_isa::cfg::thread::*`).
+        field: u32,
+        /// Value to write.
+        value: u16,
+    },
+    /// `SETC16`-family word write for the `Config` fields that are not
+    /// `ThreadConfigField`s (`alu::*`, `thcon::*`): the whole word `addr`
+    /// staged to `value` (`ConfigWords::seed`, then the `WRCFG` program).
+    /// The caller computes the word, so the IR stays raw.
+    Setcfg {
+        /// `Config` word address (`field.addr32()`).
+        addr: u32,
+        /// The complete word value.
+        value: u32,
+    },
+    /// `SEMPOST`: post `sem` (index `0..8`) once `role`'s unit has drained,
+    /// like `tt_isa::sync::post_after`. `role` names the stream the words join
+    /// (0 = T0 unpack, 1 = T1 math, 2 = T2 pack): a semaphore op sits between
+    /// the two roles it hands work between, so the stream cannot be inferred
+    /// from the ops around it.
+    Post {
+        /// Semaphore index.
+        sem: u8,
+        /// Stream: 0 = T0, 1 = T1, 2 = T2.
+        role: u8,
+    },
+    /// `SEMWAIT` + `SEMGET`: take `sem` — wait for it, then zero it —
+    /// holding the `before` blocks until it was posted (`sync::take`).
+    Wait {
+        /// Semaphore index.
+        sem: u8,
+        /// `tt_isa::backend::Before` mask.
+        before: u8,
+        /// Stream: 0 = T0, 1 = T1, 2 = T2.
+        role: u8,
+    },
+    /// Semaphore initial state for this run. Not an instruction: codegen
+    /// folds it into `TTNativeProgram::sems` (the concurrent schedule's init
+    /// list), which is why it carries the value the role protocol expects.
+    Semset {
+        /// Semaphore index, `0..8`.
+        sem: u8,
+        /// Value the semaphore starts at.
+        value: u8,
+    },
+    /// Lowered elementwise SFPU op. `kind` is the metalium opcode
+    /// (`tt_kernels::kind` or `tt_kernels::sfpu::ops::kind_sfpu`), so one
+    /// variant covers the whole elementwise op surface: adding an op is a
+    /// table entry in lowering, not a new variant or a new match arm.
+    /// `a` is the first DST input, `b` the second (`OpId::NULL` for a
+    /// unary op), and `slot` the DST result. Effect-only: a DCE root,
+    /// pinned by LICM, never deduplicated.
+    Sfpu {
+        /// Metalium elementwise opcode.
+        kind: u32,
+        /// First (Register) input.
+        a: OpId,
+        /// Second (Register) input, or `OpId::NULL` for a unary op.
+        b: OpId,
         /// Result (Register) storage.
         slot: OpId,
     },
@@ -1377,32 +1372,32 @@ impl Op {
             // src_idx is NEVER null: every load names its element.
             &Op::Load { src, src_idx } => vec![src, src_idx],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
-            Op::TT(TTOp::LLK { ops, .. }) => ops.iter().copied().filter(|o| !o.is_null()).collect(),
-            &Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => vec![cb_in, cb_sc, slot],
+            &Op::TT(TTOp::ReduceTile { input, slot, .. }) => vec![input, slot],
             &Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
-            &Op::TT(TTOp::FillTile { slot, val }) => vec![slot, val],
-            &Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => vec![cb_a, cb_b, slot],
-            &Op::TT(TTOp::SigmoidTile { cb_in, slot }) => vec![cb_in, slot],
-            &Op::TT(TTOp::SiluTile { cb_in, slot }) => vec![cb_in, slot],
-            &Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
+            &Op::TT(TTOp::Unpacr { src, .. }) => vec![src],
+            &Op::TT(TTOp::Setrwc { dst }) => vec![dst],
+            Op::TT(TTOp::Setadczw { .. })
+            | Op::TT(TTOp::Setadcx { .. })
+            | Op::TT(TTOp::Zeroacc { .. })
+            | Op::TT(TTOp::Mvmul { .. })
+            | Op::TT(TTOp::Setc16 { .. })
+            | Op::TT(TTOp::Setcfg { .. })
+            | Op::TT(TTOp::Post { .. })
+            | Op::TT(TTOp::Wait { .. })
+            | Op::TT(TTOp::Semset { .. }) => vec![],
+            &Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
+                if b.is_null() {
+                    vec![a, slot]
+                } else {
+                    vec![a, b, slot]
+                }
+            }
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            &Op::TT(TTOp::ReserveBack { cb, .. })
-            | &Op::TT(TTOp::PushBack { cb, .. })
-            | &Op::TT(TTOp::WaitFront { cb, .. })
-            | &Op::TT(TTOp::PopFront { cb, .. }) => vec![cb],
-            Op::TT(TTOp::MathLock)
-            | Op::TT(TTOp::MathUnlock)
-            | Op::TT(TTOp::PackLock)
-            | Op::TT(TTOp::PackUnlock)
-            | Op::TT(TTOp::NocReadBarrier)
-            | Op::TT(TTOp::NocWriteBarrier)
-            | Op::TT(TTOp::ReduceUninit)
-            | Op::TT(TTOp::EndReader)
-            | Op::TT(TTOp::EndCompute)
-            | Op::TT(TTOp::ProgramDesc(_))
-            | Op::TT(TTOp::TensixGrid(_)) => vec![],
+            Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) | Op::TT(TTOp::ProgramDesc(_)) | Op::TT(TTOp::TensixGrid(_)) => {
+                vec![]
+            }
             Op::After { x, dep } => vec![*x, *dep],
             Op::ToDevice { x, .. } => vec![*x],
             Op::Contiguous { x } => vec![*x],
@@ -1432,7 +1427,7 @@ impl Op {
             Op::ToDevice { x, .. } => vec![x],
             Op::After { x, dep } => vec![x, dep],
             Op::Param { shape, .. } => {
-                // Null shape = scalar or unknown (eager params carry none)
+                // Shape is null after linearize
                 if shape.is_null() { vec![] } else { vec![shape] }
             }
             Op::Range { kind, .. } => match kind {
@@ -1472,30 +1467,30 @@ impl Op {
             Op::Unroll { .. } => vec![],
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::TT(TTOp::ReserveBack { cb, .. })
-            | Op::TT(TTOp::PushBack { cb, .. })
-            | Op::TT(TTOp::WaitFront { cb, .. })
-            | Op::TT(TTOp::PopFront { cb, .. }) => vec![cb],
-            Op::TT(TTOp::MathLock)
-            | Op::TT(TTOp::MathUnlock)
-            | Op::TT(TTOp::PackLock)
-            | Op::TT(TTOp::PackUnlock)
-            | Op::TT(TTOp::NocReadBarrier)
-            | Op::TT(TTOp::NocWriteBarrier)
-            | Op::TT(TTOp::ReduceUninit)
-            | Op::TT(TTOp::EndReader)
-            | Op::TT(TTOp::EndCompute)
-            | Op::TT(TTOp::ProgramDesc(_))
-            | Op::TT(TTOp::TensixGrid(_)) => vec![],
+            Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) | Op::TT(TTOp::ProgramDesc(_)) | Op::TT(TTOp::TensixGrid(_)) => {
+                vec![]
+            }
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
-            Op::TT(TTOp::LLK { ops, .. }) => ops.iter_mut().filter(|o| !o.is_null()).collect(),
-            Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => vec![cb_in, cb_sc, slot],
+            Op::TT(TTOp::ReduceTile { input, slot, .. }) => vec![input, slot],
             Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
-            Op::TT(TTOp::FillTile { slot, val }) => vec![slot, val],
-            Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => vec![cb_a, cb_b, slot],
-            Op::TT(TTOp::SigmoidTile { cb_in, slot }) => vec![cb_in, slot],
-            Op::TT(TTOp::SiluTile { cb_in, slot }) => vec![cb_in, slot],
-            Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => vec![cb_a, cb_b, mx, plain],
+            Op::TT(TTOp::Unpacr { src, .. }) => vec![src],
+            Op::TT(TTOp::Setrwc { dst }) => vec![dst],
+            Op::TT(TTOp::Setadczw { .. })
+            | Op::TT(TTOp::Setadcx { .. })
+            | Op::TT(TTOp::Zeroacc { .. })
+            | Op::TT(TTOp::Mvmul { .. })
+            | Op::TT(TTOp::Setc16 { .. })
+            | Op::TT(TTOp::Setcfg { .. })
+            | Op::TT(TTOp::Post { .. })
+            | Op::TT(TTOp::Wait { .. })
+            | Op::TT(TTOp::Semset { .. }) => vec![],
+            Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
+                if b.is_null() {
+                    vec![a, slot]
+                } else {
+                    vec![a, b, slot]
+                }
+            }
         }
         .into_iter()
     }

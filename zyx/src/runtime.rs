@@ -1997,21 +1997,20 @@ impl Runtime {
     }
 
     #[allow(clippy::wrong_self_convention)] // naming convention from GPU API, not a conversion method
-    pub fn to_device(&mut self, mut x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
+    pub fn to_device(&mut self, x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device={device:?})");
         // Implicit layout: crossing onto TT stages through the host
         // (row-major in, face tiles out). Already-TT tensors skip:
         // tilize is not idempotent.
-        #[cfg(feature = "tenstorrent")]
-        if matches!(device, Dev::TT(_)) && !matches!(self.device(x), Dev::TT(_)) {
+        if device.is_tt_layout() && !self.device(x).is_tt_layout() {
             // Host-staged upload through the TT layout transfer: the
             // Leaf keeps the logical shape, only its buffer is physical.
             let h = self.to_device(x, Dev::Host)?;
             let shape = self.resolve_shape(h);
             let dtype = self.dtype(h);
             let buf = self.leaf_buffer(h).expect("to_device: host-staged tensor has no buffer");
-            let placed = device.tilize_transfer(&buf, &shape, dtype)?;
+            let placed = device.tilize(&buf, &shape, dtype)?;
             let shape_id = match &self.tensors[h] {
                 TensorData::Leaf { shape_id, .. } => *shape_id,
                 TensorData::PendingLeaf { shape_id, .. } => *shape_id,
@@ -2052,12 +2051,13 @@ impl Runtime {
                 }
                 // TT-sourced transfers untilize (physical tiles out,
                 // logical row-major back) inside the transfer.
-                #[cfg(feature = "tenstorrent")]
-                if let [Shard { pool: Pool::TT(id), .. }] = &buf_id.shards[..] {
+                if let [Shard { pool, .. }] = &buf_id.shards[..]
+                    && let Some(src_dev) = pool.tt_layout_device()
+                {
                     // Host-staged download through the TT layout transfer.
                     let shape = self.resolve_shape(x);
                     let dtype = self.dtype(x);
-                    let placed = Dev::TT(*id).untilize_transfer(&buf_id, &shape, dtype, dst_pool)?;
+                    let placed = src_dev.untilize(&buf_id, &shape, dtype, dst_pool)?;
                     let shape_id = match &self.tensors[x] {
                         TensorData::Leaf { shape_id, .. } => *shape_id,
                         TensorData::PendingLeaf { shape_id, .. } => *shape_id,
@@ -2116,12 +2116,13 @@ impl Runtime {
                 }
                 // TT-sourced transfers untilize (physical tiles out,
                 // logical row-major back) inside the transfer.
-                #[cfg(feature = "tenstorrent")]
-                if let [Shard { pool: Pool::TT(id), .. }] = &buf_id.shards[..] {
+                if let [Shard { pool, .. }] = &buf_id.shards[..]
+                    && let Some(src_dev) = pool.tt_layout_device()
+                {
                     // Host-staged download through the TT layout transfer.
                     let shape = self.resolve_shape(x);
                     let dtype = self.dtype(x);
-                    let placed = Dev::TT(*id).untilize_transfer(&buf_id, &shape, dtype, dst_pool)?;
+                    let placed = src_dev.untilize(&buf_id, &shape, dtype, dst_pool)?;
                     let shape_id = match &self.tensors[x] {
                         TensorData::Leaf { shape_id, .. } => *shape_id,
                         TensorData::PendingLeaf { shape_id, .. } => *shape_id,
@@ -4164,7 +4165,6 @@ impl Runtime {
                         Dev::Auto | Dev::C | Dev::Cblas | Dev::Host | Dev::Vulkan(_) | Dev::OpenCL(_) => None,
                         #[cfg(feature = "wgpu")]
                         Dev::WGPU(_) => None,
-                        #[cfg(feature = "tenstorrent")]
                         Dev::TT(_) => None,
                     },
                     has_openmp: dev_info.has_openmp,
@@ -4611,10 +4611,9 @@ impl Runtime {
             // logical shapes stay. Mirrors tilize_transfer: outer * pr
             // * pc. Flat round-up under-allocates whenever rows are not
             // a multiple of 32 (halo rows need full tiles).
-            #[cfg(feature = "tenstorrent")]
             let bytes = {
                 let el = dtypes[&tid].bit_size() as usize / 8;
-                if matches!(pool_id, Pool::TT(_)) {
+                if pool_id.is_tt_layout() {
                     let shape = self.resolve_shape(tid);
                     let (rows, cols) = match shape.as_slice() {
                         [.., r, c] => (*r, *c),

@@ -304,7 +304,16 @@ impl Kernel {
                 | Op::Contiguous { .. }
                 | Op::Program { .. }
                 | Op::Kernel(_)
-                | Op::TT(TTOp::Copy { .. }) => {}
+                | Op::TT(TTOp::Copy { .. })
+                | Op::TT(TTOp::Setadczw { .. })
+                | Op::TT(TTOp::Setadcx { .. })
+                | Op::TT(TTOp::Zeroacc { .. })
+                | Op::TT(TTOp::Mvmul { .. })
+                | Op::TT(TTOp::Setc16 { .. })
+                | Op::TT(TTOp::Setcfg { .. })
+                | Op::TT(TTOp::Post { .. })
+                | Op::TT(TTOp::Wait { .. })
+                | Op::TT(TTOp::Semset { .. }) => {}
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => todo!("Detach in ordered kernel"),
                 // Movement ops carry their output shape in their
@@ -448,16 +457,6 @@ impl Kernel {
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(reduce_axis).or_insert(0) += 1;
                 }
-                Op::TT(TTOp::ReserveBack { cb, .. })
-                | Op::TT(TTOp::PushBack { cb, .. })
-                | Op::TT(TTOp::WaitFront { cb, .. })
-                | Op::TT(TTOp::PopFront { cb, .. }) => {
-                    // Effect-only CB sync: associated with the buffer's
-                    // dtype/layout, keeps the CB's refcount (mirrors Copy
-                    // minus the dst side — one buffer, not two).
-                    dtypes.insert(op_id, dtypes[&cb].clone());
-                    *rcs.entry(cb).or_insert(0) += 1;
-                }
                 Op::Binary { x, y, bop } => {
                     // Implicit broadcast, per slot: equal slots agree; a
                     // -1 (symbolic), 0 (unset) or 1 (scalar) side takes
@@ -494,8 +493,7 @@ impl Kernel {
                     // lane-varying select (same rule as Binary, applied
                     // twice).
                     let dtype = dtypes[&if_true].0;
-                    let (cd, td, fd) =
-                        (dtypes[&cond].1.clone(), dtypes[&if_true].1.clone(), dtypes[&if_false].1.clone());
+                    let (cd, td, fd) = (dtypes[&cond].1.clone(), dtypes[&if_true].1.clone(), dtypes[&if_false].1.clone());
                     let rank = cd.len().max(td.len()).max(fd.len());
                     let mut dims = Vec::with_capacity(rank);
                     for i in 0..rank {
@@ -524,11 +522,11 @@ impl Kernel {
                     *rcs.entry(if_true).or_insert(0) += 1;
                     *rcs.entry(if_false).or_insert(0) += 1;
                 }
-                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
+                Op::Asm { ref ops, .. } => {
                     // Result takes ops[0]'s dtype/layout; the template's
                     // `{i}` placeholders substitute the operand expressions.
-                    // Operand-free Asm/LLK is an effect-only call (e.g. a
-                    // TT LLK init): produces no value, takes no entry.
+                    // Operand-free Asm is an effect-only call: produces no
+                    // value, takes no entry.
                     if !ops.is_empty() {
                         let dtype = dtypes[&ops[0]].clone();
                         dtypes.insert(op_id, dtype);
@@ -537,60 +535,41 @@ impl Kernel {
                         }
                     }
                 }
-                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, kind, .. }) => {
-                    // Lowered reduce: result takes the input CB's dtype; the
+                Op::TT(TTOp::ReduceTile { input, slot, kind, .. }) => {
+                    // Lowered reduce: result takes the DST input's dtype; the
                     // shape drops the trailing dim (Row/Col) or everything
                     // (Scalar), like `Kernel::shape`.
-                    let (dtype, _) = dtypes[&cb_in].clone();
+                    let (dtype, _) = dtypes[&input].clone();
                     let shape = if matches!(kind, TileDim::Scalar) {
                         Vec::new()
                     } else {
                         vec![32]
                     };
                     dtypes.insert(op_id, (dtype, shape));
-                    for &f in &[cb_in, cb_sc, slot] {
+                    for &f in &[input, slot] {
                         *rcs.entry(f).or_insert(0) += 1;
                     }
                 }
-                Op::TT(TTOp::FillTile { slot, val }) => {
-                    // Lowered fill: scalar value broadcast to one tile.
-                    dtypes.insert(op_id, (dtypes[&val].0, vec![32, 32]));
-                    for &f in &[slot, val] {
-                        *rcs.entry(f).or_insert(0) += 1;
-                    }
-                }
-                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
-                    // Lowered fused broadcast: same rule over cb_a.
-                    dtypes.insert(op_id, dtypes[&cb_a].clone());
-                    for &f in &[cb_a, cb_b, mx, plain] {
-                        *rcs.entry(f).or_insert(0) += 1;
-                    }
-                }
-                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
-                    // Lowered matmul: one tile out; result takes the
-                    // left CB's dtype.
-                    let (dtype, _) = dtypes[&cb_a].clone();
+                Op::TT(TTOp::Unpacr { src, .. }) => {
+                    // Native unpack: the source CB's dtype, one tile out.
+                    let (dtype, _) = dtypes[&src].clone();
                     dtypes.insert(op_id, (dtype, vec![32, 32]));
-                    for &f in &[cb_a, cb_b, slot] {
-                        *rcs.entry(f).or_insert(0) += 1;
-                    }
+                    *rcs.entry(src).or_insert(0) += 1;
                 }
-                Op::TT(TTOp::SigmoidTile { cb_in, slot }) => {
-                    // Lowered fused sigmoid: one tile out; result takes
-                    // the input CB's dtype.
-                    let (dtype, _) = dtypes[&cb_in].clone();
-                    dtypes.insert(op_id, (dtype, vec![32, 32]));
-                    for &f in &[cb_in, slot] {
-                        *rcs.entry(f).or_insert(0) += 1;
-                    }
+                Op::TT(TTOp::Setrwc { dst }) => {
+                    // Accumulator pointer: no value of its own.
+                    dtypes.insert(op_id, dtypes[&dst].clone());
+                    *rcs.entry(dst).or_insert(0) += 1;
                 }
-                Op::TT(TTOp::SiluTile { cb_in, slot }) => {
-                    // Lowered fused silu: one tile out; result takes
-                    // the input CB's dtype.
-                    let (dtype, _) = dtypes[&cb_in].clone();
-                    dtypes.insert(op_id, (dtype, vec![32, 32]));
-                    for &f in &[cb_in, slot] {
-                        *rcs.entry(f).or_insert(0) += 1;
+                Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
+                    // Lowered elementwise SFPU: result takes the first
+                    // input's dtype and shape (rank-1 rows stay rank-1).
+                    let (dtype, shape) = dtypes[&a].clone();
+                    dtypes.insert(op_id, (dtype, shape));
+                    for f in [a, b, slot] {
+                        if !f.is_null() {
+                            *rcs.entry(f).or_insert(0) += 1;
+                        }
                     }
                 }
                 Op::Stack { ref ops } => {
@@ -651,13 +630,6 @@ impl Kernel {
                 }
                 Op::Barrier
                 | Op::EndLoop
-                | Op::TT(TTOp::MathLock)
-                | Op::TT(TTOp::MathUnlock)
-                | Op::TT(TTOp::PackLock)
-                | Op::TT(TTOp::PackUnlock)
-                | Op::TT(TTOp::NocReadBarrier)
-                | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::ProgramDesc(_))
@@ -714,39 +686,35 @@ impl Kernel {
                     | MMADType::b1_b1_s32_and_popc => return DType::I32,
                 },
                 Op::Stack { ref ops } => op_id = ops[0],
-                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
+                Op::Asm { ref ops, .. } => {
                     if ops.is_empty() {
-                        todo!("dtype: operand-free Asm/LLK produces no value")
+                        todo!("dtype: operand-free Asm produces no value")
                     }
                     op_id = ops[0]
                 }
-                Op::TT(TTOp::ReduceTile { cb_in, .. }) => op_id = cb_in,
-                Op::TT(TTOp::FillTile { val, .. }) => op_id = val,
-                Op::TT(TTOp::LLKBcast { cb_a, .. }) => op_id = cb_a,
-                Op::TT(TTOp::MatmulTiles { cb_a, .. }) => op_id = cb_a,
-                Op::TT(TTOp::SigmoidTile { cb_in, .. }) => op_id = cb_in,
-                Op::TT(TTOp::SiluTile { cb_in, .. }) => op_id = cb_in,
+                Op::TT(TTOp::ReduceTile { input, .. }) => op_id = input,
+                Op::TT(TTOp::Unpacr { .. }) => return IDX_T,
+                Op::TT(TTOp::Setrwc { .. }) => return IDX_T,
+                Op::TT(TTOp::Sfpu { a, .. }) => op_id = a,
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
                 Op::EndLoop | Op::Loop { .. } => return IDX_T,
                 Op::Barrier
-                | Op::TT(TTOp::MathLock)
-                | Op::TT(TTOp::MathUnlock)
-                | Op::TT(TTOp::PackLock)
-                | Op::TT(TTOp::PackUnlock)
-                | Op::TT(TTOp::NocReadBarrier)
-                | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::ProgramDesc(_))
                 | Op::TT(TTOp::TensixGrid(_)) => todo!(),
-                Op::TT(TTOp::ReserveBack { .. })
-                | Op::TT(TTOp::PushBack { .. })
-                | Op::TT(TTOp::WaitFront { .. })
-                | Op::TT(TTOp::PopFront { .. })
-                | Op::TT(TTOp::Copy { .. }) => todo!("dtype: CB sync/traffic op produces no value"),
+                Op::TT(TTOp::Copy { .. }) => todo!("dtype: traffic op produces no value"),
+                Op::TT(TTOp::Setadczw { .. })
+                | Op::TT(TTOp::Setadcx { .. })
+                | Op::TT(TTOp::Zeroacc { .. })
+                | Op::TT(TTOp::Mvmul { .. })
+                | Op::TT(TTOp::Setc16 { .. })
+                | Op::TT(TTOp::Setcfg { .. })
+                | Op::TT(TTOp::Post { .. })
+                | Op::TT(TTOp::Wait { .. })
+                | Op::TT(TTOp::Semset { .. }) => todo!("dtype: instruction op produces no value"),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
@@ -1162,18 +1130,13 @@ impl Kernel {
                     let loop_prod: u64 = loop_stack.iter().product::<u64>().max(1);
                     flops = flops.saturating_add(2 * m * n * k * warps * loop_prod);
                 }
-                Op::TT(TTOp::MatmulTiles { .. }) => {
+                Op::TT(TTOp::Unpacr { .. }) | Op::TT(TTOp::Setrwc { .. }) => {
                     // Lowered matmul: single 32x32x32 tile MAC.
                     flops = flops.saturating_add(2 * 32 * 32 * 32 * mult);
                 }
-                Op::TT(TTOp::SigmoidTile { .. }) => {
-                    // Lowered fused sigmoid: the 5 replaced elementwise
-                    // ops (neg, mul, exp2, add, recip) at one flop each.
-                    flops = flops.saturating_add(5 * mult);
-                }
-                Op::TT(TTOp::SiluTile { .. }) => {
-                    // Lowered fused silu: sigmoid's 5 plus the final mul.
-                    flops = flops.saturating_add(6 * mult);
+                Op::TT(TTOp::Sfpu { .. }) => {
+                    // Lowered elementwise SFPU: one op per tile instance.
+                    flops = flops.saturating_add(mult);
                 }
                 Op::Load { src, .. } => {
                     if let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*src].op {
@@ -1511,34 +1474,29 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { src: x, .. }
-                | Op::Cast { x, .. }
-                | Op::Bitcast { x, .. }
-                | Op::Unary { x, .. }
-                | Op::TT(TTOp::LLKBcast { cb_a: x, .. }) => match visited.get(&x) {
-                    Some(dims) => {
-                        visited.insert(op_id, dims.clone());
-                        if let Some(a) = axes.get(&x).cloned() {
-                            axes.insert(op_id, a);
+                Op::Store { src: x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => {
+                    match visited.get(&x) {
+                        Some(dims) => {
+                            visited.insert(op_id, dims.clone());
+                            if let Some(a) = axes.get(&x).cloned() {
+                                axes.insert(op_id, a);
+                            }
+                        }
+                        None => {
+                            stack.push(op_id);
+                            stack.push(x);
                         }
                     }
-                    None => {
-                        stack.push(op_id);
-                        stack.push(x);
-                    }
-                },
+                }
                 // Lowered calls report no shape ids: no buffer is ever
                 // sized from them (writer CBs are pre-sized). `shape`
                 // and the dtype map carry their tile shapes.
-                Op::TT(TTOp::MatmulTiles { .. })
-                | Op::TT(TTOp::ReduceTile { .. })
-                | Op::TT(TTOp::SigmoidTile { .. })
-                | Op::TT(TTOp::SiluTile { .. }) => {
+                Op::TT(TTOp::Unpacr { .. }) | Op::TT(TTOp::ReduceTile { .. }) | Op::TT(TTOp::Sfpu { .. }) => {
                     visited.insert(op_id, Vec::new());
                 }
-                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
+                Op::Asm { ref ops, .. } => {
                     if ops.is_empty() {
-                        todo!("shape: operand-free Asm/LLK produces no value")
+                        todo!("shape: operand-free Asm produces no value")
                     }
                     match visited.get(&ops[0]) {
                         Some(dims) => {
@@ -1625,11 +1583,7 @@ impl Kernel {
                         }
                         continue;
                     }
-                    let (dims, merged_axes) = match (
-                        visited[&x].as_slice(),
-                        visited[&y].as_slice(),
-                        visited[&c].as_slice(),
-                    ) {
+                    let (dims, merged_axes) = match (visited[&x].as_slice(), visited[&y].as_slice(), visited[&c].as_slice()) {
                         (&[], &[], &[]) => (Vec::new(), Vec::new()),
                         (&[], &[], _) => (visited[&c].clone(), axes.get(&c).cloned().unwrap_or_default()),
                         (&[], _, _) => (visited[&y].clone(), axes.get(&y).cloned().unwrap_or_default()),
@@ -1838,19 +1792,17 @@ impl Kernel {
                         stack.push(x);
                     }
                 },
-                Op::Store { src: x, .. }
-                | Op::Cast { x, .. }
-                | Op::Bitcast { x, .. }
-                | Op::Unary { x, .. }
-                | Op::TT(TTOp::LLKBcast { cb_a: x, .. }) => match visited.get(&x) {
-                    Some(dims) => {
-                        visited.insert(id, *dims);
+                Op::Store { src: x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => {
+                    match visited.get(&x) {
+                        Some(dims) => {
+                            visited.insert(id, *dims);
+                        }
+                        None => {
+                            stack.push(id);
+                            stack.push(x);
+                        }
                     }
-                    None => {
-                        stack.push(id);
-                        stack.push(x);
-                    }
-                },
+                }
                 // Select merges the cond and both value arms (same
                 // broadcast merge as Binary above, applied twice:
                 // scalars broadcast). The cond contributes lanes exactly
@@ -1910,26 +1862,26 @@ impl Kernel {
                     }
                     visited.insert(id, out);
                 }
-                Op::TT(TTOp::MatmulTiles { .. }) => {
+                Op::TT(TTOp::Unpacr { .. }) => {
                     visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);
                 }
-                // A fused sigmoid yields one [32, 32] tile:
-                // kind-constant, like the matmul.
-                Op::TT(TTOp::SigmoidTile { .. }) => {
+                Op::TT(TTOp::Setrwc { .. }) => {
                     visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);
                 }
-                // A fused silu yields one [32, 32] tile: kind-constant.
-                Op::TT(TTOp::SiluTile { .. }) => {
-                    visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);
-                }
-                // A fill produces one full tile: fixed [32, 32], no
-                // unroll dims anywhere.
-                Op::TT(TTOp::FillTile { .. }) => {
-                    visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);
-                }
-                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
+                // An elementwise SFPU op keeps its first input's shape:
+                // a rank-1 row stays rank-1, a tile stays a tile.
+                Op::TT(TTOp::Sfpu { a, .. }) => match visited.get(&a) {
+                    Some(dims) => {
+                        visited.insert(id, *dims);
+                    }
+                    None => {
+                        stack.push(id);
+                        stack.push(a);
+                    }
+                },
+                Op::Asm { ref ops, .. } => {
                     if ops.is_empty() {
-                        // Operand-free Asm/LLK is an effect-only call:
+                        // Operand-free Asm is an effect-only call:
                         // no value, scalar shape.
                         visited.insert(id, [0; 8]);
                     } else {
@@ -2169,38 +2121,6 @@ impl Kernel {
                     }
                     _ => {}
                 }
-            }
-            // Const-scaled compound: the factor distributes over the
-            // stride sum exactly (every term stride and the const
-            // offset scale uniformly), so descend with the folded
-            // scale. Both-const folds into the offset. Overflow bails.
-            // Proof-only: values elsewhere are untouched, so congruence
-            // verdicts on genuinely wrong traffic do not change.
-            if let Op::Binary { x, y, bop: BOp::Mul } = self.at(param) {
-                let (k, e) = match (self.at(*x), self.at(*y)) {
-                    (Op::Const(a), Op::Const(b)) => {
-                        let (Some(a), Some(b)) = (a.as_integer(), b.as_integer()) else {
-                            return None;
-                        };
-                        let Some(p) = a.checked_mul(b).and_then(|p| p.checked_mul(scale)) else {
-                            return None;
-                        };
-                        indices.entry(OpId::NULL).and_modify(|(_, v)| *v += p).or_insert((0, p));
-                        continue;
-                    }
-                    (Op::Const(a), _) => {
-                        let Some(k) = a.as_integer() else { return None };
-                        (k, *y)
-                    }
-                    (_, Op::Const(b)) => {
-                        let Some(k) = b.as_integer() else { return None };
-                        (k, *x)
-                    }
-                    _ => return None,
-                };
-                let Some(s) = k.checked_mul(scale) else { return None };
-                params.push((e, s));
-                continue;
             }
             // Anything else (Div/Mod/Min/Max, dynamic factors,
             // data-dependent leaves) is not an affine index expression:

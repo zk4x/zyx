@@ -614,29 +614,7 @@ impl Kernel {
                 op,
                 Op::Store { .. }
                     | Op::Copy { .. }
-                    | Op::TT(TTOp::Copy { .. })
-                    | Op::TT(TTOp::ReserveBack { .. })
-                    | Op::TT(TTOp::PushBack { .. })
-                    | Op::TT(TTOp::WaitFront { .. })
-                    | Op::TT(TTOp::PopFront { .. })
-                    | Op::TT(TTOp::MathLock)
-                    | Op::TT(TTOp::MathUnlock)
-                    | Op::TT(TTOp::PackLock)
-                    | Op::TT(TTOp::PackUnlock)
-                    | Op::TT(TTOp::NocReadBarrier)
-                    | Op::TT(TTOp::NocWriteBarrier)
-                    | Op::TT(TTOp::ReduceUninit)
-                    | Op::TT(TTOp::EndReader)
-                    | Op::TT(TTOp::EndCompute)
-                    | Op::TT(TTOp::ProgramDesc(_))
-                    | Op::TT(TTOp::TensixGrid(_))
-                    | Op::TT(TTOp::LLK { .. })
-                    | Op::TT(TTOp::ReduceTile { .. })
-                    | Op::TT(TTOp::FillTile { .. })
-                    | Op::TT(TTOp::LLKBcast { .. })
-                    | Op::TT(TTOp::MatmulTiles { .. })
-                    | Op::TT(TTOp::SigmoidTile { .. })
-                    | Op::TT(TTOp::SiluTile { .. })
+                    | Op::TT(_)
                     | Op::Param { .. }
                     | Op::Storage { .. }
                     | Op::Wmma { .. }
@@ -704,29 +682,7 @@ impl Kernel {
                 }
                 &mut Op::Store { .. }
                 | &mut Op::Copy { .. }
-                | &mut Op::TT(TTOp::Copy { .. })
-                | &mut Op::TT(TTOp::ReserveBack { .. })
-                | &mut Op::TT(TTOp::PushBack { .. })
-                | &mut Op::TT(TTOp::WaitFront { .. })
-                | &mut Op::TT(TTOp::PopFront { .. })
-                | &mut Op::TT(TTOp::LLK { .. })
-                | &mut Op::TT(TTOp::ReduceTile { .. })
-                | &mut Op::TT(TTOp::FillTile { .. })
-                | &mut Op::TT(TTOp::LLKBcast { .. })
-                | &mut Op::TT(TTOp::MatmulTiles { .. })
-                | &mut Op::TT(TTOp::SigmoidTile { .. })
-                | &mut Op::TT(TTOp::SiluTile { .. })
-                | &mut Op::TT(TTOp::MathLock)
-                | &mut Op::TT(TTOp::MathUnlock)
-                | &mut Op::TT(TTOp::PackLock)
-                | &mut Op::TT(TTOp::PackUnlock)
-                | &mut Op::TT(TTOp::NocReadBarrier)
-                | &mut Op::TT(TTOp::NocWriteBarrier)
-                | &mut Op::TT(TTOp::ReduceUninit)
-                | &mut Op::TT(TTOp::EndReader)
-                | &mut Op::TT(TTOp::EndCompute)
-                | &mut Op::TT(TTOp::ProgramDesc(_))
-                | &mut Op::TT(TTOp::TensixGrid(_)) => {
+                | &mut Op::TT(_) => {
                     // Effect ops never participate in CSE: remap operands,
                     // never dedup (two identical effects are two traffic
                     // events). Only buffer references (Storage/Param base
@@ -808,13 +764,6 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        // CSE leaves the deduplicated originals dead in place. A dead op
-        // can sit before the params (a deduped shape const, say), which
-        // the positional ABI check in `verify` flags even though the op
-        // is about to vanish. Drop dead ops first so the check sees the
-        // list the caller will actually run.
-        self.dead_code_elimination();
-
         self.verify();
     }
 
@@ -826,34 +775,8 @@ impl Kernel {
     pub(crate) fn move_constants_to_beginning(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("move_constants_to_beginning");
-        // Leading metadata region: params, storages, consts, and the
-        // shape-descriptor ops params depend on (`Op::parameters`).
-        // Dependency-derived: a shape cone must stay with its params, so
-        // ranges are hoisted only past it — never above a param.
-        let mut shape_deps: Set<OpId> = Set::default();
-        for (_, op) in self.iter_unordered() {
-            if let Op::Param { shape, .. } = op
-                && !shape.is_null()
-            {
-                let mut stack = vec![*shape];
-                for _ in 0..250_000 {
-                    let Some(d) = stack.pop() else { break };
-                    if !shape_deps.insert(d) {
-                        continue;
-                    }
-                    for q in self.ops[d].op.parameters() {
-                        if !q.is_null() {
-                            stack.push(q);
-                        }
-                    }
-                }
-            }
-        }
-        let leading = |k: &Self, id: OpId| {
-            matches!(k.at(id), Op::Storage { .. } | Op::Param { .. } | Op::Const(_)) || shape_deps.contains(&id)
-        };
         let mut start = self.head;
-        while !start.is_null() && leading(self, start) {
+        while matches!(self.at(start), Op::Storage { .. } | Op::Param { .. }) {
             start = self.next_op(start);
         }
 
@@ -872,7 +795,7 @@ impl Kernel {
 
         // Find position after last Op::Const (skip past all params, storages and consts)
         let mut start = self.head;
-        while !start.is_null() && leading(self, start) {
+        while matches!(self.at(start), Op::Storage { .. } | Op::Param { .. } | Op::Const(_)) {
             start = self.next_op(start);
         }
 
@@ -1233,32 +1156,4 @@ mod tests {
     use crate::kernel::{Dev, Kernel, MemScope, Op, TTOp};
     use crate::types::{TinyString, TinyVec};
 
-    /// Two identical LLK calls are two traffic events: CSE must not
-    /// merge them (the unpacker streams each CB read separately).
-    #[test]
-    fn cse_does_not_dedup_llk_calls() {
-        let mut k = Kernel::new(Dev::Auto);
-        let out = k.param_mut(DType::F32);
-        let cb = k.storage(DType::F32, MemScope::Circular, 1);
-        let idx = k.const_val(0i64);
-        k.tt_end_reader();
-        let a = k.push_back(Op::TT(TTOp::LLK { asm: TinyString::new("copy_tile({0}, {1});"), ops: TinyVec::new(&[cb, idx]) }));
-        let b = k.push_back(Op::TT(TTOp::LLK { asm: TinyString::new("copy_tile({0}, {1});"), ops: TinyVec::new(&[cb, idx]) }));
-        let load_a = k.load(cb, idx);
-        let load_b = k.load(cb, idx);
-        k.store(out, load_a, idx);
-        k.store(out, load_b, idx);
-        k.tt_end_compute();
-        k.common_subexpression_elimination();
-        // Both calls survive; neither is remapped to the other.
-        let mut llk_count = 0;
-        for (_, op) in k.iter_unordered() {
-            if matches!(op, Op::TT(TTOp::LLK { .. })) {
-                llk_count += 1;
-            }
-        }
-        assert_eq!(llk_count, 2, "CSE must not merge two identical LLK calls");
-        assert!(matches!(k.at(a), Op::TT(TTOp::LLK { .. })));
-        assert!(matches!(k.at(b), Op::TT(TTOp::LLK { .. })));
-    }
 }

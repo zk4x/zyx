@@ -58,7 +58,7 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 match self.ops[op_id].op {
-                    Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
+                    Op::Asm { ref ops, .. } => {
                         // Same rule as compute_dtypes_and_rcs: result takes
                         // ops[0]'s dtype/layout, ops are consumed operands.
                         // Operand-free Asm/LLK is an effect-only call: no
@@ -71,37 +71,24 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => {
-                        // Lowered reduce: same rule over cb_in.
-                        let (dtype, shape) = dtypes[&cb_in].clone();
+                    Op::TT(TTOp::ReduceTile { input, slot, .. }) => {
+                        // Lowered reduce: same rule over its DST input.
+                        let (dtype, shape) = dtypes[&input].clone();
                         dtypes.insert(op_id, (dtype, shape));
-                        for &f in &[cb_in, cb_sc, slot] {
+                        for &f in &[input, slot] {
                             *rcs.entry(f).or_insert(0) += 1;
                         }
                     }
-                    Op::TT(TTOp::FillTile { slot, val }) => {
-                        // Lowered fill: scalar value broadcast to one tile.
-                        let (dtype, _) = dtypes[&val].clone();
-                        dtypes.insert(op_id, (dtype, vec![32, 32]));
-                        for &f in &[slot, val] {
-                            *rcs.entry(f).or_insert(0) += 1;
-                        }
-                    }
-                    Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
-                        // Lowered matmul: same rule over cb_a.
-                        let (dtype, shape) = dtypes[&cb_a].clone();
+                    Op::TT(TTOp::Unpacr { src, .. }) => {
+                        // Unpack: the source CB's dtype and shape, one use.
+                        let (dtype, shape) = dtypes[&src].clone();
                         dtypes.insert(op_id, (dtype, shape));
-                        for &f in &[cb_a, cb_b, slot] {
-                            *rcs.entry(f).or_insert(0) += 1;
-                        }
+                        *rcs.entry(src).or_insert(0) += 1;
                     }
-                    Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
-                        // Lowered fused broadcast: same rule over cb_a.
-                        let (dtype, shape) = dtypes[&cb_a].clone();
-                        dtypes.insert(op_id, (dtype, shape));
-                        for &f in &[cb_a, cb_b, mx, plain] {
-                            *rcs.entry(f).or_insert(0) += 1;
-                        }
+                    Op::TT(TTOp::Setrwc { dst }) => {
+                        // Accumulator row of an existing Register storage.
+                        dtypes.insert(op_id, dtypes[&dst].clone());
+                        *rcs.entry(dst).or_insert(0) += 1;
                     }
                     Op::Expand { .. }
                     | Op::Permute { .. }
@@ -223,59 +210,26 @@ impl Kernel {
                         }
                     }
                     Op::TT(ref ttop) => match ttop {
-                        TTOp::ReserveBack { cb, .. }
-                        | TTOp::PushBack { cb, .. }
-                        | TTOp::WaitFront { cb, .. }
-                        | TTOp::PopFront { cb, .. } => {
-                            dtypes.insert(op_id, dtypes[cb].clone());
-                            *rcs.entry(*cb).or_insert(0) += 1;
+                        TTOp::ReduceTile { input, slot, .. } => {
+                            dtypes.insert(op_id, dtypes[input].clone());
+                            for f in [input, slot] {
+                                *rcs.entry(*f).or_insert(0) += 1;
+                            }
                         }
-                        TTOp::LLK { ops, .. } => {
-                            // Opaque effect call: no value, but the CB
-                            // operands stay live (same rule as the Asm
-                            // arm above).
-                            if !ops.is_empty() {
-                                dtypes.insert(op_id, dtypes[&ops[0]].clone());
-                                for &x in ops.iter() {
-                                    *rcs.entry(x).or_insert(0) += 1;
+                        TTOp::Unpacr { src, .. } => {
+                            dtypes.insert(op_id, dtypes[src].clone());
+                            *rcs.entry(*src).or_insert(0) += 1;
+                        }
+                        TTOp::Setrwc { dst } => {
+                            dtypes.insert(op_id, dtypes[dst].clone());
+                            *rcs.entry(*dst).or_insert(0) += 1;
+                        }
+                        TTOp::Sfpu { a, b, slot, .. } => {
+                            dtypes.insert(op_id, dtypes[a].clone());
+                            for f in [a, b, slot] {
+                                if !f.is_null() {
+                                    *rcs.entry(*f).or_insert(0) += 1;
                                 }
-                            }
-                        }
-                        TTOp::ReduceTile { cb_in, cb_sc, slot, .. } => {
-                            dtypes.insert(op_id, dtypes[cb_in].clone());
-                            for f in [cb_in, cb_sc, slot] {
-                                *rcs.entry(*f).or_insert(0) += 1;
-                            }
-                        }
-                        TTOp::FillTile { slot, val } => {
-                            let (dtype, _) = dtypes[val].clone();
-                            dtypes.insert(op_id, (dtype, vec![32, 32]));
-                            for f in [slot, val] {
-                                *rcs.entry(*f).or_insert(0) += 1;
-                            }
-                        }
-                        TTOp::MatmulTiles { cb_a, cb_b, slot } => {
-                            dtypes.insert(op_id, dtypes[cb_a].clone());
-                            for f in [cb_a, cb_b, slot] {
-                                *rcs.entry(*f).or_insert(0) += 1;
-                            }
-                        }
-                        TTOp::SigmoidTile { cb_in, slot, .. } => {
-                            dtypes.insert(op_id, dtypes[cb_in].clone());
-                            for f in [cb_in, slot] {
-                                *rcs.entry(*f).or_insert(0) += 1;
-                            }
-                        }
-                        TTOp::SiluTile { cb_in, slot, .. } => {
-                            dtypes.insert(op_id, dtypes[cb_in].clone());
-                            for f in [cb_in, slot] {
-                                *rcs.entry(*f).or_insert(0) += 1;
-                            }
-                        }
-                        TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. } => {
-                            dtypes.insert(op_id, dtypes[cb_a].clone());
-                            for f in [cb_a, cb_b, mx, plain] {
-                                *rcs.entry(*f).or_insert(0) += 1;
                             }
                         }
                         TTOp::Copy { src, src_idx, dst, dst_idx, .. } => {
@@ -285,17 +239,7 @@ impl Kernel {
                                 *rcs.entry(*f).or_insert(0) += 1;
                             }
                         }
-                        TTOp::MathLock
-                        | TTOp::MathUnlock
-                        | TTOp::PackLock
-                        | TTOp::PackUnlock
-                        | TTOp::NocReadBarrier
-                        | TTOp::NocWriteBarrier
-                        | TTOp::ReduceUninit
-                        | TTOp::EndReader
-                        | TTOp::EndCompute
-                        | TTOp::ProgramDesc(_)
-                        | TTOp::TensixGrid(_) => {}
+                        _ => {}
                     },
                     Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => todo!(),
                     Op::Barrier | Op::EndLoop => {}
@@ -365,33 +309,7 @@ impl Kernel {
                 | Op::Const(_)
                 | Op::Unroll { .. }
                 | Op::Range { .. } => true,
-                Op::Store { .. }
-                | Op::Copy { .. }
-                | Op::TT(TTOp::Copy { .. })
-                | Op::TT(TTOp::ReserveBack { .. })
-                | Op::TT(TTOp::PushBack { .. })
-                | Op::TT(TTOp::WaitFront { .. })
-                | Op::TT(TTOp::PopFront { .. })
-                | Op::TT(TTOp::MathLock)
-                | Op::TT(TTOp::MathUnlock)
-                | Op::TT(TTOp::PackLock)
-                | Op::TT(TTOp::PackUnlock)
-                | Op::TT(TTOp::NocReadBarrier)
-                | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
-                | Op::TT(TTOp::EndReader)
-                | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::ProgramDesc(_))
-                | Op::TT(TTOp::TensixGrid(_))
-                | Op::TT(TTOp::LLK { .. })
-                | Op::TT(TTOp::ReduceTile { .. })
-                | Op::TT(TTOp::FillTile { .. })
-                | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::MatmulTiles { .. })
-                | Op::TT(TTOp::SigmoidTile { .. })
-                | Op::TT(TTOp::SiluTile { .. })
-                | Op::EndLoop
-                | Op::Barrier => false,
+                Op::Store { .. } | Op::Copy { .. } | Op::TT(_) | Op::EndLoop | Op::Barrier => false,
                 // Counted loops produce the induction value; boolean
                 // loops (conditionals) produce nothing, like `If` did.
                 Op::Loop { len } => self.dtype(len) != DType::Bool,

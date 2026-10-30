@@ -1969,7 +1969,6 @@ impl PyDev {
         Self(Dev::Cuda(id))
     }
     /// Tenstorrent chip with the given id.
-    #[cfg(feature = "tenstorrent")]
     #[staticmethod]
     fn tt(id: u16) -> Self {
         Self(Dev::TT(id))

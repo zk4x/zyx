@@ -75,28 +75,7 @@ impl Kernel {
                     | Op::Unroll { .. }
                     | Op::Barrier
                     | Op::Wmma { .. }
-                    | Op::TT(TTOp::ReserveBack { .. })
-                    | Op::TT(TTOp::PushBack { .. })
-                    | Op::TT(TTOp::WaitFront { .. })
-                    | Op::TT(TTOp::PopFront { .. })
-                    | Op::TT(TTOp::MathLock)
-                    | Op::TT(TTOp::MathUnlock)
-                    | Op::TT(TTOp::PackLock)
-                    | Op::TT(TTOp::PackUnlock)
-                    | Op::TT(TTOp::NocReadBarrier)
-                    | Op::TT(TTOp::NocWriteBarrier)
-                    | Op::TT(TTOp::ReduceUninit)
-                    | Op::TT(TTOp::EndReader)
-                    | Op::TT(TTOp::EndCompute)
-                    | Op::TT(TTOp::ProgramDesc(_))
-                    | Op::TT(TTOp::TensixGrid(_))
-                    | Op::TT(TTOp::LLK { .. })
-                    | Op::TT(TTOp::ReduceTile { .. })
-                    | Op::TT(TTOp::FillTile { .. })
-                    | Op::TT(TTOp::LLKBcast { .. })
-                    | Op::TT(TTOp::MatmulTiles { .. })
-                    | Op::TT(TTOp::SigmoidTile { .. })
-                    | Op::TT(TTOp::SiluTile { .. })
+                    | Op::TT(_)
                     | Op::Asm { .. } => has_post_linearize_ops = true,
                     Op::Permute { .. }
                     | Op::Expand { .. }
@@ -159,12 +138,6 @@ impl Kernel {
                 Done,
             }
             let mut phase = Phase::GlobalRo;
-            // The phase machine orders the ABI, not the body: only
-            // params and storages take part. Every other op's position
-            // is constrained by `check()` below (an op must follow its
-            // own `Op::parameters`), which is the real invariant — a
-            // shape descriptor or a body const sitting ahead of a param
-            // breaks nothing, so it is not this check's business.
             let mut scan = self.head;
             while !scan.is_null() {
                 match self.at(scan) {
@@ -195,8 +168,11 @@ impl Kernel {
                             phase = Phase::LocalRw;
                         }
                     }
-                    // Body ops stay out of the ABI phase machine.
-                    _ => {}
+                    _ => {
+                        if phase != Phase::Done {
+                            phase = Phase::Done;
+                        }
+                    }
                 }
                 scan = self.next_op(scan);
             }
@@ -335,126 +311,68 @@ impl Kernel {
                     check(op_id, reduce_axis, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
-                Op::TT(TTOp::ReserveBack { cb, n })
-                | Op::TT(TTOp::PushBack { cb, n })
-                | Op::TT(TTOp::WaitFront { cb, n })
-                | Op::TT(TTOp::PopFront { cb, n }) => {
-                    // Whole-buffer CB sync: `cb` names the Circular
-                    // storage directly (no index — a reserve/wait/push/pop
-                    // addresses no single location).
-                    check(op_id, cb, &stack);
-                    if !matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }) {
-                        println!("cb sync op={op_id} targets non-circular {cb}");
+                Op::TT(TTOp::ReduceTile { input, slot, .. }) => {
+                    // Native reduce: DST input and DST accumulator. Result
+                    // takes the input's dtype.
+                    for &f in &[input, slot] {
+                        check(op_id, f, &stack);
+                        if !matches!(self.at(f), Op::Storage { scope: MemScope::Register, .. }) {
+                            println!("tt reduce tile op={op_id} operand {f} is not a Register storage");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    dtypes.insert(op_id, dtypes[&input]);
+                }
+                Op::TT(TTOp::Unpacr { src, .. }) => {
+                    // Native unpack: a CB in, a Src bank out.
+                    check(op_id, src, &stack);
+                    if !matches!(self.at(src), Op::Storage { scope: MemScope::Circular, .. }) {
+                        println!("tt unpacr op={op_id} src {src} is not a Circular storage");
                         self.debug();
                         panic!();
                     }
-                    debug_assert!(n != 0, "cb sync op={op_id} has zero count");
-                    dtypes.insert(op_id, dtypes[&cb]);
+                    dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::TT(TTOp::LLK { ref ops, .. }) => {
-                    // Opaque LLK call: operands are bare storages
-                    // (Circular CBs plus the Register acc slot) and
-                    // value ops (index arithmetic). Per-position scope
-                    // enforcement is the caller's job (tt_storage's
-                    // debug_assert!); verify only rejects operands that
-                    // are neither a storage nor a value. NULL operands
-                    // are render-filled placeholders (the result slot)
-                    // — not scope-checked, never indexed.
-                    for &x in ops.iter() {
-                        if x.is_null() {
+                Op::TT(TTOp::Setrwc { dst }) => {
+                    // The accumulator is a DST row of an existing storage.
+                    check(op_id, dst, &stack);
+                    if !matches!(self.at(dst), Op::Storage { scope: MemScope::Register, .. }) {
+                        println!("tt setrwc op={op_id} dst {dst} is not a Register storage");
+                        self.debug();
+                        panic!();
+                    }
+                    dtypes.insert(op_id, dtypes[&dst]);
+                }
+                Op::TT(TTOp::Setadczw { .. })
+                | Op::TT(TTOp::Setadcx { .. })
+                | Op::TT(TTOp::Zeroacc { .. })
+                | Op::TT(TTOp::Mvmul { .. })
+                | Op::TT(TTOp::Setc16 { .. })
+                | Op::TT(TTOp::Setcfg { .. })
+                | Op::TT(TTOp::Post { .. })
+                | Op::TT(TTOp::Wait { .. })
+                | Op::TT(TTOp::Semset { .. }) => {}
+                Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
+                    // Native SFPU: DST inputs and DST result.
+                    for &f in &[a, b] {
+                        if f.is_null() {
                             continue;
                         }
-                        check(op_id, x, &stack);
-                        if !matches!(
-                            self.at(x),
-                            Op::Storage { .. }
-                                | Op::Const(_)
-                                | Op::Unroll { .. }
-                                | Op::Param { .. }
-                                | Op::Cast { .. }
-                                | Op::Bitcast { .. }
-                                | Op::Unary { .. }
-                                | Op::Binary { .. }
-                                | Op::Stack { .. }
-                                | Op::Load { .. }
-                                | Op::Copy { .. }
-                                | Op::Range { .. }
-                                | Op::Loop { .. }
-                                | Op::Index { .. }
-                        ) {
-                            println!("tt llk op={op_id} has non-storage/non-value operand {x}");
-                            self.debug();
-                            panic!();
-                        }
-                    }
-                    if !ops.is_empty() {
-                        dtypes.insert(op_id, dtypes[&ops[0]]);
-                    }
-                }
-                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => {
-                    // Lowered reduce: bare storages only (input/scaler
-                    // CBs, acc slot). Result takes the input CB's dtype.
-                    for &f in &[cb_in, cb_sc, slot] {
                         check(op_id, f, &stack);
-                        if !matches!(self.at(f), Op::Storage { .. }) {
-                            println!("tt reduce tile op={op_id} has non-storage operand {f}");
+                        if !matches!(self.at(f), Op::Storage { scope: MemScope::Register, .. }) {
+                            println!("tt sfpu op={op_id} operand {f} is not a Register storage");
                             self.debug();
                             panic!();
                         }
                     }
-                    dtypes.insert(op_id, dtypes[&cb_in]);
-                }
-                Op::TT(TTOp::FillTile { slot, val }) => {
-                    // Lowered fill: Register slot plus the scalar Const.
-                    // Result is the fill value broadcast to one tile.
-                    for &f in &[slot, val] {
-                        check(op_id, f, &stack);
-                        if !matches!(self.at(f), Op::Storage { scope: MemScope::Register, .. } | Op::Const(_)) {
-                            println!("tt fill tile op={op_id} has non-slot/non-const operand {f}");
-                            self.debug();
-                            panic!();
-                        }
+                    check(op_id, slot, &stack);
+                    if !matches!(self.at(slot), Op::Storage { scope: MemScope::Register, .. }) {
+                        println!("tt sfpu op={op_id} slot {slot} is not a Register storage");
+                        self.debug();
+                        panic!();
                     }
-                    dtypes.insert(op_id, dtypes[&val]);
-                }
-                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
-                    // Lowered matmul: bare storages only (input CBs,
-                    // result slot). Result takes the left CB's dtype.
-                    for &f in &[cb_a, cb_b, slot] {
-                        check(op_id, f, &stack);
-                        if !matches!(self.at(f), Op::Storage { .. }) {
-                            println!("tt matmul op={op_id} has non-storage operand {f}");
-                            self.debug();
-                            panic!();
-                        }
-                    }
-                    dtypes.insert(op_id, dtypes[&cb_a]);
-                }
-                Op::TT(TTOp::SigmoidTile { cb_in, slot }) => {
-                    // Lowered fused sigmoid: bare storages only (input
-                    // CB, result slot). Result takes the CB's dtype.
-                    for &f in &[cb_in, slot] {
-                        check(op_id, f, &stack);
-                        if !matches!(self.at(f), Op::Storage { .. }) {
-                            println!("tt fused sigmoid op={op_id} has non-storage operand {f}");
-                            self.debug();
-                            panic!();
-                        }
-                    }
-                    dtypes.insert(op_id, dtypes[&cb_in]);
-                }
-                Op::TT(TTOp::SiluTile { cb_in, slot }) => {
-                    // Lowered fused silu: bare storages only (input CB,
-                    // result slot). Result takes the CB's dtype.
-                    for &f in &[cb_in, slot] {
-                        check(op_id, f, &stack);
-                        if !matches!(self.at(f), Op::Storage { .. }) {
-                            println!("tt fused silu op={op_id} has non-storage operand {f}");
-                            self.debug();
-                            panic!();
-                        }
-                    }
-                    dtypes.insert(op_id, dtypes[&cb_in]);
+                    dtypes.insert(op_id, dtypes[&a]);
                 }
                 Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, bytes }) => {
                     // Lowered traffic copy: DRAM param or Circular
@@ -472,11 +390,20 @@ impl Kernel {
                         self.debug();
                         panic!();
                     }
+                    let dst_is_register = matches!(self.at(dst), Op::Storage { scope: MemScope::Register, .. });
                     if !matches!(
                         self.at(dst),
-                        Op::Param { kind: ParamKind::GlobalMut, .. } | Op::Storage { scope: MemScope::Circular, .. }
+                        Op::Param { kind: ParamKind::GlobalMut, .. }
+                            | Op::Storage { scope: MemScope::Circular, .. }
+                            | Op::Storage { scope: MemScope::Register, .. }
                     ) {
                         println!("tt copy op={op_id} has non-traffic dst {dst:?}");
+                        self.debug();
+                        panic!();
+                    }
+                    // CB->DST is the unpack; DRAM may only land in a CB.
+                    if dst_is_register && !matches!(self.at(src), Op::Storage { scope: MemScope::Circular, .. }) {
+                        println!("tt copy op={op_id} unpacks from non-CB src {src:?}");
                         self.debug();
                         panic!();
                     }
@@ -493,42 +420,7 @@ impl Kernel {
                         panic!();
                     }
                 }
-                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
-                    // Lowered fused broadcast: same rule over cb_a.
-                    for &f in &[cb_a, cb_b, mx, plain] {
-                        check(op_id, f, &stack);
-                        if !matches!(
-                            self.at(f),
-                            Op::Storage { .. }
-                                | Op::Const(_)
-                                | Op::Unroll { .. }
-                                | Op::Param { .. }
-                                | Op::Cast { .. }
-                                | Op::Bitcast { .. }
-                                | Op::Unary { .. }
-                                | Op::Binary { .. }
-                                | Op::Stack { .. }
-                                | Op::Load { .. }
-                                | Op::Copy { .. }
-                                | Op::Range { .. }
-                                | Op::Loop { .. }
-                                | Op::Index { .. }
-                        ) {
-                            println!("tt llk bcast op={op_id} has non-storage/non-value operand {f}");
-                            self.debug();
-                            panic!();
-                        }
-                    }
-                    dtypes.insert(op_id, dtypes[&cb_a]);
-                }
-                Op::TT(TTOp::MathLock)
-                | Op::TT(TTOp::MathUnlock)
-                | Op::TT(TTOp::PackLock)
-                | Op::TT(TTOp::PackUnlock)
-                | Op::TT(TTOp::NocReadBarrier)
-                | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
-                | Op::TT(TTOp::EndReader)
+                Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::ProgramDesc(_))
                 | Op::TT(TTOp::TensixGrid(_)) => {}
@@ -579,8 +471,10 @@ impl Kernel {
                     // Both arms must share the value dtype (no promotion:
                     // select is not arithmetic); result is that dtype.
                     if dtypes[&if_true] != dtypes[&if_false] {
-                        println!("Select arm dtype mismatch on op={op_id}: if_true={} ({:?}) if_false={} ({:?}).",
-                            dtypes[&if_true], self.ops[if_true].op, dtypes[&if_false], self.ops[if_false].op);
+                        println!(
+                            "Select arm dtype mismatch on op={op_id}: if_true={} ({:?}) if_false={} ({:?}).",
+                            dtypes[&if_true], self.ops[if_true].op, dtypes[&if_false], self.ops[if_false].op
+                        );
                         self.debug();
                         panic!();
                     }
@@ -884,7 +778,7 @@ impl Kernel {
                         bounds.insert(op_id, (0, Dim::from(len - 1)));
                     }
                 }
-                Op::Asm { ref ops, .. } | Op::TT(TTOp::LLK { ref ops, .. }) => {
+                Op::Asm { ref ops, .. } => {
                     let mut r = None;
                     for x in ops.iter() {
                         if let Some(&(xl, xu)) = bounds.get(x) {
@@ -898,9 +792,9 @@ impl Kernel {
                         bounds.insert(op_id, (xl, xu));
                     }
                 }
-                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => {
+                Op::TT(TTOp::ReduceTile { input, slot, .. }) => {
                     let mut r = None;
-                    for f in [cb_in, cb_sc, slot] {
+                    for f in [input, slot] {
                         if let Some(&(xl, xu)) = bounds.get(&f) {
                             r = Some(match r {
                                 Some((l, u)) => (xl.min(l), xu.max(u)),
@@ -912,65 +806,22 @@ impl Kernel {
                         bounds.insert(op_id, (xl, xu));
                     }
                 }
-                Op::TT(TTOp::FillTile { slot, val }) => {
-                    let mut r = None;
-                    for f in [slot, val] {
-                        if let Some(&(xl, xu)) = bounds.get(&f) {
-                            r = Some(match r {
-                                Some((l, u)) => (xl.min(l), xu.max(u)),
-                                None => (xl, xu),
-                            });
-                        }
-                    }
-                    if let Some((xl, xu)) = r {
+                Op::TT(TTOp::Unpacr { src, .. }) => {
+                    if let Some(&(xl, xu)) = bounds.get(&src) {
                         bounds.insert(op_id, (xl, xu));
                     }
                 }
-                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
-                    let mut r = None;
-                    for f in [cb_a, cb_b, slot] {
-                        if let Some(&(xl, xu)) = bounds.get(&f) {
-                            r = Some(match r {
-                                Some((l, u)) => (xl.min(l), xu.max(u)),
-                                None => (xl, xu),
-                            });
-                        }
-                    }
-                    if let Some((xl, xu)) = r {
+                Op::TT(TTOp::Setrwc { dst }) => {
+                    if let Some(&(xl, xu)) = bounds.get(&dst) {
                         bounds.insert(op_id, (xl, xu));
                     }
                 }
-                Op::TT(TTOp::SigmoidTile { cb_in, slot, .. }) => {
+                Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
                     let mut r = None;
-                    for f in [cb_in, slot] {
-                        if let Some(&(xl, xu)) = bounds.get(&f) {
-                            r = Some(match r {
-                                Some((l, u)) => (xl.min(l), xu.max(u)),
-                                None => (xl, xu),
-                            });
+                    for f in [a, b, slot] {
+                        if f.is_null() {
+                            continue;
                         }
-                    }
-                    if let Some((xl, xu)) = r {
-                        bounds.insert(op_id, (xl, xu));
-                    }
-                }
-                Op::TT(TTOp::SiluTile { cb_in, slot, .. }) => {
-                    let mut r = None;
-                    for f in [cb_in, slot] {
-                        if let Some(&(xl, xu)) = bounds.get(&f) {
-                            r = Some(match r {
-                                Some((l, u)) => (xl.min(l), xu.max(u)),
-                                None => (xl, xu),
-                            });
-                        }
-                    }
-                    if let Some((xl, xu)) = r {
-                        bounds.insert(op_id, (xl, xu));
-                    }
-                }
-                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
-                    let mut r = None;
-                    for f in [cb_a, cb_b, mx, plain] {
                         if let Some(&(xl, xu)) = bounds.get(&f) {
                             r = Some(match r {
                                 Some((l, u)) => (xl.min(l), xu.max(u)),
@@ -1012,14 +863,10 @@ impl Kernel {
                             if let Some(&b) = bounds.get(&if_false) {
                                 bounds.insert(op_id, b);
                             }
-                        } else if let (Some(&(tlo, thi)), Some(&(flo, fhi))) =
-                            (bounds.get(&if_true), bounds.get(&if_false))
-                        {
+                        } else if let (Some(&(tlo, thi)), Some(&(flo, fhi))) = (bounds.get(&if_true), bounds.get(&if_false)) {
                             bounds.insert(op_id, (tlo.min(flo), thi.max(fhi)));
                         }
-                    } else if let (Some(&(tlo, thi)), Some(&(flo, fhi))) =
-                        (bounds.get(&if_true), bounds.get(&if_false))
-                    {
+                    } else if let (Some(&(tlo, thi)), Some(&(flo, fhi))) = (bounds.get(&if_true), bounds.get(&if_false)) {
                         bounds.insert(op_id, (tlo.min(flo), thi.max(fhi)));
                     }
                 }

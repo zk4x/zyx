@@ -128,8 +128,16 @@ impl Kernel {
     /// ```
     pub fn compile(mut self) -> Result<CompiledKernel, ZyxError> {
         self.linearize();
-        // Parameter shapes are kept (see `linearize`); backends
-        // ignore them (bare-pointer convention).
+        // After linearization the parameter shapes are no longer meaningful
+        // (the same clear happens inside `linearize` for kernels it processes);
+        // clear them here too so kernels that skip linearization (already
+        // lowered by hand) don't require shape consts to be ordered before the
+        // params that reference them.
+        for node in self.ops.values_mut() {
+            if let Op::Param { shape, .. } = &mut node.op {
+                *shape = OpId::NULL;
+            }
+        }
 
         self.instruction_schedule();
         self.constant_folding();
@@ -180,7 +188,7 @@ impl Kernel {
         }
         // TT lowering runs here (custom kernels bypass the autotune
         // epilogue); other backends no-op inside.
-        self.device_epilogue()?;
+        self.device_epilogue();
         let debug_asm = crate::debug_mask().asm();
         let program_id = device_id.compile(&self, debug_asm)?;
         // Dev debug bit: record the compile-time perf estimate so eager
@@ -576,10 +584,9 @@ impl Kernel {
     /// `MemScope::Circular` storage (reader publish). Both ends are
     /// elementwise: `src_idx` addresses DRAM elements, `dst_idx` CB
     /// elements (tile k lives at element offset k*1024). DRAM↔CB
-    /// traffic is a `Copy`, never
-    /// load+store: `tt_sync_cbs` wraps it with reserve/push, and a
-    /// circular load feeding a store is a lowering bug under its
-    /// strict load rule.
+    /// traffic is a `Copy`, never load+store: the native reader emits one
+    /// data-mover entry for it, and a circular load feeding a store is a
+    /// lowering bug.
     pub fn load_global_to_cb(&mut self, src: OpId, src_idx: impl IntoOp, dst: OpId, dst_idx: impl IntoOp) -> OpId {
         debug_assert!(
             matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global, .. } | Op::Param { kind: ParamKind::GlobalMut, .. }),
@@ -699,8 +706,8 @@ impl Kernel {
     /// storages (CB-to-CB movement). Both ends are elementwise:
     /// `src_idx`/`dst_idx` address CB elements (tile k lives at
     /// element offset k*1024). Same `Copy`-only traffic rule as
-    /// [`Kernel::load_global_to_cb`]; `tt_sync_cbs` waits on
-    /// the read side.
+    /// [`Kernel::load_global_to_cb`]; the native plan carries the
+    /// read-side handoff.
     pub fn copy_circular_to_circular(&mut self, src: OpId, src_idx: impl IntoOp, dst: OpId, dst_idx: impl IntoOp) -> OpId {
         debug_assert!(
             matches!(self.ops[src].op, Op::Storage { scope: MemScope::Circular, .. }),
@@ -1097,34 +1104,13 @@ impl Kernel {
     /// Hardware tile reduce: pure SSA over input tile `x` with `rop`,
     /// returning the reduced tile. On TT (`reduce_tile`) the result
     /// tile carries the values in its first row, rest zeros (packer
-    /// masks; closed by `ReduceUninit`). Scaling, when needed, is a
-    /// separate mul over the result, lowered with its scaler CB by
-    /// `tt_lower_llks`). `x` is any rank-2 (tile-shaped) value;
+    /// masks). Scaling, when needed, is a separate mul over the result,
+    /// lowered with its scaler CB by `tt_lower_llks`. `x` is any rank-2
+    /// (tile-shaped) value;
     /// CB attachment is the transport passes' job, never the builder's.
     pub fn reduce_tile(&mut self, x: OpId, rop: BOp, kind: TileDim) -> OpId {
         debug_assert!(self.shape(x).len() == 2, "reduce_tile: x {x} is not a tile value");
         todo!("reduce_tile builder pending redesign")
-    }
-
-    /// Fused broadcast binary: plain tile `a` from circular buffer
-    /// `cb_a` combined with broadcast tile `b` from circular buffer
-    /// `cb_b` under `bop` (`kind` selects the `*_bcast_*` LLK form).
-    /// Emits the fused call directly (no marker + fusion pass);
-    /// operands stay in CBs, the result is a DST tile like every
-    /// `LLK`. CB attachment is the caller's job: hand kernels own
-    /// their buffers.
-    pub fn bcast_tile(&mut self, a: OpId, cb_a: OpId, b: OpId, cb_b: OpId, bop: BOp, kind: TileDim) -> OpId {
-        debug_assert!(
-            matches!(self.ops[cb_a].op, Op::Storage { scope: MemScope::Circular, .. }),
-            "bcast_tile: cb_a {cb_a} is not a Circular storage"
-        );
-        debug_assert!(
-            matches!(self.ops[cb_b].op, Op::Storage { scope: MemScope::Circular, .. }),
-            "bcast_tile: cb_b {cb_b} is not a Circular storage"
-        );
-        debug_assert!(self.shape(a).len() == 2, "bcast_tile: a {a} is not a tile value");
-        debug_assert!(self.shape(b).len() == 2, "bcast_tile: b {b} is not a tile value");
-        self.push_back(Op::TT(TTOp::LLKBcast { bop, kind, cb_a, cb_b, mx: b, plain: a }))
     }
 
     /// Backend-specific assembly instruction applied to `ops`.

@@ -16,7 +16,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use crate::{
-    Map, Set,
+    Map,
     kernel::{Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
 };
 
@@ -41,86 +41,24 @@ impl Kernel {
         let mut global_rw = Vec::new();
         let mut local_rw = Vec::new();
         let mut rest = Vec::new();
-        // Shape-descriptor ops (keepshapes): params now carry a `shape`
-        // operand, so hoisting them above their descriptors would break
-        // dominance. Gather each shape cone in dependency (post) order
-        // and emit it before the param buckets.
-        let mut cone: Set<OpId> = Set::default();
-        for (_, op) in self.iter_unordered() {
-            if let Op::Param { shape, .. } = op
-                && !shape.is_null()
-            {
-                let mut stack = vec![*shape];
-                for _ in 0..250_000 {
-                    let Some(id) = stack.pop() else { break };
-                    if !cone.insert(id) {
-                        continue;
-                    }
-                    for q in self.ops[id].op.parameters() {
-                        if !q.is_null() {
-                            stack.push(q);
-                        }
-                    }
-                }
-            }
-        }
+
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if cone.contains(&op_id) && !matches!(self.at(op_id), Op::Param { .. }) {
-                // Emitted with the param that needs it, below. Params are
-                // never descriptors: they keep their ABI position.
-            } else {
-                match self.at(op_id) {
-                    Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } => global_ro.push(op_id),
-                    Op::Param { kind: ParamKind::GlobalMut, .. } => global_rw.push(op_id),
-                    Op::Storage { scope: MemScope::Local, .. } => local_rw.push(op_id),
-                    _ => rest.push(op_id),
-                }
+            match self.at(op_id) {
+                Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } => global_ro.push(op_id),
+                Op::Param { kind: ParamKind::GlobalMut, .. } => global_rw.push(op_id),
+                Op::Storage { scope: MemScope::Local, .. } => local_rw.push(op_id),
+                _ => rest.push(op_id),
             }
             op_id = next;
         }
 
         let sorted_rest = self.schedule_rest(&rest);
 
-        // Params in ABI order (ro then rw, list order), each preceded by
-        // its own shape cone: a param's `shape` operand must be declared
-        // before it, and a dim variable in that cone is itself an
-        // earlier kernel arg. Emitting the whole cone ahead of every
-        // param instead would hoist that variable out of the ABI
-        // sequence and shift the launch-arg ordinals.
         let mut order = Vec::with_capacity(global_ro.len() + global_rw.len() + local_rw.len() + sorted_rest.len());
-        let mut emitted: Set<OpId> = Set::default();
-        for p in global_ro.iter().copied().chain(global_rw.iter().copied()) {
-            let shape = match self.at(p) {
-                Op::Param { shape, .. } => *shape,
-                _ => unreachable!("instruction_schedule: global param must stay a param"),
-            };
-            if !shape.is_null() {
-                let mut stack = vec![(shape, false)];
-                for _ in 0..250_000 {
-                    let Some((id, expanded)) = stack.pop() else { break };
-                    if expanded {
-                        if emitted.insert(id) {
-                            order.push(id);
-                        }
-                        continue;
-                    }
-                    if emitted.contains(&id) {
-                        continue;
-                    }
-                    stack.push((id, true));
-                    for q in self.ops[id].op.parameters() {
-                        if !q.is_null() && !emitted.contains(&q) {
-                            stack.push((q, false));
-                        }
-                    }
-                }
-            }
-            if emitted.insert(p) {
-                order.push(p);
-            }
-        }
+        order.extend(global_ro);
+        order.extend(global_rw);
         order.extend(local_rw);
         order.extend(sorted_rest);
 
@@ -190,13 +128,18 @@ impl Kernel {
                 // Opaque side effect (inline asm, TT LLK call):
                 // program-ordered like a barrier for placement (never
                 // crosses one), but not a barrier itself.
-                Op::Asm { .. } | Op::TT(TTOp::LLK { .. }) => structural[i] = true,
+                Op::Asm { .. } => structural[i] = true,
                 Op::TT(TTOp::ReduceTile { .. })
-                | Op::TT(TTOp::FillTile { .. })
-                | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::MatmulTiles { .. })
-                | Op::TT(TTOp::SigmoidTile { .. })
-                | Op::TT(TTOp::SiluTile { .. }) => structural[i] = true,
+                | Op::TT(TTOp::Sfpu { .. })
+                | Op::TT(TTOp::Unpacr { .. })
+                | Op::TT(TTOp::Setadczw { .. })
+                | Op::TT(TTOp::Setadcx { .. })
+                | Op::TT(TTOp::Setrwc { .. })
+                | Op::TT(TTOp::Zeroacc { .. })
+                | Op::TT(TTOp::Mvmul { .. })
+                | Op::TT(TTOp::Setc16 { .. })
+                | Op::TT(TTOp::Post { .. })
+                | Op::TT(TTOp::Wait { .. }) => structural[i] = true,
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
                 // A copy reads its src and writes its dst: it pins like a
@@ -245,10 +188,6 @@ impl Kernel {
                 | Op::Reduce { x, .. } => {
                     add_param!(x)
                 }
-                Op::TT(TTOp::ReserveBack { cb, .. })
-                | Op::TT(TTOp::PushBack { cb, .. })
-                | Op::TT(TTOp::WaitFront { cb, .. })
-                | Op::TT(TTOp::PopFront { cb, .. }) => add_param!(cb),
                 Op::Binary { x, y, .. } => {
                     add_param!(x);
                     add_param!(y);
@@ -264,17 +203,19 @@ impl Kernel {
                 | Op::Storage { .. }
                 | Op::EndLoop
                 | Op::Barrier
-                | Op::TT(TTOp::MathLock)
-                | Op::TT(TTOp::MathUnlock)
-                | Op::TT(TTOp::PackLock)
-                | Op::TT(TTOp::PackUnlock)
-                | Op::TT(TTOp::NocReadBarrier)
-                | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::ProgramDesc(_))
-                | Op::TT(TTOp::TensixGrid(_)) => {}
+                | Op::TT(TTOp::TensixGrid(_))
+                | Op::TT(TTOp::Setadczw { .. })
+                | Op::TT(TTOp::Setadcx { .. })
+                | Op::TT(TTOp::Zeroacc { .. })
+                | Op::TT(TTOp::Mvmul { .. })
+                | Op::TT(TTOp::Setc16 { .. })
+                | Op::TT(TTOp::Setcfg { .. })
+                | Op::TT(TTOp::Post { .. })
+                | Op::TT(TTOp::Wait { .. })
+                | Op::TT(TTOp::Semset { .. }) => {}
                 Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)
@@ -322,37 +263,26 @@ impl Kernel {
                     add_param!(b);
                     add_param!(c);
                 }
-                Op::Asm { ops, .. } | Op::TT(TTOp::LLK { ops, .. }) => {
+                Op::Asm { ops, .. } => {
                     for &p in ops.iter() {
                         add_param!(p);
                     }
                 }
-                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => {
-                    add_param!(cb_in);
-                    add_param!(cb_sc);
+                Op::TT(TTOp::ReduceTile { input, slot, .. }) => {
+                    add_param!(input);
                     add_param!(slot);
                 }
-                Op::TT(TTOp::FillTile { slot, val }) => {
-                    add_param!(slot);
-                    add_param!(val);
+                Op::TT(TTOp::Unpacr { src, .. }) => {
+                    add_param!(*src);
                 }
-                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
-                    add_param!(cb_a);
-                    add_param!(cb_b);
-                    add_param!(slot);
+                Op::TT(TTOp::Setrwc { dst }) => {
+                    add_param!(*dst);
                 }
-                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
-                    add_param!(cb_a);
-                    add_param!(cb_b);
-                    add_param!(mx);
-                    add_param!(plain);
-                }
-                Op::TT(TTOp::SigmoidTile { cb_in, slot, .. }) => {
-                    add_param!(cb_in);
-                    add_param!(slot);
-                }
-                Op::TT(TTOp::SiluTile { cb_in, slot, .. }) => {
-                    add_param!(cb_in);
+                Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
+                    add_param!(a);
+                    if !b.is_null() {
+                        add_param!(b);
+                    }
                     add_param!(slot);
                 }
                 Op::Stack { ops } => {
@@ -386,52 +316,22 @@ impl Kernel {
                     by_memory_target.entry(*src).or_default().push(i);
                     by_memory_target.entry(*dst).or_default().push(i);
                 }
-                // CB sync ops name their buffer directly: same FIFO group
-                // as the CB's loads/stores/copies, or sync
-                // could reorder across the traffic it guards.
-                Op::TT(TTOp::ReserveBack { cb, .. })
-                | Op::TT(TTOp::PushBack { cb, .. })
-                | Op::TT(TTOp::WaitFront { cb, .. })
-                | Op::TT(TTOp::PopFront { cb, .. }) => {
-                    by_memory_target.entry(*cb).or_default().push(i);
-                }
-                // LLK calls stream CBs (compute) or publish into them
-                // (pack): same FIFO group as the CB's traffic, or the
-                // call could reorder across the sync it runs under.
-                // Index operands form singleton groups (harmless).
-                Op::TT(TTOp::LLK { ops, .. }) => {
-                    for &x in ops.iter() {
-                        by_memory_target.entry(x).or_default().push(i);
-                    }
-                }
-                Op::TT(TTOp::ReduceTile { cb_in, cb_sc, slot, .. }) => {
-                    for &f in [cb_in, cb_sc, slot] {
+                Op::TT(TTOp::ReduceTile { input, slot, .. }) => {
+                    for &f in [input, slot] {
                         by_memory_target.entry(f).or_default().push(i);
                     }
                 }
-                Op::TT(TTOp::FillTile { slot, val }) => {
-                    for &f in [slot, val] {
-                        by_memory_target.entry(f).or_default().push(i);
-                    }
+                Op::TT(TTOp::Unpacr { src, .. }) => {
+                    by_memory_target.entry(*src).or_default().push(i);
                 }
-                Op::TT(TTOp::MatmulTiles { cb_a, cb_b, slot }) => {
-                    for &f in [cb_a, cb_b, slot] {
-                        by_memory_target.entry(f).or_default().push(i);
-                    }
+                Op::TT(TTOp::Setrwc { dst }) => {
+                    by_memory_target.entry(*dst).or_default().push(i);
                 }
-                Op::TT(TTOp::LLKBcast { cb_a, cb_b, mx, plain, .. }) => {
-                    for &f in [cb_a, cb_b, mx, plain] {
-                        by_memory_target.entry(f).or_default().push(i);
-                    }
-                }
-                Op::TT(TTOp::SigmoidTile { cb_in, slot, .. }) => {
-                    for &f in [cb_in, slot] {
-                        by_memory_target.entry(f).or_default().push(i);
-                    }
-                }
-                Op::TT(TTOp::SiluTile { cb_in, slot, .. }) => {
-                    for &f in [cb_in, slot] {
-                        by_memory_target.entry(f).or_default().push(i);
+                Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
+                    for f in [a, b, slot] {
+                        if !f.is_null() {
+                            by_memory_target.entry(*f).or_default().push(i);
+                        }
                     }
                 }
                 _ => {}

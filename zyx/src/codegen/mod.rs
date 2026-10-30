@@ -11,8 +11,7 @@ mod cuda;
 mod opencl;
 mod ptx;
 pub(crate) mod spirv;
-#[cfg(feature = "tenstorrent")]
-pub mod tenstorrent;
+pub(crate) mod tenstorrent;
 
 impl Kernel {
     /// Render to a backend kernel: the original ops plus appended
@@ -32,7 +31,6 @@ impl Kernel {
             Dev::C => self.render_c(),
             Dev::Cuda(_) => self.render_cuda(),
             Dev::OpenCL(_) => self.render_opencl(),
-            #[cfg(feature = "tenstorrent")]
             Dev::TT(_) => self.render_tt(),
             Dev::Vulkan(_) => self.render_spirv(),
             #[cfg(feature = "wgpu")]

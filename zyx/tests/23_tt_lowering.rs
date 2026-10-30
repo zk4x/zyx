@@ -1,5 +1,3 @@
-#![cfg(feature = "tenstorrent")]
-
 use zyx::{DType, Dev, Scalar, Tensor, ZyxError, bf16};
 
 #[test]

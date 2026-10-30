@@ -32,7 +32,6 @@ use crate::{
 
 mod autograd;
 mod kernelizer;
-mod tenstorrent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GraphId(pub u16);
@@ -1488,10 +1487,10 @@ impl Graph {
                 | Op::GPU(_)
                 | Op::Spirv(_)
                 | Op::PTX(_)
-                    | Op::Program { .. }
-                    | Op::Kernel { .. } => return None,
-                    // Detach is value identity, not const-foldable.
-                    Op::Detach { .. } => return None,
+                | Op::Program { .. }
+                | Op::Kernel { .. } => return None,
+                // Detach is value identity, not const-foldable.
+                Op::Detach { .. } => return None,
             }
             order.push(node_id);
         }
@@ -1898,10 +1897,7 @@ impl Runtime {
                             // second promotion of the same tid must reuse
                             // the leaf class bound in `leaf_map` instead of
                             // minting a duplicate variable leaf.
-                            TensorData::Symbolic { .. } => self.graphs[graph_id]
-                                .leaf_map
-                                .values()
-                                .any(|&t| t == load_tid),
+                            TensorData::Symbolic { .. } => self.graphs[graph_id].leaf_map.values().any(|&t| t == load_tid),
                             _ => false,
                         };
                         if load_is_leaf {
@@ -1910,13 +1906,11 @@ impl Runtime {
                                 TensorData::Graph { class_id: c, .. }
                                 | TensorData::GraphLeaf { class_id: c, .. }
                                 | TensorData::Promoted { class_id: c, .. } => *c,
-                                TensorData::Symbolic { .. } => {
-                                    self.graphs[graph_id]
-                                        .leaf_map
-                                        .iter()
-                                        .find_map(|(&c, &t)| (t == load_tid).then_some(c))
-                                        .expect("promote_to_graph: symbolic load bound in leaf_map")
-                                }
+                                TensorData::Symbolic { .. } => self.graphs[graph_id]
+                                    .leaf_map
+                                    .iter()
+                                    .find_map(|(&c, &t)| (t == load_tid).then_some(c))
+                                    .expect("promote_to_graph: symbolic load bound in leaf_map"),
                                 ref t => unreachable!("{t:?}"),
                             }
                         } else {
@@ -2116,10 +2110,8 @@ impl Runtime {
                         let cond_class = op_to_class[&cond];
                         let if_true_class = op_to_class[&if_true];
                         let if_false_class = op_to_class[&if_false];
-                        let class_id = self.push_op(
-                            graph_id,
-                            Op::Select { cond: cond_class, if_true: if_true_class, if_false: if_false_class },
-                        );
+                        let class_id = self
+                            .push_op(graph_id, Op::Select { cond: cond_class, if_true: if_true_class, if_false: if_false_class });
                         class_id
                     }
                     Op::Reduce { x, rop, reduce_axis } => {

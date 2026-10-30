@@ -72,28 +72,7 @@ impl Kernel {
                 Op::Detach { .. } => {
                     unreachable!()
                 }
-                Op::TT(TTOp::ReserveBack { .. })
-                | Op::TT(TTOp::PushBack { .. })
-                | Op::TT(TTOp::WaitFront { .. })
-                | Op::TT(TTOp::PopFront { .. })
-                | Op::TT(TTOp::MathLock)
-                | Op::TT(TTOp::MathUnlock)
-                | Op::TT(TTOp::PackLock)
-                | Op::TT(TTOp::PackUnlock)
-                | Op::TT(TTOp::NocReadBarrier)
-                | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
-                | Op::TT(TTOp::EndReader)
-                | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::ProgramDesc(_))
-                | Op::TT(TTOp::TensixGrid(_))
-                | Op::TT(TTOp::LLK { .. })
-                | Op::TT(TTOp::ReduceTile { .. })
-                | Op::TT(TTOp::FillTile { .. })
-                | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::MatmulTiles { .. })
-                | Op::TT(TTOp::SigmoidTile { .. })
-                | Op::TT(TTOp::SiluTile { .. }) => loop_depth,
+                Op::TT(_) => loop_depth,
                 Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -125,7 +104,7 @@ impl Kernel {
                 | Op::Load { .. }
                 | Op::Store { .. }
                 | Op::Copy { .. }
-                | Op::TT(TTOp::Copy { .. })
+                | Op::TT(_)
                 | Op::Const(_)
                 | Op::Unroll { .. }
                 | Op::Storage { .. } => loop_depth,
@@ -174,28 +153,7 @@ impl Kernel {
                     unreachable!()
                 }
                 // Effect-only TT ops: pinned like Store/Copy, never hoisted.
-                Op::TT(TTOp::ReserveBack { .. })
-                | Op::TT(TTOp::PushBack { .. })
-                | Op::TT(TTOp::WaitFront { .. })
-                | Op::TT(TTOp::PopFront { .. })
-                | Op::TT(TTOp::MathLock)
-                | Op::TT(TTOp::MathUnlock)
-                | Op::TT(TTOp::PackLock)
-                | Op::TT(TTOp::PackUnlock)
-                | Op::TT(TTOp::NocReadBarrier)
-                | Op::TT(TTOp::NocWriteBarrier)
-                | Op::TT(TTOp::ReduceUninit)
-                | Op::TT(TTOp::EndReader)
-                | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::ProgramDesc(_))
-                | Op::TT(TTOp::TensixGrid(_))
-                | Op::TT(TTOp::LLK { .. })
-                | Op::TT(TTOp::ReduceTile { .. })
-                | Op::TT(TTOp::FillTile { .. })
-                | Op::TT(TTOp::LLKBcast { .. })
-                | Op::TT(TTOp::MatmulTiles { .. })
-                | Op::TT(TTOp::SigmoidTile { .. })
-                | Op::TT(TTOp::SiluTile { .. }) => loop_depth,
+                Op::TT(_) => loop_depth,
                 Op::Asm { ops, .. } => {
                     let mut max = 0;
                     for op in ops.iter() {
@@ -227,7 +185,7 @@ impl Kernel {
                 | Op::Load { .. }
                 | Op::Store { .. }
                 | Op::Copy { .. }
-                | Op::TT(TTOp::Copy { .. })
+                | Op::TT(_)
                 | Op::Const(_)
                 | Op::Unroll { .. }
                 | Op::Param { .. }
@@ -324,25 +282,7 @@ impl Kernel {
                         op,
                         Op::Store { .. }
                             | Op::Copy { .. }
-                            | Op::TT(TTOp::Copy { .. })
-                            | Op::TT(TTOp::ReserveBack { .. })
-                            | Op::TT(TTOp::PushBack { .. })
-                            | Op::TT(TTOp::WaitFront { .. })
-                            | Op::TT(TTOp::PopFront { .. })
-                            | Op::TT(TTOp::MathLock)
-                            | Op::TT(TTOp::MathUnlock)
-                            | Op::TT(TTOp::PackLock)
-                            | Op::TT(TTOp::PackUnlock)
-                            | Op::TT(TTOp::NocReadBarrier)
-                            | Op::TT(TTOp::NocWriteBarrier)
-                            | Op::TT(TTOp::ReduceUninit)
-                            | Op::TT(TTOp::LLK { .. })
-                            | Op::TT(TTOp::ReduceTile { .. })
-                            | Op::TT(TTOp::FillTile { .. })
-                            | Op::TT(TTOp::LLKBcast { .. })
-                            | Op::TT(TTOp::MatmulTiles { .. })
-                            | Op::TT(TTOp::SigmoidTile { .. })
-                            | Op::TT(TTOp::SiluTile { .. })
+                            | Op::TT(_)
                             | Op::Load { .. }
                             | Op::Loop { .. }
                             | Op::EndLoop

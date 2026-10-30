@@ -97,77 +97,31 @@ impl Kernel {
     }
 
     /// Device specific epilogue
-    pub fn device_epilogue(&mut self) -> Result<(), BackendError> {
+    pub fn device_epilogue(&mut self) {
         // Unroll vectors never survive to a scalar backend: they unfold
         // to per-element statements. Tenstorrent tiles the vector IR
         // (there is no way to tile a devectorized kernel), so no
         // devectorize runs on the TT path.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
-            self.tt_tile()?;
-            self.tt_reindex()?;
-            // Lowering (order-flexible; each pass tolerates the
-            // others' legal output - not currently, but it's the idea):
-            // structured LLK claiming + register allocation, locks,
-            // duplicate-publish elimination, engine-config inits +
-            // startup + reduce closing, CB sync, pop placement.
-            self.tt_lower_llks()?;
-            self.tt_lock_dst()?;
-            self.tt_dedup_pushes();
-            self.tt_init_math()?;
-            self.tt_sync_cbs()?;
-            self.tt_place_pops()?;
+            self.tt_tile();
+            // Native lowering: tile the SSA, then claim it into reader
+            // traffic (`TTOp::Copy`), run-level compute programs, and the
+            // section markers. There is no CB-sync or DST-lock pass: those
+            // are tt-metal API, not Tensix instructions.
+            self.tt_lower_llks();
+            // Lowering is SSA over logical DST storages; this assigns the
+            // 8-16 physical tile registers by liveness and rewrites all
+            // operands. It must run after lowering and before codegen.
+            self.tt_dst_reuse();
             self.verify();
 
             self.common_subexpression_elimination();
             self.dead_code_elimination();
-            self.tt_verify()?;
+            self.tt_verify();
         } else {
             self.devectorize();
-            // Shapes are lowering metadata, not part of the program:
-            // these backends render the linear IR 1:1 against their own
-            // language, and a shape descriptor must never surface as a
-            // device value. Every pass that reads logical dims has run
-            // by here.
-            //
-            // TT is excluded: its render already skips descriptors, and
-            // its section order forbids the reschedule that dropping
-            // forces (a lowered lock may not move relative to
-            // EndReader/EndCompute).
-            if self.drop_param_shapes() {
-                // Dropping the descriptors strands any body op that
-                // lived in the metadata front region (a const shared
-                // with a shape stack, say), so re-establish params-first
-                // before anything verifies the kernel; the dead
-                // descriptors go with the DCE.
-                self.instruction_schedule();
-                self.dead_code_elimination();
-            }
         }
-        Ok(())
-    }
-
-    /// Drop every `Param { shape }` descriptor, returning whether any
-    /// were present.
-    ///
-    /// Logical dims are lowering metadata (for example the pad gate
-    /// that decides whether halo padding needs guards), not part of the
-    /// emitted program: backends render the linear IR 1:1 against
-    /// their own language, so a descriptor must never surface as a
-    /// device value. Call only once every pass that reads logical dims
-    /// has run; the now-unreferenced descriptors are dead code, so a
-    /// following DCE removes them.
-    pub(crate) fn drop_param_shapes(&mut self) -> bool {
-        let mut dropped = false;
-        for node in self.ops.values_mut() {
-            if let Op::Param { shape, .. } = &mut node.op
-                && !shape.is_null()
-            {
-                *shape = OpId::NULL;
-                dropped = true;
-            }
-        }
-        dropped
     }
 
     /// Get a hash of the kernel for deduplication during autotuning.
@@ -513,13 +467,8 @@ impl BeamSearch {
                 let mut kernel = base.clone();
                 apply_seq(&mut kernel, opt_seq, optimizations, &epilogue);
                 // Hardware lowering runs once here, right before timed
-                // launches — never inside the search loop above. A
-                // candidate the lowering rejects skips via the error
-                // path; only unexpected panics escape.
-                if let Err(e) = kernel.device_epilogue() {
-                    last_error = Some(e);
-                    continue;
-                }
+                // launches — never inside the search loop above.
+                kernel.device_epilogue();
                 if launched.insert(kernel.get_hash()) {
                     match kernel.launch_with_timings(&args, dev, debug) {
                         Ok((program_id, time)) => {
@@ -579,12 +528,12 @@ impl NoSearch {
         // TT tiling first: scalar row-major traffic becomes tile traffic
         // (tt_tile gates on the TT device itself, other devices skip).
         // Readability passes (relative order mirrors `default_epilogue`).
-        seed.tt_tile()?;
+        seed.tt_tile();
         for _ in 0..3 {
             seed.default_epilogue();
         }
 
-        seed.device_epilogue()?;
+        seed.device_epilogue();
         seed.dead_code_elimination();
 
         let debug = crate::debug_mask();

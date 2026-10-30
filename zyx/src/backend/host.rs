@@ -95,18 +95,17 @@ pub(super) fn copy(src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), B
             let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
             opool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
         }
+        Pool::TT(_) => {
+            // `Pool::TT` memory is host memory on this transport (see
+            // `backend::tenstorrent`): a download is the same memcpy.
+            let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
+            let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
+            unsafe {
+                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, bytes as usize);
+            }
+        }
         Pool::Vulkan(_) => {
             todo!("host copy from {:?}", src_shard.pool)
-        }
-        #[cfg(feature = "tenstorrent")]
-        Pool::TT(id) => {
-            // Device-to-host download straight into the destination, no
-            // staging buffer: the shim IPC is synchronous, so the reply
-            // arrives after the data did.
-            let tt = super::tenstorrent::pool(id)?;
-            let mut tpool = super::lock(Pool::TT(id), tt);
-            let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
-            tpool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
         }
         #[cfg(feature = "wgpu")]
         Pool::WGPU(_) => todo!("host copy from {:?}", src_shard.pool),
