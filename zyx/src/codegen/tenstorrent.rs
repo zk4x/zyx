@@ -22,7 +22,11 @@
 use crate::DType;
 use crate::Map;
 use crate::Set;
-use crate::backend::tenstorrent::{TTDmMove, TTDstRow, TTNativeProgram, TTSemaphoreInit, TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE};
+use crate::backend::tenstorrent::kern::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
+use crate::backend::tenstorrent::kern::sfpu::reduce::{Axis, ReduceOp, accumulate, finish};
+use crate::backend::tenstorrent::{
+    TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE, TTDmMove, TTDstRow, TTNativeProgram, TTSemaphoreInit,
+};
 use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
@@ -32,8 +36,6 @@ use crate::kernel::{
 use crate::scalar::{bf16, f16};
 use crate::slab::Slab;
 use tt_isa::isa::Instruction;
-use crate::backend::tenstorrent::kern::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
-use crate::backend::tenstorrent::kern::sfpu::reduce::{Axis, ReduceOp, accumulate, finish};
 
 /// DRAM page size in bytes.
 pub(crate) const TT_DRAM_PAGE_BYTES: u32 = 4096;
@@ -850,7 +852,12 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                             }
                             _ => return Err(sec.err(format!("unpack {id:?} dst is not a Register storage"))),
                         };
-                        let l1 = sec.cb_l1(scb)?;
+                        // The unpacker reads datums at `base + 16` (one tile
+                        // header), and zyx CBs hold the datum stream alone, so
+                        // the DST path needs the same header compensation the
+                        // Src path does (`tt_src_base`). Without it the tile is
+                        // shifted by one 16-byte unit (four F32 datums).
+                        let l1 = tt_src_base(sec.cb_l1(scb)?);
                         let words = crate::backend::tenstorrent::kern::datapath::unpack_tile_to_dst(l1, dst);
                         sec.native_t0.extend(words.iter().map(|i| i.word()));
                         sec.last_role = 0;
@@ -919,9 +926,9 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.compute_ops += 1;
             }
             Op::TT(TTOp::Unpacr { src, unit, count, flip }) => {
+                use crate::backend::tenstorrent::kern::datapath::{Unpacker, config_program, set_adc_x, tile_base_units};
                 use tt_isa::backend::{Before, cond, stallwait, wait_for_unpacker0, wait_for_unpacker1};
                 use tt_isa::cfg::generated::{alu, thcon};
-                use crate::backend::tenstorrent::kern::datapath::{Unpacker, config_program, set_adc_x, tile_base_units};
                 if *count != 1024 {
                     return Err(sec.err(format!("unpacr {id:?} of {count} datums: only whole tiles are wired up")));
                 }
@@ -941,9 +948,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                         DType::F32 => crate::backend::tenstorrent::kern::matmul::SrcRoute::Tf32FromFp32,
                         DType::BF16 => crate::backend::tenstorrent::kern::matmul::SrcRoute::Bf16FromBf16,
                         dt => {
-                            return Err(sec.err(format!(
-                                "unpacr {id:?}: no Src route from {dt:?} (F32 and BF16 are wired up)"
-                            )));
+                            return Err(sec.err(format!("unpacr {id:?}: no Src route from {dt:?} (F32 and BF16 are wired up)")));
                         }
                     };
                     let (in_fmt, out_fmt) = route.formats();
@@ -966,9 +971,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                         Unpacker::SrcA => thcon::THCON_SEC0_REG3_Base_address,
                         Unpacker::SrcB => thcon::THCON_SEC1_REG3_Base_address,
                     };
-                    words
-                        .set(field, tile_base_units(l1))
-                        .map_err(|e| sec.err(format!("unpacr {id:?}: base address: {e:?}")))?;
+                    words.set(field, tile_base_units(l1)).map_err(|e| sec.err(format!("unpacr {id:?}: base address: {e:?}")))?;
                 }
                 // `matmul_items` issues no wait around a Src unpack: the
                 // prelude's `WRCFG` and the `UNPACR` come from the same
@@ -1064,8 +1067,10 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 // composes the word and this writes it as given (`0` leaves
                 // every other field of the entry clear). `set_thread_entry`
                 // rejects an address outside the thread-config space.
-                let addr = u16::try_from(*field).map_err(|_| sec.err(format!("setc16 {id:?}: {field:#x} is not a ThreadConfig word")))?;
-                let insn = tt_isa::backend::set_thread_entry(addr, *value).map_err(|e| sec.err(format!("setc16 {id:?}: {e:?}")))?;
+                let addr = u16::try_from(*field)
+                    .map_err(|_| sec.err(format!("setc16 {id:?}: {field:#x} is not a ThreadConfig word")))?;
+                let insn =
+                    tt_isa::backend::set_thread_entry(addr, *value).map_err(|e| sec.err(format!("setc16 {id:?}: {e:?}")))?;
                 sec.native.push(insn.word());
                 sec.last_role = 1;
             }
@@ -1074,7 +1079,10 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 // the caller owns the word exactly (no field masks involved).
                 let mut words = tt_isa::backend::ConfigWords::new();
                 words
-                    .seed(u16::try_from(*addr).map_err(|_| sec.err(format!("setcfg {id:?}: {addr:#x} is not a Config word")))?, *value)
+                    .seed(
+                        u16::try_from(*addr).map_err(|_| sec.err(format!("setcfg {id:?}: {addr:#x} is not a Config word")))?,
+                        *value,
+                    )
                     .map_err(|e| sec.err(format!("setcfg {id:?}: {e:?}")))?;
                 let program = crate::backend::tenstorrent::kern::datapath::config_program(&words);
                 sec.native.extend(program.iter().map(|i| i.word()));
@@ -1209,28 +1217,23 @@ fn tt_narrow(cb: DType, param: DType) -> u8 {
 /// `strip_unrolls` uses to place reader and writer slices. Trusting the
 /// folded index here reads a 32-tile stride where one tile is meant.
 fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), BackendError> {
-    let strides = k
-        .get_strides(idx)
-        .ok_or_else(|| tt_err(format!("tenstorrent: boundary index {idx:?} is not affine")))?;
+    let strides = k.get_strides(idx).ok_or_else(|| tt_err(format!("tenstorrent: boundary index {idx:?} is not affine")))?;
     for var in strides.keys() {
         if *var == OpId::NULL {
             continue;
         }
         let is_group = matches!(k.at(*var), Op::Range { kind: RangeKind::Group(_), .. });
         if !is_group {
-            return Err(tt_err(format!(
-                "tenstorrent: boundary index {idx:?} keeps a non-grid variable {var:?}"
-            )));
+            return Err(tt_err(format!("tenstorrent: boundary index {idx:?} keeps a non-grid variable {var:?}")));
         }
     }
     let base = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
     let mut axes: Vec<(u32, i64)> = Vec::new();
     for (_, op) in k.iter_unordered() {
         if let Op::Range { axis, kind: RangeKind::Group(len) } = op {
-            let extent = k
-                .resolve_const(*len)
-                .and_then(Constant::as_dim)
-                .ok_or_else(|| tt_err("tenstorrent: a grid extent is symbolic; boundary slices need a concrete grid".to_string()))?;
+            let extent = k.resolve_const(*len).and_then(Constant::as_dim).ok_or_else(|| {
+                tt_err("tenstorrent: a grid extent is symbolic; boundary slices need a concrete grid".to_string())
+            })?;
             axes.push((*axis, extent));
         }
     }
@@ -1238,24 +1241,21 @@ fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), B
     let mut per_axis = [0i64; 2];
     let mut suffix = 1024i64;
     for (axis, extent) in axes.iter().rev() {
-        let slot = per_axis
-            .get_mut(*axis as usize)
-            .ok_or_else(|| tt_err(format!("tenstorrent: grid axis {axis} is not dispatched")))?;
+        let slot =
+            per_axis.get_mut(*axis as usize).ok_or_else(|| tt_err(format!("tenstorrent: grid axis {axis} is not dispatched")))?;
         *slot = suffix;
-        suffix = suffix
-            .checked_mul(*extent)
-            .ok_or_else(|| tt_err("tenstorrent: grid slice stride overflows".to_string()))?;
+        suffix = suffix.checked_mul(*extent).ok_or_else(|| tt_err("tenstorrent: grid slice stride overflows".to_string()))?;
     }
     let to_bytes = |v: i64| -> Result<u32, BackendError> {
-        let b = v
-            .checked_mul(i64::from(elem_bytes))
-            .ok_or_else(|| tt_err(format!("tenstorrent: boundary offset {v} overflows")))?;
+        let b =
+            v.checked_mul(i64::from(elem_bytes)).ok_or_else(|| tt_err(format!("tenstorrent: boundary offset {v} overflows")))?;
         u32::try_from(b).map_err(|_| tt_err(format!("tenstorrent: boundary offset {b} bytes does not fit u32")))
     };
     Ok((to_bytes(base)?, to_bytes(per_axis[0])?, to_bytes(per_axis[1])?))
 }
 
-fn tt_boundary_moves(    k: &Kernel,
+fn tt_boundary_moves(
+    k: &Kernel,
     cbs: &Map<OpId, u32>,
     l1: &[u32],
     param_ordinal_of: &Map<OpId, u32>,
@@ -1732,7 +1732,11 @@ fn render(
             // Role streams, T0/T1/T2 in order. The roles run in order
             // (`Schedule::InOrder`), so no semaphores: each role drains its
             // unit before the firmware reports it done.
-            native.compute = [tt_unpack_role(section_t0, sec.has_src_unpack), tt_math_role(native_words.clone()), tt_pack_role(section_t2)];
+            native.compute = [
+                tt_unpack_role(section_t0, sec.has_src_unpack),
+                tt_math_role(native_words.clone()),
+                tt_pack_role(section_t2),
+            ];
             native.sems = std::mem::take(&mut sec.sems);
             // Physical DST rows: the emitter's slot table is the only place
             // a Register storage is bound to a row, so snapshot it here.
@@ -2115,8 +2119,13 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
                 .map_err(|e| sec.err(format!("pack {id:?}: out format: {e:?}")))?;
             let mut code = vec![wait_for_packer(Before::CONFIG).map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?];
             code.extend(crate::backend::tenstorrent::kern::datapath::config_program(&words));
-            code.push(stallwait(block::PACKER | block::CONFIG, cond::CONFIG_BUSY).map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?);
-            code.extend(crate::backend::tenstorrent::kern::datapath::pack_rows(crate::backend::tenstorrent::kern::datapath::TILE_DST_ROWS));
+            code.push(
+                stallwait(block::PACKER | block::CONFIG, cond::CONFIG_BUSY)
+                    .map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?,
+            );
+            code.extend(crate::backend::tenstorrent::kern::datapath::pack_rows(
+                crate::backend::tenstorrent::kern::datapath::TILE_DST_ROWS,
+            ));
             sec.native_t2.extend(code.iter().map(|i| i.word()));
             sec.last_role = 2;
             sec.out.push_str(&format!("{}pack_tile({slot}, {dcb});\n", sec.indent));
