@@ -1,13 +1,147 @@
 # Native Tenstorrent backend — design notes
 
-> Repository root is `/home/x/Dev/rust/zyx2` (crate in `zyx/`), branch
-> `tt-native`. All paths below are relative to that root. `/home/x/Dev/rust/zyx`
-> is a *different* checkout and is not this work.
+> **This file is the agent handoff.** Repository root is `/home/x/Dev/rust/zyx`
+> (crate in `zyx/`). The `tt-native` branch was squash-merged here as
+> `82f441f7`; `/home/x/Dev/rust/zyx2` is the old branch checkout and is not
+> this work.
+
+## CURRENT STATE (2026-10-30) — read this first
+
+### Layout and dependencies
+
+`src/backend/tenstorrent/` is the whole TT backend, ported in-tree from
+`metalium-rs` (attribution and the Apache-2.0 note are in `mod.rs`):
+
+| path | what |
+| --- | --- |
+| `mod.rs` | `Dev::TT` backend: pools (host-memory DRAM), `TTDevice`, program staging (`TTNativeProgram`/`TTDmMove`/`TTDstRow`), launch |
+| `ttsim.rs` | owner thread over the simulator + `run_native` |
+| `dev/` | ported `tt-device`: device, TLB windows, config writes, core control, DRAM, trace, telemetry, arc, fencing |
+| `kern/` | ported `tt-kernels` subset: `runtime` (runner), `datapath`, `sfpu`, `l1`, `loops`, `code`, `kind`, `elem`, trimmed `matmul` |
+| `sim/` | ported `tt-ttsim` + `tt-ttsim-sys` (dlopen wrapper) |
+
+Dependencies: **`tt-isa` and `tt-firmware-images` stay external** (generated
+encoding tables; RISC-V role images). `tt-kernels`, `tt-device` and
+`tt-ttsim` were removed; `libc` (fork helper) and `libm` (SFPU fits) added.
+There is deliberately **no `tenstorrent` feature** — TT is always compiled in
+(~16 s clean builds). The simulator blob is a vendor binary: set
+`TT_TTSIM_LIB`, or put it at `vendor/libttsim_bh.so`.
+
+Known layering wart, deliberately deferred: `kern/` sits under `backend/`
+but is imported by `kernel/tenstorrent.rs` and `codegen/tenstorrent.rs`
+(inverted edges). The durable split is builders → `codegen/tenstorrent/`,
+and the few constants the lowering needs (`MATH_AM_*`, SFPU kind ids) →
+`kernel/ops.rs`.
+
+### Tests
+
+`tests/23_tt_lowering.rs` is the only TT gate (the old `24_tt` was folded into
+it and deleted). Everything runs in **F32 on purpose**: `ttsim` models only
+`(0,0)`, `(0,4)` and `(8,8)` unpack-to-`Dst` (`ttsim-divergence.md` rows 31
+and 87), so a 16-bit elementwise kernel cannot run on the simulator at all.
+There are **no implicit conversions**: a BF16 compute kernel is a loud
+codegen error ("needs an F32 DST tile"), and the user wants it kept that way.
+
+| test | state |
+| --- | --- |
+| `transfer_roundtrip` | **green**, 0/200 (exact) |
+| `matmul` | **green**, 0/120, worst 0.0075 (TF32: the MU truncates F32 in `Src`) |
+| `sigmoid` | dispatches 8 cores now, but **2532/2560 wrong**, worst 0.23 |
+| `sum` | runs, **10/10 wrong**, worst 3.43 |
+| `sum_sigmoid` | 1/10 bad, worst 0.0025 (nearly right — different drain path) |
+| `matmul_sigmoid` | `native unpack ... got I64` (pattern bug, below) |
+| `softmax` | `Op::Loop` still bails `tt_lower_llks` |
+
+CPU suites `01_unary`…`05_misc` are green. `08_graph`'s three
+`custom_kernel_*` tests now autotune on `TT(0)` because TT is always
+compiled in and fail on a 44-byte param — the user disables TT in config for
+those; **do not change those tests**.
+
+Run one TT gate (simulator only, no board):
+
+```bash
+cd zyx
+TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
+  AGENT=1 cargo test --test 23_tt_lowering matmul -- --exact --nocapture
+```
+
+`ZYX_DEBUG=8` dumps the winning IR, `ZYX_TT_DUMP=1` dumps the role words.
+`libttsim` calls `_Exit` on a BAR contract violation (no unwinding, no panic
+hook), so a test that vanishes without a failure line is a decoder violation,
+not a panic.
+
+### Open work, in the order it should be attacked
+
+1. **Tile payload mapping** — this is what blocks `sigmoid`. Grid dispatch is
+   in and executes 8 points, but the result is wrong *including the first
+   point at DRAM offset 0*, so the bug is inside one tile: the unpack (a flat
+   1024-datum run into DST rows 0..63), the SFPU row walk, and the pack
+   (rows 0..63 back out) disagree on lane/face order. `transfer_roundtrip`
+   passes (tilize/untilize agree) and `matmul` passes (the MU handles faces),
+   so this pair has never been validated. Next probe: a **copy kernel with no
+   SFPU** — unpack → pack — compared against `transfer_roundtrip`.
+2. **`tt_tile`'s grouped index math is wrong.** The folded reader index
+   carries a 32-tile stride per grid step (131072 B where one tile is meant).
+   `tt_slice` in codegen ignores it for strides (base comes from the index's
+   const term, strides from the grid map: 1024 datums × higher-axis extents),
+   but the index math itself still needs fixing or deleting.
+3. **Reduce axis.** The phase-2 pattern table picks
+   `Reduce(TileDim::Row)` from the *result shape* and never looks at the IR's
+   `reduce_axis`; `TileDim::Row` maps to `Axis::Cols`. That is `sum`'s
+   10/10 wrong. Needs a `Col` entry keyed on the reduce axis, not on shape.
+4. **`matmul_sigmoid`.** The sigmoid pattern's `Pat::Const` matches an
+   *index* constant, so an I64 storage reaches the unpack. Needs a
+   dtype-aware const pattern.
+5. **`softmax`.** `Op::Loop` bails the pass; loops (multi-tile per core) are
+   not lowered yet.
+6. **DST rows and L1 placement are still decided in codegen.** The row
+   *numbers* are correct now (`dst_row = slot × 64`, or × 32 for 16-bit;
+   `Setrwc.DstVal = row/32`; `Mvmul.dst_row` offset by the accumulator's row;
+   the packer offset is a row; `native.dst` is rows), but no pass can see
+   them. The ordered step was a `TTOp::DstBase { storage, row }` placement op
+   emitted by `tt_dst_reuse`, checked by `tt_verify` (unique, aligned,
+   within 8 tiles), and read by codegen. `tt_place_cbs` (bump allocator over
+   `tt_isa::l1::DATA`) is the same story for L1.
+
+### Grid dispatch (implemented, uncommitted)
+
+The program is **tile-uniform**: identical L1 layout and instruction streams
+on every core, so only the DRAM slice differs.
+
+- `TTDmMove { param, l1, bytes, narrow, base, gstride0, gstride1 }`;
+  `tt_move_offset(mv, gidx0, gidx1)` gives a point's byte offset.
+- `TTDevice::launch` runs one program per grid point over
+  `tt_isa::noc::grid::Tensix::FULL.tiles::<Noc0>()` (row-major; `gidx0` = row,
+  `gidx1` = column), staging and reading back that point's slices, with bounds
+  checks in all three narrowing arms. The 1×1 restriction is gone.
+- `NativeRun.tile: (u8, u8)`; `ttsim.rs` runs the requested tile instead of the
+  old hardcoded `(3,4)`.
+
+Reference for the concurrent version: metalium's `Session` (`TileChoice`,
+`Unit` with resident roles + its own data mover, wave dispatch,
+`step20_many_tiles`). That layer was pruned on purpose; it is the model to
+copy when sequential runs become waves.
+
+### Why the merge, in hindsight
+
+The tt-metal path had grid dispatch, 16-bit staging and multi-tile *for free*
+(tt-metal's launcher and LLK supplied them), and its cost was the per-op
+CB/pop/lock discipline. The native path owns the stack and has to build those
+capabilities: grid (done), tile payload (open), BF16 staging (decided out —
+F32 tests, no implicit conversions), multi-tile and concurrency (open).
+Grading on green tests alone, the tt-metal path was ahead; the merge was
+bought for ownership.
+
+Commits: `82f441f7` merge, `590d4008` "reduce the tt dependencies, rewrite
+the backend", `03246130` "tt tests fp32 only", then the grid work
+(uncommitted at the time of writing).
 
 ## Goal
 
 `zyx` compiles a whole `Kernel` into native Tenstorrent programs and runs them
-through `metalium-rs` (`tt-device`, `tt-isa`, `tt-kernels`, `tt-ttsim`), with:
+on the device layer zyx now owns: `src/backend/tenstorrent/` (`dev/`, `kern/`,
+`sim/`, ported from `metalium-rs`), with `tt-isa` and `tt-firmware-images` as
+the only external TT crates. Constraints:
 
 - no C++ shim and no tt-metal link;
 - no `Session` between zyx and the device;
@@ -37,8 +171,8 @@ This is non-negotiable and overrides convenience paths in the lowering:
 - The verifier must reject an intra-kernel `Store` to a `GlobalMut` param
   followed by a `Load` from that param, instead of silently hoisting the load
   into the reader section.
-- `24_tt::sum_sigmoid` and `24_tt::matmul_sigmoid` are the acceptance tests:
-  one kernel, no DRAM traffic between the two compute ops.
+- `23_tt_lowering::sum_sigmoid` and `23_tt_lowering::matmul_sigmoid` are the
+  acceptance tests: one kernel, no DRAM traffic between the two compute ops.
 
 ## DST registers: SSA lowering, physical reuse in a separate pass
 
@@ -178,8 +312,7 @@ a structural tile op (`ReduceTile { input, slot }`).
 - Table stakes: a working port within one week, not necessarily fast.
 - This is mechanical: follow `metalium-rs`. The old C++ tt-metal path
   passed `23_tt_lowering::matmul` and handled CBs, sync, and locks. That
-  test is the only known green TT baseline. `24_tt` has never passed
-  anything. Not new semantics.
+  test is the only known green TT baseline. Not new semantics.
 
 ### Memory and layout
 
@@ -837,9 +970,9 @@ built, for four independent reasons, in order:
 3. Even with a shim, the backend never reads `TTProgramDesc.native`: it
    passes the three C++ sources to `compile_program`, so the lowering would
    not be exercised at all.
-4. `tt-device`, `tt-ttsim`, `tt-firmware-images` are declared in
-   `Cargo.toml` but referenced nowhere in `src/`, i.e. the native transport
-   is not written yet.
+4. `tt-device`, `tt-ttsim`, `tt-firmware-images` were declared in
+   `Cargo.toml` at that point but referenced nowhere in `src/`, i.e. the
+   native transport was not written yet.
 
 What the minimum native runtime needs (from `tt_kernels::runtime` and
 `tt_device`, all public):
@@ -863,10 +996,10 @@ Until all of that exists, the lowering is compile-checked only.
 
 #### Resolved: the gate is green on tt_sim
 
-`tests/23_tt_lowering.rs::matmul` and `tests/24_tt.rs::matmul` both pass on
-the native path (metalium's pinned ttsim, no C++ shim). The four build
-blockers above are gone: the transport and the native emitter landed on
-`tt-native`. What it took, and the facts behind it:
+`tests/23_tt_lowering.rs::matmul` passes on the native path (metalium's
+pinned ttsim, no C++ shim). The four build blockers above are gone: the
+transport and the native emitter landed on `tt-native`. What it took, and
+the facts behind it:
 
 - **CB L1 placement was sized in datums, not bytes.** `Op::Storage::len` is
   a datum count (`1024` for a tile) and `tt_place_cbs` used it directly, so
@@ -910,12 +1043,11 @@ blockers above are gone: the transport and the native emitter landed on
 - `ZYX_TT_DUMP=1` prints every role's `pc word mnemonic` and the staged
   ranges. It is how both bugs above were found.
 
-Still failing, and why: `sigmoid`/`matmul_sigmoid` (`24_tt`,
-`23_tt_lowering`) trip `tt_verify: DRAM write in compute` because a
-`[10, 256]` store is not a `[32, 32]`/`[32]` tile and phase 3 bails;
-`sum`/`sum_sigmoid` panic with `tt_verify: missing EndReader`; `softmax`
-fails in the runtime layer. All of them need the loop/grid (multi-tile)
-path, not another one-tile fix.
+Still failing at the time this paragraph was written; the live list is in
+**CURRENT STATE** at the top. The cause is no longer `tt_verify`: phase 3 now
+accepts the flat `[1024]` tile store, and `sigmoid` reaches the device. What is
+open is the tile payload mapping (wrong values inside a tile), the reduce axis,
+`matmul_sigmoid`'s const-dtype pattern, and `softmax`'s loops.
 
 ### Native backend
 
@@ -963,7 +1095,7 @@ not need).
 
 ### Tests / cleanup
 
-- [ ] `24_tt`: transfer, copy kernel, sigmoid, matmul, sum.
+- [ ] `23_tt_lowering`: transfer, copy kernel, sigmoid, matmul, sum.
 - [ ] Loop/grid kernel.
 - [ ] Multi-op chain with DST intermediates: sigmoid -> sigmoid, reduce ->
       sigmoid, matmul -> sigmoid. No CB roundtrip between them; the only
@@ -971,73 +1103,12 @@ not need).
 - [ ] Delete obsolete feature-gated tests and `ZYX_TT_DEBUG_MATMUL` /
       `ZYX_TT_TRACE`.
 
-## Next up (in order)
+## Next up and session state
 
-1. **Loop / grid (multi-tile) lowering.** Every remaining red test needs it:
-   `tt_lower_llks` bails on any `Op::Loop`, phase 3 only accepts
-   `[32, 32]`/`[32]` stores, and `runtime::run` programs one tile. A
-   `[10, 256]` tensor is eight tiles; `[256, 256]` is sixty-four.
-2. **Grid dispatch.** Launch a tile grid (`runtime::run` per tile, or one
-   kernel per tile with the DM moves indexed by tile) and stop erroring on
-   a non-1x1 grid in `TTDevice::launch`.
-3. **SFPU path end to end.** `sigmoid` lowers to the native SFPU program
-   already; it fails in `tt_verify`/phase 3 before reaching the device.
-4. **Multi-op DST chains** (matmul -> sigmoid, reduce -> sigmoid) with no
-   CB roundtrip between them.
-5. Delete the dead C++ `TtSection.out` emitter and the obsolete
-   `ZYX_TT_DEBUG_MATMUL` / `ZYX_TT_TRACE` hooks once nothing reads them.
-
-## Session state (last update)
-
-- `cargo check` is green; tests compile.
-- **Green on tt_sim now:** `24_tt::transfer_roundtrip`, `24_tt::matmul`,
-  and the gate `23_tt_lowering::matmul`, all on the native path (no C++
-  shim, host-memory DRAM, host-side tile layout).
-- Not green yet, all for the same reason (one tile only): `24_tt::sigmoid`
-  (`tt_verify: DRAM write in compute`), `24_tt::sum` and
-  `23_tt_lowering::sum` / `sum_sigmoid` (`tt_verify: missing EndReader`),
-  `23_tt_lowering::sigmoid` (`DRAM write in compute`), `softmax` /
-  `matmul_sigmoid` (runtime layer).
-- The C++ shim files are deleted; the backend runs `TTProgramDesc.native`
-  through `tt_kernels::runtime::run` on a `zyx-ttsim` owner thread.
-- Phase 2 is recursive/root-first over one biggest-first pattern list;
-  every native op writes a fresh logical DST row; `tt_dst_reuse` assigns
-  the physical rows afterward. Multi-use computed values get a CB
-  roundtrip. Phase 3 packs single-use DST outputs (into an FP32 writer CB)
-  and drains materialized CBs directly. `tt_verify` rejects DRAM traffic in
-  compute and intra-kernel store->load.
-- The generic SFPU IR, pattern table, recursive lowering, and
-  `tt_dst_reuse` are in place and `cargo check` is green.
-- The reduce codegen is native: `ReduceTile` emits the metalium
-  `sfpu::reduce` math program on the actual DST rows (row remap of
-  `SFPLOAD`/`SFPSTORE` `Imm10`) and no longer calls the LLK
-  `reduce_tile`. The raw words are in `TTProgramDesc.native_compute`.
-  A unit test checks the row remap.
-- The rest of the compute path still uses the old C++ string source;
-  the native role streams and the native backend are the next step.
-- Work is committed gradually on branch `tt-native`. Commits so far:
-  1. drop TT feature gates, `build.rs`, and the C++ shim;
-  2. reduce `TTOp` to native ops and update lowering, passes, verifier;
-  3. adapt whole-kernel codegen to the native op set;
-  4. add `NOTES.md` and `tests/24_tt.rs`;
-  5. one biggest-first pattern list, output-only packs, verifier checks;
-  6. generic SFPU, recursive lowering, multi-use CB materialization,
-     separate `tt_dst_reuse`;
-  7. native reduce math on the actual DST rows (no LLK `reduce_tile`);
-  8. ISA facts and the native-reduce status.
-- `cargo check --lib` was green at commit `30365dd6`. No simulator/device
-  run has been made.
-
-### Current working tree (uncommitted, mid-refactor)
-
-- Codegen still produces `compute_native: Vec<u32>` (raw
-  `Instruction::word()`s, the T1 math stream) as a flat mirror of
-  `native.compute[1]`; it goes away once the backend reads `native`.
-- `MatmulTiles` is the only compute op still on the C++ path, so a kernel
-  with a matmul cannot run natively yet.
-- `Sfpu` codegen currently returns an explicit error ("requires the native
-  emitter"): the generic SFPU path has no C++ fallback and is gated on the
-  emitter.
+Superseded by **CURRENT STATE** at the top of this file — that section is the
+single source of truth for what is green, what is broken, and in what order to
+fix it. Everything below this point is design detail and history from the
+`tt-native` branch.
 
 ## What stays (origin/main's compiler model)
 
@@ -1180,8 +1251,8 @@ is one DM list.
 
 ## Test ladder
 
-Baseline: the old C++ path passed `23_tt_lowering::matmul` only.
-`24_tt` has never passed a single test. Treat every `24_tt` case below as
+Baseline: the old C++ path passed `23_tt_lowering::matmul` only, and the
+native path is at `transfer_roundtrip` + `matmul`. Treat every case below as
 unproven until it runs green.
 
 1. `transfer_roundtrip` — host <-> DRAM, no compute.

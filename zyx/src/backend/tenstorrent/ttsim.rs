@@ -27,12 +27,6 @@ use super::sim::{self, Simulator};
 use tt_isa::isa::Instruction;
 use tt_isa::noc::{Noc0, NocCoord};
 
-/// The Tensix tile every zyx kernel runs on.
-///
-/// One tile: `runtime::run` programs a single core, and grid dispatch is a
-/// separate step (a launch is one tile's worth of work today).
-const TILE: (u8, u8) = (3, 4);
-
 /// Simulated cycles one run may take before it is declared stuck. A run that
 /// does not reach `DONE` in this many clocks is a bug in the program, not
 /// slowness.
@@ -41,6 +35,8 @@ const BUDGET: u64 = 400_000;
 /// One launch of a native program: what the owner thread needs to start the
 /// three roles and collect their results.
 pub(crate) struct NativeRun {
+    /// The Tensix tile this grid point runs on.
+    pub(crate) tile: (u8, u8),
     /// T0/T1/T2 role programs.
     pub(crate) roles: [Vec<Instruction>; 3],
     /// Host-side block repeats, per role.
@@ -144,7 +140,8 @@ fn execute(dev: &mut Device<sim::LibTtsim<'_>>, run: &NativeRun) -> Result<Nativ
             eprintln!("[tt] stage {at:#x}: {} bytes", bytes.len());
         }
     }
-    let tile = NocCoord::<Noc0>::new(TILE.0, TILE.1).ok_or_else(|| format!("{TILE:?} is not a Tensix coordinate"))?;
+    let tile = NocCoord::<Noc0>::new(run.tile.0, run.tile.1)
+        .ok_or_else(|| format!("{:?} is not a Tensix coordinate", run.tile))?;
     let roles: [&[Instruction]; 3] = [&run.roles[0], &run.roles[1], &run.roles[2]];
     let loops: [&[Loop]; 3] = [&run.loops[0], &run.loops[1], &run.loops[2]];
     let stage: Vec<(u64, &[u8])> = run.stage.iter().map(|(at, bytes)| (*at, bytes.as_slice())).collect();

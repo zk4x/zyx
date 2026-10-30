@@ -196,6 +196,19 @@ pub struct TTDmMove {
     /// it: F32 `Dst` -> BF16 L1 is `pack_fmt_conv_mode=0x105`, which the
     /// pinned ttsim refuses (`ttsim-divergence.md`, "BF16 late narrowing").
     pub narrow: u8,
+    /// Byte offset of this move's slice inside the param's buffer at grid
+    /// point `(0, 0)`.
+    pub base: u32,
+    /// Byte stride of the slice per grid index on axis 0 (gidx0, the row).
+    pub gstride0: u32,
+    /// Byte stride of the slice per grid index on axis 1 (gidx1, the column).
+    pub gstride1: u32,
+}
+
+/// Byte offset of a move's slice for one grid point: the program is
+/// tile-uniform, so this is the only thing a grid point changes.
+pub fn tt_move_offset(mv: &TTDmMove, gidx0: u32, gidx1: u32) -> usize {
+    mv.base as usize + gidx0 as usize * mv.gstride0 as usize + gidx1 as usize * mv.gstride1 as usize
 }
 
 /// `TTDmMove::narrow`: the L1 bytes are copied as they are.
@@ -654,74 +667,104 @@ impl TTDevice {
         if crate::debug_mask().launch() {
             println!("[tt] launch {program_id:?} grid=({},{}) args={args:?}", grid_dims[0], grid_dims[1]);
         }
-        if grid_dims != [1, 1] {
+        // Grid dispatch runs one program per grid point below; the extents
+        // must name real tiles.
+        if grid_dims[0] == 0 || grid_dims[1] == 0 {
             return Err(BackendError {
                 status: ErrorStatus::KernelLaunch,
-                context: format!(
-                    "tenstorrent grid dispatch is not wired yet: this launch wants {} x {} tiles and the runtime programs one",
-                    grid_dims[0], grid_dims[1]
-                )
-                .into(),
+                context: format!("tenstorrent grid of {} x {} has no cores", grid_dims[0], grid_dims[1]).into(),
             });
         }
         // The boundary: reader moves copy the param's DRAM bytes into the CB's
         // L1 address before any role starts; writer moves read them back after
         // every role finished. Both stay outside the kernel, so no role ever
         // touches DRAM.
-        let mut stage: Vec<(u64, Vec<u8>)> = Vec::with_capacity(prog.native.reader.len());
-        {
-            let host = super::host::pool();
-            let hpool = super::lock(Pool::Host, host);
-            for mv in &prog.native.reader {
-                let chunk = chunks[mv.param as usize].ok_or_else(|| BackendError {
-                    status: ErrorStatus::KernelLaunch,
-                    context: format!("reader move names param {}, which has no buffer arg", mv.param).into(),
-                })?;
-                let data = hpool.get_buffer(chunk);
-                let bytes = mv.bytes as usize;
-                if bytes > data.len() {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelLaunch,
-                        context: format!(
-                            "reader move of {bytes} bytes from param {} exceeds its {} byte buffer",
-                            mv.param,
-                            data.len()
-                        )
-                        .into(),
-                    });
-                }
-                stage.push((u64::from(mv.l1), data[..bytes].to_vec()));
-            }
-        }
-        let spans: Vec<(u64, usize, u32)> = prog
-            .native
-            .writer
-            .iter()
-            .map(|mv| (u64::from(mv.l1), mv.bytes as usize, mv.param))
-            .collect();        let read_back: Vec<(u64, usize)> = spans.iter().map(|(l1, bytes, _)| (*l1, *bytes)).collect();
-        let run = NativeRun {
-            roles: prog.roles.clone(),
-            loops: prog.loops.clone(),
-            stage,
-            read_back,
-            sems: prog.sems.clone(),
-        };
-        let outcome = run_native(run).map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: e.into_boxed_str(),
-        })?;
+        //
+        // Grid dispatch: one run per grid point, on that point's Tensix tile,
+        // with each boundary move offset by the point's group indices. The
+        // program is tile-uniform (same L1 layout, same instruction streams);
+        // the DRAM slice is the only thing that differs, and `TTDmMove`'s
+        // `base`/`gstride*` are what carry it.
+        use tt_isa::noc::Noc0;
+        use tt_isa::noc::grid::Tensix;
+        let tensix = Tensix::FULL;
+        let ncols = tensix.columns().count() as u32;
+        let tiles: Vec<(u8, u8)> = tensix.tiles::<Noc0>().map(|t| (t.x(), t.y())).collect();
         let host = super::host::pool();
-        let mut hpool = super::lock(Pool::Host, host);
-        for (idx, (_, bytes, param)) in spans.iter().enumerate() {
-            let chunk = chunks[*param as usize].ok_or_else(|| BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("writer move names param {param}, which has no buffer arg").into(),
-            })?;
-            let out = &outcome.l1[idx];
-            let dst = hpool.buffer_ptr_mut(chunk);
-            match prog.native.writer[idx].narrow {
+        for gidx0 in 0..grid_dims[0] {
+            for gidx1 in 0..grid_dims[1] {
+                let point = usize::try_from(gidx0 * ncols + gidx1).unwrap_or(usize::MAX);
+                let (x, y) = *tiles.get(point).ok_or_else(|| BackendError {
+                    status: ErrorStatus::KernelLaunch,
+                    context: format!("tenstorrent grid point ({gidx0}, {gidx1}) is not a Tensix tile").into(),
+                })?;
+                let mut stage: Vec<(u64, Vec<u8>)> = Vec::with_capacity(prog.native.reader.len());
+                {
+                    let hpool = super::lock(Pool::Host, host);
+                    for mv in &prog.native.reader {
+                        let chunk = chunks[mv.param as usize].ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelLaunch,
+                            context: format!("reader move names param {}, which has no buffer arg", mv.param).into(),
+                        })?;
+                        let data = hpool.get_buffer(chunk);
+                        let bytes = mv.bytes as usize;
+                        let off = tt_move_offset(mv, gidx0, gidx1);
+                        let end = off.checked_add(bytes).unwrap_or(usize::MAX);
+                        if end > data.len() {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: format!(
+                                    "reader move of {bytes} bytes at offset {off} from param {} exceeds its {} byte buffer",
+                                    mv.param,
+                                    data.len()
+                                )
+                                .into(),
+                            });
+                        }
+                        stage.push((u64::from(mv.l1), data[off..end].to_vec()));
+                    }
+                }
+                let mut spans: Vec<(u64, usize, u32, usize)> = Vec::with_capacity(prog.native.writer.len());
+                for mv in &prog.native.writer {
+                    spans.push((u64::from(mv.l1), mv.bytes as usize, mv.param, tt_move_offset(mv, gidx0, gidx1)));
+                }
+                let read_back: Vec<(u64, usize)> = spans.iter().map(|(l1, bytes, _, _)| (*l1, *bytes)).collect();
+                let run = NativeRun {
+                    tile: (x, y),
+                    roles: prog.roles.clone(),
+                    loops: prog.loops.clone(),
+                    stage,
+                    read_back,
+                    sems: prog.sems.clone(),
+                };
+                let outcome = run_native(run).map_err(|e| BackendError {
+                    status: ErrorStatus::KernelLaunch,
+                    context: e.into_boxed_str(),
+                })?;
+                let mut hpool = super::lock(Pool::Host, host);
+                for (idx, (_, bytes, param, off)) in spans.iter().enumerate() {
+                    let chunk = chunks[*param as usize].ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelLaunch,
+                        context: format!("writer move names param {param}, which has no buffer arg").into(),
+                    })?;
+                    let out = &outcome.l1[idx];
+                    // SAFETY: the destination is the chunk's bytes plus this
+                    // grid point's slice offset, which the bounds check below
+                    // keeps inside the chunk.
+                    let dst = unsafe { hpool.buffer_ptr_mut(chunk).add(*off) };
+                    match prog.native.writer[idx].narrow {
                 TT_NARROW_NONE => {
                     let n = (*bytes).min(out.len());
+                    if off + n > hpool.get_buffer(chunk).len() {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelLaunch,
+                            context: format!(
+                                "writer move of {n} bytes at offset {off} exceeds param {param}'s {} byte buffer",
+                                hpool.get_buffer(chunk).len()
+                            )
+                            .into(),
+                        });
+                    }
                     // SAFETY: `dst` points at the destination chunk's bytes,
                     // which the host pool owns, and `n` never exceeds the
                     // read-back range.
@@ -732,11 +775,11 @@ impl TTDevice {
                     // datum, and the writer CB holds whole tiles.
                     let datums = unsafe { std::slice::from_raw_parts(out.as_ptr().cast::<f32>(), out.len() / 4) };
                     let n = datums.len() * 2;
-                    if n > hpool.get_buffer(chunk).len() {
+                    if off + n > hpool.get_buffer(chunk).len() {
                         return Err(BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: format!(
-                                "writer move narrows {} datums to {n} bytes, more than param {param}'s buffer",
+                                "writer move narrows {} datums to {n} bytes at offset {off}, more than param {param}'s buffer",
                                 datums.len()
                             )
                             .into(),
@@ -753,11 +796,11 @@ impl TTDevice {
                     // SAFETY: as for the BF16 arm.
                     let datums = unsafe { std::slice::from_raw_parts(out.as_ptr().cast::<f32>(), out.len() / 4) };
                     let n = datums.len() * 2;
-                    if n > hpool.get_buffer(chunk).len() {
+                    if off + n > hpool.get_buffer(chunk).len() {
                         return Err(BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: format!(
-                                "writer move narrows {} datums to {n} bytes, more than param {param}'s buffer",
+                                "writer move narrows {} datums to {n} bytes at offset {off}, more than param {param}'s buffer",
                                 datums.len()
                             )
                             .into(),
@@ -770,6 +813,8 @@ impl TTDevice {
                     }
                 }
                 other => unreachable!("writer narrowing code {other} is not TT_NARROW_NONE/F16/BF16"),
+                    }
+                }
             }
         }
         Ok(())

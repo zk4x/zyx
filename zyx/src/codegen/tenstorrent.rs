@@ -1200,8 +1200,62 @@ fn tt_narrow(cb: DType, param: DType) -> u8 {
     }
 }
 
-fn tt_boundary_moves(
-    k: &Kernel,
+/// Byte offset and per-grid-axis byte strides of a boundary move's slice.
+///
+/// The base is the index's constant term. The strides are *not* taken from
+/// the index expression: one grid point owns exactly one tile (the unit
+/// phase 1 sizes CBs, slots and byte counts in), so a group step advances by
+/// 1024 datums times the extents of the higher-axis groups — the same map
+/// `strip_unrolls` uses to place reader and writer slices. Trusting the
+/// folded index here reads a 32-tile stride where one tile is meant.
+fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), BackendError> {
+    let strides = k
+        .get_strides(idx)
+        .ok_or_else(|| tt_err(format!("tenstorrent: boundary index {idx:?} is not affine")))?;
+    for var in strides.keys() {
+        if *var == OpId::NULL {
+            continue;
+        }
+        let is_group = matches!(k.at(*var), Op::Range { kind: RangeKind::Group(_), .. });
+        if !is_group {
+            return Err(tt_err(format!(
+                "tenstorrent: boundary index {idx:?} keeps a non-grid variable {var:?}"
+            )));
+        }
+    }
+    let base = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
+    let mut axes: Vec<(u32, i64)> = Vec::new();
+    for (_, op) in k.iter_unordered() {
+        if let Op::Range { axis, kind: RangeKind::Group(len) } = op {
+            let extent = k
+                .resolve_const(*len)
+                .and_then(Constant::as_dim)
+                .ok_or_else(|| tt_err("tenstorrent: a grid extent is symbolic; boundary slices need a concrete grid".to_string()))?;
+            axes.push((*axis, extent));
+        }
+    }
+    axes.sort();
+    let mut per_axis = [0i64; 2];
+    let mut suffix = 1024i64;
+    for (axis, extent) in axes.iter().rev() {
+        let slot = per_axis
+            .get_mut(*axis as usize)
+            .ok_or_else(|| tt_err(format!("tenstorrent: grid axis {axis} is not dispatched")))?;
+        *slot = suffix;
+        suffix = suffix
+            .checked_mul(*extent)
+            .ok_or_else(|| tt_err("tenstorrent: grid slice stride overflows".to_string()))?;
+    }
+    let to_bytes = |v: i64| -> Result<u32, BackendError> {
+        let b = v
+            .checked_mul(i64::from(elem_bytes))
+            .ok_or_else(|| tt_err(format!("tenstorrent: boundary offset {v} overflows")))?;
+        u32::try_from(b).map_err(|_| tt_err(format!("tenstorrent: boundary offset {b} bytes does not fit u32")))
+    };
+    Ok((to_bytes(base)?, to_bytes(per_axis[0])?, to_bytes(per_axis[1])?))
+}
+
+fn tt_boundary_moves(    k: &Kernel,
     cbs: &Map<OpId, u32>,
     l1: &[u32],
     param_ordinal_of: &Map<OpId, u32>,
@@ -1214,10 +1268,10 @@ fn tt_boundary_moves(
         match k.at(op_id) {
             Op::TT(TTOp::EndReader) => section = 1,
             Op::TT(TTOp::EndCompute) => section = 2,
-            Op::TT(TTOp::Copy { src, dst, bytes, .. }) if section != 1 => {
-                let (param, cb) = match section {
-                    0 => (*src, *dst),
-                    2 => (*dst, *src),
+            Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, bytes }) if section != 1 => {
+                let (param, cb, idx) = match section {
+                    0 => (*src, *dst, *src_idx),
+                    2 => (*dst, *src, *dst_idx),
                     _ => unreachable!("section is 0 or 2 in this arm"),
                 };
                 let ord = param_ordinal_of
@@ -1235,7 +1289,12 @@ fn tt_boundary_moves(
                     2 => tt_narrow(k.dtype(cb), k.dtype(param)),
                     _ => unreachable!("section is 0 or 2 in this arm"),
                 };
-                let move_ = TTDmMove { param: ord, l1: l1[cb_num as usize], bytes: *bytes, narrow };
+                // Which slice of the param this move touches, and how it
+                // moves with the grid: the program is tile-uniform, so this
+                // is the only per-core difference.
+                let elem_bytes = k.dtype(param).bit_size() as u32 / 8;
+                let (base, gstride0, gstride1) = tt_slice(k, idx, elem_bytes)?;
+                let move_ = TTDmMove { param: ord, l1: l1[cb_num as usize], bytes: *bytes, narrow, base, gstride0, gstride1 };
                 match section {
                     0 => reader.push(move_),
                     2 => writer.push(move_),
