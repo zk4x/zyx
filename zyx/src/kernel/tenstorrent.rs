@@ -313,6 +313,149 @@ impl Kernel {
     /// feeder's storage; matmul reads CBs and writes a fresh DST row.
     /// Only a value that reaches a DRAM output is packed (phase 3).
     /// Anything unmatched is left in place for later increments.
+    /// Canonicalize a single-tile reduce's traffic to the physical tile
+    /// pitch.
+    ///
+    /// `tt_tile` builds the reader index from the *logical* layout: a
+    /// reduce over a contiguous axis loads a rank-3 cube (`[32, 32, 32]`
+    /// for a whole tile) and a reduce over a tiled rank-2 value loads at
+    /// the logical pitch. Neither is what the NOC moves: the reader reads
+    /// one 32x32 tile from its base, and the reduce wants the reduced axis
+    /// as the innermost tile lane.
+    ///
+    /// This pass recognizes the one template zyx emits today — exactly one
+    /// `Reduce(Add)` fed by exactly one DRAM load and drained by exactly one
+    /// DRAM store — and rewrites both indices to `row * 32 + lane`, so the
+    /// load publishes one tile and the store drains one row. Anything else
+    /// is left untouched (multi-reduce, loops, groups, matmul cubes).
+    pub fn tt_reindex(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        // Single-tile kernels only: loops and groups mean extents or
+        // multi-tile traffic this rewrite does not model.
+        for (_, x) in self.iter_unordered() {
+            match x {
+                Op::Loop { .. } => return,
+                Op::Range { kind: RangeKind::Group(_), .. } => return,
+                _ => {}
+            }
+        }
+        // Exactly one reduce, one DRAM load, one DRAM store.
+        let mut reduces: Vec<OpId> = Vec::new();
+        let mut loads: Vec<OpId> = Vec::new();
+        let mut stores: Vec<OpId> = Vec::new();
+        let mut id = self.head;
+        for _ in 0..250_000 {
+            if id.is_null() {
+                break;
+            }
+            match self.ops[id].op {
+                Op::Reduce { .. } => reduces.push(id),
+                Op::Load { src: base, .. } => {
+                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
+                        loads.push(id);
+                    }
+                }
+                Op::Store { dst: base, .. } => {
+                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
+                        stores.push(id);
+                    }
+                }
+                _ => {}
+            }
+            id = self.ops[id].next;
+        }
+        if reduces.len() != 1 || loads.len() != 1 || stores.len() != 1 {
+            return;
+        }
+        let root = reduces[0];
+        let load = loads[0];
+        let store = stores[0];
+        // Reduce(Add) over the DRAM load; the store drains the reduce.
+        let (x, k) = match &self.ops[root].op {
+            Op::Reduce { x, reduce_axis, rop } if matches!(rop, BOp::Add) => (*x, *reduce_axis),
+            _ => return,
+        };
+        if x != load {
+            return;
+        }
+        let ssrc = match &self.ops[store].op {
+            Op::Store { src, .. } => *src,
+            _ => return,
+        };
+        if ssrc != root {
+            return;
+        }
+        // Rank-3 cube to a rank-2 result (axis drop), or a
+        // logical-pitch rank-2 tile to a row (pitch substitution).
+        // Anything else (matmul cubes, scalars) is not this template.
+        let drop3 = self.shape(load) == vec![32, 32, 32] && self.shape(root) == vec![32, 32];
+        let row2 = self.shape(load) == vec![32, 32] && self.shape(root) == vec![32];
+        if !drop3 && !row2 {
+            return;
+        }
+        let lidx = match self.ops[load].op {
+            Op::Load { src_idx, .. } => src_idx,
+            _ => unreachable!("tt_reindex: load lost its index"),
+        };
+        // Stride anatomy of the load index: the reduce lane at stride
+        // 1, one row axis at stride W, and (cube only) dropped axes at
+        // multiples of W. A const offset must be zero (a nonzero
+        // logical offset is not a physical one); anything else bails.
+        let Some(strides) = self.get_strides(lidx) else {
+            return;
+        };
+        if !matches!(self.ops[k].op, Op::Unroll { len: 32, .. }) {
+            return;
+        }
+        match strides.get(&k) {
+            Some((32, 1)) => {}
+            _ => return,
+        }
+        let mut rows: Vec<(OpId, Dim)> = Vec::new();
+        for (var, (len, stride)) in strides.iter() {
+            if *var == OpId::NULL {
+                if *stride != 0 {
+                    return;
+                }
+                continue;
+            }
+            if *var == k {
+                continue;
+            }
+            if !matches!(self.ops[*var].op, Op::Unroll { len: 32, .. }) {
+                return;
+            }
+            if *len != 32 || *stride <= 0 {
+                return;
+            }
+            rows.push((*var, *stride));
+        }
+        // Keep the smallest stride above 1 as the row axis; every
+        // other axis must stride a multiple of it (pure upward row
+        // shift, never a new column structure).
+        rows.sort_by_key(|&(_, s)| s);
+        let row = match rows.as_slice() {
+            [(r, w)] if row2 && *w != 32 && *w > 1 => *r,
+            [(r, w), (_d, dw)] if drop3 && *w > 1 && *dw > *w && *dw % *w == 0 => *r,
+            _ => return,
+        };
+        // Canonical traffic indices at the physical tile pitch.
+        let phys = self.insert_const_idx_before(load, 32i64);
+        let rk = self.insert_before(load, Op::Binary { x: row, y: phys, bop: BOp::Mul });
+        let new_idx = self.insert_before(load, Op::Binary { x: rk, y: k, bop: BOp::Add });
+        match &mut self.ops[load].op {
+            Op::Load { src_idx, .. } => *src_idx = new_idx,
+            _ => unreachable!("tt_reindex: load lost its index"),
+        }
+        match &mut self.ops[store].op {
+            Op::Store { dst_idx, .. } => *dst_idx = row,
+            _ => unreachable!("tt_reindex: store lost its index"),
+        }
+        self.verify();
+    }
+
     pub fn tt_lower_llks(&mut self) {
         if !self.device_info().tenstorrent {
             return;
@@ -509,6 +652,21 @@ impl Kernel {
         // them before phase 3 so codegen sees only native compute.
         self.dead_code_elimination();
 
+        // The prologue anchor was the first non-param/storage op when the
+        // pass started; the DCE above can take exactly that op (a rewritten
+        // index cone leaves nothing after the params). Phase 3 inserts CB
+        // storages before it, so re-resolve it first.
+        prologue = self.head;
+        for _ in 0..250_000 {
+            if prologue.is_null() {
+                break;
+            }
+            match self.ops[prologue].op {
+                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
+                _ => break,
+            }
+        }
+
         // Phase 3 — writer drains: every DRAM store of a lowered value
         // becomes a `TTOp::Copy` in a writer section closed by
         // `EndCompute`. A value already materialized in a CB is drained
@@ -534,10 +692,8 @@ impl Kernel {
                         // Tiled stores and row stores (a reduce row is 32
                         // elements); anything else bails the pass.
                         match self.shape(id).as_slice() {
-                            [32, 32] | [32] => stores.push((id, base, off, src)),
-                            _ => {
-                                return;
-                            }
+                            [32, 32] | [32] | [1024] => stores.push((id, base, off, src)),
+                            _ => return,
                         }
                     } else {
                         return;
@@ -591,7 +747,7 @@ impl Kernel {
                 };
                 // Single-tile shapes only; anything else bails the pass.
                 match self.shape(*store).as_slice() {
-                    [32, 32] | [32] => {}
+                    [32, 32] | [32] | [1024] => {}
                     _ => return,
                 };
                 if self.dtype(*store) != dtype {

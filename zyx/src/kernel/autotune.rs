@@ -105,6 +105,10 @@ impl Kernel {
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
             self.tt_tile();
+            // Logical indices -> physical tile traffic: a single-tile
+            // reduce loads a rank-3 cube and stores at the logical pitch;
+            // the NOC moves tiles.
+            self.tt_reindex();
             // Native lowering: tile the SSA, then claim it into reader
             // traffic (`TTOp::Copy`), run-level compute programs, and the
             // section markers. There is no CB-sync or DST-lock pass: those

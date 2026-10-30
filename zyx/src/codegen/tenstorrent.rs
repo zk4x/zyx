@@ -521,6 +521,9 @@ struct TtSection<'a> {
     /// Compute value ops emitted so far: `ZEROACC` mode 3 (`CLR_ALL`) is only
     /// safe before any of them, or it would wipe live DST rows.
     compute_ops: u32,
+    /// The DST row base of the current matmul accumulator, set by `Setrwc`:
+    /// `Mvmul`'s `dst_row` is tile-relative and is offset by this.
+    acc_row: u32,
     /// Per unpacker (0 = SrcA, 1 = SrcB): its one-time Src configuration has
     /// been emitted, so later unpacks only retarget the base address.
     src_unpacker_ready: [bool; 2],
@@ -603,6 +606,16 @@ impl<'a> TtSection<'a> {
         let s = self.fresh_slot()?;
         self.slots.insert(storage, s);
         Ok(s)
+    }
+
+    /// DST **row** base of a Register storage: its slot times the rows one
+    /// tile occupies (64 for a 32-bit datum, 32 for a 16-bit one). The row,
+    /// not the slot, is what every native instruction names (`DstVal`,
+    /// `SFPLOAD`/`SFPSTORE` rows, unpack destination, pack offset).
+    fn dst_row(&mut self, storage: OpId) -> Result<u32, BackendError> {
+        let slot = self.reg_slot(storage)?;
+        let rows = if self.k.dtype(storage).bit_size() == 16 { 32 } else { 64 };
+        Ok(slot * rows)
     }
 
     /// Slot holding a tile operand: an SSA tile already lowered, a
@@ -833,7 +846,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                                         "native unpack {id:?} needs an F32 DST tile, got {dtype:?} (BF16/F16 staging is not implemented)"
                                     )));
                                 }
-                                sec.reg_slot(*dst)?
+                                sec.dst_row(*dst)?
                             }
                             _ => return Err(sec.err(format!("unpack {id:?} dst is not a Register storage"))),
                         };
@@ -893,11 +906,12 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 // Native reduce: the metalium reduce math program reads the
                 // input DST row and writes the accumulator DST row. There is
                 // no LLK `reduce_tile` and no CB operand here.
-                let input_row = sec.reg_slot(*input)?;
-                let slot_row = sec.reg_slot(*slot)?;
-                sec.slots.insert(id, slot_row);
+                let input_row = sec.dst_row(*input)?;
+                let slot_row = sec.dst_row(*slot)?;
+                let slot_idx = sec.reg_slot(*slot)?;
+                sec.slots.insert(id, slot_idx);
                 let needs_scratch = *kind == TileDim::Scalar || (*kind == TileDim::Col && *rop == BOp::Add);
-                let scratch = if needs_scratch { Some(sec.fresh_slot()?) } else { None };
+                let scratch = if needs_scratch { Some(sec.fresh_slot()? * 64) } else { None };
                 let code = tt_reduce_program(*rop, *kind, input_row, slot_row, scratch)?;
                 for insn in code {
                     sec.native.push(insn.word());
@@ -1000,16 +1014,17 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             Op::TT(TTOp::Setrwc { dst }) => {
                 use tt_isa::isa::generated::encode;
                 let row = match sec.k.at(*dst) {
-                    Op::Storage { scope: MemScope::Register, .. } => sec.reg_slot(*dst)?,
+                    Op::Storage { scope: MemScope::Register, .. } => sec.dst_row(*dst)?,
                     _ => return Err(sec.err(format!("setrwc {id:?} dst {dst:?} is not a Register storage"))),
                 };
+                sec.acc_row = row;
                 let insn = encode::Setrwc::ZERO
                     .src_a(1)
                     .src_a_val(crate::backend::tenstorrent::kern::matmul::SRC_A_ROW as u32)
                     .src_b(1)
                     .src_b_val(crate::backend::tenstorrent::kern::matmul::SRC_B_ROW as u32)
                     .dst(1)
-                    .dst_val(row)
+                    .dst_val(row / 32)
                     .fidelity(1)
                     .encode()
                     .map_err(|e| sec.err(format!("setrwc {id:?}: {e:?}")))?;
@@ -1032,7 +1047,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             }
             Op::TT(TTOp::Mvmul { dst_row, addr_mod, flip_a, flip_b, broadcast_b }) => {
                 let insn = tt_isa::isa::generated::encode::Mvmul::ZERO
-                    .dst_row(*dst_row)
+                    .dst_row(*dst_row + sec.acc_row)
                     .addr_mod(*addr_mod as u32)
                     .flip_src_a(u32::from(*flip_a))
                     .flip_src_b(u32::from(*flip_b))
@@ -1100,19 +1115,20 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 // DST rows. Unpacking is the `Copy` before it; there is no
                 // CB operand and no pack inside the op.
                 let a_row = match sec.k.at(*a) {
-                    Op::Storage { scope: MemScope::Register, .. } => sec.reg_slot(*a)?,
+                    Op::Storage { scope: MemScope::Register, .. } => sec.dst_row(*a)?,
                     _ => return Err(sec.err(format!("Sfpu {id:?} first operand {a:?} is not a Register storage"))),
                 };
                 let b_row = if b.is_null() {
                     None
                 } else {
                     match sec.k.at(*b) {
-                        Op::Storage { scope: MemScope::Register, .. } => Some(sec.reg_slot(*b)?),
+                        Op::Storage { scope: MemScope::Register, .. } => Some(sec.dst_row(*b)?),
                         _ => return Err(sec.err(format!("Sfpu {id:?} second operand {b:?} is not a Register storage"))),
                     }
                 };
-                let slot_row = sec.reg_slot(*slot)?;
-                sec.slots.insert(id, slot_row);
+                let slot_row = sec.dst_row(*slot)?;
+                let slot_idx = sec.reg_slot(*slot)?;
+                sec.slots.insert(id, slot_idx);
                 let code = tt_sfpu_program(*kind, a_row, b_row, slot_row)?;
                 for insn in code {
                     sec.native.push(insn.word());
@@ -1523,6 +1539,7 @@ fn render(
             last_role: 1,
             sems: Vec::new(),
             compute_ops: 0,
+            acc_row: 0,
             src_unpacker_ready: [false, false],
             has_src_unpack: false,
         };
@@ -1664,7 +1681,10 @@ fn render(
                 .slots
                 .iter()
                 .filter(|(id, _)| matches!(k.at(**id), Op::Storage { scope: MemScope::Register, .. }))
-                .map(|(id, row)| TTDstRow { storage: id.0, row: *row })
+                .map(|(id, slot)| {
+                    let rows = if k.dtype(*id).bit_size() == 16 { 32 } else { 64 };
+                    TTDstRow { storage: id.0, row: *slot * rows }
+                })
                 .collect();
             native.dst.sort_by_key(|d| d.row);
         } else {
@@ -2008,7 +2028,15 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
                 );
             }
             let dcb = sec.cb_num(dst)?;
-            let slot = sec.slot_of(x)?;
+            // The packer's offset names a DST **row**; the C++ fallback text
+            // below still names a slot, so both are resolved here.
+            let (slot, row) = match sec.k.at(x) {
+                Op::Storage { scope: MemScope::Register, .. } => (sec.reg_slot(x)?, sec.dst_row(x)?),
+                _ => {
+                    let s = sec.slot_of(x)?;
+                    (s, s * 64)
+                }
+            };
             // The packer writes the CB's own format, not the value's: the
             // writer CB is FP32 even for a BF16 output, and the boundary
             // narrows on the way back to DRAM (`TTDmMove::narrow`). Packing
@@ -2021,7 +2049,7 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
             let mut words = tt_isa::backend::ConfigWords::new();
             crate::backend::tenstorrent::kern::datapath::pack_config(&mut words, l1);
             words
-                .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, slot)
+                .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row)
                 .map_err(|e| sec.err(format!("pack {id:?}: dst offset: {e:?}")))?;
             words
                 .set(thcon::THCON_SEC0_REG1_Out_data_format, out_fmt)

@@ -809,11 +809,14 @@ pub fn unpack_datums_to_dst(l1: u64, first: u32, count: u32, row: u32) -> Vec<In
     assert!(first % 4 == 0 && count > 0 && first + count <= TILE_DATUMS);
     let mut p = vec![backend::wait_for_unpacker0(Before::CONFIG).unwrap()];
     let mut words = ConfigWords::new();
+    // The unpacker's context (descriptor words included) outlives the kernel
+    // that wrote it, so every copy seeds the whole context: a flat copy that
+    // inherits a matmul's `ZDim` or its clear `is_uncompressed` flag reads
+    // the wrong thing (ttsim: `tensix_unpacr: is_uncompressed=0`).
+    let base = l1 + 4 * first as u64;
+    unpack_config(&mut words, tile_descriptor(), base);
     words
-        .set(
-            thcon::THCON_SEC0_REG3_Base_address,
-            tile_base_units(l1 + 4 * first as u64),
-        )
+        .set(thcon::THCON_SEC0_REG3_Base_address, tile_base_units(base))
         .unwrap()
         .set(thcon::THCON_SEC0_REG5_Dest_cntx0_address, dst_address(row))
         .unwrap();
