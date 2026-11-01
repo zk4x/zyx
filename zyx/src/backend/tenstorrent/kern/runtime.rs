@@ -64,8 +64,13 @@ pub const DST_FMT_FP32: u32 = 0;
 /// A kernel, and what to stage and collect around it.
 #[derive(Copy, Clone, Debug)]
 pub struct Kernel<'a> {
-    /// The programs of threads 0, 1 and 2.
-    pub roles: [&'a [u32]; 3],
+    /// Each role's program as its slot already stores it: `Some(length word)`
+    /// when the role runs, `None` when the kernel has no such leg. The bytes
+    /// are not here — they live in the device's program cache and are loaded
+    /// by `load` when the slot misses (NOTES §2).
+    pub programs: [Option<u32>; 3],
+    /// Roles whose program slot already holds its program: no load.
+    pub resident: [bool; 3],
     pub schedule: Schedule<'a>,
     /// Bytes written to L1 first, as `(address, data)`.
     pub stage: &'a [(u64, &'a [u8])],
@@ -95,16 +100,14 @@ pub struct Kernel<'a> {
     /// runner before the program is pushed (`tt_isa::frontend::mop`,
     /// `mailbox::MOP_CFG`). `None` leaves the expander as it is.
     pub mop: [Option<tt_isa::frontend::mop::MopConfig>; 3],
-    /// Each role's block repeats over its program (`super::code`,
-    /// `mailbox::LOOPS`): the runner pushes each range `count` times.
-    pub loops: [&'a [super::code::Loop]; 3],
 }
 
 impl<'a> Kernel<'a> {
     /// A kernel with nothing staged, nothing read back and nothing dumped.
-    pub fn new(roles: [&'a [u32]; 3], schedule: Schedule<'a>) -> Self {
+    pub fn new(schedule: Schedule<'a>) -> Self {
         Kernel {
-            roles,
+            programs: [None; 3],
+            resident: [false; 3],
             schedule,
             stage: &[],
             read_back: &[],
@@ -115,28 +118,7 @@ impl<'a> Kernel<'a> {
             restores_semaphores: false,
             unwedge: false,
             mop: [None; 3],
-            loops: [&[]; 3],
         }
-    }
-
-    /// Role `thread`'s `program` -- its own program, or that with a prefix the
-    /// runtime put in front (`assemble`'s `Dst` clear) -- as its slot stores
-    /// it, its block repeats moved past the prefix and led by their header
-    /// (`super::code::stored`), and the length word that names it.
-    fn stored_program(&self, thread: usize, program: &[u32]) -> Result<(Vec<u32>, u32), RunError> {
-        // A resident list's descriptor, staged without its programs (their
-        // `KERNEL` entries name them, length word and all).
-        if program.is_empty() {
-            return Ok((Vec::new(), 0));
-        }
-        let prefix = program.len().saturating_sub(self.roles[thread].len()) as u32;
-        let loops: Vec<super::code::Loop> =
-            self.loops[thread].iter().map(|l| super::code::Loop { start: l.start + prefix, ..*l }).collect();
-        let (words, len) = super::code::stored(program, &loops).map_err(|e| RunError::Loops { thread, reason: e })?;
-        if words.len() > mailbox::PROGRAM_MAX as usize {
-            return Err(RunError::ProgramTooLong { thread, len: words.len() });
-        }
-        Ok((words, len))
     }
 
     /// Role `thread`'s MOP words, checked: a configuration the expander cannot
@@ -257,6 +239,11 @@ pub enum RunError {
         thread: usize,
         reason: super::code::LoopError,
     },
+    /// Role `thread`'s program could not be loaded into its slot.
+    Program {
+        thread: usize,
+        reason: String,
+    },
     /// The tile's reset never finished: these roles' threads take no
     /// instruction even after the backend pulse, every semaphore released and
     /// their `Src` banks fed (`session::unwedge_tile`). What else holds them is
@@ -293,6 +280,7 @@ impl std::fmt::Display for RunError {
                 write!(f, "role {thread}'s program: {reason}")
             }
             RunError::DoesNotFit { what, bytes, limit } => write!(f, "{what} need {bytes} bytes of L1; the region holds {limit}"),
+            RunError::Program { thread, reason } => write!(f, "role {thread}'s program: {reason}"),
             RunError::Wedged { tile: (x, y), roles } => {
                 let names: Vec<&str> = roles.iter().map(|c| c.name()).collect();
                 write!(
@@ -333,20 +321,39 @@ pub(crate) fn word_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 
-/// The setup program (for a concurrent schedule) and thread 0's program, with
-/// the `Dst` clear in front of whichever runs first.
-#[allow(clippy::type_complexity)]
-fn assemble(kernel: &Kernel<'_>) -> Result<(Option<Vec<u32>>, Vec<u32>), RunError> {
+/// The setup program a concurrent schedule needs: the `Dst` clear (when a
+/// dump asks for one) and the semaphore initial states, run once on thread 0
+/// before the roles. `None` when the schedule is in-order and nothing needs
+/// zeroing.
+fn assemble(kernel: &Kernel<'_>) -> Result<Option<Vec<u32>>, RunError> {
     if kernel.dump_rows > mailbox::DUMP_MAX_ROWS {
         return Err(RunError::TooManyDumpRows { rows: kernel.dump_rows });
     }
     let clear = if kernel.clear_dst && kernel.dump_rows > 0 {
+        // The clear is a prefix on thread 0's program. The program's bytes
+        // live in the device's cache now, so a prefix cannot be prepended at
+        // launch: that needs a staged copy, which no launch keeps.
+        if kernel.programs[0].is_some() {
+            return Err(RunError::Program {
+                thread: 0,
+                reason: "a Dst dump would prepend a clear to a device-resident program".to_string(),
+            });
+        }
         dst_clear(kernel.dump_rows)
     } else {
         Vec::new()
     };
-    let (setup, unpack) = match kernel.schedule {
-        Schedule::InOrder => (None, [clear.as_slice(), kernel.roles[0]].concat()),
+    match kernel.schedule {
+        Schedule::InOrder => {
+            if clear.is_empty() {
+                Ok(None)
+            } else {
+                Err(RunError::Program {
+                    thread: 0,
+                    reason: "an in-order schedule has no setup run to carry the Dst clear".to_string(),
+                })
+            }
+        }
         Schedule::Concurrent(init) => {
             let mut setup = clear;
             for &(sem, value, max) in init {
@@ -360,10 +367,9 @@ fn assemble(kernel: &Kernel<'_>) -> Result<(Option<Vec<u32>>, Vec<u32>), RunErro
                     .word();
                 setup.push(word);
             }
-            (Some(setup), kernel.roles[0].to_vec())
+            Ok(Some(setup))
         }
-    };
-    Ok((setup, unpack))
+    }
 }
 
 /// Run `kernel` on the Tensix tile at `tile`, waiting up to `budget` simulated
@@ -372,18 +378,24 @@ fn assemble(kernel: &Kernel<'_>) -> Result<(Option<Vec<u32>>, Vec<u32>), RunErro
 ///
 /// The tile's backend is released first; the three role cores are held in
 /// reset again afterwards, success or not.
+///
+/// `load` brings role `thread`'s program into its slot on a residency miss
+/// (NOTES §2): the bytes live in the device's program cache, never in the
+/// host, so the runtime asks for the load instead of writing words itself.
 pub fn run<T: Transport, N: NocId>(
     dev: &mut Device<T>,
     tile: NocCoord<N>,
     images: &RoleImages<'_>,
     kernel: &Kernel<'_>,
     budget: u64,
+    load: &mut dyn FnMut(&mut Device<T>, usize) -> Result<(), RunError>,
 ) -> Result<Outcome, RunError> {
-    let (setup, unpack) = assemble(kernel)?;
-    let programs: [&[u32]; 3] = [&unpack, kernel.roles[1], kernel.roles[2]];
-    for (thread, p) in programs.iter().enumerate() {
-        if p.len() > mailbox::PROGRAM_MAX as usize {
-            return Err(RunError::ProgramTooLong { thread, len: p.len() });
+    let setup = assemble(kernel)?;
+    for (thread, program) in kernel.programs.iter().enumerate() {
+        if let Some(len) = program
+            && *len > mailbox::PROGRAM_MAX
+        {
+            return Err(RunError::ProgramTooLong { thread, len: *len as usize });
         }
     }
 
@@ -401,14 +413,13 @@ pub fn run<T: Transport, N: NocId>(
         0
     };
     let stage_role =
-        |dev: &mut Device<T>, thread: usize, program: &[u32], dump: u32, traced: bool| -> Result<(), RunError> {
+        |dev: &mut Device<T>, thread: usize, program_len: u32, dump: u32, traced: bool| -> Result<(), RunError> {
             let mb = Mailbox::of(thread as u32);
             dev.write32(&w, tile, mb.status(), 0)?;
-            let (words, len) = kernel.stored_program(thread, program)?;
             let d = mailbox::Descriptor {
                 thread_index: thread as u32,
                 dst_access_fmt: kernel.dst_fmt,
-                program_len: len,
+                program_len,
                 dump_row_count: dump,
                 trace: u32::from(traced),
                 push_window,
@@ -419,7 +430,6 @@ pub fn run<T: Transport, N: NocId>(
             for (at, v) in d.writes(mb) {
                 dev.write32(&w, tile, at, v)?;
             }
-            dev.write(&w, tile, mb.program(), &word_bytes(&words))?;
             for row in 0..dump {
                 for col in 0..mailbox::DUMP_ROW_WORDS {
                     dev.write32(&w, tile, mb.dump_offset(row, col), DUMP_SENTINEL)?;
@@ -439,7 +449,10 @@ pub fn run<T: Transport, N: NocId>(
     };
 
     if let Some(setup) = &setup {
-        stage_role(dev, 0, setup, 0, false)?;
+        stage_role(dev, 0, setup.len() as u32, 0, false)?;
+        // The setup program is host text (a `Dst` clear and semaphore inits),
+        // not an image, and pushing it is what makes slot 0 a miss.
+        dev.write(&w, tile, Mailbox::of(0).program(), &word_bytes(setup))?;
         let (core, image, at) = images[0];
         dev.load_and_start(&w, tile, core, image, at)?;
         if let Err(e) = wait(dev, 0)? {
@@ -448,9 +461,13 @@ pub fn run<T: Transport, N: NocId>(
         }
         clock.lap(dev, Phase::Setup);
     }
-    for (thread, program) in programs.iter().enumerate() {
+    for (thread, program) in kernel.programs.iter().enumerate() {
+        let Some(len) = program else { continue };
+        if !kernel.resident[thread] {
+            load(dev, thread)?;
+        }
         let dump = if thread == 1 { kernel.dump_rows } else { 0 };
-        stage_role(dev, thread, program, dump, kernel.trace)?;
+        stage_role(dev, thread, *len, dump, kernel.trace)?;
     }
     if kernel.trace {
         dev.configure_trace(&w, tile, mailbox::TRACE_BUFFER, mailbox::TRACE_BUFFER_BYTES)?;
@@ -463,12 +480,18 @@ pub fn run<T: Transport, N: NocId>(
         dev.load_and_start_together(&w, tile, images)?;
         clock.lap(dev, Phase::Launch);
         for (thread, (core, _, _)) in images.iter().enumerate() {
+            if kernel.programs[thread].is_none() {
+                continue;
+            }
             if let Err(e) = wait(dev, thread)? {
                 stuck.push((thread, *core, e));
             }
         }
     } else {
         for (thread, &(core, image, at)) in images.iter().enumerate() {
+            if kernel.programs[thread].is_none() {
+                continue;
+            }
             dev.load_and_start(&w, tile, core, image, at)?;
             clock.lap(dev, Phase::Launch);
             let waited = wait(dev, thread)?;
@@ -754,8 +777,10 @@ impl<N: NocId> Resident<N> {
                          the data mover",
             }));
         }
-        let descriptors_only = Kernel { roles: [&[], &[], &[]], ..*kernel };
-        let staged = if resident_programs { &descriptors_only } else { kernel };
+        // Program bytes live in the device's program cache now: a resident
+        // kernel and a fixed-slot one differ only in whether the tile's
+        // `KERNEL` entry names the program (NOTES §2).
+        let staged = kernel;
         let clock = self.begin(dev, images, staged, budget, resident_programs)?;
         let first = self.generation;
         self.generation += count - 1;
@@ -915,8 +940,7 @@ impl<N: NocId> Resident<N> {
                 reason: "a host run or fixed-slot kernel behind queued kernels; drain the tile first",
             }));
         }
-        let (setup, unpack) = assemble(kernel)?;
-        let programs: [&[u32]; 3] = [&unpack, kernel.roles[1], kernel.roles[2]];
+        let setup = assemble(kernel)?;
         let mut clock = Stopwatch::start(dev);
         let tile = self.tile;
         for (addr, data) in kernel.stage {
@@ -970,7 +994,8 @@ impl<N: NocId> Resident<N> {
         // Every role's program and descriptor is in place before any role's
         // generation moves, so the three start as close together as the host's
         // three final writes allow.
-        for (thread, program) in programs.iter().enumerate() {
+        for (thread, program) in kernel.programs.iter().enumerate() {
+            let Some(len) = program else { continue };
             let dump = if thread == 1 { kernel.dump_rows } else { 0 };
             self.stage(
                 dev,
@@ -981,7 +1006,7 @@ impl<N: NocId> Resident<N> {
                 false,
                 resident_programs,
                 kernel.mop_words(thread)?,
-                kernel.stored_program(thread, program)?,
+                (Vec::new(), *len),
             )?;
         }
         clock.lap(dev, Phase::Programs);

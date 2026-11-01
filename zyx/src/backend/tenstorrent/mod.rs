@@ -28,10 +28,12 @@
 // Device access goes through the native runtime (`self::ttsim`): the ported
 // `dev/` layer over the ported `sim/` transport, held by one owner thread
 // because the simulator is `!Send`. Every op that touches the device blocks on
-// that thread. There is no C++ and no dlopen: a launch hands `kern::runtime::run`
-// the three role streams the emitter staged, waits for every role's `DONE`, and
-// returns. The simulator itself is a Tenstorrent binary blob, found through
-// `TT_TTSIM_LIB` or `vendor/libttsim_bh.so`; only its wrapper lives here.
+// that thread. There is no C++ and no dlopen: compilation uploads a kernel's
+// images into device DRAM once (`images`), a launch resolves them to their
+// slots and the owner thread loads only what its residency ledger says is
+// missing, then `kern::runtime::run` waits for every role's `DONE`. The
+// simulator itself is a Tenstorrent binary blob, found through `TT_TTSIM_LIB`
+// or `vendor/libttsim_bh.so`; only its wrapper lives here.
 //
 // A `Pool::TT` chunk is device DRAM (the card's GDDR6), not host memory: the
 // pool hands out flat byte ranges of the chip's DRAM, and the host touches them
@@ -55,9 +57,10 @@ use crate::{
     f16,
     kernel::{GPUOp, Op, OpId, TTOp},
     shape::Dim,
-    slab::Slab,
+    slab::{Slab, SlabId},
 };
 use nanoserde::{DeJson, SerBin};
+use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tt_isa::dram::{Dram, DramRange};
 
@@ -74,6 +77,8 @@ pub(crate) mod ttsim;
 
 use kern::code::Loop;
 use kern::runtime::SemaphoreInit;
+use tt_isa::mailbox::role::Mailbox;
+use tt_isa::tensix::Core;
 
 // ── Global state ──────────────────────────────────────────────────────────────
 
@@ -109,6 +114,8 @@ fn initialize_backend() -> TTBackend {
             device_info: Arc::new(guard.dev_info.clone()),
             memory_pool: pool_id,
             programs: Slab::new(),
+            images: Slab::new(),
+            firmware: None,
         }));
         drop(guard);
     }
@@ -678,13 +685,97 @@ pub(super) fn device_count() -> u16 {
     backend().map(|(_, devs)| devs.len() as u16).unwrap_or(0)
 }
 
+/// One image: a single core's bytes, resident in device DRAM (NOTES §2,
+/// "Table A"). Nothing on the card occupies two cores at once, so an image is
+/// one `(core, address, len)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Image {
+    /// The core the bytes run on.
+    core: Core,
+    /// Flat device DRAM address of the image's first byte.
+    address: u64,
+    /// Byte length.
+    len: u32,
+    /// Identity: a recycled slab slot never matches a tile's ledger entry.
+    generation: u32,
+}
+
+/// Slab key of an [`Image`] in the device's program cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ImageId(u32);
+
+impl From<usize> for ImageId {
+    fn from(value: usize) -> Self {
+        ImageId(u32::try_from(value).expect("image id fits u32"))
+    }
+}
+
+impl From<ImageId> for usize {
+    fn from(value: ImageId) -> Self {
+        value.0 as usize
+    }
+}
+
+impl SlabId for ImageId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+/// Never-reused image identity, so a recycled [`ImageId`] is a ledger miss
+/// rather than a stale hit.
+static IMAGE_GENERATION: AtomicU32 = AtomicU32::new(1);
+
+fn next_generation() -> u32 {
+    IMAGE_GENERATION.fetch_add(1, AtomicOrdering::Relaxed)
+}
+
+/// The residency slot of a core's image (NOTES §2: B, NC, T0, T1, T2).
+pub(crate) fn slot(core: Core) -> usize {
+    match core {
+        Core::B => 0,
+        Core::NC => 1,
+        Core::T0 => 2,
+        Core::T1 => 3,
+        Core::T2 => 4,
+    }
+}
+
+/// The role thread an image's core feeds (`T0` -> 0).
+fn role_thread(core: Core) -> u32 {
+    match core {
+        Core::T0 => 0,
+        Core::T1 => 1,
+        Core::T2 => 2,
+        Core::B | Core::NC => todo!("{core:?} is a mover, not a role thread"),
+    }
+}
+
+/// The L1 address a mover's image is loaded at (B at 0, NC at its image base,
+/// which it reaches through the stub at its reset PC).
+fn firmware_base(core: Core) -> u64 {
+    match core {
+        Core::B => tt_isa::dm::IMAGE_BASE,
+        Core::NC => tt_isa::dm::nc::IMAGE_BASE,
+        other => todo!("{other:?} has no mover image"),
+    }
+}
+
 #[derive(Debug)]
 struct TTProgram {
-    /// The staged program, ready to hand to the owner thread: the three role
-    /// word streams, their loops, the semaphore init and the boundary moves.
+    /// The legs this kernel runs, in program order (NOTES §2, "Table B"): the
+    /// T0/T1/T2 images of a compute kernel. Reader and writer images join the
+    /// sequence once the `Dm` stream is compilation output.
+    sequence: Box<[ImageId]>,
+    /// The program length word of each leg, parallel to `sequence`: what the
+    /// role's descriptor names (`code::stored`, loop header included).
+    lens: Box<[u32]>,
+    /// Boundary moves, semaphores and placement: still launch assembly until
+    /// the `Dm` stream lands.
     native: TTNativeProgram,
-    roles: [Vec<u32>; 3],
-    loops: [Vec<Loop>; 3],
     sems: Vec<SemaphoreInit>,
     /// Global param count (inputs) and GlobalMut count (outputs).
     n_inputs: u32,
@@ -701,6 +792,12 @@ pub struct TTDevice {
     device_info: Arc<DeviceInfo>,
     memory_pool: Pool,
     programs: Slab<DeviceProgramId, TTProgram>,
+    /// The device's program cache: every image on the card (NOTES §2).
+    images: Slab<ImageId, Image>,
+    /// The two mover firmware images ([`tt_firmware_images::DM_B`],
+    /// [`DM_NC`]), created on first compile: boot is their first residency
+    /// miss, not a special step.
+    firmware: Option<[ImageId; 2]>,
 }
 
 impl TTDevice {
@@ -808,9 +905,28 @@ impl TTDevice {
             })?,
         ];
 
-        let mut loops: [Vec<Loop>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        for (role, entries) in native.compute_loops.iter().enumerate() {
-            loops[role] = entries.iter().map(|l| Loop { start: l.start, len: l.len, count: l.count }).collect();
+        // NOTES §2: codegen's bytes become images in the device's program
+        // cache, uploaded into DRAM once. The stored form (loop header
+        // included) is what a program slot holds, so its length word is
+        // decided here and never at launch.
+        self.ensure_firmware()?;
+        let mut sequence: Vec<ImageId> = Vec::with_capacity(3);
+        let mut lens: Vec<u32> = Vec::with_capacity(3);
+        for (thread, words) in roles.iter().enumerate() {
+            if words.is_empty() {
+                continue;
+            }
+            let loops: Vec<Loop> = native.compute_loops[thread]
+                .iter()
+                .map(|l| Loop { start: l.start, len: l.len, count: l.count })
+                .collect();
+            let (stored, len) = kern::code::stored(words, &loops).map_err(|e| BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tenstorrent: role T{thread} loops: {e}").into(),
+            })?;
+            let bytes: Vec<u8> = stored.iter().flat_map(|w| w.to_le_bytes()).collect();
+            sequence.push(self.upload([Core::T0, Core::T1, Core::T2][thread], &bytes)?);
+            lens.push(len);
         }
         let mut sems: Vec<SemaphoreInit> = Vec::with_capacity(native.sems.len());
         for s in &native.sems {
@@ -821,9 +937,9 @@ impl TTDevice {
             sems.push((sem, s.value, s.max));
         }
         Ok(self.programs.push(TTProgram {
+            sequence: sequence.into_boxed_slice(),
+            lens: lens.into_boxed_slice(),
             native,
-            roles,
-            loops,
             sems,
             n_inputs: desc.n_inputs,
             n_outputs: desc.n_outputs,
@@ -832,13 +948,63 @@ impl TTDevice {
         }))
     }
 
+    /// Put `bytes` into device DRAM and register them as the image of `core`.
+    /// This is the one PCIe write a compiled program costs; every later load
+    /// of it is a NoC read from this copy.
+    fn upload(&mut self, core: Core, bytes: &[u8]) -> Result<ImageId, BackendError> {
+        let Pool::TT(dev_id) = self.memory_pool else {
+            unreachable!("TT device carries {:?}, not a TT pool", self.memory_pool)
+        };
+        let tpool = pool(dev_id)?;
+        let mut tpool = super::lock(self.memory_pool, tpool);
+        let chunk = tpool.allocate(bytes.len() as Dim)?;
+        tpool.write_at(chunk, 0, bytes)?;
+        let image = Image {
+            core,
+            address: tpool.chunks[chunk].addr,
+            len: u32::try_from(bytes.len()).map_err(|_| BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tenstorrent: {} bytes do not fit an image", bytes.len()).into(),
+            })?,
+            generation: next_generation(),
+        };
+        Ok(self.images.push(image))
+    }
+
+    /// The two mover firmware images, created once: the backend's own leaves,
+    /// not derived from any `Kernel` (NOTES §2).
+    fn ensure_firmware(&mut self) -> Result<[ImageId; 2], BackendError> {
+        if let Some(ids) = self.firmware {
+            return Ok(ids);
+        }
+        let ids = [
+            self.upload(Core::B, tt_firmware_images::DM_B.1)?,
+            self.upload(Core::NC, tt_firmware_images::DM_NC.1)?,
+        ];
+        self.firmware = Some(ids);
+        Ok(ids)
+    }
+
     pub fn release(&mut self, program_id: DeviceProgramId) {
-        if self.programs.contains_id(program_id) {
-            // The owner thread holds nothing per program: everything a run
-            // needs is pushed into the tile's mailbox each launch. Plain
-            // `remove` drops the staged program in place — `remove_and_return`
-            // would move it out (push + swap) only for us to drop it.
-            self.programs.remove(program_id);
+        let Some(program) = self.programs.get(program_id) else {
+            return;
+        };
+        let sequence = program.sequence.clone();
+        self.programs.remove(program_id);
+        // Autotune is the one caller: drop the images it compiled and give
+        // their DRAM back. Every other program is never released.
+        let Pool::TT(dev_id) = self.memory_pool else {
+            unreachable!("TT device carries {:?}, not a TT pool", self.memory_pool)
+        };
+        let Ok(tpool) = pool(dev_id) else { return };
+        let mut tpool = super::lock(self.memory_pool, tpool);
+        for id in sequence.iter() {
+            let Some(image) = self.images.get(*id).copied() else { continue };
+            self.images.remove(*id);
+            let chunk = tpool.chunks.iter().find(|(_, c)| c.addr == image.address).map(|(chunk, _)| chunk);
+            if let Some(chunk) = chunk {
+                tpool.release(chunk);
+            }
         }
     }
 
@@ -961,6 +1127,50 @@ impl TTDevice {
         let tensix = Tensix::FULL;
         let ncols = tensix.columns().count() as u32;
         let tiles: Vec<(u8, u8)> = tensix.tiles::<Noc0>().map(|t| (t.x(), t.y())).collect();
+        // The kernel's images, resolved once: which slot each leg fills and the
+        // DRAM pages that fill it. Loading is the owner thread's decision (the
+        // residency ledger); everything here is address translation (NOTES §2).
+        let firmware = self.firmware.ok_or_else(|| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: "tenstorrent launch before any compile created the mover images".into(),
+        })?;
+        let mut programs: [Option<ttsim::RoleProgram>; 3] = [None, None, None];
+        let firmware: [ttsim::Firmware; 2] = {
+            let tpool = super::lock(self.memory_pool, tpool);
+            for (leg, id) in prog.sequence.iter().enumerate() {
+                let image = self.images[*id];
+                let thread = role_thread(image.core);
+                let slot_at = Mailbox::of(thread).program();
+                let ranges = tpool.stripes(image.address, u64::from(image.len)).map_err(|e| BackendError {
+                    status: ErrorStatus::KernelLaunch,
+                    context: format!("program image {id:?}: {e}").into(),
+                })?;
+                programs[thread as usize] = Some(ttsim::RoleProgram {
+                    id: *id,
+                    generation: image.generation,
+                    len: prog.lens[leg],
+                    ranges: ranges.into_iter().map(|(range, at)| (range, (slot_at + at as u64) as u32)).collect(),
+                });
+            }
+            let mut fw = Vec::with_capacity(2);
+            for id in firmware {
+                let image = self.images[id];
+                let ranges = tpool.stripes(image.address, u64::from(image.len)).map_err(|e| BackendError {
+                    status: ErrorStatus::KernelLaunch,
+                    context: format!("firmware image {id:?}: {e}").into(),
+                })?;
+                fw.push(ttsim::Firmware {
+                    id,
+                    generation: image.generation,
+                    core: image.core,
+                    base: firmware_base(image.core),
+                    ranges: ranges.into_iter().map(|(range, _)| range).collect(),
+                });
+            }
+            let nc = fw.pop().expect("the firmware images are created together");
+            let b = fw.pop().expect("the firmware images are created together");
+            [b, nc]
+        };
         for gidx0 in 0..grid_dims[0] {
             for gidx1 in 0..grid_dims[1] {
                 let point = usize::try_from(gidx0 * ncols + gidx1).unwrap_or(usize::MAX);
@@ -1012,8 +1222,8 @@ impl TTDevice {
                 let read_back: Vec<(u64, usize)> = narrows.iter().map(|(_, _, _, l1, bytes, _)| (*l1, *bytes)).collect();
                 let run = NativeRun {
                     tile: (x, y),
-                    roles: prog.roles.clone(),
-                    loops: prog.loops.clone(),
+                    programs: programs.clone(),
+                    firmware: firmware.clone(),
                     reads,
                     writes,
                     read_back,

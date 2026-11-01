@@ -7,17 +7,19 @@
 //! process-global and a transport borrows it), so the device can never leave
 //! the thread that opened it. Everything in zyx parks on a channel instead:
 //! this thread opens the simulator and the `Device` once, then answers
-//! [`Cmd::Run`] with one run of a tile — the B mover reads the operands into
-//! L1, [`tt_kernels::runtime::run`] runs the three roles, the NC mover writes
-//! the results out. A launch is synchronous — it returns only once every role
-//! has reported `DONE` and every moved byte has landed — so the caller sees
-//! the same blocking semantics the old shim had.
+//! [`Cmd::Run`] with one run of a tile — the program slots are checked against
+//! the residency ledger and loaded from the card's DRAM copy on a miss, the B
+//! mover reads the operands into L1, [`tt_kernels::runtime::run`] runs the
+//! three roles, the NC mover writes the results out. A launch is synchronous —
+//! it returns only once every role has reported `DONE` and every moved byte has
+//! landed — so the caller sees the same blocking semantics the old shim had.
 //!
-//! Nothing here decides what to run: the roles, the loops, the DRAM ranges and
-//! the L1 blocks they land in all come from the staged
-//! [`crate::backend::tenstorrent::TTNativeProgram`] through the launch. What
-//! lives here is the wire protocol: the movers' mailboxes and descriptor
-//! lists, and the host's own DRAM upload/readback for placement and readback.
+//! Nothing here decides what to run: the DRAM ranges and the L1 blocks they
+//! land in come from the launch's [`NativeRun`], and which of them still have
+//! to be moved comes from this thread's residency ledger (NOTES §2). What lives
+//! here is the wire protocol: the movers' mailboxes and descriptor lists, the
+//! program slots, and the host's own DRAM upload/readback for placement and
+//! readback.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -26,7 +28,6 @@ use std::thread;
 
 use super::dev::Device;
 use super::dev::tlb::WindowKind;
-use super::kern::code::Loop;
 use super::kern::runtime::{self, Schedule, SemaphoreInit};
 use super::sim::{self, Simulator};
 use tt_isa::dm;
@@ -43,16 +44,43 @@ const BUDGET: u64 = 400_000;
 /// Simulated cycles a mover may take to boot or to finish a list.
 const MOVER_BUDGET: u64 = 1_000_000;
 
+/// One role program of a launch: the image it names and where its bytes go.
+#[derive(Clone)]
+pub(crate) struct RoleProgram {
+    /// The image in the device's program cache.
+    pub(crate) id: super::ImageId,
+    /// The image's identity: a recycled id is a miss.
+    pub(crate) generation: u32,
+    /// The program length word the role's descriptor names.
+    pub(crate) len: u32,
+    /// DRAM -> L1 blocks, in page order: `(DRAM range, address in the slot)`.
+    pub(crate) ranges: Vec<(DramRange, u32)>,
+}
+
+/// One mover firmware image: the DRAM copy of its bytes and where it runs.
+#[derive(Clone)]
+pub(crate) struct Firmware {
+    pub(crate) id: super::ImageId,
+    pub(crate) generation: u32,
+    /// The core that runs it.
+    pub(crate) core: Core,
+    /// L1 address its bytes are written to.
+    pub(crate) base: u64,
+    /// The DRAM ranges holding the bytes, in order.
+    pub(crate) ranges: Vec<DramRange>,
+}
+
 /// One launch of a native program: what the owner thread needs to move the
 /// operands in, start the three roles, move the results out and collect what
 /// the host still has to touch.
 pub(crate) struct NativeRun {
     /// The Tensix tile this grid point runs on.
     pub(crate) tile: (u8, u8),
-    /// T0/T1/T2 role programs, as the words their slots hold.
-    pub(crate) roles: [Vec<u32>; 3],
-    /// Host-side block repeats, per role.
-    pub(crate) loops: [Vec<Loop>; 3],
+    /// T0/T1/T2 programs, by role thread; `None` for a leg the kernel does not
+    /// have (a gather or scatter has none).
+    pub(crate) programs: [Option<RoleProgram>; 3],
+    /// The tile's two mover firmware images, B then NC.
+    pub(crate) firmware: [Firmware; 2],
     /// DRAM -> L1 blocks the tile's B mover reads before any role starts.
     pub(crate) reads: Vec<(DramRange, u32)>,
     /// L1 -> DRAM blocks its NC mover writes after every role finished.
@@ -63,6 +91,10 @@ pub(crate) struct NativeRun {
     /// synchronisation (`Schedule::InOrder`).
     pub(crate) sems: Vec<SemaphoreInit>,
 }
+
+/// What each core's program slot holds, per tile: `(image, generation)` when a
+/// slot is resident, `None` when it must be loaded (NOTES §2).
+pub(crate) type Ledger = [Option<(super::ImageId, u32)>; 5];
 
 /// What a run produced.
 pub(crate) struct NativeOutcome {
@@ -174,13 +206,15 @@ fn serve(rx: Receiver<Cmd>, ready: Sender<Result<(), String>>) {
     };
     // Movers are booted per tile on the first launch that uses it.
     let mut movers: HashMap<(u8, u8), Movers> = HashMap::new();
+    // What each tile's five program slots hold (NOTES §2).
+    let mut resident: HashMap<(u8, u8), Ledger> = HashMap::new();
     if ready.send(Ok(())).is_err() {
         return;
     }
     while let Ok(cmd) = rx.recv() {
         match cmd {
             Cmd::Run(run, reply) => {
-                let _ = reply.send(execute(&mut dev, &window, &mut movers, &run));
+                let _ = reply.send(execute(&mut dev, &window, &mut movers, &mut resident, &run));
             }
             Cmd::DramWrite(segments, reply) => {
                 let _ = reply.send(execute_dram_write(&mut dev, &window, &segments));
@@ -224,63 +258,75 @@ fn mover(which: usize) -> dm::Mover {
     }
 }
 
-/// Boot `tile`'s movers: mailbox words, image, `RUNNING`, then `CAPS`.
+/// Boot one mover from its image: the bytes come back from the card's DRAM
+/// copy over the NoC, the mailbox words go in, then the image starts and the
+/// host waits for `RUNNING` and `CAPS`. This is the first residency miss on the
+/// core's slot, not a separate step (NOTES §2).
 ///
 /// The mailbox is written before the image starts because the mover reads
 /// `MY_X`/`MY_Y`/`USABLE` once, as it comes up; everything the host resets
 /// here is state L1 keeps across runs on silicon.
-fn boot_movers(
+fn boot_image(
     dev: &mut Device<sim::LibTtsim<'_>>,
     window: &super::dev::Window,
     tile: NocCoord<Noc0>,
     dram: &Dram,
-) -> Result<Movers, String> {
-    for &(which, image) in &[(B, tt_firmware_images::DM_B), (NC, tt_firmware_images::DM_NC)] {
-        let (core, bytes, load_address) = image;
-        let m = mover(which);
-        let at = |word: u64| m.at(word);
-        write32(dev, window, tile, at(dm::MY_X), tile.x() as u32)?;
-        write32(dev, window, tile, at(dm::MY_Y), tile.y() as u32)?;
-        write32(dev, window, tile, at(dm::USABLE), u32::from(dram.usable_mask()))?;
-        // Nothing here uses host-encoded reads or tracing; zero is the off
-        // state of both, and of every counter the mover writes.
-        for word in [
-            dm::SEQ,
-            dm::DONE,
-            dm::ERROR,
-            dm::TRACE,
-            dm::THROTTLE_STALLS,
-            dm::THROTTLE_CYCLES,
-            dm::WRITE_NOC,
-            dm::READ_FAST,
-            dm::CAPS,
-            dm::QUEUE_HEAD,
-            dm::QUEUE_DONE,
-            dm::QUEUE_ERROR,
-            dm::QUEUE_ERROR_AT,
-            dm::TRACE_PROGRESS,
-            dm::ENCODE_KEY,
-        ] {
-            write32(dev, window, tile, at(word), 0)?;
-        }
-        write32(dev, window, tile, at(dm::IN_FLIGHT_CAP), dm::TILE_IN_FLIGHT_CAP)?;
-        let status_at = m.mailbox + mailbox::offset::STATUS;
-        let panic_at = m.mailbox + mailbox::offset::PANIC_CODE;
-        write32(dev, window, tile, status_at, 0)?;
-        match core {
-            Core::NC => dev.load_and_start_nc(window, tile, bytes, load_address),
-            core => dev.load_and_start(window, tile, core, bytes, load_address),
-        }
-        .map_err(|e| format!("cannot start the {core:?} mover: {e}"))?;
-        dev.wait_for_mailbox(window, tile, status_at, panic_at, MOVER_BUDGET, |s| s == status::RUNNING)
-            .map_err(|e| format!("the {core:?} mover: {e}"))?
-            .map_err(|e| format!("the {core:?} mover: {e:?}"))?;
-        // What the image says it can do, written after the status word.
-        dev.wait_for_mailbox(window, tile, at(dm::CAPS), panic_at, MOVER_BUDGET, |c| c & dm::caps::VALID != 0)
-            .map_err(|e| format!("the {core:?} mover: {e}"))?
-            .map_err(|e| format!("the {core:?} mover: {e:?}"))?;
+    fw: &Firmware,
+) -> Result<(), String> {
+    let mut bytes: Vec<u8> = Vec::with_capacity(fw.ranges.iter().map(|r| r.len() as usize).sum());
+    for range in &fw.ranges {
+        let mut buf = vec![0u8; range.len() as usize];
+        dev.dram_read(window, *range, &mut buf).map_err(|e| e.to_string())?;
+        bytes.extend_from_slice(&buf);
     }
-    Ok(Movers { seq: [0; 2] })
+    let which = match fw.core {
+        Core::B => B,
+        Core::NC => NC,
+        other => todo!("{other:?} has no mover firmware"),
+    };
+    let m = mover(which);
+    let at = |word: u64| m.at(word);
+    write32(dev, window, tile, at(dm::MY_X), tile.x() as u32)?;
+    write32(dev, window, tile, at(dm::MY_Y), tile.y() as u32)?;
+    write32(dev, window, tile, at(dm::USABLE), u32::from(dram.usable_mask()))?;
+    // Nothing here uses host-encoded reads or tracing; zero is the off
+    // state of both, and of every counter the mover writes.
+    for word in [
+        dm::SEQ,
+        dm::DONE,
+        dm::ERROR,
+        dm::TRACE,
+        dm::THROTTLE_STALLS,
+        dm::THROTTLE_CYCLES,
+        dm::WRITE_NOC,
+        dm::READ_FAST,
+        dm::CAPS,
+        dm::QUEUE_HEAD,
+        dm::QUEUE_DONE,
+        dm::QUEUE_ERROR,
+        dm::QUEUE_ERROR_AT,
+        dm::TRACE_PROGRESS,
+        dm::ENCODE_KEY,
+    ] {
+        write32(dev, window, tile, at(word), 0)?;
+    }
+    write32(dev, window, tile, at(dm::IN_FLIGHT_CAP), dm::TILE_IN_FLIGHT_CAP)?;
+    let status_at = m.mailbox + mailbox::offset::STATUS;
+    let panic_at = m.mailbox + mailbox::offset::PANIC_CODE;
+    write32(dev, window, tile, status_at, 0)?;
+    match fw.core {
+        Core::NC => dev.load_and_start_nc(window, tile, &bytes, fw.base),
+        core => dev.load_and_start(window, tile, core, &bytes, fw.base),
+    }
+    .map_err(|e| format!("cannot start the {core:?} mover: {e}", core = fw.core))?;
+    dev.wait_for_mailbox(window, tile, status_at, panic_at, MOVER_BUDGET, |s| s == status::RUNNING)
+        .map_err(|e| format!("the {:?} mover: {e}", fw.core))?
+        .map_err(|e| format!("the {:?} mover: {e:?}", fw.core))?;
+    // What the image says it can do, written after the status word.
+    dev.wait_for_mailbox(window, tile, at(dm::CAPS), panic_at, MOVER_BUDGET, |c| c & dm::caps::VALID != 0)
+        .map_err(|e| format!("the {:?} mover: {e}", fw.core))?
+        .map_err(|e| format!("the {:?} mover: {e:?}", fw.core))?;
+    Ok(())
 }
 
 fn write32(
@@ -397,20 +443,21 @@ fn execute_dram_read(
     Ok(out)
 }
 
-/// One run: the tile's B mover brings the operands in, the roles compute, the
-/// NC mover writes the results out, and only what the host must narrow is read
-/// back.
+/// One run: the tile's program slots are checked against the ledger and
+/// loaded from the device's cache on a miss, the B mover brings the operands
+/// in, the roles compute, the NC mover writes the results out, and only what
+/// the host must narrow is read back.
 fn execute(
     dev: &mut Device<sim::LibTtsim<'_>>,
     window: &super::dev::Window,
     movers: &mut HashMap<(u8, u8), Movers>,
+    resident: &mut HashMap<(u8, u8), Ledger>,
     run: &NativeRun,
 ) -> Result<NativeOutcome, String> {
     if std::env::var_os("ZYX_TT_DUMP").is_some() {
-        for (role, words) in run.roles.iter().enumerate() {
-            eprintln!("[tt] role T{role}: {} words", words.len());
-            for (pc, word) in words.iter().enumerate() {
-                eprintln!("  {pc:4} {word:08x}");
+        for (thread, program) in run.programs.iter().enumerate() {
+            if let Some(p) = program {
+                eprintln!("[tt] role T{thread}: {} bytes, {} entries, len {}", p.len * 4, p.ranges.len(), p.len);
             }
         }
         eprintln!(
@@ -422,32 +469,80 @@ fn execute(
     }
     let tile =
         NocCoord::<Noc0>::new(run.tile.0, run.tile.1).ok_or_else(|| format!("{:?} is not a Tensix coordinate", run.tile))?;
-    if !movers.contains_key(&run.tile) {
-        let dram = dev.dram_grid(window).map_err(|e| format!("cannot read the DRAM grid: {e}"))?;
-        let booted = boot_movers(dev, window, tile, &dram)?;
-        movers.insert(run.tile, booted);
+    let state = movers.entry(run.tile).or_insert(Movers { seq: [0; 2] });
+    // Boot a mover on its slot's first miss (NOTES §2: boot is not a step).
+    {
+        let ledger = resident.entry(run.tile).or_insert([None; 5]);
+        for fw in run.firmware.iter() {
+            let slot = super::slot(fw.core);
+            if ledger[slot] == Some((fw.id, fw.generation)) {
+                continue;
+            }
+            let dram = dev.dram_grid(window).map_err(|e| format!("cannot read the DRAM grid: {e}"))?;
+            boot_image(dev, window, tile, &dram, fw)?;
+            // A freshly booted mover starts its sequence over.
+            state.seq = [0; 2];
+            ledger[slot] = Some((fw.id, fw.generation));
+        }
     }
-    let state = movers.get_mut(&run.tile).expect("just booted");
     if !run.reads.is_empty() {
         mover_list(dev, window, tile, state, B, &run.reads)?;
     }
-    let roles: [&[u32]; 3] = [&run.roles[0], &run.roles[1], &run.roles[2]];
-    let loops: [&[Loop]; 3] = [&run.loops[0], &run.loops[1], &run.loops[2]];
+    // Which role slots already hold their program. The concurrent schedule's
+    // setup run pushes its own words into slot 0, so that slot is a miss by
+    // construction.
+    let mut flags = [false; 3];
+    {
+        let ledger = resident.entry(run.tile).or_insert([None; 5]);
+        if !run.sems.is_empty() {
+            ledger[super::slot(Core::T0)] = None;
+        }
+        for (thread, program) in run.programs.iter().enumerate() {
+            let Some(p) = program else { continue };
+            let core = [Core::T0, Core::T1, Core::T2][thread];
+            flags[thread] = ledger[super::slot(core)] == Some((p.id, p.generation));
+        }
+    }
+    let mut loaded = [false; 3];
+    let mut load = |dev: &mut Device<sim::LibTtsim<'_>>, thread: usize| -> Result<(), runtime::RunError> {
+        let program = run.programs[thread].as_ref().expect("the loader is called only for a role with a program");
+        mover_list(dev, window, tile, state, B, &program.ranges)
+            .map_err(|reason| runtime::RunError::Program { thread, reason })?;
+        loaded[thread] = true;
+        Ok(())
+    };
     let stage: Vec<(u64, &[u8])> = Vec::new();
     let schedule = if run.sems.is_empty() {
         Schedule::InOrder
     } else {
         Schedule::Concurrent(&run.sems)
     };
-    let kernel = runtime::Kernel {
-        roles,
-        schedule,
-        stage: &stage,
-        read_back: &run.read_back,
-        loops,
-        ..runtime::Kernel::new(roles, schedule)
-    };
-    let out = runtime::run(dev, tile, &tt_firmware_images::ROLES, &kernel, BUDGET).map_err(|e| e.to_string())?;
+    let mut kernel = runtime::Kernel { schedule, stage: &stage, read_back: &run.read_back, ..runtime::Kernel::new(schedule) };
+    for thread in 0..3 {
+        if let Some(program) = &run.programs[thread] {
+            kernel.programs[thread] = Some(program.len);
+            kernel.resident[thread] = flags[thread];
+        }
+    }
+    let out = runtime::run(dev, tile, &tt_firmware_images::ROLES, &kernel, BUDGET, &mut load);
+    let ledger = resident.entry(run.tile).or_insert([None; 5]);
+    match &out {
+        Ok(_) => {
+            for thread in 0..3 {
+                if !loaded[thread] {
+                    continue;
+                }
+                let program = run.programs[thread].as_ref().expect("loaded programs name their role");
+                let core = [Core::T0, Core::T1, Core::T2][thread];
+                ledger[super::slot(core)] = Some((program.id, program.generation));
+            }
+        }
+        Err(_) => {
+            // A failed tile holds nothing trustworthy: reload on next use.
+            *ledger = [None; 5];
+        }
+    }
+    let out = out.map_err(|e| e.to_string())?;
     if !run.writes.is_empty() {
         mover_list(dev, window, tile, state, NC, &run.writes)?;
     }

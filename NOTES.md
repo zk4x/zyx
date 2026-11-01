@@ -97,12 +97,12 @@ is the same idea for us and is not wired yet.
 the host inside a launch:
 
 - Each tile boots RISCV B (`tt_firmware_images::DM_B`) and RISCV NC (`DM_NC`,
-  through the stub at NC's reset PC) once, on its first launch
-  (`ttsim::boot_movers`). The mailbox is written first (`MY_X`/`MY_Y`,
-  `USABLE` = the DRAM grid's mask, `IN_FLIGHT_CAP`, and every word the host
-  owns zeroed), then the image starts and the host waits for `RUNNING` and
-  `CAPS`. *(Superseded by §2: the two images become backend-built `Program`s, and
-  this boot is just the first residency miss on the B and NC slots.)*
+  through the stub at NC's reset PC) once: the two are `Image`s in the device's
+  cache like any other program, so this boot is the first residency miss on the B
+  and NC slots (`ttsim::boot_image`, bytes read back from the card's DRAM copy).
+  The mailbox is written first (`MY_X`/`MY_Y`, `USABLE` = the DRAM grid's mask,
+  `IN_FLIGHT_CAP`, and every word the host owns zeroed), then the image starts
+  and the host waits for `RUNNING` and `CAPS`.
 - A launch hands B its reads as **one list** before the roles run and NC its
   writes as **one list** after they finish
   (`tt_isa::dm::op::LIST` → `dm::LIST` ring, `OP`, `LEN`, `SEQ`, then `DONE` /
@@ -148,49 +148,90 @@ found.
 
 The rule:
 
-> Compilation turns a `Kernel` into the backend's own `Program`s and uploads them to
-> the device once. What runs is those programs, not the `Kernel`: a launch binds
-> arguments and issues. Nothing is encoded, expanded or decided at launch.
+> Compilation turns a `Kernel` into the backend's own images and uploads them to the
+> device once. What runs is those images, not the `Kernel`: a launch binds arguments
+> and issues. Nothing is encoded, expanded or decided at launch.
 
 **The `Kernel` is the compiler's input, not the program.** The passes and codegen are
-the last compilation. Codegen turns the Kernel into images and the backend collects
-them into its own programs — three of them per kernel, exactly the three the shim
-built:
+the last compilation. Codegen turns the Kernel into per-core bytes; the backend
+collects them into two tables.
+
+**Table A — the images on the card.** One image is one core's bytes: nothing on the
+card occupies two cores at once.
+
+```rust
+pub struct Image {
+    core: Core,      // B, NC, T0, T1, T2
+    address: u32,    // flat device DRAM address of the bytes
+    len: u32,        // byte length
+}
+images: Slab<ImageId, Image>,
+```
+
+**Table B — the launchable unit**, which is what `DeviceProgramId` names (unchanged
+meaning: the handle a plan holds, a launch takes and `release` frees):
+
+```rust
+struct TTProgram {
+    /// The legs this kernel runs, in program order.
+    sequence: Box<[ImageId]>,
+    n_inputs, n_outputs, gws, max_grid,
+}
+```
+
+**A zyx kernel's boundary is DRAM**, so a launch reads DRAM, computes, writes DRAM,
+and `sequence` is the legs the kernel actually has:
 
 ```
-reader  Program -> RISCV B     its entries
-compute Program -> T0/T1/T2    the three role images
-writer  Program -> RISCV NC    its entries
+compute kernel      B: reader, T0: unpack, T1: math, T2: pack, NC: writer
+gather / scatter    B: reader, NC: writer
 ```
 
-**The backend owns them afterwards.** A `Program` is uploaded to device memory once
-(DRAM; into L1 by NoC when it runs), and the backend keeps only a table —
-`DeviceProgramId -> [(core, device address, length)]`. No blobs in host RAM after
-compilation; a copy kept for debugging is a debug artifact, not a program. That is
-CUDA's module/handle: the bytes are on the card, the host holds the address.
+The compute leg is not a hole to leave empty: a kernel with nothing to compute emits
+two images, one that computes emits five. Adjacent role images (T0/T1/T2) are started
+together — they hand off through semaphores — while B's and NC's keep their order.
 
-**A launch binds arguments and issues.** It writes the operand words a program's
-holes name — chunk addresses, variable values, grid size — plus the mailbox and
-sequence words that start it. It never adds, removes, reorders, splits or encodes.
+**The backend owns them afterwards.** An image is uploaded into device DRAM once at
+compile (into L1 by NoC when it runs), and after that the backend keeps only the two
+tables. No blobs in host RAM after compilation; a copy kept for debugging is a debug
+artifact, not an image. That is CUDA's module/handle: the bytes are on the card, the
+host holds the address.
+
+**A launch binds arguments and issues.** It writes the operand words an image's holes
+name — chunk addresses, variable values, grid size — plus the mailbox and sequence
+words that start it. It never adds, removes, reorders, splits or encodes.
 
 **Residency is per (tile, core), over five slots:**
 
 ```
-resident[tile] = [Option<(DeviceProgramId, generation)>; 5]   // B, NC, T0, T1, T2
+resident[tile] = [Option<(ImageId, generation)>; 5]   // B, NC, T0, T1, T2
 ```
 
 At most five integer compares per tile per launch; a load only when a slot's identity
-changes, and a load is a PCIe write the first time or a NoC read from the program's
-DRAM copy after that. The two mover firmware images are programs as well — created by
-the backend at init, not derived from any `Kernel` — so **boot is not a concept**: it
-is the first residency miss on B or NC.
+changes, and a load is a PCIe write the first time or a NoC read from the image's DRAM
+copy after that. The two mover firmware images are images as well — created by the
+backend at init from `tt_firmware_images::DM_B`/`DM_NC`, not derived from any `Kernel`
+— so **boot is not a concept**: it is the first residency miss on B or NC.
 
-- Lifetime: refcounted (a compiled kernel holds one ref per program it created). Slab
+- Lifetime: refcounted (a `TTProgram` holds one ref per image in its sequence). Slab
   slots may be recycled, so identity is `(id, generation)` and a stale ledger entry is
   a miss by construction. zyx releases almost nothing; the one release is autotuning
   dropping a candidate when a better one wins.
 - Invalidation: a tile that failed clears its ledger entries and reloads on next use —
   the same idea as `kern::runtime::Resident`'s `poisoned` flag, one level down.
+
+**Implemented 2026-11-01:** `Image`/`ImageId` and the `images` slab; `TTProgram` holds
+`sequence: Box<[ImageId]>` plus `lens: Box<[u32]>` (each leg's program-length word)
+instead of role words; `compile` uploads each role's stored form (loop header
+included) into DRAM and creates the two firmware images on first use; the owner thread
+keeps `resident[tile]` over the five slots, boots a mover on its first miss from the
+card's DRAM copy, and loads a role's program with the B mover (`runtime::run` takes a
+`load` callback, so the load happens after the setup run that clobbers slot 0);
+`release` frees a program's images and their DRAM. Still launch-side: the reader and
+writer *lists* (step 3), and the three role **firmware** images, which `runtime::run`
+still loads into T0/T1/T2 on every launch — they are backend constants, not kernel
+images, and keeping them running across launches is the `Resident` generation
+protocol, not this cache.
 
 **PCIe is the budget.** That is *why* compilation exists: CUDA's execution is "bind
 the args, launch the kernel the pointer names", and the only reason it can be that is
@@ -279,11 +320,11 @@ performs over a launch-time count, and narrowing as an op.
 - **`REPLAY` is an instruction and stays.** What goes is the `Program` / `LoopForm`
   *builders* and the decode-shaped `Instruction` plumbing; `tt_isa::frontend::REPLAY`
   words are part of the stream. `Code` shrinks to `Loop` plus the free `stored()`.
-- **Compilation output is the backend's `Program`, not the `Kernel`.** A `Kernel` is
-  the compiler's input; codegen turns it into per-core images and the backend keeps a
-  device-address table (`DeviceProgramId -> [(core, address, length)]`). After
-  compilation there is no second program structure in host RAM, and no IR-side table
-  the launch consults.
+- **Compilation output is two tables, not the `Kernel`.** A `Kernel` is the compiler's
+  input; codegen turns it into per-core bytes, the backend uploads each into device
+  DRAM and keeps `images` (`Image { core, address, len }`) plus `programs`
+  (`TTProgram { sequence: Box<[ImageId]>, … }`). After compilation there is no second
+  program structure in host RAM, and no IR-side table the launch consults.
 - **Direction is the op kind.** B-bound and NC-bound work are different `Dm` variants,
   so there is no "which core" field to fill at launch. `EndReader`/`EndCompute` are
   consumed by codegen and do not appear in the compiled kernel.
@@ -294,10 +335,10 @@ performs over a launch-time count, and narrowing as an op.
   chunk-relative offset; the dispatch substitutes `param → chunk address` and derives
   channel/offset. Address translation, no shape decision.
 
-**Consequences:** `TTProgram` becomes the backend `Program` (device-resident, address
-table only); `TTNativeProgram` and `TTProgramDesc` die as IR-side structures;
-`TTDmMove` becomes `Dm` ops; the launch becomes a walk that binds values and issues;
-and the `Kernel` does not survive compilation beyond debugging.
+**Consequences:** `TTProgram` (what `DeviceProgramId` names) holds a `sequence` of
+`ImageId`s instead of bytes; `TTNativeProgram` and `TTProgramDesc` die as IR-side
+structures; `TTDmMove` becomes `Dm` ops; the launch becomes a walk that binds values
+and issues; and the `Kernel` does not survive compilation beyond debugging.
 
 ### Pipeline and pass names
 
@@ -378,10 +419,10 @@ placement/run/boundary ops (`Copy`, `Semset`, `EndReader`, `EndCompute`,
   Reader/Writer are not blobs: they are the tile's movers (RISCV B/NC), and
   the launch hands them descriptor lists (§1). The launch walks whatever
   role blobs exist; it never assumes exactly three.
-- **Codegen is the last compilation; the backend's `Program` is what runs** (§2).
+- **Codegen is the last compilation; the backend's images are what run** (§2).
   The `Kernel` is the compiler's input: codegen turns it into per-core images, the
-  backend uploads them once and keeps a device-address table, and the launch only
-  binds operands and issues. `TTDmMove` / `TTDstRow` / `TTSemaphoreInit` /
+  backend uploads them once into the two tables (`images`, `programs`), and the launch
+  only binds operands and issues. `TTDmMove` / `TTDstRow` / `TTSemaphoreInit` /
   `TTProgramDesc` are to collapse into ops; `tt_decode` is already gone and the
   runtime takes words (`&[u32]`). The simulator may decode internally; the transport
   must not.
@@ -457,11 +498,13 @@ Since the 2026-10-30 handoff:
    still built inside the launch. **The movers stay serial here** — one list
    per direction per launch, reads then writes, no overlap with compute. That is
    deliberate: async CBs are step 7.
-   Follow-on in this step: move the programs into the slab and reference them
-   (`§2 Program cache and residency`) — `Reader`/`Writer` naming a program id, and
-   `Unpack`/`Math`/`Pack` holding a reference instead of inline `Box<[u32]>` (the
-   inline boxes of step 1 are the intermediate state). That is what makes a launch
-   args-only.
+   Follow-on in this step: move the bytes into the `images` slab and reference them
+   (§2) — `Reader`/`Writer` naming an `ImageId`, and `Unpack`/`Math`/`Pack` holding a
+   reference instead of inline `Box<[u32]>` (the inline boxes of step 1 are the
+   intermediate state). That is what makes a launch args-only.
+   *Done so far (2026-11-01):* the two tables, the DRAM upload at compile, the
+   five-slot ledger, the B-mover load path and the firmware boot as a first miss —
+   see §2's "Implemented". The reader/writer lists are the remaining leg.
 4. **Loop lowering** (`REPLAY` for bodies that fit its 32-word buffer, the
    `mailbox::loops` header only for longer ones) for `softmax`; multi-tile per
    core. A trip count that does not fold to `Const` is a TT compile error (§2).
@@ -503,11 +546,12 @@ Since the 2026-10-30 handoff:
 - Codegen is the last compilation step. A kernel that has been through the
   passes runs on the device as it is; the dispatch fills operands and issues,
   and decides nothing (§2).
-- Compilation's output is the backend's `Program` (per core: reader, compute,
-  writer), uploaded once and referenced by device address; the `Kernel` is the
-  compiler's input and does not run. Per-tile residency (five slots: B, NC, T0, T1,
-  T2) is backend state keyed by `(id, generation)`; there is no "boot" step and no
-  hidden program structure.
+- Compilation's output is two tables (§2): `images: Slab<ImageId, Image>` (one
+  image per core, its bytes in device DRAM) and `programs: Slab<DeviceProgramId,
+  TTProgram>` (a `sequence` of image ids plus the arg-shaped metadata). The `Kernel`
+  is the compiler's input and does not run. Per-tile residency (five slots: B, NC,
+  T0, T1, T2) is backend state keyed by `(ImageId, generation)`; there is no "boot"
+  step and no hidden program structure.
 - Loops are `REPLAY`/loop-table entries with launch-time counts; unrolling is
   a search decision before the device epilogue.
 - `Pool::TT` is device DRAM. Host staging is only upload/readback.
