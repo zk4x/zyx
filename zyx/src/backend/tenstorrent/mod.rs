@@ -60,7 +60,6 @@ use crate::{
 use nanoserde::{DeJson, SerBin};
 use std::sync::{Arc, Mutex, OnceLock};
 use tt_isa::dram::{Dram, DramRange};
-use tt_isa::isa::Instruction;
 
 // The ported layers are carried over whole so their behaviour matches
 // upstream bit for bit; only the pieces zyx calls are exercised, so the rest
@@ -269,10 +268,8 @@ pub struct TTNativeProgram {
     pub reader: Vec<TTDmMove>,
     /// Writer DM moves, in program order (L1 CB -> DRAM param).
     pub writer: Vec<TTDmMove>,
-    /// Compute role streams in T0/T1/T2 order, raw `Instruction::word()`s.
-    /// `Instruction` holds a `&'static InstructionDef`, so only the word is
-    /// staged.
-    pub compute: [Vec<u32>; 3],
+    /// Compute role streams in T0/T1/T2 order, raw `Instruction::word()`s,
+    /// staged as [`TTOp::Unpack`]/[`TTOp::Math`]/[`TTOp::Pack`] (`compute`).
     /// Host-side block loops, per role, in the same T0/T1/T2 order.
     pub compute_loops: [Vec<TTLoop>; 3],
     /// Semaphore initial states for the run.
@@ -684,10 +681,9 @@ pub(super) fn device_count() -> u16 {
 #[derive(Debug)]
 struct TTProgram {
     /// The staged program, ready to hand to the owner thread: the three role
-    /// streams decoded to `Instruction`s, their loops, the semaphore init and
-    /// the boundary moves.
+    /// word streams, their loops, the semaphore init and the boundary moves.
     native: TTNativeProgram,
-    roles: [Vec<Instruction>; 3],
+    roles: [Vec<u32>; 3],
     loops: [Vec<Loop>; 3],
     sems: Vec<SemaphoreInit>,
     /// Global param count (inputs) and GlobalMut count (outputs).
@@ -705,23 +701,6 @@ pub struct TTDevice {
     device_info: Arc<DeviceInfo>,
     memory_pool: Pool,
     programs: Slab<DeviceProgramId, TTProgram>,
-}
-
-/// Decode one native instruction word back to its definition, for the
-/// runtime's `Instruction`. The staged program keeps words only (`SerBin`),
-/// so the identity is recovered here: `InstructionDef::matches` is opcode
-/// plus fixed fields, and the first match is the definition to push.
-///
-/// A definition's identity is not consulted by the runtime — it pushes
-/// `word()` — so a shared opcode picking its first form is harmless; a word
-/// the ISA does not know at all is a compile error, never a silent zero.
-fn tt_decode(role: usize, word: u32) -> Result<Instruction, BackendError> {
-    use tt_isa::isa::generated::ALL;
-    let def = ALL.iter().copied().find(|def| def.matches(word)).ok_or_else(|| BackendError {
-        status: ErrorStatus::KernelCompilation,
-        context: format!("native T{role} word {word:#010x} decodes as no Tenstorrent instruction").into(),
-    })?;
-    Ok(Instruction::new(word, def))
 }
 
 impl TTDevice {
@@ -753,20 +732,32 @@ impl TTDevice {
         let Some(Op::TT(TTOp::TensixGrid(grid))) = order.next() else {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "third op is not TensixGrid".into() });
         };
+        // The compute core's three programs, as codegen encoded them. They are
+        // the kernel's own ops, not a side table: nothing here decodes them.
+        let Some(Op::TT(TTOp::Unpack(unpack))) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Unpack".into() });
+        };
+        let Some(Op::TT(TTOp::Math(math))) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fifth op is not Math".into() });
+        };
+        let Some(Op::TT(TTOp::Pack(pack))) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "sixth op is not Pack".into() });
+        };
+        let roles: [Vec<u32>; 3] = [unpack.to_vec(), math.to_vec(), pack.to_vec()];
         let Some(Op::Source(reader)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Source".into() });
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "seventh op is not Source".into() });
         };
         let Some(Op::TT(TTOp::EndReader)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fifth op is not EndReader".into() });
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "eighth op is not EndReader".into() });
         };
         let Some(Op::Source(compute)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "sixth op is not Source".into() });
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "ninth op is not Source".into() });
         };
         let Some(Op::TT(TTOp::EndCompute)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "seventh op is not EndCompute".into() });
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "tenth op is not EndCompute".into() });
         };
         let Some(Op::Source(writer)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "eighth op is not Source".into() });
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "eleventh op is not Source".into() });
         };
 
         // Per-section params (0 = reader, 1 = compute, 2 = writer): param
@@ -796,8 +787,8 @@ impl TTDevice {
             eprintln!("[tenstorrent] reader:\n{}", String::from_utf8_lossy(reader));
             eprintln!("[tenstorrent] compute:\n{}", String::from_utf8_lossy(compute));
             eprintln!("[tenstorrent] writer:\n{}", String::from_utf8_lossy(writer));
-            for (role, words) in native.compute.iter().enumerate() {
-                eprintln!("[tenstorrent] native T{role}: {} words", words.len());
+            for (role, words) in roles.iter().enumerate() {
+                eprintln!("[tenstorrent] role T{role}: {} words", words.len());
             }
             eprintln!("[tenstorrent] native dm: {} reader, {} writer", native.reader.len(), native.writer.len());
         }
@@ -817,16 +808,6 @@ impl TTDevice {
             })?,
         ];
 
-        // The native program is the program: decode each role's words once,
-        // here, so a word the ISA cannot name is a compile error.
-        let mut roles: [Vec<Instruction>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        for (role, words) in native.compute.iter().enumerate() {
-            let mut decoded = Vec::with_capacity(words.len());
-            for word in words {
-                decoded.push(tt_decode(role, *word)?);
-            }
-            roles[role] = decoded;
-        }
         let mut loops: [Vec<Loop>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         for (role, entries) in native.compute_loops.iter().enumerate() {
             loops[role] = entries.iter().map(|l| Loop { start: l.start, len: l.len, count: l.count }).collect();

@@ -352,7 +352,10 @@ impl Kernel {
                 | Op::TT(TTOp::Setcfg { .. })
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
-                | Op::TT(TTOp::Semset { .. }) => {}
+                | Op::TT(TTOp::Semset { .. })
+                | Op::TT(TTOp::Unpack(_))
+                | Op::TT(TTOp::Math(_))
+                | Op::TT(TTOp::Pack(_)) => {}
                 Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
                     // Native SFPU: DST inputs and DST result.
                     for &f in &[a, b] {

@@ -494,10 +494,6 @@ pub struct TTProgramDesc {
     pub n_outputs: u32,
     /// Runtime CB config per CB, in CB index order.
     pub cb_config: Box<[TTCbConfig]>,
-    /// Raw native compute instruction words, in emission order. The native
-    /// backend stages these; the C++ source is only the not-yet-ported
-    /// fallback. Empty until the native emitter covers the kernel.
-    pub native_compute: Box<[u32]>,
     /// True iff the kernel touches F32 tiles (32-bit DST mode).
     pub fp32: bool,
 }
@@ -536,6 +532,15 @@ pub enum TTOp {
     /// launch args. Operand-free effect like [`TTOp::EndReader`].
     /// Boxed to keep `Op` in budget.
     TensixGrid(Box<[GwsDim; 2]>),
+    /// The compute core's T0 program: raw instruction words in emission
+    /// order, already encoded by codegen. The launch pushes them into the
+    /// role's program slot; nothing decodes them. Operand-free effect like
+    /// [`TTOp::EndReader`]. Boxed to keep `Op` in budget.
+    Unpack(Box<[u32]>),
+    /// The compute core's T1 program. See [`TTOp::Unpack`].
+    Math(Box<[u32]>),
+    /// The compute core's T2 program. See [`TTOp::Unpack`].
+    Pack(Box<[u32]>),
     /// Lowered reduce program: a tile `Reduce` after lowering resolved
     /// its DST input and DST accumulator. Carries the structured
     /// `(rop, kind)` so codegen can build the native reduce program
@@ -1395,7 +1400,13 @@ impl Op {
             Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) | Op::TT(TTOp::ProgramDesc(_)) | Op::TT(TTOp::TensixGrid(_)) => {
+            Op::TT(TTOp::EndReader)
+            | Op::TT(TTOp::EndCompute)
+            | Op::TT(TTOp::ProgramDesc(_))
+            | Op::TT(TTOp::TensixGrid(_))
+            | Op::TT(TTOp::Unpack(_))
+            | Op::TT(TTOp::Math(_))
+            | Op::TT(TTOp::Pack(_)) => {
                 vec![]
             }
             Op::After { x, dep } => vec![*x, *dep],
@@ -1467,7 +1478,13 @@ impl Op {
             Op::Unroll { .. } => vec![],
             Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) | Op::TT(TTOp::ProgramDesc(_)) | Op::TT(TTOp::TensixGrid(_)) => {
+            Op::TT(TTOp::EndReader)
+            | Op::TT(TTOp::EndCompute)
+            | Op::TT(TTOp::ProgramDesc(_))
+            | Op::TT(TTOp::TensixGrid(_))
+            | Op::TT(TTOp::Unpack(_))
+            | Op::TT(TTOp::Math(_))
+            | Op::TT(TTOp::Pack(_)) => {
                 vec![]
             }
             Op::Asm { ops, .. } => ops.iter_mut().collect(),

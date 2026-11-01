@@ -313,7 +313,10 @@ impl Kernel {
                 | Op::TT(TTOp::Setcfg { .. })
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
-                | Op::TT(TTOp::Semset { .. }) => {}
+                | Op::TT(TTOp::Semset { .. })
+                | Op::TT(TTOp::Unpack(_))
+                | Op::TT(TTOp::Math(_))
+                | Op::TT(TTOp::Pack(_)) => {}
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => todo!("Detach in ordered kernel"),
                 // Movement ops carry their output shape in their
@@ -715,6 +718,9 @@ impl Kernel {
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
                 | Op::TT(TTOp::Semset { .. }) => todo!("dtype: instruction op produces no value"),
+                // Every other TT op is instruction- or descriptor-shaped and
+                // carries no scalar value: the encoded role streams included.
+                Op::TT(_) => todo!("dtype: instruction op produces no value"),
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }

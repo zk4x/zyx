@@ -65,7 +65,7 @@ pub const DST_FMT_FP32: u32 = 0;
 #[derive(Copy, Clone, Debug)]
 pub struct Kernel<'a> {
     /// The programs of threads 0, 1 and 2.
-    pub roles: [&'a [Instruction]; 3],
+    pub roles: [&'a [u32]; 3],
     pub schedule: Schedule<'a>,
     /// Bytes written to L1 first, as `(address, data)`.
     pub stage: &'a [(u64, &'a [u8])],
@@ -102,7 +102,7 @@ pub struct Kernel<'a> {
 
 impl<'a> Kernel<'a> {
     /// A kernel with nothing staged, nothing read back and nothing dumped.
-    pub fn new(roles: [&'a [Instruction]; 3], schedule: Schedule<'a>) -> Self {
+    pub fn new(roles: [&'a [u32]; 3], schedule: Schedule<'a>) -> Self {
         Kernel {
             roles,
             schedule,
@@ -122,19 +122,17 @@ impl<'a> Kernel<'a> {
     /// Role `thread`'s `program` -- its own program, or that with a prefix the
     /// runtime put in front (`assemble`'s `Dst` clear) -- as its slot stores
     /// it, its block repeats moved past the prefix and led by their header
-    /// (`super::code::Code::stored`), and the length word that names it.
-    fn stored_program(&self, thread: usize, program: &[Instruction]) -> Result<(Vec<u32>, u32), RunError> {
+    /// (`super::code::stored`), and the length word that names it.
+    fn stored_program(&self, thread: usize, program: &[u32]) -> Result<(Vec<u32>, u32), RunError> {
         // A resident list's descriptor, staged without its programs (their
         // `KERNEL` entries name them, length word and all).
         if program.is_empty() {
             return Ok((Vec::new(), 0));
         }
         let prefix = program.len().saturating_sub(self.roles[thread].len()) as u32;
-        let code = super::code::Code {
-            ins: program.to_vec(),
-            loops: self.loops[thread].iter().map(|l| super::code::Loop { start: l.start + prefix, ..*l }).collect(),
-        };
-        let (words, len) = code.stored().map_err(|e| RunError::Loops { thread, reason: e })?;
+        let loops: Vec<super::code::Loop> =
+            self.loops[thread].iter().map(|l| super::code::Loop { start: l.start + prefix, ..*l }).collect();
+        let (words, len) = super::code::stored(program, &loops).map_err(|e| RunError::Loops { thread, reason: e })?;
         if words.len() > mailbox::PROGRAM_MAX as usize {
             return Err(RunError::ProgramTooLong { thread, len: words.len() });
         }
@@ -319,7 +317,7 @@ impl std::error::Error for RunError {}
 
 /// Zero `rows` of FP32 `Dst` through the SFPU, whose `Dst` writes read back
 /// correctly on both targets, then wait for it.
-fn dst_clear(rows: u32) -> Vec<Instruction> {
+fn dst_clear(rows: u32) -> Vec<u32> {
     let mut p = Vec::new();
     p.extend(sfpu::load_f32(0, 0).expect("LReg 0 is writable"));
     for group in 0..rows.div_ceil(4) {
@@ -328,7 +326,7 @@ fn dst_clear(rows: u32) -> Vec<Instruction> {
         }
     }
     p.push(backend::wait_for_sfpu(Before::EVERYTHING).expect("named bits"));
-    p
+    p.into_iter().map(|i| i.word()).collect()
 }
 
 pub(crate) fn word_bytes(words: &[u32]) -> Vec<u8> {
@@ -338,7 +336,7 @@ pub(crate) fn word_bytes(words: &[u32]) -> Vec<u8> {
 /// The setup program (for a concurrent schedule) and thread 0's program, with
 /// the `Dst` clear in front of whichever runs first.
 #[allow(clippy::type_complexity)]
-fn assemble(kernel: &Kernel<'_>) -> Result<(Option<Vec<Instruction>>, Vec<Instruction>), RunError> {
+fn assemble(kernel: &Kernel<'_>) -> Result<(Option<Vec<u32>>, Vec<u32>), RunError> {
     if kernel.dump_rows > mailbox::DUMP_MAX_ROWS {
         return Err(RunError::TooManyDumpRows { rows: kernel.dump_rows });
     }
@@ -352,12 +350,15 @@ fn assemble(kernel: &Kernel<'_>) -> Result<(Option<Vec<Instruction>>, Vec<Instru
         Schedule::Concurrent(init) => {
             let mut setup = clear;
             for &(sem, value, max) in init {
-                setup.push(tt_isa::sync::init(sem, value, max).map_err(|_| {
-                    RunError::Transport(TransportError::Hazard {
-                        address: 0,
-                        reason: "a semaphore value or max does not fit in four bits",
-                    })
-                })?);
+                let word = tt_isa::sync::init(sem, value, max)
+                    .map_err(|_| {
+                        RunError::Transport(TransportError::Hazard {
+                            address: 0,
+                            reason: "a semaphore value or max does not fit in four bits",
+                        })
+                    })?
+                    .word();
+                setup.push(word);
             }
             (Some(setup), kernel.roles[0].to_vec())
         }
@@ -379,7 +380,7 @@ pub fn run<T: Transport, N: NocId>(
     budget: u64,
 ) -> Result<Outcome, RunError> {
     let (setup, unpack) = assemble(kernel)?;
-    let programs: [&[Instruction]; 3] = [&unpack, kernel.roles[1], kernel.roles[2]];
+    let programs: [&[u32]; 3] = [&unpack, kernel.roles[1], kernel.roles[2]];
     for (thread, p) in programs.iter().enumerate() {
         if p.len() > mailbox::PROGRAM_MAX as usize {
             return Err(RunError::ProgramTooLong { thread, len: p.len() });
@@ -400,7 +401,7 @@ pub fn run<T: Transport, N: NocId>(
         0
     };
     let stage_role =
-        |dev: &mut Device<T>, thread: usize, program: &[Instruction], dump: u32, traced: bool| -> Result<(), RunError> {
+        |dev: &mut Device<T>, thread: usize, program: &[u32], dump: u32, traced: bool| -> Result<(), RunError> {
             let mb = Mailbox::of(thread as u32);
             dev.write32(&w, tile, mb.status(), 0)?;
             let (words, len) = kernel.stored_program(thread, program)?;
@@ -563,7 +564,7 @@ pub struct Resident<N: NocId> {
     profile_roles: bool,
     /// The last setup run's generation and program, until taken: a trace's
     /// capture records it as a kernel of its own (`crate::trace`).
-    last_setup: Option<(u32, Vec<Instruction>)>,
+    last_setup: Option<(u32, Vec<u32>)>,
     /// Kernels [`Resident::reserve`]d and not yet closed, oldest first: their
     /// lists may be queued on the mover behind one another.
     reservations: std::collections::VecDeque<Stopwatch>,
@@ -819,7 +820,7 @@ impl<N: NocId> Resident<N> {
 
     /// The setup run [`Resident::reserve`] did last, if any since the last
     /// call: its generation and its thread-0 program.
-    pub fn take_setup_run(&mut self) -> Option<(u32, Vec<Instruction>)> {
+    pub fn take_setup_run(&mut self) -> Option<(u32, Vec<u32>)> {
         self.last_setup.take()
     }
 
@@ -915,7 +916,7 @@ impl<N: NocId> Resident<N> {
             }));
         }
         let (setup, unpack) = assemble(kernel)?;
-        let programs: [&[Instruction]; 3] = [&unpack, kernel.roles[1], kernel.roles[2]];
+        let programs: [&[u32]; 3] = [&unpack, kernel.roles[1], kernel.roles[2]];
         let mut clock = Stopwatch::start(dev);
         let tile = self.tile;
         for (addr, data) in kernel.stage {
@@ -947,8 +948,7 @@ impl<N: NocId> Resident<N> {
         if let (Some(setup), false) = (&setup, skip_setup) {
             self.generation += 1;
             self.last_setup = Some((self.generation, setup.clone()));
-            let stored =
-                super::code::Code::plain(setup.to_vec()).stored().map_err(|e| RunError::Loops { thread: 0, reason: e })?;
+            let stored = super::code::stored(setup, &[]).map_err(|e| RunError::Loops { thread: 0, reason: e })?;
             self.stage(dev, 0, 0, false, kernel.dst_fmt, true, false, None, stored)?;
             let stuck = self.wait(dev, &[0], images, budget)?;
             if let Some((_, _, e)) = stuck.into_iter().next() {

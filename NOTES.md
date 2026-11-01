@@ -206,12 +206,22 @@ placement/run/boundary ops (`Copy`, `Semset`, `EndReader`, `EndCompute`,
   There is **no separate encoder component in the backend**; there is no
   decode in the backend either. `tt_isa`'s word packers are called from
   codegen only.
-- **Blobs are IR ops**: `TTOp::Unpack(Box<[u32]>)`, `TTOp::Math(Box<[u32]>)`,
-  `TTOp::Pack(Box<[u32]>)` (boxed to keep `Op` at 32 bytes). They are the
-  compute core's T0/T1/T2 word streams. Reader/Writer are DM-core programs
-  and join the blob set once `Pool::TT` is device DRAM; until then they are
-  host-staged and must be named as such, not pretended to be device work.
-  The launch walks whatever role blobs exist; it never assumes exactly three.
+- **Blobs are IR ops** — **done (2026-11-01)**: `TTOp::Unpack(Box<[u32]>)`,
+  `TTOp::Math(Box<[u32]>)`, `TTOp::Pack(Box<[u32]>)` (boxed to keep `Op` at
+  32 bytes) are pushed by `render_tt` right after `TensixGrid`, in T0/T1/T2
+  order, and `TTDevice::compile` reads them positionally from the rendered
+  kernel — the rendered op order is `ProgramDesc`, `Params`, `TensixGrid`,
+  `Unpack`, `Math`, `Pack`, `Source(reader)`, `EndReader`,
+  `Source(compute)`, `EndCompute`, `Source(writer)`. `TTNativeProgram` no
+  longer carries the streams (`compute`/`native_compute`/`compute_native`
+  are gone), `tt_decode` is gone, and `kern::runtime::Kernel::roles` is
+  `[&[u32]; 3]`: the runtime stores words and never names an
+  `InstructionDef`. Parity: the streams are the same objects codegen built
+  (sigmoid T0/T1/T2 = 39/3753/68 words before and after) and the gates are
+  bit-identical. `ZYX_TT_DUMP` now prints role words in hex only.
+  Reader/Writer are not blobs: they are the tile's movers (RISCV B/NC), and
+  the launch hands them descriptor lists (§1). The launch walks whatever
+  role blobs exist; it never assumes exactly three.
 - **The Kernel after codegen IS the compiled program.** No `TTNativeProgram`:
   launch walks the Kernel's ops in a guaranteed order (grid, params, role
   blobs, copies/sync/descriptors), stages the moves, runs the blobs per grid
@@ -266,10 +276,12 @@ Since the 2026-10-30 handoff:
 ### Implementation order (agreed)
 
 0. ~~**Restore `Pool::TT` as device DRAM**~~ — **done (2026-11-01)**, see §1.
-1. **Blob container + parity.** Add `Unpack`/`Math`/`Pack`, have codegen
-   emit them while `native.compute` still exists, env-var the new launch
-   path, assert exact word equality per role (and loops). Then delete
-   `native.compute`, the role decode, and the old launch path.
+1. ~~**Blob container + parity.**~~ — **done (2026-11-01)**: `Unpack`/`Math`/
+   `Pack` are rendered ops, the launch reads them from the kernel,
+   `native.compute`/`native_compute`/`compute_native` and `tt_decode` are
+   deleted, and the runtime takes words. No env-var path was needed: the
+   blobs are the same vectors codegen already built, so parity is by
+   construction and the gates are bit-identical.
 2. **Typed SFPU port.** `SfpOp` + `Sfp`/`SfpLoad`/`SfpStore`/`SfpConst`;
    move the macro bodies to `tt_dataflow_select` as typed sequences; the
    codegen dispatch match is the only encoder; delete `Program` /

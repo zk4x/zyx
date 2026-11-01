@@ -120,7 +120,10 @@ impl Kernel {
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::ProgramDesc(_))
-                | Op::TT(TTOp::TensixGrid(_)) => {
+                | Op::TT(TTOp::TensixGrid(_))
+                | Op::TT(TTOp::Unpack(_))
+                | Op::TT(TTOp::Math(_))
+                | Op::TT(TTOp::Pack(_)) => {
                     structural[i] = true;
                     barrier[i] = true;
                 }
@@ -215,7 +218,10 @@ impl Kernel {
                 | Op::TT(TTOp::Setcfg { .. })
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
-                | Op::TT(TTOp::Semset { .. }) => {}
+                | Op::TT(TTOp::Semset { .. })
+                | Op::TT(TTOp::Unpack(_))
+                | Op::TT(TTOp::Math(_))
+                | Op::TT(TTOp::Pack(_)) => {}
                 Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)

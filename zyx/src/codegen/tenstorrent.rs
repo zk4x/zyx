@@ -78,10 +78,11 @@ pub struct TTProgram {
     pub compute_src: String,
     /// Writer section source.
     pub writer_src: String,
-    /// Raw native compute instruction words (`Instruction::word()`), in
-    /// emission order. The native backend stages these; the C++ source is
-    /// only the not-yet-ported fallback.
-    pub compute_native: Vec<u32>,
+    /// The compute core's three programs (T0/T1/T2) as their instruction
+    /// words, in emission order. These become [`TTOp::Unpack`], [`TTOp::Math`]
+    /// and [`TTOp::Pack`] in the rendered kernel; the C++ source is only the
+    /// not-yet-ported fallback.
+    pub roles: [Vec<u32>; 3],
     /// The staged native program: DM boundary moves, role streams,
     /// semaphores, and the L1/DST placement baked into the instructions.
     pub native: TTNativeProgram,
@@ -153,15 +154,18 @@ impl Kernel {
                 .into_iter()
                 .map(|(format, tile_bytes, num_tiles)| TTCbConfig { format, tile_bytes, num_tiles })
                 .collect(),
-            native_compute: program.compute_native.into_boxed_slice(),
             native: program.native,
             fp32: program.fp32,
         };
+        let [unpack, math, pack] = program.roles;
         let mut rendered =
             Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
         rendered.push_back(Op::TT(TTOp::ProgramDesc(Box::new(desc))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
+        rendered.push_back(Op::TT(TTOp::Unpack(unpack.into_boxed_slice())));
+        rendered.push_back(Op::TT(TTOp::Math(math.into_boxed_slice())));
+        rendered.push_back(Op::TT(TTOp::Pack(pack.into_boxed_slice())));
         rendered.push_back(Op::Source(SourceBlock(program.reader_src.into_boxed_str())));
         rendered.push_back(Op::TT(TTOp::EndReader));
         rendered.push_back(Op::Source(SourceBlock(program.compute_src.into_boxed_str())));
@@ -258,13 +262,12 @@ impl Kernel {
         let mut native = TTNativeProgram {
             reader: Vec::new(),
             writer: Vec::new(),
-            compute: [Vec::new(), Vec::new(), Vec::new()],
             compute_loops: [Vec::new(), Vec::new(), Vec::new()],
             sems: Vec::new(),
             l1: tt_place_cbs(k, &cb_order)?,
             dst: Vec::new(),
         };
-        let (reader_src, compute_src, writer_src, reader_params, compute_params, writer_params, fp32, compute_native) =
+        let (reader_src, compute_src, writer_src, reader_params, compute_params, writer_params, fp32, roles) =
             render(k, &param_ordinal_of, &cbs, &mut native)?;
 
         // The DRAM boundary of the native program. Role streams, their
@@ -300,7 +303,7 @@ impl Kernel {
         Ok(TTProgram {
             reader_src,
             compute_src,
-            compute_native,
+            roles,
             writer_src,
             native,
             reader_params,
@@ -1466,7 +1469,7 @@ fn render(
     param_ordinal_of: &Map<OpId, u32>,
     cbs: &Map<OpId, u32>,
     native: &mut TTNativeProgram,
-) -> Result<(String, String, String, Vec<u32>, Vec<u32>, Vec<u32>, bool, Vec<u32>), BackendError> {
+) -> Result<(String, String, String, Vec<u32>, Vec<u32>, Vec<u32>, bool, [Vec<u32>; 3]), BackendError> {
     let mut sections: [Vec<OpId>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut section = 0usize;
     let mut op_id = k.head;
@@ -1544,7 +1547,8 @@ fn render(
 
     let mut srcs = [String::new(), String::new(), String::new()];
     let mut lists: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    let mut native_words: Vec<u32> = Vec::new();
+    // The compute core's three programs, filled by the compute section below.
+    let mut roles: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut fp32 = false; // 32-bit DST mode: any F32 tile, or any F8 circular (Blackhole
     // mandate). F32 circulars are accepted (format 0), like the old backend.
     let mut scan = k.head;
@@ -1788,13 +1792,13 @@ fn render(
         let section_t0 = std::mem::take(&mut sec.native_t0);
         let section_t2 = std::mem::take(&mut sec.native_t2);
         if s == 1 {
-            native_words = section_native;
             // Role streams, T0/T1/T2 in order. The roles run in order
             // (`Schedule::InOrder`), so no semaphores: each role drains its
-            // unit before the firmware reports it done.
-            native.compute = [
+            // unit before the firmware reports it done. The three streams
+            // become `TTOp::Unpack`/`Math`/`Pack`: codegen is the encoder.
+            roles = [
                 tt_unpack_role(section_t0, sec.has_src_unpack),
-                tt_math_role(native_words.clone()),
+                tt_math_role(section_native),
                 tt_pack_role(section_t2),
             ];
             native.sems = std::mem::take(&mut sec.sems);
@@ -1827,7 +1831,7 @@ fn render(
         lists[1].clone(),
         lists[2].clone(),
         fp32,
-        native_words,
+        roles,
     ))
 }
 

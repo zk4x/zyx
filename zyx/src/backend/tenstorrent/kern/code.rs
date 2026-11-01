@@ -78,21 +78,26 @@ impl Code {
     /// -- before the code, and `LOOPED` set in the length; without, the code
     /// alone. Checked as the runner checks it.
     pub fn stored(&self) -> Result<(Vec<u32>, u32), LoopError> {
-        let code = self.ins.iter().map(|i| i.word());
-        if self.loops.is_empty() {
-            let words: Vec<u32> = code.collect();
-            let n = words.len() as u32;
-            return Ok((words, n));
-        }
-        check(&self.loops, self.ins.len() as u32)?;
-        let mut words = vec![self.loops.len() as u32];
-        for l in &self.loops {
-            words.push(loops::entry(l.start, l.len, l.count).ok_or(LoopError::Field(*l))?);
-        }
-        words.extend(code);
-        let n = words.len() as u32;
-        Ok((words, n | loops::LOOPED))
+        let words: Vec<u32> = self.ins.iter().map(|i| i.word()).collect();
+        stored(&words, &self.loops)
     }
+}
+
+/// [`Code::stored`] for a program that is already its instruction words, which
+/// is what the native backend hands over: codegen encodes, nothing decodes.
+pub fn stored(words: &[u32], loops: &[Loop]) -> Result<(Vec<u32>, u32), LoopError> {
+    if loops.is_empty() {
+        let n = words.len() as u32;
+        return Ok((words.to_vec(), n));
+    }
+    check(loops, words.len() as u32)?;
+    let mut out = vec![loops.len() as u32];
+    for l in loops {
+        out.push(loops::entry(l.start, l.len, l.count).ok_or(LoopError::Field(*l))?);
+    }
+    out.extend_from_slice(words);
+    let n = out.len() as u32;
+    Ok((out, n | loops::LOOPED))
 }
 
 /// The runner's rules: at most `MAX` loops, inside the program, any two

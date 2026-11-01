@@ -31,7 +31,6 @@ use super::kern::runtime::{self, Schedule, SemaphoreInit};
 use super::sim::{self, Simulator};
 use tt_isa::dm;
 use tt_isa::dram::{Dram, DramRange};
-use tt_isa::isa::Instruction;
 use tt_isa::mailbox::{self, status};
 use tt_isa::noc::{Noc0, NocCoord};
 use tt_isa::tensix::Core;
@@ -50,8 +49,8 @@ const MOVER_BUDGET: u64 = 1_000_000;
 pub(crate) struct NativeRun {
     /// The Tensix tile this grid point runs on.
     pub(crate) tile: (u8, u8),
-    /// T0/T1/T2 role programs.
-    pub(crate) roles: [Vec<Instruction>; 3],
+    /// T0/T1/T2 role programs, as the words their slots hold.
+    pub(crate) roles: [Vec<u32>; 3],
     /// Host-side block repeats, per role.
     pub(crate) loops: [Vec<Loop>; 3],
     /// DRAM -> L1 blocks the tile's B mover reads before any role starts.
@@ -410,8 +409,8 @@ fn execute(
     if std::env::var_os("ZYX_TT_DUMP").is_some() {
         for (role, words) in run.roles.iter().enumerate() {
             eprintln!("[tt] role T{role}: {} words", words.len());
-            for (pc, insn) in words.iter().enumerate() {
-                eprintln!("  {pc:4} {:08x} {}", insn.word(), insn.def().mnemonic());
+            for (pc, word) in words.iter().enumerate() {
+                eprintln!("  {pc:4} {word:08x}");
             }
         }
         eprintln!(
@@ -432,7 +431,7 @@ fn execute(
     if !run.reads.is_empty() {
         mover_list(dev, window, tile, state, B, &run.reads)?;
     }
-    let roles: [&[Instruction]; 3] = [&run.roles[0], &run.roles[1], &run.roles[2]];
+    let roles: [&[u32]; 3] = [&run.roles[0], &run.roles[1], &run.roles[2]];
     let loops: [&[Loop]; 3] = [&run.loops[0], &run.loops[1], &run.loops[2]];
     let stage: Vec<(u64, &[u8])> = Vec::new();
     let schedule = if run.sems.is_empty() {
