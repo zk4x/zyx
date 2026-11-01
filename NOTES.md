@@ -5,6 +5,13 @@
 > `82f441f7`; `/home/x/Dev/rust/zyx2` is the old branch checkout and is not
 > this work.
 
+> **NOTES.md is the agent's working memory, not a document for the user.**
+> The user does not read it and does not want it polished for an audience.
+> Write what is needed to continue the work: state, decisions and why,
+> traps already hit, exact file/line anchors, and what is still unproven.
+> Verbosity that helps the next session is welcome; presentation is not the
+> point. The user's own record is the commit history and their messages.
+
 ## CURRENT STATE (2026-11-01) — read this first
 
 ### 0. Memory model (the card, not the host)
@@ -448,6 +455,51 @@ item 5) and the non-ISA placement/run/boundary ops (`Copy`, `Semset`, `Dm*`,
   bookkeeping is to be **deleted** from the lowering path. The macro bodies
   remain as instruction-selection functions that emit typed ops;
   `tt_isa::sfpu::encode` is the only encoder, and codegen calls it.
+
+### SFPU emission: the shape of the port (settled 2026-11-01)
+
+Working notes for writing the emitter — these are the mechanics, not opinions.
+
+- **Rows are unrolled in the IR.** `for_each_row_group(rows=64)` runs
+  `iterations = rows/2 = 32` times with offsets `o = 0, 2, …, 62` (an `SFPLOAD`
+  address is a four-row group plus a column half, hence step 2). One IR op per
+  instruction, per iteration. No `LoopForm`, no `REPLAY` in the IR.
+- **The loop bookkeeping goes away with it.** Today, when the body fits the
+  32-entry buffer, the builder emits `thread_entry(addr_mod 0)`,
+  `thread_entry(addr_mod 7, step 2)`, `clear_dst_rwc()`, records the body with
+  its last `Dst` access patched to the stepping modifier, replays it, and
+  clears the counter again (`mod.rs:668-742`). Unrolled offsets make all of
+  that unnecessary; the role preamble codegen already emits stays. Words for a
+  short body (`BOOL_NOT`, `SQRT`) therefore *differ* from today's replayed
+  form — same program, different encoding — so the acceptance check for those
+  is `interp`/gates, not word parity.
+- **Row ranges map onto the op's allocated tiles.** The bodies address global
+  `Dst` rows: `A_ROW 0..64`, `B_ROW 64..128`, `OUT_ROW 128..192`,
+  `C_ROW 192..256`, `SPILL_ROW 256..` (`kernel.rs:38-47`). The emitter resolves
+  `at` to `(storage, at - base)` by range and carries `slot` + intra-tile
+  offset; codegen adds `slot.id * rows`. `SPILL_ROW` is used by `log1p` and
+  `pow`, so those kinds need an extra scratch tile allocated by the lowering —
+  settle that when `POW` is ported (it is reachable).
+- **Flag scopes are plain `Sfp` ops in sequence** (`SFPPUSHC`, `SFPSETCC`,
+  `SFPCOMPC`, `SFPPOPC`), so a pass can see and cancel them. If a pass can
+  unbalance them, `tt_verify` gains a stack-depth-returns-to-zero invariant;
+  no new variant.
+- **NOP after MAD is codegen's.** `sfpu/mod.rs` inserts `SFPNOP` where
+  `SFPMAD`'s automatic stall misses a dependency; with unrolled IR that is a
+  peephole over consecutive ops in the encoder, exactly where `SFPLOADI`
+  expansion already lives.
+- **`Sfp`'s generic encoding needs one self-check.** `tt_sfp_encode` places
+  `args` into `InstructionDef::fields()` order (high bits first). For every
+  form the emitter writes, encode once that way and once through
+  `tt_isa::sfpu::enc::*` and require the same word; where a form disagrees,
+  give it a per-opcode arm with a comment. Do not leave the assumption
+  unverified once a real kernel uses the form.
+- **Port order**: `BOOL_NOT`, `ABS`, `NEG`, `SQRT`/`RSQRT`, the comparisons
+  (`EQ..LE` via `binary_body`), `DIV`/`REM`, the integer ops, `FLOOR`/`TRUNC`
+  (`round::body`), then the approx kinds — `SIGMOID` first because it is the
+  only gated one. `ReduceTile`/`reduce.rs` untouched (item 5).
+- **Acceptance** = the gates, plus `interp` (`kern/sfpu/interp.rs`) for the
+  kinds no gate touches. Word parity is a debugging aid, not the criterion.
 
 ### Codegen IS the encoder; the backend is transport
 

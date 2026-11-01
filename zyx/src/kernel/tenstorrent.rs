@@ -29,7 +29,9 @@ use crate::Map;
 use crate::Set;
 use crate::dtype::Constant;
 use crate::kernel::Pat;
-use crate::kernel::{BOp, Bindings, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp, TileDim, UOp};
+use crate::kernel::{
+    BOp, Bindings, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp, TTSfpConst, TTSfpInsn, TTSfpLoad, TTSfpStore, TileDim, UOp,
+};
 use crate::shape::Dim;
 
 /// Matmul role hand-off: T2 may pack the accumulator (T1 posts) and T1 may
@@ -287,7 +289,41 @@ impl Kernel {
                 }
             }
         }
+        // A vectorized kernel can arrive with a lane axis already (`x + y` is
+        // vectorized by the search; `sigmoid` is not). A tile access carries
+        // exactly as many axes as `DevInfo::tile` has, so a group split that
+        // would stack another lane axis on top is skipped here — this pass is
+        // the fixed step, the search decides the rest.
+        //
+        // `Op::Reduce` is not a "reduce kernel": `linearize` turns a reduce
+        // into a `Loop` with a scalar accumulator, and a `Reduce` only exists
+        // here once `split` has unrolled such a loop into lanes. That case
+        // keeps its extra axes — the rank-3 cube is deliberate, and
+        // `tt_reindex` rewrites it for the movers.
+        let elementwise = !self.iter_unordered().any(|(_, op)| matches!(op, Op::Reduce { .. }));
         for g in pad_groups {
+            // The cap comes before padding: padding a group we are not going
+            // to split would leave a grid extent of 32 with nothing in it
+            // (the device has 14 columns, not 32).
+            if elementwise {
+                let axes = self.device_info().tile.len();
+                let mut full = false;
+                for (_, op) in self.iter_unordered() {
+                    let idx = match *op {
+                        Op::Load { src_idx, .. } => src_idx,
+                        Op::Store { dst_idx, .. } => dst_idx,
+                        Op::Copy { src_idx, .. } => src_idx,
+                        _ => continue,
+                    };
+                    if !idx.is_null() && self.shape(idx).len() >= axes {
+                        full = true;
+                        break;
+                    }
+                }
+                if full {
+                    continue;
+                }
+            }
             self.pad_to(g, 32);
             let len = match self.ops[g].op {
                 Op::Range { kind: RangeKind::Group(len), .. } => len,
@@ -928,6 +964,64 @@ impl Kernel {
         Some((dtype, cb))
     }
 
+    /// Emit one SFPU kind as row-level ops in place of `Sfpu { kind }`.
+    ///
+    /// The sequence is **unrolled**: `for_each_row_group(64)` runs 32
+    /// iterations at offsets `0, 2, …, 62` (an `SFPLOAD` address is a
+    /// four-row group plus a column half), and every instruction becomes one
+    /// `TTOp`. The last op takes `id`'s place so `tt_materialize`'s pack lands
+    /// after the whole sequence rather than inside it. Returns `false` for a
+    /// kind that is not ported yet; the caller then keeps `Sfpu { kind }`.
+    fn tt_sfp_sequence(&mut self, id: OpId, kind: u32, a: OpId, b: OpId, slot: OpId) -> bool {
+        use crate::backend::tenstorrent::kern::kind;
+        use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
+        // `Dst` format codes (`tt_isa::sfpu::mod0_fmt`).
+        const FP32: u8 = 3;
+        const INT32: u8 = 4;
+        // Lane registers the bodies use (`L0..L7` are writable; `L8..L15` are
+        // the read-only constants `LREG_ZERO`/`LREG_ONE`/...).
+        const L0: u8 = 0;
+        const L1: u8 = 1;
+        const L2: u8 = 2;
+        const L3: u8 = 3;
+        const LREG_ONE: u32 = 10;
+        let mut ops: Vec<Op> = Vec::new();
+        if kind == sf::BOOL_NOT && b.is_null() {
+            // `0`/`1` either way: `x ^ 1`, on raw bits.
+            let xor = tt_isa::isa::generated::defs::SFPXOR.opcode();
+            ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg: L3, bits: 1 }))));
+            for o in (0..64u16).step_by(2) {
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L2, fmt: INT32 }))));
+                ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn {
+                    op: xor,
+                    args: [u32::from(L3), u32::from(L2), 0, 0, 0],
+                }))));
+                ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
+            }
+        } else if kind == kind::ADD && !b.is_null() {
+            // `d = 1 * a + b` (`SFPMAD` with the constant-one register), the
+            // same words `Program::add` emits.
+            let mad = tt_isa::isa::generated::defs::SFPMAD.opcode();
+            for o in (0..64u16).step_by(2) {
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
+                ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn {
+                    op: mad,
+                    args: [LREG_ONE, u32::from(L0), u32::from(L1), u32::from(L2), 0],
+                }))));
+                ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: FP32 }))));
+            }
+        } else {
+            return false;
+        }
+        let last = ops.pop().expect("the sequence is never empty");
+        for op in ops {
+            self.insert_before(id, op);
+        }
+        self.ops[id].op = last;
+        true
+    }
+
     /// Emit the first matching pattern at `id`. The pattern table is data;
     /// this only knows the three emitter shapes (SFPU, Matmul, Reduce).
     fn tt_emit(&mut self, id: OpId, emit: TtEmit, m: &Bindings, lower: &mut TtLowering) -> Option<(DType, OpId)> {
@@ -941,7 +1035,9 @@ impl Kernel {
                     OpId::NULL
                 };
                 let slot = self.tt_new_dst(dtype, lower.prologue);
-                self.ops[id].op = Op::TT(TTOp::Sfpu { kind, a, b, slot });
+                if !self.tt_sfp_sequence(id, kind, a, b, slot) {
+                    self.ops[id].op = Op::TT(TTOp::Sfpu { kind, a, b, slot });
+                }
                 self.tt_materialize(id, dtype, slot, lower)
             }
             TtEmit::Reduce(dim) => {
@@ -1159,6 +1255,7 @@ impl Kernel {
         }
         match self.ops[id].op {
             Op::TT(TTOp::Sfpu { slot, .. } | TTOp::ReduceTile { slot, .. }) => Some((self.dtype(id), slot)),
+            Op::TT(TTOp::SfpStore(ref store)) => Some((self.dtype(id), store.slot)),
             Op::TT(TTOp::Setrwc { dst }) => Some((self.dtype(id), dst)),
             Op::TT(TTOp::Copy { dst, .. }) => match self.ops[dst].op {
                 Op::Storage { dtype, scope: MemScope::Register, .. } => Some((dtype, dst)),
@@ -1318,6 +1415,10 @@ impl Kernel {
     fn tt_register_output(&self, op: &Op) -> Option<OpId> {
         match op {
             Op::TT(TTOp::Sfpu { slot, .. } | TTOp::ReduceTile { slot, .. }) => Some(*slot),
+            // A row-level store is where a ported SFPU sequence writes its
+            // result tile, so it is that tile's output as far as the
+            // allocator is concerned.
+            Op::TT(TTOp::SfpStore(store)) => Some(store.slot),
             Op::TT(TTOp::Copy { dst, .. }) => match self.ops[*dst].op {
                 Op::Storage { scope: MemScope::Register, .. } => Some(*dst),
                 _ => None,

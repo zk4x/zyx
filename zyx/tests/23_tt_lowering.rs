@@ -45,6 +45,44 @@ fn sigmoid() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn add() -> Result<(), ZyxError> {
+    let x = Tensor::rand([10, 256], DType::F32)?;
+    let y = Tensor::rand([10, 256], DType::F32)?;
+
+    let xs = x.to(Dev::TT(0))?;
+    let ys = y.to(Dev::TT(0))?;
+    let z = (xs + ys).to(Dev::C)?;
+
+    // `SFPMAD` with the constant-one register is exact F32 addition, so the
+    // gate is bit equality in principle; keep a margin for the host's own
+    // summation order only if it ever shows up.
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let yv: Vec<f32> = y.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 10 * 256);
+    assert_eq!(yv.len(), 10 * 256);
+    assert_eq!(zv.len(), 10 * 256);
+    let mut bad = 0;
+    let mut worst = 0f32;
+    for i in 0..10 * 256 {
+        let expected = xv[i] + yv[i];
+        let v = zv[i];
+        let err = (v - expected).abs();
+        worst = worst.max(err);
+        if err > 0.0 {
+            if bad < 10 {
+                println!("z[{i}] = {v}, expected {expected} (err {err})");
+            }
+            bad += 1;
+        }
+    }
+    println!("add bad: {bad} / {} (worst {worst})", 10 * 256);
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+#[test]
 fn matmul() -> Result<(), ZyxError> {
     let x = Tensor::rand([10, 20], DType::F32)?;
     let y = Tensor::rand([20, 12], DType::F32)?;

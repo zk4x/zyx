@@ -100,7 +100,7 @@ pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{
     BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind, SourceBlock, SpirvOp, TTDmRead, TTDmWrite, TTOp,
-    TTSfpInsn, TileDim,
+    TTSfpConst, TTSfpInsn, TTSfpLoad, TTSfpStore, TileDim,
 };
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, CoverGroup, DtypeClass, PMatch, Pat, VExpr};
@@ -314,8 +314,6 @@ impl Kernel {
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
                 | Op::TT(TTOp::Semset { .. })
-                | Op::TT(TTOp::SfpLoad(_))
-                | Op::TT(TTOp::SfpStore(_))
                 | Op::TT(TTOp::SfpConst(_))
                 | Op::TT(TTOp::Sfp(_))
                 | Op::TT(TTOp::Unpack(_))
@@ -579,6 +577,19 @@ impl Kernel {
                         }
                     }
                 }
+                Op::TT(TTOp::SfpLoad(ref load)) => {
+                    // A row op's value is the tile it touches: the load's
+                    // source tile and the store's destination tile keep the
+                    // dtype and tile shape the lowered root reports.
+                    let (dtype, _) = dtypes[&load.slot].clone();
+                    dtypes.insert(op_id, (dtype, vec![32, 32]));
+                    *rcs.entry(load.slot).or_insert(0) += 1;
+                }
+                Op::TT(TTOp::SfpStore(ref store)) => {
+                    let (dtype, _) = dtypes[&store.slot].clone();
+                    dtypes.insert(op_id, (dtype, vec![32, 32]));
+                    *rcs.entry(store.slot).or_insert(0) += 1;
+                }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes[&ops[0]].0;
                     dtypes.insert(op_id, (dtype, vec![ops.len() as Dim]));
@@ -711,6 +722,8 @@ impl Kernel {
                 Op::TT(TTOp::Unpacr { .. }) => return IDX_T,
                 Op::TT(TTOp::Setrwc { .. }) => return IDX_T,
                 Op::TT(TTOp::Sfpu { a, .. }) => op_id = a,
+                Op::TT(TTOp::SfpLoad(ref load)) => op_id = load.slot,
+                Op::TT(TTOp::SfpStore(ref store)) => op_id = store.slot,
                 Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
@@ -1903,6 +1916,25 @@ impl Kernel {
                     None => {
                         stack.push(id);
                         stack.push(a);
+                    }
+                },
+                // A row op's value is the tile it touches.
+                Op::TT(TTOp::SfpLoad(ref load)) => match visited.get(&load.slot) {
+                    Some(dims) => {
+                        visited.insert(id, *dims);
+                    }
+                    None => {
+                        stack.push(id);
+                        stack.push(load.slot);
+                    }
+                },
+                Op::TT(TTOp::SfpStore(ref store)) => match visited.get(&store.slot) {
+                    Some(dims) => {
+                        visited.insert(id, *dims);
+                    }
+                    None => {
+                        stack.push(id);
+                        stack.push(store.slot);
                     }
                 },
                 Op::Asm { ref ops, .. } => {

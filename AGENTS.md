@@ -18,6 +18,16 @@
   ask in plain text. Silence is not approval, and a guess is worse than a
   question — but a question is never an excuse to skip work that is
   actually determined.
+- NEVER ASSUME WHICH OPS A PASS SEES. High-level ops are consumed by
+  earlier passes: `linearize` rewrites `Op::Reduce` into a `Loop` with a
+  scalar accumulator, and `Op::Reduce` only reappears when `split.rs`
+  unrolls a loop into lanes (a reduce over vector/tile unroll dims, never
+  a loop). The same is true of every other op a frontend emits. Before
+  matching on an op, counting it, or writing a predicate that keys on it,
+  print the IR at that boundary (`ZYX_DEBUG=8`, or a temporary dump at
+  the pass entry, removed afterwards). A predicate written from the
+  frontend's vocabulary instead of the actual IR is a guess, and it is
+  how the `Op::Reduce` mistake happened.
 - User owns design. Analysis: thorough. Implementation: ask, don't choose.
 - ASK BEFORE ADDING ANY FUNCTION OR CHANGING A SIGNATURE
   (params, return, generics, `Result`), incl. private helpers.

@@ -353,13 +353,19 @@ impl Kernel {
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
                 | Op::TT(TTOp::Semset { .. })
-                | Op::TT(TTOp::SfpLoad(_))
-                | Op::TT(TTOp::SfpStore(_))
                 | Op::TT(TTOp::SfpConst(_))
                 | Op::TT(TTOp::Sfp(_))
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
                 | Op::TT(TTOp::Pack(_)) => {}
+                Op::TT(TTOp::SfpLoad(ref load)) => {
+                    check(op_id, load.slot, &stack);
+                    dtypes.insert(op_id, dtypes[&load.slot]);
+                }
+                Op::TT(TTOp::SfpStore(ref store)) => {
+                    check(op_id, store.slot, &stack);
+                    dtypes.insert(op_id, dtypes[&store.slot]);
+                }
                 Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
                     // Native SFPU: DST inputs and DST result.
                     for &f in &[a, b] {

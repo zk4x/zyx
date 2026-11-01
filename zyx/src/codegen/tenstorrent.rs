@@ -371,10 +371,13 @@ fn tt_row_remap(mut code: Vec<Instruction>, a_row: u32, b_row: Option<u32>, out_
 /// place the operand words into the form's fields, in the ISA's own order
 /// (high bits first, as `InstructionDef::fields` lists them).
 fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendError> {
+    // `args` are the form's operands in the ISA's own field order, which is
+    // the order `InstructionDef::fields` lists them in.
     let def = tt_isa::isa::generated::ALL
         .iter()
         .copied()
-        .find(|d| d.opcode() == insn.op)
+        .find(|d| d.opcode() == insn.op && d.key() == d.mnemonic())
+        .or_else(|| tt_isa::isa::generated::ALL.iter().copied().find(|d| d.opcode() == insn.op))
         .ok_or_else(|| tt_err(format!("tenstorrent: no ISA instruction has opcode {:#x}", insn.op)))?;
     let fields = def.fields();
     if insn.args.len() > fields.len() {
