@@ -7,6 +7,124 @@
 
 ## CURRENT STATE (2026-11-01) — read this first
 
+### 0. Memory model (the card, not the host)
+
+- **Host** = CPU DDR5.
+- **Device DRAM** = the card's VRAM (28 GB on the P100A; `Dram::FULL` is 8
+  channels × `CHANNEL_BYTES` ≈ 4.27 GB).
+- **L1** = the per-core CBs and scratch (the `Circular`/`Local` storages).
+- **DST** = the compute core's register file (8 × 32-bit tiles or 16 ×
+  16-bit tiles, single mode).
+
+`Pool::TT` means **device DRAM**. It does not today: see the regression
+below, which must be undone before any DM/Reader/Writer work.
+
+### 1. THE `Pool::TT` REGRESSION — fix this first
+
+The C++ shim allocated a real device buffer:
+`alloc_buffer` created a tt-metal `BufferType::DRAM` MeshBuffer (2 KB page
+rounding), `write_buffer` uploaded to it through the command queue, and
+`read_buffer` downloaded from it. `Pool::TT` chunks were therefore in the
+card's DRAM, and the reader/writer moved DRAM↔L1.
+
+It happened on the `tt-native` branch:
+
+- **`cca1c452` "tt: drop feature gates and the C++ shim" (2026-10-28 03:32)**
+  deleted `build.rs` and `tt_runtime_shim.{cpp,h}` and, in the same diff,
+  rewired every `Pool::TT` operation to the host pool:
+  `Pool::TT(id) => (lock(self, tenstorrent::pool(id)?).allocate(bytes), …)`
+  became `Pool::TT(_) => (lock(self, host::pool()).allocate(bytes), …)`, and
+  the same for `release`, `try_reuse_allocations`, `dispose`, `free_bytes`,
+  `pool_to_host`, `buffer_ptr_mut`.
+- **`88156a9b` "tt: native transport — owner thread over tt-ttsim, host
+  DRAM, native compile/launch" (2026-10-28 16:03)** made the consequence
+  explicit: the comment `// DRAM is host memory in this transport: a
+  Pool::TT chunk is a Vec<u8>`, host-side staging of reader moves into L1,
+  and host read-back for writers.
+- **`82f441f7`** (squash merge) brought both to main. `git blame` names the
+  merge because it squashed the branch; the change originated in
+  `cca1c452`.
+
+Consequences today: the card's DRAM is unused, `Pool::TT` chunks are CPU
+`Vec<u8>`s, `buffer_ptr_mut` hands out a CPU pointer to "VRAM", the reader
+is a host copy into simulated L1, and the writer is a host read-back plus a
+host narrowing write. The DM cores are never involved.
+
+**Restoration plan (agreed shape, details open):**
+
+- `TTMemoryPool` owns a DRAM allocator (page-aligned ranges), not a host
+  pool; `allocate`/`release`/`try_reuse_allocations`/`dispose`/`free_bytes`
+  operate on it.
+- `host_to_pool`/`pool_to_host` become `dram_write`/`dram_read` through the
+  ported `dev/dram.rs` (`DramRange`, `Dram::FULL`, `ALIGN = 64`).
+- `buffer_ptr_mut` cannot exist for device DRAM. The launch's writer
+  narrowing becomes `dram_read` → narrow on the host → `dram_write`.
+- The reader stages from DRAM (host read into a staging buffer, then host
+  write into L1) until the DM blobs land; then it is a NOC DRAM→L1 program
+  on the reader core.
+
+Open decisions for the restore:
+
+1. **Address model.** The old path had one flat MeshBuffer (spans channels,
+   card-managed striping). `dev/dram.rs` exposes per-channel `DramRange`s
+   (max ~4.27 GB each) and a 14 GB tensor does not fit one channel. Do we
+   write a flat DRAM allocator + our own flat→(channel, offset) translation,
+   or split chunks per channel? The flat one matches tt-metal and the card.
+2. **Who performs host I/O.** `Device<SimTransport>` lives in the `ttsim`
+   owner thread; pool operations are called from arbitrary threads. Add
+   `Cmd::DramRead`/`Cmd::DramWrite` to the owner thread, or a second device
+   handle with its own transport?
+3. **`buffer_ptr_mut`.** Drop it for TT (a `Pool` API change), or introduce
+   a staging-buffer abstraction that keeps the launch's in-place write?
+4. **Reader path.** Host DRAM→staging→L1 first (testable now), then the NOC
+   DM program with the Reader/Writer blobs? (This is the agreed order.)
+5. **Simulator.** Is `dram_read`/`dram_write` over `Device<SimTransport>`
+   expected to work on ttsim, so the restored pool is gated by
+   `23_tt_lowering`? If not, the restore cannot be tested there.
+6. Allocation granularity/alignment and free-list semantics: mirror the old
+   2 KB pages, and keep `release`/`try_reuse_allocations` semantics.
+
+**Answers (2026-11-01, user):**
+
+1. **Flat DRAM address space with a custom translation.** Tenstorrent's
+   striping is simple round-robin and that is sufficient. Chunks are
+   arbitrary size; the abstraction comes first and the translation can be
+   optimized later.
+2. Owner-thread commands (the owner thread is the only holder of
+   `Device<SimTransport>`).
+3. **`buffer_ptr_mut` never existed for TT** and must not. Drop the TT arm;
+   uploads/downloads go through the pool's DRAM read/write. The launch's
+   writer narrowing is `dram_read` → narrow on the host → `dram_write`.
+4. Host DRAM→staging→L1 first, then the NOC DM program with Reader/Writer
+   blobs.
+5. `dram_read`/`dram_write` are known to work through **libttsim** (the
+   official C++ dylib). The Rust wrapper's behavior is unproven; the gate
+   will tell.
+6. Keep 2 KB page rounding and the host pool's free-list semantics
+   (best-fit reuse, `dispose` reclaims only free buffers).
+
+**Implementation sketch:**
+
+- `TTMemoryPool { dev_info, buffers: Slab<ChunkId, DramChunk>, free_set,
+  free_bytes, bump }`, `DramChunk { addr: u64, len: u64 }` in the flat
+  space; `allocate` = best-fit free list, else bump (2 KB aligned);
+  `release`/`try_reuse_allocations`/`dispose` mirror `HostMemoryPool`.
+- Flat→channel: page `p = a / 2048`; `channel = p % channels`;
+  `offset = (p / channels) * 2048 + (a % 2048)`. Split a range at 2 KB
+  boundaries into per-channel `DramRange`s for `dram_write`/`dram_read`.
+  (The exact stripe is the one thing to confirm against the card later;
+  round-robin is what tt does.)
+- `ttsim.rs` gains `Cmd::DramRead { range, reply }` and
+  `Cmd::DramWrite { range, data, reply }`; the owner thread keeps a window
+  (FourGib if the transport allows, else TwoMib) and calls
+  `Device::dram_read`/`dram_write`. `Dram::FULL` on the simulator.
+- `Pool::TT` arms in `backend/mod.rs` go back to `tenstorrent::pool(id)`
+  (allocate/release/reuse/dispose/free_bytes/pool_to_host), and the TT arm
+  of `buffer_ptr_mut` panics.
+- Launch: reader reads the param's DRAM range through the pool into a host
+  staging buffer, then writes L1; writer reads L1, narrows on the host, and
+  writes the DRAM range back. No CPU pointer to VRAM anywhere.
+
 ### Pipeline and pass names
 
 ```
@@ -60,20 +178,34 @@ placement/run/boundary ops (`Copy`, `Semset`, `EndReader`, `EndCompute`,
   remain as instruction-selection functions that emit typed ops;
   `tt_isa::sfpu::encode` is the only encoder, and codegen calls it.
 
-### Codegen and the backend
+### Codegen IS the encoder; the backend is transport
 
-- Codegen consumes the typed form and emits per-role word blobs
-  (`TTOp::Unpack`, `TTOp::Math`, `TTOp::Pack`; boxed payloads to keep `Op`
-  at 32 bytes) plus resolved `Copy` (L1 address + param ordinal), `Semset` /
-  `Post` / `Wait`, descriptors and `TensixGrid`.
-- **The Kernel after codegen IS the compiled program.** There is no separate
-  `TTNativeProgram`: launch walks the Kernel's ops in a guaranteed order
-  (grid, params, role blobs, copies/sync/descriptors), stages the moves, runs
-  the blobs per grid point and reads back. `TTDmMove` / `TTDstRow` /
-  `TTSemaphoreInit` collapse into op payloads; `tt_decode` (word →
-  `Instruction`) goes away and the runtime takes words. The simulator may
-  decode internally; the transport must not.
-- Roles are one op each. The backend must not decompile/recompile a blob.
+- **Codegen owns encoding.** It walks the post-regalloc typed IR and emits
+  the blob: the `match SfpOp -> tt_isa::sfpu::encode::*` dispatch lives
+  there, and so do the `SFPNOP` after-MAD insertion, `SFPLOADI` expansion,
+  the per-role preamble (`SFPENCC`, the `ADDR_MOD0` thread entry, `clear_dst_rwc`),
+  the `REPLAY`/loop tables, L1 address resolution and param ordinals.
+  There is **no separate encoder component in the backend**; there is no
+  decode in the backend either. `tt_isa`'s word packers are called from
+  codegen only.
+- **Blobs are IR ops**: `TTOp::Unpack(Box<[u32]>)`, `TTOp::Math(Box<[u32]>)`,
+  `TTOp::Pack(Box<[u32]>)` (boxed to keep `Op` at 32 bytes). They are the
+  compute core's T0/T1/T2 word streams. Reader/Writer are DM-core programs
+  and join the blob set once `Pool::TT` is device DRAM; until then they are
+  host-staged and must be named as such, not pretended to be device work.
+  The launch walks whatever role blobs exist; it never assumes exactly three.
+- **The Kernel after codegen IS the compiled program.** No `TTNativeProgram`:
+  launch walks the Kernel's ops in a guaranteed order (grid, params, role
+  blobs, copies/sync/descriptors), stages the moves, runs the blobs per grid
+  point and reads back. `TTDmMove` / `TTDstRow` / `TTSemaphoreInit` collapse
+  into op payloads; `tt_decode` (word → `Instruction`) goes away and the
+  runtime takes words (`&[u32]`). The simulator may decode internally; the
+  transport must not.
+- Parity gate for the container swap (agreed ordering): codegen emits the
+  blobs while the old `native.compute` path still exists; an env var selects
+  the blob launch path, and every role's `Vec<u32>` (and loop table) must be
+  exactly equal before the old path is deleted. Only then does the typed-op
+  port start.
 
 ### Loops
 
@@ -113,20 +245,52 @@ Since the 2026-10-30 handoff:
   leftovers;
 - `tt_lower_llks`/`tt_reg_alloc` renamed to `tt_dataflow_select`.
 
-### Next steps
+### Implementation order (agreed)
 
-1. Typed SFPU layer and delete `Program`: add `SfpOp` + the four ops, the
-   codegen encoder, and the `Exp2`/`Log2`/`Reciprocal` + generic expansions
-   in `tt_dataflow_select`; remove `Sfpu` / `ReduceTile`.
-2. Codegen → role blobs, Kernel-as-program, backend walker, delete
-   `tt_decode` / `TTNativeProgram`.
-3. Loop lowering (`REPLAY` / loop table, launch-time counts) for `softmax`.
-4. Fix `Kernel::dtype` for `TTOp::Setrwc` (`dst`, not `IDX_T`) — the
-   `matmul_sigmoid` failure; then `tt_tile`'s grouped index math and the
-   reduce kind keyed on `reduce_axis`.
-5. L1 spills (needs the scheduling story) and multi-tile per core.
+0. **Restore `Pool::TT` as device DRAM** (section 1). Blocks the DM model and
+   makes the reader/writer real; the open decisions above must be settled
+   first.
+1. **Blob container + parity.** Add `Unpack`/`Math`/`Pack`, have codegen
+   emit them while `native.compute` still exists, env-var the new launch
+   path, assert exact word equality per role (and loops). Then delete
+   `native.compute`, the role decode, and the old launch path.
+2. **Typed SFPU port.** `SfpOp` + `Sfp`/`SfpLoad`/`SfpStore`/`SfpConst`;
+   move the macro bodies to `tt_dataflow_select` as typed sequences; the
+   codegen dispatch match is the only encoder; delete `Program` /
+   `Instruction` / `Code` / `LoopForm` / `REPLAY` from the lowering; remove
+   `Sfpu { kind }` and `ReduceTile`.
+3. **Reader/Writer DM blobs** once step 0 is real; the simulator may keep
+   the host-staged fallback, named as such.
+4. **Loop lowering** (`REPLAY` / mailbox loop table, launch-time counts) for
+   `softmax`; multi-tile per core.
+5. **Fixes**: `Kernel::dtype` for `TTOp::Setrwc` returns `dst`, not `IDX_T`
+   (the `matmul_sigmoid` I64); `tt_tile`'s grouped index math (32 tiles per
+   step where one is meant); the reduce kind keyed on `reduce_axis`.
+6. **L1 spills** in `tt_dst_reuse` (needs the scheduling story: a mid-T1
+   spill needs T0/T2 and the roles currently run in order).
+
+### Decisions / non-negotiables
+
+- `TTOp` is the instruction. One representation per phase: typed ops before
+  codegen, words after; no third instruction type.
+- Codegen is the encoder; the backend never decodes, re-encodes, or names an
+  `InstructionDef`.
+- No `Program` in the lowering. The macro math stays; the object goes.
+- zyx UOps are `Exp2`, `Log2`, `Reciprocal` (plus the generic unary/binary);
+  `exp`, `log`, `sigmoid` are frontend compositions, never backend ops.
+- No LLK layer, no fused user-op names in the backend.
+- 32-byte ops: the IR may be as low-level as the machine. An interpreter over
+  it is a viable second oracle.
+- Placement lives in the IR (rows, L1); no side tables.
+- Loops are `REPLAY`/loop-table entries with launch-time counts; unrolling is
+  a search decision before the device epilogue.
+- `Pool::TT` is device DRAM. Host staging is only upload/readback.
 
 ## HISTORY (2026-10-30) — superseded by CURRENT STATE above
+
+> Everything below this line is history from the 2026-10-30 handoff. The
+> `Pool::TT` description here (host-memory DRAM) is the regression documented
+> in CURRENT STATE §1, not the design.
 
 ### Layout and dependencies
 
@@ -135,7 +299,7 @@ Since the 2026-10-30 handoff:
 
 | path | what |
 | --- | --- |
-| `mod.rs` | `Dev::TT` backend: pools (host-memory DRAM), `TTDevice`, program staging (`TTNativeProgram`/`TTDmMove`/`TTDstRow`), launch |
+| `mod.rs` | `Dev::TT` backend: pools (host-memory DRAM **— the regression, see §1**), `TTDevice`, program staging (`TTNativeProgram`/`TTDmMove`/`TTDstRow`), launch |
 | `ttsim.rs` | owner thread over the simulator + `run_native` |
 | `dev/` | ported `tt-device`: device, TLB windows, config writes, core control, DRAM, trace, telemetry, arc, fencing |
 | `kern/` | ported `tt-kernels` subset: `runtime` (runner), `datapath`, `sfpu`, `l1`, `loops`, `code`, `kind`, `elem`, trimmed `matmul` |
