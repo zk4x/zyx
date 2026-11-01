@@ -5,7 +5,128 @@
 > `82f441f7`; `/home/x/Dev/rust/zyx2` is the old branch checkout and is not
 > this work.
 
-## CURRENT STATE (2026-10-30) — read this first
+## CURRENT STATE (2026-11-01) — read this first
+
+### Pipeline and pass names
+
+```
+tt_tile -> tt_reindex -> CSE/DCE -> tt_dataflow_select -> tt_dst_reuse
+        -> verify -> tt_verify
+```
+
+- **`tt_dataflow_select`** (renamed from `tt_lower_llks` / `tt_reg_alloc`) is
+  the phase boundary and instruction selection. It converts the tiled SSA
+  (`Unary`/`Binary`/`Reduce`/`Matmul`, UOps `Exp2`/`Log2`/`Reciprocal`) into
+  the mutating ISA form, and does the *primitive* placement the mutating form
+  needs: every result gets its own tile (zero reuse). It also emits the
+  boundary traffic (`Copy` publish/unpack/pack) and the section nesting.
+  No generic pass may run after it.
+- **`tt_dst_reuse`** is the real allocator over the typed form: tile
+  liveness, coalescing, in-place merging, store/load forwarding, dead tile
+  removal. Peepholes belong here. L1 spills, when they land, are this pass's
+  job (today pressure is resolved by coalescing or it fails loudly).
+- **`tt_verify`** owns the post-allocation invariants: no
+  `Op::Load`/`Store`/`Copy`/`Asm`, no float SSA compute, no `Reduce`, DST
+  width (16/32) and single-mode, 8/16-tile budget, row bounds, flag balance.
+- CSE/DCE run **before** `tt_dataflow_select`; nothing generic runs after.
+
+### Target IR: `TTOp` is the instruction
+
+One variant per ISA instruction form, operands typed:
+
+```
+Sfp      { op: SfpOp, a, b, c, d: u8, imm: u32 }
+SfpLoad  { dst: u8, fmt: Format, row: u32 }
+SfpStore { src: u8, fmt: Format, row: u32 }
+SfpConst { reg: u8, bits: u32 }
+```
+
+plus the existing ISA ops (`Unpacr`, `Setadczw`, `Setadcx`, `Setrwc`,
+`Zeroacc`, `Mvmul`, `Setc16`, `Setcfg`, `Post`, `Wait`) and the non-ISA
+placement/run/boundary ops (`Copy`, `Semset`, `EndReader`, `EndCompute`,
+`ProgramDesc`, `TensixGrid`).
+
+- `a`/`b`/`c` are source LREGs (`L0..L7` writable; `L8..L15` read-only
+  constants/config), `d` is the destination for forms that write one, `imm`
+  carries the immediate/flag where the form has one. `SfpOp` is the typed
+  mnemonic; it decides which operands are read and written.
+- `Sfpu { kind }` and `ReduceTile` are macros and go away. The expansions
+  live in `tt_dataflow_select`: `exp2(x) = exp(x * ln2)`, `log2(x) =
+  log(x) * log2e`, `reciprocal` = `SFPARECIP` + Newton, reduce = its SFPU
+  tree. The zyx UOp surface has only `Exp2`/`Log2`/`Reciprocal`; `exp`,
+  `log`, `sigmoid` are frontend compositions, not backend ops.
+- `kern/sfpu`'s `Program` / `Instruction` / `Code` / `LoopForm` / `REPLAY`
+  bookkeeping is to be **deleted** from the lowering path. The macro bodies
+  remain as instruction-selection functions that emit typed ops;
+  `tt_isa::sfpu::encode` is the only encoder, and codegen calls it.
+
+### Codegen and the backend
+
+- Codegen consumes the typed form and emits per-role word blobs
+  (`TTOp::Unpack`, `TTOp::Math`, `TTOp::Pack`; boxed payloads to keep `Op`
+  at 32 bytes) plus resolved `Copy` (L1 address + param ordinal), `Semset` /
+  `Post` / `Wait`, descriptors and `TensixGrid`.
+- **The Kernel after codegen IS the compiled program.** There is no separate
+  `TTNativeProgram`: launch walks the Kernel's ops in a guaranteed order
+  (grid, params, role blobs, copies/sync/descriptors), stages the moves, runs
+  the blobs per grid point and reads back. `TTDmMove` / `TTDstRow` /
+  `TTSemaphoreInit` collapse into op payloads; `tt_decode` (word →
+  `Instruction`) goes away and the runtime takes words. The simulator may
+  decode internally; the transport must not.
+- Roles are one op each. The backend must not decompile/recompile a blob.
+
+### Loops
+
+- The Tensix coprocessor stream has **no branch**. Loop control is `REPLAY`
+  (record a block, repeat it) and the mailbox loop table
+  (`Code::Loop { start, len, count }`), nested under its field limits.
+- Trip counts must be resolvable at launch (compile-time or launch arg), like
+  grid extents. On-device data-dependent counts are not expressible in this
+  model without the host re-pushing the body.
+- Unrolling is a search/cost decision *before* the device epilogue, never a
+  backend choice.
+
+### Status (2026-11-01)
+
+| test | state |
+| --- | --- |
+| `transfer_roundtrip` | green, 0/200 |
+| `matmul` | green, 0/120 (0.0075 = TF32 in `Src`) |
+| `sigmoid` | green, 0/2560 (worst 1.2e-7) |
+| `sum` | green, 0/10 (worst 9.5e-7) |
+| `sum_sigmoid` | green, 0/10 (exact) |
+| `matmul_sigmoid` | fails at `tt_verify`: DST register is I64 — the `Setrwc` dtype bug |
+| `softmax` | `Op::Loop` still bails `tt_dataflow_select` |
+
+CPU `01_unary` (64) and `04_reduce` (15) are green.
+
+Since the 2026-10-30 handoff:
+- grid dispatch committed (`bae9c617`);
+- the unpack header offset fixed (datums start at `(Base_address + 1) * 16`;
+  passing the raw CB base shifted every tile by four F32 datums);
+- the DST register file is the ordered prologue declarations; codegen numbers
+  slots by declaration, not first use; `tt_verify` enforces single width,
+  16/32-bit only, 8/16 budget;
+- packs are `TTOp::Copy` (Register → CB), not `Op::Store`; the `Copy` traffic
+  matrix is param→CB, CB→DST, DST→CB, CB→param;
+- CSE/DCE moved before instruction selection; `tt_verify` rejects SSA
+  leftovers;
+- `tt_lower_llks`/`tt_reg_alloc` renamed to `tt_dataflow_select`.
+
+### Next steps
+
+1. Typed SFPU layer and delete `Program`: add `SfpOp` + the four ops, the
+   codegen encoder, and the `Exp2`/`Log2`/`Reciprocal` + generic expansions
+   in `tt_dataflow_select`; remove `Sfpu` / `ReduceTile`.
+2. Codegen → role blobs, Kernel-as-program, backend walker, delete
+   `tt_decode` / `TTNativeProgram`.
+3. Loop lowering (`REPLAY` / loop table, launch-time counts) for `softmax`.
+4. Fix `Kernel::dtype` for `TTOp::Setrwc` (`dst`, not `IDX_T`) — the
+   `matmul_sigmoid` failure; then `tt_tile`'s grouped index math and the
+   reduce kind keyed on `reduce_axis`.
+5. L1 spills (needs the scheduling story) and multi-tile per core.
+
+## HISTORY (2026-10-30) — superseded by CURRENT STATE above
 
 ### Layout and dependencies
 

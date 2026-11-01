@@ -385,11 +385,13 @@ impl Kernel {
                         self.at(src),
                         Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }
                             | Op::Storage { scope: MemScope::Circular, .. }
+                            | Op::Storage { scope: MemScope::Register, .. }
                     ) {
                         println!("tt copy op={op_id} has non-traffic src {src:?}");
                         self.debug();
                         panic!();
                     }
+                    let src_is_register = matches!(self.at(src), Op::Storage { scope: MemScope::Register, .. });
                     let dst_is_register = matches!(self.at(dst), Op::Storage { scope: MemScope::Register, .. });
                     if !matches!(
                         self.at(dst),
@@ -401,9 +403,15 @@ impl Kernel {
                         self.debug();
                         panic!();
                     }
-                    // CB->DST is the unpack; DRAM may only land in a CB.
+                    // CB->DST is the unpack, DST->CB is the pack; DRAM only
+                    // lands in a CB, so a Register never touches a Param.
                     if dst_is_register && !matches!(self.at(src), Op::Storage { scope: MemScope::Circular, .. }) {
                         println!("tt copy op={op_id} unpacks from non-CB src {src:?}");
+                        self.debug();
+                        panic!();
+                    }
+                    if src_is_register && !matches!(self.at(dst), Op::Storage { scope: MemScope::Circular, .. }) {
+                        println!("tt copy op={op_id} packs into non-CB dst {dst:?}");
                         self.debug();
                         panic!();
                     }

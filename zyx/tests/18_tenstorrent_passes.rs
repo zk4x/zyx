@@ -98,7 +98,7 @@ fn sync_cbs_wraps_cb_traffic() {
 /// Pure-SSA `ReduceTile`: `x = load CB` then `r = reduce_tile(x)` with
 /// no acc/scaler operands. Accumulation is explicit SSA (store the
 /// result, reload it); scale, when needed, is a separate mul over the
-/// result, lowered with its scaler CB by `tt_lower_llks`.
+/// result, lowered with its scaler CB by `tt_dataflow_select`.
 #[test]
 fn pure_reduce_tile_threading() {
     let mut k = Kernel::new(Dev::Auto);

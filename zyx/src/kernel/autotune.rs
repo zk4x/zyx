@@ -113,16 +113,15 @@ impl Kernel {
             // traffic (`TTOp::Copy`), run-level compute programs, and the
             // section markers. There is no CB-sync or DST-lock pass: those
             // are tt-metal API, not Tensix instructions.
-            self.tt_lower_llks();
-            // Generic passes first: after allocation the IR is a register-
-            // transfer form (in-place writes, shared physical slots), not SSA,
-            // so nothing but verification may run on it.
+            // Every generic pass runs before the phase boundary: `tt_dataflow_select`
+            // selects the native instruction form, gives each result its own
+            // tile, and leaves no SSA behind. Nothing generic may run after it.
             self.common_subexpression_elimination();
             self.dead_code_elimination();
-            // Lowering is SSA over logical DST storages; this assigns the
-            // 8-16 physical tile registers by liveness and rewrites all
-            // operands. It must run after lowering (and after every generic
-            // pass) and before codegen.
+            self.tt_dataflow_select();
+            // The allocated form is legal but at maximal pressure; the reuse
+            // pass coalesces it down to the physical tile budget. It must run
+            // after allocation and before codegen.
             self.tt_dst_reuse();
             self.verify();
             self.tt_verify();

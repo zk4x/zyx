@@ -4,10 +4,16 @@
 //! Tenstorrent kernel passes: tile the IR, lower it to native ops, and
 //! verify the reader/compute/writer stream shape.
 //!
-//! Pipeline order: `tt_tile` -> `tt_lower_llks` -> `tt_dst_reuse` ->
-//! `verify` -> `tt_verify`. The passes are public so external pass authors
-//! can reuse or replace stages. Calling them out of order is a loud panic,
-//! never silent corruption.
+//! Pipeline order: `tt_tile` -> `tt_reindex` -> `tt_dataflow_select` ->
+//! `tt_dst_reuse` -> `verify` -> `tt_verify`. The passes are public so
+//! external pass authors can reuse or replace stages. Calling them out of
+//! order is a loud panic, never silent corruption.
+//!
+//! `tt_dataflow_select` is the phase boundary: it selects the native instruction
+//! form for every value and gives each result its own tile (no reuse), so
+//! the result is a legal machine program with maximal register pressure.
+//! `tt_dst_reuse` is an optimization over that form (coalescing, in-place
+//! merging, store/load forwarding). Nothing generic runs after it.
 //!
 //! Lowering is SSA over DST: every native op writes a fresh
 //! `Op::Storage { scope: Register }` and the `TTOp` carries that storage
@@ -456,7 +462,7 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn tt_lower_llks(&mut self) {
+    pub fn tt_dataflow_select(&mut self) {
         if !self.device_info().tenstorrent {
             return;
         }
@@ -779,15 +785,18 @@ impl Kernel {
                     };
                     let writer_cb = self.tt_new_cb(DType::F32, prologue);
                     let zero_pack = self.insert_const_idx_before(*store, 0i64);
-                    // The lane tree goes where the pack reads it: right before
-                    // the store (its base `zero_pack` is inserted there too),
-                    // never before the producer — that would put index math in
-                    // the compute section referring to a later const.
-                    let pack_lanes = self.lane_tree_before(zero_pack, &[32, 32], *store);
-                    // Pack from the resolved DST storage, not the value
-                    // root: the reuse pass only sees Storage operands, and
-                    // it must know this pack keeps the row live.
-                    let pack = Op::Store { dst: writer_cb, dst_idx: pack_lanes, src: storage };
+                    // The pack is a tile move (DST -> L1), not an SSA store:
+                    // after allocation there is no SSA, so it goes out as
+                    // `Copy` like every other memory-level move. It keeps the
+                    // storage as its source, which is what the reuse pass
+                    // needs to know the row is still live.
+                    let pack = Op::TT(TTOp::Copy {
+                        src: storage,
+                        src_idx: zero_pack,
+                        dst: writer_cb,
+                        dst_idx: zero_pack,
+                        bytes: pack_bytes,
+                    });
                     // A matmul accumulator hands its work over: T2 takes
                     // `ready` before reading it and posts `free` after, so T1
                     // can clear the rows for the next tile. The wait goes in
@@ -910,18 +919,10 @@ impl Kernel {
         }
         let cb = self.tt_new_cb(dtype, lower.prologue);
         let zero = self.insert_const_idx_before(id, 0i64);
-        let shape = self.shape(id);
-        let block: Vec<Dim> = match shape.as_slice() {
-            [32, 32] => vec![32, 32],
-            // A scalar reduce result lives in lane 0 of its row; pack the
-            // row so a second consumer does not alias the producer's DST.
-            [32] | [] => vec![32],
-            // Odd shapes stay in DST; a later increment can widen the
-            // materialization once the codegen knows the lane layout.
-            _ => return Some((dtype, slot)),
-        };
-        let pack_lanes = self.lane_tree_before(zero, &block, id);
-        let pack = Op::Store { dst: cb, dst_idx: pack_lanes, src: slot };
+        let bytes = (dtype.bit_size() as u32 / 8).checked_mul(1024)?;
+        // A tile move, not an SSA store: the materialized value is in L1 now,
+        // and every consumer reads it back with a `Copy` (unpack).
+        let pack = Op::TT(TTOp::Copy { src: slot, src_idx: zero, dst: cb, dst_idx: zero, bytes });
         self.insert_after(id, pack);
         lower.materialized.insert(id, cb);
         Some((dtype, cb))
@@ -1597,6 +1598,10 @@ impl Kernel {
                 continue;
             };
             dst_count += 1;
+            assert!(
+                dtype.bit_size() == 16 || dtype.bit_size() == 32,
+                "tt_verify: DST register {id:?} is {dtype:?}; Dst holds 16-bit or 32-bit tiles only"
+            );
             let wide = dtype.bit_size() > 16;
             match dst_wide {
                 None => dst_wide = Some(wide),
@@ -1611,6 +1616,27 @@ impl Kernel {
             dst_count <= budget,
             "tt_verify: {dst_count} DST register tiles exceed the {budget}-tile budget"
         );
+        // The allocated form has no SSA left: no generic memory op (a load
+        // turns an effect into a value, a store turns a value into an effect)
+        // and no high-level compute may survive `tt_dataflow_select`. Anything that
+        // does would be silently dropped by the native emitter otherwise.
+        for (id, op) in self.iter_unordered() {
+            match op {
+                Op::Load { .. } | Op::Store { .. } | Op::Copy { .. } => {
+                    panic!("tt_verify: SSA memory op {id:?} survived register allocation")
+                }
+                Op::Asm { .. } => panic!("tt_verify: Op::Asm in a TT kernel at {id:?}"),
+                Op::Reduce { .. } => panic!("tt_verify: reduce {id:?} is not lowered"),
+                Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Select { .. } | Op::Stack { .. } => {
+                    // Index arithmetic is integer-typed and dead but harmless;
+                    // any float value op means the lowering missed it.
+                    if self.dtype(id).is_float() {
+                        panic!("tt_verify: {id:?} is not fully lowered (SSA compute remains)");
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Chase a `Load`/`Store`/`Copy` operand through its index expression

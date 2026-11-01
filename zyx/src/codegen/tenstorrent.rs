@@ -808,6 +808,42 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 let dst_reg = matches!(sec.k.at(*dst), Op::Storage { scope: MemScope::Register, .. });
                 match (src_cb, dst_cb, dst_reg) {
                     (None, Some(dcb), false) => {
+                        // A Register source is the pack (DST tile -> L1 CB).
+                        // A DRAM param is the reader publish. Both are `Copy`;
+                        // the source side tells them apart. The pack is a tile
+                        // move, not an SSA store, and it lives in the compute
+                        // section while its words join the T2 pack role.
+                        if matches!(sec.k.at(*src), Op::Storage { scope: MemScope::Register, .. }) {
+                            if sec.section != 1 {
+                                return Err(sec.err(format!("pack {id:?} outside the compute section")));
+                            }
+                            let row = sec.dst_row(*src)?;
+                            let out_fmt = tt_fmt(sec.k.dtype(*dst))?;
+                            use tt_isa::backend::{Before, block, cond, stallwait, wait_for_packer};
+                            use tt_isa::cfg::generated::{global, thcon};
+                            let l1 = sec.cb_l1(dcb)?;
+                            let mut words = tt_isa::backend::ConfigWords::new();
+                            crate::backend::tenstorrent::kern::datapath::pack_config(&mut words, l1);
+                            words
+                                .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row)
+                                .map_err(|e| sec.err(format!("pack {id:?}: dst offset: {e:?}")))?;
+                            words
+                                .set(thcon::THCON_SEC0_REG1_Out_data_format, out_fmt)
+                                .map_err(|e| sec.err(format!("pack {id:?}: out format: {e:?}")))?;
+                            let mut code =
+                                vec![wait_for_packer(Before::CONFIG).map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?];
+                            code.extend(crate::backend::tenstorrent::kern::datapath::config_program(&words));
+                            code.push(
+                                stallwait(block::PACKER | block::CONFIG, cond::CONFIG_BUSY)
+                                    .map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?,
+                            );
+                            code.extend(crate::backend::tenstorrent::kern::datapath::pack_rows(
+                                crate::backend::tenstorrent::kern::datapath::TILE_DST_ROWS,
+                            ));
+                            sec.native_t2.extend(code.iter().map(|i| i.word()));
+                            sec.last_role = 2;
+                            return Ok(());
+                        }
                         if sec.section != 0 {
                             return Err(sec.err(format!("publish {id:?} outside the reader")));
                         }
