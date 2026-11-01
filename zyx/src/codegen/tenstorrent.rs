@@ -372,23 +372,21 @@ fn tt_row_remap(mut code: Vec<Instruction>, a_row: u32, b_row: Option<u32>, out_
 /// (high bits first, as `InstructionDef::fields` lists them).
 fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendError> {
     // `args` are the form's operands in the ISA's own field order, which is
-    // the order `InstructionDef::fields` lists them in.
+    // the order `InstructionDef::fields` lists them in; the array is fixed at
+    // five words, so a form with fewer fields reads the leading entries and
+    // leaves the rest unused.
+    //
+    // `ALL` carries both layouts where Blackhole replaced a Wormhole form, and
+    // the Wormhole one keeps the plain key (`SFPAND`, `SFPPUSHC`, ...) while
+    // Blackhole's is suffixed (`SFPAND_BH`). The superseded layout is never the
+    // one to emit: it drops fields this IR carries (`SFPAND`'s `VB`, for one).
     let def = tt_isa::isa::generated::ALL
         .iter()
         .copied()
-        .find(|d| d.opcode() == insn.op && d.key() == d.mnemonic())
+        .find(|d| d.opcode() == insn.op && !matches!(d.provenance(), tt_isa::isa::Provenance::SupersededOnBlackhole { .. }))
         .or_else(|| tt_isa::isa::generated::ALL.iter().copied().find(|d| d.opcode() == insn.op))
         .ok_or_else(|| tt_err(format!("tenstorrent: no ISA instruction has opcode {:#x}", insn.op)))?;
     let fields = def.fields();
-    if insn.args.len() > fields.len() {
-        return Err(tt_err(format!(
-            "tenstorrent: {:#x} ({}) takes {} fields, the op carries {}",
-            insn.op,
-            def.mnemonic(),
-            fields.len(),
-            insn.args.len()
-        )));
-    }
     let mut word = def.skeleton();
     for (field, value) in fields.iter().zip(insn.args.iter()) {
         if !field.fits(*value) {

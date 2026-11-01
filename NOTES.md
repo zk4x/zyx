@@ -477,9 +477,16 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   `Dst` rows: `A_ROW 0..64`, `B_ROW 64..128`, `OUT_ROW 128..192`,
   `C_ROW 192..256`, `SPILL_ROW 256..` (`kernel.rs:38-47`). The emitter resolves
   `at` to `(storage, at - base)` by range and carries `slot` + intra-tile
-  offset; codegen adds `slot.id * rows`. `SPILL_ROW` is used by `log1p` and
-  `pow`, so those kinds need an extra scratch tile allocated by the lowering —
-  settle that when `POW` is ported (it is reachable).
+  offset; codegen adds `slot.id * rows`. `SPILL_ROW` is used by the Precise
+  `sigmoid` (and by `log1p`/`pow`), so those kinds need scratch. The row-op
+  path does **not** allocate a tile for it: `ops::sigmoid_program` spills only
+  the input `x` across the exponential, and the output tile's rows are dead
+  until the last store of the iteration, so `SfpStore { slot, at: o }` then
+  `SfpLoad { slot, at: o }` uses the output as scratch (coalescing the input
+  and output onto one row is still safe: the store rewrites the bytes it read,
+  before the row's last use, and iterations touch disjoint addresses). A kind
+  whose spill must survive the whole body (`log1p`, `pow`) does need a real
+  scratch tile — settle that when those are ported.
 - **Flag scopes are plain `Sfp` ops in sequence** (`SFPPUSHC`, `SFPSETCC`,
   `SFPCOMPC`, `SFPPOPC`), so a pass can see and cancel them. If a pass can
   unbalance them, `tt_verify` gains a stack-depth-returns-to-zero invariant;
@@ -488,26 +495,84 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   `SFPMAD`'s automatic stall misses a dependency; with unrolled IR that is a
   peephole over consecutive ops in the encoder, exactly where `SFPLOADI`
   expansion already lives.
-- **`Sfp`'s generic encoding needs one self-check.** `tt_sfp_encode` places
-  `args` into `InstructionDef::fields()` order (high bits first). For every
-  form the emitter writes, encode once that way and once through
-  `tt_isa::sfpu::enc::*` and require the same word; where a form disagrees,
-  give it a per-opcode arm with a comment. Do not leave the assumption
-  unverified once a real kernel uses the form.
+- **`Sfp`'s generic encoding: two traps, both hit by `SIGMOID`.**
+  `tt_sfp_encode` places `args` into `InstructionDef::fields()` order (high
+  bits first), and `args` is a fixed five-word array, so a form with fewer
+  fields reads the leading entries and ignores the rest (do **not** ask for
+  as many args as fields). The other trap is *which* definition an opcode
+  names: `ALL` carries both layouts where Blackhole replaced a Wormhole form,
+  the Wormhole one keeps the plain key (`SFPAND`, `SFPPUSHC`, `SFPPOPC`) and
+  Blackhole's is suffixed (`SFPAND_BH`), so preferring `key == mnemonic` picks
+  the **superseded** entry and silently drops fields — `SFPAND` lost `VB`
+  (`0x7e000010` instead of `0x7e000141`) and the mask came out wrong. Select
+  by `opcode` with `Provenance::SupersededOnBlackhole` excluded. Verified
+  against the builder word-for-word while porting `SIGMOID`; keep doing that
+  (the builder's stream is the reference), because a wrong field order is
+  silent and only shows as wrong numbers.
+- **`SFPENCC` is part of the program, not the preamble.** `SFPSETCC` is a
+  no-op unless `UseLaneFlagsForLaneEnable` is set, and `SFPCOMPC` clears
+  `LaneFlags` when it is not; the builder emits `sfpencc(3, 0, EI|RI)` at the
+  start of every program (`Program::new`). The row-op path must emit the same
+  `Sfp { SFPENCC, [3, 0, 10] }` once, before the first row, or every flag
+  scope silently executes its body in all lanes. `add`/`BOOL_NOT` do not need
+  it (no scopes); anything ported with `if_` does.
+- **A suspicious `if_` result is usually the transcript, not the flags.**
+  `SIGMOID` first came out as `sigmoid(-|x|)`; the flag scopes were fine. The
+  bug was `isub_from(t, magic)` written as `SFPMAD`-style `[c, d]` instead of
+  `SFPIADD`'s `[c, d]` = `d = c - d` order — one swapped pair of `LReg`s, a
+  factor-of-two result. Compare the emitted words against the builder's before
+  believing a structural diagnosis.
 - **Port order**: `BOOL_NOT`, `ABS`, `NEG`, `SQRT`/`RSQRT`, the comparisons
   (`EQ..LE` via `binary_body`), `DIV`/`REM`, the integer ops, `FLOOR`/`TRUNC`
   (`round::body`), then the approx kinds — `SIGMOID` first because it is the
   only gated one. `ReduceTile`/`reduce.rs` untouched (item 5).
 - **Acceptance** = the gates, plus `interp` (`kern/sfpu/interp.rs`) for the
   kinds no gate touches. Word parity is a debugging aid, not the criterion.
+- **Row ops own the lowered value.** The root of a ported kind is an
+  `SfpStore`, not an `Sfpu { slot }`, so five places must treat a row op as
+  "the tile it touches": `tt_lowered_storage` (phase 3 silently skipped the
+  DRAM store → "DRAM write in compute"), `Kernel::dtype`,
+  `Kernel::shape` (`compute_dtypes_and_rcs` maps *and* the shape walker), and
+  `verify`'s dtype map. Forgetting one shows up as "no entry found for key"
+  in a verify, or as the store surviving into the compute section.
+- **A vectorized kernel is legal input to `tt_tile`.** The search may already
+  have added a lane axis (`add` has one, `sigmoid` does not). `tt_tile`'s own
+  group splits must stop once an access has `DevInfo::tile.len()` axes —
+  checked **before** `pad_to`, because padding a group that is not split
+  leaves a 32-wide grid on a 14-column device ("grid dim 1 32 exceeds device
+  max 14"). The predicate is not "is this a reduce kernel": `Op::Reduce` only
+  exists here after `split` unrolled a loop into lanes, and that case keeps
+  its rank-3 cube for `tt_reindex`.
+- **`SIGMOID` ported (2026-11-01)**, gate `0/2560`, worst `1.19e-7` — the
+  same number the builder path gives. The ported kind is the **Precise**
+  program (`ops::sigmoid_program`, kind `0x12b`), which is what the lowering's
+  fused-sigmoid pattern emits and what the gate runs; the notes had said the
+  Approx twin (`approx::sigmoid_body`, `0x1d3`) — that one is only reachable
+  through `MathMode::Approx`, and `MathMode` is never applied anywhere in the
+  backend (`MathMode::lower` has no caller), so the Approx bodies are not on
+  any gate's path. Port the Precise programs. The sequence needed:
+  `SFPENCC` once, `abs`/`neg`, `exp_program`, `1+e`, `recip` (seed + two
+  Newton steps + its four special cases, one `if_else`), the three `x < 0`
+  scopes (one nested), the `SFPMOV`-negate forms, `SFPAND` (mask), `SFPIADD`
+  (`isub_from`/`iadd`), `SFPSHFT`, `SFPARECIP`, `SFPSETSGN`, `SFPGT`/`SFPLE`/
+  `SFPSETCC`, and the output tile as spill. One `SFPNOP` is required: after
+  the two final Horner `SFPMAD`s, `SFPIADD` is a read the MAD stall misses.
+- **Next**: `sum` (`tt_reduce_program`/`reduce.rs`, scratch row, in-order
+  accumulator); then `FLOOR`/`TRUNC` (`round::body`), the comparisons and
+  integers — each transcribed from its `Program` body and verified by word
+  comparison first. `Sfpu { kind }`/`tt_sfpu_program`/`tt_row_remap` then die
+  (23 kinds still reach `program_for`). Matmul needs nothing: it is already
+  instruction-level ops (`Unpacr`/`Setadczw`/`Setrwc`/`Zeroacc`/`Mvmul`/
+  `Setc16`/`Setcfg`), and `kern::matmul` only supplies constants.
 
 ### Codegen IS the encoder; the backend is transport
 
 - **Codegen owns encoding.** It walks the post-regalloc typed IR and emits
   the blob: the `match SfpOp -> tt_isa::sfpu::encode::*` dispatch lives
-  there, and so do the `SFPNOP` after-MAD insertion, `SFPLOADI` expansion,
-  the per-role preamble (`SFPENCC`, the `ADDR_MOD0` thread entry, `clear_dst_rwc`),
-  the `REPLAY`/loop tables, L1 address resolution and param ordinals.
+  there, and so do `SFPLOADI` expansion, the `REPLAY`/loop tables, L1 address
+  resolution and param ordinals. `SFPENCC` and the `SFPNOP` after a MAD are
+  **not** codegen's: the emitter writes them as ops (`SFPENCC` once per
+  program, the NOP where the stall is missed), so they are visible to passes.
   There is **no separate encoder component in the backend**; there is no
   decode in the backend either. `tt_isa`'s word packers are called from
   codegen only.
@@ -551,9 +616,10 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
 | --- | --- |
 | `transfer_roundtrip` | green, 0/200 |
 | `matmul` | green, 0/120 (0.0075 = TF32 in `Src`) |
-| `sigmoid` | green, 0/2560 (worst 1.2e-7) |
+| `sigmoid` | green, 0/2560 (worst 1.2e-7) — on the row-op path as of 2026-11-01 (Precise program, `sigmoid_program`) |
 | `sum` | green, 0/10 (worst 9.5e-7) |
 | `sum_sigmoid` | green, 0/10 (exact) |
+| `add` | green, 0/2560 (exact) — first kind on the row-op path (`SFPMAD` + `LREG_ONE`) |
 | `matmul_sigmoid` | fails at `tt_verify`: DST register is I64 — the `Setrwc` dtype bug |
 | `softmax` | red: `Op::Loop` bails `tt_dataflow_select`, so `tt_verify` reports `missing EndReader` |
 
