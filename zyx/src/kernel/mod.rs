@@ -99,7 +99,7 @@ pub use crate::error::BackendError;
 pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{
-    BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind, SourceBlock, SpirvOp, TTCbConfig, TTOp, TTProgramDesc,
+    BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind, SourceBlock, SpirvOp, TTDmRead, TTDmWrite, TTOp,
     TileDim,
 };
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
@@ -635,7 +635,8 @@ impl Kernel {
                 | Op::EndLoop
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::ProgramDesc(_))
+                | Op::TT(TTOp::DmRead(_))
+                | Op::TT(TTOp::DmWrite(_))
                 | Op::TT(TTOp::TensixGrid(_)) => {}
             }
             op_id = self.next_op(op_id);
@@ -706,7 +707,8 @@ impl Kernel {
                 Op::Barrier
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::ProgramDesc(_))
+                | Op::TT(TTOp::DmRead(_))
+                | Op::TT(TTOp::DmWrite(_))
                 | Op::TT(TTOp::TensixGrid(_)) => todo!(),
                 Op::TT(TTOp::Copy { .. }) => todo!("dtype: traffic op produces no value"),
                 Op::TT(TTOp::Setadczw { .. })

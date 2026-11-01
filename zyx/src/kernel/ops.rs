@@ -4,7 +4,6 @@ use std::hash::{Hash, Hasher};
 
 use nanoserde::{DeBin, SerBin};
 
-use crate::backend::tenstorrent::TTNativeProgram;
 use crate::backend::{Dev, GwsDim, ProgramId};
 use crate::dtype::Constant;
 use crate::kernel::MemScope;
@@ -455,52 +454,46 @@ pub enum PTXOp {
     Bytes(Box<[u8]>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// One circular-buffer entry of a rendered Tenstorrent descriptor:
-/// the runtime CB config triple the shim consumes per CB, in CB index
-/// order. A struct (not a tuple) so every field stays named at the
-/// shim call site.
-pub struct TTCbConfig {
-    /// TT data format code.
-    pub format: u32,
-    /// Tile size in bytes.
-    pub tile_bytes: u32,
-    /// Tile count.
-    pub num_tiles: u32,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One page of the Tenstorrent reader list ([`TTOp::DmRead`]).
+pub struct TTDmRead {
+    /// Global head-order param ordinal (the launch arg index).
+    pub param: u32,
+    /// L1 byte address this page lands at.
+    pub l1: u32,
+    /// Bytes this page moves.
+    pub len: u32,
+    /// Byte offset of the page inside the param's slice at grid point `(0, 0)`.
+    pub base: u32,
+    /// Byte stride of the slice per grid index on axis 0 (the row).
+    pub gstride0: u32,
+    /// Byte stride of the slice per grid index on axis 1 (the column).
+    pub gstride1: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One page of the Tenstorrent writer list ([`TTOp::DmWrite`]).
+pub struct TTDmWrite {
+    /// Global head-order param ordinal (the launch arg index).
+    pub param: u32,
+    /// L1 byte address this page is read from.
+    pub l1: u32,
+    /// Bytes this page moves.
+    pub len: u32,
+    /// Byte offset of the page inside the param's slice at grid point `(0, 0)`.
+    pub base: u32,
+    /// Byte stride of the slice per grid index on axis 0 (the row).
+    pub gstride0: u32,
+    /// Byte stride of the slice per grid index on axis 1 (the column).
+    pub gstride1: u32,
+    /// Writer-side narrowing: the L1 tile is FP32 and the param is 16-bit, so
+    /// the host write-back converts (`TT_NARROW_*`).
+    pub narrow: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// Rendered Tenstorrent descriptor tables: everything backend `compile`
-/// needs beyond the three section sources, computed once at render when
-/// the full lowered kernel is still available. Counts (not dtype vecs):
-/// launch only ever reads vector lengths. Lives inside
-/// [`TTOp::ProgramDesc`], boxed to keep `Op` in budget.
-pub struct TTProgramDesc {
-    /// The staged native program: reader/writer DM moves, the three role
-    /// instruction streams, semaphores, and the CB L1 placement. The
-    /// C++ source is only the not-yet-ported fallback.
-    pub native: TTNativeProgram,
-    /// Global head-order ordinals of the reader section params.
-    pub reader_params: Box<[u32]>,
-    /// Global head-order ordinals of the compute section params.
-    pub compute_params: Box<[u32]>,
-    /// Global head-order ordinals of the writer section params.
-    pub writer_params: Box<[u32]>,
-    /// Total param count (all kinds, global head order).
-    pub n_params: u32,
-    /// Global param count (kernel inputs).
-    pub n_inputs: u32,
-    /// GlobalMut param count (kernel outputs).
-    pub n_outputs: u32,
-    /// Runtime CB config per CB, in CB index order.
-    pub cb_config: Box<[TTCbConfig]>,
-    /// True iff the kernel touches F32 tiles (32-bit DST mode).
-    pub fp32: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// Tenstorrent backend op: section markers, run-level compute programs,
-/// and DRAM<->L1 traffic. Lives inside [`Op::TT`].
+/// Tenstorrent backend op: the DRAM boundary stream, run-level compute
+/// programs, and section markers. Lives inside [`Op::TT`].
 ///
 /// These are the native operations the backend emits. tt-metal's
 /// circular-buffer sync (`reserve_back`/`push_back`/`wait_front`/`pop_front`)
@@ -517,14 +510,6 @@ pub enum TTOp {
     /// TT section split: end of the compute section. Same effect rules
     /// as [`TTOp::EndReader`].
     EndCompute,
-    /// Rendered descriptor tables ([`TTProgramDesc`]): the per-section
-    /// param ordinals, param/input/output counts, CB config, and DST
-    /// mode, decoded positionally by backend `compile`. Operand-free
-    /// effect like [`TTOp::EndReader`]: a DCE root, never CSE'd or
-    /// LICM-hoisted, program-ordered by scheduling. Inserted only by
-    /// render — tables are a lowering decision. Boxed to keep `Op` in
-    /// budget.
-    ProgramDesc(Box<TTProgramDesc>),
     /// Rendered tensix grid: one owned group-length expression per
     /// axis, fixed 2D (missing axes are `Const(1)`); more than two
     /// group axes is a render-time error. Lowered once at render from
@@ -532,6 +517,16 @@ pub enum TTOp {
     /// launch args. Operand-free effect like [`TTOp::EndReader`].
     /// Boxed to keep `Op` in budget.
     TensixGrid(Box<[GwsDim; 2]>),
+    /// One DRAM page of the reader list: `len` bytes from the buffer of param
+    /// `param` (at byte `base` plus the launch's grid coordinates times
+    /// `gstride0`/`gstride1`) into L1 at `l1`. Codegen emits one per 4 KB page,
+    /// so the entry count — the stream's shape — is fixed at compile time; the
+    /// launch only substitutes the chunk address and the grid point. Effect
+    /// only: a DCE root, never deduplicated. Boxed to keep `Op` in budget.
+    DmRead(Box<TTDmRead>),
+    /// One DRAM page of the writer list (L1 -> DRAM). See [`TTOp::DmRead`]; the
+    /// direction is the variant, never a launch-time choice.
+    DmWrite(Box<TTDmWrite>),
     /// The compute core's T0 program: raw instruction words in emission
     /// order, already encoded by codegen. The launch pushes them into the
     /// role's program slot; nothing decodes them. Operand-free effect like
@@ -678,9 +673,10 @@ pub enum TTOp {
         /// Stream: 0 = T0, 1 = T1, 2 = T2.
         role: u8,
     },
-    /// Semaphore initial state for this run. Not an instruction: codegen
-    /// folds it into `TTNativeProgram::sems` (the concurrent schedule's init
-    /// list), which is why it carries the value the role protocol expects.
+    /// Semaphore initial state for this run. Not an instruction: `compile`
+    /// folds it into the program's semaphore init list (the concurrent
+    /// schedule's), which is why it carries the value the role protocol
+    /// expects.
     Semset {
         /// Semaphore index, `0..8`.
         sem: u8,
@@ -1389,6 +1385,8 @@ impl Op {
             | Op::TT(TTOp::Setcfg { .. })
             | Op::TT(TTOp::Post { .. })
             | Op::TT(TTOp::Wait { .. })
+            | Op::TT(TTOp::DmRead { .. })
+            | Op::TT(TTOp::DmWrite { .. })
             | Op::TT(TTOp::Semset { .. }) => vec![],
             &Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
                 if b.is_null() {
@@ -1402,7 +1400,6 @@ impl Op {
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::TT(TTOp::EndReader)
             | Op::TT(TTOp::EndCompute)
-            | Op::TT(TTOp::ProgramDesc(_))
             | Op::TT(TTOp::TensixGrid(_))
             | Op::TT(TTOp::Unpack(_))
             | Op::TT(TTOp::Math(_))
@@ -1480,7 +1477,6 @@ impl Op {
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::TT(TTOp::EndReader)
             | Op::TT(TTOp::EndCompute)
-            | Op::TT(TTOp::ProgramDesc(_))
             | Op::TT(TTOp::TensixGrid(_))
             | Op::TT(TTOp::Unpack(_))
             | Op::TT(TTOp::Math(_))
@@ -1500,6 +1496,8 @@ impl Op {
             | Op::TT(TTOp::Setcfg { .. })
             | Op::TT(TTOp::Post { .. })
             | Op::TT(TTOp::Wait { .. })
+            | Op::TT(TTOp::DmRead { .. })
+            | Op::TT(TTOp::DmWrite { .. })
             | Op::TT(TTOp::Semset { .. }) => vec![],
             Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
                 if b.is_null() {

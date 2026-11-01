@@ -433,7 +433,8 @@ impl Kernel {
                 }
                 Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::ProgramDesc(_))
+                | Op::TT(TTOp::DmRead(_))
+                | Op::TT(TTOp::DmWrite(_))
                 | Op::TT(TTOp::TensixGrid(_)) => {}
                 Op::Unary { x, .. }
                 | Op::Permute { x, .. }

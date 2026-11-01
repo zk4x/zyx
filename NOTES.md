@@ -222,16 +222,18 @@ backend at init from `tt_firmware_images::DM_B`/`DM_NC`, not derived from any `K
 
 **Implemented 2026-11-01:** `Image`/`ImageId` and the `images` slab; `TTProgram` holds
 `sequence: Box<[ImageId]>` plus `lens: Box<[u32]>` (each leg's program-length word)
-instead of role words; `compile` uploads each role's stored form (loop header
-included) into DRAM and creates the two firmware images on first use; the owner thread
-keeps `resident[tile]` over the five slots, boots a mover on its first miss from the
-card's DRAM copy, and loads a role's program with the B mover (`runtime::run` takes a
-`load` callback, so the load happens after the setup run that clobbers slot 0);
-`release` frees a program's images and their DRAM. Still launch-side: the reader and
-writer *lists* (step 3), and the three role **firmware** images, which `runtime::run`
-still loads into T0/T1/T2 on every launch — they are backend constants, not kernel
-images, and keeping them running across launches is the `Resident` generation
-protocol, not this cache.
+instead of role words; `compile` uploads each role's stored form into DRAM and creates
+the two firmware images on first use; the owner thread keeps `resident[tile]` over the
+five slots, boots a mover on its first miss from the card's DRAM copy, and loads a
+role's program with the B mover (`runtime::run` takes a `load` callback, so the load
+happens after the setup run that clobbers slot 0); `release` frees a program's images
+and their DRAM. The boundary stream is IR too: `render_tt` emits one
+`TTOp::DmRead`/`DmWrite` per 4 KB page and `compile` turns them into the program's
+`reader`/`writer` tables, so no side table is re-read at launch. Still launch-side and
+still to do: the reader/writer *lists* as `images` (they are per-launch ranges today),
+and the three role **firmware** images, which `runtime::run` still loads into T0/T1/T2
+on every launch — backend constants kept running across launches is the `Resident`
+generation protocol, not this cache.
 
 **PCIe is the budget.** That is *why* compilation exists: CUDA's execution is "bind
 the args, launch the kernel the pointer names", and the only reason it can be that is
@@ -280,10 +282,13 @@ What this forbids, each of which the launch does today (compilation at runtime):
 Mover boot is *not* on that list: it changes no op and no entry, it is the first
 residency miss on a core (`resident[tile]`), not a decision about the stream.
 
-**Target op order as codegen leaves it:** `TensixGrid`, `Params`, then the flow —
-`Dm(Read …)`*, `Dm(Kernel)` (which starts the role blobs), `Dm(Write …)`*,
-`Dm(Wait)`, with `Unpack`/`Math`/`Pack` sitting as the programs that `Dm(Kernel)`
-starts. Every address-carrying op holds an operand slot the dispatch fills. Nothing
+**Target op order as codegen leaves it:** `Params`, `TensixGrid`,
+`Unpack`/`Math`/`Pack`, then the flow — `DmRead`*, `Dm(Kernel)` (which starts the
+role blobs), `DmWrite`*, `Dm(Wait)`. **Today** the reader's `DmRead` pages sit in the
+reader section (before `EndReader`), the writer's `DmWrite` pages and the `Semset`s
+after `EndCompute`, and `compile` turns them into the program's tables; `Dm(Kernel)`
+and `Dm(Wait)` do not exist yet (the launch still issues the role start and the lists
+around it). Every address-carrying op holds the operand the dispatch fills. Nothing
 in the dispatch is a `match` over policy, only a `match` over how to issue.
 
 **What must therefore move into the passes and codegen:** the per-page expansion of a
@@ -301,12 +306,12 @@ performs over a launch-time count, and narrowing as an op.
   ops themselves are tile-uniform and their strides are compile-time constants, so
   nothing about the stream's shape changes with the grid.
 - **The role blob is the program-slot image.** Codegen emits exactly what the slot
-  holds — loop header (when there is one), code, and the length word — so the
-  dispatch writes bytes and nothing else. `REPLAY` stays an *instruction* in the
-  stream for a body that fits its 32-word buffer; the `mailbox::loops` header exists
-  only for a body too long for that buffer. Today `compute_loops` is never filled
-  (SFPU bodies are unrolled), so no header exists — but the code that would build
-  one sits in the dispatch today and belongs to codegen.
+  holds — loop header (when there is one), code, and the length word — and `compile`
+  turns it into an `Image`. `REPLAY` stays an *instruction* in the stream for a body
+  that fits its 32-word buffer; the `mailbox::loops` header exists only for a body
+  too long for that buffer. Today no role program carries loops (SFPU bodies are
+  unrolled), so `compile` calls `code::stored(words, &[])` and the length is the word
+  count; loop lowering is step 4.
 - **No dynamic stride math on TT.** A stride or extent that bottoms out in
   `Param { Variable }` is a loud TT compile error, not a runtime computation: shapes
   must fold to `Const` before codegen. Chunk addresses stay launch values, but they
@@ -404,28 +409,25 @@ placement/run/boundary ops (`Copy`, `Semset`, `EndReader`, `EndCompute`,
   decode in the backend either. `tt_isa`'s word packers are called from
   codegen only.
 - **Blobs are IR ops** — **done (2026-11-01)**: `TTOp::Unpack(Box<[u32]>)`,
-  `TTOp::Math(Box<[u32]>)`, `TTOp::Pack(Box<[u32]>)` (boxed to keep `Op` at
-  32 bytes) are pushed by `render_tt` right after `TensixGrid`, in T0/T1/T2
-  order, and `TTDevice::compile` reads them positionally from the rendered
-  kernel — the rendered op order is `ProgramDesc`, `Params`, `TensixGrid`,
-  `Unpack`, `Math`, `Pack`, `Source(reader)`, `EndReader`,
-  `Source(compute)`, `EndCompute`, `Source(writer)`. `TTNativeProgram` no
-  longer carries the streams (`compute`/`native_compute`/`compute_native`
-  are gone), `tt_decode` is gone, and `kern::runtime::Kernel::roles` is
-  `[&[u32]; 3]`: the runtime stores words and never names an
+  `TTOp::Math(Box<[u32]>)`, `TTOp::Pack(Box<[u32]>)` (boxed to keep `Op` small)
+  are pushed by `render_tt` right after `TensixGrid`, in T0/T1/T2 order. The
+  rendered op order is `Params`, `TensixGrid`, `Unpack`, `Math`, `Pack`,
+  `Source(reader)`, `DmRead`*, `EndReader`, `Source(compute)`, `EndCompute`,
+  `Semset`*, `DmWrite`*, `Source(writer)`; `TTDevice::compile` walks it.
+  `tt_decode` is gone, and the runtime takes words (`&[u32]`), never an
   `InstructionDef`. Parity: the streams are the same objects codegen built
   (sigmoid T0/T1/T2 = 39/3753/68 words before and after) and the gates are
-  bit-identical. `ZYX_TT_DUMP` now prints role words in hex only.
-  Reader/Writer are not blobs: they are the tile's movers (RISCV B/NC), and
-  the launch hands them descriptor lists (§1). The launch walks whatever
-  role blobs exist; it never assumes exactly three.
+  bit-identical. `ZYX_TT_DUMP` prints per-role byte counts only.
+  Reader/Writer are not blobs yet: they are the tile's movers (RISCV B/NC) and the
+  launch hands them the page lists `compile` collected (§1). The launch walks
+  whatever legs a kernel has; it never assumes exactly three.
 - **Codegen is the last compilation; the backend's images are what run** (§2).
   The `Kernel` is the compiler's input: codegen turns it into per-core images, the
   backend uploads them once into the two tables (`images`, `programs`), and the launch
-  only binds operands and issues. `TTDmMove` / `TTDstRow` / `TTSemaphoreInit` /
-  `TTProgramDesc` are to collapse into ops; `tt_decode` is already gone and the
-  runtime takes words (`&[u32]`). The simulator may decode internally; the transport
-  must not.
+  only binds operands and issues. The boundary stream is IR (`TTOp::DmRead`/
+  `DmWrite`, one per 4 KB page); `TTProgramDesc`, `TTNativeProgram`, `TTLoop` and
+  `TTDstRow` are gone. `tt_decode` is gone and the runtime takes words (`&[u32]`).
+  The simulator may decode internally; the transport must not.
 - ~~Parity gate for the container swap~~ — done: see the "Blobs are IR ops"
   bullet above for the final op order and the parity evidence.
 
@@ -450,9 +452,15 @@ placement/run/boundary ops (`Copy`, `Semset`, `EndReader`, `EndCompute`,
 | `sum` | green, 0/10 (worst 9.5e-7) |
 | `sum_sigmoid` | green, 0/10 (exact) |
 | `matmul_sigmoid` | fails at `tt_verify`: DST register is I64 — the `Setrwc` dtype bug |
-| `softmax` | `Op::Loop` still bails `tt_dataflow_select` |
+| `softmax` | red: `Op::Loop` bails `tt_dataflow_select`, so `tt_verify` reports `missing EndReader` |
 
 CPU `01_unary` (64) and `04_reduce` (15) are green.
+
+Build hygiene: `~/.cargo/config.toml` no longer sets a global `target-dir` (it did,
+pointing at `/home/x/.cache/cargo-target`), so cargo uses each checkout's own
+`target/`. Keep it that way — with the shared dir, `/home/x/Dev/rust/zyx2` (a second
+checkout of this repo) could shadow this tree's test binaries, and a "green" run then
+belongs to the wrong source tree.
 
 Since the 2026-10-30 handoff:
 - grid dispatch committed (`bae9c617`);
@@ -494,17 +502,31 @@ Since the 2026-10-30 handoff:
    consumed here. `TTNativeProgram` (`TTDmMove`, `TTLoop`, `TTSemaphoreInit`,
    `TTDstRow`, the CB `l1` table) and `TTProgramDesc` die as the launch stops
    reading side tables, and the launch becomes substitution + issue only.
-   *Done so far:* the boundary itself runs on the movers (§1); the stream is
-   still built inside the launch. **The movers stay serial here** — one list
-   per direction per launch, reads then writes, no overlap with compute. That is
-   deliberate: async CBs are step 7.
+   **The movers stay serial here** — one list per direction per launch, reads
+   then writes, no overlap with compute. That is deliberate: async CBs are step 7.
    Follow-on in this step: move the bytes into the `images` slab and reference them
    (§2) — `Reader`/`Writer` naming an `ImageId`, and `Unpack`/`Math`/`Pack` holding a
    reference instead of inline `Box<[u32]>` (the inline boxes of step 1 are the
    intermediate state). That is what makes a launch args-only.
-   *Done so far (2026-11-01):* the two tables, the DRAM upload at compile, the
-   five-slot ledger, the B-mover load path and the firmware boot as a first miss —
-   see §2's "Implemented". The reader/writer lists are the remaining leg.
+   *Done 2026-11-01:*
+   - **Two tables + residency** (§2 "Implemented"): `Image`/`ImageId`, the DRAM
+     upload at compile, `resident[tile]` over the five slots, the B-mover load
+     path, the firmware boot as a first miss, `release`; `TTProgram` holds
+     `sequence`/`lens` instead of role words.
+   - **The boundary stream is IR**: `TTOp::DmRead(Box<TTDmRead>)` and
+     `TTOp::DmWrite(Box<TTDmWrite>)`, one per 4 KB page, emitted by `render_tt`
+     (`tt_pages`), with `param`/`l1`/`len`/`base`/grid strides on the op and
+     `narrow` on the write. `TTOp::ProgramDesc`, `TTNativeProgram`, `TTLoop`,
+     `TTDstRow` are gone; `compile` walks the rendered kernel and fills its own
+     `reader`/`writer`/`sems`/`n_inputs`/`n_outputs`/`gws` table. The launch
+     substitutes `param -> chunk` and the grid point and issues — no side table
+     is read.
+   - **Still to come in this item:** the other mover ops (`DmReadTransposed`,
+     `DmHostRead/Write`, `DmTilize`/`DmUntilize`/`DmCopyWords`/`DmFill`/
+     `DmIndexPick`, `DmKernel`, `DmWait`, `DmBarrier`), the `tt_verify`
+     invariant that a core's entry count fits `dm::LIST_MAX` at compile time,
+     and folding the reader/writer lists into `images` (a list becomes a blob
+     the mover runs, so `TTProgram::sequence` grows to five legs).
 4. **Loop lowering** (`REPLAY` for bodies that fit its 32-word buffer, the
    `mailbox::loops` header only for longer ones) for `softmax`; multi-tile per
    core. A trip count that does not fold to `Const` is a TT compile error (§2).

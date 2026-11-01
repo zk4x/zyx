@@ -24,14 +24,12 @@ use crate::Map;
 use crate::Set;
 use crate::backend::tenstorrent::kern::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
 use crate::backend::tenstorrent::kern::sfpu::reduce::{Axis, ReduceOp, accumulate, finish};
-use crate::backend::tenstorrent::{
-    TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE, TTDmMove, TTDstRow, TTNativeProgram, TTSemaphoreInit,
-};
+use crate::backend::tenstorrent::{TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE, TTDmMove, TTSemaphoreInit};
 use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{
-    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTCbConfig, TTOp, TTProgramDesc, TileDim, UOp,
+    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmWrite, TTOp, TileDim, UOp,
 };
 use crate::scalar::{bf16, f16};
 use crate::slab::Slab;
@@ -69,8 +67,9 @@ fn tt_fmt(dtype: DType) -> Result<u32, BackendError> {
     })
 }
 
-/// Launch tables for the Tenstorrent backend, built from the kernel IR
-/// by [`Kernel::generate_tenstorrent`].
+/// Codegen output for the Tenstorrent backend, built from the kernel IR by
+/// [`Kernel::generate_tenstorrent`] and rendered into ops by
+/// [`Kernel::render_tt`].
 pub struct TTProgram {
     /// Reader section source.
     pub reader_src: String,
@@ -83,36 +82,23 @@ pub struct TTProgram {
     /// and [`TTOp::Pack`] in the rendered kernel; the C++ source is only the
     /// not-yet-ported fallback.
     pub roles: [Vec<u32>; 3],
-    /// The staged native program: DM boundary moves, role streams,
-    /// semaphores, and the L1/DST placement baked into the instructions.
-    pub native: TTNativeProgram,
-    /// Global head-order ordinals of the reader section params.
-    pub reader_params: Vec<u32>,
-    /// Global head-order ordinals of the compute section params.
-    pub compute_params: Vec<u32>,
-    /// Global head-order ordinals of the writer section params.
-    pub writer_params: Vec<u32>,
-    /// Total param count (all kinds, global head order).
-    pub n_params: u32,
-    /// Global params in head order (kernel inputs).
-    pub input_dtypes: Vec<DType>,
-    /// GlobalMut params in head order (kernel outputs).
-    pub output_dtypes: Vec<DType>,
-    /// Runtime CB config: (tt format, tile bytes, tile count) per CB,
-    /// indexed by CB number.
-    pub cb_config: Vec<(u32, u32, u32)>,
-    /// True iff the kernel touches F32 tiles (32-bit DST mode).
-    pub fp32: bool,
+    /// The DRAM boundary: one move per reader publish (param -> CB) and per
+    /// writer drain (CB -> param), in program order. Render expands each into
+    /// one [`TTOp::DmRead`]/[`TTOp::DmWrite`] per 4 KB page.
+    pub reader: Vec<TTDmMove>,
+    pub writer: Vec<TTDmMove>,
+    /// Semaphore initial states, rendered as [`TTOp::Semset`].
+    pub sems: Vec<TTSemaphoreInit>,
 }
 
 impl Kernel {
-    /// Tenstorrent render: lower to a descriptor-only kernel — head
-    /// order `ProgramDesc`, `Params`, `TensixGrid`, then the three
-    /// section sources separated by the existing `EndReader` /
-    /// `EndCompute` markers. Lowering lives in `device_epilogue`
-    /// (which verifies the lowered IR); `generate_tenstorrent`
-    /// renders 1:1. Backend `compile` only decodes positions and
-    /// drives the shim.
+    /// Tenstorrent render: lower to a fully rendered kernel — head order
+    /// `Params`, `TensixGrid`, the three role programs, the reader's `DmRead`
+    /// pages, `EndReader`, the compute section, `EndCompute`, the `Semset`s,
+    /// the writer's `DmWrite` pages. The section sources are the
+    /// not-yet-ported fallback only. Lowering lives in `device_epilogue`
+    /// (which verifies the lowered IR); `generate_tenstorrent` renders 1:1.
+    /// Backend `compile` only walks these ops.
     /// The unlowered ops are consumed, never carried. Every kernel
     /// goes through here, including hand-built custom kernels (raw IR
     /// lowers exactly once; kernels already holding a `Source` pass
@@ -142,34 +128,48 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        let desc = TTProgramDesc {
-            reader_params: program.reader_params.into_boxed_slice(),
-            compute_params: program.compute_params.into_boxed_slice(),
-            writer_params: program.writer_params.into_boxed_slice(),
-            n_params: program.n_params,
-            n_inputs: program.input_dtypes.len() as u32,
-            n_outputs: program.output_dtypes.len() as u32,
-            cb_config: program
-                .cb_config
-                .into_iter()
-                .map(|(format, tile_bytes, num_tiles)| TTCbConfig { format, tile_bytes, num_tiles })
-                .collect(),
-            native: program.native,
-            fp32: program.fp32,
-        };
         let [unpack, math, pack] = program.roles;
         let mut rendered =
             Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
-        rendered.push_back(Op::TT(TTOp::ProgramDesc(Box::new(desc))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
         rendered.push_back(Op::TT(TTOp::Unpack(unpack.into_boxed_slice())));
         rendered.push_back(Op::TT(TTOp::Math(math.into_boxed_slice())));
         rendered.push_back(Op::TT(TTOp::Pack(pack.into_boxed_slice())));
+        // The reader list: one op per 4 KB page, so the stream's shape is
+        // fixed here and the launch only substitutes addresses (NOTES §2).
         rendered.push_back(Op::Source(SourceBlock(program.reader_src.into_boxed_str())));
+        for mv in &program.reader {
+            for page in tt_pages(mv) {
+                rendered.push_back(Op::TT(TTOp::DmRead(Box::new(TTDmRead {
+                    param: mv.param,
+                    l1: page.l1,
+                    len: page.len,
+                    base: page.base,
+                    gstride0: mv.gstride0,
+                    gstride1: mv.gstride1,
+                }))));
+            }
+        }
         rendered.push_back(Op::TT(TTOp::EndReader));
         rendered.push_back(Op::Source(SourceBlock(program.compute_src.into_boxed_str())));
         rendered.push_back(Op::TT(TTOp::EndCompute));
+        for sem in &program.sems {
+            rendered.push_back(Op::TT(TTOp::Semset { sem: sem.index, value: sem.value }));
+        }
+        for mv in &program.writer {
+            for page in tt_pages(mv) {
+                rendered.push_back(Op::TT(TTOp::DmWrite(Box::new(TTDmWrite {
+                    param: mv.param,
+                    l1: page.l1,
+                    len: page.len,
+                    base: page.base,
+                    gstride0: mv.gstride0,
+                    gstride1: mv.gstride1,
+                    narrow: mv.narrow,
+                }))));
+            }
+        }
         rendered.push_back(Op::Source(SourceBlock(program.writer_src.into_boxed_str())));
         Ok(rendered)
     }
@@ -187,24 +187,17 @@ impl Kernel {
         // (winner / seed, once before its compile).
         let k = self;
 
-        // Param ordinals + input/output dtypes, flat head order.
+        // Param ordinals, flat head order.
         let mut param_ordinal_of: Map<OpId, u32> = Map::default();
         let mut next_param = 0u32;
-        let mut input_dtypes: Vec<DType> = Vec::new();
-        let mut output_dtypes: Vec<DType> = Vec::new();
         let mut scan = k.head;
         for _ in 0..50_000 {
             if scan.is_null() {
                 break;
             }
-            if let Op::Param { dtype, kind, .. } = k.at(scan) {
+            if let Op::Param { .. } = k.at(scan) {
                 param_ordinal_of.insert(scan, next_param);
                 next_param += 1;
-                match kind {
-                    ParamKind::Global => input_dtypes.push(*dtype),
-                    ParamKind::GlobalMut => output_dtypes.push(*dtype),
-                    ParamKind::Variable => {}
-                }
             }
             scan = k.next_op(scan);
         }
@@ -259,63 +252,38 @@ impl Kernel {
         }
 
         // Render.
-        let mut native = TTNativeProgram {
-            reader: Vec::new(),
-            writer: Vec::new(),
-            compute_loops: [Vec::new(), Vec::new(), Vec::new()],
-            sems: Vec::new(),
-            l1: tt_place_cbs(k, &cb_order)?,
-            dst: Vec::new(),
-        };
-        let (reader_src, compute_src, writer_src, reader_params, compute_params, writer_params, fp32, roles) =
-            render(k, &param_ordinal_of, &cbs, &mut native)?;
+        let l1 = tt_place_cbs(k, &cb_order)?;
+        let mut sems: Vec<TTSemaphoreInit> = Vec::new();
+        let (reader_src, compute_src, writer_src, roles) = render(k, &param_ordinal_of, &cbs, &l1, &mut sems)?;
 
-        // The DRAM boundary of the native program. Role streams, their
-        // loops, and the semaphores are filled by `render` for the compute
-        // section (roles run in order, so no semaphores yet).
-        let (reader_moves, writer_moves) = tt_boundary_moves(k, &cbs, &native.l1, &param_ordinal_of)?;
-        native.reader = reader_moves;
-        native.writer = writer_moves;
+        // The DRAM boundary: one move per reader publish and per writer drain,
+        // in program order. `render_tt` splits each into page ops.
+        let (reader, writer) = tt_boundary_moves(k, &cbs, &l1, &param_ordinal_of)?;
 
-        // CB config per CB, in index order.
-        let mut cb_config: Vec<(u32, u32, u32)> = Vec::new();
-        for st in &cb_order {
-            let Op::Storage { dtype, len, .. } = k.at(*st) else {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("tenstorrent: cb entry {st} is not a storage op").into(),
-                });
-            };
-            let (fmt, tb) = match *dtype {
-                // Index and predicate storages are moved as raw bytes: they
-                // are not tile data, so they declare the FP32 code and no
-                // instruction ever reads that field for them.
-                DType::I64 | DType::Bool => (0, (*len as u32) * 8 / 1024),
-                dt => {
-                    let bits = dt.bit_size() as u32;
-                    (tt_fmt(dt)?, bits / 8 * 1024)
-                }
-            };
-            cb_config.push((fmt, tb, (len / 1024) as u32));
-            debug_assert_eq!(cb_config.len() - 1, cbs[st] as usize, "tenstorrent: CB config out of sync with allocation");
-        }
-
-        Ok(TTProgram {
-            reader_src,
-            compute_src,
-            roles,
-            writer_src,
-            native,
-            reader_params,
-            compute_params,
-            writer_params,
-            n_params: next_param,
-            input_dtypes,
-            output_dtypes,
-            cb_config,
-            fp32,
-        })
+        Ok(TTProgram { reader_src, compute_src, writer_src, roles, reader, writer, sems })
     }
+}
+
+/// One 4 KB page of a boundary move: its L1 side, its byte length, and its
+/// byte offset inside the param's slice. The grid strides move the whole
+/// slice, so they stay on the move.
+struct TtPage {
+    l1: u32,
+    len: u32,
+    base: u32,
+}
+
+/// Split a boundary move into the pages codegen emits one op each for: the
+/// 4 KB page is the unit that is contiguous on both sides.
+fn tt_pages(mv: &TTDmMove) -> Vec<TtPage> {
+    let mut pages = Vec::with_capacity(mv.bytes.div_ceil(TT_DRAM_PAGE_BYTES) as usize);
+    let mut at = 0u32;
+    while at < mv.bytes {
+        let len = (mv.bytes - at).min(TT_DRAM_PAGE_BYTES);
+        pages.push(TtPage { l1: mv.l1 + at, len, base: mv.base + at });
+        at += len;
+    }
+    pages
 }
 fn tt_err(context: String) -> BackendError {
     BackendError { status: ErrorStatus::KernelCompilation, context: context.into() }
@@ -1468,8 +1436,9 @@ fn render(
     k: &Kernel,
     param_ordinal_of: &Map<OpId, u32>,
     cbs: &Map<OpId, u32>,
-    native: &mut TTNativeProgram,
-) -> Result<(String, String, String, Vec<u32>, Vec<u32>, Vec<u32>, bool, [Vec<u32>; 3]), BackendError> {
+    l1: &[u32],
+    sems: &mut Vec<TTSemaphoreInit>,
+) -> Result<(String, String, String, [Vec<u32>; 3]), BackendError> {
     let mut sections: [Vec<OpId>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut section = 0usize;
     let mut op_id = k.head;
@@ -1546,7 +1515,6 @@ fn render(
     }
 
     let mut srcs = [String::new(), String::new(), String::new()];
-    let mut lists: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     // The compute core's three programs, filled by the compute section below.
     let mut roles: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut fp32 = false; // 32-bit DST mode: any F32 tile, or any F8 circular (Blackhole
@@ -1632,7 +1600,7 @@ fn render(
             pack_open: false,
             out: String::new(),
             native: Vec::new(),
-            l1: &native.l1,
+            l1,
             native_t0: Vec::new(),
             native_t2: Vec::new(),
             last_role: 1,
@@ -1801,38 +1769,16 @@ fn render(
                 tt_math_role(section_native),
                 tt_pack_role(section_t2),
             ];
-            native.sems = std::mem::take(&mut sec.sems);
-            // Physical DST rows: the emitter's slot table is the only place
-            // a Register storage is bound to a row, so snapshot it here.
-            native.dst = sec
-                .slots
-                .iter()
-                .filter(|(id, _)| matches!(k.at(**id), Op::Storage { scope: MemScope::Register, .. }))
-                .map(|(id, slot)| {
-                    let rows = if k.dtype(*id).bit_size() == 16 { 32 } else { 64 };
-                    TTDstRow { storage: id.0, row: *slot * rows }
-                })
-                .collect();
-            native.dst.sort_by_key(|d| d.row);
+            *sems = std::mem::take(&mut sec.sems);
         } else {
             debug_assert!(section_native.is_empty(), "native compute words outside the compute section");
             debug_assert!(section_t0.is_empty(), "native unpack words outside the compute section");
             debug_assert!(section_t2.is_empty(), "native pack words outside the compute section");
         }
         srcs[s] = sec.out;
-        lists[s] = params[s].iter().map(|id| param_ordinal_of[id]).collect();
     }
 
-    Ok((
-        srcs[0].clone(),
-        srcs[1].clone(),
-        srcs[2].clone(),
-        lists[0].clone(),
-        lists[1].clone(),
-        lists[2].clone(),
-        fp32,
-        roles,
-    ))
+    Ok((srcs[0].clone(), srcs[1].clone(), srcs[2].clone(), roles))
 }
 
 /// Render a traffic `Copy`: publish (DRAM→CB, NOC read) or drain

@@ -55,7 +55,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     f16,
-    kernel::{GPUOp, Op, OpId, TTOp},
+    kernel::{GPUOp, Op, OpId, ParamKind, TTOp},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -233,21 +233,9 @@ pub const TT_NARROW_F16: u8 = 1;
 pub const TT_NARROW_BF16: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// One host-side block repeat, mirroring `tt_kernels::code::Loop`: the
-/// firmware pushes `[start, start + len)` `count` times.
-pub struct TTLoop {
-    /// First instruction word of the repeated block.
-    pub start: u32,
-    /// Word count of the repeated block.
-    pub len: u32,
-    /// Repeat count.
-    pub count: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// One semaphore's initial state, mirroring
 /// `tt_kernels::runtime::SemaphoreInit` (`(Semaphore, value, max)`), stored
-/// as plain bytes so the program stays `SerBin`.
+/// as plain bytes so the program table stays plain data.
 pub struct TTSemaphoreInit {
     /// Semaphore index, `0..8`.
     pub index: u8,
@@ -255,37 +243,6 @@ pub struct TTSemaphoreInit {
     pub value: u8,
     /// Maximum value.
     pub max: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// One Register storage's physical DST row.
-pub struct TTDstRow {
-    /// Storage op (bits of its `OpId`).
-    pub storage: u32,
-    /// Absolute DST row the storage occupies.
-    pub row: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// The staged native program. Empty vectors mean "not emitted yet": the C++
-/// section source is still the fallback for anything the native emitter does
-/// not cover.
-pub struct TTNativeProgram {
-    /// Reader DM moves, in program order (DRAM param -> L1 CB).
-    pub reader: Vec<TTDmMove>,
-    /// Writer DM moves, in program order (L1 CB -> DRAM param).
-    pub writer: Vec<TTDmMove>,
-    /// Compute role streams in T0/T1/T2 order, raw `Instruction::word()`s,
-    /// staged as [`TTOp::Unpack`]/[`TTOp::Math`]/[`TTOp::Pack`] (`compute`).
-    /// Host-side block loops, per role, in the same T0/T1/T2 order.
-    pub compute_loops: [Vec<TTLoop>; 3],
-    /// Semaphore initial states for the run.
-    pub sems: Vec<TTSemaphoreInit>,
-    /// L1 byte address per CB, in CB index order (the same order as
-    /// `TTProgramDesc::cb_config`).
-    pub l1: Vec<u32>,
-    /// Physical DST row per Register storage, sorted by row.
-    pub dst: Vec<TTDstRow>,
 }
 
 // ---------------------------------------------------------------------------
@@ -773,9 +730,12 @@ struct TTProgram {
     /// The program length word of each leg, parallel to `sequence`: what the
     /// role's descriptor names (`code::stored`, loop header included).
     lens: Box<[u32]>,
-    /// Boundary moves, semaphores and placement: still launch assembly until
-    /// the `Dm` stream lands.
-    native: TTNativeProgram,
+    /// The DRAM boundary of the run, in program order, as the rendered
+    /// kernel's `DmRead`/`DmWrite` pages. This is the backend's own table:
+    /// the launch substitutes a chunk address for each page's param and adds
+    /// the grid point's offsets, deciding nothing (NOTES §2).
+    reader: Box<[TTDmMove]>,
+    writer: Box<[TTDmMove]>,
     sems: Vec<SemaphoreInit>,
     /// Global param count (inputs) and GlobalMut count (outputs).
     n_inputs: u32,
@@ -814,82 +774,86 @@ impl TTDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        // Render to descriptor; decode head positions. CB ids, section
-        // params, param ordinals, and io counts arrive in the descriptor
-        // tables; what stays here is launch-side assembly: the decoded grid,
-        // the runtime CB config split, and the program compile call.
+        // A rendered kernel is the finished stream (NOTES §2): this walk only
+        // collects what the launch needs — the grid, the role programs, the
+        // boundary pages and the semaphore set. Nothing here decides anything.
         let rendered = kernel.render()?;
-        let mut order = rendered.ops_in_order();
-        let Some(Op::TT(TTOp::ProgramDesc(desc))) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "head op is not ProgramDesc".into() });
-        };
-        let Some(GPUOp::Params(_params)) = order.next().and_then(Op::as_gpu) else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "second op is not Params".into() });
-        };
-        let Some(Op::TT(TTOp::TensixGrid(grid))) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "third op is not TensixGrid".into() });
-        };
-        // The compute core's three programs, as codegen encoded them. They are
-        // the kernel's own ops, not a side table: nothing here decodes them.
-        let Some(Op::TT(TTOp::Unpack(unpack))) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Unpack".into() });
-        };
-        let Some(Op::TT(TTOp::Math(math))) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fifth op is not Math".into() });
-        };
-        let Some(Op::TT(TTOp::Pack(pack))) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "sixth op is not Pack".into() });
-        };
-        let roles: [Vec<u32>; 3] = [unpack.to_vec(), math.to_vec(), pack.to_vec()];
-        let Some(Op::Source(reader)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "seventh op is not Source".into() });
-        };
-        let Some(Op::TT(TTOp::EndReader)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "eighth op is not EndReader".into() });
-        };
-        let Some(Op::Source(compute)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "ninth op is not Source".into() });
-        };
-        let Some(Op::TT(TTOp::EndCompute)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "tenth op is not EndCompute".into() });
-        };
-        let Some(Op::Source(writer)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "eleventh op is not Source".into() });
-        };
-
-        // Per-section params (0 = reader, 1 = compute, 2 = writer): param
-        // ordinals in ascending head order — Global + Variable interleaved
-        // first, GlobalMut at the tail — then the core's grid coordinates
-        // gidx0 (row) / gidx1 (col). See `Kernel::generate_tenstorrent` and
-        // `tt_runtime_shim.cpp` `section_rt_args` for the consumption side.
-        let n_params = desc.n_params;
-        // Tensix grid from the descriptor (rank <= 2 enforced at render):
-        // Param-backed lengths resolve at launch from the Variable arg.
-        let gws: Vec<GwsDim> = grid.to_vec();
-
-        let reader = reader.as_str().as_bytes();
-        let reader_params: &[u32] = &desc.reader_params;
-        let compute = compute.as_str().as_bytes();
-        let compute_params: &[u32] = &desc.compute_params;
-        let writer = writer.as_str().as_bytes();
-        let writer_params: &[u32] = &desc.writer_params;
-        if debug_asm {
-            eprintln!("[tenstorrent] reader:\n{}", String::from_utf8_lossy(reader));
-            eprintln!("[tenstorrent] compute:\n{}", String::from_utf8_lossy(compute));
-            eprintln!("[tenstorrent] writer:\n{}", String::from_utf8_lossy(writer));
+        let mut reader: Vec<TTDmMove> = Vec::new();
+        let mut writer: Vec<TTDmMove> = Vec::new();
+        let mut roles: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut semset: Vec<TTSemaphoreInit> = Vec::new();
+        let mut gws: Option<Vec<GwsDim>> = None;
+        let mut n_inputs = 0u32;
+        let mut n_outputs = 0u32;
+        let mut sources: [String; 3] = [String::new(), String::new(), String::new()];
+        let mut section = 0usize;
+        let mut op_id = rendered.head;
+        while !op_id.is_null() {
+            match rendered.at(op_id) {
+                Op::GPU(gpu) => {
+                    let GPUOp::Params(kinds) = &**gpu else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("{op_id:?} is not a Params op").into(),
+                        });
+                    };
+                    for kind in kinds.iter() {
+                        match kind {
+                            ParamKind::Global => n_inputs += 1,
+                            ParamKind::GlobalMut => n_outputs += 1,
+                            ParamKind::Variable => {}
+                        }
+                    }
+                }
+                Op::TT(TTOp::TensixGrid(grid)) => gws = Some(grid.to_vec()),
+                Op::TT(TTOp::Unpack(words)) => roles[0] = words.to_vec(),
+                Op::TT(TTOp::Math(words)) => roles[1] = words.to_vec(),
+                Op::TT(TTOp::Pack(words)) => roles[2] = words.to_vec(),
+                Op::TT(TTOp::DmRead(page)) => reader.push(TTDmMove {
+                    param: page.param,
+                    l1: page.l1,
+                    bytes: page.len,
+                    narrow: TT_NARROW_NONE,
+                    base: page.base,
+                    gstride0: page.gstride0,
+                    gstride1: page.gstride1,
+                }),
+                Op::TT(TTOp::DmWrite(page)) => writer.push(TTDmMove {
+                    param: page.param,
+                    l1: page.l1,
+                    bytes: page.len,
+                    narrow: page.narrow,
+                    base: page.base,
+                    gstride0: page.gstride0,
+                    gstride1: page.gstride1,
+                }),
+                Op::TT(TTOp::Semset { sem, value }) => {
+                    semset.push(TTSemaphoreInit { index: *sem, value: *value, max: tt_isa::sync::MAX_VALUE })
+                }
+                Op::Source(src) => sources[section] = src.as_str().to_string(),
+                Op::TT(TTOp::EndReader) => section = 1,
+                Op::TT(TTOp::EndCompute) => section = 2,
+                other => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: format!("{op_id:?} is not a rendered TT op: {other:?}").into(),
+                    });
+                }
+            }
+            op_id = rendered.next_op(op_id);
         }
-
-        let native = desc.native.clone();
+        let Some(gws) = gws else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "rendered kernel has no TensixGrid".into() });
+        };
         if debug_asm {
-            eprintln!("[tenstorrent] reader:\n{}", String::from_utf8_lossy(reader));
-            eprintln!("[tenstorrent] compute:\n{}", String::from_utf8_lossy(compute));
-            eprintln!("[tenstorrent] writer:\n{}", String::from_utf8_lossy(writer));
+            eprintln!("[tenstorrent] reader:\n{}", sources[0]);
+            eprintln!("[tenstorrent] compute:\n{}", sources[1]);
+            eprintln!("[tenstorrent] writer:\n{}", sources[2]);
             for (role, words) in roles.iter().enumerate() {
                 eprintln!("[tenstorrent] role T{role}: {} words", words.len());
             }
-            eprintln!("[tenstorrent] native dm: {} reader, {} writer", native.reader.len(), native.writer.len());
+            eprintln!("[tenstorrent] dm: {} reader pages, {} writer pages", reader.len(), writer.len());
         }
-        let _ = (reader_params, compute_params, writer_params, n_params);
 
         // Snapshot the grid for the launch-time bounds check (dynamic
         // sizes only; const sizes already failed at compile above).
@@ -906,9 +870,8 @@ impl TTDevice {
         ];
 
         // NOTES §2: codegen's bytes become images in the device's program
-        // cache, uploaded into DRAM once. The stored form (loop header
-        // included) is what a program slot holds, so its length word is
-        // decided here and never at launch.
+        // cache, uploaded into DRAM once. The stored form is what a program
+        // slot holds, so its length word is decided here and never at launch.
         self.ensure_firmware()?;
         let mut sequence: Vec<ImageId> = Vec::with_capacity(3);
         let mut lens: Vec<u32> = Vec::with_capacity(3);
@@ -916,20 +879,16 @@ impl TTDevice {
             if words.is_empty() {
                 continue;
             }
-            let loops: Vec<Loop> = native.compute_loops[thread]
-                .iter()
-                .map(|l| Loop { start: l.start, len: l.len, count: l.count })
-                .collect();
-            let (stored, len) = kern::code::stored(words, &loops).map_err(|e| BackendError {
+            let (stored, len) = kern::code::stored(words, &[]).map_err(|e| BackendError {
                 status: ErrorStatus::KernelCompilation,
-                context: format!("tenstorrent: role T{thread} loops: {e}").into(),
+                context: format!("tenstorrent: role T{thread} program: {e}").into(),
             })?;
             let bytes: Vec<u8> = stored.iter().flat_map(|w| w.to_le_bytes()).collect();
             sequence.push(self.upload([Core::T0, Core::T1, Core::T2][thread], &bytes)?);
             lens.push(len);
         }
-        let mut sems: Vec<SemaphoreInit> = Vec::with_capacity(native.sems.len());
-        for s in &native.sems {
+        let mut sems: Vec<SemaphoreInit> = Vec::with_capacity(semset.len());
+        for s in &semset {
             let sem = tt_isa::sync::Semaphore::new(s.index).ok_or_else(|| BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: format!("semaphore {} is outside 0..8", s.index).into(),
@@ -939,10 +898,11 @@ impl TTDevice {
         Ok(self.programs.push(TTProgram {
             sequence: sequence.into_boxed_slice(),
             lens: lens.into_boxed_slice(),
-            native,
+            reader: reader.into_boxed_slice(),
+            writer: writer.into_boxed_slice(),
             sems,
-            n_inputs: desc.n_inputs,
-            n_outputs: desc.n_outputs,
+            n_inputs,
+            n_outputs,
             gws,
             max_grid,
         }))
@@ -1183,7 +1143,7 @@ impl TTDevice {
                 let mut narrows: Vec<(u32, ChunkId, usize, u64, usize, u8)> = Vec::new();
                 {
                     let tpool = super::lock(self.memory_pool, tpool);
-                    for mv in &prog.native.reader {
+                    for mv in prog.reader.iter() {
                         let chunk = chunks[mv.param as usize].ok_or_else(|| BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: format!("reader move names param {}, which has no buffer arg", mv.param).into(),
@@ -1198,7 +1158,7 @@ impl TTDevice {
                             reads.push((range, mv.l1 + at as u32));
                         }
                     }
-                    for mv in &prog.native.writer {
+                    for mv in prog.writer.iter() {
                         let chunk = chunks[mv.param as usize].ok_or_else(|| BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: format!("writer move names param {}, which has no buffer arg", mv.param).into(),

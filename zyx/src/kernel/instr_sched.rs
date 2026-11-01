@@ -119,7 +119,8 @@ impl Kernel {
                 Op::Barrier
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::ProgramDesc(_))
+                | Op::TT(TTOp::DmRead(_))
+                | Op::TT(TTOp::DmWrite(_))
                 | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
@@ -208,7 +209,8 @@ impl Kernel {
                 | Op::Barrier
                 | Op::TT(TTOp::EndReader)
                 | Op::TT(TTOp::EndCompute)
-                | Op::TT(TTOp::ProgramDesc(_))
+                | Op::TT(TTOp::DmRead(_))
+                | Op::TT(TTOp::DmWrite(_))
                 | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::Setadczw { .. })
                 | Op::TT(TTOp::Setadcx { .. })

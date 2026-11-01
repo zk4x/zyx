@@ -133,18 +133,15 @@ impl Kernel {
                 Op::TT(TTOp::Pack(ref words)) => {
                     writeln!(f, "{indent}{blue}pack{reset} {} words", words.len()).unwrap();
                 }
-                Op::TT(TTOp::ProgramDesc(ref desc)) => {
+                Op::TT(TTOp::DmRead(ref page)) => {
+                    writeln!(f, "{indent}{blue}dm_read{reset} param:{} l1:{:#x} len:{} base:{}", page.param, page.l1, page.len, page.base)
+                        .unwrap();
+                }
+                Op::TT(TTOp::DmWrite(ref page)) => {
                     writeln!(
                         f,
-                        "{indent}{blue}program_desc{reset} reader:{} compute:{} writer:{} params:{} in:{} out:{} cbs:{} fp32:{}",
-                        desc.reader_params.len(),
-                        desc.compute_params.len(),
-                        desc.writer_params.len(),
-                        desc.n_params,
-                        desc.n_inputs,
-                        desc.n_outputs,
-                        desc.cb_config.len(),
-                        desc.fp32,
+                        "{indent}{blue}dm_write{reset} param:{} l1:{:#x} len:{} base:{} narrow:{}",
+                        page.param, page.l1, page.len, page.base, page.narrow
                     )
                     .unwrap();
                 }
