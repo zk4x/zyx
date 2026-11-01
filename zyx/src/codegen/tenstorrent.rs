@@ -573,6 +573,11 @@ impl<'a> TtSection<'a> {
 
     /// Slot of a Register storage, assigned on first need.
     fn reg_slot(&mut self, storage: OpId) -> Result<u32, BackendError> {
+        // A Register storage *is* its slot: the allocator stamped the
+        // allocation index on it, so the file needs no numbering pass here.
+        if let Op::Storage { scope: MemScope::Register, id, .. } = self.k.at(storage) {
+            return Ok(*id);
+        }
         if let Some(s) = self.slots.get(&storage) {
             return Ok(*s);
         }

@@ -486,9 +486,11 @@ Since the 2026-10-30 handoff:
 - grid dispatch committed (`bae9c617`);
 - the unpack header offset fixed (datums start at `(Base_address + 1) * 16`;
   passing the raw CB base shifted every tile by four F32 datums);
-- the DST register file is the ordered prologue declarations; codegen numbers
-  slots by declaration, not first use; `tt_verify` enforces single width,
-  16/32-bit only, 8/16 budget;
+- the DST register file is the prologue's Register storages, and each one carries
+  its allocation index in `Op::Storage::id`: `tt_dst_reuse` stamps them, codegen
+  reads them (`row = id × 64`, or × 32 for 16-bit), instead of numbering slots by
+  first use; `tt_verify` enforces single width, 16/32-bit only, 8/16 budget, and
+  that the indices are distinct and inside the file;
 - packs are `TTOp::Copy` (Register → CB), not `Op::Store`; the `Copy` traffic
   matrix is param→CB, CB→DST, DST→CB, CB→param;
 - CSE/DCE moved before instruction selection; `tt_verify` rejects SSA
@@ -510,8 +512,12 @@ Since the 2026-10-30 handoff:
    `Instruction` / `Code` / `LoopForm` / `REPLAY` from the lowering; remove
    `Sfpu { kind }` and `ReduceTile`. (`REPLAY` the *instruction* stays — it is
    `tt_isa::frontend`'s word and codegen emits it; only the builders go.)
-   This is also where the dead `Op::Source` section text dies (render stops
-   emitting it; `EndReader`/`EndCompute` are consumed by codegen).
+   `Op::Source` stays for C/CUDA/SPIR-V/PTX — render just stops emitting it on
+   the TT path.
+   *Started 2026-11-01:* the storage model (`Op::Storage::id`, see the decision
+   below) — the allocator stamps the physical index and codegen reads it, so the
+   DST file is IR rather than a codegen side map. Next: the ISA-level `Sfp*`
+   opset and the port of the 24 reachable kinds.
 3. **The `Dm` instruction stream (§2).** Flat `TTOp` variants, one per mover op —
    `DmRead`/`DmReadTransposed`/`DmReadBroadcastCol`/`DmWrite`/`DmFill`/
    `DmCopyWords`/`DmIndexPick`, `DmKernel` (no program payload) / `DmWait` —
@@ -629,8 +635,11 @@ Since the 2026-10-30 handoff:
   `id = 0`. The pass also enforces liveness ≤ capacity and fails loudly.
   CSE is the reason `id` is in `Eq`/`Hash` (like `Op::Param`'s buffer `id`,
   canonicalised before cache lookups): an identity field added later cannot
-  repair a CSE that already merged two registers. Status: the field exists and
-  is `0` everywhere; wiring the allocator is item 2's job.
+  repair a CSE that already merged two registers. Status (2026-11-01): wired —
+  `tt_dst_reuse` stamps one index per surviving physical Register storage in
+  prologue order, codegen reads `id` as the slot (`sec.slots` is left for the
+  non-storage intermediates), and `tt_verify` rejects duplicate indices or one
+  past the file. `Circular`/`Global` keep `id = 0`.
 - Codegen is the last compilation step. A kernel that has been through the
   passes runs on the device as it is; the dispatch fills operands and issues,
   and decides nothing (§2).

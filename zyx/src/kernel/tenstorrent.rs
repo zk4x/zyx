@@ -1293,6 +1293,23 @@ impl Kernel {
         for id in dead {
             self.remove_op(id);
         }
+        // The file is exactly the surviving physical storages, in prologue
+        // order: stamp each with its allocation index. From here on the row is
+        // the storage's own `id` (`id * 32` or `id * 64` rows), so codegen
+        // reads the file instead of numbering slots by first use, and a
+        // post-allocation CSE sees two registers as two storages.
+        let mut next = 0u32;
+        let mut id = self.head;
+        for _ in 0..250_000 {
+            if id.is_null() {
+                break;
+            }
+            if let Op::Storage { scope: MemScope::Register, id: slot, .. } = &mut self.ops[id].op {
+                *slot = next;
+                next += 1;
+            }
+            id = self.next_op(id);
+        }
     }
 
     /// The Register operand an op writes, if any. Inputs precede the
@@ -1617,12 +1634,20 @@ impl Kernel {
         // Dst.md: mixing `Dst16b` and `Dst32b` is possible but is expected to
         // be exclusive). Capacity is 8 tiles of 32-bit or 16 of 16-bit.
         let mut dst_count = 0u32;
+        let mut dst_slots: Set<u32> = Set::default();
         let mut dst_wide: Option<bool> = None;
         for (id, op) in self.iter_unordered() {
-            let Op::Storage { dtype, scope: MemScope::Register, .. } = op else {
+            let Op::Storage { dtype, scope: MemScope::Register, id: slot, .. } = op else {
                 continue;
             };
             dst_count += 1;
+            // The allocator stamped one index per physical tile; codegen reads
+            // it as the slot, so two tiles sharing an index (or an index past
+            // the file) would alias rows silently.
+            assert!(
+                dst_slots.insert(*slot),
+                "tt_verify: DST storages share allocation index {slot} at {id:?}"
+            );
             assert!(
                 dtype.bit_size() == 16 || dtype.bit_size() == 32,
                 "tt_verify: DST register {id:?} is {dtype:?}; Dst holds 16-bit or 32-bit tiles only"
@@ -1638,6 +1663,9 @@ impl Kernel {
         }
         let budget = if dst_wide == Some(true) { 8 } else { 16 };
         assert!(dst_count <= budget, "tt_verify: {dst_count} DST register tiles exceed the {budget}-tile budget");
+        for slot in dst_slots.iter() {
+            assert!(*slot < budget, "tt_verify: DST allocation index {slot} is past the {budget}-tile file");
+        }
         // The allocated form has no SSA left: no generic memory op (a load
         // turns an effect into a value, a store turns a value into an effect)
         // and no high-level compute may survive `tt_dataflow_select`. Anything that
