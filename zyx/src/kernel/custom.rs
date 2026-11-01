@@ -349,7 +349,7 @@ impl Kernel {
         let len_op = len.into_op(self);
         let len =
             self.resolve_const(len_op).and_then(crate::dtype::Constant::as_dim).expect("storage: len must resolve to a constant");
-        self.push_back(Op::Storage { dtype, scope, len })
+        self.push_back(Op::Storage { dtype, scope, len, id: 0 })
     }
 
     /// Create a zero-initialized `MemScope::Register` storage of `len` elements.

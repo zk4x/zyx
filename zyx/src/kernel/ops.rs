@@ -166,6 +166,18 @@ pub enum Op {
         scope: MemScope,
         /// Element count.
         len: Dim,
+        /// Allocation index: which object of this scope and size the storage
+        /// is. `0` until the register allocator runs, so the storage is then
+        /// only "a request for an allocation of this shape" — equal to every
+        /// other request of the same `(dtype, scope, len)`, exactly as if the
+        /// field did not exist. The allocator assigns the ids that fit the
+        /// device's capacity (one per DST tile on Tenstorrent, one per
+        /// coloured register on CUDA, ...) and, from then on, `id` is part of
+        /// the storage's identity: `Eq`/`Hash` separate it from every other
+        /// allocation, so post-allocation CSE cannot merge two registers.
+        /// Backends that expose their file (Tenstorrent) read it directly as
+        /// the physical slot; backends that hide it never look at it.
+        id: u32,
     },
     /// Store an SSA value through an addressed location: `dst` is a
     /// [`Op::Param`] or [`Op::Storage`], `dst_idx` is arbitrary index
@@ -893,8 +905,8 @@ impl PartialEq for Op {
                 a == b && at == bt && af == bf
             }
             (Op::Stack { ops: a }, Op::Stack { ops: b }) => a == b,
-            (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
-                ad == bd && as_ == bs && al == bl
+            (Op::Storage { dtype: ad, scope: as_, len: al, id: ai }, Op::Storage { dtype: bd, scope: bs, len: bl, id: bi }) => {
+                ad == bd && as_ == bs && al == bl && ai == bi
             }
             (Op::Store { dst: ad, dst_idx: adi, src: as_, .. }, Op::Store { dst: bd, dst_idx: bdi, src: bs, .. }) => {
                 ad == bd && adi == bdi && as_ == bs
@@ -989,10 +1001,14 @@ impl Hash for Op {
                 if_false.hash(state);
             }
             Op::Stack { ops } => ops.hash(state),
-            Op::Storage { dtype, scope, len } => {
+            Op::Storage { dtype, scope, len, id } => {
                 dtype.hash(state);
                 scope.hash(state);
                 len.hash(state);
+                // `id` is `0` until the allocator runs, so hashing it keeps
+                // the pre-allocation identity ("a request of this shape") and
+                // separates two registers after allocation.
+                id.hash(state);
             }
             Op::Store { dst, dst_idx, src } => {
                 dst.hash(state);
@@ -1120,8 +1136,8 @@ impl Ord for Op {
                 (a, at, af).cmp(&(b, bt, bf))
             }
             (Op::Stack { ops: a }, Op::Stack { ops: b }) => a.cmp(b),
-            (Op::Storage { dtype: ad, scope: as_, len: al }, Op::Storage { dtype: bd, scope: bs, len: bl }) => {
-                (ad, as_, al).cmp(&(bd, bs, bl))
+            (Op::Storage { dtype: ad, scope: as_, len: al, id: ai }, Op::Storage { dtype: bd, scope: bs, len: bl, id: bi }) => {
+                (ad, as_, al, ai).cmp(&(bd, bs, bl, bi))
             }
             (Op::Store { dst: ad, dst_idx: adi, src: as_ }, Op::Store { dst: bd, dst_idx: bdi, src: bs }) => {
                 (ad, adi, as_).cmp(&(bd, bdi, bs))

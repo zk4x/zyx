@@ -147,7 +147,7 @@ impl Kernel {
         let reg_acc;
         let acc_dtype;
         loop {
-            if let Op::Storage { dtype, scope, len } = self.ops[op_id].op {
+            if let Op::Storage { dtype, scope, len, .. } = self.ops[op_id].op {
                 if scope != MemScope::Register || len != 1 {
                     return;
                 }
@@ -228,7 +228,7 @@ impl Kernel {
             }
             None => self.head,
         };
-        let loc_acc = self.insert_before(insert_at, Op::Storage { dtype: acc_dtype, scope: MemScope::Local, len: factor as Dim });
+        let loc_acc = self.insert_before(insert_at, Op::Storage { dtype: acc_dtype, scope: MemScope::Local, len: factor as Dim, id: 0 });
         let lidx = self.insert_before(insert_at, Op::Range { axis: laxis, kind: RangeKind::Local(factor) });
 
         // Divide reduce loop by factor

@@ -593,9 +593,9 @@ impl Kernel {
             let mut slot_of: Map<OpId, i64> = Map::default();
             for (base, dtype, ntiles) in cbs.iter() {
                 let cb = if prologue.is_null() {
-                    self.push_back(Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
+                    self.push_back(Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024, id: 0 })
                 } else {
-                    self.insert_before(prologue, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024 })
+                    self.insert_before(prologue, Op::Storage { dtype: *dtype, scope: MemScope::Circular, len: ntiles * 1024, id: 0 })
                 };
                 cb_of.insert(*base, cb);
                 reader_cb_of.insert(*base, cb);
@@ -826,7 +826,7 @@ impl Kernel {
     /// Fresh logical DST storage, inserted in the prologue so it dominates
     /// every compute op. The reuse pass later assigns it a physical row.
     fn tt_new_dst(&mut self, dtype: DType, prologue: OpId) -> OpId {
-        let op = Op::Storage { dtype, scope: MemScope::Register, len: 1024 };
+        let op = Op::Storage { dtype, scope: MemScope::Register, len: 1024, id: 0 };
         if prologue.is_null() {
             self.push_back(op)
         } else {
@@ -837,7 +837,7 @@ impl Kernel {
     /// Fresh Circular CB, inserted in the prologue. Used for multi-use
     /// values and for writer packs.
     fn tt_new_cb(&mut self, dtype: DType, prologue: OpId) -> OpId {
-        let op = Op::Storage { dtype, scope: MemScope::Circular, len: 1024 };
+        let op = Op::Storage { dtype, scope: MemScope::Circular, len: 1024, id: 0 };
         if prologue.is_null() {
             self.push_back(op)
         } else {

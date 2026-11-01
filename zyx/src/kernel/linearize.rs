@@ -1351,7 +1351,7 @@ impl Kernel {
                     _ => unreachable!(),
                 }),
             );
-            let acc = self.insert_before(loop_id, Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1 });
+            let acc = self.insert_before(loop_id, Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1, id: 0 });
             self.insert_before(loop_id, Op::Store { dst: acc, dst_idx: zero, src: acc_init });
 
             // Accumulate inside the loop, then close it, then read the result.

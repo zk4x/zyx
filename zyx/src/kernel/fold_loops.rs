@@ -64,7 +64,7 @@ impl Kernel {
     /// On success, the loop and accumulator are removed and replaced with closed-form ops.
     fn fold_loop(&mut self, acc_id: OpId) -> bool {
         // Check that acc_id is a register storage with length 1 (scalar accumulator)
-        let &Op::Storage { dtype: acc_dtype, scope, len } = self.at(acc_id) else {
+        let &Op::Storage { dtype: acc_dtype, scope, len, .. } = self.at(acc_id) else {
             return false;
         };
         if len != 1 {
@@ -482,7 +482,7 @@ impl Kernel {
         let Some(loop_len) = self.resolve_const(loop_len_id).and_then(crate::dtype::Constant::as_dim) else {
             return false;
         };
-        let &Op::Storage { dtype, scope: MemScope::Register, len } = self.at(acc_id) else {
+        let &Op::Storage { dtype, scope: MemScope::Register, len, .. } = self.at(acc_id) else {
             return false;
         };
         if len != 1 {

@@ -310,7 +310,7 @@ impl Kernel {
                         .unwrap();
                     }
                 }
-                Op::Storage { dtype, scope, len } => {
+                Op::Storage { dtype, scope, len, .. } => {
                     dtypes.insert(op_id, dtype);
                     let shp = self.shape_suffix(op_id, &shapes);
                     writeln!(

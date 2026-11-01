@@ -215,7 +215,7 @@ impl Kernel {
                     }
                 }
                 Op::Param { .. } => {}
-                Op::Storage { dtype, scope, len } => match scope {
+                Op::Storage { dtype, scope, len, .. } => match scope {
                     MemScope::Local => {
                         _ = writeln!(source, "{indent}__local {} p{op_id}[{len}] __attribute__ ((aligned));", dtype.ocl())
                     }

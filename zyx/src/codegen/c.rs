@@ -524,7 +524,7 @@ impl Kernel {
                     }
                 }
                 Op::Param { .. } => {}
-                Op::Storage { dtype, scope, len } => {
+                Op::Storage { dtype, scope, len, .. } => {
                     debug_assert_eq!(scope, MemScope::Register, "C backend only supports register scoped storage");
                     _ = writeln!(source, "{indent}{} p{op_id}[{len}] __attribute__((aligned));", dtype.c_type(),);
                 }

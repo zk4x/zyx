@@ -333,7 +333,7 @@ impl Kernel {
                             match self.at(growth_id) {
                                 Op::Storage { dtype, scope, len, .. } => {
                                     let (dtype, scope, len) = (*dtype, *scope, *len);
-                                    self.ops[growth_id].op = Op::Storage { dtype, scope, len: len * factor };
+                                    self.ops[growth_id].op = Op::Storage { dtype, scope, len: len * factor, id: 0 };
                                 }
                                 _ => unreachable!("lane split grows a storage"),
                             }

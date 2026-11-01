@@ -555,7 +555,7 @@ impl Kernel {
                         check(op_id, shape, &stack);
                     }
                 }
-                Op::Storage { dtype, scope, len } => {
+                Op::Storage { dtype, scope, len, .. } => {
                     storages.insert(op_id, (scope, len));
                     dtypes.insert(op_id, dtype);
                 }

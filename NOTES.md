@@ -354,6 +354,14 @@ tt_tile -> tt_reindex -> CSE/DCE -> tt_dataflow_select -> tt_dst_reuse
         -> verify -> tt_verify
 ```
 
+Three stages, and the split is what makes the middle stage optimizable:
+(1) `tt_dataflow_select` lowers SSA into the TT opset — non-SSA, already
+optimizable; (2) the allocation/reuse passes improve it in place (register
+reuse, ordering, forwarding); (3) codegen turns it into the `u32` words of
+bytecode. Allocation is meant to be **one pass shared by every backend**,
+parameterised by device capacity (see the storage decision below);
+`tt_dst_reuse` is its Tenstorrent configuration today.
+
 - **`tt_dataflow_select`** (renamed from `tt_lower_llks` / `tt_reg_alloc`) is
   the phase boundary and instruction selection. It converts the tiled SSA
   (`Unary`/`Binary`/`Reduce`/`Matmul`, UOps `Exp2`/`Log2`/`Reciprocal`) into
@@ -383,13 +391,23 @@ SfpConst { reg: u8, bits: u32 }
 
 plus the existing ISA ops (`Unpacr`, `Setadczw`, `Setadcx`, `Setrwc`,
 `Zeroacc`, `Mvmul`, `Setc16`, `Setcfg`, `Post`, `Wait`) and the non-ISA
-placement/run/boundary ops (`Copy`, `Semset`, `EndReader`, `EndCompute`,
-`ProgramDesc`, `TensixGrid`).
+placement/run/boundary ops (`Copy`, `Semset`, `Dm*`, `EndReader`,
+`EndCompute`, `TensixGrid`).
 
 - `a`/`b`/`c` are source LREGs (`L0..L7` writable; `L8..L15` read-only
   constants/config), `d` is the destination for forms that write one, `imm`
   carries the immediate/flag where the form has one. `SfpOp` is the typed
   mnemonic; it decides which operands are read and written.
+- `row` is a DST row, not a free index: a tile lives in an
+  `Op::Storage { Register }` whose `id` is the slot the allocator bound, and a
+  row is `id * 32` (16-bit tiles) or `id * 64` (32-bit) plus the row inside the
+  tile. The tile-level identity stays the storage; the encoded instruction
+  carries the row.
+- **The opset is deliberately not frozen.** It is what lowering emits, what the
+  post-allocation passes optimize, and what codegen packs, so variants get
+  added, merged, or dropped as the tests demand — one per ISA instruction form
+  only for as long as that is the easiest shape to work with. The fixed points
+  are the ISA words it must encode and the invariants in `tt_verify`.
 - `Sfpu { kind }` and `ReduceTile` are macros and go away. The expansions
   live in `tt_dataflow_select`: `exp2(x) = exp(x * ln2)`, `log2(x) =
   log(x) * log2e`, `reciprocal` = `SFPARECIP` + Newton, reduce = its SFPU
@@ -595,6 +613,24 @@ Since the 2026-10-30 handoff:
 - 32-byte ops: the IR may be as low-level as the machine. An interpreter over
   it is a viable second oracle.
 - Placement lives in the IR (rows, L1); no side tables.
+- **A storage has two levels: what it is, and where it lives.** `Op::Storage`'s
+  `dtype`/`scope`/`len` are the declaration (the object's type and size — CUDA's
+  `__shared__` array, a DST tile, a CB ring); `id` is the allocation index, `0`
+  until the allocator runs. Before allocation a storage is only "a request for an
+  object of this shape", so all such requests are `Eq`/`Hash`-equal, exactly as
+  if `id` did not exist; the allocator assigns one id per physical object the
+  device can hold and, from then on, `id` is part of the storage's identity, so
+  post-allocation CSE cannot merge tile 3 into tile 7. Backends that expose the
+  file (Tenstorrent) read `id` as the physical slot; backends that hide it
+  (CUDA/CPU) never read it and their compiler colours behind the same
+  declaration. One allocator pass, parameterised by device capacity:
+  `Register` = 8/16 tiles on TT, unbounded on CUDA/CPU; `Local` =
+  `local_mem_size`; `Circular`/`Global` are declared, not allocated, and keep
+  `id = 0`. The pass also enforces liveness ≤ capacity and fails loudly.
+  CSE is the reason `id` is in `Eq`/`Hash` (like `Op::Param`'s buffer `id`,
+  canonicalised before cache lookups): an identity field added later cannot
+  repair a CSE that already merged two registers. Status: the field exists and
+  is `0` everywhere; wiring the allocator is item 2's job.
 - Codegen is the last compilation step. A kernel that has been through the
   passes runs on the device as it is; the dispatch fills operands and issues,
   and decides nothing (§2).

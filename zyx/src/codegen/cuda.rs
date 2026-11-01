@@ -339,7 +339,7 @@ impl Kernel {
                     constants.insert(op_id, x);
                 }
                 Op::Param { .. } => {}
-                Op::Storage { dtype, scope, len } => match scope {
+                Op::Storage { dtype, scope, len, .. } => match scope {
                     MemScope::Local => _ = writeln!(source, "{indent}__shared__ {} p{op_id}[{len}];", dtype.cu()),
                     MemScope::Register => _ = writeln!(source, "{indent}{} p{op_id}[{len}];", dtype.cu()),
                     _ => unreachable!("cuda supports only local and register scopes"),

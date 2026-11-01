@@ -857,7 +857,7 @@ impl Kernel {
                             }
                         }
                     }
-                    &Op::Storage { dtype, scope, len } => {
+                    &Op::Storage { dtype, scope, len, .. } => {
                         match scope {
                             MemScope::Circular => unreachable!(),
                             MemScope::Global => {
