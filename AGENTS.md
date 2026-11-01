@@ -12,6 +12,12 @@
   the answer (multiple designs, missing spec, intended semantics).
 - NEVER use the question tool. Ask in plain text when the code
   underdetermines the answer; wait for a plain-text verb.
+- ASKING IS ALWAYS ALLOWED, including after being told to proceed.
+  "Proceed" authorizes work, it does not silence questions: if the code,
+  the scope, or the design underdetermines something mid-task, stop and
+  ask in plain text. Silence is not approval, and a guess is worse than a
+  question — but a question is never an excuse to skip work that is
+  actually determined.
 - User owns design. Analysis: thorough. Implementation: ask, don't choose.
 - ASK BEFORE ADDING ANY FUNCTION OR CHANGING A SIGNATURE
   (params, return, generics, `Result`), incl. private helpers.

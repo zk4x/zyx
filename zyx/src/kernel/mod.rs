@@ -100,7 +100,7 @@ pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{
     BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind, SourceBlock, SpirvOp, TTDmRead, TTDmWrite, TTOp,
-    TileDim,
+    TTSfpInsn, TileDim,
 };
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, CoverGroup, DtypeClass, PMatch, Pat, VExpr};
@@ -314,6 +314,10 @@ impl Kernel {
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
                 | Op::TT(TTOp::Semset { .. })
+                | Op::TT(TTOp::SfpLoad(_))
+                | Op::TT(TTOp::SfpStore(_))
+                | Op::TT(TTOp::SfpConst(_))
+                | Op::TT(TTOp::Sfp(_))
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
                 | Op::TT(TTOp::Pack(_)) => {}

@@ -142,6 +142,10 @@ impl Kernel {
                 Op::Asm { .. } => structural[i] = true,
                 Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::Sfpu { .. })
+                | Op::TT(TTOp::SfpLoad(_))
+                | Op::TT(TTOp::SfpStore(_))
+                | Op::TT(TTOp::SfpConst(_))
+                | Op::TT(TTOp::Sfp(_))
                 | Op::TT(TTOp::Unpacr { .. })
                 | Op::TT(TTOp::Setadczw { .. })
                 | Op::TT(TTOp::Setadcx { .. })
@@ -307,6 +311,13 @@ impl Kernel {
                     }
                     add_param!(slot);
                 }
+                Op::TT(TTOp::SfpLoad(load)) => {
+                    add_param!(load.slot);
+                }
+                Op::TT(TTOp::SfpStore(store)) => {
+                    add_param!(store.slot);
+                }
+                Op::TT(TTOp::SfpConst(_)) | Op::TT(TTOp::Sfp(_)) => {}
                 Op::Stack { ops } => {
                     for &p in ops.iter() {
                         add_param!(p);

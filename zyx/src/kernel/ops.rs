@@ -588,6 +588,57 @@ pub struct TTDmKernel {
     pub len: [u32; 3],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One row-level SFPU load ([`TTOp::SfpLoad`]): the `Dst` datum at address `at`
+/// of the Register tile `slot` goes into lane register `reg`. `at` is the
+/// address inside the tile, so codegen packs `slot.id * rows + at`; `fmt` is
+/// the `Dst` format code (`tt_isa::sfpu::mod0_fmt`).
+pub struct TTSfpLoad {
+    /// Register tile read from.
+    pub slot: OpId,
+    /// `Dst` address inside the tile.
+    pub at: u16,
+    /// Lane register written (`L0..L15`; only `L0..L7` are writable).
+    pub reg: u8,
+    /// `Dst` format code (`mod0_fmt::FP32`, `INT32`, ...).
+    pub fmt: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One row-level SFPU store ([`TTOp::SfpStore`]): lane register `reg` goes to
+/// the `Dst` address `at` of the Register tile `slot`. See [`TTSfpLoad`].
+pub struct TTSfpStore {
+    /// Register tile written to.
+    pub slot: OpId,
+    /// `Dst` address inside the tile.
+    pub at: u16,
+    /// Lane register read.
+    pub reg: u8,
+    /// `Dst` format code.
+    pub fmt: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One lane-register immediate ([`TTOp::SfpConst`]): `reg = bits`, in every
+/// enabled lane. One `SFPLOADI` when the low half is zero, two otherwise.
+pub struct TTSfpConst {
+    /// Lane register written.
+    pub reg: u8,
+    /// The F32 bits (or the raw bits, for an integer-form program).
+    pub bits: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One non-addressing SFPU instruction ([`TTOp::Sfp`]): the ISA form named by
+/// its opcode, with the operand fields in the ISA's own order (high bits
+/// first, as `InstructionDef::fields` lists them) and zero padding.
+pub struct TTSfpInsn {
+    /// ISA opcode (`tt_isa::isa::InstructionDef::opcode`).
+    pub op: u8,
+    /// Field values, in `fields()` order.
+    pub args: [u32; 5],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// Tenstorrent backend op: the DRAM boundary stream, run-level compute
 /// programs, and section markers. Lives inside [`Op::TT`].
@@ -646,6 +697,18 @@ pub enum TTOp {
     /// Wait for every move before it in the list to complete: the boundary
     /// between entries that reuse each other's L1 slots.
     DmWait,
+    /// One row-level SFPU load: see [`TTSfpLoad`]. Boxed to keep `Op` in
+    /// budget.
+    SfpLoad(Box<TTSfpLoad>),
+    /// One row-level SFPU store: see [`TTSfpStore`]. Boxed to keep `Op` in
+    /// budget.
+    SfpStore(Box<TTSfpStore>),
+    /// One lane-register immediate: see [`TTSfpConst`]. Boxed to keep `Op` in
+    /// budget.
+    SfpConst(Box<TTSfpConst>),
+    /// One non-addressing SFPU instruction: see [`TTSfpInsn`]. Boxed to keep
+    /// `Op` in budget.
+    Sfp(Box<TTSfpInsn>),
     /// The compute core's T0 program: raw instruction words in emission
     /// order, already encoded by codegen. The launch pushes them into the
     /// role's program slot; nothing decodes them. Operand-free effect like
@@ -1517,7 +1580,11 @@ impl Op {
             | Op::TT(TTOp::DmIndexPick(_))
             | Op::TT(TTOp::DmKernel(_))
             | Op::TT(TTOp::DmWait)
+            | Op::TT(TTOp::SfpConst(_))
+            | Op::TT(TTOp::Sfp(_))
             | Op::TT(TTOp::Semset { .. }) => vec![],
+            &Op::TT(TTOp::SfpLoad(ref load)) => vec![load.slot],
+            &Op::TT(TTOp::SfpStore(ref store)) => vec![store.slot],
             &Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
                 if b.is_null() {
                     vec![a, slot]
@@ -1635,7 +1702,11 @@ impl Op {
             | Op::TT(TTOp::DmIndexPick(_))
             | Op::TT(TTOp::DmKernel(_))
             | Op::TT(TTOp::DmWait)
+            | Op::TT(TTOp::SfpConst(_))
+            | Op::TT(TTOp::Sfp(_))
             | Op::TT(TTOp::Semset { .. }) => vec![],
+            &mut Op::TT(TTOp::SfpLoad(ref mut load)) => vec![&mut load.slot],
+            &mut Op::TT(TTOp::SfpStore(ref mut store)) => vec![&mut store.slot],
             Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
                 if b.is_null() {
                     vec![a, slot]

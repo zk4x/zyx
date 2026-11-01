@@ -354,21 +354,46 @@ tt_tile -> tt_reindex -> CSE/DCE -> tt_dataflow_select -> tt_dst_reuse
         -> verify -> tt_verify
 ```
 
-Three stages, and the split is what makes the middle stage optimizable:
-(1) `tt_dataflow_select` lowers SSA into the TT opset — non-SSA, already
-optimizable; (2) the allocation/reuse passes improve it in place (register
-reuse, ordering, forwarding); (3) codegen turns it into the `u32` words of
-bytecode. Allocation is meant to be **one pass shared by every backend**,
-parameterised by device capacity (see the storage decision below);
-`tt_dst_reuse` is its Tenstorrent configuration today.
+Three stages, and the middle one is what the TTOp form exists for:
+
+1. **`tt_dataflow_select`** lowers the tiled SSA into the TT opset and performs
+   the *primitive* allocation that representation cannot avoid: every result
+   gets a fresh tile, in order, zero reuse. Lowering and allocation are one
+   step — a TT op must name a tile, and there are no TT ops before lowering, so
+   neither can happen without the other.
+2. **`tt_dst_reuse`** is the real allocator: it minimizes that naive tile set
+   (coalescing, in-place merging, store/load forwarding, dead-tile removal) and
+   is where the simple post-regalloc optimizations live — ordering, peepholes,
+   later L1 spills. It only rewrites *which* tile an op names.
+3. **Codegen** converts that post-regalloc IR into bytecode, the `u32` words;
+   the `TTOp` variants do not survive it.
+
+So the TTOp set is not a machine-independent abstraction: it is **whatever the
+simple post-regalloc optimizations need**, the way an LLVM machine IR is
+whatever regalloc and the machine passes need. Data ops manipulate tiles; SFPU
+ops address rows; anything finer (lanes, `LReg` assignment, flag stack,
+`REPLAY` vs unroll, address arithmetic) is the encoder's and never appears in
+the IR.
+
+**Granularity is a tool, not a risk.** The IR goes as fine as the passes need —
+tile-level data ops, row-level SFPU ops, and instruction-level ops where a pass
+must see them — and nothing about that "blows up": `Op` is 24 bytes today, the
+slab is flat, and thousands of ops per kernel are ordinary (the elementwise
+stream that is one `Sfpu { kind }` today is a row or instruction per row then).
+Variants are shaped for what the post-regalloc passes must inspect, for
+orderings they must preserve, and for the granularity at which they must fire —
+never for compactness, and never limited by the 32-byte `Op`, which boxing only
+keeps from growing. `REPLAY` stays an encoder/peephole decision on that stream,
+not a reason to keep the IR macro-sized.
 
 - **`tt_dataflow_select`** (renamed from `tt_lower_llks` / `tt_reg_alloc`) is
-  the phase boundary and instruction selection. It converts the tiled SSA
-  (`Unary`/`Binary`/`Reduce`/`Matmul`, UOps `Exp2`/`Log2`/`Reciprocal`) into
-  the mutating ISA form, and does the *primitive* placement the mutating form
-  needs: every result gets its own tile (zero reuse). It also emits the
-  boundary traffic (`Copy` publish/unpack/pack) and the section nesting.
-  No generic pass may run after it.
+  the phase boundary, instruction selection, and the primitive allocation:
+  it converts the tiled SSA (`Unary`/`Binary`/`Reduce`/`Matmul`, UOps
+  `Exp2`/`Log2`/`Reciprocal`) into the mutating ISA form and gives every result
+  its own tile (zero reuse) as it goes — that assignment is not an optimization
+  decision, it is what makes the ops expressible. It also emits the boundary
+  traffic (`Copy` publish/unpack/pack) and the section nesting. No generic pass
+  may run after it.
 - **`tt_dst_reuse`** is the real allocator over the typed form: tile
   liveness, coalescing, in-place merging, store/load forwarding, dead tile
   removal. Peepholes belong here. L1 spills, when they land, are this pass's
@@ -383,21 +408,26 @@ parameterised by device capacity (see the storage decision below);
 One variant per ISA instruction form, operands typed:
 
 ```
-Sfp      { op: SfpOp, a, b, c, d: u8, imm: u32 }
-SfpLoad  { dst: u8, fmt: Format, row: u32 }
-SfpStore { src: u8, fmt: Format, row: u32 }
+Sfp      { op: u8, a, b, c, d: u8, mod1: u8, imm: u32 }   // ISA ALU form
+SfpLoad  { slot: OpId, at: u16, reg: u8, fmt: u8 }
+SfpStore { slot: OpId, at: u16, reg: u8, fmt: u8 }
 SfpConst { reg: u8, bits: u32 }
 ```
 
 plus the existing ISA ops (`Unpacr`, `Setadczw`, `Setadcx`, `Setrwc`,
-`Zeroacc`, `Mvmul`, `Setc16`, `Setcfg`, `Post`, `Wait`) and the non-ISA
-placement/run/boundary ops (`Copy`, `Semset`, `Dm*`, `EndReader`,
-`EndCompute`, `TensixGrid`).
+`Zeroacc`, `Mvmul`, `Setc16`, `Setcfg`, `Post`, `Wait`, `ReduceTile` until
+item 5) and the non-ISA placement/run/boundary ops (`Copy`, `Semset`, `Dm*`,
+`EndReader`, `EndCompute`, `TensixGrid`).
 
 - `a`/`b`/`c` are source LREGs (`L0..L7` writable; `L8..L15` read-only
-  constants/config), `d` is the destination for forms that write one, `imm`
-  carries the immediate/flag where the form has one. `SfpOp` is the typed
-  mnemonic; it decides which operands are read and written.
+  constants/config), `d` is the destination for forms that write one,
+  `mod1`/`imm` carry the modifier and immediate where the form has one.
+  `op` is the ISA opcode — the form decides which operands are read and
+  written.
+- `slot` is the allocated Register tile and `at` the `Dst` address inside
+  it, so the encoder's row is `slot.id * rows + at`. Row-level ops are
+  numerous by design; `REPLAY` and the address modifiers are the encoder's
+  peephole, not a reason to keep the IR macro-sized.
 - `row` is a DST row, not a free index: a tile lives in an
   `Op::Storage { Register }` whose `id` is the slot the allocator bound, and a
   row is `id * 32` (16-bit tiles) or `id * 64` (32-bit) plus the row inside the
@@ -408,11 +438,12 @@ placement/run/boundary ops (`Copy`, `Semset`, `Dm*`, `EndReader`,
   added, merged, or dropped as the tests demand — one per ISA instruction form
   only for as long as that is the easiest shape to work with. The fixed points
   are the ISA words it must encode and the invariants in `tt_verify`.
-- `Sfpu { kind }` and `ReduceTile` are macros and go away. The expansions
-  live in `tt_dataflow_select`: `exp2(x) = exp(x * ln2)`, `log2(x) =
-  log(x) * log2e`, `reciprocal` = `SFPARECIP` + Newton, reduce = its SFPU
-  tree. The zyx UOp surface has only `Exp2`/`Log2`/`Reciprocal`; `exp`,
-  `log`, `sigmoid` are frontend compositions, not backend ops.
+- `Sfpu { kind }` is a macro and goes away with this cut. Its expansions live
+  in `tt_dataflow_select`: `exp2(x) = exp(x * ln2)`, `log2(x) =
+  log(x) * log2e`, `reciprocal` = `SFPARECIP` + Newton. The zyx UOp surface
+  has only `Exp2`/`Log2`/`Reciprocal`; `exp`, `log`, `sigmoid` are frontend
+  compositions, not backend ops. `ReduceTile` stays until item 5 (its
+  algorithm is still the open part; the `sum` gates are the compass).
 - `kern/sfpu`'s `Program` / `Instruction` / `Code` / `LoopForm` / `REPLAY`
   bookkeeping is to be **deleted** from the lowering path. The macro bodies
   remain as instruction-selection functions that emit typed ops;
@@ -506,18 +537,41 @@ Since the 2026-10-30 handoff:
    deleted, and the runtime takes words. No env-var path was needed: the
    blobs are the same vectors codegen already built, so parity is by
    construction and the gates are bit-identical.
-2. **Typed SFPU port.** `SfpOp` + `Sfp`/`SfpLoad`/`SfpStore`/`SfpConst`;
-   move the macro bodies to `tt_dataflow_select` as typed sequences; the
-   codegen dispatch match is the only encoder; delete `Program` /
-   `Instruction` / `Code` / `LoopForm` / `REPLAY` from the lowering; remove
-   `Sfpu { kind }` and `ReduceTile`. (`REPLAY` the *instruction* stays — it is
-   `tt_isa::frontend`'s word and codegen emits it; only the builders go.)
-   `Op::Source` stays for C/CUDA/SPIR-V/PTX — render just stops emitting it on
-   the TT path.
+2. **Typed SFPU port.** The opset is ISA-level and row-addressed; the
+   per-kind sequence bodies move into the pass; codegen only encodes.
+   Settled shape (2026-11-01):
+   - **Ops**: `SfpLoad` / `SfpStore` (Register tile + the intra-tile `Dst`
+     address, LREG, format), `SfpConst` (LREG immediate, the `SFPLOADI`
+     pair when the low half is non-zero), `Sfp` (the ISA ALU form: opcode +
+     LREG operands and mods). One op per instruction. Per-operation
+     variants (`SfpAbs`, `SfpRecip`, …) are added only when a pass must
+     match on that operation, and the reason is written down.
+   - **Where ids come from**: `tt_dataflow_select` lowers and assigns the
+     tile ids as it goes (primitive allocation, one fresh tile per result);
+     `tt_dst_reuse` is the real allocator and only rewrites which tile an op
+     names (see the storage decision).
+   - **The sequences** (the ~24 kinds the pass can select, plus the row
+     loop, const staging, `if_`/`if_else` flag scopes, NOP-after-MAD) are
+     emitted by `tt_dataflow_select` / a pass it drives. `kern/sfpu`'s
+     `Program` / `Instruction` / `Code` / `LoopForm` go as the
+     encoder-side layer; codegen calls `tt_isa`'s encoders directly.
+   - **`Sfpu { kind }` is deleted in this cut**, together with the
+     `TtEmit::Sfpu` route.
+   - **`ReduceTile` stays until item 5.** The representation is clear but
+     the reduce *algorithm* is not (the `reduce_axis` selection bug), so the
+     `sum`/`sum_sigmoid` gates stay as the compass there.
+   - **Acceptance is the tests**, not word parity: identical words where the
+     old builder already unrolled, interpreter-equal (`kern/sfpu/interp.rs`,
+     which stays as the oracle) otherwise. The interpreter is the only check
+     for kinds no gate touches (`INT_AND`, `REM`, `COS`, …).
+   - **Size is not a reason to abstract**: row-level ops are allowed to be
+     numerous; `REPLAY` is an encoder/peephole decision on that stream.
+   - `Op::Source` stays for C/CUDA/SPIR-V/PTX — render just stops emitting it
+     on the TT path.
    *Started 2026-11-01:* the storage model (`Op::Storage::id`, see the decision
    below) — the allocator stamps the physical index and codegen reads it, so the
-   DST file is IR rather than a codegen side map. Next: the ISA-level `Sfp*`
-   opset and the port of the 24 reachable kinds.
+   DST file is IR rather than a codegen side map. Next: the `Sfp*` opset and the
+   port of the 24 reachable kinds.
 3. **The `Dm` instruction stream (§2).** Flat `TTOp` variants, one per mover op —
    `DmRead`/`DmReadTransposed`/`DmReadBroadcastCol`/`DmWrite`/`DmFill`/
    `DmCopyWords`/`DmIndexPick`, `DmKernel` (no program payload) / `DmWait` —
@@ -616,8 +670,10 @@ Since the 2026-10-30 handoff:
 - zyx UOps are `Exp2`, `Log2`, `Reciprocal` (plus the generic unary/binary);
   `exp`, `log`, `sigmoid` are frontend compositions, never backend ops.
 - No LLK layer, no fused user-op names in the backend.
-- 32-byte ops: the IR may be as low-level as the machine. An interpreter over
-  it is a viable second oracle.
+- The IR may be as low-level as the machine, and no larger than the passes
+  need: op width and op count are not design constraints (`Op` is 24 bytes; a
+  variant is boxed only to keep it so). An interpreter over it is a viable
+  second oracle.
 - Placement lives in the IR (rows, L1); no side tables.
 - **A storage has two levels: what it is, and where it lives.** `Op::Storage`'s
   `dtype`/`scope`/`len` are the declaration (the object's type and size — CUDA's

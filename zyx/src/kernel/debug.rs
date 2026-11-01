@@ -192,6 +192,19 @@ impl Kernel {
                 Op::TT(TTOp::DmWait) => {
                     writeln!(f, "{indent}{blue}dm_wait{reset}").unwrap();
                 }
+                Op::TT(TTOp::SfpLoad(ref load)) => {
+                    writeln!(f, "{indent}{blue}sfp_load{reset} r{} <- slot:{} at:{} fmt:{}", load.reg, load.slot, load.at, load.fmt).unwrap();
+                }
+                Op::TT(TTOp::SfpStore(ref store)) => {
+                    writeln!(f, "{indent}{blue}sfp_store{reset} r{} -> slot:{} at:{} fmt:{}", store.reg, store.slot, store.at, store.fmt)
+                        .unwrap();
+                }
+                Op::TT(TTOp::SfpConst(ref c)) => {
+                    writeln!(f, "{indent}{blue}sfp_const{reset} r{} = {:#x}", c.reg, c.bits).unwrap();
+                }
+                Op::TT(TTOp::Sfp(ref insn)) => {
+                    writeln!(f, "{indent}{blue}sfp{reset} op:{:#x} args:{:?}", insn.op, insn.args).unwrap();
+                }
                 Op::TT(TTOp::TensixGrid(ref grid)) => {
                     writeln!(f, "{indent}{blue}tensix_grid{reset} {grid:?}").unwrap();
                 }

@@ -29,7 +29,8 @@ use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{
-    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmWrite, TTOp, TileDim, UOp,
+    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmWrite, TTOp, TTSfpInsn, TileDim,
+    UOp,
 };
 use crate::scalar::{bf16, f16};
 use crate::slab::Slab;
@@ -364,6 +365,40 @@ fn tt_row_remap(mut code: Vec<Instruction>, a_row: u32, b_row: Option<u32>, out_
         *insn = Instruction::new(word, def);
     }
     code
+}
+
+/// Encode one row-level SFPU instruction: look its form up by ISA opcode and
+/// place the operand words into the form's fields, in the ISA's own order
+/// (high bits first, as `InstructionDef::fields` lists them).
+fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendError> {
+    let def = tt_isa::isa::generated::ALL
+        .iter()
+        .copied()
+        .find(|d| d.opcode() == insn.op)
+        .ok_or_else(|| tt_err(format!("tenstorrent: no ISA instruction has opcode {:#x}", insn.op)))?;
+    let fields = def.fields();
+    if insn.args.len() > fields.len() {
+        return Err(tt_err(format!(
+            "tenstorrent: {:#x} ({}) takes {} fields, the op carries {}",
+            insn.op,
+            def.mnemonic(),
+            fields.len(),
+            insn.args.len()
+        )));
+    }
+    let mut word = def.skeleton();
+    for (field, value) in fields.iter().zip(insn.args.iter()) {
+        if !field.fits(*value) {
+            return Err(tt_err(format!(
+                "tenstorrent: {:#x} ({}) field {} cannot hold {value}",
+                insn.op,
+                def.mnemonic(),
+                field.name()
+            )));
+        }
+        word |= field.place(*value);
+    }
+    Ok(Instruction::new(word, def))
 }
 
 /// The native math program for one generic SFPU op: `a_row` (and `b_row`) in,
@@ -1153,6 +1188,42 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 for insn in code {
                     sec.native.push(insn.word());
                 }
+                sec.compute_ops += 1;
+            }
+            Op::TT(TTOp::SfpLoad(load)) => {
+                // One row-level load: the tile's row base plus the address
+                // inside the tile.
+                let at = sec.dst_row(load.slot)? + u32::from(load.at);
+                let insn = tt_isa::sfpu::load(u32::from(load.reg), u32::from(load.fmt), 0, at)
+                    .map_err(|e| sec.err(format!("sfp_load {id:?}: {e:?}")))?;
+                sec.native.push(insn.word());
+                sec.compute_ops += 1;
+            }
+            Op::TT(TTOp::SfpStore(store)) => {
+                let at = sec.dst_row(store.slot)? + u32::from(store.at);
+                let insn = tt_isa::sfpu::store(u32::from(store.reg), u32::from(store.fmt), 0, at)
+                    .map_err(|e| sec.err(format!("sfp_store {id:?}: {e:?}")))?;
+                sec.native.push(insn.word());
+                sec.compute_ops += 1;
+            }
+            Op::TT(TTOp::SfpConst(c)) => {
+                // `SFPLOADI` when the low half is zero, the two-instruction
+                // `load_f32` form otherwise (as the builder does).
+                let reg = u32::from(c.reg);
+                if c.bits & 0xffff == 0 {
+                    let insn = tt_isa::sfpu::loadi(reg, tt_isa::sfpu::loadi_mode::FLOATB, c.bits >> 16)
+                        .map_err(|e| sec.err(format!("sfp_const {id:?}: {e:?}")))?;
+                    sec.native.push(insn.word());
+                } else {
+                    for insn in tt_isa::sfpu::load_f32(reg, c.bits).map_err(|e| sec.err(format!("sfp_const {id:?}: {e:?}")))? {
+                        sec.native.push(insn.word());
+                    }
+                }
+                sec.compute_ops += 1;
+            }
+            Op::TT(TTOp::Sfp(insn)) => {
+                let encoded = tt_sfp_encode(insn)?;
+                sec.native.push(encoded.word());
                 sec.compute_ops += 1;
             }
             Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) => {}
