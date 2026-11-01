@@ -101,7 +101,8 @@ the host inside a launch:
   (`ttsim::boot_movers`). The mailbox is written first (`MY_X`/`MY_Y`,
   `USABLE` = the DRAM grid's mask, `IN_FLIGHT_CAP`, and every word the host
   owns zeroed), then the image starts and the host waits for `RUNNING` and
-  `CAPS`.
+  `CAPS`. *(Superseded by §2: the two images become backend-built `Program`s, and
+  this boot is just the first residency miss on the B and NC slots.)*
 - A launch hands B its reads as **one list** before the roles run and NC its
   writes as **one list** after they finish
   (`tt_isa::dm::op::LIST` → `dm::LIST` ring, `OP`, `LEN`, `SEQ`, then `DONE` /
@@ -142,6 +143,161 @@ still passes. A host-shadow A/B (pool bytes kept in host memory, identical
 launch path) reproduced it exactly: it is device/tile state left by the
 Matrix Unit program, not memory. Run the gates one at a time until it is
 found.
+
+### 2. COMPILATION ENDS AT CODEGEN — THE DEVICE PROGRAM IS WHAT RUNS
+
+The rule:
+
+> Compilation turns a `Kernel` into the backend's own `Program`s and uploads them to
+> the device once. What runs is those programs, not the `Kernel`: a launch binds
+> arguments and issues. Nothing is encoded, expanded or decided at launch.
+
+**The `Kernel` is the compiler's input, not the program.** The passes and codegen are
+the last compilation. Codegen turns the Kernel into images and the backend collects
+them into its own programs — three of them per kernel, exactly the three the shim
+built:
+
+```
+reader  Program -> RISCV B     its entries
+compute Program -> T0/T1/T2    the three role images
+writer  Program -> RISCV NC    its entries
+```
+
+**The backend owns them afterwards.** A `Program` is uploaded to device memory once
+(DRAM; into L1 by NoC when it runs), and the backend keeps only a table —
+`DeviceProgramId -> [(core, device address, length)]`. No blobs in host RAM after
+compilation; a copy kept for debugging is a debug artifact, not a program. That is
+CUDA's module/handle: the bytes are on the card, the host holds the address.
+
+**A launch binds arguments and issues.** It writes the operand words a program's
+holes name — chunk addresses, variable values, grid size — plus the mailbox and
+sequence words that start it. It never adds, removes, reorders, splits or encodes.
+
+**Residency is per (tile, core), over five slots:**
+
+```
+resident[tile] = [Option<(DeviceProgramId, generation)>; 5]   // B, NC, T0, T1, T2
+```
+
+At most five integer compares per tile per launch; a load only when a slot's identity
+changes, and a load is a PCIe write the first time or a NoC read from the program's
+DRAM copy after that. The two mover firmware images are programs as well — created by
+the backend at init, not derived from any `Kernel` — so **boot is not a concept**: it
+is the first residency miss on B or NC.
+
+- Lifetime: refcounted (a compiled kernel holds one ref per program it created). Slab
+  slots may be recycled, so identity is `(id, generation)` and a stale ledger entry is
+  a miss by construction. zyx releases almost nothing; the one release is autotuning
+  dropping a candidate when a better one wins.
+- Invalidation: a tile that failed clears its ledger entries and reloads on next use —
+  the same idea as `kern::runtime::Resident`'s `poisoned` flag, one level down.
+
+**PCIe is the budget.** That is *why* compilation exists: CUDA's execution is "bind
+the args, launch the kernel the pointer names", and the only reason it can be that is
+that the kernel's bytes already went over the bus at load time. On TT the same must
+hold:
+
+- a compiled kernel's bytes — role blobs, mover entries, CB/DST config, mailbox
+  preloads — are uploaded **once**, and live in DRAM (28 GB, free) and/or a tile's L1
+  program cache;
+- a launch writes **args only**: chunk addresses, variable values, grid size, and the
+  sequence/generation words that start things. Cost proportional to the argument
+  count, never to program size or tensor size;
+- the scarce resource is L1, not DRAM: 1.5 MB per tile, of which the data arena takes
+  1 MB, so residency has a policy and a miss is a NoC load (a `Dm` read from DRAM into
+  the program cache), not a PCIe transfer;
+- which is why per-page entries are pre-written with operand holes rather than built
+  at launch, and why `Dm(Kernel)` naming a resident program is the endpoint of the
+  `Dm` work, not an optimization on top of it.
+
+The CPU exists because Tenstorrent has no "launch kernel" command. So the dispatch
+is the physical picture, one line per core:
+
+```
+reader list -> RISCV B     Unpack blob -> T0     Math blob -> T1
+                           Pack blob   -> T2     writer list -> RISCV NC
+```
+
+and with `Dm(Kernel)` as an entry of the reader list even that collapses: B runs
+the reads, starts the roles, then runs the writes — one list, one round trip.
+
+What this forbids, each of which the launch does today (compilation at runtime):
+
+- expanding a `TTDmMove` into per-page mover entries — the entry count is stream
+  shape, so **codegen** emits one op per page (settled below);
+- cutting a list at `dm::LIST_MAX` — stream shape; the per-core entry counts must
+  already fit, checked at compile time (a `tt_verify` invariant), so the launch's
+  list boundary is just "ops changed core", never a split decision;
+- computing strides at launch — they are compile-time constants carried by the op;
+  substituting a grid point's coordinates into them is dispatch (settled below);
+- deciding per writer move whether the host narrows;
+- reading a *second program representation* out of the IR: the `Kernel` must not carry
+  tables the backend re-reads (`TTNativeProgram`'s `TTDmMove` / `TTLoop` /
+  `TTSemaphoreInit` / `TTDstRow` / CB `l1` table, `TTProgramDesc`). The backend's own
+  program table is fine — that is the compiled form, not a second IR.
+
+Mover boot is *not* on that list: it changes no op and no entry, it is the first
+residency miss on a core (`resident[tile]`), not a decision about the stream.
+
+**Target op order as codegen leaves it:** `TensixGrid`, `Params`, then the flow —
+`Dm(Read …)`*, `Dm(Kernel)` (which starts the role blobs), `Dm(Write …)`*,
+`Dm(Wait)`, with `Unpack`/`Math`/`Pack` sitting as the programs that `Dm(Kernel)`
+starts. Every address-carrying op holds an operand slot the dispatch fills. Nothing
+in the dispatch is a `match` over policy, only a `match` over how to issue.
+
+**What must therefore move into the passes and codegen:** the per-page expansion of a
+move (codegen, one op per page), the section assignment of `Dm` ops (codegen consumes
+`EndReader`/`EndCompute`), grid dispatch as an operand substitution the dispatch
+performs over a launch-time count, and narrowing as an op.
+
+**Settled (2026-11-01):**
+
+- **One flat `TTOp`.** The mover's ops are plain `TTOp` variants, no sub-enum;
+  a payload that would grow `Op` past its budget is boxed, like the blobs are.
+- **Grid dispatch is launch-time and legitimate.** How many Tensix cores a launch
+  covers is a launch value, the way a CUDA grid size is: the dispatch iterates the
+  points and substitutes each point's coordinates into the ops that name them. The
+  ops themselves are tile-uniform and their strides are compile-time constants, so
+  nothing about the stream's shape changes with the grid.
+- **The role blob is the program-slot image.** Codegen emits exactly what the slot
+  holds — loop header (when there is one), code, and the length word — so the
+  dispatch writes bytes and nothing else. `REPLAY` stays an *instruction* in the
+  stream for a body that fits its 32-word buffer; the `mailbox::loops` header exists
+  only for a body too long for that buffer. Today `compute_loops` is never filled
+  (SFPU bodies are unrolled), so no header exists — but the code that would build
+  one sits in the dispatch today and belongs to codegen.
+- **No dynamic stride math on TT.** A stride or extent that bottoms out in
+  `Param { Variable }` is a loud TT compile error, not a runtime computation: shapes
+  must fold to `Const` before codegen. Chunk addresses stay launch values, but they
+  are *operands*, not strides, and the pool aligns them to the 4 KB stripe — which
+  is what keeps every move's entry count compile-time.
+- **Host narrowing is a simulator artifact.** The pinned `libttsim` refuses PACR
+  `pack_fmt_conv_mode = 0x105` (`docs/learnings/ttsim-divergence.md`, "BF16 late
+  narrowing"); the card packs `F32 → BF16` itself, and origin/main's shim had no
+  narrowing path at all because tt-metal's packer did it. So the writer's host narrow
+  is ttsim-only, and disappears on silicon.
+- **`REPLAY` is an instruction and stays.** What goes is the `Program` / `LoopForm`
+  *builders* and the decode-shaped `Instruction` plumbing; `tt_isa::frontend::REPLAY`
+  words are part of the stream. `Code` shrinks to `Loop` plus the free `stored()`.
+- **Compilation output is the backend's `Program`, not the `Kernel`.** A `Kernel` is
+  the compiler's input; codegen turns it into per-core images and the backend keeps a
+  device-address table (`DeviceProgramId -> [(core, address, length)]`). After
+  compilation there is no second program structure in host RAM, and no IR-side table
+  the launch consults.
+- **Direction is the op kind.** B-bound and NC-bound work are different `Dm` variants,
+  so there is no "which core" field to fill at launch. `EndReader`/`EndCompute` are
+  consumed by codegen and do not appear in the compiled kernel.
+- **`Op::Loop` with a dynamic trip count is IR-legal** (CUDA does it), but on TT the
+  count must fold to `Const`; a `Param`-backed count is a loud compile error, not a
+  runtime value.
+- **Per-page expansion is codegen's.** One `Dm` op per 4 KB page, carrying a symbolic
+  chunk-relative offset; the dispatch substitutes `param → chunk address` and derives
+  channel/offset. Address translation, no shape decision.
+
+**Consequences:** `TTProgram` becomes the backend `Program` (device-resident, address
+table only); `TTNativeProgram` and `TTProgramDesc` die as IR-side structures;
+`TTDmMove` becomes `Dm` ops; the launch becomes a walk that binds values and issues;
+and the `Kernel` does not survive compilation beyond debugging.
 
 ### Pipeline and pass names
 
@@ -222,18 +378,15 @@ placement/run/boundary ops (`Copy`, `Semset`, `EndReader`, `EndCompute`,
   Reader/Writer are not blobs: they are the tile's movers (RISCV B/NC), and
   the launch hands them descriptor lists (§1). The launch walks whatever
   role blobs exist; it never assumes exactly three.
-- **The Kernel after codegen IS the compiled program.** No `TTNativeProgram`:
-  launch walks the Kernel's ops in a guaranteed order (grid, params, role
-  blobs, copies/sync/descriptors), stages the moves, runs the blobs per grid
-  point and reads back. `TTDmMove` / `TTDstRow` / `TTSemaphoreInit` collapse
-  into op payloads; `tt_decode` (word → `Instruction`) goes away and the
-  runtime takes words (`&[u32]`). The simulator may decode internally; the
-  transport must not.
-- Parity gate for the container swap (agreed ordering): codegen emits the
-  blobs while the old `native.compute` path still exists; an env var selects
-  the blob launch path, and every role's `Vec<u32>` (and loop table) must be
-  exactly equal before the old path is deleted. Only then does the typed-op
-  port start.
+- **Codegen is the last compilation; the backend's `Program` is what runs** (§2).
+  The `Kernel` is the compiler's input: codegen turns it into per-core images, the
+  backend uploads them once and keeps a device-address table, and the launch only
+  binds operands and issues. `TTDmMove` / `TTDstRow` / `TTSemaphoreInit` /
+  `TTProgramDesc` are to collapse into ops; `tt_decode` is already gone and the
+  runtime takes words (`&[u32]`). The simulator may decode internally; the transport
+  must not.
+- ~~Parity gate for the container swap~~ — done: see the "Blobs are IR ops"
+  bullet above for the final op order and the parity evidence.
 
 ### Loops
 
@@ -286,19 +439,53 @@ Since the 2026-10-30 handoff:
    move the macro bodies to `tt_dataflow_select` as typed sequences; the
    codegen dispatch match is the only encoder; delete `Program` /
    `Instruction` / `Code` / `LoopForm` / `REPLAY` from the lowering; remove
-   `Sfpu { kind }` and `ReduceTile`.
-3. **Reader/Writer DM** — *done for the boundary itself* (2026-11-01): the
-   tile's B/NC movers execute every boundary move as one list per direction,
-   see §1. What remains of this step is folding the role run into the same
-   list (`dm::op::KERNEL` + resident programs), so an op is one host round
-   trip, and moving placement upload/readback onto `HOST_READ`/`HOST_WRITE`.
-4. **Loop lowering** (`REPLAY` / mailbox loop table, launch-time counts) for
-   `softmax`; multi-tile per core.
+   `Sfpu { kind }` and `ReduceTile`. (`REPLAY` the *instruction* stays — it is
+   `tt_isa::frontend`'s word and codegen emits it; only the builders go.)
+   This is also where the dead `Op::Source` section text dies (render stops
+   emitting it; `EndReader`/`EndCompute` are consumed by codegen).
+3. **The `Dm` instruction stream (§2).** Flat `TTOp` variants, one per mover op —
+   `DmRead`/`DmReadTransposed`/`DmReadBroadcastCol`/`DmWrite`/`DmHostRead`/
+   `DmHostWrite`, `DmTilize`/`DmUntilize`/`DmCopyWords`/`DmFill`/`DmIndexPick`,
+   `DmKernel` (no program payload) / `DmWait` / `DmBarrier` — emitted by codegen
+   into the reader (B) and writer (NC) sections. Codegen expands each move into
+   one `Dm` op per 4 KB page (symbolic chunk-relative operand), so the number and
+   order of entries never depend on the launch; `EndReader`/`EndCompute` are
+   consumed here. `TTNativeProgram` (`TTDmMove`, `TTLoop`, `TTSemaphoreInit`,
+   `TTDstRow`, the CB `l1` table) and `TTProgramDesc` die as the launch stops
+   reading side tables, and the launch becomes substitution + issue only.
+   *Done so far:* the boundary itself runs on the movers (§1); the stream is
+   still built inside the launch. **The movers stay serial here** — one list
+   per direction per launch, reads then writes, no overlap with compute. That is
+   deliberate: async CBs are step 7.
+   Follow-on in this step: move the programs into the slab and reference them
+   (`§2 Program cache and residency`) — `Reader`/`Writer` naming a program id, and
+   `Unpack`/`Math`/`Pack` holding a reference instead of inline `Box<[u32]>` (the
+   inline boxes of step 1 are the intermediate state). That is what makes a launch
+   args-only.
+4. **Loop lowering** (`REPLAY` for bodies that fit its 32-word buffer, the
+   `mailbox::loops` header only for longer ones) for `softmax`; multi-tile per
+   core. A trip count that does not fold to `Const` is a TT compile error (§2).
 5. **Fixes**: `Kernel::dtype` for `TTOp::Setrwc` returns `dst`, not `IDX_T`
    (the `matmul_sigmoid` I64); `tt_tile`'s grouped index math (32 tiles per
-   step where one is meant); the reduce kind keyed on `reduce_axis`.
+   step where one is meant); the reduce kind keyed on `reduce_axis`; and the
+   tile state `matmul` leaves behind, which makes every later SFPU kernel in the
+   same process read zeros from DST (`sigmoid` → 0.5) while copies still work
+   — proven not to be the memory path (host-shadow A/B), so it is device/tile
+   state from the Matrix Unit program.
 6. **L1 spills** in `tt_dst_reuse` (needs the scheduling story: a mid-T1
    spill needs T0/T2 and the roles currently run in order).
+7. **Async CB pipeline (deferred; last).** CBs become multi-tile rings with
+   credits so the reader streams into a CB while T0/T1/T2 consume it and T2's
+   packs drain through NC at the same time — double-buffered, the shape
+   origin/main already had. Emitted as `Dm` entries (`op::CB` with stream 0/1,
+   `op::PAIR`/`PAIR_CALL` so B starts NC, `op::RELEASED`, `WAIT`/`BARRIER`) plus
+   per-tile role programs written against those credits, and the packer/unpacker
+   synchronisation between roles that origin/main already had. Requires: more
+   than one tile per core per launch, the tile loop inside the stream instead of
+   in the grid dispatch, and role programs built for per-tile credit
+   synchronisation. Until then the movers stay serial (step 3) — this is the step
+   that recovers throughput, and it is explicitly not a prerequisite for anything
+   above.
 
 ### Decisions / non-negotiables
 
@@ -313,13 +500,25 @@ Since the 2026-10-30 handoff:
 - 32-byte ops: the IR may be as low-level as the machine. An interpreter over
   it is a viable second oracle.
 - Placement lives in the IR (rows, L1); no side tables.
+- Codegen is the last compilation step. A kernel that has been through the
+  passes runs on the device as it is; the dispatch fills operands and issues,
+  and decides nothing (§2).
+- Compilation's output is the backend's `Program` (per core: reader, compute,
+  writer), uploaded once and referenced by device address; the `Kernel` is the
+  compiler's input and does not run. Per-tile residency (five slots: B, NC, T0, T1,
+  T2) is backend state keyed by `(id, generation)`; there is no "boot" step and no
+  hidden program structure.
 - Loops are `REPLAY`/loop-table entries with launch-time counts; unrolling is
   a search decision before the device epilogue.
 - `Pool::TT` is device DRAM. Host staging is only upload/readback.
 - The DRAM↔L1 boundary belongs to the tile's data movers (RISCV B reads,
   RISCV NC writes), never to the host. A launch hands the movers lists; no
   tensor byte crosses the host between placement and readback. Only a 16-bit
-  output's narrowing is the host's, and only because the packer cannot do it.
+  output's narrowing is the host's, and only because the pinned ttsim refuses
+  the packer's format conversion (silicon does it on the card).
+- The movers run **serial** with compute until step 7: reads, then the roles,
+  then writes, one list per direction. Async CBs with double buffering are
+  origin/main's shape and stay deferred until the rest lands.
 
 ## HISTORY (2026-10-30) — superseded by CURRENT STATE above
 
