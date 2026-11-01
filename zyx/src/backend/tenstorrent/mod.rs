@@ -75,7 +75,6 @@ pub(crate) mod kern;
 pub(crate) mod sim;
 pub(crate) mod ttsim;
 
-use kern::code::Loop;
 use kern::runtime::SemaphoreInit;
 use tt_isa::mailbox::role::Mailbox;
 use tt_isa::tensix::Core;

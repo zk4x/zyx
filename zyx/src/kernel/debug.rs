@@ -145,6 +145,53 @@ impl Kernel {
                     )
                     .unwrap();
                 }
+                Op::TT(TTOp::DmReadTransposed(ref t)) => {
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_read_transposed{reset} param:{} dst:{:#x} base:{}",
+                        t.param, t.dst, t.base
+                    )
+                    .unwrap();
+                }
+                Op::TT(TTOp::DmReadBroadcastCol(ref t)) => {
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_read_broadcast_col{reset} param:{} dst:{:#x} base:{}",
+                        t.param, t.dst, t.base
+                    )
+                    .unwrap();
+                }
+                Op::TT(TTOp::DmFill(ref fill)) => {
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_fill{reset} value:{} bounds:{:#x} dst:{:#x}",
+                        fill.value, fill.bounds, fill.dst
+                    )
+                    .unwrap();
+                }
+                Op::TT(TTOp::DmCopyWords(ref copy)) => {
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_copy_words{reset} {:#x}->{:#x} count:{}",
+                        copy.src, copy.dst, copy.count
+                    )
+                    .unwrap();
+                }
+                Op::TT(TTOp::DmIndexPick(ref pick)) => {
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_index_pick{reset} idx:{:#x} src:{:#x} out:{:#x} bound:{}",
+                        pick.indices, pick.source, pick.output, pick.bound
+                    )
+                    .unwrap();
+                }
+                Op::TT(TTOp::DmKernel(ref kernel)) => {
+                    writeln!(f, "{indent}{blue}dm_kernel{reset} generation:{} at:{:?} len:{:?}", kernel.generation, kernel.at, kernel.len)
+                        .unwrap();
+                }
+                Op::TT(TTOp::DmWait) => {
+                    writeln!(f, "{indent}{blue}dm_wait{reset}").unwrap();
+                }
                 Op::TT(TTOp::TensixGrid(ref grid)) => {
                     writeln!(f, "{indent}{blue}tensix_grid{reset} {grid:?}").unwrap();
                 }

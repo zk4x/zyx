@@ -229,11 +229,11 @@ role's program with the B mover (`runtime::run` takes a `load` callback, so the 
 happens after the setup run that clobbers slot 0); `release` frees a program's images
 and their DRAM. The boundary stream is IR too: `render_tt` emits one
 `TTOp::DmRead`/`DmWrite` per 4 KB page and `compile` turns them into the program's
-`reader`/`writer` tables, so no side table is re-read at launch. Still launch-side and
-still to do: the reader/writer *lists* as `images` (they are per-launch ranges today),
-and the three role **firmware** images, which `runtime::run` still loads into T0/T1/T2
-on every launch — backend constants kept running across launches is the `Resident`
-generation protocol, not this cache.
+`reader`/`writer` tables, so no side table is re-read at launch. Still launch-side:
+the reader/writer *lists* (per-launch ranges written into the mover's L1 ring —
+see item 7 for why they cannot be images), and the three role **firmware** images,
+which `runtime::run` still loads into T0/T1/T2 on every launch — backend constants
+kept running across launches is the `Resident` generation protocol, not this cache.
 
 **PCIe is the budget.** That is *why* compilation exists: CUDA's execution is "bind
 the args, launch the kernel the pointer names", and the only reason it can be that is
@@ -286,10 +286,12 @@ residency miss on a core (`resident[tile]`), not a decision about the stream.
 `Unpack`/`Math`/`Pack`, then the flow — `DmRead`*, `Dm(Kernel)` (which starts the
 role blobs), `DmWrite`*, `Dm(Wait)`. **Today** the reader's `DmRead` pages sit in the
 reader section (before `EndReader`), the writer's `DmWrite` pages and the `Semset`s
-after `EndCompute`, and `compile` turns them into the program's tables; `Dm(Kernel)`
-and `Dm(Wait)` do not exist yet (the launch still issues the role start and the lists
-around it). Every address-carrying op holds the operand the dispatch fills. Nothing
-in the dispatch is a `match` over policy, only a `match` over how to issue.
+after `EndCompute`, and `compile` turns them into the program's tables. The
+`DmKernel`/`DmWait` variants exist but nothing emits them yet, so the launch still
+issues the role start and the waits around the lists; `tt_verify` already counts
+every `Dm` op as one entry of its section's list and rejects a stream past
+`dm::LIST_MAX`. Every address-carrying op holds the operand the dispatch fills.
+Nothing in the dispatch is a `match` over policy, only a `match` over how to issue.
 
 **What must therefore move into the passes and codegen:** the per-page expansion of a
 move (codegen, one op per page), the section assignment of `Dm` ops (codegen consumes
@@ -493,10 +495,13 @@ Since the 2026-10-30 handoff:
    This is also where the dead `Op::Source` section text dies (render stops
    emitting it; `EndReader`/`EndCompute` are consumed by codegen).
 3. **The `Dm` instruction stream (§2).** Flat `TTOp` variants, one per mover op —
-   `DmRead`/`DmReadTransposed`/`DmReadBroadcastCol`/`DmWrite`/`DmHostRead`/
-   `DmHostWrite`, `DmTilize`/`DmUntilize`/`DmCopyWords`/`DmFill`/`DmIndexPick`,
-   `DmKernel` (no program payload) / `DmWait` / `DmBarrier` — emitted by codegen
-   into the reader (B) and writer (NC) sections. Codegen expands each move into
+   `DmRead`/`DmReadTransposed`/`DmReadBroadcastCol`/`DmWrite`/`DmFill`/
+   `DmCopyWords`/`DmIndexPick`, `DmKernel` (no program payload) / `DmWait` —
+   emitted by codegen into the reader (B) and writer (NC) sections. (The ISA has
+   no tilize/untilize or host read/write mover op, so those names are gone: the
+   unpacker tilizes, and `Pool::TT` is device DRAM with no host data path.
+   `DmBarrier` is multi-core sync and belongs with multi-tile dispatch, not with
+   the serial stream. The async family moved to item 7.) Codegen expands each move into
    one `Dm` op per 4 KB page (symbolic chunk-relative operand), so the number and
    order of entries never depend on the launch; `EndReader`/`EndCompute` are
    consumed here. `TTNativeProgram` (`TTDmMove`, `TTLoop`, `TTSemaphoreInit`,
@@ -504,10 +509,14 @@ Since the 2026-10-30 handoff:
    reading side tables, and the launch becomes substitution + issue only.
    **The movers stay serial here** — one list per direction per launch, reads
    then writes, no overlap with compute. That is deliberate: async CBs are step 7.
-   Follow-on in this step: move the bytes into the `images` slab and reference them
-   (§2) — `Reader`/`Writer` naming an `ImageId`, and `Unpack`/`Math`/`Pack` holding a
-   reference instead of inline `Box<[u32]>` (the inline boxes of step 1 are the
-   intermediate state). That is what makes a launch args-only.
+   Follow-on in this step: move the bytes into the `images` slab (§2) —
+   `Unpack`/`Math`/`Pack` holding an `ImageId` instead of inline
+   `Box<[u32]>` (the inline boxes of step 1 are the intermediate state). That is
+   what makes a launch args-only. The reader/writer *lists*, by contrast, are not
+   images and never will be under this design: `mover_list` writes absolute
+   channel/offset words into the mover's **L1** list ring, and a mover's list
+   cannot be loaded by that mover out of DRAM. That leg moved to item 7, where
+   the async pipeline decides the final list shape anyway.
    *Done 2026-11-01:*
    - **Two tables + residency** (§2 "Implemented"): `Image`/`ImageId`, the DRAM
      upload at compile, `resident[tile]` over the five slots, the B-mover load
@@ -521,12 +530,22 @@ Since the 2026-10-30 handoff:
      `reader`/`writer`/`sems`/`n_inputs`/`n_outputs`/`gws` table. The launch
      substitutes `param -> chunk` and the grid point and issues — no side table
      is read.
-   - **Still to come in this item:** the other mover ops (`DmReadTransposed`,
-     `DmHostRead/Write`, `DmTilize`/`DmUntilize`/`DmCopyWords`/`DmFill`/
-     `DmIndexPick`, `DmKernel`, `DmWait`, `DmBarrier`), the `tt_verify`
-     invariant that a core's entry count fits `dm::LIST_MAX` at compile time,
-     and folding the reader/writer lists into `images` (a list becomes a blob
-     the mover runs, so `TTProgram::sequence` grows to five legs).
+   - **The other mover ops exist** (2026-11-01): `DmReadTransposed`/
+     `DmReadBroadcastCol` (`TTDmTileRead`), `DmFill`, `DmCopyWords`,
+     `DmIndexPick`, `DmKernel` and `DmWait` are flat `Box`ed `TTOp` variants
+     mirroring their ISA entry words. Nothing emits them yet; they are the
+     vocabulary the stream will be written in, and every op match treats them as
+     operand-free structural entries.
+   - **`LIST_MAX` is a compile-time invariant** (2026-11-01): `tt_verify` counts
+     the mover entries of the reader section (B) and the writer section (NC)
+     separately and rejects either over `dm::LIST_MAX` (512), and rejects a mover
+     op inside the compute section. `mover_list` no longer splits a long stream
+     into several lists; a stream past the ring **panics** instead, so a bypassed
+     check is loud rather than a silent slowdown.
+   - **Still to come in this item:** emitting `DmKernel`/`DmWait` from codegen and
+     letting `compile`/the launch issue them (the launch still starts the roles
+     and waits around the page lists itself), and `Unpack`/`Math`/`Pack` naming an
+     `ImageId` instead of inline words.
 4. **Loop lowering** (`REPLAY` for bodies that fit its 32-word buffer, the
    `mailbox::loops` header only for longer ones) for `softmax`; multi-tile per
    core. A trip count that does not fold to `Const` is a TT compile error (§2).
@@ -551,6 +570,17 @@ Since the 2026-10-30 handoff:
    synchronisation. Until then the movers stay serial (step 3) — this is the step
    that recovers throughput, and it is explicitly not a prerequisite for anything
    above.
+   Moved here from item 3 (2026-11-01), because both are properties of the
+   pipeline, not of the serial stream:
+   - **The async `Dm` family**: `Pair`, `PairCall`, `Cb` (stream 0/1 credits),
+     `Shared` (NC runs B's writer entries), `Released` (B waits on NC/T2 output
+     credits) — as flat `TTOp` variants, emitted by codegen like the serial ones.
+   - **The reader/writer lists as `images`.** Not the naive "list is a blob the
+     B mover loads": `mover_list` writes absolute channel/offset words into the
+     mover's **L1** list ring, and a mover cannot load its own list out of DRAM.
+     The async pipeline settles where the list lives (ring in L1 vs. a DRAM image
+     streamed by `CALL`, which the ISA supports via `TRACE_CHUNK`), so
+     `TTProgram::sequence` grows to five legs here or not at all.
 
 ### Decisions / non-negotiables
 

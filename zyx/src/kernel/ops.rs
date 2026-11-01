@@ -491,6 +491,91 @@ pub struct TTDmWrite {
     pub narrow: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One tile-slot read of the reader list, in either shape the mover knows:
+/// transposed ([`TTOp::DmReadTransposed`]) or with column 0 copied across
+/// ([`TTOp::DmReadBroadcastCol`]). Both are `dm::op::READ_TRANSPOSED` /
+/// `READ_BROADCAST_COL`: exactly one tile slot, so no length, and the
+/// transpose scratch slot is the mover's, not the kernel's.
+pub struct TTDmTileRead {
+    /// Global head-order param ordinal (the launch arg index).
+    pub param: u32,
+    /// L1 byte address the shaped tile lands at.
+    pub dst: u32,
+    /// Byte offset of the tile inside the param's slice at grid point `(0, 0)`.
+    pub base: u32,
+    /// Byte stride of the slice per grid index on axis 0 (the row).
+    pub gstride0: u32,
+    /// Byte stride of the slice per grid index on axis 1 (the column).
+    pub gstride1: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One padding fill of a reader/writer list ([`TTOp::DmFill`]): every datum
+/// of the tile slot at `dst` outside the first `bounds & 0xff` rows and
+/// `bounds >> 8` columns takes `value` (each bound of `0` means 32).
+pub struct TTDmFill {
+    /// Datum written outside the bounds.
+    pub value: u32,
+    /// Packed bounds, as `dm::fill::param` packs them.
+    pub bounds: u32,
+    /// L1 byte address of the tile slot.
+    pub dst: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One L1-to-L1 word copy of a list ([`TTOp::DmCopyWords`]):
+/// `count` aligned words from `src` to `dst`, `src_stride`/`dst_stride`
+/// bytes apart. The mover does no arithmetic: this is a bit-preserving
+/// move inside the data arena.
+pub struct TTDmCopyWords {
+    /// L1 byte address copied from.
+    pub src: u32,
+    /// L1 byte address copied to.
+    pub dst: u32,
+    /// Words copied.
+    pub count: u32,
+    /// Byte stride between source words.
+    pub src_stride: u32,
+    /// Byte stride between destination words.
+    pub dst_stride: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One indexed gather of a list ([`TTOp::DmIndexPick`]): B selects one datum
+/// per row using resident I32 indices. All three slots are L1 addresses; the
+/// source holds a 32-column chunk beginning at column `first`.
+pub struct TTDmIndexPick {
+    /// L1 byte address of the I32 indices.
+    pub indices: u32,
+    /// L1 byte address of the source tile.
+    pub source: u32,
+    /// L1 byte address of the gathered tile.
+    pub output: u32,
+    /// Indices outside `0..bound` report a domain error before any access.
+    pub bound: u32,
+    /// First source column of the chunk.
+    pub first: u32,
+    /// Rows gathered.
+    pub rows: u32,
+    /// Bytes per gathered datum.
+    pub datum_bytes: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// The list entry that runs the tile's roles ([`TTOp::DmKernel`]): the mover
+/// waits for every move before it, points each role at its program image,
+/// bumps the generation, and waits for the acknowledgement. Zero `at`/`len`
+/// means "run what the host staged".
+pub struct TTDmKernel {
+    /// Generation counter the roles acknowledge.
+    pub generation: u32,
+    /// Program address per role (T0, T1, T2); zero means staged.
+    pub at: [u32; 3],
+    /// Program length in words per role (T0, T1, T2).
+    pub len: [u32; 3],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// Tenstorrent backend op: the DRAM boundary stream, run-level compute
 /// programs, and section markers. Lives inside [`Op::TT`].
@@ -527,6 +612,28 @@ pub enum TTOp {
     /// One DRAM page of the writer list (L1 -> DRAM). See [`TTOp::DmRead`]; the
     /// direction is the variant, never a launch-time choice.
     DmWrite(Box<TTDmWrite>),
+    /// One transposed tile read of the reader list: the mover lands the tile
+    /// slot in its scratch slot and writes the transpose to `dst`. Boxed to
+    /// keep `Op` in budget.
+    DmReadTransposed(Box<TTDmTileRead>),
+    /// One broadcast tile read of the reader list: as [`TTOp::DmReadTransposed`],
+    /// but every column of the tile takes the value of column 0.
+    DmReadBroadcastCol(Box<TTDmTileRead>),
+    /// One padding fill of a list: see [`TTDmFill`]. Boxed to keep `Op` in
+    /// budget.
+    DmFill(Box<TTDmFill>),
+    /// One L1-to-L1 word copy of a list: see [`TTDmCopyWords`]. Boxed to keep
+    /// `Op` in budget.
+    DmCopyWords(Box<TTDmCopyWords>),
+    /// One indexed gather of a list: see [`TTDmIndexPick`]. Boxed to keep `Op`
+    /// in budget.
+    DmIndexPick(Box<TTDmIndexPick>),
+    /// The list entry that runs the three role programs: see [`TTDmKernel`].
+    /// Boxed to keep `Op` in budget.
+    DmKernel(Box<TTDmKernel>),
+    /// Wait for every move before it in the list to complete: the boundary
+    /// between entries that reuse each other's L1 slots.
+    DmWait,
     /// The compute core's T0 program: raw instruction words in emission
     /// order, already encoded by codegen. The launch pushes them into the
     /// role's program slot; nothing decodes them. Operand-free effect like
@@ -1385,8 +1492,15 @@ impl Op {
             | Op::TT(TTOp::Setcfg { .. })
             | Op::TT(TTOp::Post { .. })
             | Op::TT(TTOp::Wait { .. })
-            | Op::TT(TTOp::DmRead { .. })
-            | Op::TT(TTOp::DmWrite { .. })
+            | Op::TT(TTOp::DmRead(_))
+            | Op::TT(TTOp::DmWrite(_))
+            | Op::TT(TTOp::DmReadTransposed(_))
+            | Op::TT(TTOp::DmReadBroadcastCol(_))
+            | Op::TT(TTOp::DmFill(_))
+            | Op::TT(TTOp::DmCopyWords(_))
+            | Op::TT(TTOp::DmIndexPick(_))
+            | Op::TT(TTOp::DmKernel(_))
+            | Op::TT(TTOp::DmWait)
             | Op::TT(TTOp::Semset { .. }) => vec![],
             &Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
                 if b.is_null() {
@@ -1496,8 +1610,15 @@ impl Op {
             | Op::TT(TTOp::Setcfg { .. })
             | Op::TT(TTOp::Post { .. })
             | Op::TT(TTOp::Wait { .. })
-            | Op::TT(TTOp::DmRead { .. })
-            | Op::TT(TTOp::DmWrite { .. })
+            | Op::TT(TTOp::DmRead(_))
+            | Op::TT(TTOp::DmWrite(_))
+            | Op::TT(TTOp::DmReadTransposed(_))
+            | Op::TT(TTOp::DmReadBroadcastCol(_))
+            | Op::TT(TTOp::DmFill(_))
+            | Op::TT(TTOp::DmCopyWords(_))
+            | Op::TT(TTOp::DmIndexPick(_))
+            | Op::TT(TTOp::DmKernel(_))
+            | Op::TT(TTOp::DmWait)
             | Op::TT(TTOp::Semset { .. }) => vec![],
             Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
                 if b.is_null() {

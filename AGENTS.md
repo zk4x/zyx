@@ -190,9 +190,12 @@ zyx/src/kernel/   kernel IR, codegen, ALL optimization passes
 ## Defensive programming
 - Fail loudly at the spot (`expect`/`todo!()`). No fake values
   (`unwrap_or(n)`, sentinels, default arms, silent clears).
-- Every variant its own arm (duplicate bodies, no `A | B`). Only trailing
-  `unreachable!()`/`todo!()` after all real arms. Fallthrough needs approval.
-  `_ => {}`/`None`/`false` forbidden; `_ => todo!()` desired.
+- No silent fallthrough. A wildcard arm must be loud: `_ => todo!()` or
+  `unreachable!()`, never `_ => {}`/`None`/`false`/a made-up value.
+  Grouping variants in one arm (`A | B` with the same body) is fine, and a
+  new variant may land behind a loud catch-all until its real arm exists:
+  `todo!()` is a report, `_ => {}` is a silent bug. The goal is no silent
+  bugs, not exhaustive busywork.
 - Full resolution (`resolve_const`) over trivial-case matching.
 - Never enforce a should-be invariant with real code (`clear()`, re-init
   "just in case" hides the leak). `debug_assert!` it or leave it alone.

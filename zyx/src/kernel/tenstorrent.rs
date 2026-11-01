@@ -1504,6 +1504,8 @@ impl Kernel {
         let mut seen_reader = false;
         let mut seen_compute = false;
         let mut section = 0u8;
+        let mut reader_entries = 0u32;
+        let mut writer_entries = 0u32;
         let mut written: Set<OpId> = Set::default();
         let is_dram = |op: &Op| matches!(op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
         let is_written = |op: &Op| matches!(op, Op::Param { kind: ParamKind::GlobalMut, .. });
@@ -1537,6 +1539,24 @@ impl Kernel {
                 | Op::TT(TTOp::Wait { .. })
                 | Op::TT(TTOp::Semset { .. }) => {
                     assert!(section == 1, "tt_verify: compute op outside the compute section at {id:?}");
+                }
+                Op::TT(TTOp::DmRead(_))
+                | Op::TT(TTOp::DmWrite(_))
+                | Op::TT(TTOp::DmReadTransposed(_))
+                | Op::TT(TTOp::DmReadBroadcastCol(_))
+                | Op::TT(TTOp::DmFill(_))
+                | Op::TT(TTOp::DmCopyWords(_))
+                | Op::TT(TTOp::DmIndexPick(_))
+                | Op::TT(TTOp::DmKernel(_))
+                | Op::TT(TTOp::DmWait) => {
+                    // Every `Dm` op is one entry of its section's mover list:
+                    // B runs the reader's, NC the writer's. A list is issued
+                    // whole, so the entry count is a compile-time property.
+                    match section {
+                        0 => reader_entries += 1,
+                        2 => writer_entries += 1,
+                        _ => panic!("tt_verify: mover op in the compute section at {id:?}"),
+                    }
                 }
                 Op::TT(TTOp::Copy { src, dst, .. }) => {
                     let s = self.tt_storage_of(*src);
@@ -1579,6 +1599,19 @@ impl Kernel {
         }
         assert!(seen_reader, "tt_verify: missing EndReader");
         assert!(seen_compute, "tt_verify: missing EndCompute");
+        // One list per mover per launch, and the list ring holds
+        // `dm::LIST_MAX` entries: a kernel that would need a second list is a
+        // compile error here, never a silent split at launch.
+        assert!(
+            reader_entries <= tt_isa::dm::LIST_MAX,
+            "tt_verify: {reader_entries} reader entries exceed LIST_MAX {}",
+            tt_isa::dm::LIST_MAX
+        );
+        assert!(
+            writer_entries <= tt_isa::dm::LIST_MAX,
+            "tt_verify: {writer_entries} writer entries exceed LIST_MAX {}",
+            tt_isa::dm::LIST_MAX
+        );
         // The DST register file is one mode wide: 32-bit tiles (F32/I32/U32)
         // or 16-bit tiles, never both (WormholeB0/TensixTile/TensixCoprocessor/
         // Dst.md: mixing `Dst16b` and `Dst32b` is possible but is expected to

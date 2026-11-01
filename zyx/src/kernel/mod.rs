@@ -637,6 +637,13 @@ impl Kernel {
                 | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::DmRead(_))
                 | Op::TT(TTOp::DmWrite(_))
+                | Op::TT(TTOp::DmReadTransposed(_))
+                | Op::TT(TTOp::DmReadBroadcastCol(_))
+                | Op::TT(TTOp::DmFill(_))
+                | Op::TT(TTOp::DmCopyWords(_))
+                | Op::TT(TTOp::DmIndexPick(_))
+                | Op::TT(TTOp::DmKernel(_))
+                | Op::TT(TTOp::DmWait)
                 | Op::TT(TTOp::TensixGrid(_)) => {}
             }
             op_id = self.next_op(op_id);
@@ -709,6 +716,13 @@ impl Kernel {
                 | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::DmRead(_))
                 | Op::TT(TTOp::DmWrite(_))
+                | Op::TT(TTOp::DmReadTransposed(_))
+                | Op::TT(TTOp::DmReadBroadcastCol(_))
+                | Op::TT(TTOp::DmFill(_))
+                | Op::TT(TTOp::DmCopyWords(_))
+                | Op::TT(TTOp::DmIndexPick(_))
+                | Op::TT(TTOp::DmKernel(_))
+                | Op::TT(TTOp::DmWait)
                 | Op::TT(TTOp::TensixGrid(_)) => todo!(),
                 Op::TT(TTOp::Copy { .. }) => todo!("dtype: traffic op produces no value"),
                 Op::TT(TTOp::Setadczw { .. })

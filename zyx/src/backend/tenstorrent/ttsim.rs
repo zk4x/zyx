@@ -359,34 +359,47 @@ fn mover_list(
         NC => dm::op::WRITE,
         other => unreachable!("mover index {other} is neither B nor NC"),
     };
-    for list in segments.chunks(dm::LIST_MAX as usize) {
-        let mut entries = Vec::with_capacity(list.len() * dm::ENTRY_BYTES as usize);
-        for (range, l1) in list {
-            // Port 0: the mover maps it onto a port its NoC owns, and reads
-            // stay on NoC #0 whichever entry names.
-            let entry: [u32; 8] = [
-                op,
-                u32::from(range.channel().index()),
-                0,
-                range.offset() as u32,
-                *l1,
-                range.len() as u32,
-                0,
-                0,
-            ];
-            for word in entry {
-                entries.extend_from_slice(&word.to_le_bytes());
-            }
-        }
-        dev.l1_write(window, tile, m.list, &entries)
-            .map_err(|e| format!("cannot write the {:?} mover's list: {e}", m.core))?;
-        write32(dev, window, tile, m.at(dm::OP), dm::op::LIST)?;
-        write32(dev, window, tile, m.at(dm::LEN), list.len() as u32)?;
-        let seq = movers.seq[which].wrapping_add(1).max(1);
-        movers.seq[which] = seq;
-        write32(dev, window, tile, m.at(dm::SEQ), seq)?;
-        wait_done(dev, window, tile, m, seq)?;
+    // One list per direction per launch: `tt_verify` rejects a longer stream
+    // at compile time, so a second chunk here means that check was bypassed.
+    // Never split silently: the entry count is the stream's shape.
+    let mut batches = segments.chunks(dm::LIST_MAX as usize);
+    let Some(list) = batches.next() else {
+        return Ok(());
+    };
+    if batches.next().is_some() {
+        panic!(
+            "the {:?} mover's list holds {} entries, LIST_MAX is {}: tt_verify must reject this at compile time",
+            m.core,
+            segments.len(),
+            dm::LIST_MAX
+        );
     }
+    let mut entries = Vec::with_capacity(list.len() * dm::ENTRY_BYTES as usize);
+    for (range, l1) in list {
+        // Port 0: the mover maps it onto a port its NoC owns, and reads
+        // stay on NoC #0 whichever entry names.
+        let entry: [u32; 8] = [
+            op,
+            u32::from(range.channel().index()),
+            0,
+            range.offset() as u32,
+            *l1,
+            range.len() as u32,
+            0,
+            0,
+        ];
+        for word in entry {
+            entries.extend_from_slice(&word.to_le_bytes());
+        }
+    }
+    dev.l1_write(window, tile, m.list, &entries)
+        .map_err(|e| format!("cannot write the {:?} mover's list: {e}", m.core))?;
+    write32(dev, window, tile, m.at(dm::OP), dm::op::LIST)?;
+    write32(dev, window, tile, m.at(dm::LEN), list.len() as u32)?;
+    let seq = movers.seq[which].wrapping_add(1).max(1);
+    movers.seq[which] = seq;
+    write32(dev, window, tile, m.at(dm::SEQ), seq)?;
+    wait_done(dev, window, tile, m, seq)?;
     Ok(())
 }
 

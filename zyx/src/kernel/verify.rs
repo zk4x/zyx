@@ -435,6 +435,13 @@ impl Kernel {
                 | Op::TT(TTOp::EndCompute)
                 | Op::TT(TTOp::DmRead(_))
                 | Op::TT(TTOp::DmWrite(_))
+                | Op::TT(TTOp::DmReadTransposed(_))
+                | Op::TT(TTOp::DmReadBroadcastCol(_))
+                | Op::TT(TTOp::DmFill(_))
+                | Op::TT(TTOp::DmCopyWords(_))
+                | Op::TT(TTOp::DmIndexPick(_))
+                | Op::TT(TTOp::DmKernel(_))
+                | Op::TT(TTOp::DmWait)
                 | Op::TT(TTOp::TensixGrid(_)) => {}
                 Op::Unary { x, .. }
                 | Op::Permute { x, .. }
