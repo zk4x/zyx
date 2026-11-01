@@ -114,14 +114,17 @@ impl Kernel {
             // section markers. There is no CB-sync or DST-lock pass: those
             // are tt-metal API, not Tensix instructions.
             self.tt_lower_llks();
-            // Lowering is SSA over logical DST storages; this assigns the
-            // 8-16 physical tile registers by liveness and rewrites all
-            // operands. It must run after lowering and before codegen.
-            self.tt_dst_reuse();
-            self.verify();
-
+            // Generic passes first: after allocation the IR is a register-
+            // transfer form (in-place writes, shared physical slots), not SSA,
+            // so nothing but verification may run on it.
             self.common_subexpression_elimination();
             self.dead_code_elimination();
+            // Lowering is SSA over logical DST storages; this assigns the
+            // 8-16 physical tile registers by liveness and rewrites all
+            // operands. It must run after lowering (and after every generic
+            // pass) and before codegen.
+            self.tt_dst_reuse();
+            self.verify();
             self.tt_verify();
         } else {
             self.devectorize();

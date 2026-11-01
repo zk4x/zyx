@@ -1602,6 +1602,30 @@ fn render(
             src_unpacker_ready: [false, false],
             has_src_unpack: false,
         };
+        // The DST register file is the ordered list of physical Register
+        // storages the allocator declared in the prologue: slot `i` is the
+        // i-th declaration. Encoding it here (rather than on first use) is
+        // what makes the IR's register file authoritative — ops name a
+        // storage by OpId, and codegen resolves that to the same row on
+        // every section and every launch.
+        let mut scan = k.head;
+        for _ in 0..250_000 {
+            if scan.is_null() {
+                break;
+            }
+            if matches!(k.at(scan), Op::Storage { scope: MemScope::Register, .. }) {
+                if sec.next_slot >= sec.budget {
+                    return Err(tt_err(format!(
+                        "tenstorrent: DST register file holds {} tiles, budget is {}",
+                        sec.next_slot + 1,
+                        sec.budget
+                    )));
+                }
+                sec.slots.insert(scan, sec.next_slot);
+                sec.next_slot += 1;
+            }
+            scan = k.next_op(scan);
+        }
         // Preamble: includes + kernel_main + CB declares + grid/var
         // reads + DRAM accessors (front emission for both dataflow
         // sections — same programs, fewer rules than inline-first).

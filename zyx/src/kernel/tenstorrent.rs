@@ -1279,6 +1279,27 @@ impl Kernel {
                 *slot = phys;
             }
         }
+        // The register file is now exactly the physical storages this pass
+        // created: drop the logical Register declarations they replaced, so
+        // the prologue's ordered Register storages are the file codegen
+        // numbers (slot i is the i-th declaration). A logical declaration
+        // left behind would otherwise count against the DST budget and
+        // shift every row after it.
+        let live: Set<OpId> = physical.values().copied().collect();
+        let mut dead: Vec<OpId> = Vec::new();
+        let mut id = self.head;
+        for _ in 0..250_000 {
+            if id.is_null() {
+                break;
+            }
+            if matches!(self.ops[id].op, Op::Storage { scope: MemScope::Register, .. }) && !live.contains(&id) {
+                dead.push(id);
+            }
+            id = self.next_op(id);
+        }
+        for id in dead {
+            self.remove_op(id);
+        }
     }
 
     /// The Register operand an op writes, if any. Inputs precede the
@@ -1565,6 +1586,31 @@ impl Kernel {
         }
         assert!(seen_reader, "tt_verify: missing EndReader");
         assert!(seen_compute, "tt_verify: missing EndCompute");
+        // The DST register file is one mode wide: 32-bit tiles (F32/I32/U32)
+        // or 16-bit tiles, never both (WormholeB0/TensixTile/TensixCoprocessor/
+        // Dst.md: mixing `Dst16b` and `Dst32b` is possible but is expected to
+        // be exclusive). Capacity is 8 tiles of 32-bit or 16 of 16-bit.
+        let mut dst_count = 0u32;
+        let mut dst_wide: Option<bool> = None;
+        for (id, op) in self.iter_unordered() {
+            let Op::Storage { dtype, scope: MemScope::Register, .. } = op else {
+                continue;
+            };
+            dst_count += 1;
+            let wide = dtype.bit_size() > 16;
+            match dst_wide {
+                None => dst_wide = Some(wide),
+                Some(w) => assert!(
+                    w == wide,
+                    "tt_verify: DST register {id:?} is {dtype:?}; 16-bit and 32-bit tiles cannot share the register file"
+                ),
+            }
+        }
+        let budget = if dst_wide == Some(true) { 8 } else { 16 };
+        assert!(
+            dst_count <= budget,
+            "tt_verify: {dst_count} DST register tiles exceed the {budget}-tile budget"
+        );
     }
 
     /// Chase a `Load`/`Store`/`Copy` operand through its index expression
