@@ -163,8 +163,12 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let shp = self.shape_suffix(op_id, &shapes);
                     let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}unpacr{reset} u{unit} r{count} r{}", map(src))
-                        .unwrap();
+                    writeln!(
+                        f,
+                        "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}unpacr{reset} u{unit} r{count} r{}",
+                        map(src)
+                    )
+                    .unwrap();
                 }
                 Op::TT(TTOp::Setrwc { dst }) => {
                     let dtype = dtypes.get(&dst).copied().unwrap_or(DType::U8);

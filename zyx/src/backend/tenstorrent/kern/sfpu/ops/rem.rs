@@ -193,9 +193,7 @@ fn exact_body(p: &mut Program, o: u32, variant: Variant, divisor: Divisor) {
     p.mov(L4, L0);
     p.mov(L5, L2);
     p.isub_from(ZERO, L2);
-    p.if_(Cond::Gte0(L7), |p| {
-        p.if_(Cond::LessEq(L5, L0), |p| p.iadd(L2, L0))
-    });
+    p.if_(Cond::Gte0(L7), |p| p.if_(Cond::LessEq(L5, L0), |p| p.iadd(L2, L0)));
     // The long division. L0 = r, L2 = -MB, L5 = MB, L7 = the step counter,
     // kept: L1 = EB', L3 = rexp, L6 = a ^ b.
     for _ in 0..STEPS {
@@ -395,12 +393,7 @@ mod tests {
             if want.is_nan() {
                 assert!(f32::from_bits(got[i]).is_nan(), "{x:e} % {y:e}");
             } else {
-                assert_eq!(
-                    got[i],
-                    want.to_bits(),
-                    "{x:e} % {y:e}: device {:e}, flex {want:e}",
-                    f32::from_bits(got[i])
-                );
+                assert_eq!(got[i], want.to_bits(), "{x:e} % {y:e}: device {:e}, flex {want:e}", f32::from_bits(got[i]));
             }
         }
     }

@@ -680,9 +680,7 @@ impl Kernel {
                     stack.pop();
                     stored_stack.pop();
                 }
-                &mut Op::Store { .. }
-                | &mut Op::Copy { .. }
-                | &mut Op::TT(_) => {
+                &mut Op::Store { .. } | &mut Op::Copy { .. } | &mut Op::TT(_) => {
                     // Effect ops never participate in CSE: remap operands,
                     // never dedup (two identical effects are two traffic
                     // events). Only buffer references (Storage/Param base
@@ -902,27 +900,18 @@ impl Kernel {
                             while m > 0 {
                                 if m & 1 == 1 {
                                     acc = Some(match acc {
-                                        Some(a) => self.insert_before(
-                                            op_id,
-                                            Op::Binary { x: a, y: sq, bop: BOp::Mul },
-                                        ),
+                                        Some(a) => self.insert_before(op_id, Op::Binary { x: a, y: sq, bop: BOp::Mul }),
                                         None => sq,
                                     });
                                 }
                                 m >>= 1;
                                 if m > 0 {
-                                    sq = self.insert_before(
-                                        op_id,
-                                        Op::Binary { x: sq, y: sq, bop: BOp::Mul },
-                                    );
+                                    sq = self.insert_before(op_id, Op::Binary { x: sq, y: sq, bop: BOp::Mul });
                                 }
                             }
                             let p = acc.expect("nonzero pow magnitude leaves a nonempty chain");
                             if n < 0 {
-                                let r = self.insert_before(
-                                    op_id,
-                                    Op::Unary { x: p, uop: UOp::Reciprocal },
-                                );
+                                let r = self.insert_before(op_id, Op::Unary { x: p, uop: UOp::Reciprocal });
                                 self.ops[op_id].op = Op::Unary { x: r, uop: UOp::Reciprocal };
                             } else {
                                 self.remap(op_id, p);
@@ -932,8 +921,7 @@ impl Kernel {
                             // Dynamic (or zero) float exponent: keep
                             // `x^y = exp2(y * log2(x))`.
                             let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
-                            let x =
-                                self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
+                            let x = self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
                             self.ops[op_id].op = Op::Unary { x, uop: UOp::Exp2 };
                         }
                     }
@@ -963,19 +951,13 @@ impl Kernel {
                             while m > 0 {
                                 if m & 1 == 1 {
                                     acc = Some(match acc {
-                                        Some(a) => self.insert_before(
-                                            op_id,
-                                            Op::Binary { x: a, y: sq, bop: BOp::Mul },
-                                        ),
+                                        Some(a) => self.insert_before(op_id, Op::Binary { x: a, y: sq, bop: BOp::Mul }),
                                         None => sq,
                                     });
                                 }
                                 m >>= 1;
                                 if m > 0 {
-                                    sq = self.insert_before(
-                                        op_id,
-                                        Op::Binary { x: sq, y: sq, bop: BOp::Mul },
-                                    );
+                                    sq = self.insert_before(op_id, Op::Binary { x: sq, y: sq, bop: BOp::Mul });
                                 }
                             }
                             let mut p = acc.expect("nonzero pow magnitude leaves a nonempty chain");
@@ -996,23 +978,11 @@ impl Kernel {
                             let c1 = self.insert_before(op_id, Op::Cast { x: c1, dtype: dt });
                             let cm1 = self.insert_before(op_id, Op::Const(Constant::new(-1i32)));
                             let cm1 = self.insert_before(op_id, Op::Cast { x: cm1, dtype: dt });
-                            let is_one = self.insert_before(
-                                op_id,
-                                Op::Binary { x, y: c1, bop: BOp::Eq },
-                            );
-                            let is_negone = self.insert_before(
-                                op_id,
-                                Op::Binary { x, y: cm1, bop: BOp::Eq },
-                            );
+                            let is_one = self.insert_before(op_id, Op::Binary { x, y: c1, bop: BOp::Eq });
+                            let is_negone = self.insert_before(op_id, Op::Binary { x, y: cm1, bop: BOp::Eq });
                             let picked = if n & 1 == 1 { cm1 } else { c1 };
-                            let inner = self.insert_before(
-                                op_id,
-                                Op::Select { cond: is_negone, if_true: picked, if_false: c0 },
-                            );
-                            let result = self.insert_before(
-                                op_id,
-                                Op::Select { cond: is_one, if_true: x, if_false: inner },
-                            );
+                            let inner = self.insert_before(op_id, Op::Select { cond: is_negone, if_true: picked, if_false: c0 });
+                            let result = self.insert_before(op_id, Op::Select { cond: is_one, if_true: x, if_false: inner });
                             self.remap(op_id, result);
                         }
                     } else {
@@ -1048,38 +1018,19 @@ impl Kernel {
                         let mut sq = b;
                         let width = dt.bit_size();
                         for i in 0..width {
-                            let ci =
-                                self.insert_before(op_id, Op::Const(Constant::idx(i as i64)));
+                            let ci = self.insert_before(op_id, Op::Const(Constant::idx(i as i64)));
                             let ci = if edt == IDX_T {
                                 ci
                             } else {
                                 self.insert_before(op_id, Op::Cast { x: ci, dtype: edt })
                             };
-                            let shr = self.insert_before(
-                                op_id,
-                                Op::Binary { x: y, y: ci, bop: BOp::BitShiftRight },
-                            );
-                            let bit = self.insert_before(
-                                op_id,
-                                Op::Binary { x: shr, y: eone, bop: BOp::BitAnd },
-                            );
-                            let cond = self.insert_before(
-                                op_id,
-                                Op::Binary { x: bit, y: ezero, bop: BOp::NotEq },
-                            );
-                            let prod = self.insert_before(
-                                op_id,
-                                Op::Binary { x: ret, y: sq, bop: BOp::Mul },
-                            );
-                            ret = self.insert_before(
-                                op_id,
-                                Op::Select { cond, if_true: prod, if_false: ret },
-                            );
+                            let shr = self.insert_before(op_id, Op::Binary { x: y, y: ci, bop: BOp::BitShiftRight });
+                            let bit = self.insert_before(op_id, Op::Binary { x: shr, y: eone, bop: BOp::BitAnd });
+                            let cond = self.insert_before(op_id, Op::Binary { x: bit, y: ezero, bop: BOp::NotEq });
+                            let prod = self.insert_before(op_id, Op::Binary { x: ret, y: sq, bop: BOp::Mul });
+                            ret = self.insert_before(op_id, Op::Select { cond, if_true: prod, if_false: ret });
                             if i + 1 < width {
-                                sq = self.insert_before(
-                                    op_id,
-                                    Op::Binary { x: sq, y: sq, bop: BOp::Mul },
-                                );
+                                sq = self.insert_before(op_id, Op::Binary { x: sq, y: sq, bop: BOp::Mul });
                             }
                         }
                         let mut out = ret;
@@ -1095,45 +1046,18 @@ impl Kernel {
                             let c1 = self.insert_before(op_id, Op::Cast { x: c1, dtype: dt });
                             let cm1 = self.insert_before(op_id, Op::Const(Constant::new(-1i32)));
                             let cm1 = self.insert_before(op_id, Op::Cast { x: cm1, dtype: dt });
-                            let is_one = self.insert_before(
-                                op_id,
-                                Op::Binary { x, y: c1, bop: BOp::Eq },
-                            );
-                            let is_negone = self.insert_before(
-                                op_id,
-                                Op::Binary { x, y: cm1, bop: BOp::Eq },
-                            );
-                            let masked = self.insert_before(
-                                op_id,
-                                Op::Binary { x: y, y: eone, bop: BOp::BitAnd },
-                            );
-                            let odd = self.insert_before(
-                                op_id,
-                                Op::Binary { x: masked, y: ezero, bop: BOp::NotEq },
-                            );
-                            let neg_odd = self.insert_before(
-                                op_id,
-                                Op::Select { cond: odd, if_true: cm1, if_false: c1 },
-                            );
-                            let inner = self.insert_before(
-                                op_id,
-                                Op::Select { cond: is_negone, if_true: neg_odd, if_false: c0 },
-                            );
-                            let negval = self.insert_before(
-                                op_id,
-                                Op::Select { cond: is_one, if_true: c1, if_false: inner },
-                            );
+                            let is_one = self.insert_before(op_id, Op::Binary { x, y: c1, bop: BOp::Eq });
+                            let is_negone = self.insert_before(op_id, Op::Binary { x, y: cm1, bop: BOp::Eq });
+                            let masked = self.insert_before(op_id, Op::Binary { x: y, y: eone, bop: BOp::BitAnd });
+                            let odd = self.insert_before(op_id, Op::Binary { x: masked, y: ezero, bop: BOp::NotEq });
+                            let neg_odd = self.insert_before(op_id, Op::Select { cond: odd, if_true: cm1, if_false: c1 });
+                            let inner = self.insert_before(op_id, Op::Select { cond: is_negone, if_true: neg_odd, if_false: c0 });
+                            let negval = self.insert_before(op_id, Op::Select { cond: is_one, if_true: c1, if_false: inner });
                             // `Cmpge` (not negated `Cmplt`) so the
                             // vector result stays the true arm: `Select`
                             // takes its shape from there.
-                            let nonneg = self.insert_before(
-                                op_id,
-                                Op::Binary { x: y, y: ezero, bop: BOp::Cmpge },
-                            );
-                            out = self.insert_before(
-                                op_id,
-                                Op::Select { cond: nonneg, if_true: out, if_false: negval },
-                            );
+                            let nonneg = self.insert_before(op_id, Op::Binary { x: y, y: ezero, bop: BOp::Cmpge });
+                            out = self.insert_before(op_id, Op::Select { cond: nonneg, if_true: out, if_false: negval });
                         }
                         self.remap(op_id, out);
                     }
@@ -1155,5 +1079,4 @@ mod tests {
     use crate::DType;
     use crate::kernel::{Dev, Kernel, MemScope, Op, TTOp};
     use crate::types::{TinyString, TinyVec};
-
 }

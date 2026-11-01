@@ -283,11 +283,8 @@ impl Graph {
                             // cannot grid (eager parity: runtime::stack duplicates
                             // every input for the same reason).
                             let s0 = {
-                                let (&first, _) = ops
-                                    .iter()
-                                    .zip(sym.iter())
-                                    .find(|(_, s)| !**s)
-                                    .expect("stack: no materialized element");
+                                let (&first, _) =
+                                    ops.iter().zip(sym.iter()).find(|(_, s)| !**s).expect("stack: no materialized element");
                                 self.shape(first)
                             };
                             if cfg!(debug_assertions) {
@@ -312,8 +309,7 @@ impl Graph {
                                     continue;
                                 }
                                 let (kid, op_id) = visited[&elem];
-                                let (kid, op_id) =
-                                    self.duplicate_or_store_class(elem, kid, op_id, &mut visited, &mut rcs, false);
+                                let (kid, op_id) = self.duplicate_or_store_class(elem, kid, op_id, &mut visited, &mut rcs, false);
                                 // Route the merge repointing through the duplicate
                                 // home; merge_kernels repoints every visited entry
                                 // of the merged kernel onto the destination. The
@@ -1055,10 +1051,8 @@ impl Graph {
                             // Present operands in cond, if_true, if_false
                             // order; the first owns the destination kernel
                             // (Binary's first-operand-wins for x).
-                            let present: Vec<OpId> = [cond, if_true, if_false]
-                                .into_iter()
-                                .filter(|c| visited.contains_key(c))
-                                .collect();
+                            let present: Vec<OpId> =
+                                [cond, if_true, if_false].into_iter().filter(|c| visited.contains_key(c)).collect();
                             let owner = present[0];
                             let mut kid = visited[&owner].0;
                             // Merge every other present operand's kernel
@@ -1116,12 +1110,8 @@ impl Graph {
                                         (kid, dop) = self.add_store(owner, kid, dop, &mut visited, &rcs);
                                         (skid, _) = self.add_store(scid, skid, sop, &mut visited, &rcs);
                                     }
-                                    (true, false) => {
-                                        (kid, dop) = self.add_store(owner, kid, dop, &mut visited, &rcs)
-                                    }
-                                    (false, true) => {
-                                        (skid, _) = self.add_store(scid, skid, sop, &mut visited, &rcs)
-                                    }
+                                    (true, false) => (kid, dop) = self.add_store(owner, kid, dop, &mut visited, &rcs),
+                                    (false, true) => (skid, _) = self.add_store(scid, skid, sop, &mut visited, &rcs),
                                     (false, false) => {}
                                 }
 
@@ -1129,9 +1119,7 @@ impl Graph {
                                 // the reduce kernel must be the merge
                                 // destination — pulling plain compute ops into
                                 // it is safe, the reverse corrupts the gws.
-                                if self.jit_kernels[kid].kernel.is_reduce()
-                                    && !self.jit_kernels[skid].kernel.is_reduce()
-                                {
+                                if self.jit_kernels[kid].kernel.is_reduce() && !self.jit_kernels[skid].kernel.is_reduce() {
                                     std::mem::swap(&mut kid, &mut skid);
                                     std::mem::swap(&mut dop, &mut sop);
                                 }

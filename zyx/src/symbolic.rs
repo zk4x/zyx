@@ -798,12 +798,9 @@ impl Runtime {
                     // (e.g. x's and y's shapes sharing one variable) names
                     // the same variable: reuse its class so downstream
                     // identity sees one variable, not two.
-                    let existing = self.graphs[graph_id]
-                        .leaf_map
-                        .iter()
-                        .find_map(|(&c, &t)| {
-                            matches!(self.tensors[t], TensorData::Symbolic { expr: e, .. } if e == eid).then_some(c)
-                        });
+                    let existing = self.graphs[graph_id].leaf_map.iter().find_map(|(&c, &t)| {
+                        matches!(self.tensors[t], TensorData::Symbolic { expr: e, .. } if e == eid).then_some(c)
+                    });
                     if let Some(cid) = existing {
                         cid
                     } else {
@@ -883,9 +880,12 @@ impl Runtime {
     /// Returns shape for reduce that reduces over the last axis
     pub fn reduce_last_axis_shape(&mut self, shape_id: ExprId) -> ExprId {
         match self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
-                ExprId::SCALAR
-            }
+            Expr::Constant { .. }
+            | Expr::Variable { .. }
+            | Expr::Cast { .. }
+            | Expr::Unary { .. }
+            | Expr::Binary { .. }
+            | Expr::Select { .. } => ExprId::SCALAR,
             Expr::Stack2 { exprs } => exprs[0],
             Expr::Stack3 { exprs } => self.push(Expr::Stack2 { exprs: [exprs[0], exprs[1]] }),
             Expr::Stack4 { exprs } => self.push(Expr::Stack3 { exprs: [exprs[0], exprs[1], exprs[2]] }),
@@ -905,9 +905,12 @@ impl Runtime {
             return ExprId::SCALAR;
         }
         match self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
-                shape_id
-            }
+            Expr::Constant { .. }
+            | Expr::Variable { .. }
+            | Expr::Cast { .. }
+            | Expr::Unary { .. }
+            | Expr::Binary { .. }
+            | Expr::Select { .. } => shape_id,
             Expr::Stack2 { exprs } => {
                 let permuted = [exprs[axes[0] as usize], exprs[axes[1] as usize]];
                 self.push(Expr::Stack2 { exprs: permuted })
@@ -950,7 +953,12 @@ impl Runtime {
             panic!("pad_zeros of scalar tensor");
         }
         match self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
+            Expr::Constant { .. }
+            | Expr::Variable { .. }
+            | Expr::Cast { .. }
+            | Expr::Unary { .. }
+            | Expr::Binary { .. }
+            | Expr::Select { .. } => {
                 debug_assert_eq!(axis, 0, "pad_zeros axis {axis} out of bounds for rank 1");
                 len
             }
@@ -990,7 +998,12 @@ impl Runtime {
             panic!("narrow of scalar tensor");
         }
         match self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
+            Expr::Constant { .. }
+            | Expr::Variable { .. }
+            | Expr::Cast { .. }
+            | Expr::Unary { .. }
+            | Expr::Binary { .. }
+            | Expr::Select { .. } => {
                 debug_assert_eq!(axis, 0, "narrow axis {axis} out of bounds for rank 1");
                 len
             }
@@ -1030,9 +1043,12 @@ impl Runtime {
             return len;
         }
         match self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
-                self.push(Expr::Stack2 { exprs: [len, shape_id] })
-            }
+            Expr::Constant { .. }
+            | Expr::Variable { .. }
+            | Expr::Cast { .. }
+            | Expr::Unary { .. }
+            | Expr::Binary { .. }
+            | Expr::Select { .. } => self.push(Expr::Stack2 { exprs: [len, shape_id] }),
             Expr::Stack2 { exprs } => self.push(Expr::Stack3 { exprs: [len, exprs[0], exprs[1]] }),
             Expr::Stack3 { exprs } => self.push(Expr::Stack4 { exprs: [len, exprs[0], exprs[1], exprs[2]] }),
             Expr::Stack4 { exprs } => self.push(Expr::Stack5 { exprs: [len, exprs[0], exprs[1], exprs[2], exprs[3]] }),
@@ -1056,7 +1072,12 @@ impl Runtime {
             return 0;
         }
         match &self.exprs[shape_id] {
-            Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => 1,
+            Expr::Constant { .. }
+            | Expr::Variable { .. }
+            | Expr::Cast { .. }
+            | Expr::Unary { .. }
+            | Expr::Binary { .. }
+            | Expr::Select { .. } => 1,
             Expr::Stack2 { .. } => 2,
             Expr::Stack3 { .. } => 3,
             Expr::Stack4 { .. } => 4,
@@ -1082,7 +1103,12 @@ impl Runtime {
                 Expr::Stack { .. } | Expr::Stack2 { .. } | Expr::Stack3 { .. } | Expr::Stack4 { .. } | Expr::Stack5 { .. } => {
                     return 1;
                 }
-                Expr::Constant { .. } | Expr::Variable { .. } | Expr::Cast { .. } | Expr::Unary { .. } | Expr::Binary { .. } | Expr::Select { .. } => {
+                Expr::Constant { .. }
+                | Expr::Variable { .. }
+                | Expr::Cast { .. }
+                | Expr::Unary { .. }
+                | Expr::Binary { .. }
+                | Expr::Select { .. } => {
                     return 0;
                 }
             },

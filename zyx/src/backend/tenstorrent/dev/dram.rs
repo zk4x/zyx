@@ -29,9 +29,7 @@ impl<T: Transport> Device<T> {
         }
         let table = TelemetryTable::read(self, window)?;
         let tag = |dev: &mut Self, id: u16, name: &str| -> Result<u32> {
-            table
-                .read_tag(dev, window, id)?
-                .ok_or_else(|| io(format!("the chip does not publish {name} (tag {id})")))
+            table.read_tag(dev, window, id)?.ok_or_else(|| io(format!("the chip does not publish {name} (tag {id})")))
         };
         if tag(self, arc::tag::NOC_TRANSLATION, "NOC_TRANSLATION")? == 0 {
             return Err(io("NoC coordinate translation is off; the DRAM endpoints \
@@ -41,9 +39,7 @@ impl<T: Transport> Device<T> {
         let enabled = tag(self, arc::tag::ENABLED_GDDR, "ENABLED_GDDR")?;
         let status = tag(self, arc::tag::GDDR_STATUS, "GDDR_STATUS")?;
         Dram::from_telemetry(enabled, status).map_err(|e| match e {
-            DramError::UnknownChannels { enabled } => io(format!(
-                "ENABLED_GDDR = {enabled:#x} names channels beyond 7"
-            )),
+            DramError::UnknownChannels { enabled } => io(format!("ENABLED_GDDR = {enabled:#x} names channels beyond 7")),
             DramError::Harvested { enabled } => io(format!(
                 "ENABLED_GDDR = {enabled:#x}: a fused-off channel changes the translated \
                  DRAM numbering (NoC/Coordinates.md:60), which is not implemented"
@@ -70,9 +66,7 @@ impl<T: Transport> Device<T> {
     pub fn dram_write(&mut self, window: &Window, range: DramRange, data: &[u8]) -> Result<()> {
         check_len(range, data.len())?;
         let ch = range.channel();
-        let at = ch
-            .endpoint(Niu::Noc0, ch.cmfw_port())
-            .expect("CMFW's endpoint is NoC #0's");
+        let at = ch.endpoint(Niu::Noc0, ch.cmfw_port()).expect("CMFW's endpoint is NoC #0's");
         // GDDR is memory by construction: the bulk path.
         self.write_memory(window, at, range.offset(), data)?;
         if data.len() >= 4 {
@@ -92,20 +86,14 @@ impl<T: Transport> Device<T> {
     pub fn dram_read(&mut self, window: &Window, range: DramRange, out: &mut [u8]) -> Result<()> {
         check_len(range, out.len())?;
         let ch = range.channel();
-        let at = ch
-            .endpoint(Niu::Noc0, ch.cmfw_port())
-            .expect("CMFW's endpoint is NoC #0's");
+        let at = ch.endpoint(Niu::Noc0, ch.cmfw_port()).expect("CMFW's endpoint is NoC #0's");
         self.read_memory(window, at, range.offset(), out)
     }
 }
 
 fn check_len(range: DramRange, len: usize) -> Result<()> {
     if range.len() != len as u64 {
-        return Err(TransportError::OutOfBounds {
-            bar: super::Bar::Bar4,
-            offset: range.offset(),
-            len: len as u64,
-        });
+        return Err(TransportError::OutOfBounds { bar: super::Bar::Bar4, offset: range.offset(), len: len as u64 });
     }
     Ok(())
 }

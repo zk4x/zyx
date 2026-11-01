@@ -27,12 +27,8 @@ pub fn body(p: &mut Program, op: RoundOp) {
                 p.and(LReg::L0, LReg::L4, LReg::L2);
                 match op {
                     Trunc => {}
-                    Floor => p.if_(Cond::Lt0(LReg::L0), |p| {
-                        p.if_(Cond::Ne0(LReg::L1), |p| p.loadi(LReg::L2, -1.0))
-                    }),
-                    Ceil => p.if_(Cond::Gte0(LReg::L0), |p| {
-                        p.if_(Cond::Ne0(LReg::L1), |p| p.loadi(LReg::L2, 1.0))
-                    }),
+                    Floor => p.if_(Cond::Lt0(LReg::L0), |p| p.if_(Cond::Ne0(LReg::L1), |p| p.loadi(LReg::L2, -1.0))),
+                    Ceil => p.if_(Cond::Gte0(LReg::L0), |p| p.if_(Cond::Ne0(LReg::L1), |p| p.loadi(LReg::L2, 1.0))),
                     Even => {
                         p.loadi_bits(LReg::L4, 0x3f000000);
                         p.if_(Cond::Less(LReg::L4, LReg::L1), |p| {
@@ -54,12 +50,8 @@ pub fn body(p: &mut Program, op: RoundOp) {
                 p.and(LReg::L0, LReg::L5, LReg::L2);
                 match op {
                     Trunc => {}
-                    Floor => p.if_(Cond::Lt0(LReg::L0), |p| {
-                        p.if_(Cond::Ne0(LReg::L6), |p| p.iadd(LReg::L4, LReg::L2))
-                    }),
-                    Ceil => p.if_(Cond::Gte0(LReg::L0), |p| {
-                        p.if_(Cond::Ne0(LReg::L6), |p| p.iadd(LReg::L4, LReg::L2))
-                    }),
+                    Floor => p.if_(Cond::Lt0(LReg::L0), |p| p.if_(Cond::Ne0(LReg::L6), |p| p.iadd(LReg::L4, LReg::L2))),
+                    Ceil => p.if_(Cond::Gte0(LReg::L0), |p| p.if_(Cond::Ne0(LReg::L6), |p| p.iadd(LReg::L4, LReg::L2))),
                     Even => {
                         p.mov(LReg::L4, LReg::L5);
                         p.loadi_bits(LReg::L7, (-1i32) as u32);

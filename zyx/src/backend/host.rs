@@ -95,14 +95,15 @@ pub(super) fn copy(src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), B
             let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
             opool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
         }
-        Pool::TT(_) => {
-            // `Pool::TT` memory is host memory on this transport (see
-            // `backend::tenstorrent`): a download is the same memcpy.
-            let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
+        Pool::TT(id) => {
+            // Device DRAM read straight into the destination, no staging
+            // buffer: `Pool::TT` chunks are the card's GDDR6, never host memory.
+            let tt = super::tenstorrent::pool(id)?;
+            let mut tpool = super::lock(src_shard.pool, tt);
             let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
-            unsafe {
-                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, bytes as usize);
-            }
+            // SAFETY: the destination is a host chunk of `bytes` bytes (the
+            // caller sized the allocation); the read fills at most that much.
+            tpool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
         }
         Pool::Vulkan(_) => {
             todo!("host copy from {:?}", src_shard.pool)

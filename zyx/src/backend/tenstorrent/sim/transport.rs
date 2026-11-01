@@ -100,12 +100,7 @@ impl<'a> LibTtsim<'a> {
     /// Reject anything libttsim would refuse, before it gets the chance to `_Exit`.
     fn validate(bar: Bar, offset: u64, len: u64, dir: Dir) -> Result<()> {
         let oob = || TransportError::OutOfBounds { bar, offset, len };
-        let bad = |reason| TransportError::Misaligned {
-            bar,
-            offset,
-            len,
-            reason,
-        };
+        let bad = |reason| TransportError::Misaligned { bar, offset, len, reason };
 
         if len == 0 {
             return Err(bad("zero-length accesses are not meaningful"));
@@ -127,18 +122,14 @@ impl<'a> LibTtsim<'a> {
                     }
                     Ok(())
                 } else if (STRIDED_BASE..STRIDED_END).contains(&offset) {
-                    Err(bad(
-                        "libttsim does not implement the TLB `strided[32]` array, so \
-                         non-rectangular multicast cannot be configured on the simulator",
-                    ))
+                    Err(bad("libttsim does not implement the TLB `strided[32]` array, so \
+                         non-rectangular multicast cannot be configured on the simulator"))
                 } else if offset >= TLB_CONFIG_BASE && end <= TLB_CONFIG_END {
                     if dir == Dir::Read {
                         return Err(bad("TLB configuration registers are write-only"));
                     }
                     require_dword(offset, len).map_err(bad)
-                } else if (offset >= NIU0_BASE && end <= NIU0_END)
-                    || (offset >= NIU1_BASE && end <= NIU1_END)
-                {
+                } else if (offset >= NIU0_BASE && end <= NIU0_END) || (offset >= NIU1_BASE && end <= NIU1_END) {
                     if dir == Dir::Write {
                         return Err(bad("PCIe NIU registers are read-only"));
                     }
@@ -198,12 +189,7 @@ fn validate_tlb_config_word(offset: u64, value: u32) -> Result<()> {
     } else {
         "libttsim does not decode static-VC fields in TLB window configuration"
     };
-    Err(TransportError::Misaligned {
-        bar: Bar::Bar0,
-        offset,
-        len: 4,
-        reason,
-    })
+    Err(TransportError::Misaligned { bar: Bar::Bar0, offset, len: 4, reason })
 }
 
 /// Regions that libttsim decodes a dword at a time reject anything else outright.
@@ -226,13 +212,7 @@ impl Transport for LibTtsim<'_> {
         Self::validate(bar, offset, dst.len() as u64, Dir::Read)?;
         // SAFETY: the access has been validated against libttsim's decode map, and
         // `dst` is a valid writable slice of exactly `len` bytes.
-        unsafe {
-            (self.lib.pci_mem_rd_bytes)(
-                self.paddr(bar, offset),
-                dst.as_mut_ptr().cast(),
-                dst.len() as u32,
-            )
-        };
+        unsafe { (self.lib.pci_mem_rd_bytes)(self.paddr(bar, offset), dst.as_mut_ptr().cast(), dst.len() as u32) };
         Ok(())
     }
 
@@ -243,13 +223,7 @@ impl Transport for LibTtsim<'_> {
             validate_tlb_config_word(offset, value)?;
         }
         // SAFETY: as above; `src` is a valid readable slice of exactly `len` bytes.
-        unsafe {
-            (self.lib.pci_mem_wr_bytes)(
-                self.paddr(bar, offset),
-                src.as_ptr().cast(),
-                src.len() as u32,
-            )
-        };
+        unsafe { (self.lib.pci_mem_wr_bytes)(self.paddr(bar, offset), src.as_ptr().cast(), src.len() as u32) };
         Ok(())
     }
 
@@ -284,8 +258,7 @@ impl Transport for LibTtsim<'_> {
 /// `validate`'s `end > bar.size()` rejection is also what keeps one chip's
 /// accesses out of the next chip's 64 GiB window. That is why `validate` needs
 /// to know nothing about chips.
-const _: () =
-    assert!(super::expected_bar_base(Bar::Bar4) + Bar::Bar4.size() == super::PER_CHIP_PADDR_STRIDE);
+const _: () = assert!(super::expected_bar_base(Bar::Bar4) + Bar::Bar4.size() == super::PER_CHIP_PADDR_STRIDE);
 
 #[cfg(test)]
 mod tests {
@@ -293,9 +266,7 @@ mod tests {
 
     #[track_caller]
     fn rejected(bar: Bar, offset: u64, len: u64, dir: Dir) -> String {
-        LibTtsim::validate(bar, offset, len, dir)
-            .expect_err("expected this access to be rejected")
-            .to_string()
+        LibTtsim::validate(bar, offset, len, dir).expect_err("expected this access to be rejected").to_string()
     }
 
     #[track_caller]

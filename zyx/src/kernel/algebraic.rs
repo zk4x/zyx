@@ -441,19 +441,13 @@ impl Kernel {
                         // dropping it would silently lose a summand.
                         if matches!(k.at(ls[0].root), Op::Loop { .. }) {
                             let constant = match lc {
-                                Some(a) => Some(k.insert_before(
-                                    op_id,
-                                    Op::Binary { x: a, y, bop: BOp::Add },
-                                )),
+                                Some(a) => Some(k.insert_before(op_id, Op::Binary { x: a, y, bop: BOp::Add })),
                                 None => Some(y),
                             };
                             return (ls, constant);
                         } else {
                             let constant = match rc {
-                                Some(b) => Some(k.insert_before(
-                                    op_id,
-                                    Op::Binary { x, y: b, bop: BOp::Add },
-                                )),
+                                Some(b) => Some(k.insert_before(op_id, Op::Binary { x, y: b, bop: BOp::Add })),
                                 None => Some(x),
                             };
                             return (rs, constant);
@@ -487,10 +481,9 @@ impl Kernel {
                     // (S + C) << k distributes exactly: the carried constant
                     // shifts with the slices.
                     let constant = match constant {
-                        Some(cc) if !is_zero_const(k, cc) => Some(k.insert_before(
-                            op_id,
-                            Op::Binary { x: cc, y, bop: BOp::BitShiftLeft },
-                        )),
+                        Some(cc) if !is_zero_const(k, cc) => {
+                            Some(k.insert_before(op_id, Op::Binary { x: cc, y, bop: BOp::BitShiftLeft }))
+                        }
                         c => c,
                     };
                     (slices, constant)
@@ -514,10 +507,7 @@ impl Kernel {
                     // scales with the multiply (keeping it unscaled would
                     // silently drop the factor).
                     let constant = match constant {
-                        Some(cc) if !is_zero_const(k, cc) => Some(k.insert_before(
-                            op_id,
-                            Op::Binary { x: cc, y, bop: BOp::Mul },
-                        )),
+                        Some(cc) if !is_zero_const(k, cc) => Some(k.insert_before(op_id, Op::Binary { x: cc, y, bop: BOp::Mul })),
                         c => c,
                     };
                     (slices, constant)

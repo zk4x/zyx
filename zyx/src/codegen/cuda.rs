@@ -276,7 +276,10 @@ impl Kernel {
                     match dtype.1.as_slice() {
                         [len] => {
                             for &c in VEC_COMPONENTS.iter().take(width(len) as usize) {
-                                _ = writeln!(source, "{indent}r{reg}.{c} = {cond}.{c} ? ({ctype}){if_true}.{c} : ({ctype}){if_false}.{c};");
+                                _ = writeln!(
+                                    source,
+                                    "{indent}r{reg}.{c} = {cond}.{c} ? ({ctype}){if_true}.{c} : ({ctype}){if_false}.{c};"
+                                );
                             }
                         }
                         [] => {

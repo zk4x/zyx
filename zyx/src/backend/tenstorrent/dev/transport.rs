@@ -115,20 +115,12 @@ pub enum TransportError {
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TransportError::OutOfBounds { bar, offset, len } => write!(
-                f,
-                "access of {len} bytes at {bar:?}+{offset:#x} falls outside the BAR ({:#x} bytes)",
-                bar.size()
-            ),
-            TransportError::Misaligned {
-                bar,
-                offset,
-                len,
-                reason,
-            } => write!(
-                f,
-                "access of {len} bytes at {bar:?}+{offset:#x} is not permitted: {reason}"
-            ),
+            TransportError::OutOfBounds { bar, offset, len } => {
+                write!(f, "access of {len} bytes at {bar:?}+{offset:#x} falls outside the BAR ({:#x} bytes)", bar.size())
+            }
+            TransportError::Misaligned { bar, offset, len, reason } => {
+                write!(f, "access of {len} bytes at {bar:?}+{offset:#x} is not permitted: {reason}")
+            }
             TransportError::NotBlackhole { vendor, device } => write!(
                 f,
                 "expected Blackhole ({VENDOR_ID_TENSTORRENT:#06x}:{DEVICE_ID_BLACKHOLE:#06x}), \

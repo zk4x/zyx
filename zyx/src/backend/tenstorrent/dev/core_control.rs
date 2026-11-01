@@ -32,11 +32,7 @@ pub enum WaitError {
 impl std::fmt::Display for WaitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WaitError::TimedOut {
-                waited_cycles,
-                wall_clock,
-                last_status,
-            } => {
+            WaitError::TimedOut { waited_cycles, wall_clock, last_status } => {
                 let hint = match *last_status {
                     0 => {
                         " (the mailbox is still zero: the core may never have started, or is \
@@ -104,13 +100,7 @@ impl<T: Transport> Device<T> {
     /// (`SoftReset.md:3-4`). Taking `&mut self` provides it within this process;
     /// if anything else on the host can touch the same tile, that is not enough
     /// and the caller must serialise at a higher level.
-    pub fn set_core_reset<N: NocId>(
-        &mut self,
-        window: &Window,
-        tile: NocCoord<N>,
-        core: Core,
-        held: bool,
-    ) -> Result<()> {
+    pub fn set_core_reset<N: NocId>(&mut self, window: &Window, tile: NocCoord<N>, core: Core, held: bool) -> Result<()> {
         let current = self.read_soft_reset(window, tile)?;
         let updated = if held {
             current | core.soft_reset_mask()
@@ -130,12 +120,7 @@ impl<T: Transport> Device<T> {
     }
 
     /// Is `core` currently held in reset?
-    pub fn is_core_in_reset<N: NocId>(
-        &mut self,
-        window: &Window,
-        tile: NocCoord<N>,
-        core: Core,
-    ) -> Result<bool> {
+    pub fn is_core_in_reset<N: NocId>(&mut self, window: &Window, tile: NocCoord<N>, core: Core) -> Result<bool> {
         Ok(self.read_soft_reset(window, tile)? & core.soft_reset_mask() != 0)
     }
 
@@ -143,16 +128,8 @@ impl<T: Transport> Device<T> {
     ///
     /// Returns an error for RISCV B, whose entry point is hardwired to L1 offset 0
     /// and has no override register.
-    pub fn set_reset_pc<N: NocId>(
-        &mut self,
-        window: &Window,
-        tile: NocCoord<N>,
-        core: Core,
-        address: u32,
-    ) -> Result<()> {
-        let (Some(pc_reg), Some((override_reg, override_bit))) =
-            (core.reset_pc_register(), core.reset_pc_override())
-        else {
+    pub fn set_reset_pc<N: NocId>(&mut self, window: &Window, tile: NocCoord<N>, core: Core, address: u32) -> Result<()> {
+        let (Some(pc_reg), Some((override_reg, override_bit))) = (core.reset_pc_register(), core.reset_pc_override()) else {
             return Err(TransportError::Misaligned {
                 bar: super::Bar::Bar0,
                 offset: address as u64,
@@ -213,11 +190,7 @@ impl<T: Transport> Device<T> {
         let core = Core::NC;
         let stub_at = core.default_reset_pc() as u64;
         if load_address + image.len() as u64 > tensix::L1_SIZE || load_address < tt_isa::dm::LIST {
-            return Err(TransportError::OutOfBounds {
-                bar: super::Bar::Bar0,
-                offset: load_address,
-                len: image.len() as u64,
-            });
+            return Err(TransportError::OutOfBounds { bar: super::Bar::Bar0, offset: load_address, len: image.len() as u64 });
         }
         self.set_core_reset(window, tile, core, true)?;
         self.write(window, tile, load_address, image)?;
@@ -258,8 +231,7 @@ impl<T: Transport> Device<T> {
         self.write32(window, tile, tensix::SOFT_RESET_0, current & !release)?;
         let now = std::time::Instant::now();
         for &(core, _, _) in cores {
-            self.released
-                .insert((N::INDEX, tile.x(), tile.y(), core), now);
+            self.released.insert((N::INDEX, tile.x(), tile.y(), core), now);
         }
         Ok(())
     }
@@ -275,11 +247,7 @@ impl<T: Transport> Device<T> {
         load_address: u64,
     ) -> Result<()> {
         if load_address + image.len() as u64 > tensix::L1_SIZE {
-            return Err(TransportError::OutOfBounds {
-                bar: super::Bar::Bar0,
-                offset: load_address,
-                len: image.len() as u64,
-            });
+            return Err(TransportError::OutOfBounds { bar: super::Bar::Bar0, offset: load_address, len: image.len() as u64 });
         }
 
         self.set_core_reset(window, tile, core, true)?;
@@ -315,18 +283,9 @@ impl<T: Transport> Device<T> {
     ///
     /// Leaves the five baby RISC-V cores alone, so it composes with
     /// [`Device::load_and_start`] in either order.
-    pub fn release_tensix_backend<N: NocId>(
-        &mut self,
-        window: &Window,
-        tile: NocCoord<N>,
-    ) -> Result<()> {
+    pub fn release_tensix_backend<N: NocId>(&mut self, window: &Window, tile: NocCoord<N>) -> Result<()> {
         let current = self.read_soft_reset(window, tile)?;
-        self.write32(
-            window,
-            tile,
-            tensix::SOFT_RESET_0,
-            current & !tensix::BACKEND_RESET_MASK,
-        )
+        self.write32(window, tile, tensix::SOFT_RESET_0, current & !tensix::BACKEND_RESET_MASK)
     }
 
     /// Hold the Tensix backend in soft reset: the inverse of
@@ -336,18 +295,9 @@ impl<T: Transport> Device<T> {
     /// process that set it -- so "never released it" is not the same as "held".
     /// **Fatal on the simulator**, which accepts only the baby RISC-V bits of
     /// `SOFT_RESET_0` (divergence row 16).
-    pub fn hold_tensix_backend<N: NocId>(
-        &mut self,
-        window: &Window,
-        tile: NocCoord<N>,
-    ) -> Result<()> {
+    pub fn hold_tensix_backend<N: NocId>(&mut self, window: &Window, tile: NocCoord<N>) -> Result<()> {
         let current = self.read_soft_reset(window, tile)?;
-        self.write32(
-            window,
-            tile,
-            tensix::SOFT_RESET_0,
-            current | tensix::BACKEND_RESET_MASK,
-        )
+        self.write32(window, tile, tensix::SOFT_RESET_0, current | tensix::BACKEND_RESET_MASK)
     }
 
     /// Release `core` into a one-instruction loop, `j .`, placed at `loop_address`
@@ -362,13 +312,7 @@ impl<T: Transport> Device<T> {
     ///
     /// For RISCV B `loop_address` must be 0, since B cannot be redirected; the
     /// word at L1 offset 0 is overwritten.
-    pub fn park_core<N: NocId>(
-        &mut self,
-        window: &Window,
-        tile: NocCoord<N>,
-        core: Core,
-        loop_address: u64,
-    ) -> Result<()> {
+    pub fn park_core<N: NocId>(&mut self, window: &Window, tile: NocCoord<N>, core: Core, loop_address: u64) -> Result<()> {
         /// `jal x0, 0`.
         const J_SELF: u32 = 0x0000_006F;
         self.load_and_start(window, tile, core, &J_SELF.to_le_bytes(), loop_address)
@@ -494,14 +438,7 @@ impl<T: Transport> Device<T> {
         budget_cycles: u64,
         predicate: impl FnMut(u32) -> bool,
     ) -> Result<std::result::Result<u32, WaitError>> {
-        self.wait_for_mailbox(
-            window,
-            tile,
-            mailbox::STATUS,
-            mailbox::PANIC_CODE,
-            budget_cycles,
-            predicate,
-        )
+        self.wait_for_mailbox(window, tile, mailbox::STATUS, mailbox::PANIC_CODE, budget_cycles, predicate)
     }
 
     /// [`Device::wait_for_status`] against an arbitrary status word and its panic
@@ -552,12 +489,7 @@ impl<T: Transport> Device<T> {
     ///
     /// Taken as instructions leave the frontend, so it may name an instruction that
     /// never executes. Good for liveness, useless as a precise fault PC.
-    pub fn read_pc_snapshot<N: NocId>(
-        &mut self,
-        window: &Window,
-        tile: NocCoord<N>,
-        core: Core,
-    ) -> Result<u32> {
+    pub fn read_pc_snapshot<N: NocId>(&mut self, window: &Window, tile: NocCoord<N>, core: Core) -> Result<u32> {
         self.read32(window, tile, core.pc_snapshot())
     }
 }

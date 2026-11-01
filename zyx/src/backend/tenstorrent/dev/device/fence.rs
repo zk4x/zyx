@@ -35,9 +35,9 @@
 //! observer that needs no start from the host: an Ethernet transfer landing, a
 //! mover told to read the range.
 
-use super::{refuse_local_ram_aperture, refuse_non_l1};
 use super::super::{Device, Window};
 use super::super::{Result, Transport, TransportError};
+use super::{refuse_local_ram_aperture, refuse_non_l1};
 use tt_isa::noc::{NocCoord, NocId};
 
 /// The dword that holds the last byte of `[address, address + len)`.
@@ -75,12 +75,7 @@ pub struct FencedWrite<'w, N: NocId> {
 
 impl<'w, N: NocId> FencedWrite<'w, N> {
     pub fn new(window: &'w Window, coord: NocCoord<N>) -> Self {
-        Self {
-            window,
-            coord,
-            writes: Vec::new(),
-            fence_at: None,
-        }
+        Self { window, coord, writes: Vec::new(), fence_at: None }
     }
 
     /// Queue `data` at `address` (dword aligned, whole dwords).
@@ -123,9 +118,7 @@ impl<'w, N: NocId> FencedWrite<'w, N> {
         let Some((last_at, last)) = self.writes.iter().rfind(|(_, d)| !d.is_empty()) else {
             return Ok(());
         };
-        let fence = self
-            .fence_at
-            .unwrap_or_else(|| last_word(*last_at, last.len()));
+        let fence = self.fence_at.unwrap_or_else(|| last_word(*last_at, last.len()));
         for (address, data) in &self.writes {
             if !data.is_empty() {
                 dev.write_unchecked(self.window, self.coord, *address, data)?;
@@ -139,44 +132,22 @@ impl<'w, N: NocId> FencedWrite<'w, N> {
 impl<T: Transport> Device<T> {
     /// [`Device::write32`], then one read-back of the same dword: returns once
     /// the write has landed. `address` must be dword aligned.
-    pub fn write32_fenced<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        address: u64,
-        value: u32,
-    ) -> Result<()> {
-        FencedWrite::new(window, coord)
-            .word(address, value)
-            .commit(self)
+    pub fn write32_fenced<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>, address: u64, value: u32) -> Result<()> {
+        FencedWrite::new(window, coord).word(address, value).commit(self)
     }
 
     /// [`Device::write`], then one read-back of the last dword written: returns
     /// once every byte has landed. `address` and `data.len()` must be dword
     /// multiples. For several writes under one read-back, use [`FencedWrite`].
-    pub fn write_fenced<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        address: u64,
-        data: &[u8],
-    ) -> Result<()> {
-        FencedWrite::new(window, coord)
-            .bytes(address, data)
-            .commit(self)
+    pub fn write_fenced<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>, address: u64, data: &[u8]) -> Result<()> {
+        FencedWrite::new(window, coord).bytes(address, data).commit(self)
     }
 
     /// [`Device::l1_write`] (the bulk path), then one bulk read-back of the dword
     /// holding the last byte: returns once every byte has landed. Any byte range
     /// inside a Tensix tile's L1 is allowed; the read-back is of the whole dword
     /// that contains the last byte.
-    pub fn l1_write_fenced<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        address: u64,
-        data: &[u8],
-    ) -> Result<()> {
+    pub fn l1_write_fenced<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>, address: u64, data: &[u8]) -> Result<()> {
         refuse_non_l1(coord, address, data.len())?;
         self.check_owned(window)?;
         if data.is_empty() {
@@ -215,8 +186,8 @@ mod tests {
     //! (`device::tests::FakeTransport`), which logs every data access in order.
 
     use super::super::tests::{c, device};
-    use super::*;
     use super::super::tlb::WindowKind;
+    use super::*;
 
     fn tile() -> NocCoord<tt_isa::noc::Noc0> {
         c(3, 4)
@@ -248,10 +219,7 @@ mod tests {
         let w = d.alloc_window(WindowKind::TwoMib).unwrap();
         let data: Vec<u8> = (0..16).collect();
         d.write_fenced(&w, tile(), 0x2000, &data).unwrap();
-        assert_eq!(
-            d.transport().log,
-            vec![(true, 0x2000, 16), (false, 0x200C, 4)]
-        );
+        assert_eq!(d.transport().log, vec![(true, 0x2000, 16), (false, 0x200C, 4)]);
         let mut back = [0u8; 16];
         d.read(&w, tile(), 0x2000, &mut back).unwrap();
         assert_eq!(&back[..], &data[..]);
@@ -275,12 +243,8 @@ mod tests {
         let mut d = device();
         let w = d.alloc_window(WindowKind::TwoMib).unwrap();
         // Bytes 0x3002..0x3008: the last byte is in the dword at 0x3004.
-        d.l1_write_fenced(&w, tile(), 0x3002, &[1, 2, 3, 4, 5, 6])
-            .unwrap();
-        assert_eq!(
-            d.transport().log,
-            vec![(true, 0x3002, 6), (false, 0x3004, 4)]
-        );
+        d.l1_write_fenced(&w, tile(), 0x3002, &[1, 2, 3, 4, 5, 6]).unwrap();
+        assert_eq!(d.transport().log, vec![(true, 0x3002, 6), (false, 0x3004, 4)]);
         let mut back = [0u8; 6];
         d.l1_read(&w, tile(), 0x3002, &mut back).unwrap();
         assert_eq!(back, [1, 2, 3, 4, 5, 6]);
@@ -312,21 +276,12 @@ mod tests {
             d.write32_fenced(&w, tile(), 0x1002, 1),
             d.write_fenced(&w, tile(), 0x1000, &[1, 2, 3, 4, 5, 6]),
             d.write_fenced(&w, tile(), 0x1001, &[1, 2, 3, 4]),
-            FencedWrite::new(&w, tile())
-                .word(0x1000, 1)
-                .fence_at(0x1002)
-                .commit(&mut d),
-            FencedWrite::new(&w, tile())
-                .word(0x1000, 1)
-                .bytes(0x1010, &[9; 3])
-                .commit(&mut d),
+            FencedWrite::new(&w, tile()).word(0x1000, 1).fence_at(0x1002).commit(&mut d),
+            FencedWrite::new(&w, tile()).word(0x1000, 1).bytes(0x1010, &[9; 3]).commit(&mut d),
         ];
         for (i, r) in results.into_iter().enumerate() {
             let e = r.unwrap_err();
-            assert!(
-                matches!(e, TransportError::Misaligned { .. }),
-                "case {i}: {e}"
-            );
+            assert!(matches!(e, TransportError::Misaligned { .. }), "case {i}: {e}");
         }
         assert_eq!(d.traffic(), before, "a refused batch changes nothing");
         assert!(d.transport().log.is_empty());
@@ -339,11 +294,7 @@ mod tests {
         let before = d.traffic();
         let e = d.write32_fenced(&w, tile(), 0xFFB1_4000, 1).unwrap_err();
         assert!(matches!(e, TransportError::Hazard { .. }), "{e}");
-        let e = FencedWrite::new(&w, tile())
-            .word(0x1000, 1)
-            .fence_at(0xFFB1_4000)
-            .commit(&mut d)
-            .unwrap_err();
+        let e = FencedWrite::new(&w, tile()).word(0x1000, 1).fence_at(0xFFB1_4000).commit(&mut d).unwrap_err();
         assert!(matches!(e, TransportError::Hazard { .. }), "{e}");
         assert_eq!(d.traffic(), before);
     }
@@ -365,34 +316,16 @@ mod tests {
     fn a_batch_is_ordered_and_fenced_once_at_the_last_word_or_the_named_one() {
         let mut d = device();
         let w = d.alloc_window(WindowKind::TwoMib).unwrap();
-        FencedWrite::new(&w, tile())
-            .word(0x4000, 1)
-            .bytes(0x4010, &[7; 8])
-            .word(0x4004, 2)
-            .commit(&mut d)
-            .unwrap();
+        FencedWrite::new(&w, tile()).word(0x4000, 1).bytes(0x4010, &[7; 8]).word(0x4004, 2).commit(&mut d).unwrap();
         assert_eq!(
             d.transport().log,
-            vec![
-                (true, 0x4000, 4),
-                (true, 0x4010, 8),
-                (true, 0x4004, 4),
-                (false, 0x4004, 4)
-            ],
+            vec![(true, 0x4000, 4), (true, 0x4010, 8), (true, 0x4004, 4), (false, 0x4004, 4)],
             "writes in call order, then one read of the last one's word"
         );
         d.transport().log.clear();
         // A doorbell that cannot be read: fence on a readable word instead.
-        FencedWrite::new(&w, tile())
-            .word(0x4000, 3)
-            .word(0x4100, 1)
-            .fence_at(0x4000)
-            .commit(&mut d)
-            .unwrap();
-        assert_eq!(
-            d.transport().log,
-            vec![(true, 0x4000, 4), (true, 0x4100, 4), (false, 0x4000, 4)]
-        );
+        FencedWrite::new(&w, tile()).word(0x4000, 3).word(0x4100, 1).fence_at(0x4000).commit(&mut d).unwrap();
+        assert_eq!(d.transport().log, vec![(true, 0x4000, 4), (true, 0x4100, 4), (false, 0x4000, 4)]);
     }
 
     #[test]

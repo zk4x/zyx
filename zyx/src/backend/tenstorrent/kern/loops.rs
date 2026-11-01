@@ -35,8 +35,8 @@
 
 use tt_isa::frontend::mop::{self, MopConfig, Template0};
 use tt_isa::frontend::{self, REPLAY_BUFFER};
-use tt_isa::isa::generated::defs;
 use tt_isa::isa::Instruction;
+use tt_isa::isa::generated::defs;
 
 /// One element of a role program.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,11 +88,7 @@ pub enum LoopForm {
     /// A shared block: recorded once, replayed at each of its other `uses`.
     Shared { key: u32, body: usize, uses: u32 },
     /// Written out.
-    Unrolled {
-        times: u32,
-        body: usize,
-        why: Unrolled,
-    },
+    Unrolled { times: u32, body: usize, why: Unrolled },
 }
 
 /// Why a loop was written out.
@@ -129,9 +125,7 @@ pub struct Lowered {
 const MOP_ITERATIONS: u32 = 32;
 
 fn is_expander_insn(i: &Instruction) -> bool {
-    core::ptr::eq(i.def(), &defs::REPLAY)
-        || core::ptr::eq(i.def(), &defs::MOP)
-        || core::ptr::eq(i.def(), &defs::MOP_CFG)
+    core::ptr::eq(i.def(), &defs::REPLAY) || core::ptr::eq(i.def(), &defs::MOP) || core::ptr::eq(i.def(), &defs::MOP_CFG)
 }
 
 /// A loop's body flattened, if it can be recorded: no loop inside it that is
@@ -183,20 +177,13 @@ fn inline_long(items: &[Item], notes: &mut Vec<LoopForm>, top: bool) -> Vec<Item
                 let len = Item::unrolled(&body).len();
                 if len > REPLAY_BUFFER as usize {
                     if top {
-                        notes.push(LoopForm::Unrolled {
-                            times: *times,
-                            body: len,
-                            why: Unrolled::TooLong,
-                        });
+                        notes.push(LoopForm::Unrolled { times: *times, body: len, why: Unrolled::TooLong });
                     }
                     for _ in 0..*times {
                         out.extend(body.iter().cloned());
                     }
                 } else {
-                    out.push(Item::Repeat {
-                        times: *times,
-                        body,
-                    });
+                    out.push(Item::Repeat { times: *times, body });
                 }
             }
             other => out.push(other.clone()),
@@ -238,8 +225,7 @@ fn lower_flat(items: &[Item], allow_mop: bool) -> Lowered {
             if let Item::Repeat { times, body } = it {
                 if let Some(b) = flat_body(body) {
                     if *times > 1 && b.len() <= loop_room {
-                        let saved = words_replayed(*times, b.len())
-                            .saturating_sub(words_mop(*times, b.len()));
+                        let saved = words_replayed(*times, b.len()).saturating_sub(words_mop(*times, b.len()));
                         if saved > 0 && best.is_none_or(|(_, s)| saved > s) {
                             best = Some((k, saved));
                         }
@@ -248,11 +234,7 @@ fn lower_flat(items: &[Item], allow_mop: bool) -> Lowered {
             }
         }
     }
-    let mut out = Lowered {
-        words: Vec::new(),
-        mop: None,
-        loops: Vec::new(),
-    };
+    let mut out = Lowered { words: Vec::new(), mop: None, loops: Vec::new() };
     let mut recorded: Vec<u32> = Vec::new();
     // What the loop region (from slot 0) holds now: a loop whose body is
     // already there replays it rather than recording it again.
@@ -269,11 +251,9 @@ fn lower_flat(items: &[Item], allow_mop: bool) -> Lowered {
                 match entry {
                     Some((_, first, Some(slot))) if first == body => {
                         if recorded.contains(key) {
-                            out.words
-                                .push(frontend::replay(*slot, body.len()).expect("allocated"));
+                            out.words.push(frontend::replay(*slot, body.len()).expect("allocated"));
                         } else {
-                            frontend::record(*slot, body, true, &mut out.words)
-                                .expect("allocated, no REPLAY");
+                            frontend::record(*slot, body, true, &mut out.words).expect("allocated, no REPLAY");
                             recorded.push(*key);
                         }
                         match uses.iter_mut().find(|(k2, ..)| k2 == key) {
@@ -292,11 +272,7 @@ fn lower_flat(items: &[Item], allow_mop: bool) -> Lowered {
                             Unrolled::BufferFull
                         };
                         out.words.extend_from_slice(body);
-                        out.loops.push(LoopForm::Unrolled {
-                            times: 1,
-                            body: body.len(),
-                            why,
-                        });
+                        out.loops.push(LoopForm::Unrolled { times: 1, body: body.len(), why });
                     }
                 }
                 continue;
@@ -309,11 +285,7 @@ fn lower_flat(items: &[Item], allow_mop: bool) -> Lowered {
             for _ in 0..times {
                 out.words.extend_from_slice(&unrolled);
             }
-            out.loops.push(LoopForm::Unrolled {
-                times,
-                body: len,
-                why,
-            });
+            out.loops.push(LoopForm::Unrolled { times, body: len, why });
         };
         if times <= 1 {
             write_out(&mut out, Unrolled::Once);
@@ -351,34 +323,19 @@ fn lower_flat(items: &[Item], allow_mop: bool) -> Lowered {
             _ => None,
         });
         if mop_body.as_ref() == Some(&b) {
-            out.mop = Some(MopConfig::Template0(Template0 {
-                a0: replay,
-                a123: None,
-                b: None,
-                skip_a0: replay,
-                skip_b: replay,
-            }));
+            out.mop = Some(MopConfig::Template0(Template0 { a0: replay, a123: None, b: None, skip_a0: replay, skip_b: replay }));
             let mut left = rest;
             let mut mops = 0;
             while left > 0 {
                 let n = left.min(MOP_ITERATIONS);
-                out.words
-                    .extend(mop::mop_template0(n, 0).expect("1..=32 iterations"));
+                out.words.extend(mop::mop_template0(n, 0).expect("1..=32 iterations"));
                 left -= n;
                 mops += 1;
             }
-            out.loops.push(LoopForm::Mop {
-                times,
-                body: b.len(),
-                mops,
-            });
+            out.loops.push(LoopForm::Mop { times, body: b.len(), mops });
         } else {
-            out.words
-                .extend(core::iter::repeat_n(replay, rest as usize));
-            out.loops.push(LoopForm::Replayed {
-                times,
-                body: b.len(),
-            });
+            out.words.extend(core::iter::repeat_n(replay, rest as usize));
+            out.loops.push(LoopForm::Replayed { times, body: b.len() });
         }
     }
     for (key, body, n) in uses {
@@ -457,14 +414,8 @@ mod tests {
     fn the_biggest_saving_takes_the_mop_and_the_rest_replay() {
         let items = vec![
             Item::I(op(1000)),
-            Item::Repeat {
-                times: 5,
-                body: body(0..3),
-            },
-            Item::Repeat {
-                times: 100,
-                body: body(10..14),
-            },
+            Item::Repeat { times: 5, body: body(0..3) },
+            Item::Repeat { times: 100, body: body(10..14) },
             Item::I(op(1001)),
         ];
         let l = holds(&items);
@@ -472,11 +423,7 @@ mod tests {
             l.loops,
             [
                 LoopForm::Replayed { times: 5, body: 3 },
-                LoopForm::Mop {
-                    times: 100,
-                    body: 4,
-                    mops: 4
-                },
+                LoopForm::Mop { times: 100, body: 4, mops: 4 },
             ]
         );
         // 1 + (1 + 3 + 4) + (1 + 4 + 2 * 4) + 1 words, against 1 + 15 + 400 + 1.
@@ -486,28 +433,14 @@ mod tests {
 
     #[test]
     fn what_cannot_be_recorded_is_written_out_and_says_why() {
-        let long = Item::Repeat {
-            times: 3,
-            body: body(0..33),
-        };
-        let once = Item::Repeat {
-            times: 1,
-            body: body(0..2),
-        };
+        let long = Item::Repeat { times: 3, body: body(0..33) };
+        let once = Item::Repeat { times: 1, body: body(0..2) };
         let l = holds(&[long, once]);
         assert_eq!(
             l.loops,
             [
-                LoopForm::Unrolled {
-                    times: 3,
-                    body: 33,
-                    why: Unrolled::TooLong
-                },
-                LoopForm::Unrolled {
-                    times: 1,
-                    body: 2,
-                    why: Unrolled::Once
-                },
+                LoopForm::Unrolled { times: 3, body: 33, why: Unrolled::TooLong },
+                LoopForm::Unrolled { times: 1, body: 2, why: Unrolled::Once },
             ]
         );
         // A program with a REPLAY of its own keeps the buffer to itself.
@@ -516,50 +449,24 @@ mod tests {
         frontend::record(4, &[op(7), op(8)], true, &mut rec).unwrap();
         let mut items: Vec<Item> = rec.into_iter().map(Item::I).collect();
         items.push(Item::I(own));
-        items.push(Item::Repeat {
-            times: 4,
-            body: body(0..2),
-        });
+        items.push(Item::Repeat { times: 4, body: body(0..2) });
         let l = lower(&items);
-        assert_eq!(
-            l.loops,
-            [LoopForm::Unrolled {
-                times: 4,
-                body: 2,
-                why: Unrolled::BufferInUse
-            }]
-        );
+        assert_eq!(l.loops, [LoopForm::Unrolled { times: 4, body: 2, why: Unrolled::BufferInUse }]);
         assert!(l.mop.is_none());
     }
 
     #[test]
     fn nested_loops_flatten_into_one_recorded_body() {
-        let inner = Item::Repeat {
-            times: 3,
-            body: body(0..2),
-        };
-        let items = vec![Item::Repeat {
-            times: 40,
-            body: vec![Item::I(op(50)), inner],
-        }];
+        let inner = Item::Repeat { times: 3, body: body(0..2) };
+        let items = vec![Item::Repeat { times: 40, body: vec![Item::I(op(50)), inner] }];
         let l = holds(&items);
-        assert_eq!(
-            l.loops,
-            [LoopForm::Mop {
-                times: 40,
-                body: 7,
-                mops: 2
-            }]
-        );
+        assert_eq!(l.loops, [LoopForm::Mop { times: 40, body: 7, mops: 2 }]);
     }
 
     #[test]
     fn the_model_refuses_what_the_hardware_would_not_run() {
         // A replay of slots nothing recorded, a MOP with no configuration.
-        assert_eq!(
-            frontend_stream(&[frontend::replay(0, 3).unwrap()], None),
-            None
-        );
+        assert_eq!(frontend_stream(&[frontend::replay(0, 3).unwrap()], None), None);
         assert_eq!(frontend_stream(&[mop::mop_template1()], None), None);
     }
 
@@ -569,105 +476,40 @@ mod tests {
         let mut items = Vec::new();
         for pair in 0..6 {
             items.push(Item::I(op(500 + pair))); // each pair's own retargeting
-            items.push(Item::Shared {
-                key: 1,
-                body: block.clone(),
-            });
+            items.push(Item::Shared { key: 1, body: block.clone() });
         }
         // A loop beside it, in the twelve slots left.
-        items.push(Item::Repeat {
-            times: 9,
-            body: body(40..50),
-        });
+        items.push(Item::Repeat { times: 9, body: body(40..50) });
         let l = holds(&items);
         // 6 + (1 + 20) + 5 replays, then the loop.
-        assert!(
-            l.loops.contains(&LoopForm::Shared {
-                key: 1,
-                body: 20,
-                uses: 6
-            }),
-            "{:?}",
-            l.loops
-        );
-        assert!(
-            matches!(
-                l.loops[0],
-                LoopForm::Mop {
-                    times: 9,
-                    body: 10,
-                    ..
-                }
-            ),
-            "{:?}",
-            l.loops
-        );
+        assert!(l.loops.contains(&LoopForm::Shared { key: 1, body: 20, uses: 6 }), "{:?}", l.loops);
+        assert!(matches!(l.loops[0], LoopForm::Mop { times: 9, body: 10, .. }), "{:?}", l.loops);
         // A loop that would not fit beside the block is written out, and says so.
         let mut tight = items.clone();
         tight.pop();
-        tight.push(Item::Repeat {
-            times: 3,
-            body: body(60..75),
-        });
+        tight.push(Item::Repeat { times: 3, body: body(60..75) });
         let l = holds(&tight);
-        assert!(l.loops.contains(&LoopForm::Unrolled {
-            times: 3,
-            body: 15,
-            why: Unrolled::BufferFull
-        }));
+        assert!(l.loops.contains(&LoopForm::Unrolled { times: 3, body: 15, why: Unrolled::BufferFull }));
         // A key whose body changes is written out where it differs.
         let mut odd = items.clone();
-        odd.push(Item::Shared {
-            key: 1,
-            body: (100..120).map(op).collect(),
-        });
+        odd.push(Item::Shared { key: 1, body: (100..120).map(op).collect() });
         let l = holds(&odd);
-        assert!(l.loops.contains(&LoopForm::Unrolled {
-            times: 1,
-            body: 20,
-            why: Unrolled::Differs
-        }));
+        assert!(l.loops.contains(&LoopForm::Unrolled { times: 1, body: 20, why: Unrolled::Differs }));
     }
 
     #[test]
     fn loops_with_the_same_body_share_the_mop() {
         // A matmul's K loop, once per output tile, between each output's setup.
-        let items: Vec<Item> = (0..3)
-            .flat_map(|out| {
-                [
-                    Item::I(op(900 + out)),
-                    Item::Repeat {
-                        times: 25,
-                        body: body(0..8),
-                    },
-                ]
-            })
-            .collect();
+        let items: Vec<Item> =
+            (0..3).flat_map(|out| [Item::I(op(900 + out)), Item::Repeat { times: 25, body: body(0..8) }]).collect();
         let l = holds(&items);
-        assert_eq!(
-            l.loops
-                .iter()
-                .filter(|f| matches!(f, LoopForm::Mop { .. }))
-                .count(),
-            3,
-            "{:?}",
-            l.loops
-        );
+        assert_eq!(l.loops.iter().filter(|f| matches!(f, LoopForm::Mop { .. })).count(), 3, "{:?}", l.loops);
     }
 
     #[test]
     fn a_body_already_recorded_is_replayed_not_recorded_again() {
-        let items: Vec<Item> = (0..3)
-            .flat_map(|out| {
-                [
-                    Item::I(op(900 + out)),
-                    Item::Repeat {
-                        times: 5,
-                        body: body(0..8),
-                    },
-                ]
-            })
-            .collect();
+        let items: Vec<Item> =
+            (0..3).flat_map(|out| [Item::I(op(900 + out)), Item::Repeat { times: 5, body: body(0..8) }]).collect();
         let l = lower_with(&items, false);
         let got = frontend_stream(&l.words, None).unwrap();
         assert_eq!(got, Item::unrolled(&items));
@@ -682,26 +524,14 @@ mod tests {
         let unit = body(0..17);
         let pair = vec![
             Item::I(op(100)),
-            Item::Repeat {
-                times: 2,
-                body: unit.clone(),
-            },
+            Item::Repeat { times: 2, body: unit.clone() },
             Item::I(op(101)),
-            Item::Repeat {
-                times: 2,
-                body: unit,
-            },
+            Item::Repeat { times: 2, body: unit },
             Item::I(op(101)),
         ];
-        let items = vec![Item::Repeat {
-            times: 8,
-            body: pair,
-        }];
+        let items = vec![Item::Repeat { times: 8, body: pair }];
         let l = lower_with(&items, false);
-        assert_eq!(
-            frontend_stream(&l.words, None).unwrap(),
-            Item::unrolled(&items)
-        );
+        assert_eq!(frontend_stream(&l.words, None).unwrap(), Item::unrolled(&items));
         // The first pair: its reset, the unit recorded (1 + 17) and replayed
         // once, a step, two replays, a step -- 24 words. Every other pair: a
         // reset, four REPLAYs, two steps -- 7.

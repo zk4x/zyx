@@ -11,9 +11,9 @@
 use super::super::kind;
 use tt_isa::isa::Instruction;
 
-use super::kernel::{bias_row, Operands, A_ROW, B_ROW, OUT_ROW};
-use super::{Cond, Format, LReg, Program};
 use super::super::elem::Elem;
+use super::kernel::{A_ROW, B_ROW, OUT_ROW, Operands, bias_row};
+use super::{Cond, Format, LReg, Program};
 
 pub mod rem;
 
@@ -247,10 +247,7 @@ const COMPARES: [(u32, u32); 6] = [
 
 /// `kind`'s tensor-with-tensor comparison, if it is one of either form.
 fn compare_of(kind: u32) -> Option<u32> {
-    COMPARES
-        .iter()
-        .find(|(t, s)| *t == kind || *s == kind)
-        .map(|(t, _)| *t)
+    COMPARES.iter().find(|(t, s)| *t == kind || *s == kind).map(|(t, _)| *t)
 }
 
 /// What `x (cmp) y` is for two FP32 values by IEEE, as Flex compares.
@@ -291,11 +288,7 @@ pub fn elems(kind: u32) -> Sig {
             } else {
                 &[Elem::I32, Elem::I32]
             },
-            if (8..=13).contains(&op) {
-                Bool
-            } else {
-                Elem::I32
-            },
+            if (8..=13).contains(&op) { Bool } else { Elem::I32 },
         );
     }
     match kind {
@@ -377,10 +370,8 @@ pub fn accuracy(kind: u32) -> Accuracy {
 /// (it would be denormal, which flushes) or `+inf`; a NaN stays one.
 pub fn exp_program(p: &mut Program, x: LReg, d: LReg) {
     use LReg as R;
-    let regs: Vec<LReg> = [R::L0, R::L1, R::L2, R::L3, R::L4, R::L5, R::L6, R::L7]
-        .into_iter()
-        .filter(|r| *r != x && *r != d)
-        .collect();
+    let regs: Vec<LReg> =
+        [R::L0, R::L1, R::L2, R::L3, R::L4, R::L5, R::L6, R::L7].into_iter().filter(|r| *r != x && *r != d).collect();
     let (k, magic, t, nf, r, c) = (regs[0], regs[1], regs[2], regs[3], regs[4], regs[5]);
     p.loadi(k, std::f32::consts::LOG2_E);
     p.loadi_bits(magic, 0x4b40_0000);
@@ -446,10 +437,8 @@ pub const LOG_BOUND: f64 = 7.12 / 16_777_216.0;
 /// `ln(+inf) = +inf`, a NaN stays one.
 pub fn log_program(p: &mut Program, x: LReg, d: LReg) {
     use LReg as R;
-    let regs: Vec<LReg> = [R::L0, R::L1, R::L2, R::L3, R::L4, R::L5, R::L6, R::L7]
-        .into_iter()
-        .filter(|r| *r != x && *r != d)
-        .collect();
+    let regs: Vec<LReg> =
+        [R::L0, R::L1, R::L2, R::L3, R::L4, R::L5, R::L6, R::L7].into_iter().filter(|r| *r != x && *r != d).collect();
     let (e, m, f, den, y, q) = (regs[0], regs[1], regs[2], regs[3], regs[4], regs[5]);
     p.exponent(x, true, e);
     p.set_exponent(x, 127, m);
@@ -533,10 +522,8 @@ pub const RSQRT_BOUND: f64 = 4.1 / 16_777_216.0;
 /// for `±0`, `+0` for `+inf`, NaN as `sqrt`.
 pub fn sqrt_program(p: &mut Program, x: LReg, d: LReg, inverse: bool) {
     use LReg as R;
-    let regs: Vec<LReg> = [R::L0, R::L1, R::L2, R::L3, R::L4, R::L5, R::L6, R::L7]
-        .into_iter()
-        .filter(|r| *r != x && *r != d)
-        .collect();
+    let regs: Vec<LReg> =
+        [R::L0, R::L1, R::L2, R::L3, R::L4, R::L5, R::L6, R::L7].into_iter().filter(|r| *r != x && *r != d).collect();
     let (y, t, h, c) = (regs[0], regs[1], regs[2], regs[3]);
     // The seed: `magic - (bits(x) >> 1)`.
     p.mov(x, y);
@@ -612,10 +599,7 @@ pub const LOG1P_BOUND: f64 = 11.12 / 16_777_216.0;
 /// `log1p(-1) = -inf`, below `-1` NaN, `log1p(+inf) = +inf`, a NaN stays one.
 pub fn log1p_program(p: &mut Program, x: LReg, d: LReg, spill: u32) {
     use LReg as R;
-    assert!(
-        x == R::L0 && d == R::L7,
-        "log1p_program's registers are fixed"
-    );
+    assert!(x == R::L0 && d == R::L7, "log1p_program's registers are fixed");
     p.store(x, Format::Int32, spill);
     let u = R::L1;
     p.add(x, LReg::ONE, u);
@@ -637,9 +621,7 @@ pub fn log1p_program(p: &mut Program, x: LReg, d: LReg, spill: u32) {
     p.if_(Cond::Eq0(den), |p| p.mov(x, d));
     // `+inf`: `+inf` (the quotient `inf/inf` would be NaN).
     p.loadi_bits(y, 0x7f80_0000);
-    p.if_(Cond::LessEq(y, x), |p| {
-        p.if_(Cond::LessEq(x, y), |p| p.mov(y, d))
-    });
+    p.if_(Cond::LessEq(y, x), |p| p.if_(Cond::LessEq(x, y), |p| p.mov(y, d)));
 }
 
 /// [`expm1_program`]'s derived bound, relative to `e^x - 1`.
@@ -666,10 +648,8 @@ pub const EXPM1_BOUND: f64 = 4.5 / 16_777_216.0;
 /// (`e^-18 < 2^-25`), from 88.72284 `+inf`; a NaN stays one.
 pub fn expm1_program(p: &mut Program, x: LReg, d: LReg) {
     use LReg as R;
-    let regs: Vec<LReg> = [R::L0, R::L1, R::L2, R::L3, R::L4, R::L5, R::L6, R::L7]
-        .into_iter()
-        .filter(|r| *r != x && *r != d)
-        .collect();
+    let regs: Vec<LReg> =
+        [R::L0, R::L1, R::L2, R::L3, R::L4, R::L5, R::L6, R::L7].into_iter().filter(|r| *r != x && *r != d).collect();
     let (k, magic, t, nf, r, c) = (regs[0], regs[1], regs[2], regs[3], regs[4], regs[5]);
     p.loadi(k, std::f32::consts::LOG2_E);
     p.loadi_bits(magic, 0x4b40_0000);
@@ -681,14 +661,7 @@ pub fn expm1_program(p: &mut Program, x: LReg, d: LReg) {
     p.nmad(nf, k, r, r);
     // q = 1/2 + r(1/6 + r(1/24 + r(1/120 + r(1/720 + r(1/5040 + r/40320)))))
     p.loadi(d, 1.0 / 40320.0);
-    for coeff in [
-        1.0 / 5040.0,
-        1.0 / 720.0,
-        1.0 / 120.0,
-        1.0 / 24.0,
-        1.0 / 6.0,
-        0.5,
-    ] {
+    for coeff in [1.0 / 5040.0, 1.0 / 720.0, 1.0 / 120.0, 1.0 / 24.0, 1.0 / 6.0, 0.5] {
         p.loadi(c, coeff);
         p.mad(d, r, c, d);
     }
@@ -785,13 +758,9 @@ pub fn tanh_program(p: &mut Program, spill: u32) {
     p.loadi_bits(R::L5, 0x3980_0000); // 2^-12
     p.if_(Cond::Less(R::L1, R::L5), |p| p.mov(x, R::L7));
     p.loadi(R::L5, 9.01);
-    p.if_(Cond::LessEq(R::L5, R::L1), |p| {
-        p.copy_sign(R::ONE, x, R::L7)
-    });
+    p.if_(Cond::LessEq(R::L5, R::L1), |p| p.copy_sign(R::ONE, x, R::L7));
     p.loadi_bits(R::L5, 0x7f80_0000);
-    p.if_(Cond::Less(R::L5, R::L1), |p| {
-        p.loadi_bits(R::L7, 0x7fc0_0000)
-    });
+    p.if_(Cond::Less(R::L5, R::L1), |p| p.loadi_bits(R::L7, 0x7fc0_0000));
 }
 
 /// [`sinh_cosh_program`]'s derived bound for `sinh`, relative.
@@ -1028,9 +997,7 @@ pub fn log_sigmoid_program(p: &mut Program, spill: u32) {
     p.loadi_bits(R::L5, 0x7fff_ffff);
     p.and(x, R::L5, R::L1);
     p.loadi_bits(R::L5, 0x7f80_0000);
-    p.if_(Cond::Less(R::L5, R::L1), |p| {
-        p.loadi_bits(R::L7, 0x7fc0_0000)
-    });
+    p.if_(Cond::Less(R::L5, R::L1), |p| p.loadi_bits(R::L7, 0x7fc0_0000));
 }
 
 /// `2/pi`'s bits after the point, 24 to an entry: fdlibm's `ipio2`, as
@@ -1139,11 +1106,7 @@ pub fn trig_reduce(p: &mut Program, spill: u32) {
     // Limbs 1..3 of `M W mod 2^92`, in `L3`, `L2`, `L1`: limb `i` is `W_(i-1)
     // + hi(M' W_(i-1)) + lo(M' W_i)`.
     p.load(R::L4, Format::Int32, sq);
-    for (hi_of, lo_of, into) in [
-        (R::L3, R::L2, R::L3),
-        (R::L2, R::L1, R::L2),
-        (R::L1, R::L0, R::L1),
-    ] {
+    for (hi_of, lo_of, into) in [(R::L3, R::L2, R::L3), (R::L2, R::L1, R::L2), (R::L1, R::L0, R::L1)] {
         p.mul24(R::L4, hi_of, true, R::L5);
         p.iadd(R::L5, into);
         p.mul24(R::L4, lo_of, false, R::L5);
@@ -1176,11 +1139,7 @@ pub fn trig_reduce(p: &mut Program, spill: u32) {
     p.or(R::L0, R::L5, R::L0);
     p.store(R::L0, Format::Int32, sq);
     // `|g| = f3 + f2 + f1`, the limbs at `2^-21`, `2^-44`, `2^-67`.
-    for (r, scale) in [
-        (R::L1, 0x3500_0000),
-        (R::L2, 0x2980_0000),
-        (R::L3, 0x1e00_0000),
-    ] {
+    for (r, scale) in [(R::L1, 0x3500_0000), (R::L2, 0x2980_0000), (R::L3, 0x1e00_0000)] {
         p.sm32_to_float(r, r);
         p.loadi_bits(R::L6, scale);
         p.mul(r, R::L6, r);
@@ -1470,17 +1429,13 @@ pub fn atan_program(p: &mut Program, spill: u32) {
     p.load(R::L0, Format::Int32, sx);
     p.loadi_bits(R::L4, 0x7fff_ffff);
     p.and(R::L0, R::L4, R::L1);
-    p.if_(Cond::Less(R::ONE, R::L1), |p| {
-        from_constant(p, std::f64::consts::FRAC_PI_2)
-    });
+    p.if_(Cond::Less(R::ONE, R::L1), |p| from_constant(p, std::f64::consts::FRAC_PI_2));
     p.copy_sign(R::L7, R::L0, R::L4);
     p.mov(R::L4, R::L7);
     p.loadi_bits(R::L5, 0x3980_0000); // 2^-12
     p.if_(Cond::Less(R::L1, R::L5), |p| p.mov(R::L0, R::L7));
     p.loadi_bits(R::L5, 0x7f80_0000);
-    p.if_(Cond::Less(R::L5, R::L1), |p| {
-        p.loadi_bits(R::L7, 0x7fc0_0000)
-    });
+    p.if_(Cond::Less(R::L5, R::L1), |p| p.loadi_bits(R::L7, 0x7fc0_0000));
 }
 
 /// `atan2(y, x)` of `y` (in `L0`) and `x` (in `L1`), raw bits, into `L7`, as
@@ -1534,9 +1489,7 @@ pub fn atan2_program(p: &mut Program, spill: u32) {
     p.if_(Cond::LessEq(R::L6, num), |p| p.mov(R::ONE, R::L0));
     odd_core(p, spill, ATAN_FIT);
     mags(p, ay, ax);
-    p.if_(Cond::Less(ax, ay), |p| {
-        from_constant(p, std::f64::consts::FRAC_PI_2)
-    });
+    p.if_(Cond::Less(ax, ay), |p| from_constant(p, std::f64::consts::FRAC_PI_2));
     p.if_(Cond::Lt0(R::L1), |p| from_constant(p, std::f64::consts::PI));
     p.copy_sign(R::L7, R::L0, R::L4);
     p.mov(R::L4, R::L7);
@@ -1672,38 +1625,18 @@ pub struct Piece {
 }
 
 /// The fit [`erfc_mid`] uses: where `erf` is `1 - erfc` without loss.
-pub const ERFC_MID: Piece = Piece {
-    lo: 0.5,
-    hi: 3.92,
-    deg: 16,
-    fit: Fit::Erfcx,
-};
+pub const ERFC_MID: Piece = Piece { lo: 0.5, hi: 3.92, deg: 16, fit: Fit::Erfcx };
 /// The fit beyond it, for `erfc` itself (the normal CDF's far tail, `gelu`):
 /// to 9.3, past which `erfc` is below `2^-126` relative to anything it
 /// multiplies there.
-pub const ERFC_TAIL: Piece = Piece {
-    lo: 3.92,
-    hi: 9.3,
-    deg: 12,
-    fit: Fit::Erfcx,
-};
+pub const ERFC_TAIL: Piece = Piece { lo: 3.92, hi: 9.3, deg: 12, fit: Fit::Erfcx };
 /// `atan`'s core on `[0, 1]` ([`atan_program`]): `atan(sqrt s)/sqrt s` is
 /// analytic but for the branch point at `s = -1`, so the series falls as
 /// `(3 + sqrt 8)^-k`.
-pub const ATAN_FIT: Piece = Piece {
-    lo: 0.0,
-    hi: 1.0,
-    deg: 13,
-    fit: Fit::AtanSqrt,
-};
+pub const ATAN_FIT: Piece = Piece { lo: 0.0, hi: 1.0, deg: 13, fit: Fit::AtanSqrt };
 /// `asin`'s core on `[0, 0.49]` ([`asin_acos_program`]): [`Fit::AsinSqrt`],
 /// its branch point at `s = 1`.
-pub const ASIN_FIT: Piece = Piece {
-    lo: 0.0,
-    hi: 0.49,
-    deg: 16,
-    fit: Fit::AsinSqrt,
-};
+pub const ASIN_FIT: Piece = Piece { lo: 0.0, hi: 0.49, deg: 16, fit: Fit::AsinSqrt };
 /// Every piece a program uses, each fitted once.
 pub const PIECES: [Piece; 4] = [ERFC_MID, ERFC_TAIL, ATAN_FIT, ASIN_FIT];
 pub const ERFC_LO: f64 = ERFC_MID.lo;
@@ -1728,12 +1661,8 @@ pub fn erfcx_cheb() -> &'static [f32] {
 /// the series converges fast; the truncation and the rounding of each
 /// coefficient to `f32` are both inside the measured fit error.
 pub fn piece_cheb(piece: Piece) -> &'static [f32] {
-    static CELLS: [std::sync::OnceLock<Vec<f32>>; PIECES.len()] =
-        [const { std::sync::OnceLock::new() }; PIECES.len()];
-    let i = PIECES
-        .iter()
-        .position(|q| *q == piece)
-        .expect("a piece of `PIECES`");
+    static CELLS: [std::sync::OnceLock<Vec<f32>>; PIECES.len()] = [const { std::sync::OnceLock::new() }; PIECES.len()];
+    let i = PIECES.iter().position(|q| *q == piece).expect("a piece of `PIECES`");
     CELLS[i].get_or_init(|| {
         let m = 64usize;
         let (mid, half) = ((piece.hi + piece.lo) / 2.0, (piece.hi - piece.lo) / 2.0);
@@ -1873,10 +1802,7 @@ fn clenshaw(p: &mut Program, piece: Piece, out: LReg) {
     p.mad(R::L0, R::L1, R::L2, R::L1);
     p.add(R::L1, R::L1, R::L2);
     let (t, tt) = (R::L1, R::L2);
-    let free: Vec<LReg> = [R::L3, R::L4, R::L5, R::L6]
-        .into_iter()
-        .filter(|r| *r != out)
-        .collect();
+    let free: Vec<LReg> = [R::L3, R::L4, R::L5, R::L6].into_iter().filter(|r| *r != out).collect();
     let (mut b1, mut b2, tmp) = (free[0], free[1], free[2]);
     p.mov(R::ZERO, b1);
     p.mov(R::ZERO, b2);
@@ -1959,13 +1885,9 @@ pub fn erf_program(p: &mut Program, spill: u32) {
     p.loadi(R::L1, ERFC_LO as f32);
     p.if_(Cond::Less(R::L2, R::L1), |p| p.mov(R::L6, R::L7));
     p.loadi(R::L1, ERFC_HI as f32);
-    p.if_(Cond::LessEq(R::L1, R::L2), |p| {
-        p.copy_sign(R::ONE, R::L0, R::L7)
-    });
+    p.if_(Cond::LessEq(R::L1, R::L2), |p| p.copy_sign(R::ONE, R::L0, R::L7));
     p.loadi_bits(R::L1, 0x7f80_0000);
-    p.if_(Cond::Less(R::L1, R::L2), |p| {
-        p.loadi_bits(R::L7, 0x7fc0_0000)
-    });
+    p.if_(Cond::Less(R::L1, R::L2), |p| p.loadi_bits(R::L7, 0x7fc0_0000));
 }
 
 /// [`gelu_program`]'s derived bound for `gelu`, relative.
@@ -2053,9 +1975,7 @@ pub fn gelu_exp_program(p: &mut Program, spill: u32) {
     p.if_(Cond::LessEq(R::L2, R::L1), |p| p.mov(R::ZERO, R::L7));
     // A NaN sorts above 9.3 too: it stays one.
     p.loadi_bits(R::L2, 0x7f80_0000);
-    p.if_(Cond::Less(R::L2, R::L1), |p| {
-        p.loadi_bits(R::L7, 0x7fc0_0000)
-    });
+    p.if_(Cond::Less(R::L2, R::L1), |p| p.loadi_bits(R::L7, 0x7fc0_0000));
 }
 
 /// [`gelu_exp_program`]'s output, `e` in `L7` -- with `x` in `L0`, as it
@@ -2077,9 +1997,7 @@ pub fn gelu_program(p: &mut Program, spill: u32, grad: Option<u32>) {
     p.store(R::L6, Format::Int32, s_q);
     clenshaw(p, ERFC_TAIL, R::L6);
     p.loadi(R::L1, ERFC_MID.hi as f32);
-    p.if_(Cond::Less(R::L0, R::L1), |p| {
-        p.load(R::L6, Format::Int32, s_q)
-    });
+    p.if_(Cond::Less(R::L0, R::L1), |p| p.load(R::L6, Format::Int32, s_q));
     // `Q` waits in its slot, `E` in `L7` (and its slot).
     p.store(R::L6, Format::Int32, s_q);
     // The series at `v_hi` (`L0`), into `L6`: `2 Phi` below `|v| = 1/2`.
@@ -2102,9 +2020,7 @@ pub fn gelu_program(p: &mut Program, spill: u32, grad: Option<u32>) {
         })
     });
     p.loadi(R::L3, ERFC_MID.hi as f32);
-    p.if_(Cond::LessEq(R::L3, R::L4), |p| {
-        p.if_(Cond::Gte0(R::L0), |p| p.loadi(R::L6, 2.0))
-    });
+    p.if_(Cond::LessEq(R::L3, R::L4), |p| p.if_(Cond::Gte0(R::L0), |p| p.loadi(R::L6, 2.0)));
     // `x` into `L0`, the branches' flag `a >= 1/2 and v < 0` kept as `L4`
     // (`a`) and `L1` (`v`'s sign, from `x`).
     p.load(R::L0, Format::Int32, s_x);
@@ -2112,15 +2028,11 @@ pub fn gelu_program(p: &mut Program, spill: u32, grad: Option<u32>) {
     p.mul(R::L0, R::L1, R::L2);
     let negative_far = |p: &mut Program, then: &dyn Fn(&mut Program)| {
         p.loadi(R::L3, ERFC_MID.lo as f32);
-        p.if_(Cond::LessEq(R::L3, R::L4), |p| {
-            p.if_(Cond::Lt0(R::L0), then)
-        });
+        p.if_(Cond::LessEq(R::L3, R::L4), |p| p.if_(Cond::Lt0(R::L0), then));
     };
     let beyond = |p: &mut Program, then: &dyn Fn(&mut Program)| {
         p.loadi(R::L3, ERFC_TAIL.hi as f32);
-        p.if_(Cond::LessEq(R::L3, R::L4), |p| {
-            p.if_(Cond::Lt0(R::L0), then)
-        });
+        p.if_(Cond::LessEq(R::L3, R::L4), |p| p.if_(Cond::Lt0(R::L0), then));
     };
     match grad {
         None => {
@@ -2154,9 +2066,7 @@ pub fn gelu_program(p: &mut Program, spill: u32, grad: Option<u32>) {
             p.loadi_bits(R::L3, 0x7fff_ffff);
             p.and(R::L0, R::L3, R::L4);
             p.loadi_bits(R::L3, 0x7f80_0000);
-            p.if_(Cond::LessEq(R::L3, R::L4), |p| {
-                p.loadi_bits(R::L6, 0x7fc0_0000)
-            });
+            p.if_(Cond::LessEq(R::L3, R::L4), |p| p.loadi_bits(R::L6, 0x7fc0_0000));
             p.load(R::L1, Format::Fp32, g);
             p.mul(R::L1, R::L6, R::L7);
         }
@@ -2290,11 +2200,7 @@ pub fn pow_fix(p: &mut Program) {
         p.if_else(
             Cond::Eq0(flags),
             // Not an integer: NaN, unless the base is `-0` or `-inf`.
-            |p| {
-                p.if_(Cond::Ne0(ax), |p| {
-                    p.if_(Cond::Less(ax, c), |p| p.loadi_bits(res, 0x7fc0_0000))
-                })
-            },
+            |p| p.if_(Cond::Ne0(ax), |p| p.if_(Cond::Less(ax, c), |p| p.loadi_bits(res, 0x7fc0_0000))),
             |p| {
                 p.loadi_bits(t, 2);
                 p.and(flags, t, t);
@@ -2306,24 +2212,16 @@ pub fn pow_fix(p: &mut Program) {
     p.if_(Cond::LessEq(c, ay), |p| {
         p.if_(Cond::LessEq(ay, c), |p| {
             p.mov(R::ZERO, res);
-            p.if_(Cond::Lt0(y), |p| {
-                p.if_(Cond::Less(ax, R::ONE), |p| p.mov(c, res))
-            });
-            p.if_(Cond::Gte0(y), |p| {
-                p.if_(Cond::Less(R::ONE, ax), |p| p.mov(c, res))
-            });
-            p.if_(Cond::LessEq(ax, R::ONE), |p| {
-                p.if_(Cond::LessEq(R::ONE, ax), |p| p.mov(R::ONE, res))
-            });
+            p.if_(Cond::Lt0(y), |p| p.if_(Cond::Less(ax, R::ONE), |p| p.mov(c, res)));
+            p.if_(Cond::Gte0(y), |p| p.if_(Cond::Less(R::ONE, ax), |p| p.mov(c, res)));
+            p.if_(Cond::LessEq(ax, R::ONE), |p| p.if_(Cond::LessEq(R::ONE, ax), |p| p.mov(R::ONE, res)));
         })
     });
     // NaNs.
     p.if_(Cond::Less(c, ax), |p| p.loadi_bits(res, 0x7fc0_0000));
     p.if_(Cond::Less(c, ay), |p| p.loadi_bits(res, 0x7fc0_0000));
     // `1^y` and `x^0`.
-    p.if_(Cond::LessEq(x, R::ONE), |p| {
-        p.if_(Cond::LessEq(R::ONE, x), |p| p.mov(R::ONE, res))
-    });
+    p.if_(Cond::LessEq(x, R::ONE), |p| p.if_(Cond::LessEq(R::ONE, x), |p| p.mov(R::ONE, res)));
     p.if_(Cond::Eq0(ay), |p| p.mov(R::ONE, res));
 }
 
@@ -2366,9 +2264,7 @@ pub fn operands(kind: u32) -> Option<Operands> {
         | kind_sfpu::GELU_BACKWARD
         | kind_sfpu::LOG_SIGMOID_BACKWARD
         | kind_sfpu::ATAN2 => Operands::Binary,
-        kind_sfpu::MASK_WHERE | kind_sfpu::INT_MASK_WHERE | kind_sfpu::BOOL_MASK_WHERE => {
-            Operands::Ternary
-        }
+        kind_sfpu::MASK_WHERE | kind_sfpu::INT_MASK_WHERE | kind_sfpu::BOOL_MASK_WHERE => Operands::Ternary,
         kind_sfpu::REM => Operands::Binary,
         kind_sfpu::REM_S => Operands::Unary,
         kind::MUL_SCALAR
@@ -2463,11 +2359,7 @@ pub fn broadcasts(kind: u32) -> bool {
             | kind_sfpu::BOOL_OR
             | kind_sfpu::BOOL_XOR
             | kind_sfpu::EQ
-            ..=kind_sfpu::LE
-                | kind_sfpu::MASK_FILL
-                | kind_sfpu::INT_MASK_FILL
-                | kind_sfpu::BOOL_MASK_FILL
-                | kind_sfpu::PRELU
+            ..=kind_sfpu::LE | kind_sfpu::MASK_FILL | kind_sfpu::INT_MASK_FILL | kind_sfpu::BOOL_MASK_FILL | kind_sfpu::PRELU
     )
 }
 
@@ -2512,11 +2404,7 @@ fn binary_body(p: &mut Program, kind: u32, a_at: u32, b_at: u32, out_at: u32) {
         kind_sfpu::PRELU => {
             p.mul(LReg::L0, LReg::L1, LReg::L2);
             p.and(LReg::L0, LReg::L4, LReg::L3);
-            p.if_(Cond::Gte0(LReg::L0), |p| {
-                p.if_(Cond::LessEq(LReg::L3, LReg::L5), |p| {
-                    p.mov(LReg::L0, LReg::L2)
-                })
-            });
+            p.if_(Cond::Gte0(LReg::L0), |p| p.if_(Cond::LessEq(LReg::L3, LReg::L5), |p| p.mov(LReg::L0, LReg::L2)));
             p.if_(Cond::Eq0(LReg::L3), |p| p.mov(LReg::L0, LReg::L2));
             LReg::L2
         }
@@ -2533,11 +2421,7 @@ fn binary_body(p: &mut Program, kind: u32, a_at: u32, b_at: u32, out_at: u32) {
         kind_sfpu::ADD_RELU => {
             p.add(LReg::L0, LReg::L1, LReg::L2);
             p.mov(LReg::ZERO, LReg::L3);
-            p.if_(Cond::Less(LReg::ZERO, LReg::L2), |p| {
-                p.if_(Cond::Less(LReg::L2, LReg::L5), |p| {
-                    p.mov(LReg::L2, LReg::L3)
-                })
-            });
+            p.if_(Cond::Less(LReg::ZERO, LReg::L2), |p| p.if_(Cond::Less(LReg::L2, LReg::L5), |p| p.mov(LReg::L2, LReg::L3)));
             LReg::L3
         }
         kind::SUB => {
@@ -2551,16 +2435,7 @@ fn binary_body(p: &mut Program, kind: u32, a_at: u32, b_at: u32, out_at: u32) {
         kind_sfpu::DIV => {
             scale_large_divisor(p, LReg::L0, LReg::L1, LReg::L3, LReg::L4);
             p.recip(LReg::L1, LReg::L2, LReg::L3, LReg::L4, LReg::L6);
-            divide(
-                p,
-                LReg::L0,
-                LReg::L1,
-                LReg::L2,
-                LReg::L5,
-                LReg::L3,
-                LReg::L4,
-                LReg::L7,
-            );
+            divide(p, LReg::L0, LReg::L1, LReg::L2, LReg::L5, LReg::L3, LReg::L4, LReg::L7);
             LReg::L5
         }
         _ => unreachable!("kind {kind:#x} is not a broadcastable binary op"),
@@ -2580,10 +2455,7 @@ fn binary_constants(p: &mut Program, kind: u32, scalars: [f32; 2]) {
     if compare_of(kind).is_some() || kind == kind_sfpu::PRELU {
         compare_constants(p);
     }
-    if matches!(
-        kind,
-        kind_sfpu::MASK_FILL | kind_sfpu::INT_MASK_FILL | kind_sfpu::BOOL_MASK_FILL
-    ) {
+    if matches!(kind, kind_sfpu::MASK_FILL | kind_sfpu::INT_MASK_FILL | kind_sfpu::BOOL_MASK_FILL) {
         p.loadi_bits(LReg::L3, scalars[0].to_bits());
     }
 }
@@ -2618,9 +2490,7 @@ fn compare_body(p: &mut Program, kind: u32, y_may_be_nan: bool) {
     };
     p.mov(unordered, out);
     let ordered = move |p: &mut Program| match cmp {
-        kind_sfpu::EQ | kind_sfpu::NE => p.if_(Cond::LessEq(x, y), |p| {
-            p.if_(Cond::LessEq(y, x), |p| p.mov(holds, out))
-        }),
+        kind_sfpu::EQ | kind_sfpu::NE => p.if_(Cond::LessEq(x, y), |p| p.if_(Cond::LessEq(y, x), |p| p.mov(holds, out))),
         kind_sfpu::GT => p.if_(Cond::Less(y, x), |p| p.mov(holds, out)),
         kind_sfpu::GE => p.if_(Cond::LessEq(y, x), |p| p.mov(holds, out)),
         kind_sfpu::LT => p.if_(Cond::Less(x, y), |p| p.mov(holds, out)),
@@ -2638,11 +2508,7 @@ fn compare_body(p: &mut Program, kind: u32, y_may_be_nan: bool) {
 /// `bits` with a zero of either sign made `+0`: how a scalar meets the
 /// canonical lanes of [`compare_body`].
 fn canonical(bits: u32) -> u32 {
-    if bits & 0x7fff_ffff == 0 {
-        0
-    } else {
-        bits
-    }
+    if bits & 0x7fff_ffff == 0 { 0 } else { bits }
 }
 
 /// The program for an exact S2 op (10.2c) over a tile, or `None` for a kind
@@ -2692,13 +2558,7 @@ fn exact_program(p: &mut Program, kind: u32, [s, s2]: [f32; 2]) -> Option<Operan
                     p.if_else(
                         Cond::Eq0(ax),
                         |p| p.mov(LReg::ZERO, out),
-                        |p| {
-                            p.if_else(
-                                Cond::Lt0(x),
-                                |p| p.mov(LReg::L7, out),
-                                |p| p.mov(LReg::L6, out),
-                            )
-                        },
+                        |p| p.if_else(Cond::Lt0(x), |p| p.mov(LReg::L7, out), |p| p.mov(LReg::L6, out)),
                     )
                 });
                 store(p, o);
@@ -2757,9 +2617,7 @@ fn exact_program(p: &mut Program, kind: u32, [s, s2]: [f32; 2]) -> Option<Operan
                 p.if_(Cond::Eq0(ax), |p| p.mov(LReg::ZERO, LReg::L6));
                 p.if_(Cond::LessEq(ax, inf), |p| {
                     p.if_(Cond::Less(LReg::L6, LReg::L7), |p| p.mov(LReg::L1, out));
-                    p.if_(Cond::Less(ConfigLReg::L12.lreg(), LReg::L6), |p| {
-                        p.mov(ConfigLReg::L11.lreg(), out)
-                    });
+                    p.if_(Cond::Less(ConfigLReg::L12.lreg(), LReg::L6), |p| p.mov(ConfigLReg::L11.lreg(), out));
                 });
                 store(p, o);
             });
@@ -2774,9 +2632,7 @@ fn exact_program(p: &mut Program, kind: u32, [s, s2]: [f32; 2]) -> Option<Operan
                 load(p, o);
                 p.mul(x, LReg::L6, out);
                 p.and(x, mask, ax);
-                p.if_(Cond::Gte0(x), |p| {
-                    p.if_(Cond::LessEq(ax, inf), |p| p.mov(x, out))
-                });
+                p.if_(Cond::Gte0(x), |p| p.if_(Cond::LessEq(ax, inf), |p| p.mov(x, out)));
                 p.if_(Cond::Eq0(ax), |p| p.mov(x, out));
                 store(p, o);
             });
@@ -2795,9 +2651,7 @@ fn exact_program(p: &mut Program, kind: u32, [s, s2]: [f32; 2]) -> Option<Operan
                 // `.clamp(0, 1)`: a NaN stays, `-0` stays.
                 p.and(out, mask, ax);
                 p.if_(Cond::LessEq(ax, inf), |p| {
-                    p.if_(Cond::Lt0(out), |p| {
-                        p.if_(Cond::Ne0(ax), |p| p.mov(LReg::ZERO, out))
-                    });
+                    p.if_(Cond::Lt0(out), |p| p.if_(Cond::Ne0(ax), |p| p.mov(LReg::ZERO, out)));
                     p.if_(Cond::Less(LReg::L1, out), |p| p.mov(LReg::L1, out));
                 });
                 store(p, o);
@@ -2808,11 +2662,7 @@ fn exact_program(p: &mut Program, kind: u32, [s, s2]: [f32; 2]) -> Option<Operan
             // where every lane gets the unordered answer.
             compare_constants(p);
             if s.is_nan() {
-                let v = if compare_of(k) == Some(NE) {
-                    LReg::L6
-                } else {
-                    LReg::ZERO
-                };
+                let v = if compare_of(k) == Some(NE) { LReg::L6 } else { LReg::ZERO };
                 p.for_each_row_group(64, |p, o| {
                     p.mov(v, out);
                     store(p, o);
@@ -2835,9 +2685,7 @@ fn exact_program(p: &mut Program, kind: u32, [s, s2]: [f32; 2]) -> Option<Operan
                 if kind == IS_NAN {
                     p.if_(Cond::Less(inf, ax), |p| p.mov(LReg::L6, out));
                 } else {
-                    p.if_(Cond::LessEq(inf, ax), |p| {
-                        p.if_(Cond::LessEq(ax, inf), |p| p.mov(LReg::L6, out))
-                    });
+                    p.if_(Cond::LessEq(inf, ax), |p| p.if_(Cond::LessEq(ax, inf), |p| p.mov(LReg::L6, out)));
                 }
                 store(p, o);
             });
@@ -2866,21 +2714,13 @@ fn exact_program(p: &mut Program, kind: u32, [s, s2]: [f32; 2]) -> Option<Operan
 /// row group, so its loop is unrolled; a column broadcast reads a whole tile
 /// the mover has made of the column (`READ_BROADCAST_COL`), so its program is
 /// the plain binary one.
-pub fn program_for(
-    kind: u32,
-    scalars: [f32; 2],
-    bcast: Broadcast,
-) -> Option<(Operands, Vec<Instruction>)> {
+pub fn program_for(kind: u32, scalars: [f32; 2], bcast: Broadcast) -> Option<(Operands, Vec<Instruction>)> {
     code_for(kind, scalars, bcast).map(|(o, c)| (o, c.expand()))
 }
 
 /// [`program_for`] as a role's slot holds it: its long row loops stored
 /// once, the runner's block repeats beside them (`super::super::code`).
-pub fn code_for(
-    kind: u32,
-    scalars: [f32; 2],
-    bcast: Broadcast,
-) -> Option<(Operands, super::super::code::Code)> {
+pub fn code_for(kind: u32, scalars: [f32; 2], bcast: Broadcast) -> Option<(Operands, super::super::code::Code)> {
     match bcast {
         Broadcast::None => code2(kind, scalars),
         _ if !broadcasts(kind) => None,
@@ -2888,9 +2728,7 @@ pub fn code_for(
         Broadcast::Row => {
             let mut p = Program::with_policy(super::LoopPolicy::Unrolled);
             binary_constants(&mut p, kind, scalars);
-            p.for_each_row_group(64, |p, o| {
-                binary_body(p, kind, A_ROW + o, bias_row(o / 4) + (o & 2), OUT_ROW + o)
-            });
+            p.for_each_row_group(64, |p, o| binary_body(p, kind, A_ROW + o, bias_row(o / 4) + (o & 2), OUT_ROW + o));
             Some((Operands::RowBroadcast, p.finish_code()))
         }
     }
@@ -2918,11 +2756,7 @@ pub fn code2(kind: u32, scalars: [f32; 2]) -> Option<(Operands, super::super::co
     if (kind_sfpu::HARDWARE_ROUND..kind_sfpu::HARDWARE_ROUND + 6).contains(&kind) {
         use tt_isa::numerics::stochastic::{Precision, Rounding};
         let offset = kind - kind_sfpu::HARDWARE_ROUND;
-        let precision = if offset < 3 {
-            Precision::Bf16
-        } else {
-            Precision::Tf32
-        };
+        let precision = if offset < 3 { Precision::Bf16 } else { Precision::Tf32 };
         let rounding = match offset % 3 {
             0 => Rounding::Nearest,
             1 => Rounding::Stochastic,
@@ -2956,10 +2790,8 @@ pub fn code2(kind: u32, scalars: [f32; 2]) -> Option<(Operands, super::super::co
                     p.loadi_bits(LReg::L4, 0x7f00_0000);
                     p.mov(LReg::L1, LReg::L2);
                     p.isub_from(LReg::L4, LReg::L2); // 254 - e, in the exponent field
-                                                     // `e >= 254` would make the field 0 or negative: 2^-126 instead.
-                    p.if_(Cond::LessEq(LReg::L4, LReg::L1), |p| {
-                        p.loadi_bits(LReg::L2, 0x0080_0000)
-                    });
+                    // `e >= 254` would make the field 0 or negative: 2^-126 instead.
+                    p.if_(Cond::LessEq(LReg::L4, LReg::L1), |p| p.loadi_bits(LReg::L2, 0x0080_0000));
                 }
                 _ => round::to_i32(p),
             }
@@ -3026,9 +2858,7 @@ pub fn code2(kind: u32, scalars: [f32; 2]) -> Option<(Operands, super::super::co
         | kind_sfpu::BOOL_MASK_FILL
         | kind_sfpu::PRELU => {
             binary_constants(&mut p, kind, scalars);
-            p.for_each_row_group(64, |p, o| {
-                binary_body(p, kind, A_ROW + o, B_ROW + o, OUT_ROW + o)
-            });
+            p.for_each_row_group(64, |p, o| binary_body(p, kind, A_ROW + o, B_ROW + o, OUT_ROW + o));
             Operands::Binary
         }
         kind::MUL_SCALAR | kind::ADD_SCALAR => {
@@ -3057,17 +2887,11 @@ pub fn code2(kind: u32, scalars: [f32; 2]) -> Option<(Operands, super::super::co
                 }
                 p.mov(LReg::ZERO, LReg::L2);
                 p.if_(Cond::Less(LReg::ZERO, LReg::L0), |p| {
-                    p.if_(Cond::Less(LReg::L0, LReg::L5), |p| {
-                        p.mov(if backward { LReg::L1 } else { LReg::L0 }, LReg::L2)
-                    })
+                    p.if_(Cond::Less(LReg::L0, LReg::L5), |p| p.mov(if backward { LReg::L1 } else { LReg::L0 }, LReg::L2))
                 });
                 p.store(LReg::L2, Format::Fp32, OUT_ROW + o);
             });
-            if backward {
-                Operands::Binary
-            } else {
-                Operands::Unary
-            }
+            if backward { Operands::Binary } else { Operands::Unary }
         }
         // Each row group reads its column half of the broadcast row from the
         // rows the kernel laid it in, which depend on the group: unrolled.
@@ -3086,14 +2910,7 @@ pub fn code2(kind: u32, scalars: [f32; 2]) -> Option<(Operands, super::super::co
             // A divisor above `2^100`: both sides times `2^-64`, as
             // `scale_large_divisor` does, the scalar's here.
             let large = scalar.abs() > f32::from_bits(0x7180_0000);
-            p.loadi(
-                LReg::L1,
-                if large {
-                    scalar * f32::from_bits(0x1f80_0000)
-                } else {
-                    scalar
-                },
-            );
+            p.loadi(LReg::L1, if large { scalar * f32::from_bits(0x1f80_0000) } else { scalar });
             p.for_each_row_group(64, |p, o| {
                 p.load(LReg::L0, Format::Fp32, A_ROW + o);
                 if large {
@@ -3101,16 +2918,7 @@ pub fn code2(kind: u32, scalars: [f32; 2]) -> Option<(Operands, super::super::co
                     p.mul(LReg::L0, LReg::L3, LReg::L0);
                 }
                 p.recip(LReg::L1, LReg::L2, LReg::L3, LReg::L4, LReg::L6);
-                divide(
-                    p,
-                    LReg::L0,
-                    LReg::L1,
-                    LReg::L2,
-                    LReg::L5,
-                    LReg::L3,
-                    LReg::L4,
-                    LReg::L7,
-                );
+                divide(p, LReg::L0, LReg::L1, LReg::L2, LReg::L5, LReg::L3, LReg::L4, LReg::L7);
                 p.store(LReg::L5, Format::Fp32, OUT_ROW + o);
             });
             Operands::Unary
@@ -3227,11 +3035,7 @@ pub fn code2(kind: u32, scalars: [f32; 2]) -> Option<(Operands, super::super::co
                 gelu_program(p, spill, backward.then_some(B_ROW + o));
                 p.store(LReg::L7, Format::Int32, OUT_ROW + o);
             });
-            if backward {
-                Operands::Binary
-            } else {
-                Operands::Unary
-            }
+            if backward { Operands::Binary } else { Operands::Unary }
         }
         kind_sfpu::SINH | kind_sfpu::COSH => {
             p.for_each_row_group(64, |p, o| {
@@ -3355,25 +3159,14 @@ pub fn code2(kind: u32, scalars: [f32; 2]) -> Option<(Operands, super::super::co
 /// to it bit for bit, and hold it to `burn-flex` within the op's derived
 /// bound. `b` is `[rows, cols]`, or `[1, cols]` for a row broadcast. Padding
 /// is zero, as an upload leaves it.
-pub fn reference(
-    kind: u32,
-    scalar: f32,
-    a: &[f32],
-    b: Option<&[f32]>,
-    rows: usize,
-    cols: usize,
-) -> Vec<f32> {
+pub fn reference(kind: u32, scalar: f32, a: &[f32], b: Option<&[f32]>, rows: usize, cols: usize) -> Vec<f32> {
     let bcast = match (kind, b.map(<[f32]>::len)) {
         (kind::ADD_ROW, _) => Broadcast::Row,
         (_, Some(n)) if n == cols && rows > 1 && broadcasts(kind) => Broadcast::Row,
         (_, Some(n)) if n == rows && cols > 1 && broadcasts(kind) => Broadcast::Col,
         _ => Broadcast::None,
     };
-    let kind = if kind == kind::ADD_ROW {
-        kind::ADD
-    } else {
-        kind
-    };
+    let kind = if kind == kind::ADD_ROW { kind::ADD } else { kind };
     reference_for(kind, scalar, bcast, a, b, rows, cols)
 }
 
@@ -3412,14 +3205,7 @@ pub fn gelu_reference(x: &[f32], g: Option<&[f32]>, rows: usize, cols: usize) ->
 
 /// [`reference_for`] with both scalars and any number of operands: `B` as
 /// `bcast` says, a third (`Operands::Ternary`) the same shape as `A`.
-pub fn reference_op(
-    kind: u32,
-    scalars: [f32; 2],
-    bcast: Broadcast,
-    inputs: &[&[f32]],
-    rows: usize,
-    cols: usize,
-) -> Vec<f32> {
+pub fn reference_op(kind: u32, scalars: [f32; 2], bcast: Broadcast, inputs: &[&[f32]], rows: usize, cols: usize) -> Vec<f32> {
     use super::interp::Vector;
     use tt_isa::dm::face_index;
     let (a, b, c) = (inputs[0], inputs.get(1).copied(), inputs.get(2).copied());
@@ -3472,8 +3258,7 @@ pub fn reference_op(
                 (Operands::Unary, _) => {}
                 _ => panic!("kind {kind:#x} takes a second operand"),
             }
-            v.run(&math)
-                .unwrap_or_else(|e| panic!("kind {kind:#x}: {e}"));
+            v.run(&math).unwrap_or_else(|e| panic!("kind {kind:#x}: {e}"));
             let t = v.tile(OUT_ROW as usize);
             for r in 0..32 {
                 for c in 0..32 {
@@ -3497,10 +3282,7 @@ mod tests {
     fn native_index_cast_is_exact_at_its_range_edges() {
         let values = [0.0, 1.0, 65_535.0, 8_388_607.0];
         let got = reference(kind_sfpu::INDEX_TO_I32, 0.0, &values, None, 1, values.len());
-        assert_eq!(
-            got.into_iter().map(f32::to_bits).collect::<Vec<_>>(),
-            [0, 1, 65_535, 8_388_607]
-        );
+        assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), [0, 1, 65_535, 8_388_607]);
     }
 
     fn tile(seed: u32) -> Vec<u32> {
@@ -3530,11 +3312,7 @@ mod tests {
             kind_sfpu::ADD_RELU => {
                 let sum = (f(a) + f(b)).to_bits();
                 let sum_positive = (sum as i32) > 0 && sum <= 0x7f80_0000;
-                if sum_positive {
-                    sum
-                } else {
-                    0
-                }
+                if sum_positive { sum } else { 0 }
             }
             kind::SUB => (f(a) - f(b)).to_bits(),
             kind::MUL => (f(a) * f(b)).to_bits(),
@@ -3557,8 +3335,7 @@ mod tests {
             kind::ADD_ROW => (f(a) + f(bias)).to_bits(),
             _ => unreachable!(),
         };
-        if f(r).is_nan() && !matches!(kind, kind::RELU | kind::RELU_BACKWARD | kind_sfpu::ADD_RELU)
-        {
+        if f(r).is_nan() && !matches!(kind, kind::RELU | kind::RELU_BACKWARD | kind_sfpu::ADD_RELU) {
             0x7fc0_0000
         } else {
             r
@@ -3599,13 +3376,7 @@ mod tests {
                 // Datum i's column, for the broadcast row.
                 let col = (i / 256 % 2) * 16 + i % 16;
                 let bias = if col < 16 { b[col] } else { b[256 + col - 16] };
-                assert_eq!(
-                    got[i],
-                    mover(k, s, a[i], b[i], bias),
-                    "kind {k}: datum {i}: a {:#010x} b {:#010x}",
-                    a[i],
-                    b[i]
-                );
+                assert_eq!(got[i], mover(k, s, a[i], b[i], bias), "kind {k}: datum {i}: a {:#010x} b {:#010x}", a[i], b[i]);
             }
         }
     }
@@ -3636,32 +3407,18 @@ mod fit {
         .chain(kind_sfpu::INT_ADD..=kind_sfpu::INT_NOT)
         .chain(kind_sfpu::INT_ADD_S..=kind_sfpu::INT_LE_S)
         .chain(kind_sfpu::ROUND..=kind_sfpu::POW2_FLOOR_INV)
-        .chain([
-            kind_sfpu::INT_MASK_FILL,
-            kind_sfpu::BOOL_MASK_FILL,
-            kind_sfpu::INT_ABS,
-        ]) {
-            let bcast = if k == kind::ADD_ROW {
-                Broadcast::Row
-            } else {
-                Broadcast::None
-            };
+        .chain([kind_sfpu::INT_MASK_FILL, kind_sfpu::BOOL_MASK_FILL, kind_sfpu::INT_ABS])
+        {
+            let bcast = if k == kind::ADD_ROW { Broadcast::Row } else { Broadcast::None };
             let kk = if k == kind::ADD_ROW { kind::ADD } else { k };
             let (operands, math) = code_for(kk, [0.5, 0.0], bcast).unwrap();
             let n = crate::tensor::sfpu_group_for_tests(k, 0.5, operands);
             let fits = |n: usize| {
                 let layout = plan_layout(n, operands).unwrap();
-                roles_code(&layout, operands, &math)
-                    .0
-                    .iter()
-                    .all(|p| p.len() <= tt_isa::mailbox::PROGRAM_MAX as usize)
+                roles_code(&layout, operands, &math).0.iter().all(|p| p.len() <= tt_isa::mailbox::PROGRAM_MAX as usize)
             };
             assert!(fits(n), "kind {k}: {n} tiles");
-            assert!(
-                n == 64 || !fits(n + 1),
-                "kind {k}: {n} tiles, but {} would fit",
-                n + 1
-            );
+            assert!(n == 64 || !fits(n + 1), "kind {k}: {n} tiles, but {} would fit", n + 1);
         }
     }
 }
@@ -3714,12 +3471,7 @@ mod division {
                 (f(div_s[i]), f(a[i]) / -3.7),
             ] {
                 let d = ulps(got, want);
-                assert!(
-                    d <= 1,
-                    "{got:e} vs {want:e}: {d} ulps (a {:#x} b {:#x})",
-                    a[i],
-                    b[i]
-                );
+                assert!(d <= 1, "{got:e} vs {want:e}: {d} ulps (a {:#x} b {:#x})", a[i], b[i]);
                 worst = worst.max(d);
                 exact += usize::from(d == 0);
             }
@@ -3763,11 +3515,7 @@ mod division {
                     assert!(got.is_nan(), "{what} {x} / {y}: {got}");
                 } else {
                     assert_eq!(got, want, "{what} {x} / {y}");
-                    assert_eq!(
-                        got.is_sign_negative(),
-                        want.is_sign_negative(),
-                        "{what} {x} / {y}: sign"
-                    );
+                    assert_eq!(got.is_sign_negative(), want.is_sign_negative(), "{what} {x} / {y}: sign");
                 }
             }
         }
@@ -3781,8 +3529,7 @@ mod transcendental {
     /// Ulps between `got` and the exact value `want` (an f64), in units of
     /// `got`'s binade.
     fn ulps(got: f32, want: f64) -> f64 {
-        let ulp = f32::from_bits((got.abs().to_bits() & 0x7f80_0000).max(0x0080_0000)) as f64
-            * f64::powi(2.0, -23);
+        let ulp = f32::from_bits((got.abs().to_bits() & 0x7f80_0000).max(0x0080_0000)) as f64 * f64::powi(2.0, -23);
         (got as f64 - want).abs() / ulp
     }
 
@@ -3799,10 +3546,7 @@ mod transcendental {
                 let w = exact(*x as f64);
                 if w.is_nan() {
                     assert!(g.is_nan(), "kind {kind:#x}({x}): {g}");
-                } else if w.is_infinite()
-                    || w.abs() < f32::MIN_POSITIVE as f64
-                    || w.abs() > f32::MAX as f64
-                {
+                } else if w.is_infinite() || w.abs() < f32::MIN_POSITIVE as f64 || w.abs() > f32::MAX as f64 {
                     let want = if w.abs() < f32::MIN_POSITIVE as f64 {
                         0.0
                     } else {
@@ -3815,19 +3559,11 @@ mod transcendental {
                         worst = (u, *x);
                     }
                     let rel = (*g as f64 - w).abs() / w.abs();
-                    assert!(
-                        rel <= bound,
-                        "kind {kind:#x}({x:e}) = {g:e}, exact {w:e}: {rel:e} ({u:.2} ulps)"
-                    );
+                    assert!(rel <= bound, "kind {kind:#x}({x:e}) = {g:e}, exact {w:e}: {rel:e} ({u:.2} ulps)");
                 }
             }
         }
-        println!(
-            "kind {kind:#x}: worst {:.3} ulps at {:e} over {} inputs",
-            worst.0,
-            worst.1,
-            xs.len()
-        );
+        println!("kind {kind:#x}: worst {:.3} ulps at {:e} over {} inputs", worst.0, worst.1, xs.len());
     }
 
     fn grid(lo: f32, hi: f32, n: usize) -> impl Iterator<Item = f32> {
@@ -3857,14 +3593,7 @@ mod transcendental {
             f32::NEG_INFINITY,
             f32::NAN,
         ];
-        sweep(
-            kind_sfpu::EXP,
-            grid(-87.3, 88.7, 60_000)
-                .chain(grid(-0.01, 0.01, 4096))
-                .chain(specials),
-            f64::exp,
-            EXP_BOUND,
-        );
+        sweep(kind_sfpu::EXP, grid(-87.3, 88.7, 60_000).chain(grid(-0.01, 0.01, 4096)).chain(specials), f64::exp, EXP_BOUND);
     }
 
     #[test]
@@ -3904,9 +3633,7 @@ mod transcendental {
 
     /// Every binade of positive normals, `n` mantissas each.
     fn binades(n: u32) -> impl Iterator<Item = f32> {
-        (1..255u32).flat_map(move |e| {
-            (0..n).map(move |k| f32::from_bits((e << 23) | (k * (0x7f_ffff / n.max(1)))))
-        })
+        (1..255u32).flat_map(move |e| (0..n).map(move |k| f32::from_bits((e << 23) | (k * (0x7f_ffff / n.max(1))))))
     }
 
     /// Every binade, so the large inputs whose Newton steps once flushed
@@ -3920,12 +3647,7 @@ mod transcendental {
                 1.0 / x
             }
         };
-        sweep(
-            kind_sfpu::RECIP,
-            binades(256).chain(binades(64).map(|x| -x)),
-            r,
-            1.5 / 8_388_608.0,
-        );
+        sweep(kind_sfpu::RECIP, binades(256).chain(binades(64).map(|x| -x)), r, 1.5 / 8_388_608.0);
     }
 
     /// Quotients across the whole range, the smallest normal ones included:
@@ -3938,9 +3660,7 @@ mod transcendental {
             let b: Vec<f32> = binades(4).skip(bi as usize % 7).take(1024).collect();
             let mut b = b;
             b.resize(1024, 3.0);
-            let a: Vec<f32> = (0..1024)
-                .map(|i| f32::from_bits(ai.max(0x0080_0000) + (i as u32) * 0x0007_ffff))
-                .collect();
+            let a: Vec<f32> = (0..1024).map(|i| f32::from_bits(ai.max(0x0080_0000) + (i as u32) * 0x0007_ffff)).collect();
             let got = reference(kind_sfpu::DIV, 0.0, &a, Some(&b), 32, 32);
             for i in 0..1024 {
                 let q = a[i] as f64 / b[i] as f64;
@@ -3949,13 +3669,7 @@ mod transcendental {
                 }
                 let rel = (got[i] as f64 - q).abs() / q.abs();
                 worst = worst.max(rel);
-                assert!(
-                    rel <= 1.5 / 8_388_608.0,
-                    "{:e} / {:e} = {:e}, exact {q:e}: {rel:e}",
-                    a[i],
-                    b[i],
-                    got[i]
-                );
+                assert!(rel <= 1.5 / 8_388_608.0, "{:e} / {:e} = {:e}, exact {q:e}: {rel:e}", a[i], b[i], got[i]);
             }
         }
         println!("division: worst {:.3} ulps", worst * 8_388_608.0);
@@ -4023,10 +3737,7 @@ mod transcendental {
             100.0,
             -100.0,
         ];
-        let mut pairs: Vec<(f32, f32)> = xs
-            .iter()
-            .flat_map(|&x| ys.iter().map(move |&y| (x, y)))
-            .collect();
+        let mut pairs: Vec<(f32, f32)> = xs.iter().flat_map(|&x| ys.iter().map(move |&y| (x, y))).collect();
         let mut st = 0x2545_f491u32;
         let mut rnd = || {
             st ^= st << 13;
@@ -4051,10 +3762,7 @@ mod transcendental {
             for (i, &(xi, yi)) in chunk.iter().enumerate() {
                 let host = ftz(xi).powf(yi);
                 let g = got[i];
-                let what = format!(
-                    "pow({xi:e}, {yi:e}) = {g:e} ({:#010x}), powf {host:e}",
-                    g.to_bits()
-                );
+                let what = format!("pow({xi:e}, {yi:e}) = {g:e} ({:#010x}), powf {host:e}", g.to_bits());
                 if host.is_nan() {
                     assert!(g.is_nan(), "{what}");
                 } else if g.is_nan() {
@@ -4067,8 +3775,7 @@ mod transcendental {
                     let edge = exact.is_finite()
                         && exact != 0.0
                         && ((exact.abs() / f32::MAX as f64 - 1.0).abs() < 2.0 * pow_bound(xi, yi)
-                            || (exact.abs() / f32::MIN_POSITIVE as f64 - 1.0).abs()
-                                < 2.0 * pow_bound(xi, yi)
+                            || (exact.abs() / f32::MIN_POSITIVE as f64 - 1.0).abs() < 2.0 * pow_bound(xi, yi)
                             || exact.abs() < f32::MIN_POSITIVE as f64);
                     if !edge {
                         let want = if host.is_infinite() {
@@ -4085,30 +3792,18 @@ mod transcendental {
                     // round over: `e^z` saturates at the threshold `exp`
                     // draws.
                     let b2 = 1.0 + 2.0 * pow_bound(xi, yi);
-                    if exact.abs() * b2 > f32::MAX as f64
-                        || exact.abs() < f32::MIN_POSITIVE as f64 * b2
-                    {
+                    if exact.abs() * b2 > f32::MAX as f64 || exact.abs() < f32::MIN_POSITIVE as f64 * b2 {
                         continue;
                     }
                     worst = worst.max(rel / pow_bound(xi, yi));
-                    assert!(
-                        rel <= pow_bound(xi, yi),
-                        "{what}: {rel:e} against {:e}",
-                        pow_bound(xi, yi)
-                    );
-                    assert_eq!(
-                        g.is_sign_negative(),
-                        host.is_sign_negative(),
-                        "{what}: sign"
-                    );
+                    assert!(rel <= pow_bound(xi, yi), "{what}: {rel:e} against {:e}", pow_bound(xi, yi));
+                    assert_eq!(g.is_sign_negative(), host.is_sign_negative(), "{what}: sign");
                 }
             }
         }
         println!("pow: worst {worst:.3} of the bound");
         // A scalar exponent, by the same stages.
-        let x: Vec<f32> = (0..1024)
-            .map(|i| xs[i % xs.len()] * (1.0 + i as f32 / 1024.0))
-            .collect();
+        let x: Vec<f32> = (0..1024).map(|i| xs[i % xs.len()] * (1.0 + i as f32 / 1024.0)).collect();
         for s in [2.5f32, -0.5, 3.0, 0.0, f32::NAN, f32::INFINITY] {
             let got = pow_reference(&x, None, s, 32, 32);
             let viat = pow_reference(&x, Some(&vec![s; 1024]), 0.0, 32, 32);
@@ -4146,11 +3841,7 @@ mod transcendental {
             grid(-18.0, 88.7, 60_000)
                 .chain(grid(-1.0, 1.0, 20_000))
                 .chain(binades(32).filter(|x| *x < 88.0 && *x > 1.0e-30))
-                .chain(
-                    binades(32)
-                        .filter(|x| *x < 18.0 && *x > 1.0e-30)
-                        .map(|x| -x),
-                )
+                .chain(binades(32).filter(|x| *x < 18.0 && *x > 1.0e-30).map(|x| -x))
                 .chain(specials),
             f64::exp_m1,
             EXPM1_BOUND,
@@ -4187,14 +3878,7 @@ mod transcendental {
                 v
             }
         };
-        sweep(
-            kind_sfpu::SIGMOID,
-            grid(-87.0, 30.0, 60_000)
-                .chain(grid(-1.0, 1.0, 20_000))
-                .chain(specials),
-            sig,
-            SIGMOID_BOUND,
-        );
+        sweep(kind_sfpu::SIGMOID, grid(-87.0, 30.0, 60_000).chain(grid(-1.0, 1.0, 20_000)).chain(specials), sig, SIGMOID_BOUND);
     }
 
     #[test]
@@ -4303,32 +3987,17 @@ mod transcendental {
 
     #[test]
     fn asinh_is_within_its_derived_bound() {
-        sweep(
-            kind_sfpu::ASINH,
-            inverse_hyperbolic_inputs(),
-            f64::asinh,
-            ASINH_BOUND,
-        );
+        sweep(kind_sfpu::ASINH, inverse_hyperbolic_inputs(), f64::asinh, ASINH_BOUND);
     }
 
     #[test]
     fn acosh_is_within_its_derived_bound() {
-        sweep(
-            kind_sfpu::ACOSH,
-            inverse_hyperbolic_inputs(),
-            f64::acosh,
-            ACOSH_BOUND,
-        );
+        sweep(kind_sfpu::ACOSH, inverse_hyperbolic_inputs(), f64::acosh, ACOSH_BOUND);
     }
 
     #[test]
     fn atanh_is_within_its_derived_bound() {
-        sweep(
-            kind_sfpu::ATANH,
-            inverse_hyperbolic_inputs(),
-            f64::atanh,
-            ATANH_BOUND,
-        );
+        sweep(kind_sfpu::ATANH, inverse_hyperbolic_inputs(), f64::atanh, ATANH_BOUND);
     }
 
     #[test]
@@ -4355,18 +4024,11 @@ mod transcendental {
             f32::NAN,
         ];
         let ls = |x: f64| {
-            if x >= 0.0 {
-                -(-x).exp().ln_1p()
-            } else {
-                x - x.exp().ln_1p()
-            }
+            if x >= 0.0 { -(-x).exp().ln_1p() } else { x - x.exp().ln_1p() }
         };
         sweep(
             kind_sfpu::LOG_SIGMOID,
-            grid(-90.0, 90.0, 60_000)
-                .chain(grid(-1.0, 1.0, 20_000))
-                .chain(binades(32).flat_map(|x| [x, -x]))
-                .chain(specials),
+            grid(-90.0, 90.0, 60_000).chain(grid(-1.0, 1.0, 20_000)).chain(binades(32).flat_map(|x| [x, -x])).chain(specials),
             ls,
             LOG_SIGMOID_BOUND,
         );
@@ -4435,10 +4097,8 @@ mod transcendental {
         }
         assert_eq!(worst.1, HARDEST_REDUCTIONS[0], "{worst:?}");
         assert!(worst.0 > f64::powf(2.0, -29.87), "{worst:?}");
-        let gs: Vec<f64> = HARDEST_REDUCTIONS
-            .iter()
-            .map(|b| reduction_distance(reduction_window((b >> 23) as i64), *b))
-            .collect();
+        let gs: Vec<f64> =
+            HARDEST_REDUCTIONS.iter().map(|b| reduction_distance(reduction_window((b >> 23) as i64), *b)).collect();
         assert!(gs.windows(2).all(|w| w[0] <= w[1]), "{gs:?}");
     }
 
@@ -4466,9 +4126,7 @@ mod transcendental {
             f32::INFINITY,
             f32::NAN,
         ];
-        let hardest = HARDEST_REDUCTIONS
-            .into_iter()
-            .flat_map(|b| (b - 8..=b + 8).map(f32::from_bits));
+        let hardest = HARDEST_REDUCTIONS.into_iter().flat_map(|b| (b - 8..=b + 8).map(f32::from_bits));
         grid(-12.6, 12.6, 60_000)
             .chain(grid(-1.0e4, 1.0e4, 20_000))
             .chain(binades(64))
@@ -4591,10 +4249,7 @@ mod transcendental {
             f32::NAN,
         ];
         let signed: Vec<f32> = mags.iter().flat_map(|m| [*m, -*m]).collect();
-        let mut pairs: Vec<(f32, f32)> = signed
-            .iter()
-            .flat_map(|&y| signed.iter().map(move |&x| (y, x)))
-            .collect();
+        let mut pairs: Vec<(f32, f32)> = signed.iter().flat_map(|&y| signed.iter().map(move |&x| (y, x))).collect();
         let mut st = 0x2545_f491u32;
         let mut rnd = || {
             st ^= st << 13;
@@ -4660,19 +4315,13 @@ mod transcendental {
             0xffff_ffff,
             0x7fff_ffff,
         ];
-        let a: Vec<f32> = (0..1024)
-            .map(|i| f32::from_bits(nans[i % nans.len()]))
-            .collect();
-        for kind in (0x100..=kind_sfpu::LAST).filter(|&k| {
-            accuracy(k) == Accuracy::Approximate && operands(k) == Some(Operands::Unary)
-        }) {
+        let a: Vec<f32> = (0..1024).map(|i| f32::from_bits(nans[i % nans.len()])).collect();
+        for kind in
+            (0x100..=kind_sfpu::LAST).filter(|&k| accuracy(k) == Accuracy::Approximate && operands(k) == Some(Operands::Unary))
+        {
             let got = reference(kind, 0.5, &a, None, 32, 32);
             for (i, g) in got.iter().enumerate() {
-                assert!(
-                    g.is_nan(),
-                    "kind {kind:#x}({:#010x}) = {g:e}",
-                    a[i].to_bits()
-                );
+                assert!(g.is_nan(), "kind {kind:#x}({:#010x}) = {g:e}", a[i].to_bits());
             }
         }
     }
@@ -4715,11 +4364,7 @@ mod transcendental {
                 eval = eval.max((piece_clenshaw_f32(piece, a) as f64 - s).abs() / s);
             }
             let u = 1.0 / 16_777_216.0;
-            println!(
-                "{piece:?}: fit {:.3}u, evaluation {:.3}u",
-                fit / u,
-                eval / u
-            );
+            println!("{piece:?}: fit {:.3}u, evaluation {:.3}u", fit / u, eval / u);
             // The erfc pieces: the evaluation's map rounding dominates the
             // first, the coefficients' rounding to `f32` the second's fit.
             let budget = match piece.fit {
@@ -4727,10 +4372,7 @@ mod transcendental {
                 Fit::AtanSqrt => ATAN_FIT_BOUND,
                 Fit::AsinSqrt => ASIN_FIT_BOUND,
             };
-            assert!(
-                fit + eval < budget,
-                "{piece:?}: fit {fit:e}, evaluation {eval:e}"
-            );
+            assert!(fit + eval < budget, "{piece:?}: fit {fit:e}, evaluation {eval:e}");
         }
     }
 
@@ -4759,11 +4401,7 @@ mod transcendental {
             kind_sfpu::ERF,
             grid(-4.5, 4.5, 80_000)
                 .chain(grid(-0.6, 0.6, 20_000))
-                .chain(
-                    binades(64)
-                        .filter(|x| *x < 5.0 && *x > 1.0e-30)
-                        .flat_map(|x| [x, -x]),
-                )
+                .chain(binades(64).filter(|x| *x < 5.0 && *x > 1.0e-30).flat_map(|x| [x, -x]))
                 .chain(specials),
             libm::erf,
             ERF_BOUND,
@@ -4777,11 +4415,7 @@ mod transcendental {
     fn gelu_is_within_its_derived_bound() {
         let mut xs: Vec<f32> = grid(-13.5, 6.0, 80_000).collect();
         xs.extend(grid(-1.5, 1.5, 20_000));
-        xs.extend(
-            binades(48)
-                .filter(|x| *x < 13.0 && *x > 1.0e-30)
-                .flat_map(|x| [x, -x]),
-        );
+        xs.extend(binades(48).filter(|x| *x < 13.0 && *x > 1.0e-30).flat_map(|x| [x, -x]));
         xs.extend([
             0.0,
             -0.0,
@@ -4814,10 +4448,7 @@ mod transcendental {
                 } else {
                     let rel = (*g as f64 - w).abs() / w.abs();
                     worst = worst.max(rel);
-                    assert!(
-                        rel <= GELU_BOUND,
-                        "gelu({x:e}) = {g:e}, exact {w:e}: {rel:e}"
-                    );
+                    assert!(rel <= GELU_BOUND, "gelu({x:e}) = {g:e}, exact {w:e}: {rel:e}");
                 }
             }
         }
@@ -4826,9 +4457,7 @@ mod transcendental {
 
     #[test]
     fn gelu_backward_is_within_its_derived_bound() {
-        let xs: Vec<f32> = grid(-13.0, 6.0, 60_000)
-            .chain(grid(-1.0, 0.0, 20_000))
-            .collect();
+        let xs: Vec<f32> = grid(-13.0, 6.0, 60_000).chain(grid(-1.0, 0.0, 20_000)).collect();
         let exact = |x: f64| {
             let phi = (-0.5 * x * x).exp() / (2.0 * std::f64::consts::PI).sqrt();
             0.5 * libm::erfc(-x / std::f64::consts::SQRT_2) + x * phi
@@ -4847,13 +4476,7 @@ mod transcendental {
                     continue;
                 }
                 worst = worst.max(err / bound);
-                assert!(
-                    err <= bound,
-                    "gelu'({:e}) * {} = {:e}, exact {w:e}: {err:e} > {bound:e}",
-                    a[i],
-                    g[i],
-                    got[i]
-                );
+                assert!(err <= bound, "gelu'({:e}) * {} = {:e}, exact {w:e}: {err:e} > {bound:e}", a[i], g[i], got[i]);
             }
         }
         println!("gelu_backward: worst {worst:.3} of the bound");
@@ -4885,12 +4508,7 @@ mod transcendental {
         };
         // One ulp of the correctly rounded root is at most 1.5 ulps of the
         // exact one: `1.5 * 2^-23` relative.
-        sweep(
-            kind_sfpu::SQRT,
-            binades(256).chain(grid(0.0, 16.0, 20_000)).chain(specials),
-            root,
-            1.5 / 8_388_608.0,
-        );
+        sweep(kind_sfpu::SQRT, binades(256).chain(grid(0.0, 16.0, 20_000)).chain(specials), root, 1.5 / 8_388_608.0);
     }
 
     #[test]
@@ -4903,12 +4521,7 @@ mod transcendental {
                 1.0 / x.sqrt()
             }
         };
-        sweep(
-            kind_sfpu::RSQRT,
-            binades(256).chain(grid(0.01, 16.0, 20_000)).chain(specials),
-            r,
-            RSQRT_BOUND,
-        );
+        sweep(kind_sfpu::RSQRT, binades(256).chain(grid(0.01, 16.0, 20_000)).chain(specials), r, RSQRT_BOUND);
     }
 
     #[test]
@@ -4937,11 +4550,7 @@ mod transcendental {
             grid(-0.999, 3.0, 40_000)
                 .chain(grid(-1.0e-3, 1.0e-3, 20_000))
                 .chain(binades(64).filter(|x| *x > 1.0e-30))
-                .chain(
-                    binades(64)
-                        .filter(|x| *x > 1.0e-30 && *x < 0.99)
-                        .map(|x| -x),
-                )
+                .chain(binades(64).filter(|x| *x > 1.0e-30 && *x < 0.99).map(|x| -x))
                 .chain(specials),
             f64::ln_1p,
             LOG1P_BOUND,
@@ -5000,12 +4609,8 @@ mod s2 {
     ];
 
     fn pairs() -> (Vec<f32>, Vec<f32>) {
-        let a = (0..1024)
-            .map(|i| f32::from_bits(SPECIALS[i % 16]))
-            .collect();
-        let b = (0..1024)
-            .map(|i| f32::from_bits(SPECIALS[(i / 16) % 16]))
-            .collect();
+        let a = (0..1024).map(|i| f32::from_bits(SPECIALS[i % 16])).collect();
+        let b = (0..1024).map(|i| f32::from_bits(SPECIALS[(i / 16) % 16])).collect();
         (a, b)
     }
 
@@ -5058,22 +4663,13 @@ mod s2 {
     /// (`e = 254`), infinities and NaNs (`e = 255`), and ordinary values of both signs.
     #[test]
     fn the_power_of_two_scale_kinds_are_the_exponent_field() {
-        check(
-            POW2_FLOOR,
-            [0.0; 2],
-            |x, _| f32::from_bits(x.to_bits() & 0x7f80_0000),
-            false,
-        );
+        check(POW2_FLOOR, [0.0; 2], |x, _| f32::from_bits(x.to_bits() & 0x7f80_0000), false);
         check(
             POW2_FLOOR_INV,
             [0.0; 2],
             |x, _| {
                 let e = (x.to_bits() >> 23) & 0xff;
-                f32::from_bits(if e >= 254 {
-                    0x0080_0000
-                } else {
-                    (254 - e) << 23
-                })
+                f32::from_bits(if e >= 254 { 0x0080_0000 } else { (254 - e) << 23 })
             },
             false,
         );
@@ -5116,18 +4712,10 @@ mod s2 {
         // Flex's `x.max(s)`, measured: a NaN on either side gives the other,
         // and equal values the scalar.
         let max = |x: f32, s: f32| {
-            if s.is_nan() || x > s {
-                x
-            } else {
-                s
-            }
+            if s.is_nan() || x > s { x } else { s }
         };
         let min = |x: f32, s: f32| {
-            if s.is_nan() || x < s {
-                x
-            } else {
-                s
-            }
+            if s.is_nan() || x < s { x } else { s }
         };
         for s in [0.0f32, -0.0, 1.0, -0.5, f32::NAN, f32::INFINITY] {
             check(CLAMP_MIN, [s, 0.0], move |x, _| max(x, s), false);
@@ -5139,12 +4727,7 @@ mod s2 {
             check(LEAKY_RELU, [ns, 0.0], leaky, true);
         }
         for (al, be) in [(0.2f32, 0.5f32), (1.0 / 6.0, 0.5), (-1.0, 0.0)] {
-            check(
-                HARD_SIGMOID,
-                [al, be],
-                move |x, _| ftz(ftz(al * ftz(x)) + be).clamp(0.0, 1.0),
-                true,
-            );
+            check(HARD_SIGMOID, [al, be], move |x, _| ftz(ftz(al * ftz(x)) + be).clamp(0.0, 1.0), true);
         }
         let prelu = |x: f32, a: f32| if x >= 0.0 { x } else { ftz(a) * ftz(x) };
         check(PRELU, [0.0; 2], prelu, true);
@@ -5156,15 +4739,7 @@ mod s2 {
     fn the_comparisons_are_ieee_s() {
         for (t, sk) in COMPARES {
             check(t, [0.0; 2], move |x, y| b(ieee_compare(t, x, y)), false);
-            for s in [
-                0.0f32,
-                -0.0,
-                1.0,
-                -0.5,
-                f32::NAN,
-                f32::NEG_INFINITY,
-                f32::from_bits(1),
-            ] {
+            for s in [0.0f32, -0.0, 1.0, -0.5, f32::NAN, f32::NEG_INFINITY, f32::from_bits(1)] {
                 check(sk, [s, 0.0], move |x, _| b(ieee_compare(t, x, s)), false);
             }
         }
@@ -5237,8 +4812,7 @@ mod intbool {
         for (row, data) in rows {
             v.put_tile(*row as usize, data);
         }
-        v.run(&math)
-            .unwrap_or_else(|e| panic!("kind {kind:#x}: {e}"));
+        v.run(&math).unwrap_or_else(|e| panic!("kind {kind:#x}: {e}"));
         v.tile(OUT_ROW as usize)
     }
 
@@ -5277,11 +4851,7 @@ mod intbool {
     #[test]
     fn selects_move_raw_words() {
         for kind in [INT_MASK_WHERE, BOOL_MASK_WHERE] {
-            assert_eq!(
-                program(kind, 0.0).unwrap().1,
-                program(MASK_WHERE, 0.0).unwrap().1,
-                "kind {kind:#x}"
-            );
+            assert_eq!(program(kind, 0.0).unwrap().1, program(MASK_WHERE, 0.0).unwrap().1, "kind {kind:#x}");
             let (a, c) = (lanes(11), lanes(13));
             let mask: Vec<u32> = lanes(17).iter().map(|w| w & 1).collect();
             let got = run(kind, 0, &[(A_ROW, &a), (B_ROW, &mask), (C_ROW, &c)]);

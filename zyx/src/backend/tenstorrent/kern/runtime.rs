@@ -24,10 +24,10 @@
 //!   another name, which hid a missing hand-off on silicon that ttsim showed at
 //!   once (divergence row 53).
 
-use std::time::{Duration, Instant};
 use super::super::dev::core_control::WaitError;
 use super::super::dev::tlb::WindowKind;
 use super::super::dev::trace::TraceEvent;
+use std::time::{Duration, Instant};
 
 use super::super::dev::{Device, Traffic, Transport, TransportError};
 use tt_isa::backend::{self, Before};
@@ -123,11 +123,7 @@ impl<'a> Kernel<'a> {
     /// runtime put in front (`assemble`'s `Dst` clear) -- as its slot stores
     /// it, its block repeats moved past the prefix and led by their header
     /// (`super::code::Code::stored`), and the length word that names it.
-    fn stored_program(
-        &self,
-        thread: usize,
-        program: &[Instruction],
-    ) -> Result<(Vec<u32>, u32), RunError> {
+    fn stored_program(&self, thread: usize, program: &[Instruction]) -> Result<(Vec<u32>, u32), RunError> {
         // A resident list's descriptor, staged without its programs (their
         // `KERNEL` entries name them, length word and all).
         if program.is_empty() {
@@ -136,22 +132,11 @@ impl<'a> Kernel<'a> {
         let prefix = program.len().saturating_sub(self.roles[thread].len()) as u32;
         let code = super::code::Code {
             ins: program.to_vec(),
-            loops: self.loops[thread]
-                .iter()
-                .map(|l| super::code::Loop {
-                    start: l.start + prefix,
-                    ..*l
-                })
-                .collect(),
+            loops: self.loops[thread].iter().map(|l| super::code::Loop { start: l.start + prefix, ..*l }).collect(),
         };
-        let (words, len) = code
-            .stored()
-            .map_err(|e| RunError::Loops { thread, reason: e })?;
+        let (words, len) = code.stored().map_err(|e| RunError::Loops { thread, reason: e })?;
         if words.len() > mailbox::PROGRAM_MAX as usize {
-            return Err(RunError::ProgramTooLong {
-                thread,
-                len: words.len(),
-            });
+            return Err(RunError::ProgramTooLong { thread, len: words.len() });
         }
         Ok((words, len))
     }
@@ -159,10 +144,7 @@ impl<'a> Kernel<'a> {
     /// Role `thread`'s MOP words, checked: a configuration the expander cannot
     /// run as the page describes it is refused before anything is staged.
     fn mop_words(&self, thread: usize) -> Result<Option<[u32; 9]>, RunError> {
-        self.mop[thread]
-            .map(|c| c.config_words())
-            .transpose()
-            .map_err(|e| RunError::Mop { thread, reason: e })
+        self.mop[thread].map(|c| c.config_words()).transpose().map_err(|e| RunError::Mop { thread, reason: e })
     }
 }
 
@@ -209,12 +191,7 @@ pub enum Phase {
 impl Profile {
     /// Total time and traffic of every phase named `phase`.
     pub fn of(&self, phase: Phase) -> (Duration, Traffic) {
-        self.phases
-            .iter()
-            .filter(|p| p.0 == phase)
-            .fold((Duration::ZERO, Traffic::default()), |(d, t), p| {
-                (d + p.1, t + p.2)
-            })
+        self.phases.iter().filter(|p| p.0 == phase).fold((Duration::ZERO, Traffic::default()), |(d, t), p| (d + p.1, t + p.2))
     }
 }
 
@@ -227,19 +204,13 @@ struct Stopwatch {
 
 impl Stopwatch {
     fn start<T: Transport>(dev: &Device<T>) -> Self {
-        Stopwatch {
-            at: Instant::now(),
-            traffic: dev.traffic(),
-            profile: Profile::default(),
-        }
+        Stopwatch { at: Instant::now(), traffic: dev.traffic(), profile: Profile::default() }
     }
 
     /// Close the phase that has been running since the last lap.
     fn lap<T: Transport>(&mut self, dev: &Device<T>, phase: Phase) {
         let (now, traffic) = (Instant::now(), dev.traffic());
-        self.profile
-            .phases
-            .push((phase, now - self.at, traffic - self.traffic));
+        self.profile.phases.push((phase, now - self.at, traffic - self.traffic));
         (self.at, self.traffic) = (now, traffic);
     }
 }
@@ -309,16 +280,12 @@ impl std::fmt::Display for RunError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RunError::Transport(e) => write!(f, "{e}"),
-            RunError::ProgramTooLong { thread, len } => write!(
-                f,
-                "role {thread} program is {len} instructions; a program slot holds {}",
-                mailbox::PROGRAM_MAX
-            ),
-            RunError::TooManyDumpRows { rows } => write!(
-                f,
-                "{rows} Dst rows asked for; the dump holds {}",
-                mailbox::DUMP_MAX_ROWS
-            ),
+            RunError::ProgramTooLong { thread, len } => {
+                write!(f, "role {thread} program is {len} instructions; a program slot holds {}", mailbox::PROGRAM_MAX)
+            }
+            RunError::TooManyDumpRows { rows } => {
+                write!(f, "{rows} Dst rows asked for; the dump holds {}", mailbox::DUMP_MAX_ROWS)
+            }
             RunError::Setup(e) => write!(f, "setup run: {e}"),
             RunError::Queued(e) => write!(f, "{e}"),
             RunError::Mop { thread, reason } => {
@@ -327,14 +294,8 @@ impl std::fmt::Display for RunError {
             RunError::Loops { thread, reason } => {
                 write!(f, "role {thread}'s program: {reason}")
             }
-            RunError::DoesNotFit { what, bytes, limit } => write!(
-                f,
-                "{what} need {bytes} bytes of L1; the region holds {limit}"
-            ),
-            RunError::Wedged {
-                tile: (x, y),
-                roles,
-            } => {
+            RunError::DoesNotFit { what, bytes, limit } => write!(f, "{what} need {bytes} bytes of L1; the region holds {limit}"),
+            RunError::Wedged { tile: (x, y), roles } => {
                 let names: Vec<&str> = roles.iter().map(|c| c.name()).collect();
                 write!(
                     f,
@@ -347,10 +308,7 @@ impl std::fmt::Display for RunError {
                 )
             }
             RunError::Roles(stuck) => {
-                let parts: Vec<String> = stuck
-                    .iter()
-                    .map(|(t, core, e)| format!("role {t} ({}): {e}", core.name()))
-                    .collect();
+                let parts: Vec<String> = stuck.iter().map(|(t, core, e)| format!("role {t} ({}): {e}", core.name())).collect();
                 write!(f, "{}", parts.join("; "))
             }
         }
@@ -366,10 +324,7 @@ fn dst_clear(rows: u32) -> Vec<Instruction> {
     p.extend(sfpu::load_f32(0, 0).expect("LReg 0 is writable"));
     for group in 0..rows.div_ceil(4) {
         for cols in [0, sfpu::DST_ODD_COLUMNS] {
-            p.push(
-                sfpu::store(0, sfpu::store_format::FP32, 0, (group * 4) | cols)
-                    .expect("dump rows are inside Dst"),
-            );
+            p.push(sfpu::store(0, sfpu::store_format::FP32, 0, (group * 4) | cols).expect("dump rows are inside Dst"));
         }
     }
     p.push(backend::wait_for_sfpu(Before::EVERYTHING).expect("named bits"));
@@ -385,9 +340,7 @@ pub(crate) fn word_bytes(words: &[u32]) -> Vec<u8> {
 #[allow(clippy::type_complexity)]
 fn assemble(kernel: &Kernel<'_>) -> Result<(Option<Vec<Instruction>>, Vec<Instruction>), RunError> {
     if kernel.dump_rows > mailbox::DUMP_MAX_ROWS {
-        return Err(RunError::TooManyDumpRows {
-            rows: kernel.dump_rows,
-        });
+        return Err(RunError::TooManyDumpRows { rows: kernel.dump_rows });
     }
     let clear = if kernel.clear_dst && kernel.dump_rows > 0 {
         dst_clear(kernel.dump_rows)
@@ -429,10 +382,7 @@ pub fn run<T: Transport, N: NocId>(
     let programs: [&[Instruction]; 3] = [&unpack, kernel.roles[1], kernel.roles[2]];
     for (thread, p) in programs.iter().enumerate() {
         if p.len() > mailbox::PROGRAM_MAX as usize {
-            return Err(RunError::ProgramTooLong {
-                thread,
-                len: p.len(),
-            });
+            return Err(RunError::ProgramTooLong { thread, len: p.len() });
         }
     }
 
@@ -449,44 +399,36 @@ pub fn run<T: Transport, N: NocId>(
     } else {
         0
     };
-    let stage_role = |dev: &mut Device<T>,
-                      thread: usize,
-                      program: &[Instruction],
-                      dump: u32,
-                      traced: bool|
-     -> Result<(), RunError> {
-        let mb = Mailbox::of(thread as u32);
-        dev.write32(&w, tile, mb.status(), 0)?;
-        let (words, len) = kernel.stored_program(thread, program)?;
-        let d = mailbox::Descriptor {
-            thread_index: thread as u32,
-            dst_access_fmt: kernel.dst_fmt,
-            program_len: len,
-            dump_row_count: dump,
-            trace: u32::from(traced),
-            push_window,
-            unwedge: u32::from(kernel.unwedge),
-            mop_cfg: kernel.mop_words(thread)?,
-            ..Default::default()
-        };
-        for (at, v) in d.writes(mb) {
-            dev.write32(&w, tile, at, v)?;
-        }
-        dev.write(&w, tile, mb.program(), &word_bytes(&words))?;
-        for row in 0..dump {
-            for col in 0..mailbox::DUMP_ROW_WORDS {
-                dev.write32(&w, tile, mb.dump_offset(row, col), DUMP_SENTINEL)?;
+    let stage_role =
+        |dev: &mut Device<T>, thread: usize, program: &[Instruction], dump: u32, traced: bool| -> Result<(), RunError> {
+            let mb = Mailbox::of(thread as u32);
+            dev.write32(&w, tile, mb.status(), 0)?;
+            let (words, len) = kernel.stored_program(thread, program)?;
+            let d = mailbox::Descriptor {
+                thread_index: thread as u32,
+                dst_access_fmt: kernel.dst_fmt,
+                program_len: len,
+                dump_row_count: dump,
+                trace: u32::from(traced),
+                push_window,
+                unwedge: u32::from(kernel.unwedge),
+                mop_cfg: kernel.mop_words(thread)?,
+                ..Default::default()
+            };
+            for (at, v) in d.writes(mb) {
+                dev.write32(&w, tile, at, v)?;
             }
-        }
-        Ok(())
-    };
+            dev.write(&w, tile, mb.program(), &word_bytes(&words))?;
+            for row in 0..dump {
+                for col in 0..mailbox::DUMP_ROW_WORDS {
+                    dev.write32(&w, tile, mb.dump_offset(row, col), DUMP_SENTINEL)?;
+                }
+            }
+            Ok(())
+        };
     let wait = |dev: &mut Device<T>, thread: usize| -> Result<Result<(), WaitError>, RunError> {
         let mb = Mailbox::of(thread as u32);
-        Ok(dev
-            .wait_for_mailbox(&w, tile, mb.status(), mb.panic_code(), budget, |s| {
-                s == status::DONE
-            })?
-            .map(|_| ()))
+        Ok(dev.wait_for_mailbox(&w, tile, mb.status(), mb.panic_code(), budget, |s| s == status::DONE)?.map(|_| ()))
     };
     let hold_all = |dev: &mut Device<T>| -> Result<(), RunError> {
         for (core, _, _) in images.iter() {
@@ -565,12 +507,7 @@ pub fn run<T: Transport, N: NocId>(
         l1.push(buf);
     }
     clock.lap(dev, Phase::ReadBack);
-    Ok(Outcome {
-        dst,
-        l1,
-        trace,
-        profile: clock.profile,
-    })
+    Ok(Outcome { dst, l1, trace, profile: clock.profile })
 }
 
 /// The three role images, loaded once and left running between kernels.
@@ -659,17 +596,7 @@ impl<N: NocId> Resident<N> {
             reservations: Default::default(),
         };
         for thread in 0..3 {
-            r.stage(
-                dev,
-                thread,
-                0,
-                false,
-                DST_FMT_FP32,
-                false,
-                false,
-                None,
-                (Vec::new(), 0),
-            )?;
+            r.stage(dev, thread, 0, false, DST_FMT_FP32, false, false, None, (Vec::new(), 0))?;
             dev.write32(&r.window, tile, Mailbox::of(thread as u32).generation(), 1)?;
         }
         dev.load_and_start_together(&r.window, tile, images)?;
@@ -826,15 +753,8 @@ impl<N: NocId> Resident<N> {
                          the data mover",
             }));
         }
-        let descriptors_only = Kernel {
-            roles: [&[], &[], &[]],
-            ..*kernel
-        };
-        let staged = if resident_programs {
-            &descriptors_only
-        } else {
-            kernel
-        };
+        let descriptors_only = Kernel { roles: [&[], &[], &[]], ..*kernel };
+        let staged = if resident_programs { &descriptors_only } else { kernel };
         let clock = self.begin(dev, images, staged, budget, resident_programs)?;
         let first = self.generation;
         self.generation += count - 1;
@@ -850,20 +770,12 @@ impl<N: NocId> Resident<N> {
     /// behind kernels already queued -- a setup run of its semaphores, a fixed
     /// program slot, a descriptor word? Then the caller must let the tile
     /// drain first: those are read by the runs in flight.
-    pub fn needs_idle<T: Transport>(
-        &self,
-        dev: &mut Device<T>,
-        kernel: &Kernel<'_>,
-        resident_programs: bool,
-    ) -> bool {
+    pub fn needs_idle<T: Transport>(&self, dev: &mut Device<T>, kernel: &Kernel<'_>, resident_programs: bool) -> bool {
         if !resident_programs || kernel.trace || kernel.dump_rows != 0 {
             return true;
         }
         if let Schedule::Concurrent(init) = kernel.schedule {
-            let holds = self
-                .semaphores
-                .as_ref()
-                .is_some_and(|k| init.iter().all(|e| k.contains(e)));
+            let holds = self.semaphores.as_ref().is_some_and(|k| init.iter().all(|e| k.contains(e)));
             if !holds {
                 return true;
             }
@@ -889,9 +801,9 @@ impl<N: NocId> Resident<N> {
             let want = d.writes(mb);
             match descs[thread] {
                 None => true,
-                Some(have) => want.iter().enumerate().any(|(k, &(at, v))| {
-                    at != mb.program_len() && at != mb.program_addr() && have[k] != v
-                }),
+                Some(have) => {
+                    want.iter().enumerate().any(|(k, &(at, v))| at != mb.program_len() && at != mb.program_addr() && have[k] != v)
+                }
             }
         })
     }
@@ -959,16 +871,9 @@ impl<N: NocId> Resident<N> {
     /// reported each acknowledged; with `Ok(false)` from the mover -- a role
     /// panicked or the list failed -- the tile is poisoned, as a failed
     /// [`Resident::complete`] leaves it.
-    pub fn reserved_done<T: Transport>(
-        &mut self,
-        dev: &mut Device<T>,
-        ran: bool,
-    ) -> Result<(), RunError> {
+    pub fn reserved_done<T: Transport>(&mut self, dev: &mut Device<T>, ran: bool) -> Result<(), RunError> {
         let Some(mut clock) = self.reservations.pop_front() else {
-            return Err(RunError::Transport(TransportError::Hazard {
-                address: 0,
-                reason: "no reserved kernel to close",
-            }));
+            return Err(RunError::Transport(TransportError::Hazard { address: 0, reason: "no reserved kernel to close" }));
         };
         clock.lap(dev, Phase::Wait);
         if !ran {
@@ -1006,8 +911,7 @@ impl<N: NocId> Resident<N> {
         if !self.reservations.is_empty() && !resident_programs {
             return Err(RunError::Transport(TransportError::Hazard {
                 address: 0,
-                reason:
-                    "a host run or fixed-slot kernel behind queued kernels; drain the tile first",
+                reason: "a host run or fixed-slot kernel behind queued kernels; drain the tile first",
             }));
         }
         let (setup, unpack) = assemble(kernel)?;
@@ -1035,23 +939,16 @@ impl<N: NocId> Resident<N> {
         // After the kernel: its own semaphores as it found them, everyone
         // else's untouched.
         self.semaphores_after = init.as_ref().map(|i| {
-            let mut after: Vec<SemaphoreInit> = known
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|(s, ..)| !i.iter().any(|(t, ..)| t == s))
-                .collect();
+            let mut after: Vec<SemaphoreInit> =
+                known.unwrap_or_default().into_iter().filter(|(s, ..)| !i.iter().any(|(t, ..)| t == s)).collect();
             after.extend(i.iter().copied());
             after
         });
         if let (Some(setup), false) = (&setup, skip_setup) {
             self.generation += 1;
             self.last_setup = Some((self.generation, setup.clone()));
-            let stored = super::code::Code::plain(setup.to_vec())
-                .stored()
-                .map_err(|e| RunError::Loops {
-                    thread: 0,
-                    reason: e,
-                })?;
+            let stored =
+                super::code::Code::plain(setup.to_vec()).stored().map_err(|e| RunError::Loops { thread: 0, reason: e })?;
             self.stage(dev, 0, 0, false, kernel.dst_fmt, true, false, None, stored)?;
             let stuck = self.wait(dev, &[0], images, budget)?;
             if let Some((_, _, e)) = stuck.into_iter().next() {
@@ -1067,12 +964,7 @@ impl<N: NocId> Resident<N> {
             }));
         }
         if kernel.trace {
-            dev.configure_trace(
-                &self.window,
-                tile,
-                mailbox::TRACE_BUFFER,
-                mailbox::TRACE_BUFFER_BYTES,
-            )?;
+            dev.configure_trace(&self.window, tile, mailbox::TRACE_BUFFER, mailbox::TRACE_BUFFER_BYTES)?;
         }
         self.generation += 1;
         // Every role's program and descriptor is in place before any role's
@@ -1142,28 +1034,15 @@ impl<N: NocId> Resident<N> {
             l1.push(buf);
         }
         clock.lap(dev, Phase::ReadBack);
-        Ok(Outcome {
-            dst,
-            l1,
-            trace,
-            profile: clock.profile,
-        })
+        Ok(Outcome { dst, l1, trace, profile: clock.profile })
     }
 
     /// Hold the three role cores in reset again.
-    pub fn stop<T: Transport>(
-        self,
-        dev: &mut Device<T>,
-        images: &RoleImages<'_>,
-    ) -> Result<(), RunError> {
+    pub fn stop<T: Transport>(self, dev: &mut Device<T>, images: &RoleImages<'_>) -> Result<(), RunError> {
         self.hold(dev, images)
     }
 
-    fn hold<T: Transport>(
-        &self,
-        dev: &mut Device<T>,
-        images: &RoleImages<'_>,
-    ) -> Result<(), RunError> {
+    fn hold<T: Transport>(&self, dev: &mut Device<T>, images: &RoleImages<'_>) -> Result<(), RunError> {
         for (core, _, _) in images.iter() {
             dev.set_core_reset(&self.window, self.tile, *core, true)?;
         }
@@ -1256,14 +1135,7 @@ impl<N: NocId> Resident<N> {
         for &thread in threads {
             let mb = Mailbox::of(thread as u32);
             let generation = self.generation;
-            let r = dev.wait_for_mailbox(
-                &self.window,
-                self.tile,
-                mb.ack(),
-                mb.panic_code(),
-                budget,
-                |v| v == generation,
-            )?;
+            let r = dev.wait_for_mailbox(&self.window, self.tile, mb.ack(), mb.panic_code(), budget, |v| v == generation)?;
             if let Err(e) = r {
                 stuck.push((thread, images[thread].0, e));
             }

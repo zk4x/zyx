@@ -26,39 +26,24 @@ impl<T: Transport> Device<T> {
     /// Send `code` with up to seven `args` to the ARC's application queue and
     /// wait for its answer. Returns the response's upper half-word (UMD's "exit
     /// code") and the seven return values.
-    pub fn arc_message(
-        &mut self,
-        window: &Window,
-        code: u32,
-        args: &[u32],
-        timeout: Duration,
-    ) -> Result<(u32, [u32; 7])> {
+    pub fn arc_message(&mut self, window: &Window, code: u32, args: &[u32], timeout: Duration) -> Result<(u32, [u32; 7])> {
         if args.len() > 7 {
-            return Err(arc_error(format!(
-                "{} arguments; the ARC takes at most 7",
-                args.len()
-            )));
+            return Err(arc_error(format!("{} arguments; the ARC takes at most 7", args.len())));
         }
         let tile = arc::arc_tile();
         let control = self.read32(window, tile, queue::CONTROL_PTR)? as u64;
         if !arc::is_within_csm(control, 8) {
-            return Err(arc_error(format!(
-                "queue control block at {control:#x} is outside the CSM"
-            )));
+            return Err(arc_error(format!("queue control block at {control:#x} is outside the CSM")));
         }
         let base_addr = self.read32(window, tile, control)? as u64;
         let entries = (self.read32(window, tile, control + 4)? & 0xFF) as u64;
         if entries == 0 {
-            return Err(arc_error(
-                "the firmware publishes zero queue entries".into(),
-            ));
+            return Err(arc_error("the firmware publishes zero queue entries".into()));
         }
         let queue_bytes = (queue::HEADER_WORDS + 2 * entries * queue::ENTRY_WORDS) * 4;
         let base = base_addr + queue::APPLICATION * queue_bytes;
         if !arc::is_within_csm(base, queue_bytes) {
-            return Err(arc_error(format!(
-                "application queue at {base:#x} is outside the CSM"
-            )));
+            return Err(arc_error(format!("application queue at {base:#x} is outside the CSM")));
         }
         let word = |i: u64| base + i * 4;
         let deadline = Instant::now() + timeout;
@@ -81,12 +66,7 @@ impl<T: Transport> Device<T> {
         for (i, w) in request.iter().enumerate() {
             self.write32(window, tile, word(slot + i as u64), *w)?;
         }
-        self.write32(
-            window,
-            tile,
-            word(queue::REQUEST_WPTR),
-            ((wptr + 1) % (2 * entries)) as u32,
-        )?;
+        self.write32(window, tile, word(queue::REQUEST_WPTR), ((wptr + 1) % (2 * entries)) as u32)?;
         self.write32(window, tile, queue::FW_INT, queue::FW_INT_VAL)?;
 
         // Wait for the response.
@@ -105,18 +85,11 @@ impl<T: Transport> Device<T> {
         for (i, w) in response.iter_mut().enumerate() {
             *w = self.read32(window, tile, word(slot + i as u64))?;
         }
-        self.write32(
-            window,
-            tile,
-            word(queue::RESPONSE_RPTR),
-            ((rptr + 1) % (2 * entries)) as u32,
-        )?;
+        self.write32(window, tile, word(queue::RESPONSE_RPTR), ((rptr + 1) % (2 * entries)) as u32)?;
 
         let status = response[0] & 0xFF;
         if status >= queue::RESPONSE_OK_LIMIT {
-            return Err(arc_error(format!(
-                "message {code:#x} failed with status {status:#x}"
-            )));
+            return Err(arc_error(format!("message {code:#x} failed with status {status:#x}")));
         }
         let mut values = [0u32; 7];
         values.copy_from_slice(&response[1..]);
@@ -144,10 +117,7 @@ impl<T: Transport> Device<T> {
         }
         let table = super::telemetry::TelemetryTable::read(self, window)?;
         let sample = |dev: &mut Self| -> Result<(Option<u32>, Option<u32>)> {
-            Ok((
-                table.read_tag(dev, window, arc::tag::AICLK)?,
-                table.read_tag(dev, window, arc::tag::VCORE)?,
-            ))
+            Ok((table.read_tag(dev, window, arc::tag::AICLK)?, table.read_tag(dev, window, arc::tag::VCORE)?))
         };
         let before = sample(self)?;
         let code = if busy {
@@ -166,14 +136,11 @@ impl<T: Transport> Device<T> {
             recent.push(now);
             let changed = now != before || start.elapsed() >= Duration::from_millis(200);
             let n = recent.len();
-            if changed && n >= 3 && recent[n - 1] == recent[n - 2] && recent[n - 2] == recent[n - 3]
-            {
+            if changed && n >= 3 && recent[n - 1] == recent[n - 2] && recent[n - 2] == recent[n - 3] {
                 return Ok(now.0);
             }
             if start.elapsed() >= Duration::from_secs(2) {
-                return Err(arc_error(format!(
-                    "AICLK/VCORE did not settle after message {code:#x}: last {now:?}"
-                )));
+                return Err(arc_error(format!("AICLK/VCORE did not settle after message {code:#x}: last {now:?}")));
             }
             std::thread::sleep(Duration::from_millis(5));
         }

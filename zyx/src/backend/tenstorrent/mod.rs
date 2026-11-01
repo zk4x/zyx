@@ -33,25 +33,31 @@
 // returns. The simulator itself is a Tenstorrent binary blob, found through
 // `TT_TTSIM_LIB` or `vendor/libttsim_bh.so`; only its wrapper lives here.
 //
-// DRAM is host memory in this transport: a `Pool::TT` chunk is a `Vec<u8>`
-// owned by the pool, the boundary moves carry bytes in and out of it, and the
-// device only ever sees L1 (`runtime::Kernel::stage` and `read_back`). That
-// keeps the hard invariant intact — a kernel never round-trips through DRAM
-// while its roles run.
+// A `Pool::TT` chunk is device DRAM (the card's GDDR6), not host memory: the
+// pool hands out flat byte ranges of the chip's DRAM and every boundary move
+// reaches them through `dram_read`/`dram_write` on the owner thread. There is
+// no CPU pointer to a TT chunk. The device side only ever sees L1
+// (`runtime::Kernel::stage` and `read_back`), so a kernel never round-trips
+// through DRAM while its roles run.
 
 use self::ttsim::{NativeRun, run as run_native};
-use super::{ChunkId, Cmd, CmdQueue, Dev, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Placement, PlanDim, Pool, Shard};
+use super::{
+    ChunkId, Cmd, CmdQueue, Dev, DeviceInfo, DeviceProgramId, GwsDim, Kernel, LaunchArg, Placement, PlanDim, Pool, Shard,
+};
 use crate::{
-    DType, Map, Set, ZyxError, bf16, f16,
+    DType, Map, Set, ZyxError,
     backend::DTypeCapability,
+    bf16,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
+    f16,
     kernel::{GPUOp, Op, OpId, TTOp},
     shape::Dim,
     slab::Slab,
 };
 use nanoserde::{DeJson, SerBin};
 use std::sync::{Arc, Mutex, OnceLock};
+use tt_isa::dram::{Dram, DramRange};
 use tt_isa::isa::Instruction;
 
 // The ported layers are carried over whole so their behaviour matches
@@ -277,14 +283,33 @@ pub struct TTNativeProgram {
 }
 
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// A Tenstorrent device's memory.
+// Device DRAM
 //
-// `Pool::TT` memory is host memory: the native transport stages the boundary
-// with host copies, so a TT tensor lives in the host pool and `Pool::TT`'s
-// memory operations delegate there (`backend::mod`). What a TT pool carries
-// is the device: its capabilities and its compiled programs.
+// A `Pool::TT` chunk is the card's DRAM: one flat byte range in the chip's
+// GDDR6, handed out by this pool. The flat space is striped round-robin across
+// the chip's usable channels in [`STRIPE`]-byte pages — Tenstorrent's own
+// striping is simple round-robin, and that is sufficient. The allocator never
+// has to know the channel geometry: every access translates the flat range it
+// touches into per-channel [`DramRange`]s at I/O time, so chunks are arbitrary
+// size and placement is one bump.
 // ---------------------------------------------------------------------------
+
+/// DRAM interleaving granularity: bytes striped round-robin across the chip's
+/// channels before the next channel gets the next page.
+const STRIPE: u64 = 2048;
+
+/// One allocation in the flat DRAM space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DramChunk {
+    /// Flat byte address of the chunk's first byte.
+    addr: u64,
+    /// Chunk length in bytes, exactly as requested.
+    len: u64,
+}
+
+fn io_error(status: ErrorStatus, msg: String) -> BackendError {
+    BackendError { status, context: msg.into_boxed_str() }
+}
 
 fn backend() -> Result<(&'static Vec<Mutex<TTMemoryPool>>, &'static Vec<Mutex<TTDevice>>), BackendError> {
     let g = TT.get_or_init(init_global);
@@ -306,6 +331,179 @@ fn no_pool(id: u16) -> BackendError {
 #[derive(Debug)]
 pub struct TTMemoryPool {
     pub(crate) dev_info: DeviceInfo,
+    /// The chip's usable DRAM channels: the only way a [`DramRange`] is made.
+    dram: Dram,
+    /// Flat DRAM bytes this pool hands out.
+    total: u64,
+    free_bytes: Dim,
+    chunks: Slab<ChunkId, DramChunk>,
+    free_set: Set<ChunkId>,
+    /// First flat address never handed out, 2 KB aligned.
+    bump: u64,
+}
+
+impl TTMemoryPool {
+    pub const fn free_bytes(&self) -> Dim {
+        self.free_bytes
+    }
+
+    /// The chunk's length in bytes.
+    pub fn chunk_len(&self, id: ChunkId) -> usize {
+        usize::try_from(self.chunks[id].len).expect("DRAM chunk longer than a host slice")
+    }
+
+    /// Allocate `bytes` of device DRAM. Best-fit from the free list first
+    /// (stable addresses across repeats), else fresh from the flat space —
+    /// the host pool's policy, over a different address space.
+    pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
+        let best = self
+            .free_set
+            .iter()
+            .filter_map(|id| {
+                let len = self.chunks[*id].len as Dim;
+                (len >= bytes).then_some((len, *id))
+            })
+            .min();
+        if let Some((_, id)) = best {
+            self.free_set.remove(&id);
+            return Ok(id);
+        }
+        let len: u64 =
+            bytes.try_into().map_err(|_| io_error(ErrorStatus::MemoryAllocation, "DRAM allocation size too large".into()))?;
+        let addr = self.bump;
+        let end = addr.checked_add(len).ok_or_else(|| {
+            io_error(ErrorStatus::MemoryAllocation, format!("DRAM allocation of {len} bytes overflows the flat space"))
+        })?;
+        if end > self.total {
+            return Err(io_error(
+                ErrorStatus::MemoryAllocation,
+                format!("OOM: {len} bytes requested, {} bytes of {} free", self.free_bytes, self.total),
+            ));
+        }
+        self.bump = end.next_multiple_of(STRIPE);
+        self.free_bytes -= len as Dim;
+        // Fresh chunks are not zeroed. The flat space is never handed out
+        // twice through the bump, so a new chunk holds only what the card's
+        // DRAM already had there (zeros on ttsim); a chunk reused from the
+        // free list keeps its bytes, exactly like the host pool.
+        Ok(self.chunks.push(DramChunk { addr, len }))
+    }
+
+    /// Put one chunk on the free list (reclaimable only by [`Self::dispose`]).
+    pub fn release(&mut self, buffer_id: ChunkId) {
+        if !self.chunks.contains_id(buffer_id) {
+            debug_assert!(false, "release of unknown DRAM chunk {buffer_id:?}");
+            return;
+        }
+        debug_assert!(!self.free_set.contains(&buffer_id), "double release of DRAM chunk {buffer_id:?}");
+        self.free_set.insert(buffer_id);
+    }
+
+    /// Claim existing allocations, all or nothing.
+    pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
+        let ok = buffer_ids.iter().all(|id| self.free_set.contains(id));
+        if ok {
+            for id in buffer_ids {
+                self.free_set.remove(id);
+            }
+        }
+        ok
+    }
+
+    /// Free every chunk on the free list at once; the ids become invalid.
+    pub fn dispose(&mut self) {
+        for id in core::mem::take(&mut self.free_set) {
+            if let Some(chunk) = self.chunks.get(id) {
+                self.free_bytes += chunk.len as Dim;
+            }
+            self.chunks.remove(id);
+        }
+    }
+
+    /// Blocking upload: host bytes into the chunk's first bytes.
+    pub fn host_to_pool(&mut self, src: &[u8], dst: ChunkId) -> Result<(), BackendError> {
+        self.write_at(dst, 0, src)
+    }
+
+    /// Blocking download: the chunk's first bytes into host bytes (up to
+    /// `dst.len()`).
+    pub fn pool_to_host(&mut self, src: ChunkId, dst: &mut [u8]) -> Result<(), BackendError> {
+        let len = self.chunk_len(src).min(dst.len());
+        self.read_at(src, 0, &mut dst[..len])
+    }
+
+    /// Write `src` at byte `off` of chunk `id`.
+    pub fn write_at(&mut self, id: ChunkId, off: usize, src: &[u8]) -> Result<(), BackendError> {
+        const STATUS: ErrorStatus = ErrorStatus::MemoryCopyH2P;
+        let addr = self.chunks[id].addr;
+        let off = u64::try_from(off).map_err(|_| io_error(STATUS, "DRAM write offset does not fit u64".into()))?;
+        let len = src.len() as u64;
+        self.check(id, off, len).map_err(|e| io_error(STATUS, e))?;
+        let segments = self.stripes(addr + off, len).map_err(|e| io_error(STATUS, e))?;
+        ttsim::dram_write(src.to_vec(), segments).map_err(|e| io_error(STATUS, e))
+    }
+
+    /// Read byte `off` of chunk `id` into `dst`.
+    pub fn read_at(&mut self, id: ChunkId, off: usize, dst: &mut [u8]) -> Result<(), BackendError> {
+        const STATUS: ErrorStatus = ErrorStatus::MemoryCopyP2H;
+        let addr = self.chunks[id].addr;
+        let off = u64::try_from(off).map_err(|_| io_error(STATUS, "DRAM read offset does not fit u64".into()))?;
+        let len = dst.len() as u64;
+        self.check(id, off, len).map_err(|e| io_error(STATUS, e))?;
+        let segments = self.stripes(addr + off, len).map_err(|e| io_error(STATUS, e))?;
+        let ranges: Vec<DramRange> = segments.iter().map(|(range, _)| *range).collect();
+        let parts = ttsim::dram_read(ranges).map_err(|e| io_error(STATUS, e))?;
+        for ((range, at), part) in segments.iter().zip(parts) {
+            debug_assert_eq!(part.len() as u64, range.len(), "DRAM read returned a different length than asked");
+            dst[*at..*at + part.len()].copy_from_slice(&part);
+        }
+        Ok(())
+    }
+
+    fn check(&self, id: ChunkId, off: u64, len: u64) -> Result<(), String> {
+        let chunk = &self.chunks[id];
+        let end = off.checked_add(len).ok_or_else(|| format!("DRAM access at {off} of {len} bytes overflows"))?;
+        if end > chunk.len {
+            return Err(format!("DRAM access {off}..{end} of chunk {id:?} exceeds its {} bytes", chunk.len));
+        }
+        Ok(())
+    }
+
+    /// Split a flat DRAM range into the per-channel ranges it spans, each
+    /// paired with its byte offset inside the caller's buffer.
+    ///
+    /// Page `p = addr / STRIPE` is on channel `p % channels` at channel offset
+    /// `(p / channels) * STRIPE + addr % STRIPE`; accesses are cut at every page
+    /// boundary, so a segment never crosses a channel. Round-robin at a fixed
+    /// page size is what the card does; a different stripe is a change here and
+    /// nowhere else.
+    fn stripes(&self, addr: u64, len: u64) -> Result<Vec<(DramRange, usize)>, String> {
+        let channels = u64::from(self.dram.channel_count());
+        debug_assert!(channels > 0, "a DRAM grid with no usable channels");
+        let mut out = Vec::with_capacity(len.div_ceil(STRIPE) as usize);
+        let mut at = 0u64;
+        while at < len {
+            let flat = addr + at;
+            let page = flat / STRIPE;
+            let within = flat % STRIPE;
+            let channel = self.dram.channel((page % channels) as u8).ok_or_else(|| {
+                format!("flat DRAM address {flat:#x} names channel {}, which the chip does not have", page % channels)
+            })?;
+            let offset = (page / channels) * STRIPE + within;
+            let take = (STRIPE - within).min(len - at);
+            let range = channel.range(offset, take).ok_or_else(|| {
+                format!(
+                    "DRAM channel {} range {offset}..{} runs past the channel's {} bytes",
+                    channel.index(),
+                    offset + take,
+                    tt_isa::dram::CHANNEL_BYTES
+                )
+            })?;
+            out.push((range, at as usize));
+            at += take;
+        }
+        Ok(out)
+    }
 }
 
 fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Mutex<TTMemoryPool>>, BackendError> {
@@ -342,7 +540,17 @@ fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Mutex<TTM
     use tt_isa::noc::grid::{TENSIX_COLUMNS, TENSIX_ROW_COUNT};
     let rows = TENSIX_ROW_COUNT as u32;
     let cols = TENSIX_COLUMNS.len() as u32;
-    let dram_bytes = detect_dram_bytes();
+    // The chip's DRAM channels. This is the simulator's grid (`Dram::FULL`,
+    // every channel present): the native transport opens a simulated chip, and
+    // the owner thread is the only holder of the device. Silicon has to take
+    // the grid from `Device::dram_grid` instead — the ported layer refuses a
+    // harvested chip (a p100's seven channels) until the translated DRAM
+    // numbering is implemented.
+    let dram = tt_isa::dram::Dram::FULL;
+    // Flat extent: the card's GDDR6, but never more per channel than the NoC
+    // can address — a flat space wider than `channels * CHANNEL_BYTES` would
+    // strand its tail in a channel that does not exist.
+    let dram_bytes = detect_dram_bytes().min(u64::from(dram.channel_count()) * tt_isa::dram::CHANNEL_BYTES);
 
     // F8E5M2 has no Blackhole DataFormat: not a capable dtype, codegen rejects it.
     let mut dtype_capability = [DTypeCapability::all(); DType::N_DTYPES];
@@ -378,6 +586,12 @@ fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Mutex<TTM
                 num_circular_buffers: 32, // architectural CB0-CB31
                 has_openmp: false,
             },
+            dram,
+            total: dram_bytes,
+            free_bytes: dram_bytes as Dim,
+            chunks: Slab::new(),
+            free_set: Set::default(),
+            bump: 0,
         }));
     }
 
@@ -543,10 +757,7 @@ impl TTDevice {
         }
         let mut loops: [Vec<Loop>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         for (role, entries) in native.compute_loops.iter().enumerate() {
-            loops[role] = entries
-                .iter()
-                .map(|l| Loop { start: l.start, len: l.len, count: l.count })
-                .collect();
+            loops[role] = entries.iter().map(|l| Loop { start: l.start, len: l.len, count: l.count }).collect();
         }
         let mut sems: Vec<SemaphoreInit> = Vec::with_capacity(native.sems.len());
         for s in &native.sems {
@@ -685,12 +896,15 @@ impl TTDevice {
         // program is tile-uniform (same L1 layout, same instruction streams);
         // the DRAM slice is the only thing that differs, and `TTDmMove`'s
         // `base`/`gstride*` are what carry it.
+        let Pool::TT(dev_id) = self.memory_pool else {
+            unreachable!("TT device carries {:?}, not a TT pool", self.memory_pool)
+        };
+        let tpool = pool(dev_id)?;
         use tt_isa::noc::Noc0;
         use tt_isa::noc::grid::Tensix;
         let tensix = Tensix::FULL;
         let ncols = tensix.columns().count() as u32;
         let tiles: Vec<(u8, u8)> = tensix.tiles::<Noc0>().map(|t| (t.x(), t.y())).collect();
-        let host = super::host::pool();
         for gidx0 in 0..grid_dims[0] {
             for gidx1 in 0..grid_dims[1] {
                 let point = usize::try_from(gidx0 * ncols + gidx1).unwrap_or(usize::MAX);
@@ -700,28 +914,29 @@ impl TTDevice {
                 })?;
                 let mut stage: Vec<(u64, Vec<u8>)> = Vec::with_capacity(prog.native.reader.len());
                 {
-                    let hpool = super::lock(Pool::Host, host);
+                    let mut tpool = super::lock(self.memory_pool, tpool);
                     for mv in &prog.native.reader {
                         let chunk = chunks[mv.param as usize].ok_or_else(|| BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: format!("reader move names param {}, which has no buffer arg", mv.param).into(),
                         })?;
-                        let data = hpool.get_buffer(chunk);
                         let bytes = mv.bytes as usize;
                         let off = tt_move_offset(mv, gidx0, gidx1);
+                        let len = tpool.chunk_len(chunk);
                         let end = off.checked_add(bytes).unwrap_or(usize::MAX);
-                        if end > data.len() {
+                        if end > len {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelLaunch,
                                 context: format!(
-                                    "reader move of {bytes} bytes at offset {off} from param {} exceeds its {} byte buffer",
-                                    mv.param,
-                                    data.len()
+                                    "reader move of {bytes} bytes at offset {off} from param {} exceeds its {len} byte buffer",
+                                    mv.param
                                 )
                                 .into(),
                             });
                         }
-                        stage.push((u64::from(mv.l1), data[off..end].to_vec()));
+                        let mut data = vec![0u8; bytes];
+                        tpool.read_at(chunk, off, &mut data)?;
+                        stage.push((u64::from(mv.l1), data));
                     }
                 }
                 let mut spans: Vec<(u64, usize, u32, usize)> = Vec::with_capacity(prog.native.writer.len());
@@ -737,83 +952,52 @@ impl TTDevice {
                     read_back,
                     sems: prog.sems.clone(),
                 };
-                let outcome = run_native(run).map_err(|e| BackendError {
-                    status: ErrorStatus::KernelLaunch,
-                    context: e.into_boxed_str(),
-                })?;
-                let mut hpool = super::lock(Pool::Host, host);
+                let outcome = run_native(run)
+                    .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: e.into_boxed_str() })?;
+                let mut tpool = super::lock(self.memory_pool, tpool);
                 for (idx, (_, bytes, param, off)) in spans.iter().enumerate() {
                     let chunk = chunks[*param as usize].ok_or_else(|| BackendError {
                         status: ErrorStatus::KernelLaunch,
                         context: format!("writer move names param {param}, which has no buffer arg").into(),
                     })?;
                     let out = &outcome.l1[idx];
-                    // SAFETY: the destination is the chunk's bytes plus this
-                    // grid point's slice offset, which the bounds check below
-                    // keeps inside the chunk.
-                    let dst = unsafe { hpool.buffer_ptr_mut(chunk).add(*off) };
-                    match prog.native.writer[idx].narrow {
-                TT_NARROW_NONE => {
-                    let n = (*bytes).min(out.len());
-                    if off + n > hpool.get_buffer(chunk).len() {
+                    // Writer-side narrowing happens on the host, on the read-back
+                    // bytes: the packer cannot do it (F32 `Dst` -> BF16 L1 is
+                    // `pack_fmt_conv_mode=0x105`, which the pinned ttsim refuses).
+                    let narrowed: Vec<u8> = match prog.native.writer[idx].narrow {
+                        TT_NARROW_NONE => out[..(*bytes).min(out.len())].to_vec(),
+                        TT_NARROW_BF16 => {
+                            debug_assert_eq!(out.len() % 4, 0, "narrowing a partial f32 datum");
+                            let mut bytes_out = Vec::with_capacity(out.len() / 2);
+                            for datum in out.chunks_exact(4) {
+                                let d = f32::from_ne_bytes(datum.try_into().expect("four bytes"));
+                                bytes_out.extend_from_slice(&bf16::from_f32(d).to_bits().to_ne_bytes());
+                            }
+                            bytes_out
+                        }
+                        TT_NARROW_F16 => {
+                            debug_assert_eq!(out.len() % 4, 0, "narrowing a partial f32 datum");
+                            let mut bytes_out = Vec::with_capacity(out.len() / 2);
+                            for datum in out.chunks_exact(4) {
+                                let d = f32::from_ne_bytes(datum.try_into().expect("four bytes"));
+                                bytes_out.extend_from_slice(&f16::from_f32(d).to_bits().to_ne_bytes());
+                            }
+                            bytes_out
+                        }
+                        other => unreachable!("writer narrowing code {other} is not TT_NARROW_NONE/F16/BF16"),
+                    };
+                    let len = tpool.chunk_len(chunk);
+                    if off + narrowed.len() > len {
                         return Err(BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: format!(
-                                "writer move of {n} bytes at offset {off} exceeds param {param}'s {} byte buffer",
-                                hpool.get_buffer(chunk).len()
+                                "writer move of {} bytes at offset {off} exceeds param {param}'s {len} byte buffer",
+                                narrowed.len()
                             )
                             .into(),
                         });
                     }
-                    // SAFETY: `dst` points at the destination chunk's bytes,
-                    // which the host pool owns, and `n` never exceeds the
-                    // read-back range.
-                    unsafe { std::ptr::copy_nonoverlapping(out.as_ptr(), dst, n) };
-                }
-                TT_NARROW_BF16 => {
-                    // SAFETY: `out` is the read-back L1 tile, four bytes per
-                    // datum, and the writer CB holds whole tiles.
-                    let datums = unsafe { std::slice::from_raw_parts(out.as_ptr().cast::<f32>(), out.len() / 4) };
-                    let n = datums.len() * 2;
-                    if off + n > hpool.get_buffer(chunk).len() {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelLaunch,
-                            context: format!(
-                                "writer move narrows {} datums to {n} bytes at offset {off}, more than param {param}'s buffer",
-                                datums.len()
-                            )
-                            .into(),
-                        });
-                    }
-                    // SAFETY: the destination chunk owns at least `n` bytes
-                    // (checked above) and is not aliased here.
-                    let out16 = unsafe { std::slice::from_raw_parts_mut(dst.cast::<bf16>(), datums.len()) };
-                    for (o, &d) in out16.iter_mut().zip(datums) {
-                        *o = bf16::from_f32(d);
-                    }
-                }
-                TT_NARROW_F16 => {
-                    // SAFETY: as for the BF16 arm.
-                    let datums = unsafe { std::slice::from_raw_parts(out.as_ptr().cast::<f32>(), out.len() / 4) };
-                    let n = datums.len() * 2;
-                    if off + n > hpool.get_buffer(chunk).len() {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelLaunch,
-                            context: format!(
-                                "writer move narrows {} datums to {n} bytes at offset {off}, more than param {param}'s buffer",
-                                datums.len()
-                            )
-                            .into(),
-                        });
-                    }
-                    // SAFETY: as for the BF16 arm.
-                    let out16 = unsafe { std::slice::from_raw_parts_mut(dst.cast::<f16>(), datums.len()) };
-                    for (o, &d) in out16.iter_mut().zip(datums) {
-                        *o = f16::from_f32(d);
-                    }
-                }
-                other => unreachable!("writer narrowing code {other} is not TT_NARROW_NONE/F16/BF16"),
-                    }
+                    tpool.write_at(chunk, *off, &narrowed)?;
                 }
             }
         }
@@ -832,11 +1016,9 @@ impl TTDevice {
 
     /// Copy a transfer into this device's pool.
     ///
-    /// Every chunk is host memory (`Pool::TT` memory operations delegate to
-    /// the host pool, see the pool note above), so this is one host-to-host
-    /// byte move whatever the source device is: read the source through its
-    /// own pool, write the destination chunk with the host pool's pointer.
-    /// Single-shard placements only.
+    /// The destination is device DRAM, so the move is a download from the
+    /// source's own pool into a host staging buffer, then an upload into the
+    /// chunk. Single-shard placements only.
     pub fn copy(&self, src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), BackendError> {
         debug_assert!(bytes >= 0, "TT copy of negative bytes");
         let [src_shard] = &src.shards[..] else {
@@ -854,14 +1036,11 @@ impl TTDevice {
         }
         let mut buf = vec![0u8; bytes as usize];
         src_shard.pool.pool_to_host(src_shard.chunk, &mut buf)?;
-        let host = super::host::pool();
-        let mut hpool = super::lock(Pool::Host, host);
-        let dst_ptr = hpool.buffer_ptr_mut(dst_shard.chunk);
-        // SAFETY: `dst_ptr` points at the destination chunk's bytes, which the
-        // host pool owns and which `bytes` sized the allocation for; `buf`
-        // holds exactly `bytes` readable bytes.
-        unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), dst_ptr, buf.len()) };
-        Ok(())
+        let Pool::TT(dev_id) = self.memory_pool else {
+            unreachable!("TT device carries {:?}, not a TT pool", self.memory_pool)
+        };
+        let mut tpool = super::lock(self.memory_pool, pool(dev_id)?);
+        tpool.host_to_pool(&buf, dst_shard.chunk)
     }
 }
 
@@ -979,12 +1158,7 @@ impl Dev {
     /// physical bytes; TT sources are already tile layout and copy
     /// physical bytes unchanged (tilize is not idempotent, tile layout
     /// never reorders). `shape` is the logical shape.
-    pub(crate) fn tilize_transfer(
-        &self,
-        src: &Arc<Placement>,
-        shape: &[Dim],
-        dtype: DType,
-    ) -> Result<Arc<Placement>, ZyxError> {
+    pub(crate) fn tilize_transfer(&self, src: &Arc<Placement>, shape: &[Dim], dtype: DType) -> Result<Arc<Placement>, ZyxError> {
         let Dev::TT(_) = self else {
             panic!("tilize_transfer: not a TT device: {self:?}");
         };
@@ -996,8 +1170,7 @@ impl Dev {
             [] => (1, 1),
         };
         debug_assert!(rows > 0 && cols > 0, "tilize_transfer: non-positive dims {rows}x{cols}");
-        let (pr, pc) =
-            self.info().expect("tilize_transfer: TT device has no info").tile_physical_dims(rows, cols);
+        let (pr, pc) = self.info().expect("tilize_transfer: TT device has no info").tile_physical_dims(rows, cols);
         let rank = shape.len();
         let outer: Dim = if rank >= 2 { shape[..rank - 2].iter().product() } else { 1 };
         let mut phys_dims: Vec<Dim> = Vec::with_capacity(rank.max(2));
@@ -1061,17 +1234,14 @@ impl Dev {
                     let within = (r % 16) * 16 + (c % 16);
                     let srci = ((b * rows + r) * cols + c) * el as Dim;
                     let dsti = (((b * ntr + tr) * ntc + tc) * 1024 + face * 256 + within) * el as Dim;
-                    physical[dsti as usize..dsti as usize + el]
-                        .copy_from_slice(&logical[srci as usize..srci as usize + el]);
+                    physical[dsti as usize..dsti as usize + el].copy_from_slice(&logical[srci as usize..srci as usize + el]);
                 }
             }
         }
         // Physical bytes to this device.
         let plen = physical.len();
         let chunk = Pool::Host.insert_host(physical.into_boxed_slice());
-        let staged = Arc::new(Placement {
-            shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: plen }],
-        });
+        let staged = Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: plen }] });
         let mut queue = CmdQueue::new();
         queue.push(Cmd::Copy {
             src: OpId::from(0),
@@ -1113,8 +1283,7 @@ impl Dev {
             [] => (1, 1),
         };
         debug_assert!(rows > 0 && cols > 0, "untilize_transfer: non-positive dims {rows}x{cols}");
-        let (pr, pc) =
-            self.info().expect("untilize_transfer: TT device has no info").tile_physical_dims(rows, cols);
+        let (pr, pc) = self.info().expect("untilize_transfer: TT device has no info").tile_physical_dims(rows, cols);
         let rank = shape.len();
         let outer: Dim = if rank >= 2 { shape[..rank - 2].iter().product() } else { 1 };
         let mut phys_dims: Vec<Dim> = Vec::with_capacity(rank.max(2));
@@ -1179,16 +1348,13 @@ impl Dev {
                     let within = (r % 16) * 16 + (c % 16);
                     let srci = (((b * ntr + tr) * ntc + tc) * 1024 + face * 256 + within) * el as Dim;
                     let dsti = ((b * rows + r) * cols + c) * el as Dim;
-                    logical[dsti as usize..dsti as usize + el]
-                        .copy_from_slice(&physical[srci as usize..srci as usize + el]);
+                    logical[dsti as usize..dsti as usize + el].copy_from_slice(&physical[srci as usize..srci as usize + el]);
                 }
             }
         }
         let logical_len = logical.len();
         let chunk = Pool::Host.insert_host(logical.into_boxed_slice());
-        let staged = Arc::new(Placement {
-            shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: logical_len }],
-        });
+        let staged = Arc::new(Placement { shards: vec![Shard { pool: Pool::Host, chunk, offset: 0, len: logical_len }] });
         let mut queue = CmdQueue::new();
         queue.push(Cmd::Copy {
             src: OpId::from(0),

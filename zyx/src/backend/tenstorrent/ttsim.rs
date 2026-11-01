@@ -21,9 +21,11 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 use super::dev::Device;
+use super::dev::tlb::WindowKind;
 use super::kern::code::Loop;
 use super::kern::runtime::{self, Schedule, SemaphoreInit};
 use super::sim::{self, Simulator};
+use tt_isa::dram::DramRange;
 use tt_isa::isa::Instruction;
 use tt_isa::noc::{Noc0, NocCoord};
 
@@ -61,6 +63,10 @@ pub(crate) struct NativeOutcome {
 
 enum Cmd {
     Run(Box<NativeRun>, Sender<Result<NativeOutcome, String>>),
+    /// Write `data[at..at + range.len()]` to each range, in order.
+    DramWrite(Vec<u8>, Vec<(DramRange, usize)>, Sender<Result<(), String>>),
+    /// Read each range, in order.
+    DramRead(Vec<DramRange>, Sender<Result<Vec<Vec<u8>>, String>>),
 }
 
 static OWNER: OnceLock<Mutex<Sender<Cmd>>> = OnceLock::new();
@@ -73,6 +79,36 @@ pub(crate) fn run(run: NativeRun) -> Result<NativeOutcome, String> {
     let sent = {
         let owner = owner().lock().unwrap_or_else(|p| p.into_inner());
         owner.send(Cmd::Run(Box::new(run), reply))
+    };
+    if sent.is_err() {
+        return Err("the Tenstorrent owner thread is gone".to_string());
+    }
+    reply_rx.recv().map_err(|_| "the Tenstorrent owner thread dropped the reply".to_string())?
+}
+
+/// Write host bytes into the card's DRAM, one segment per channel range.
+///
+/// The segments are the caller's translation of a flat chunk range: each one
+/// `(range, at)` carries `data[at..at + range.len()]`. They go out in order on
+/// the owner thread, which is the only holder of the device.
+pub(crate) fn dram_write(data: Vec<u8>, segments: Vec<(DramRange, usize)>) -> Result<(), String> {
+    let (reply, reply_rx) = channel();
+    let sent = {
+        let owner = owner().lock().unwrap_or_else(|p| p.into_inner());
+        owner.send(Cmd::DramWrite(data, segments, reply))
+    };
+    if sent.is_err() {
+        return Err("the Tenstorrent owner thread is gone".to_string());
+    }
+    reply_rx.recv().map_err(|_| "the Tenstorrent owner thread dropped the reply".to_string())?
+}
+
+/// Read the card's DRAM into host bytes, one buffer per range, in order.
+pub(crate) fn dram_read(segments: Vec<DramRange>) -> Result<Vec<Vec<u8>>, String> {
+    let (reply, reply_rx) = channel();
+    let sent = {
+        let owner = owner().lock().unwrap_or_else(|p| p.into_inner());
+        owner.send(Cmd::DramRead(segments, reply))
     };
     if sent.is_err() {
         return Err("the Tenstorrent owner thread is gone".to_string());
@@ -115,6 +151,15 @@ fn serve(rx: Receiver<Cmd>, ready: Sender<Result<(), String>>) {
             return;
         }
     };
+    // One 2 MiB TLB window for every host DRAM access; a transfer retargets it
+    // as it goes (`Device::dram_read`/`dram_write`).
+    let window = match dev.alloc_window(WindowKind::TwoMib) {
+        Ok(window) => window,
+        Err(e) => {
+            let _ = ready.send(Err(format!("cannot allocate a DRAM window: {e}")));
+            return;
+        }
+    };
     if ready.send(Ok(())).is_err() {
         return;
     }
@@ -123,8 +168,44 @@ fn serve(rx: Receiver<Cmd>, ready: Sender<Result<(), String>>) {
             Cmd::Run(run, reply) => {
                 let _ = reply.send(execute(&mut dev, &run));
             }
+            Cmd::DramWrite(data, segments, reply) => {
+                let _ = reply.send(execute_dram_write(&mut dev, &window, &data, &segments));
+            }
+            Cmd::DramRead(segments, reply) => {
+                let _ = reply.send(execute_dram_read(&mut dev, &window, &segments));
+            }
         }
     }
+}
+
+/// One DRAM upload: each segment's slice of `data` into its channel range.
+fn execute_dram_write(
+    dev: &mut Device<sim::LibTtsim<'_>>,
+    window: &super::dev::Window,
+    data: &[u8],
+    segments: &[(DramRange, usize)],
+) -> Result<(), String> {
+    for (range, at) in segments {
+        let end = at + range.len() as usize;
+        let bytes = &data[*at..end];
+        dev.dram_write(window, *range, bytes).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// One DRAM download: one buffer per range, in order.
+fn execute_dram_read(
+    dev: &mut Device<sim::LibTtsim<'_>>,
+    window: &super::dev::Window,
+    segments: &[DramRange],
+) -> Result<Vec<Vec<u8>>, String> {
+    let mut out = Vec::with_capacity(segments.len());
+    for range in segments {
+        let mut buf = vec![0u8; range.len() as usize];
+        dev.dram_read(window, *range, &mut buf).map_err(|e| e.to_string())?;
+        out.push(buf);
+    }
+    Ok(out)
 }
 
 /// One run: hand the roles to `runtime::run` and collect what it read back.
@@ -140,8 +221,8 @@ fn execute(dev: &mut Device<sim::LibTtsim<'_>>, run: &NativeRun) -> Result<Nativ
             eprintln!("[tt] stage {at:#x}: {} bytes", bytes.len());
         }
     }
-    let tile = NocCoord::<Noc0>::new(run.tile.0, run.tile.1)
-        .ok_or_else(|| format!("{:?} is not a Tensix coordinate", run.tile))?;
+    let tile =
+        NocCoord::<Noc0>::new(run.tile.0, run.tile.1).ok_or_else(|| format!("{:?} is not a Tensix coordinate", run.tile))?;
     let roles: [&[Instruction]; 3] = [&run.roles[0], &run.roles[1], &run.roles[2]];
     let loops: [&[Loop]; 3] = [&run.loops[0], &run.loops[1], &run.loops[2]];
     let stage: Vec<(u64, &[u8])> = run.stage.iter().map(|(at, bytes)| (*at, bytes.as_slice())).collect();

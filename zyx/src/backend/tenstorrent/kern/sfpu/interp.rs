@@ -20,8 +20,8 @@
 //! The arithmetic is `tt_isa::numerics::fma_bh`, itself held bit for bit to
 //! the specification's `fma.c` (`fma_oracle`).
 
-use tt_isa::isa::generated::defs;
 use tt_isa::isa::Instruction;
+use tt_isa::isa::generated::defs;
 use tt_isa::numerics::fma_bh;
 use tt_isa::numerics::sfpu::sign_mag_is_smaller;
 
@@ -48,10 +48,7 @@ impl std::fmt::Display for InterpError {
                 write!(f, "instruction {at}: no model for {what}")
             }
             InterpError::Unknown { at, lreg } => {
-                write!(
-                    f,
-                    "instruction {at}: LReg[{lreg}] holds nothing established"
-                )
+                write!(f, "instruction {at}: LReg[{lreg}] holds nothing established")
             }
             InterpError::Undefined { at, what } => write!(f, "instruction {at}: undefined: {what}"),
         }
@@ -161,10 +158,7 @@ impl Vector {
                 if op("Load") != 0 {
                     for k in 0..count {
                         let Some(&b) = program.get(i + 1 + k) else {
-                            return Err(InterpError::Undefined {
-                                at: i,
-                                what: "REPLAY records past the end of the program",
-                            });
+                            return Err(InterpError::Undefined { at: i, what: "REPLAY records past the end of the program" });
                         };
                         self.replay[(index + k) % 32] = Some(b);
                         if op("Exec") != 0 {
@@ -174,10 +168,8 @@ impl Vector {
                     i += 1 + count;
                 } else {
                     for k in 0..count {
-                        let b = self.replay[(index + k) % 32].ok_or(InterpError::Undefined {
-                            at: i,
-                            what: "REPLAY of a slot nothing recorded",
-                        })?;
+                        let b = self.replay[(index + k) % 32]
+                            .ok_or(InterpError::Undefined { at: i, what: "REPLAY of a slot nothing recorded" })?;
                         self.exec(i, b)?;
                     }
                     i += 1;
@@ -199,10 +191,7 @@ impl Vector {
             if vd >= 12 {
                 Err(InterpError::Unmodelled {
                     at,
-                    what: format!(
-                        "{} with VD {vd} (a backdoor template load)",
-                        ins.def().mnemonic()
-                    ),
+                    what: format!("{} with VD {vd} (a backdoor template load)", ins.def().mnemonic()),
                 })
             } else {
                 Ok(())
@@ -260,10 +249,7 @@ impl Vector {
                     _ => 0,
                 });
                 if ![0, 1, 2, 4, 8, 10].contains(&mod0) {
-                    return Err(InterpError::Undefined {
-                        at,
-                        what: "SFPLOADI with an undefined Mod0",
-                    });
+                    return Err(InterpError::Undefined { at, what: "SFPLOADI with an undefined Mod0" });
                 }
                 self.write(vd, v, false);
             }
@@ -283,10 +269,7 @@ impl Vector {
             "SFPMOV" => {
                 let (vc, vd, mod1) = (op("VC"), op("VD"), op("Mod1") & !4);
                 if mod1 & 8 != 0 && vc == 9 {
-                    let mut state = self.prng.ok_or_else(|| InterpError::Unmodelled {
-                        at,
-                        what: "unknown PRNG state".into(),
-                    })?;
+                    let mut state = self.prng.ok_or_else(|| InterpError::Unmodelled { at, what: "unknown PRNG state".into() })?;
                     let old = state;
                     for (lane, value) in state.iter_mut().enumerate() {
                         if self.lane_enabled(lane) {
@@ -322,9 +305,7 @@ impl Vector {
                 }
                 let input = self.read(at, op("VC"))?;
                 let state = self.prng.unwrap_or([0; 32]);
-                let result = std::array::from_fn(|l| {
-                    stochastic::round(input[l], state[l], precision, rounding)
-                });
+                let result = std::array::from_fn(|l| stochastic::round(input[l], state[l], precision, rounding));
                 if self.prng.is_some() {
                     let mut next = state;
                     for l in 0..32 {
@@ -342,11 +323,7 @@ impl Vector {
                     if x < 0x8000_0000 {
                         x
                     } else if mod1 & 1 != 0 {
-                        if x > 0xff80_0000 {
-                            x
-                        } else {
-                            x & 0x7fff_ffff
-                        }
+                        if x > 0xff80_0000 { x } else { x & 0x7fff_ffff }
                     } else {
                         x.wrapping_neg()
                     }
@@ -356,11 +333,7 @@ impl Vector {
             "SFPSETSGN" => {
                 let (vc, vd, mod1, imm1) = (op("VC"), op("VD"), op("Mod1"), op("Imm1"));
                 let c = self.read(at, vc)?;
-                let b = if mod1 & 1 != 0 {
-                    [0; 32]
-                } else {
-                    self.read(at, vd)?
-                };
+                let b = if mod1 & 1 != 0 { [0; 32] } else { self.read(at, vd)? };
                 let v: [u32; 32] = std::array::from_fn(|l| {
                     let sign = if mod1 & 1 != 0 { imm1 & 1 } else { b[l] >> 31 };
                     (sign << 31) | (c[l] & 0x7fff_ffff)
@@ -385,12 +358,7 @@ impl Vector {
                             2 => c != 0,
                             4 => c >= 0,
                             6 => c == 0,
-                            _ => {
-                                return Err(InterpError::Undefined {
-                                    at,
-                                    what: "SFPSETCC with an undefined Mod1",
-                                })
-                            }
+                            _ => return Err(InterpError::Undefined { at, what: "SFPSETCC with an undefined Mod1" }),
                         }
                     };
                 }
@@ -400,8 +368,7 @@ impl Vector {
                 let b = self.read(at, if mod1 & 1 != 0 { vb } else { vd })?;
                 let c = self.read(at, vc)?;
                 let and = ins.def().mnemonic() == "SFPAND";
-                let v: [u32; 32] =
-                    std::array::from_fn(|l| if and { b[l] & c[l] } else { b[l] | c[l] });
+                let v: [u32; 32] = std::array::from_fn(|l| if and { b[l] & c[l] } else { b[l] | c[l] });
                 self.write(vd, v, false);
             }
             "SFPSHFT2" => {
@@ -532,11 +499,7 @@ impl Vector {
             "SFPSETEXP" => {
                 let (imm, vc, vd, mod1) = (op("Imm8"), op("VC"), op("VD"), op("Mod1"));
                 let c = self.read(at, vc)?;
-                let b = if mod1 & 1 != 0 {
-                    [0; 32]
-                } else {
-                    self.read(at, vd)?
-                };
+                let b = if mod1 & 1 != 0 { [0; 32] } else { self.read(at, vd)? };
                 let v: [u32; 32] = std::array::from_fn(|l| {
                     let e = if mod1 & 1 != 0 {
                         imm
@@ -552,17 +515,9 @@ impl Vector {
             "SFPSETMAN" => {
                 let (imm, vc, vd, mod1) = (op("Imm12"), op("VC"), op("VD"), op("Mod1"));
                 let c = self.read(at, vc)?;
-                let b = if mod1 & 1 != 0 {
-                    [0; 32]
-                } else {
-                    self.read(at, vd)?
-                };
+                let b = if mod1 & 1 != 0 { [0; 32] } else { self.read(at, vd)? };
                 let v: [u32; 32] = std::array::from_fn(|l| {
-                    let m = if mod1 & 1 != 0 {
-                        imm << 11
-                    } else {
-                        b[l] & 0x7f_ffff
-                    };
+                    let m = if mod1 & 1 != 0 { imm << 11 } else { b[l] & 0x7f_ffff };
                     (c[l] & 0xff80_0000) | m
                 });
                 self.write(vd, v, false);
@@ -572,11 +527,7 @@ impl Vector {
                 let v = self.read(at, vc)?.map(|c| {
                     let e = (c >> 23) & 0xff;
                     let e = if mod1 & 1 != 0 {
-                        if e == 255 {
-                            e
-                        } else {
-                            (e + imm) & 0xff
-                        }
+                        if e == 255 { e } else { (e + imm) & 0xff }
                     } else {
                         imm
                     };
@@ -590,14 +541,9 @@ impl Vector {
                     return unmodelled(format!("SFPARECIP into LReg[{vd}]"));
                 }
                 let c = self.read(at, vc)?;
-                let b = if mod1 == 1 {
-                    self.read(at, vb)?
-                } else {
-                    [0; 32]
-                };
+                let b = if mod1 == 1 { self.read(at, vb)? } else { [0; 32] };
                 let d = self.read(at, vd)?;
-                let v: [u32; 32] =
-                    std::array::from_fn(|l| tt_isa::numerics::sfpu::arecip(mod1, b[l], c[l], d[l]));
+                let v: [u32; 32] = std::array::from_fn(|l| tt_isa::numerics::sfpu::arecip(mod1, b[l], c[l], d[l]));
                 self.write(vd, v, false);
             }
             "SFPGT" | "SFPLE" => {
@@ -611,8 +557,7 @@ impl Vector {
                 // negation, `D <= C`.
                 let le = m == "SFPLE";
                 let (c, d) = (self.read(at, vc)?, self.read(at, vd)?);
-                let holds: [bool; 32] =
-                    std::array::from_fn(|l| sign_mag_is_smaller(c[l], d[l]) != le);
+                let holds: [bool; 32] = std::array::from_fn(|l| sign_mag_is_smaller(c[l], d[l]) != le);
                 if mod1 & 8 != 0 {
                     let v = holds.map(|s| if s { u32::MAX } else { 0 });
                     self.write(vd, v, false);
@@ -642,9 +587,7 @@ impl Vector {
                     _ => 0,
                 };
                 if mod1 > 9 {
-                    return unmodelled(format!(
-                        "SFPSWAP with Mod1 {mod1} (NonContractualBehavior)"
-                    ));
+                    return unmodelled(format!("SFPSWAP with Mod1 {mod1} (NonContractualBehavior)"));
                 }
                 let (c, d) = (self.read(at, vc)?, self.read(at, vd)?);
                 let (mut nc, mut nd) = (c, d);
@@ -653,8 +596,7 @@ impl Vector {
                         continue;
                     }
                     let swap = mod1 == 0 || {
-                        let s = sign_mag_is_smaller(c[l], d[l])
-                            || (c[l] == d[l] && c[l] & 0x8000_0000 != 0);
+                        let s = sign_mag_is_smaller(c[l], d[l]) || (c[l] == d[l] && c[l] & 0x8000_0000 != 0);
                         s == (gets_min >> l & 1 != 0)
                     };
                     if swap {
@@ -703,9 +645,7 @@ impl Vector {
                 if mod1 & 1 != 0 {
                     return unmodelled("SFPLZ with its reserved Mod1 bit".into());
                 }
-                let c = self
-                    .read(at, vc)?
-                    .map(|c| if mod1 & 4 != 0 { c & 0x7fff_ffff } else { c });
+                let c = self.read(at, vc)?.map(|c| if mod1 & 4 != 0 { c & 0x7fff_ffff } else { c });
                 let v = c.map(|c| c.leading_zeros());
                 let en: [bool; 32] = std::array::from_fn(|l| self.lane_enabled(l));
                 self.write(vd, v, false);
@@ -729,15 +669,10 @@ impl Vector {
                 }
                 backdoor(vd)?;
                 if self.read(at, vc)?.iter().any(|&c| c != 0) {
-                    return unmodelled(
-                        "SFPMUL24 with a non-zero VC (its shift-add is NonContractualBehavior)"
-                            .into(),
-                    );
+                    return unmodelled("SFPMUL24 with a non-zero VC (its shift-add is NonContractualBehavior)".into());
                 }
                 let (a, b) = (self.read(at, va)?, self.read(at, vb)?);
-                let v: [u32; 32] = std::array::from_fn(|l| {
-                    tt_isa::numerics::sfpu::mul24(a[l], b[l], mod1 & 1 != 0)
-                });
+                let v: [u32; 32] = std::array::from_fn(|l| tt_isa::numerics::sfpu::mul24(a[l], b[l], mod1 & 1 != 0));
                 self.write(vd, v, false);
             }
             "SFPCAST" => {
@@ -749,9 +684,7 @@ impl Vector {
                     return unmodelled(format!("SFPCAST with Mod1 {mod1}"));
                 }
                 backdoor(vd)?;
-                let v = self
-                    .read(at, vc)?
-                    .map(tt_isa::numerics::sfpu::cast_sm32_to_fp32_rne);
+                let v = self.read(at, vc)?.map(tt_isa::numerics::sfpu::cast_sm32_to_fp32_rne);
                 self.write(vd, v, false);
             }
             "SFPCONFIG" => {
@@ -780,9 +713,7 @@ impl Vector {
                     *x = src[l & 7];
                 }
                 if !all && self.lreg[vd as usize].is_none() {
-                    return unmodelled(format!(
-                        "SFPCONFIG writing some lanes of LReg[{vd}], which holds nothing established"
-                    ));
+                    return unmodelled(format!("SFPCONFIG writing some lanes of LReg[{vd}], which holds nothing established"));
                 }
                 self.lreg[vd as usize] = Some(r);
             }
@@ -826,11 +757,7 @@ impl Vector {
                     // The Tier 2 hazard, modelled: with `INDIRECT_VD` set --
                     // and `FP16_3ENTRY_TABLE` sets it -- the result goes to
                     // `LReg[LReg[7] & 15]`, whatever `VD` says.
-                    let to = if mod1 & m::INDIRECT_VD != 0 {
-                        lanes[7] & 15
-                    } else {
-                        vd
-                    };
+                    let to = if mod1 & m::INDIRECT_VD != 0 { lanes[7] & 15 } else { vd };
                     if to < 8 {
                         self.lreg[to as usize].get_or_insert([0; 32])[lane] = d;
                     }
@@ -854,10 +781,7 @@ impl Vector {
                 }
                 for l in 0..32 {
                     if self.stack[l].len() >= 8 {
-                        return Err(InterpError::Undefined {
-                            at,
-                            what: "SFPPUSHC on a full flag stack",
-                        });
+                        return Err(InterpError::Undefined { at, what: "SFPPUSHC on a full flag stack" });
                     }
                     self.stack[l].push((self.lane_flags[l], self.use_flags[l]));
                 }
@@ -868,10 +792,8 @@ impl Vector {
                     return unmodelled(format!("SFPPOPC with Mod1 {mod1}"));
                 }
                 for l in 0..32 {
-                    let (f, u) = self.stack[l].pop().ok_or(InterpError::Undefined {
-                        at,
-                        what: "SFPPOPC on an empty flag stack",
-                    })?;
+                    let (f, u) =
+                        self.stack[l].pop().ok_or(InterpError::Undefined { at, what: "SFPPOPC on an empty flag stack" })?;
                     self.lane_flags[l] = f;
                     self.use_flags[l] = u;
                 }
@@ -889,8 +811,7 @@ impl Vector {
             "SETRWC" => {
                 // Only the counter-clearing form the builder emits.
                 let bits: u32 = [
-                    "FlipSrcB", "FlipSrcA", "DstCtoCr", "DstCr", "SrcBCr", "SrcACr", "DstVal",
-                    "Fidelity", "SrcB",
+                    "FlipSrcB", "FlipSrcA", "DstCtoCr", "DstCr", "SrcBCr", "SrcACr", "DstVal", "Fidelity", "SrcB",
                 ]
                 .iter()
                 .map(|n| op(n))
@@ -907,16 +828,10 @@ impl Vector {
                 // field's word is written whole, and anything else in it set
                 // would be a mode this model does not have.
                 let (index, value) = (op("CfgIndex"), op("NewValue"));
-                let entry = (0..8).find(|&e| {
-                    super::super::datapath::addr_mod_entry(e).dst_incr.addr32() as u32 == index
-                });
+                let entry = (0..8).find(|&e| super::super::datapath::addr_mod_entry(e).dst_incr.addr32() as u32 == index);
                 match entry {
                     Some(e) if value & !0x3ff == 0 => self.dst_incr[e] = value,
-                    Some(_) => {
-                        return unmodelled(
-                            "an address modifier's CR, clear or fidelity bits".into(),
-                        )
-                    }
+                    Some(_) => return unmodelled("an address modifier's CR, clear or fidelity bits".into()),
                     None => return unmodelled(format!("SETC16 of ThreadConfig entry {index}")),
                 }
             }
@@ -973,11 +888,7 @@ mod tests {
             v.put_tile(0, &a);
             v.put_tile(64, &b);
             v.run(&add_program(policy)).unwrap();
-            let want: Vec<u32> = a
-                .iter()
-                .zip(&b)
-                .map(|(x, y)| (f32::from_bits(*x) + f32::from_bits(*y)).to_bits())
-                .collect();
+            let want: Vec<u32> = a.iter().zip(&b).map(|(x, y)| (f32::from_bits(*x) + f32::from_bits(*y)).to_bits()).collect();
             assert_eq!(v.tile(128), want, "{policy:?}");
             assert_eq!(v.rwc_dst, 0, "the loop leaves the counter cleared");
         }
@@ -991,20 +902,13 @@ mod tests {
         let mut p = Program::with_policy(LoopPolicy::Unrolled);
         p.for_each_row_group(64, |p, o| {
             p.load(LReg::L0, Format::Fp32, o);
-            p.if_else(
-                Cond::Lt0(LReg::L0),
-                |p| p.mov(LReg::ZERO, LReg::L0),
-                |p| p.neg(LReg::L0, LReg::L0),
-            );
+            p.if_else(Cond::Lt0(LReg::L0), |p| p.mov(LReg::ZERO, LReg::L0), |p| p.neg(LReg::L0, LReg::L0));
             p.store(LReg::L0, Format::Fp32, 128 + o);
         });
         let mut v = Vector::new();
         v.put_tile(0, &a);
         v.run(&p.finish()).unwrap();
-        let want: Vec<u32> = a
-            .iter()
-            .map(|&x| if (x as i32) < 0 { 0 } else { x ^ 0x8000_0000 })
-            .collect();
+        let want: Vec<u32> = a.iter().map(|&x| if (x as i32) < 0 { 0 } else { x ^ 0x8000_0000 }).collect();
         assert_eq!(v.tile(128), want);
     }
 
@@ -1017,10 +921,7 @@ mod tests {
         use tt_isa::sfpu::ConfigLReg;
         let mut p = Program::new();
         p.mov(ConfigLReg::L13.lreg(), LReg::L2);
-        assert_eq!(
-            Vector::new().run(&p.finish()),
-            Err(InterpError::Unknown { at: 3, lreg: 13 })
-        );
+        assert_eq!(Vector::new().run(&p.finish()), Err(InterpError::Unknown { at: 3, lreg: 13 }));
         let mut p = Program::new();
         p.constant(ConfigLReg::L13, 0x4049_0fdb);
         p.mov(ConfigLReg::L13.lreg(), LReg::L2);
@@ -1036,9 +937,6 @@ mod tests {
         let e = v.run(&p).unwrap_err();
         assert!(e.to_string().contains("SFPCAST"), "{e}");
         let read8 = [tt_isa::isa::generated::encode::sfpmov(8, 0, 0).unwrap()];
-        assert_eq!(
-            Vector::new().run(&read8),
-            Err(InterpError::Unknown { at: 0, lreg: 8 })
-        );
+        assert_eq!(Vector::new().run(&read8), Err(InterpError::Unknown { at: 0, lreg: 8 }));
     }
 }

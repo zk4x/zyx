@@ -1575,7 +1575,9 @@ impl Tensor {
             BOp::Add => Tensor::from(0i32).cast(dtype),
             BOp::Mul => Tensor::from(1i32).cast(dtype),
             BOp::Max => match dtype {
-                DType::F16 | DType::F32 | DType::F64 | DType::BF16 | DType::F8E4M3 | DType::F8E5M2 => Tensor::from(f32::NEG_INFINITY).cast(dtype),
+                DType::F16 | DType::F32 | DType::F64 | DType::BF16 | DType::F8E4M3 | DType::F8E5M2 => {
+                    Tensor::from(f32::NEG_INFINITY).cast(dtype)
+                }
                 DType::I8 => Tensor::from(i8::MIN).cast(dtype),
                 DType::I16 => Tensor::from(i16::MIN).cast(dtype),
                 DType::I32 => Tensor::from(i32::MIN).cast(dtype),

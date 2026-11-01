@@ -16,10 +16,9 @@
 - **DST** = the compute core's register file (8 × 32-bit tiles or 16 ×
   16-bit tiles, single mode).
 
-`Pool::TT` means **device DRAM**. It does not today: see the regression
-below, which must be undone before any DM/Reader/Writer work.
+`Pool::TT` means **device DRAM**, and since 2026-11-01 it is (§1).
 
-### 1. THE `Pool::TT` REGRESSION — fix this first
+### 1. `Pool::TT` IS DEVICE DRAM (restored 2026-11-01)
 
 The C++ shim allocated a real device buffer:
 `alloc_buffer` created a tt-metal `BufferType::DRAM` MeshBuffer (2 KB page
@@ -45,85 +44,53 @@ It happened on the `tt-native` branch:
   merge because it squashed the branch; the change originated in
   `cca1c452`.
 
-Consequences today: the card's DRAM is unused, `Pool::TT` chunks are CPU
-`Vec<u8>`s, `buffer_ptr_mut` hands out a CPU pointer to "VRAM", the reader
-is a host copy into simulated L1, and the writer is a host read-back plus a
-host narrowing write. The DM cores are never involved.
+Consequences while it stood: the card's DRAM was unused, `Pool::TT` chunks
+were CPU `Vec<u8>`s, `buffer_ptr_mut` handed out a CPU pointer to "VRAM", the
+reader was a host copy into simulated L1, and the writer a host read-back plus
+a host narrowing write. The DM cores were never involved.
 
-**Restoration plan (agreed shape, details open):**
+**Restored (2026-11-01).** All `Pool::TT` arms in `backend/mod.rs` are back on
+`tenstorrent::pool(id)`; a TT chunk is a flat range of the card's GDDR6.
 
-- `TTMemoryPool` owns a DRAM allocator (page-aligned ranges), not a host
-  pool; `allocate`/`release`/`try_reuse_allocations`/`dispose`/`free_bytes`
-  operate on it.
-- `host_to_pool`/`pool_to_host` become `dram_write`/`dram_read` through the
-  ported `dev/dram.rs` (`DramRange`, `Dram::FULL`, `ALIGN = 64`).
-- `buffer_ptr_mut` cannot exist for device DRAM. The launch's writer
-  narrowing becomes `dram_read` → narrow on the host → `dram_write`.
-- The reader stages from DRAM (host read into a staging buffer, then host
-  write into L1) until the DM blobs land; then it is a NOC DRAM→L1 program
-  on the reader core.
+- `TTMemoryPool` (`backend/tenstorrent/mod.rs`) is a flat DRAM allocator:
+  `DramChunk { addr, len }` in the chip's address space, `Slab` + `free_set`
+  + `free_bytes` + a 2 KB-aligned `bump`, best-fit reuse and `dispose` copied
+  from `HostMemoryPool`. `total` is `min(detect_dram_bytes(), channels *
+  CHANNEL_BYTES)`, so the flat space never needs a channel it does not have.
+- `host_to_pool`/`pool_to_host` (plus `read_at`/`write_at` for sub-chunk
+  slices) translate the flat range into per-channel `DramRange`s and go
+  through the owner thread: `ttsim::dram_write`/`dram_read` →
+  `Device::dram_write`/`dram_read` on one held `TwoMib` window. Translation:
+  page `p = addr / 2048`, `channel = p % channels`, offset
+  `(p / channels) * 2048 + addr % 2048`; accesses are cut at page
+  boundaries. One command carries every segment of a transfer.
+- `Pool::TT` `buffer_ptr_mut` is `todo!("TT buffers have no staging
+  pointer")` — it never existed for TT and must not come back.
+- Launch: the reader `read_at(chunk, off, &mut data)` into a host staging
+  buffer and stages L1 as before; the writer takes the L1 read-back, narrows
+  on the host (`TT_NARROW_NONE/F16/BF16`, no raw-pointer write), and
+  `write_at(chunk, off, &narrowed)`. Bounds are checked against `chunk_len`.
+  `TTDevice::copy` downloads through the source pool and `host_to_pool`s the
+  bytes; `host::copy`'s `Pool::TT` arm is a DRAM read straight into the host
+  destination.
+- `Dram::FULL` is the pool's grid (the transport opens a simulated chip).
+  Silicon must take it from `Device::dram_grid` — the ported layer refuses a
+  harvested chip (a p100's seven channels) until the translated DRAM
+  numbering lands.
 
-Open decisions for the restore:
+Verification: the Rust ttsim wrapper's `dram_read`/`dram_write` **do work**.
+`23_tt_lowering`, each gate run alone: `transfer_roundtrip` 0/200, `matmul`
+0/120, `sigmoid` 0/2560, `sum` 0/10, `sum_sigmoid` 0/10. `matmul_sigmoid`
+and `softmax` still fail where they did (`tt_verify` I64 DST; `Op::Loop`
+bails `tt_dataflow_select`).
 
-1. **Address model.** The old path had one flat MeshBuffer (spans channels,
-   card-managed striping). `dev/dram.rs` exposes per-channel `DramRange`s
-   (max ~4.27 GB each) and a 14 GB tensor does not fit one channel. Do we
-   write a flat DRAM allocator + our own flat→(channel, offset) translation,
-   or split chunks per channel? The flat one matches tt-metal and the card.
-2. **Who performs host I/O.** `Device<SimTransport>` lives in the `ttsim`
-   owner thread; pool operations are called from arbitrary threads. Add
-   `Cmd::DramRead`/`Cmd::DramWrite` to the owner thread, or a second device
-   handle with its own transport?
-3. **`buffer_ptr_mut`.** Drop it for TT (a `Pool` API change), or introduce
-   a staging-buffer abstraction that keeps the launch's in-place write?
-4. **Reader path.** Host DRAM→staging→L1 first (testable now), then the NOC
-   DM program with the Reader/Writer blobs? (This is the agreed order.)
-5. **Simulator.** Is `dram_read`/`dram_write` over `Device<SimTransport>`
-   expected to work on ttsim, so the restored pool is gated by
-   `23_tt_lowering`? If not, the restore cannot be tested there.
-6. Allocation granularity/alignment and free-list semantics: mirror the old
-   2 KB pages, and keep `release`/`try_reuse_allocations` semantics.
-
-**Answers (2026-11-01, user):**
-
-1. **Flat DRAM address space with a custom translation.** Tenstorrent's
-   striping is simple round-robin and that is sufficient. Chunks are
-   arbitrary size; the abstraction comes first and the translation can be
-   optimized later.
-2. Owner-thread commands (the owner thread is the only holder of
-   `Device<SimTransport>`).
-3. **`buffer_ptr_mut` never existed for TT** and must not. Drop the TT arm;
-   uploads/downloads go through the pool's DRAM read/write. The launch's
-   writer narrowing is `dram_read` → narrow on the host → `dram_write`.
-4. Host DRAM→staging→L1 first, then the NOC DM program with Reader/Writer
-   blobs.
-5. `dram_read`/`dram_write` are known to work through **libttsim** (the
-   official C++ dylib). The Rust wrapper's behavior is unproven; the gate
-   will tell.
-6. Keep 2 KB page rounding and the host pool's free-list semantics
-   (best-fit reuse, `dispose` reclaims only free buffers).
-
-**Implementation sketch:**
-
-- `TTMemoryPool { dev_info, buffers: Slab<ChunkId, DramChunk>, free_set,
-  free_bytes, bump }`, `DramChunk { addr: u64, len: u64 }` in the flat
-  space; `allocate` = best-fit free list, else bump (2 KB aligned);
-  `release`/`try_reuse_allocations`/`dispose` mirror `HostMemoryPool`.
-- Flat→channel: page `p = a / 2048`; `channel = p % channels`;
-  `offset = (p / channels) * 2048 + (a % 2048)`. Split a range at 2 KB
-  boundaries into per-channel `DramRange`s for `dram_write`/`dram_read`.
-  (The exact stripe is the one thing to confirm against the card later;
-  round-robin is what tt does.)
-- `ttsim.rs` gains `Cmd::DramRead { range, reply }` and
-  `Cmd::DramWrite { range, data, reply }`; the owner thread keeps a window
-  (FourGib if the transport allows, else TwoMib) and calls
-  `Device::dram_read`/`dram_write`. `Dram::FULL` on the simulator.
-- `Pool::TT` arms in `backend/mod.rs` go back to `tenstorrent::pool(id)`
-  (allocate/release/reuse/dispose/free_bytes/pool_to_host), and the TT arm
-  of `buffer_ptr_mut` panics.
-- Launch: reader reads the param's DRAM range through the pool into a host
-  staging buffer, then writes L1; writer reads L1, narrows on the host, and
-  writes the DRAM range back. No CPU pointer to VRAM anywhere.
+**Pre-existing, not the DRAM path:** running the whole `23_tt_lowering`
+binary in one process (any thread count) makes every SFPU kernel *after*
+`matmul` read zeros from DST (`sigmoid` → 0.5) while `transfer_roundtrip`
+still passes. A host-shadow A/B (pool bytes kept in host memory, identical
+launch path) reproduced it exactly: it is device/tile state left by the
+Matrix Unit program, not memory. Run the gates one at a time until it is
+found.
 
 ### Pipeline and pass names
 
@@ -247,9 +214,7 @@ Since the 2026-10-30 handoff:
 
 ### Implementation order (agreed)
 
-0. **Restore `Pool::TT` as device DRAM** (section 1). Blocks the DM model and
-   makes the reader/writer real; the open decisions above must be settled
-   first.
+0. ~~**Restore `Pool::TT` as device DRAM**~~ — **done (2026-11-01)**, see §1.
 1. **Blob container + parity.** Add `Unpack`/`Math`/`Pack`, have codegen
    emit them while `native.compute` still exists, env-var the new launch
    path, assert exact word equality per role (and loops). Then delete
@@ -289,8 +254,8 @@ Since the 2026-10-30 handoff:
 ## HISTORY (2026-10-30) — superseded by CURRENT STATE above
 
 > Everything below this line is history from the 2026-10-30 handoff. The
-> `Pool::TT` description here (host-memory DRAM) is the regression documented
-> in CURRENT STATE §1, not the design.
+> `Pool::TT` description here (host-memory DRAM) was the regression that
+> CURRENT STATE §1 documents and has since undone.
 
 ### Layout and dependencies
 
@@ -299,7 +264,7 @@ Since the 2026-10-30 handoff:
 
 | path | what |
 | --- | --- |
-| `mod.rs` | `Dev::TT` backend: pools (host-memory DRAM **— the regression, see §1**), `TTDevice`, program staging (`TTNativeProgram`/`TTDmMove`/`TTDstRow`), launch |
+| `mod.rs` | `Dev::TT` backend: pools (device DRAM, see §1), `TTDevice`, program staging (`TTNativeProgram`/`TTDmMove`/`TTDstRow`), launch |
 | `ttsim.rs` | owner thread over the simulator + `run_native` |
 | `dev/` | ported `tt-device`: device, TLB windows, config writes, core control, DRAM, trace, telemetry, arc, fencing |
 | `kern/` | ported `tt-kernels` subset: `runtime` (runner), `datapath`, `sfpu`, `l1`, `loops`, `code`, `kind`, `elem`, trimmed `matmul` |

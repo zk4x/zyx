@@ -27,8 +27,7 @@ use tt_isa::isa::Instruction;
 use tt_isa::sync::{self, Semaphore, Unit};
 
 use super::super::datapath::{
-    config_program, pack_tile_from_dst, state_id, thread_config, tile_unpack_config,
-    unpack_datums_to_dst, unpack_tile_to_dst,
+    config_program, pack_tile_from_dst, state_id, thread_config, tile_unpack_config, unpack_datums_to_dst, unpack_tile_to_dst,
 };
 use super::super::l1::{PlanError, Requirements};
 use super::super::runtime::SemaphoreInit;
@@ -69,11 +68,7 @@ pub enum Operands {
 /// faces 0 and 2 (row groups 0..4 and 8..12) take columns 0..16, faces 1 and 3
 /// columns 16..32.
 pub const fn bias_row(g: u32) -> u32 {
-    if (g / 4) % 2 == 0 {
-        B_ROW
-    } else {
-        B_ROW + 4
-    }
+    if (g / 4) % 2 == 0 { B_ROW } else { B_ROW + 4 }
 }
 
 /// The kernel's three semaphores, as a plan placed them.
@@ -122,18 +117,13 @@ pub fn plan_layout(tiles: usize, operands: Operands) -> Result<Layout, PlanError
 
 /// [`plan_layout`] in `arena`: half the data arena, for a run double-buffered
 /// with the next (`super::super::matmul::half_arena`, then [`Layout::shifted`]).
-pub fn plan_layout_in(
-    tiles: usize,
-    operands: Operands,
-    arena: tt_isa::l1::Region,
-) -> Result<Layout, PlanError> {
+pub fn plan_layout_in(tiles: usize, operands: Operands, arena: tt_isa::l1::Region) -> Result<Layout, PlanError> {
     let mut req = Requirements::new(1);
     let bytes = tiles as u64 * TILE_SLOT;
     let align = tt_isa::dram::ALIGN;
     let a = req.scratch("sfpu A slots", bytes, align, 0..1);
     let b = (operands != Operands::Unary).then(|| req.scratch("sfpu B slots", bytes, align, 0..1));
-    let c =
-        (operands == Operands::Ternary).then(|| req.scratch("sfpu C slots", bytes, align, 0..1));
+    let c = (operands == Operands::Ternary).then(|| req.scratch("sfpu C slots", bytes, align, 0..1));
     let out = req.scratch("sfpu output slots", bytes, align, 0..1);
     // Declared in this order so the planner numbers them as a matmul's are --
     // the first starting at zero, the second at one -- and a tile that ran
@@ -178,13 +168,7 @@ pub fn max_tiles_in(operands: Operands, bytes: u64) -> usize {
 /// -- run once per tile.
 pub fn roles(layout: &Layout, operands: Operands, math: &[Instruction]) -> [Vec<Instruction>; 3] {
     let (code, loops) = roles_code(layout, operands, &super::super::code::Code::plain(math.to_vec()));
-    std::array::from_fn(|t| {
-        super::super::code::Code {
-            ins: code[t].clone(),
-            loops: loops[t].clone(),
-        }
-        .expand()
-    })
+    std::array::from_fn(|t| super::super::code::Code { ins: code[t].clone(), loops: loops[t].clone() }.expand())
 }
 
 /// [`roles`] as the role slots hold them, with each role's block repeats
@@ -237,12 +221,7 @@ pub(crate) fn roles_code_validated(
                 // Row 0 of faces 0 and 1: datums 0..16 and 256..272.
                 for (face, first) in [(0, 0), (1, 256)] {
                     for r in 0..4 {
-                        unpack.extend(unpack_datums_to_dst(
-                            slot(b, n),
-                            first,
-                            16,
-                            B_ROW + 4 * face + r,
-                        ));
+                        unpack.extend(unpack_datums_to_dst(slot(b, n), first, 16, B_ROW + 4 * face + r));
                     }
                 }
             }
@@ -258,28 +237,15 @@ pub(crate) fn roles_code_validated(
             m.extend_from_slice(&math.ins);
             m.extend(sync::post_after(Unit::Sfpu, s.computed));
             if layout.tiles > 1 {
-                math_loops.push(Loop {
-                    start: block,
-                    len: m.len() as u32 - block,
-                    count: layout.tiles as u32,
-                });
+                math_loops.push(Loop { start: block, len: m.len() as u32 - block, count: layout.tiles as u32 });
             }
-            math_loops.extend(math.loops.iter().map(|l| Loop {
-                start: l.start + at,
-                ..*l
-            }));
+            math_loops.extend(math.loops.iter().map(|l| Loop { start: l.start + at, ..*l }));
         }
 
         pack.extend(sync::take(s.computed, Before::PACKER));
-        pack.extend(pack_tile_from_dst(
-            slot(layout.out_at, n) + tt_isa::dm::TILE_DATA,
-            OUT_ROW,
-        ));
+        pack.extend(pack_tile_from_dst(slot(layout.out_at, n) + tt_isa::dm::TILE_DATA, OUT_ROW));
         if checked {
-            pack.extend(pack_tile_from_dst(
-                slot(layout.c_at.expect("domain status slots"), n) + tt_isa::dm::TILE_DATA,
-                C_ROW,
-            ));
+            pack.extend(pack_tile_from_dst(slot(layout.c_at.expect("domain status slots"), n) + tt_isa::dm::TILE_DATA, C_ROW));
         }
         pack.extend(sync::post_after(Unit::Packer, s.free));
     }
@@ -306,10 +272,7 @@ mod tests {
         ] {
             let sfpu = plan_layout(8, operands).unwrap().init;
             for m in &matmul {
-                assert!(
-                    sfpu.iter().all(|s| s.0 != m.0 || s == m),
-                    "{operands:?}: {sfpu:?} against {matmul:?}"
-                );
+                assert!(sfpu.iter().all(|s| s.0 != m.0 || s == m), "{operands:?}: {sfpu:?} against {matmul:?}");
             }
         }
     }

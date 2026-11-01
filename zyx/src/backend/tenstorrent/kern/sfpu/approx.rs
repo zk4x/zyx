@@ -44,12 +44,12 @@
 //! (a `REPLAY` counts its body). `step145_approx_math` prints the table; the
 //! silicon-only `approx_per_tile_saving` in `silicon_perf` measures the time.
 
+use super::super::code::Code;
 use super::kernel::{A_ROW, OUT_ROW};
 use super::ops::kind_sfpu;
 use super::{Cond, ConfigLReg, Format, LReg, Program};
-use super::super::code::Code;
-use tt_isa::isa::generated::defs;
 use tt_isa::isa::Instruction;
+use tt_isa::isa::generated::defs;
 
 /// Whether a transcendental runs its full-accuracy program or the fast
 /// approximate one. `Precise` is the default.
@@ -121,10 +121,7 @@ impl MathMode {
     pub fn lower(self, kind: u32) -> u32 {
         match self {
             MathMode::Precise => precise_of(kind).unwrap_or(kind),
-            MathMode::Approx => TWINS
-                .iter()
-                .find(|(p, _)| *p == kind)
-                .map_or(kind, |(_, a)| *a),
+            MathMode::Approx => TWINS.iter().find(|(p, _)| *p == kind).map_or(kind, |(_, a)| *a),
         }
     }
 
@@ -425,11 +422,7 @@ fn log_body(p: &mut Program) {
 }
 
 fn log_code() -> Code {
-    unary(
-        Some(bits(LOG_COEFFS[4])),
-        Some(bits(LOG_COEFFS[3])),
-        log_body,
-    )
+    unary(Some(bits(LOG_COEFFS[4])), Some(bits(LOG_COEFFS[3])), log_body)
 }
 
 /// `1/x` of `x` (`L0`) into `L7`: the hardware seed and one Newton step.
@@ -474,23 +467,12 @@ fn sigmoid_body(p: &mut Program) {
     let x = R::L0;
     p.abs(x, R::L1);
     p.neg(R::L1, R::L1);
-    logistic(
-        p,
-        x,
-        R::L1,
-        R::L2,
-        [R::L3, R::L4, R::L5, R::L6, R::L7],
-        R::L7,
-    );
+    logistic(p, x, R::L1, R::L2, [R::L3, R::L4, R::L5, R::L6, R::L7], R::L7);
     keep_nan(p, x, R::L3, R::L7);
 }
 
 fn sigmoid_code() -> Code {
-    unary(
-        Some(bits(EXP_COEFFS[3])),
-        Some(bits(EXP_COEFFS[2])),
-        sigmoid_body,
-    )
+    unary(Some(bits(EXP_COEFFS[3])), Some(bits(EXP_COEFFS[2])), sigmoid_body)
 }
 
 /// `tanh x` of `x` (`L0`) into `L7`; `LReg[13]`, `LReg[14]` hold `b3`, `b2`.
@@ -535,11 +517,7 @@ fn tanh_body(p: &mut Program) {
 }
 
 fn tanh_code() -> Code {
-    unary(
-        Some(bits(EXPM1_COEFFS[3])),
-        Some(bits(EXPM1_COEFFS[2])),
-        tanh_body,
-    )
+    unary(Some(bits(EXPM1_COEFFS[3])), Some(bits(EXPM1_COEFFS[2])), tanh_body)
 }
 
 /// `gelu x = x sigmoid(c1 x + c3 x^3)` of `x` (`L0`) into `L7`; `LReg[13]`,
@@ -555,24 +533,13 @@ fn gelu_body(p: &mut Program) {
     p.mul(x, R::L1, R::L1);
     p.abs(R::L1, R::L1);
     p.neg(R::L1, R::L1);
-    logistic(
-        p,
-        x,
-        R::L1,
-        R::L2,
-        [R::L3, R::L4, R::L5, R::L6, R::L7],
-        R::L6,
-    );
+    logistic(p, x, R::L1, R::L2, [R::L3, R::L4, R::L5, R::L6, R::L7], R::L6);
     p.mul(x, R::L6, R::L7);
     keep_nan(p, x, R::L3, R::L7);
 }
 
 fn gelu_code() -> Code {
-    unary(
-        Some(bits(EXP_COEFFS[3])),
-        Some(bits(EXP_COEFFS[2])),
-        gelu_body,
-    )
+    unary(Some(bits(EXP_COEFFS[3])), Some(bits(EXP_COEFFS[2])), gelu_body)
 }
 
 /// The Approx program for `kind`, if it is one of [`TWINS`]' second column.
@@ -644,9 +611,7 @@ mod tests {
         fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
             let n = b.len();
             for c in 0..n {
-                let p = (c..n)
-                    .max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs()))
-                    .unwrap();
+                let p = (c..n).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs())).unwrap();
                 a.swap(c, p);
                 b.swap(c, p);
                 for r in c + 1..n {
@@ -673,19 +638,10 @@ mod tests {
         }
 
         /// Minimise `max |(P(x) - f(x)) w(x)|` over `[lo, hi]`, `P` of degree `n`.
-        pub fn fit(
-            f: &dyn Fn(f64) -> f64,
-            w: &dyn Fn(f64) -> f64,
-            lo: f64,
-            hi: f64,
-            n: usize,
-        ) -> (Vec<f64>, f64) {
+        pub fn fit(f: &dyn Fn(f64) -> f64, w: &dyn Fn(f64) -> f64, lo: f64, hi: f64, n: usize) -> (Vec<f64>, f64) {
             let m = n + 2;
             let mut xs: Vec<f64> = (0..m)
-                .map(|i| {
-                    (lo + hi) / 2.0
-                        - (hi - lo) / 2.0 * (std::f64::consts::PI * i as f64 / (m - 1) as f64).cos()
-                })
+                .map(|i| (lo + hi) / 2.0 - (hi - lo) / 2.0 * (std::f64::consts::PI * i as f64 / (m - 1) as f64).cos())
                 .collect();
             let (mut coef, mut level) = (vec![0.0; n + 1], 0.0);
             for _ in 0..60 {
@@ -705,9 +661,7 @@ mod tests {
                 level = sol[n + 1].abs();
                 let err = |x: f64| (horner(&coef, x) - f(x)) * w(x);
                 let grid = 50_000;
-                let g: Vec<f64> = (0..=grid)
-                    .map(|i| lo + (hi - lo) * i as f64 / grid as f64)
-                    .collect();
+                let g: Vec<f64> = (0..=grid).map(|i| lo + (hi - lo) * i as f64 / grid as f64).collect();
                 let ev: Vec<f64> = g.iter().map(|&x| err(x)).collect();
                 let mut new = Vec::new();
                 let mut i = 0;
@@ -756,52 +710,23 @@ mod tests {
     fn the_fits_are_the_remez_fits() {
         let h = std::f64::consts::LN_2 / 2.0;
         let g = |r: f64| {
-            if r.abs() < 1e-8 {
-                1.0 + r / 2.0
-            } else {
-                r.exp_m1() / r
-            }
+            if r.abs() < 1e-8 { 1.0 + r / 2.0 } else { r.exp_m1() / r }
         };
         let q = |f: f64| {
-            if f.abs() < 1e-8 {
-                1.0 - f / 2.0
-            } else {
-                f.ln_1p() / f
-            }
+            if f.abs() < 1e-8 { 1.0 - f / 2.0 } else { f.ln_1p() / f }
         };
-        let (lo, hi) = (
-            std::f64::consts::FRAC_1_SQRT_2 - 1.0,
-            std::f64::consts::SQRT_2 - 1.0,
-        );
+        let (lo, hi) = (std::f64::consts::FRAC_1_SQRT_2 - 1.0, std::f64::consts::SQRT_2 - 1.0);
         let cases: [(&str, (Vec<f64>, f64), &[f64], f64); 3] = [
-            (
-                "exp",
-                remez::fit(&|r: f64| r.exp(), &|r: f64| (-r).exp(), -h, h, 3),
-                &EXP_COEFFS,
-                EXP_FIT_ERROR,
-            ),
-            (
-                "expm1/r",
-                remez::fit(&g, &|r: f64| 1.0 / g(r), -h, h, 3),
-                &EXPM1_COEFFS,
-                EXPM1_FIT_ERROR,
-            ),
-            (
-                "ln(1+f)/f",
-                remez::fit(&q, &|f: f64| 1.0 / q(f), lo, hi, 4),
-                &LOG_COEFFS,
-                LOG_FIT_ERROR,
-            ),
+            ("exp", remez::fit(&|r: f64| r.exp(), &|r: f64| (-r).exp(), -h, h, 3), &EXP_COEFFS, EXP_FIT_ERROR),
+            ("expm1/r", remez::fit(&g, &|r: f64| 1.0 / g(r), -h, h, 3), &EXPM1_COEFFS, EXPM1_FIT_ERROR),
+            ("ln(1+f)/f", remez::fit(&q, &|f: f64| 1.0 / q(f), lo, hi, 4), &LOG_COEFFS, LOG_FIT_ERROR),
         ];
         for (name, (coef, level), hard, stated) in cases {
             for (a, b) in coef.iter().zip(hard) {
                 assert!((a - b).abs() < 1e-9, "{name}: {a} vs {b}");
             }
             // The stated error is the level, rounded up in the fifth digit.
-            assert!(
-                level <= stated && stated <= level * 1.0005,
-                "{name}: {level:e} vs {stated:e}"
-            );
+            assert!(level <= stated && stated <= level * 1.0005, "{name}: {level:e} vs {stated:e}");
         }
     }
 
@@ -838,28 +763,17 @@ mod tests {
                 continue;
             }
             let e = rel(g, w);
-            assert!(
-                e <= bound,
-                "{name}({x:e} = {:#010x}) = {g:e} vs {w:e}: {e:e} > {bound:e}",
-                x.to_bits()
-            );
+            assert!(e <= bound, "{name}({x:e} = {:#010x}) = {g:e} vs {w:e}: {e:e} > {bound:e}", x.to_bits());
             if e > worst.0 {
                 worst = (e, x);
             }
         }
-        println!(
-            "{name}: worst {:.3e} ({:.1}% of {bound:e}) at {:e}",
-            worst.0,
-            100.0 * worst.0 / bound,
-            worst.1
-        );
+        println!("{name}: worst {:.3e} ({:.1}% of {bound:e}) at {:e}", worst.0, 100.0 * worst.0 / bound, worst.1);
         worst.0
     }
 
     fn linspace(lo: f64, hi: f64, n: usize) -> Vec<f32> {
-        (0..=n)
-            .map(|i| (lo + (hi - lo) * i as f64 / n as f64) as f32)
-            .collect()
+        (0..=n).map(|i| (lo + (hi - lo) * i as f64 / n as f64) as f32).collect()
     }
 
     /// `m` positions in every binade `lo..=hi`, each times every sign.
@@ -902,13 +816,7 @@ mod tests {
         assert!(worst > RECIP_APPROX_BOUND / 4.0, "{worst:e}");
         // Where the Newton step flushes: the seed's.
         let far = binades(110, 125, 48, &[1.0, -1.0]);
-        sweep(
-            "recip far",
-            kind::RECIP,
-            &far,
-            &|x| 1.0 / x,
-            RECIP_SEED_BOUND,
-        );
+        sweep("recip far", kind::RECIP, &far, &|x| 1.0 / x, RECIP_SEED_BOUND);
         // From `2^126` the seed is zero and so is the result.
         for x in [f32::from_bits(0x7e80_0000), 3.0e38, f32::MAX] {
             let got = run(kind::RECIP, &[x, -x]);
@@ -946,10 +854,7 @@ mod tests {
             let want = 0.5 * x * libm::erfc(-x / std::f64::consts::SQRT_2);
             let bound = gelu_approx_bound(x, want);
             let e = (g as f64 - want).abs();
-            assert!(
-                e <= bound,
-                "gelu({x:e}) = {g:e} vs {want:e}: {e:e} > {bound:e}"
-            );
+            assert!(e <= bound, "gelu({x:e}) = {g:e} vs {want:e}: {e:e} > {bound:e}");
             worst = worst.max(e / bound);
         }
         println!("gelu: worst {:.1}% of its bound", 100.0 * worst);
@@ -959,13 +864,7 @@ mod tests {
     /// Every special value an ML input meets, per op.
     #[test]
     fn special_values() {
-        let nans = [
-            0x7fc0_0000u32,
-            0xffc0_0000,
-            0x7f80_0001,
-            0xff80_0001,
-            0xffff_ffff,
-        ];
+        let nans = [0x7fc0_0000u32, 0xffc0_0000, 0x7f80_0001, 0xff80_0001, 0xffff_ffff];
         let inf = f32::INFINITY;
         let denorm = f32::from_bits(0x0000_1234);
         let is = |kind: u32, x: f32| run(kind, &[x])[0];
@@ -1031,11 +930,7 @@ mod tests {
         let xs = linspace(-3.0, 3.0, 4000);
         let cases: [(u32, &dyn Fn(f64) -> f64, f64); 5] = [
             (kind_sfpu::EXP, &|x| x.exp(), ops::EXP_BOUND),
-            (
-                kind_sfpu::SIGMOID,
-                &|x| 1.0 / (1.0 + (-x).exp()),
-                ops::SIGMOID_BOUND,
-            ),
+            (kind_sfpu::SIGMOID, &|x| 1.0 / (1.0 + (-x).exp()), ops::SIGMOID_BOUND),
             (kind_sfpu::TANH, &|x| x.tanh(), ops::TANH_BOUND),
             (kind_sfpu::LOG, &|x| x.ln(), ops::LOG_BOUND),
             (kind_sfpu::RECIP, &|x| 1.0 / x, 1.0 / 8_388_608.0),
@@ -1058,29 +953,16 @@ mod tests {
                     .zip(got)
                     .map(|(&x, &g)| {
                         let w = want(x as f64);
-                        if w == 0.0 {
-                            0.0
-                        } else {
-                            rel(g, w)
-                        }
+                        if w == 0.0 { 0.0 } else { rel(g, w) }
                     })
                     .fold(0.0, f64::max)
             };
             assert!(worst(&p) <= bound, "precise {precise:#x}: {:e}", worst(&p));
-            assert!(
-                worst(&a) > bound,
-                "approx {approx:#x} stays within Precise's bound {bound:e}: {:e}",
-                worst(&a)
-            );
+            assert!(worst(&a) > bound, "approx {approx:#x} stays within Precise's bound {bound:e}: {:e}", worst(&a));
             assert_ne!(p, a, "{precise:#x}: the modes gave the same bits");
         }
         // An op with no Approx twin is itself in either mode.
-        for k in [
-            kind_sfpu::DIV,
-            kind_sfpu::POW,
-            kind_sfpu::SIN,
-            kind_sfpu::ERF,
-        ] {
+        for k in [kind_sfpu::DIV, kind_sfpu::POW, kind_sfpu::SIN, kind_sfpu::ERF] {
             assert_eq!(MathMode::Approx.lower(k), k);
         }
     }
@@ -1097,20 +979,14 @@ mod tests {
     /// The instruction counts per tile, Precise against Approx.
     #[test]
     fn approx_programs_are_shorter() {
-        println!(
-            "{:<8} {:>9} {:>9} {:>7}",
-            "op", "precise", "approx", "ratio"
-        );
+        println!("{:<8} {:>9} {:>9} {:>7}", "op", "precise", "approx", "ratio");
         for (precise, approx) in TWINS {
             let count = |k: u32| {
                 let (_, code) = ops::program(k, 0.0).expect("a program");
                 instructions_per_tile(&code)
             };
             let (p, a) = (count(precise), count(approx));
-            println!(
-                "{precise:#06x}   {p:>9} {a:>9} {:>6.2}x",
-                p as f64 / a as f64
-            );
+            println!("{precise:#06x}   {p:>9} {a:>9} {:>6.2}x", p as f64 / a as f64);
             assert!(a < p, "{precise:#x}: approx {a} >= precise {p}");
         }
     }

@@ -42,14 +42,13 @@ use tt_isa::dm::TILE_SLOT;
 use tt_isa::isa::Instruction;
 use tt_isa::sync::{self, Semaphore, Unit};
 
-use super::kernel::{A_ROW, OUT_ROW};
-use super::{Cond, Format, LReg, LoopPolicy, Program};
 use super::super::datapath::{
-    clear_unpacker0_adcs, config_program, pack_tile_from_dst, state_id, thread_config,
-    tile_unpack_config, unpack_tile_to_dst,
+    clear_unpacker0_adcs, config_program, pack_tile_from_dst, state_id, thread_config, tile_unpack_config, unpack_tile_to_dst,
 };
 use super::super::l1::{PlanError, Requirements};
 use super::super::runtime::SemaphoreInit;
+use super::kernel::{A_ROW, OUT_ROW};
+use super::{Cond, Format, LReg, LoopPolicy, Program};
 
 /// What a reduction computes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -99,14 +98,9 @@ impl ReduceOp {
 
     fn format(self) -> Format {
         match self {
-            Self::Max
-            | Self::All
-            | Self::Any
-            | Self::BitOr
-            | Self::SumI32
-            | Self::ProdI32
-            | Self::MinI32
-            | Self::MaxI32 => Format::Int32,
+            Self::Max | Self::All | Self::Any | Self::BitOr | Self::SumI32 | Self::ProdI32 | Self::MinI32 | Self::MaxI32 => {
+                Format::Int32
+            }
             _ => Format::Fp32,
         }
     }
@@ -181,11 +175,7 @@ pub fn accumulate(op: ReduceOp, axis: Axis, first: bool, valid: Option<u32>) -> 
     }
     let fmt = op.format();
     let masked = valid.is_some_and(|v| v < 32);
-    let mut p = Program::with_policy(if masked {
-        LoopPolicy::Unrolled
-    } else {
-        LoopPolicy::Replay
-    });
+    let mut p = Program::with_policy(if masked { LoopPolicy::Unrolled } else { LoopPolicy::Replay });
     let mask_setup = |p: &mut Program| {
         // `L6` = this lane's column within its half (`2 * (lane & 7)`), or
         // its row within its group (`lane >> 3`), from `LReg[15] = 2 * lane`.
@@ -223,11 +213,7 @@ pub fn accumulate(op: ReduceOp, axis: Axis, first: bool, valid: Option<u32>) -> 
                 p.mov(LReg::L4, LReg::L0);
             } else if t < 16 {
                 p.loadi_bits(LReg::L5, t as u32);
-                p.if_else(
-                    Cond::Less(LReg::L6, LReg::L5),
-                    |_| {},
-                    |p| p.mov(LReg::L4, LReg::L0),
-                );
+                p.if_else(Cond::Less(LReg::L6, LReg::L5), |_| {}, |p| p.mov(LReg::L4, LReg::L0));
             }
         }
         if first {
@@ -266,21 +252,13 @@ pub fn accumulate_in_order(first: bool, valid: u32) -> Vec<Instruction> {
                 if rows == 0 {
                     break;
                 }
-                let r = if g < 4 {
-                    top + 4 * g
-                } else {
-                    bottom + 4 * (g - 4)
-                };
+                let r = if g < 4 { top + 4 * g } else { bottom + 4 * (g - 4) };
                 p.load(LReg::L0, Format::Fp32, A_ROW + r + half);
                 // Row `i` of the four into row 0 of `L[i]`; row 0 of `L4`
                 // stays where it is.
                 p.transpose4();
                 for i in 0..rows {
-                    p.add(
-                        LReg::L4,
-                        [LReg::L0, LReg::L1, LReg::L2, LReg::L3][i as usize],
-                        LReg::L4,
-                    );
+                    p.add(LReg::L4, [LReg::L0, LReg::L1, LReg::L2, LReg::L3][i as usize], LReg::L4);
                 }
             }
             // Row 0 the sums, rows 1..4 zero: `L5..L8` cleared and transposed
@@ -334,11 +312,7 @@ pub fn finish(op: ReduceOp, axis: Axis) -> Vec<Instruction> {
                 for half in [0, 2] {
                     p.load(LReg::L0, fmt, acc(top + half));
                     for g in 0..8 {
-                        let r = if g < 4 {
-                            top + 4 * g
-                        } else {
-                            bottom + 4 * (g - 4)
-                        };
+                        let r = if g < 4 { top + 4 * g } else { bottom + 4 * (g - 4) };
                         if r != top {
                             p.load(LReg::L1, fmt, acc(r + half));
                             combine(&mut p, op, LReg::L1, LReg::L0);
@@ -387,11 +361,7 @@ impl Layout {
     /// This layout with its slots `by` bytes on, its semaphores where they
     /// were: the second half of a double-buffered pair.
     pub fn shifted(&self, by: u64) -> Layout {
-        Layout {
-            in_at: self.in_at + by,
-            out_at: self.out_at + by,
-            ..self.clone()
-        }
+        Layout { in_at: self.in_at + by, out_at: self.out_at + by, ..self.clone() }
     }
 }
 
@@ -401,19 +371,10 @@ pub fn plan_layout(outputs: usize, per: usize) -> Result<Layout, PlanError> {
 
 /// [`plan_layout`] in `arena`: half the data arena, for a run double-buffered
 /// with the next (`super::super::matmul::half_arena`, then [`Layout::shifted`]).
-pub fn plan_layout_in(
-    outputs: usize,
-    per: usize,
-    arena: tt_isa::l1::Region,
-) -> Result<Layout, PlanError> {
+pub fn plan_layout_in(outputs: usize, per: usize, arena: tt_isa::l1::Region) -> Result<Layout, PlanError> {
     let mut req = Requirements::new(1);
     let align = tt_isa::dram::ALIGN;
-    let input = req.scratch(
-        "reduce inputs",
-        (outputs * per) as u64 * TILE_SLOT,
-        align,
-        0..1,
-    );
+    let input = req.scratch("reduce inputs", (outputs * per) as u64 * TILE_SLOT, align, 0..1);
     let out = req.scratch("reduce outputs", outputs as u64 * TILE_SLOT, align, 0..1);
     let unpacked = req.semaphore("reduce unpacked", 0, 0..1);
     let consumed = req.semaphore("reduce consumed", 1, 0..1);
@@ -437,12 +398,7 @@ pub fn plan_layout_in(
 
 /// The math programs of one output tile: per input, in order, then the
 /// finishing one.
-pub fn math_programs(
-    op: ReduceOp,
-    axis: Axis,
-    per: usize,
-    last_valid: u32,
-) -> (Vec<Vec<Instruction>>, Vec<Instruction>) {
+pub fn math_programs(op: ReduceOp, axis: Axis, per: usize, last_valid: u32) -> (Vec<Vec<Instruction>>, Vec<Instruction>) {
     let inputs = (0..per)
         .map(|n| {
             let valid = (n + 1 == per && last_valid < 32).then_some(last_valid);
@@ -453,15 +409,9 @@ pub fn math_programs(
 }
 
 /// The three role programs of a run over `layout`.
-pub fn roles(
-    layout: &Layout,
-    inputs: &[Vec<Instruction>],
-    finish: &[Instruction],
-) -> [Vec<Instruction>; 3] {
+pub fn roles(layout: &Layout, inputs: &[Vec<Instruction>], finish: &[Instruction]) -> [Vec<Instruction>; 3] {
     assert_eq!(inputs.len(), layout.per);
-    roles_at(layout, inputs, finish, |k, n| {
-        layout.in_at + (k * layout.per + n) as u64 * TILE_SLOT
-    })
+    roles_at(layout, inputs, finish, |k, n| layout.in_at + (k * layout.per + n) as u64 * TILE_SLOT)
 }
 
 /// [`roles`], with output `k`'s input `n` unpacked from `input(k, n)`.
@@ -497,10 +447,7 @@ pub fn roles_at(
         math.extend(sync::post_after(Unit::Sfpu, s.computed));
 
         pack.extend(sync::take(s.computed, Before::PACKER));
-        pack.extend(pack_tile_from_dst(
-            slot(layout.out_at, k) + tt_isa::dm::TILE_DATA,
-            OUT_ROW,
-        ));
+        pack.extend(pack_tile_from_dst(slot(layout.out_at, k) + tt_isa::dm::TILE_DATA, OUT_ROW));
         pack.extend(sync::post_after(Unit::Packer, s.packed));
     }
     unpack.push(backend::wait_for_unpacker0(Before::EVERYTHING).unwrap());
@@ -528,12 +475,7 @@ pub fn plan_chunk_layout(outputs: usize) -> Result<ChunkLayout, PlanError> {
     let mut req = Requirements::new(1);
     let align = tt_isa::dram::ALIGN;
     let prior = req.scratch("sum prior", outputs as u64 * TILE_SLOT, align, 0..1);
-    let input = req.scratch(
-        "sum inputs",
-        (outputs * ROW_CHUNK) as u64 * TILE_SLOT,
-        align,
-        0..1,
-    );
+    let input = req.scratch("sum inputs", (outputs * ROW_CHUNK) as u64 * TILE_SLOT, align, 0..1);
     let out = req.scratch("sum outputs", outputs as u64 * TILE_SLOT, align, 0..1);
     let unpacked = req.semaphore("reduce unpacked", 0, 0..1);
     let consumed = req.semaphore("reduce consumed", 1, 0..1);
@@ -561,12 +503,7 @@ pub fn plan_chunk_layout(outputs: usize) -> Result<ChunkLayout, PlanError> {
 /// The role programs of one chunk of a long sum over rows: `tiles` input
 /// tiles per output (at most [`ROW_CHUNK`]), the last with `last_valid` rows,
 /// after the prior chunk's sums when `prior`.
-pub fn chunk_roles(
-    c: &ChunkLayout,
-    prior: bool,
-    tiles: usize,
-    last_valid: u32,
-) -> [Vec<Instruction>; 3] {
+pub fn chunk_roles(c: &ChunkLayout, prior: bool, tiles: usize, last_valid: u32) -> [Vec<Instruction>; 3] {
     assert!((1..=ROW_CHUNK).contains(&tiles));
     let mut inputs = Vec::new();
     if prior {
@@ -606,12 +543,7 @@ pub fn continuation_roles(
         inputs.push(p.finish());
     }
     for n in 0..tiles {
-        inputs.push(accumulate(
-            op,
-            axis,
-            !prior && n == 0,
-            (n + 1 == tiles && valid < 32).then_some(valid),
-        ));
+        inputs.push(accumulate(op, axis, !prior && n == 0, (n + 1 == tiles && valid < 32).then_some(valid)));
     }
     let fin = if last { finish(op, axis) } else { Vec::new() };
     roles_at(&c.layout, &inputs, &fin, |k, n| match (prior, n) {
@@ -684,9 +616,7 @@ mod tests {
     use super::*;
 
     fn data(rows: usize, cols: usize) -> Vec<f32> {
-        (0..rows * cols)
-            .map(|i| ((i * 37 + 11) % 101) as f32 - 50.0)
-            .collect()
+        (0..rows * cols).map(|i| ((i * 37 + 11) % 101) as f32 - 50.0).collect()
     }
 
     /// A sum over rows is Flex's to the bit, on values whose sums round at
@@ -694,15 +624,7 @@ mod tests {
     /// ragged rows left out (a `-0.0` column stays `-0.0`).
     #[test]
     fn a_sum_over_rows_is_flex_order_bit_for_bit() {
-        for (rows, cols) in [
-            (37, 70),
-            (32, 32),
-            (5, 3),
-            (64, 100),
-            (100, 33),
-            (1, 40),
-            (97, 1),
-        ] {
+        for (rows, cols) in [(37, 70), (32, 32), (5, 3), (64, 100), (100, 33), (1, 40), (97, 1)] {
             let mut a: Vec<f32> = (0..rows * cols)
                 .map(|i| {
                     let x = ((i as u32).wrapping_mul(2654435761) >> 8) as f32 / (1u32 << 24) as f32;
@@ -713,9 +635,7 @@ mod tests {
             for r in 0..rows {
                 a[r * cols] = -0.0;
             }
-            let flex: Vec<f32> = (0..cols)
-                .map(|c| (0..rows).fold(0.0f32, |s, r| s + a[r * cols + c]))
-                .collect();
+            let flex: Vec<f32> = (0..cols).map(|c| (0..rows).fold(0.0f32, |s, r| s + a[r * cols + c])).collect();
             let got = reference(ReduceOp::Sum, Axis::Rows, &a, rows, cols);
             let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
             assert_eq!(bits(&got), bits(&flex), "[{rows}, {cols}]");
@@ -730,31 +650,12 @@ mod tests {
             let a = data(rows, cols);
             for op in [ReduceOp::Sum, ReduceOp::Max] {
                 let f = |x: f32, y: f32| if op == ReduceOp::Sum { x + y } else { x.max(y) };
-                let init = if op == ReduceOp::Sum {
-                    0.0
-                } else {
-                    f32::NEG_INFINITY
-                };
-                let by_row: Vec<f32> = (0..rows)
-                    .map(|r| {
-                        a[r * cols..(r + 1) * cols]
-                            .iter()
-                            .fold(init, |s, &x| f(s, x))
-                    })
-                    .collect();
-                let by_col: Vec<f32> = (0..cols)
-                    .map(|c| (0..rows).fold(init, |s, r| f(s, a[r * cols + c])))
-                    .collect();
-                assert_eq!(
-                    reference(op, Axis::Cols, &a, rows, cols),
-                    by_row,
-                    "{op:?} over columns [{rows}, {cols}]"
-                );
-                assert_eq!(
-                    reference(op, Axis::Rows, &a, rows, cols),
-                    by_col,
-                    "{op:?} over rows [{rows}, {cols}]"
-                );
+                let init = if op == ReduceOp::Sum { 0.0 } else { f32::NEG_INFINITY };
+                let by_row: Vec<f32> =
+                    (0..rows).map(|r| a[r * cols..(r + 1) * cols].iter().fold(init, |s, &x| f(s, x))).collect();
+                let by_col: Vec<f32> = (0..cols).map(|c| (0..rows).fold(init, |s, r| f(s, a[r * cols + c]))).collect();
+                assert_eq!(reference(op, Axis::Cols, &a, rows, cols), by_row, "{op:?} over columns [{rows}, {cols}]");
+                assert_eq!(reference(op, Axis::Rows, &a, rows, cols), by_col, "{op:?} over rows [{rows}, {cols}]");
             }
         }
     }

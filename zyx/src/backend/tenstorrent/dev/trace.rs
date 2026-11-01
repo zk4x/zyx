@@ -30,13 +30,7 @@ impl<T: Transport> Device<T> {
     /// rather than a silent switch. The stream reset is sticky and has to be
     /// pulsed (`CntlWrite`), and only a status write with the `full` bit set
     /// returns the write position to zero (`StatusWrite`).
-    pub fn configure_trace<N: NocId>(
-        &mut self,
-        window: &Window,
-        tile: NocCoord<N>,
-        buffer: u64,
-        bytes: u64,
-    ) -> Result<()> {
+    pub fn configure_trace<N: NocId>(&mut self, window: &Window, tile: NocCoord<N>, buffer: u64, bytes: u64) -> Result<()> {
         if buffer % ts::EVENT_BYTES != 0 || bytes < ts::EVENT_BYTES {
             return Err(TransportError::Hazard {
                 address: buffer,
@@ -45,12 +39,7 @@ impl<T: Transport> Device<T> {
         }
         self.write32(window, tile, ts::CNTL, 1 << 31)?;
         self.write32(window, tile, ts::BUF0_START, (buffer / 16) as u32)?;
-        self.write32(
-            window,
-            tile,
-            ts::BUF0_END,
-            ((buffer + bytes) / 16 - 1) as u32,
-        )?;
+        self.write32(window, tile, ts::BUF0_END, ((buffer + bytes) / 16 - 1) as u32)?;
         // Clear buffer 0's `full` (which also zeroes its position) and
         // `overflow`, then release the reset with buffer 0 alone valid.
         self.write32(window, tile, ts::STATUS, (1 << 0) | (1 << 4))?;
@@ -61,12 +50,7 @@ impl<T: Transport> Device<T> {
     ///
     /// Refuses a stream that overflowed, rather than returning the part that
     /// fitted as though it were all of it.
-    pub fn read_trace<N: NocId>(
-        &mut self,
-        window: &Window,
-        tile: NocCoord<N>,
-        buffer: u64,
-    ) -> Result<Vec<TraceEvent>> {
+    pub fn read_trace<N: NocId>(&mut self, window: &Window, tile: NocCoord<N>, buffer: u64) -> Result<Vec<TraceEvent>> {
         let status = self.read32(window, tile, ts::STATUS)?;
         if ts::buf0_overflowed(status) {
             return Err(TransportError::Hazard {
@@ -81,10 +65,7 @@ impl<T: Transport> Device<T> {
             .chunks_exact(ts::EVENT_BYTES as usize)
             .map(|e| {
                 let word = |i: usize| u32::from_le_bytes([e[i], e[i + 1], e[i + 2], e[i + 3]]);
-                TraceEvent {
-                    token: word(0) >> 3,
-                    cycles: u64::from(word(4)) | (u64::from(word(8)) << 32),
-                }
+                TraceEvent { token: word(0) >> 3, cycles: u64::from(word(4)) | (u64::from(word(8)) << 32) }
             })
             .collect())
     }

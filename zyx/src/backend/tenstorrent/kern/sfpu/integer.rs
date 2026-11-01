@@ -81,25 +81,13 @@ pub fn body(p: &mut Program, op: u32) {
             match op {
                 8 | 9 => {
                     p.xor(LReg::L0, LReg::L1);
-                    let cond = if op == 8 {
-                        Cond::Eq0(LReg::L1)
-                    } else {
-                        Cond::Ne0(LReg::L1)
-                    };
+                    let cond = if op == 8 { Cond::Eq0(LReg::L1) } else { Cond::Ne0(LReg::L1) };
                     p.if_(cond, |p| p.mov(LReg::L4, LReg::L2));
                 }
-                10 => p.if_(Cond::Less(LReg::L1, LReg::L0), |p| {
-                    p.mov(LReg::L4, LReg::L2)
-                }),
-                11 => p.if_(Cond::LessEq(LReg::L1, LReg::L0), |p| {
-                    p.mov(LReg::L4, LReg::L2)
-                }),
-                12 => p.if_(Cond::Less(LReg::L0, LReg::L1), |p| {
-                    p.mov(LReg::L4, LReg::L2)
-                }),
-                _ => p.if_(Cond::LessEq(LReg::L0, LReg::L1), |p| {
-                    p.mov(LReg::L4, LReg::L2)
-                }),
+                10 => p.if_(Cond::Less(LReg::L1, LReg::L0), |p| p.mov(LReg::L4, LReg::L2)),
+                11 => p.if_(Cond::LessEq(LReg::L1, LReg::L0), |p| p.mov(LReg::L4, LReg::L2)),
+                12 => p.if_(Cond::Less(LReg::L0, LReg::L1), |p| p.mov(LReg::L4, LReg::L2)),
+                _ => p.if_(Cond::LessEq(LReg::L0, LReg::L1), |p| p.mov(LReg::L4, LReg::L2)),
             }
         }
         14 => p.not(LReg::L0, LReg::L2),
@@ -173,9 +161,7 @@ mod tests {
     fn division_and_domain_flags_match_integer_oracle() {
         use crate::sfpu::{interp::Vector, kernel, ops};
         let cases = [i32::MIN, i32::MAX, -1, 0, 1, -3, 3, 0x40000000];
-        let a: Vec<_> = (0..1024)
-            .map(|i| cases[i / cases.len() % cases.len()] as u32)
-            .collect();
+        let a: Vec<_> = (0..1024).map(|i| cases[i / cases.len() % cases.len()] as u32).collect();
         let b: Vec<_> = (0..1024).map(|i| cases[i % cases.len()] as u32).collect();
         for kind in [ops::kind_sfpu::INT_DIV, ops::kind_sfpu::INT_REM] {
             let (_, code) = ops::code2(kind, [0.0; 2]).unwrap();
@@ -183,10 +169,7 @@ mod tests {
             v.put_tile(kernel::A_ROW as usize, &a);
             v.put_tile(kernel::B_ROW as usize, &b);
             v.run(&code.expand()).unwrap();
-            assert_eq!(
-                v.tile(kernel::C_ROW as usize),
-                b.iter().map(|&b| u32::from(b != 0)).collect::<Vec<_>>()
-            );
+            assert_eq!(v.tile(kernel::C_ROW as usize), b.iter().map(|&b| u32::from(b != 0)).collect::<Vec<_>>());
             for (i, got) in v.tile(kernel::OUT_ROW as usize).into_iter().enumerate() {
                 let (a, b) = (a[i] as i32 as i64, b[i] as i32 as i64);
                 if b != 0 {

@@ -119,21 +119,13 @@ pub const MAX_CB_PAGES: u32 = 0x7FFF;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PlanError {
     /// No address in the arena holds this buffer beside everything live with it.
-    DoesNotFit {
-        name: &'static str,
-        bytes: u64,
-        arena: u64,
-    },
+    DoesNotFit { name: &'static str, bytes: u64, arena: u64 },
     /// More semaphores live at once than the tile's eight.
     TooManySemaphores { name: &'static str },
     /// A circular buffer of more pages than its page counters hold
     /// ([`MAX_CB_PAGES`]): the kernel is too large for one buffer, not
     /// malformed, so a caller that can split the work does.
-    TooManyPages {
-        name: &'static str,
-        pages: u32,
-        max: u32,
-    },
+    TooManyPages { name: &'static str, pages: u32, max: u32 },
     /// A spec that cannot be planned at all, or a fusion edge that does not
     /// join a producer's buffer to a consumer's.
     Invalid(String),
@@ -142,17 +134,15 @@ pub enum PlanError {
 impl std::fmt::Display for PlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PlanError::DoesNotFit { name, bytes, arena } => write!(
-                f,
-                "{name} ({bytes} bytes) does not fit the {arena}-byte L1 arena beside what is live with it"
-            ),
+            PlanError::DoesNotFit { name, bytes, arena } => {
+                write!(f, "{name} ({bytes} bytes) does not fit the {arena}-byte L1 arena beside what is live with it")
+            }
             PlanError::TooManySemaphores { name } => {
                 write!(f, "{name}: more than eight semaphores live at once")
             }
-            PlanError::TooManyPages { name, pages, max } => write!(
-                f,
-                "{name}: a circular buffer of {pages} pages; its page counters hold at most {max}"
-            ),
+            PlanError::TooManyPages { name, pages, max } => {
+                write!(f, "{name}: a circular buffer of {pages} pages; its page counters hold at most {max}")
+            }
             PlanError::Invalid(s) => f.write_str(s),
         }
     }
@@ -172,12 +162,7 @@ pub struct Requirements {
 impl Requirements {
     /// A kernel of `stages` stages, needing nothing yet.
     pub fn new(stages: u32) -> Self {
-        Requirements {
-            id: next_id(),
-            stages,
-            buffers: Vec::new(),
-            sems: Vec::new(),
-        }
+        Requirements { id: next_id(), stages, buffers: Vec::new(), sems: Vec::new() }
     }
 
     pub fn stages(&self) -> u32 {
@@ -195,21 +180,12 @@ impl Requirements {
     /// Declare a buffer.
     pub fn buffer(&mut self, spec: BufferSpec) -> Buf {
         self.buffers.push(spec);
-        Buf {
-            set: self.id,
-            index: self.buffers.len() as u32 - 1,
-        }
+        Buf { set: self.id, index: self.buffers.len() as u32 - 1 }
     }
 
     /// Declare scratch of `bytes`, aligned to `align`, live in `live`.
     pub fn scratch(&mut self, name: &'static str, bytes: u64, align: u64, live: Range<u32>) -> Buf {
-        self.buffer(BufferSpec {
-            name,
-            bytes,
-            align,
-            live,
-            kind: Kind::Scratch,
-        })
+        self.buffer(BufferSpec { name, bytes, align, live, kind: Kind::Scratch })
     }
 
     /// Declare a circular buffer of `pages` pages of `page` bytes, each page
@@ -230,26 +206,14 @@ impl Requirements {
             bytes: page * pages as u64,
             align,
             live,
-            kind: Kind::Cb {
-                page,
-                pages,
-                producer,
-                consumer,
-            },
+            kind: Kind::Cb { page, pages, producer, consumer },
         })
     }
 
     /// Declare a semaphore starting at `initial`, in use in `live`.
     pub fn semaphore(&mut self, name: &'static str, initial: u8, live: Range<u32>) -> Sem {
-        self.sems.push(SemSpec {
-            name,
-            initial,
-            live,
-        });
-        Sem {
-            set: self.id,
-            index: self.sems.len() as u32 - 1,
-        }
+        self.sems.push(SemSpec { name, initial, live });
+        Sem { set: self.id, index: self.sems.len() as u32 - 1 }
     }
 
     /// `first` then `second`, as one kernel: `second`'s stages follow
@@ -261,11 +225,7 @@ impl Requirements {
     ///
     /// Refused: an edge that is not two circular buffers with the same page
     /// size, a buffer in two edges, or a handle of neither kernel.
-    pub fn fuse(
-        first: &Requirements,
-        second: &Requirements,
-        edges: &[(Buf, Buf)],
-    ) -> Result<Fused, PlanError> {
+    pub fn fuse(first: &Requirements, second: &Requirements, edges: &[(Buf, Buf)]) -> Result<Fused, PlanError> {
         let invalid = |s: String| Err(PlanError::Invalid(s));
         let mut req = Requirements::new(first.stages + second.stages);
         let shift = |r: &Range<u32>| r.start + first.stages..r.end + first.stages;
@@ -281,76 +241,35 @@ impl Requirements {
             }
             let (o, i) = (out.index as usize, input.index as usize);
             if std::mem::replace(&mut joined[o], true) || map_second[i].is_some() {
-                return invalid(format!(
-                    "{} or {} is in two fusion edges",
-                    first.buffers[o].name, second.buffers[i].name
-                ));
+                return invalid(format!("{} or {} is in two fusion edges", first.buffers[o].name, second.buffers[i].name));
             }
             let (a, b) = (&first.buffers[o], &second.buffers[i]);
-            let (
-                Kind::Cb {
-                    page: pa,
-                    pages: na,
-                    producer,
-                    ..
-                },
-                Kind::Cb {
-                    page: pb,
-                    pages: nb,
-                    consumer,
-                    ..
-                },
-            ) = (a.kind, b.kind)
+            let (Kind::Cb { page: pa, pages: na, producer, .. }, Kind::Cb { page: pb, pages: nb, consumer, .. }) =
+                (a.kind, b.kind)
             else {
-                return invalid(format!(
-                    "{} -> {}: a fusion edge joins two circular buffers",
-                    a.name, b.name
-                ));
+                return invalid(format!("{} -> {}: a fusion edge joins two circular buffers", a.name, b.name));
             };
             if pa != pb {
-                return invalid(format!(
-                    "{} -> {}: pages of {pa} and {pb} bytes",
-                    a.name, b.name
-                ));
+                return invalid(format!("{} -> {}: pages of {pa} and {pb} bytes", a.name, b.name));
             }
             let pages = na.max(nb);
             let merged = &mut req.buffers[o];
             merged.bytes = pa * pages as u64;
             merged.align = a.align.max(b.align);
             merged.live = a.live.start..shift(&b.live).end;
-            merged.kind = Kind::Cb {
-                page: pa,
-                pages,
-                producer,
-                consumer,
-            };
+            merged.kind = Kind::Cb { page: pa, pages, producer, consumer };
             map_second[i] = Some(map_first[o]);
         }
         for (i, b) in second.buffers.iter().enumerate() {
             if map_second[i].is_none() {
-                map_second[i] = Some(req.buffer(BufferSpec {
-                    live: shift(&b.live),
-                    ..b.clone()
-                }));
+                map_second[i] = Some(req.buffer(BufferSpec { live: shift(&b.live), ..b.clone() }));
             }
         }
-        let sems_first = first
-            .sems
-            .iter()
-            .map(|s| req.semaphore(s.name, s.initial, s.live.clone()))
-            .collect();
-        let sems_second = second
-            .sems
-            .iter()
-            .map(|s| req.semaphore(s.name, s.initial, shift(&s.live)))
-            .collect();
+        let sems_first = first.sems.iter().map(|s| req.semaphore(s.name, s.initial, s.live.clone())).collect();
+        let sems_second = second.sems.iter().map(|s| req.semaphore(s.name, s.initial, shift(&s.live))).collect();
         Ok(Fused {
             first: (first.id, map_first, sems_first),
-            second: (
-                second.id,
-                map_second.into_iter().map(Option::unwrap).collect(),
-                sems_second,
-            ),
+            second: (second.id, map_second.into_iter().map(Option::unwrap).collect(), sems_second),
             req,
         })
     }
@@ -362,24 +281,11 @@ impl Requirements {
                 return bad(format!("{}: zero bytes or alignment", b.name));
             }
             if b.live.start >= b.live.end || b.live.end > self.stages {
-                return bad(format!(
-                    "{}: live {:?} outside the kernel's {} stages",
-                    b.name, b.live, self.stages
-                ));
+                return bad(format!("{}: live {:?} outside the kernel's {} stages", b.name, b.live, self.stages));
             }
-            if let Kind::Cb {
-                page,
-                pages,
-                producer,
-                consumer,
-            } = b.kind
-            {
+            if let Kind::Cb { page, pages, producer, consumer } = b.kind {
                 if pages > MAX_CB_PAGES {
-                    return Err(PlanError::TooManyPages {
-                        name: b.name,
-                        pages,
-                        max: MAX_CB_PAGES,
-                    });
+                    return Err(PlanError::TooManyPages { name: b.name, pages, max: MAX_CB_PAGES });
                 }
                 if pages == 0 || page % b.align != 0 || producer == consumer {
                     return bad(format!(
@@ -395,10 +301,7 @@ impl Requirements {
                 return bad(format!("{}: live {:?} outside the kernel", s.name, s.live));
             }
             if s.initial > tt_isa::sync::MAX_VALUE {
-                return bad(format!(
-                    "{}: starts at {}, past the maximum",
-                    s.name, s.initial
-                ));
+                return bad(format!("{}: starts at {}, past the maximum", s.name, s.initial));
             }
         }
         Ok(())
@@ -421,23 +324,17 @@ impl Requirements {
                 .filter(|(p, _)| overlaps(&p.live, &b.live))
                 .map(|(p, &at)| (at, at + p.bytes))
                 .collect();
-            let fits = |at: u64| {
-                at + b.bytes <= arena.end
-                    && live_with.iter().all(|&(s, e)| at + b.bytes <= s || at >= e)
-            };
+            let fits = |at: u64| at + b.bytes <= arena.end && live_with.iter().all(|&(s, e)| at + b.bytes <= s || at >= e);
             let mut candidates: Vec<u64> = std::iter::once(arena.base)
                 .chain(live_with.iter().map(|&(_, e)| e))
                 .map(|at| at.next_multiple_of(b.align))
                 .collect();
             candidates.sort_unstable();
-            let at = candidates
-                .into_iter()
-                .find(|&at| fits(at))
-                .ok_or(PlanError::DoesNotFit {
-                    name: b.name,
-                    bytes: b.bytes,
-                    arena: arena.len(),
-                })?;
+            let at = candidates.into_iter().find(|&at| fits(at)).ok_or(PlanError::DoesNotFit {
+                name: b.name,
+                bytes: b.bytes,
+                arena: arena.len(),
+            })?;
             addr.push(at);
         }
         let mut sems: Vec<u32> = Vec::with_capacity(self.sems.len());
@@ -450,9 +347,7 @@ impl Requirements {
                 .filter(|(p, _)| overlaps(&p.live, &s.live) || p.initial != s.initial)
                 .map(|(_, &n)| n)
                 .collect();
-            let n = (0..8)
-                .find(|n| !taken.contains(n))
-                .ok_or(PlanError::TooManySemaphores { name: s.name })?;
+            let n = (0..8).find(|n| !taken.contains(n)).ok_or(PlanError::TooManySemaphores { name: s.name })?;
             sems.push(n);
         }
         let mut init: Vec<SemaphoreInit> = Vec::new();
@@ -467,10 +362,7 @@ impl Requirements {
             set: self.id,
             init,
             addr,
-            sems: sems
-                .into_iter()
-                .map(|n| Semaphore::new(n as u8).expect("one of eight"))
-                .collect(),
+            sems: sems.into_iter().map(|n| Semaphore::new(n as u8).expect("one of eight")).collect(),
         })
     }
 }
@@ -529,19 +421,13 @@ impl Plan {
     /// If `b` is not a handle of the requirements this plan was made from --
     /// a programming error, and the one the handles exist to catch.
     pub fn addr(&self, b: Buf) -> u64 {
-        assert_eq!(
-            b.set, self.set,
-            "a buffer handle used against another kernel's plan"
-        );
+        assert_eq!(b.set, self.set, "a buffer handle used against another kernel's plan");
         self.addr[b.index as usize]
     }
 
     /// The semaphore `s` was given.
     pub fn semaphore(&self, s: Sem) -> Semaphore {
-        assert_eq!(
-            s.set, self.set,
-            "a semaphore handle used against another kernel's plan"
-        );
+        assert_eq!(s.set, self.set, "a semaphore handle used against another kernel's plan");
         self.sems[s.index as usize]
     }
 
@@ -565,33 +451,21 @@ pub fn check(req: &Requirements, plan: &Plan, arena: Region) -> Result<(), Strin
             return Err(format!("{} at {at:#x} is not {}-aligned", b.name, b.align));
         }
         if !arena.contains(at, b.bytes) {
-            return Err(format!(
-                "{} at {at:#x}+{} leaves the arena",
-                b.name, b.bytes
-            ));
+            return Err(format!("{} at {at:#x}+{} leaves the arena", b.name, b.bytes));
         }
         for (c, &cat) in req.buffers[..i].iter().zip(&plan.addr) {
             if overlaps(&b.live, &c.live) && at < cat + c.bytes && cat < at + b.bytes {
-                return Err(format!(
-                    "{} and {} are live together and overlap at {at:#x}/{cat:#x}",
-                    b.name, c.name
-                ));
+                return Err(format!("{} and {} are live together and overlap at {at:#x}/{cat:#x}", b.name, c.name));
             }
         }
     }
     for (i, (s, n)) in req.sems.iter().zip(&plan.sems).enumerate() {
         for (t, m) in req.sems[..i].iter().zip(&plan.sems) {
             if overlaps(&s.live, &t.live) && n == m {
-                return Err(format!(
-                    "{} and {} share a semaphore while live",
-                    s.name, t.name
-                ));
+                return Err(format!("{} and {} share a semaphore while live", s.name, t.name));
             }
             if n == m && s.initial != t.initial {
-                return Err(format!(
-                    "{} and {} share a semaphore but start at {} and {}",
-                    s.name, t.name, s.initial, t.initial
-                ));
+                return Err(format!("{} and {} share a semaphore but start at {} and {}", s.name, t.name, s.initial, t.initial));
             }
         }
     }
@@ -632,10 +506,7 @@ mod tests {
     fn what_does_not_fit_is_an_error_and_so_are_bad_specs() {
         let mut r = Requirements::new(1);
         r.scratch("big", DATA.len() + 1, 64, 0..1);
-        assert!(matches!(
-            r.plan(DATA),
-            Err(PlanError::DoesNotFit { name: "big", .. })
-        ));
+        assert!(matches!(r.plan(DATA), Err(PlanError::DoesNotFit { name: "big", .. })));
         let mut r = Requirements::new(1);
         r.scratch("dead", 64, 64, 1..2);
         assert!(matches!(r.plan(DATA), Err(PlanError::Invalid(_))));
@@ -646,10 +517,7 @@ mod tests {
         for _ in 0..9 {
             r.semaphore("s", 0, 0..1);
         }
-        assert!(matches!(
-            r.plan(DATA),
-            Err(PlanError::TooManySemaphores { .. })
-        ));
+        assert!(matches!(r.plan(DATA), Err(PlanError::TooManySemaphores { .. })));
     }
 
     /// More pages than a circular buffer's counters hold is a kernel too large for one buffer, which
@@ -658,15 +526,7 @@ mod tests {
     #[test]
     fn too_many_circular_buffer_pages_is_its_own_error() {
         let mut r = Requirements::new(1);
-        r.cb(
-            "wide",
-            64,
-            MAX_CB_PAGES + 1,
-            64,
-            Endpoint::Pack,
-            Endpoint::Unpack,
-            0..1,
-        );
+        r.cb("wide", 64, MAX_CB_PAGES + 1, 64, Endpoint::Pack, Endpoint::Unpack, 0..1);
         match r.plan(DATA) {
             Err(PlanError::TooManyPages { name, pages, max }) => {
                 assert_eq!((name, pages, max), ("wide", MAX_CB_PAGES + 1, MAX_CB_PAGES));
@@ -674,20 +534,9 @@ mod tests {
             other => panic!("expected TooManyPages, got {:?}", other.err()),
         }
         let mut r = Requirements::new(1);
-        r.cb(
-            "wide",
-            64,
-            MAX_CB_PAGES,
-            64,
-            Endpoint::Pack,
-            Endpoint::Unpack,
-            0..1,
-        );
+        r.cb("wide", 64, MAX_CB_PAGES, 64, Endpoint::Pack, Endpoint::Unpack, 0..1);
         assert!(
-            matches!(
-                r.plan(DATA),
-                Err(PlanError::DoesNotFit { name: "wide", .. })
-            ),
+            matches!(r.plan(DATA), Err(PlanError::DoesNotFit { name: "wide", .. })),
             "the largest legal count is validated, then asked to fit"
         );
     }
@@ -695,9 +544,7 @@ mod tests {
     #[test]
     fn semaphores_are_shared_only_across_stages() {
         let mut r = Requirements::new(2);
-        let s = (0..8)
-            .map(|_| r.semaphore("first", 0, 0..1))
-            .collect::<Vec<_>>();
+        let s = (0..8).map(|_| r.semaphore("first", 0, 0..1)).collect::<Vec<_>>();
         let t = r.semaphore("second", 0, 1..2);
         let p = r.plan(DATA).unwrap();
         let n: std::collections::BTreeSet<_> = s.iter().map(|&s| p.semaphore(s).index()).collect();
@@ -743,59 +590,19 @@ mod tests {
     #[test]
     fn fusion_joins_an_edge_and_plans_as_one() {
         let mut a = Requirements::new(1);
-        let a_in = a.cb(
-            "a in",
-            SLOT,
-            2,
-            SLOT,
-            Endpoint::Mover,
-            Endpoint::Unpack,
-            0..1,
-        );
-        let a_out = a.cb(
-            "a out",
-            SLOT,
-            2,
-            SLOT,
-            Endpoint::Pack,
-            Endpoint::Mover,
-            0..1,
-        );
+        let a_in = a.cb("a in", SLOT, 2, SLOT, Endpoint::Mover, Endpoint::Unpack, 0..1);
+        let a_out = a.cb("a out", SLOT, 2, SLOT, Endpoint::Pack, Endpoint::Mover, 0..1);
         let a_sem = a.semaphore("a ready", 0, 0..1);
         let mut b = Requirements::new(1);
-        let b_in = b.cb(
-            "b in",
-            SLOT,
-            4,
-            SLOT,
-            Endpoint::Mover,
-            Endpoint::Unpack,
-            0..1,
-        );
-        let b_out = b.cb(
-            "b out",
-            SLOT,
-            2,
-            SLOT,
-            Endpoint::Pack,
-            Endpoint::Mover,
-            0..1,
-        );
+        let b_in = b.cb("b in", SLOT, 4, SLOT, Endpoint::Mover, Endpoint::Unpack, 0..1);
+        let b_out = b.cb("b out", SLOT, 2, SLOT, Endpoint::Pack, Endpoint::Mover, 0..1);
         let b_sem = b.semaphore("b ready", 0, 0..1);
         let f = Requirements::fuse(&a, &b, &[(a_out, b_in)]).unwrap();
         assert_eq!(f.req.stages(), 2);
         assert_eq!(f.buf(a_out), f.buf(b_in), "one ring");
         let joined = &f.req.buffers()[2 - 1];
         assert_eq!(joined.live, 0..2);
-        assert_eq!(
-            joined.kind,
-            Kind::Cb {
-                page: SLOT,
-                pages: 4,
-                producer: Endpoint::Pack,
-                consumer: Endpoint::Unpack
-            }
-        );
+        assert_eq!(joined.kind, Kind::Cb { page: SLOT, pages: 4, producer: Endpoint::Pack, consumer: Endpoint::Unpack });
         let p = f.req.plan(DATA).unwrap();
         check(&f.req, &p, DATA).unwrap();
         // `a in` is dead in stage 1, so `b out` may reuse it.
@@ -813,15 +620,7 @@ mod tests {
         let s = a.scratch("s", SLOT, SLOT, 0..1);
         let o = a.cb("o", SLOT, 2, SLOT, Endpoint::Pack, Endpoint::Mover, 0..1);
         let mut b = Requirements::new(1);
-        let i = b.cb(
-            "i",
-            2 * SLOT,
-            2,
-            SLOT,
-            Endpoint::Mover,
-            Endpoint::Unpack,
-            0..1,
-        );
+        let i = b.cb("i", 2 * SLOT, 2, SLOT, Endpoint::Mover, Endpoint::Unpack, 0..1);
         let j = b.cb("j", SLOT, 2, SLOT, Endpoint::Mover, Endpoint::Unpack, 0..1);
         assert!(Requirements::fuse(&a, &b, &[(s, j)]).is_err());
         assert!(Requirements::fuse(&a, &b, &[(o, i)]).is_err());
@@ -834,17 +633,10 @@ mod tests {
     fn random_requirements_plan_to_valid_layouts() {
         let mut seed = 0x5eed_u64;
         let mut next = |n: u64| {
-            seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             (seed >> 33) % n
         };
-        let ends = [
-            Endpoint::Mover,
-            Endpoint::Unpack,
-            Endpoint::Math,
-            Endpoint::Pack,
-        ];
+        let ends = [Endpoint::Mover, Endpoint::Unpack, Endpoint::Math, Endpoint::Pack];
         let kernel = |next: &mut dyn FnMut(u64) -> u64| {
             let stages = 1 + next(4) as u32;
             let mut r = Requirements::new(stages);
@@ -857,15 +649,7 @@ mod tests {
                     r.scratch("s", align * (1 + next(20)), align, s..e);
                 } else {
                     let (p, c) = (next(4) as usize, 1 + next(3) as usize);
-                    cbs.push(r.cb(
-                        "c",
-                        align,
-                        1 + next(8) as u32,
-                        align,
-                        ends[p],
-                        ends[(p + c) % 4],
-                        s..e,
-                    ));
+                    cbs.push(r.cb("c", align, 1 + next(8) as u32, align, ends[p], ends[(p + c) % 4], s..e));
                 }
             }
             for _ in 0..next(6) {

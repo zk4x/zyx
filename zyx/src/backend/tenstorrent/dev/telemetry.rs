@@ -84,16 +84,12 @@ impl TelemetryTable {
         let version = dev.read32(window, arc, base)?;
         let major = (version >> 16) & 0xFF;
         if major > arc::TELEMETRY_MAX_MAJOR_VERSION {
-            return Err(malformed(
-                "the table declares a major version this code does not know",
-            ));
+            return Err(malformed("the table declares a major version this code does not know"));
         }
 
         let num_entries = dev.read32(window, arc, base + 4)?;
         let tags = base + 8;
-        if num_entries > arc::TELEMETRY_MAX_ENTRIES
-            || !arc::is_within_csm(tags, num_entries as u64 * 4)
-        {
+        if num_entries > arc::TELEMETRY_MAX_ENTRIES || !arc::is_within_csm(tags, num_entries as u64 * 4) {
             return Err(malformed("the entry count does not fit the CSM"));
         }
 
@@ -115,19 +111,11 @@ impl TelemetryTable {
 
     /// The CSM address of `tag`, if the chip publishes it.
     pub fn address_of(&self, tag: u16) -> Option<u64> {
-        self.entries
-            .iter()
-            .find(|&&(id, _)| id == tag)
-            .map(|&(_, addr)| addr)
+        self.entries.iter().find(|&&(id, _)| id == tag).map(|&(_, addr)| addr)
     }
 
     /// Read `tag`, or `None` if this chip does not publish it.
-    pub fn read_tag<T: Transport>(
-        &self,
-        dev: &mut Device<T>,
-        window: &Window,
-        tag: u16,
-    ) -> Result<Option<u32>> {
+    pub fn read_tag<T: Transport>(&self, dev: &mut Device<T>, window: &Window, tag: u16) -> Result<Option<u32>> {
         match self.address_of(tag) {
             None => Ok(None),
             Some(addr) => Ok(Some(dev.read32(window, arc::arc_tile(), addr)?)),
@@ -168,9 +156,7 @@ impl<T: Transport> Device<T> {
             return Err(malformed("ENABLED_TENSIX_COL reports no usable columns"));
         }
 
-        let noc_translation = table
-            .read_tag(self, window, arc::tag::NOC_TRANSLATION)?
-            .is_some_and(|v| v != 0);
+        let noc_translation = table.read_tag(self, window, arc::tag::NOC_TRANSLATION)?.is_some_and(|v| v != 0);
 
         Ok(ChipTelemetry {
             tensix,

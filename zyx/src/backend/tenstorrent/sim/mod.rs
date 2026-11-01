@@ -30,14 +30,14 @@ pub mod fork;
 pub mod sys;
 pub mod transport;
 
-pub use fork::{fork_scope, outside_fork, ForkError};
+pub use fork::{ForkError, fork_scope, outside_fork};
 pub use transport::LibTtsim;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tt_isa::noc::ChipId;
 use self::sys::{Lib, LoadError};
+use tt_isa::noc::ChipId;
 
 /// Set once `Simulator::open` has succeeded. Never cleared: `libttsim_init` has no
 /// re-init path, so a second open would be a fatal error inside the library.
@@ -122,12 +122,7 @@ impl std::fmt::Display for OpenError {
                  mapping in this crate no longer matches the library's.",
                 gap.0, present_above.0
             ),
-            OpenError::BarMismatch {
-                chip,
-                bar,
-                expected,
-                found,
-            } => write!(
+            OpenError::BarMismatch { chip, bar, expected, found } => write!(
                 f,
                 "chip {}'s {bar:?} base is {found:#x} in config space but this build \
                  expects {expected:#x}; libttsim's hardcoded BAR map has changed",
@@ -206,11 +201,7 @@ impl Simulator {
         // SAFETY: callbacks are installed and this is the first and only init.
         unsafe { (lib.init)() };
 
-        let mut sim = Simulator {
-            lib,
-            chips: 0,
-            _not_send: std::marker::PhantomData,
-        };
+        let mut sim = Simulator { lib, chips: 0, _not_send: std::marker::PhantomData };
         sim.chips = sim.probe_chips()?;
         Ok(sim)
     }
@@ -239,17 +230,12 @@ impl Simulator {
             let chip = ChipId(index);
             // SAFETY: offset 0 is always decoded, the bdf is well-formed, and an
             // absent slot reads all-ones rather than faulting.
-            let id = unsafe {
-                (self.lib.pci_config_rd32)(chip_bdf(chip), ConfigOffset::VendorDevice as u32)
-            };
+            let id = unsafe { (self.lib.pci_config_rd32)(chip_bdf(chip), ConfigOffset::VendorDevice as u32) };
             if id == u32::MAX {
                 continue;
             }
             if index != present {
-                return Err(OpenError::SparseTopology {
-                    gap: ChipId(present),
-                    present_above: chip,
-                });
+                return Err(OpenError::SparseTopology { gap: ChipId(present), present_above: chip });
             }
 
             let vendor = (id & 0xFFFF) as u16;
@@ -260,21 +246,12 @@ impl Simulator {
 
             for bar in [Bar::Bar0, Bar::Bar2, Bar::Bar4] {
                 // SAFETY: BAR offsets are decoded; the simulator is initialized.
-                let lo = unsafe {
-                    (self.lib.pci_config_rd32)(chip_bdf(chip), bar.config_offset() as u32)
-                };
-                let hi = unsafe {
-                    (self.lib.pci_config_rd32)(chip_bdf(chip), bar.config_offset_hi() as u32)
-                };
+                let lo = unsafe { (self.lib.pci_config_rd32)(chip_bdf(chip), bar.config_offset() as u32) };
+                let hi = unsafe { (self.lib.pci_config_rd32)(chip_bdf(chip), bar.config_offset_hi() as u32) };
                 let found = ((hi as u64) << 32) | ((lo & !0xF) as u64);
                 let expected = chip_bar_base(chip, bar);
                 if found != expected {
-                    return Err(OpenError::BarMismatch {
-                        chip,
-                        bar,
-                        expected,
-                        found,
-                    });
+                    return Err(OpenError::BarMismatch { chip, bar, expected, found });
                 }
             }
             present += 1;
@@ -312,9 +289,7 @@ impl Simulator {
     /// them on a single global timebase — so ticking one `Device` per chip in a
     /// loop advances time once per chip, not once.
     pub fn transports(&mut self) -> Vec<LibTtsim<'_>> {
-        (0..self.chips)
-            .map(|i| LibTtsim::new(self.lib, ChipId(i)))
-            .collect()
+        (0..self.chips).map(|i| LibTtsim::new(self.lib, ChipId(i))).collect()
     }
 
     /// Advance simulated time.
@@ -427,9 +402,7 @@ unsafe extern "C" fn dma_read_unexpected(paddr: u64, dst: *mut core::ffi::c_void
 unsafe extern "C" fn dma_write_unexpected(paddr: u64, src: *const core::ffi::c_void, size: u32) {
     let done = host::with_region(paddr, size as u64, |bytes| {
         // SAFETY: libttsim hands `size` bytes to take.
-        unsafe {
-            std::ptr::copy_nonoverlapping(src as *const u8, bytes.as_mut_ptr(), size as usize)
-        }
+        unsafe { std::ptr::copy_nonoverlapping(src as *const u8, bytes.as_mut_ptr(), size as usize) }
     });
     if done.is_none() {
         fatal_unexpected_dma("write", paddr, size)
@@ -473,10 +446,7 @@ pub mod host {
             let base = *next;
             *next += (len as u64).next_multiple_of(1 << 30);
             let bytes = Arc::new(Mutex::new(vec![0u8; len]));
-            REGIONS
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push((base, bytes.clone()));
+            REGIONS.lock().unwrap_or_else(|p| p.into_inner()).push((base, bytes.clone()));
             SimHostMemory { base, bytes }
         }
     }
@@ -503,10 +473,7 @@ pub mod host {
 
     impl Drop for SimHostMemory {
         fn drop(&mut self) {
-            REGIONS
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .retain(|(base, _)| *base != self.base);
+            REGIONS.lock().unwrap_or_else(|p| p.into_inner()).retain(|(base, _)| *base != self.base);
         }
     }
 }

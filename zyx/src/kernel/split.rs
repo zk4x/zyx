@@ -170,8 +170,7 @@ impl Kernel {
                                     let addr_varies = !dst_idx.is_null() && varies.contains(&dst_idx);
                                     let val_varies = varies.contains(&src);
                                     let base = self.at(dst);
-                                    let global =
-                                        matches!(base, Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
+                                    let global = matches!(base, Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
                                     if !matches!(base, Op::Storage { .. } | Op::Param { .. }) {
                                         valid = false;
                                     } else if global && !addr_varies {
@@ -187,8 +186,7 @@ impl Kernel {
                                 Op::Copy { dst, dst_idx, .. } => {
                                     let addr_varies = !dst_idx.is_null() && varies.contains(&dst_idx);
                                     let base = self.at(dst);
-                                    let global =
-                                        matches!(base, Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
+                                    let global = matches!(base, Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
                                     if !matches!(base, Op::Storage { .. } | Op::Param { .. }) {
                                         valid = false;
                                     } else if global && !addr_varies {
@@ -236,9 +234,13 @@ impl Kernel {
                         for op in splits.iter().rev() {
                             strides.push(st);
                             match op {
-                                Op::Loop { len, .. } => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                                Op::Loop { len, .. } => {
+                                    st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap()
+                                }
                                 Op::Range { kind, .. } => match kind {
-                                    RangeKind::Group(len) => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                                    RangeKind::Group(len) => {
+                                        st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap()
+                                    }
                                     RangeKind::Local(len) => st *= i64::from(*len),
                                     RangeKind::Warp(_) => unreachable!("warp dims are never split"),
                                 },
@@ -287,10 +289,7 @@ impl Kernel {
                             #[cfg(debug_assertions)]
                             {
                                 for p in self.at(walk_id).parameters() {
-                                    debug_assert!(
-                                        p.is_null() || visited.contains(&p),
-                                        "split: use before def in program order"
-                                    );
+                                    debug_assert!(p.is_null() || visited.contains(&p), "split: use before def in program order");
                                 }
                                 visited.insert(walk_id);
                             }
@@ -302,8 +301,7 @@ impl Kernel {
                             }
                             match self.at(walk_id) {
                                 Op::Store { dst, dst_idx, src, .. } => {
-                                    let is_register =
-                                        matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. });
+                                    let is_register = matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. });
                                     let lane_dep = lane.contains(src)
                                         || (!dst_idx.is_null() && lane.contains(dst_idx))
                                         || grows.contains(dst);
@@ -312,17 +310,14 @@ impl Kernel {
                                     }
                                 }
                                 Op::Load { src, src_idx, .. } => {
-                                    let is_register =
-                                        matches!(self.at(*src), Op::Storage { scope: MemScope::Register, .. });
-                                    let lane_dep =
-                                        (!src_idx.is_null() && lane.contains(src_idx)) || grows.contains(src);
+                                    let is_register = matches!(self.at(*src), Op::Storage { scope: MemScope::Register, .. });
+                                    let lane_dep = (!src_idx.is_null() && lane.contains(src_idx)) || grows.contains(src);
                                     if is_register && lane_dep {
                                         grows.insert(*src);
                                     }
                                 }
                                 Op::Copy { dst, dst_idx, .. } => {
-                                    let is_register =
-                                        matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. });
+                                    let is_register = matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. });
                                     let lane_dep = (!dst_idx.is_null() && lane.contains(dst_idx)) || grows.contains(dst);
                                     if is_register && lane_dep {
                                         grows.insert(*dst);
@@ -351,38 +346,30 @@ impl Kernel {
                             match self.ops[walk_id].op {
                                 Op::Load { src, src_idx } if grows.contains(&src) => {
                                     let scale = self.insert_const_idx_before(walk_id, factor);
-                                    let mul =
-                                        self.insert_before(walk_id, Op::Binary { x: src_idx, y: scale, bop: BOp::Mul });
-                                    let new_idx =
-                                        self.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
+                                    let mul = self.insert_before(walk_id, Op::Binary { x: src_idx, y: scale, bop: BOp::Mul });
+                                    let new_idx = self.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
                                     self.ops[walk_id].op = Op::Load { src, src_idx: new_idx };
                                 }
                                 Op::Store { dst, dst_idx, src } if grows.contains(&dst) => {
                                     let scale = self.insert_const_idx_before(walk_id, factor);
-                                    let mul =
-                                        self.insert_before(walk_id, Op::Binary { x: dst_idx, y: scale, bop: BOp::Mul });
-                                    let new_idx =
-                                        self.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
+                                    let mul = self.insert_before(walk_id, Op::Binary { x: dst_idx, y: scale, bop: BOp::Mul });
+                                    let new_idx = self.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
                                     self.ops[walk_id].op = Op::Store { dst, dst_idx: new_idx, src };
                                 }
                                 Op::Copy { src, src_idx, dst, dst_idx } if grows.contains(&src) || grows.contains(&dst) => {
                                     let mut new_src_idx = src_idx;
                                     if !new_src_idx.is_null() {
                                         let scale = self.insert_const_idx_before(walk_id, factor);
-                                        let mul = self.insert_before(
-                                            walk_id,
-                                            Op::Binary { x: new_src_idx, y: scale, bop: BOp::Mul },
-                                        );
+                                        let mul =
+                                            self.insert_before(walk_id, Op::Binary { x: new_src_idx, y: scale, bop: BOp::Mul });
                                         new_src_idx =
                                             self.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
                                     }
                                     let mut new_dst_idx = dst_idx;
                                     if !new_dst_idx.is_null() {
                                         let scale = self.insert_const_idx_before(walk_id, factor);
-                                        let mul = self.insert_before(
-                                            walk_id,
-                                            Op::Binary { x: new_dst_idx, y: scale, bop: BOp::Mul },
-                                        );
+                                        let mul =
+                                            self.insert_before(walk_id, Op::Binary { x: new_dst_idx, y: scale, bop: BOp::Mul });
                                         new_dst_idx =
                                             self.insert_before(walk_id, Op::Binary { x: mul, y: unroll_id, bop: BOp::Add });
                                     }
@@ -512,9 +499,11 @@ impl Kernel {
                                 }
                                 match self.ops[use_id].op {
                                     Op::Copy { .. } | Op::Store { .. } => {
-                                        if !self.at(use_id).parameters().any(|p| {
-                                            p == axis_id || self.depends_on(p, axis_id, &mut Set::default())
-                                        }) {
+                                        if !self
+                                            .at(use_id)
+                                            .parameters()
+                                            .any(|p| p == axis_id || self.depends_on(p, axis_id, &mut Set::default()))
+                                        {
                                             unfed = true;
                                         }
                                     }
@@ -589,10 +578,8 @@ impl Kernel {
                             Op::Binary { x, y, bop } => (x, y, bop),
                             _ => return OpId::NULL,
                         };
-                        let x_acc =
-                            sx == acc_load_id || self.depends_on(sx, acc_load_id, &mut Set::default());
-                        let y_acc =
-                            sy == acc_load_id || self.depends_on(sy, acc_load_id, &mut Set::default());
+                        let x_acc = sx == acc_load_id || self.depends_on(sx, acc_load_id, &mut Set::default());
+                        let y_acc = sy == acc_load_id || self.depends_on(sy, acc_load_id, &mut Set::default());
                         if x_acc == y_acc {
                             return OpId::NULL;
                         }
@@ -602,14 +589,11 @@ impl Kernel {
                         let mut next_lane_axis = 0u64;
                         for (_, op) in self.iter_unordered() {
                             match op {
-                                Op::Unroll { axis, .. } => {
-                                    next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1)
-                                }
+                                Op::Unroll { axis, .. } => next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1),
                                 _ => {}
                             }
                         }
-                        let lane_axis =
-                            u32::try_from(next_lane_axis).expect("unroll lane axis overflows u32");
+                        let lane_axis = u32::try_from(next_lane_axis).expect("unroll lane axis overflows u32");
 
                         // Lane composition: bare lanes when the factor
                         // covers the loop, else outer * factor + lane.
@@ -621,28 +605,20 @@ impl Kernel {
                             let new_len = self.insert_const_idx_before(axis_id, len / factor_dim);
                             let outer_id = self.insert_before(axis_id, Op::Loop { len: new_len });
                             let stride = self.insert_before(axis_id, Op::Const(Constant::idx(factor_dim)));
-                            let scaled = self.insert_before(
-                                axis_id,
-                                Op::Binary { x: outer_id, y: stride, bop: BOp::Mul },
-                            );
-                            let lane_id =
-                                self.insert_before(axis_id, Op::Unroll { axis: lane_axis, len: factor });
-                            self.ops[axis_id].op =
-                                Op::Binary { x: scaled, y: lane_id, bop: BOp::Add };
+                            let scaled = self.insert_before(axis_id, Op::Binary { x: outer_id, y: stride, bop: BOp::Mul });
+                            let lane_id = self.insert_before(axis_id, Op::Unroll { axis: lane_axis, len: factor });
+                            self.ops[axis_id].op = Op::Binary { x: scaled, y: lane_id, bop: BOp::Add };
                             lane_id
                         };
 
                         // Reduce the prod side; the acc side stays scalar.
-                        let red = self.insert_before(
-                            acc_store_id,
-                            Op::Reduce { x: prod_side, rop: bop, reduce_axis: unroll_id },
-                        );
+                        let red = self.insert_before(acc_store_id, Op::Reduce { x: prod_side, rop: bop, reduce_axis: unroll_id });
                         let (nx, ny) = if x_acc { (acc_side, red) } else { (red, acc_side) };
-                        self.ops[acc_store_id].op =
-                            Op::Store { dst: acc_id, dst_idx: acc_store_idx, src: self.insert_before(
-                                acc_store_id,
-                                Op::Binary { x: nx, y: ny, bop },
-                            ) };
+                        self.ops[acc_store_id].op = Op::Store {
+                            dst: acc_id,
+                            dst_idx: acc_store_idx,
+                            src: self.insert_before(acc_store_id, Op::Binary { x: nx, y: ny, bop }),
+                        };
 
                         unroll_id
                     }
@@ -893,11 +869,7 @@ mod tests {
 
         // Apply the structural split via the optimization interface: one
         // reduce-loop unroll config at factor 4.
-        super::super::autotune::Optimization::apply(
-            &OptSplit { configs: vec![(loop_id, SplitMode::Unroll, 4)] },
-            &mut k,
-            0,
-        );
+        super::super::autotune::Optimization::apply(&OptSplit { configs: vec![(loop_id, SplitMode::Unroll, 4)] }, &mut k, 0);
         k.verify();
 
         // The accumulator stays scalar.
@@ -948,11 +920,7 @@ mod tests {
 
         // Apply the structural split via the optimization interface: one
         // group lane config at factor 8.
-        super::super::autotune::Optimization::apply(
-            &OptSplit { configs: vec![(g, SplitMode::Unroll, 8)] },
-            &mut k,
-            0,
-        );
+        super::super::autotune::Optimization::apply(&OptSplit { configs: vec![(g, SplitMode::Unroll, 8)] }, &mut k, 0);
         k.verify();
 
         // The accumulator grew to one slot per lane.
@@ -980,11 +948,7 @@ mod tests {
 
         // Apply the structural split via the optimization interface: one
         // local config at factor 8.
-        super::super::autotune::Optimization::apply(
-            &OptSplit { configs: vec![(g, SplitMode::Local, 8)] },
-            &mut k,
-            0,
-        );
+        super::super::autotune::Optimization::apply(&OptSplit { configs: vec![(g, SplitMode::Local, 8)] }, &mut k, 0);
         k.verify();
 
         let mut groups = 0;

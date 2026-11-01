@@ -1265,7 +1265,12 @@ impl Kernel {
                         let result_type =
                             layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, res_dt, &res_shape);
                         let rid = asm.id();
-                        asm.emit_typed(OpSelect, result_type, rid, &[spv_values[&cond], spv_values[&if_true], spv_values[&if_false]]);
+                        asm.emit_typed(
+                            OpSelect,
+                            result_type,
+                            rid,
+                            &[spv_values[&cond], spv_values[&if_true], spv_values[&if_false]],
+                        );
                         spv_values.insert(op_id, rid);
                     }
                     Op::TT { .. }

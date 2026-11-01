@@ -143,10 +143,9 @@ impl Kernel {
         let Op::Loop { len: len_b_id } = self.ops[inner].op else {
             return OpId::NULL;
         };
-        let (Some(len_a), Some(len_b)) = (
-            self.resolve_const(len_a_id).and_then(Constant::as_dim),
-            self.resolve_const(len_b_id).and_then(Constant::as_dim),
-        ) else {
+        let (Some(len_a), Some(len_b)) =
+            (self.resolve_const(len_a_id).and_then(Constant::as_dim), self.resolve_const(len_b_id).and_then(Constant::as_dim))
+        else {
             return OpId::NULL;
         };
         let total_len: u64 = len_a as u64 * len_b as u64;
@@ -182,10 +181,7 @@ impl Kernel {
             let Op::Loop { len: len_id } = self.ops[id].op else {
                 return OpId::NULL;
             };
-            let len = self
-                .resolve_const(len_id)
-                .and_then(Constant::as_dim)
-                .expect("merge: loop len resolved above");
+            let len = self.resolve_const(len_id).and_then(Constant::as_dim).expect("merge: loop len resolved above");
             let y = self.insert_before(outer, Op::Const(Constant::idx(len)));
             self.ops[id].op = Op::Binary { x, y, bop: BOp::Mod };
             x = self.insert_before(outer, Op::Binary { x, y, bop: BOp::Div });
@@ -203,10 +199,8 @@ impl Kernel {
         let Op::Range { axis: axis_b, kind: kind_b } = self.ops[second].op else {
             return OpId::NULL;
         };
-        let both_group =
-            matches!(kind_a, RangeKind::Group(_)) && matches!(kind_b, RangeKind::Group(_));
-        let both_local =
-            matches!(kind_a, RangeKind::Local(_)) && matches!(kind_b, RangeKind::Local(_));
+        let both_group = matches!(kind_a, RangeKind::Group(_)) && matches!(kind_b, RangeKind::Group(_));
+        let both_local = matches!(kind_a, RangeKind::Local(_)) && matches!(kind_b, RangeKind::Local(_));
         if !(both_group || both_local) {
             return OpId::NULL;
         }
@@ -251,9 +245,7 @@ impl Kernel {
         acc *= len_a;
         acc *= len_b;
         let kind = match kind_a {
-            RangeKind::Group(_) => {
-                RangeKind::Group(self.insert_before(first, Op::Const(Constant::idx(acc))))
-            }
+            RangeKind::Group(_) => RangeKind::Group(self.insert_before(first, Op::Const(Constant::idx(acc)))),
             RangeKind::Local(_) => RangeKind::Local(acc as u32),
             RangeKind::Warp(_) => return OpId::NULL,
         };

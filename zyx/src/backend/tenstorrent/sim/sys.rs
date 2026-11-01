@@ -40,10 +40,8 @@ type FnConfigWr32 = unsafe extern "C" fn(bdf: u32, offset: u32, data: u32);
 type FnMemRdBytes = unsafe extern "C" fn(paddr: u64, dst: *mut core::ffi::c_void, size: u32);
 type FnMemWrBytes = unsafe extern "C" fn(paddr: u64, src: *const core::ffi::c_void, size: u32);
 type FnClock = unsafe extern "C" fn(n_clocks: u32);
-type FnTileRdBytes =
-    unsafe extern "C" fn(x: u32, y: u32, addr: u64, dst: *mut core::ffi::c_void, size: u32);
-type FnTileWrBytes =
-    unsafe extern "C" fn(x: u32, y: u32, addr: u64, src: *const core::ffi::c_void, size: u32);
+type FnTileRdBytes = unsafe extern "C" fn(x: u32, y: u32, addr: u64, dst: *mut core::ffi::c_void, size: u32);
+type FnTileWrBytes = unsafe extern "C" fn(x: u32, y: u32, addr: u64, src: *const core::ffi::c_void, size: u32);
 
 /// A loaded `libttsim.so` with all ten entry points resolved.
 ///
@@ -80,10 +78,7 @@ pub enum LoadError {
     Open(libloading::Error),
     /// `dlopen` succeeded but a required entry point was missing, which means
     /// the file is not a `libttsim.so` of the expected vintage.
-    MissingSymbol {
-        name: &'static str,
-        source: libloading::Error,
-    },
+    MissingSymbol { name: &'static str, source: libloading::Error },
 }
 
 impl std::fmt::Display for LoadError {
@@ -91,10 +86,7 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Open(e) => write!(f, "could not dlopen libttsim: {e}"),
             LoadError::MissingSymbol { name, source } => {
-                write!(
-                    f,
-                    "libttsim is missing required entry point `{name}`: {source}"
-                )
+                write!(f, "libttsim is missing required entry point `{name}`: {source}")
             }
         }
     }
@@ -127,10 +119,7 @@ impl Lib {
         macro_rules! sym {
             ($name:literal) => {{
                 let s: Symbol<'_, _> = unsafe { library.get(concat!($name, "\0").as_bytes()) }
-                    .map_err(|source| LoadError::MissingSymbol {
-                        name: $name,
-                        source,
-                    })?;
+                    .map_err(|source| LoadError::MissingSymbol { name: $name, source })?;
                 *s
             }};
         }

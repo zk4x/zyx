@@ -95,9 +95,7 @@ impl Kernel {
                     }
                     loop_dep[&x].max(loop_dep[&y])
                 }
-                Op::Select { cond, if_true, if_false } => {
-                    loop_dep[&cond].max(loop_dep[&if_true]).max(loop_dep[&if_false])
-                }
+                Op::Select { cond, if_true, if_false } => loop_dep[&cond].max(loop_dep[&if_true]).max(loop_dep[&if_false]),
                 Op::Param { .. }
                 | Op::Barrier
                 | Op::Range { .. }

@@ -2148,7 +2148,11 @@ impl Tensor {
             // only, never dtypes: the bool cond joins the broadcast
             // without being cast away.
             let (target, expand_cond, expand_arms) = Self::broadcast_shape(self, &if_true)?;
-            let cond = if expand_cond { self.expand(target.iter())? } else { self.clone() };
+            let cond = if expand_cond {
+                self.expand(target.iter())?
+            } else {
+                self.clone()
+            };
             let (if_true, if_false) = if expand_arms {
                 (if_true.expand(target.iter())?, if_false.expand(target.iter())?)
             } else {

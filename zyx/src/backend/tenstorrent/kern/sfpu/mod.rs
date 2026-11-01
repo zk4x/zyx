@@ -37,8 +37,8 @@ pub mod reduce;
 pub mod round;
 
 use tt_isa::frontend;
-use tt_isa::isa::generated::{defs, encode};
 use tt_isa::isa::Instruction;
+use tt_isa::isa::generated::{defs, encode};
 use tt_isa::sfpu::{self as enc, mad_mod1, mod0_fmt};
 pub use tt_isa::sfpu::{ConfigLReg, LReg};
 
@@ -187,8 +187,7 @@ impl Program {
         // The thread's address modifier 0 steps nothing and its `Dst` row
         // counter is zero, so an `SFPLOAD`/`SFPSTORE` address is absolute --
         // whatever the kernel before left (a matmul steps the counter).
-        p.ins
-            .push(thread_entry(super::datapath::addr_mod_entry(0).dst_incr, 0));
+        p.ins.push(thread_entry(super::datapath::addr_mod_entry(0).dst_incr, 0));
         p.ins.push(clear_dst_rwc());
         p
     }
@@ -200,14 +199,7 @@ impl Program {
         }
         self.after_mad = matches!(
             i.def().mnemonic(),
-            "SFPMAD"
-                | "SFPMUL"
-                | "SFPADD"
-                | "SFPMULI"
-                | "SFPADDI"
-                | "SFPMUL24"
-                | "SFPLUT"
-                | "SFPLUTFP32"
+            "SFPMAD" | "SFPMUL" | "SFPADD" | "SFPMULI" | "SFPADDI" | "SFPMUL24" | "SFPLUT" | "SFPLUTFP32"
         );
         self.ins.push(i);
     }
@@ -220,11 +212,7 @@ impl Program {
     }
 
     fn dst(d: LReg) -> u32 {
-        assert!(
-            d.writable(),
-            "LReg[{}] cannot be written: the hardware would drop it",
-            d.index()
-        );
+        assert!(d.writable(), "LReg[{}] cannot be written: the hardware would drop it", d.index());
         d.index()
     }
 
@@ -281,16 +269,7 @@ impl Program {
 
     /// `d = -(a * b) + c`.
     pub fn nmad(&mut self, a: LReg, b: LReg, c: LReg, d: LReg) {
-        self.push(
-            enc::mad(
-                a.index(),
-                b.index(),
-                c.index(),
-                Self::dst(d),
-                mad_mod1::NEGATE_VA,
-            )
-            .unwrap(),
-        );
+        self.push(enc::mad(a.index(), b.index(), c.index(), Self::dst(d), mad_mod1::NEGATE_VA).unwrap());
     }
 
     /// `d = s`.
@@ -366,10 +345,7 @@ impl Program {
 
     /// `d = c + imm`, `imm` a signed twelve-bit integer (`SFPIADD_MOD1_ARG_IMM`).
     pub fn iadd_imm(&mut self, c: LReg, imm: i32, d: LReg) {
-        assert!(
-            (-2048..2048).contains(&imm),
-            "{imm} is not a twelve-bit immediate"
-        );
+        assert!((-2048..2048).contains(&imm), "{imm} is not a twelve-bit immediate");
         self.push(encode::sfpiadd(imm as u32 & 0xfff, c.index(), Self::dst(d), 1 | 4).unwrap());
     }
 
@@ -417,10 +393,7 @@ impl Program {
     /// ttsim refuses an immediate from 128 up (divergence row 66); scale down
     /// with a multiply.
     pub fn scale_by_pow2(&mut self, s: LReg, k: u32, d: LReg) {
-        assert!(
-            k < 128,
-            "SFPDIVP2 by {k}: ttsim refuses an immediate from 128 (row 66)"
-        );
+        assert!(k < 128, "SFPDIVP2 by {k}: ttsim refuses an immediate from 128 (row 66)");
         self.push(encode::sfpdivp2(k, s.index(), Self::dst(d), 1).unwrap());
     }
 
@@ -519,10 +492,7 @@ impl Program {
     /// registers unknown, so a program relying on one an earlier program left
     /// (concepts review G11) is refused there.
     pub fn constant(&mut self, c: ConfigLReg, bits: u32) {
-        assert_eq!(
-            self.depth, 0,
-            "SFPCONFIG inside a scope sees lanes 0..8's flags only"
-        );
+        assert_eq!(self.depth, 0, "SFPCONFIG inside a scope sees lanes 0..8's flags only");
         self.loadi_bits(LReg::L0, bits);
         self.push(encode::sfpconfig(0, c.lreg().index(), 0).unwrap());
     }
@@ -650,10 +620,7 @@ impl Program {
     }
 
     fn push_flags(&mut self) {
-        assert!(
-            self.depth < FLAG_STACK,
-            "conditional execution nested deeper than the {FLAG_STACK}-entry flag stack"
-        );
+        assert!(self.depth < FLAG_STACK, "conditional execution nested deeper than the {FLAG_STACK}-entry flag stack");
         self.push(encode::sfppushc(0, 0).unwrap());
         self.depth += 1;
     }
@@ -677,12 +644,7 @@ impl Program {
     /// `then` where `cond` holds, `otherwise` in the other enabled lanes.
     /// `SFPCOMPC` inverts `LaneFlags` against the saved state, so a lane that
     /// was disabled before the scope runs neither branch.
-    pub fn if_else(
-        &mut self,
-        cond: Cond,
-        then: impl FnOnce(&mut Self),
-        otherwise: impl FnOnce(&mut Self),
-    ) {
+    pub fn if_else(&mut self, cond: Cond, then: impl FnOnce(&mut Self), otherwise: impl FnOnce(&mut Self)) {
         self.push_flags();
         self.push(cond.setcc());
         then(self);
@@ -705,10 +667,7 @@ impl Program {
     /// absolute. Unrolled otherwise, with the offset in each address.
     pub fn for_each_row_group(&mut self, rows: u32, body: impl Fn(&mut Self, u32)) {
         assert!(!self.in_loop, "a row loop inside a row loop");
-        assert!(
-            rows % 4 == 0 && rows > 0,
-            "{rows} rows are not whole groups of four"
-        );
+        assert!(rows % 4 == 0 && rows > 0, "{rows} rows are not whole groups of four");
         let iterations = rows / 2;
         // The body once, at offset 0, to measure and patch.
         let mut b = Program {
@@ -721,25 +680,17 @@ impl Program {
             repeats: Vec::new(),
         };
         body(&mut b, 0);
-        assert_eq!(
-            b.depth, self.depth,
-            "a row loop's body leaves the flag stack as it found it"
-        );
+        assert_eq!(b.depth, self.depth, "a row loop's body leaves the flag stack as it found it");
         let last_dst = b
             .ins
             .iter()
-            .rposition(|i| {
-                core::ptr::eq(i.def(), &defs::SFPLOAD) || core::ptr::eq(i.def(), &defs::SFPSTORE)
-            })
+            .rposition(|i| core::ptr::eq(i.def(), &defs::SFPLOAD) || core::ptr::eq(i.def(), &defs::SFPSTORE))
             .expect("a row loop's body reads or writes Dst");
         // The body was built following what precedes the loop, so a NOP it
         // needs at its start is already in it. Replayed, it also follows its
         // own end: a body ending in a multiply-add whose first instruction
         // stalling would miss needs one more, at its end.
-        let wraps_nop = b.after_mad
-            && b.ins
-                .first()
-                .is_some_and(|i| !i.stalls_automatically_after_mad());
+        let wraps_nop = b.after_mad && b.ins.first().is_some_and(|i| !i.stalls_automatically_after_mad());
         let fits = b.ins.len() + usize::from(wraps_nop) <= frontend::REPLAY_BUFFER as usize;
         if self.policy == LoopPolicy::Unrolled {
             for k in 0..iterations {
@@ -772,11 +723,7 @@ impl Program {
             // Too long to record: stored once, the runner pushes it once per
             // iteration -- the same words the replayed form's expansion is,
             // the row counter stepped the same way.
-            self.repeats.push(super::code::Loop {
-                start: self.ins.len() as u32,
-                len: ins.len() as u32,
-                count: iterations,
-            });
+            self.repeats.push(super::code::Loop { start: self.ins.len() as u32, len: ins.len() as u32, count: iterations });
             self.ins.extend_from_slice(&ins);
             self.loops.push(LoopForm::Repeated { body: ins.len() });
         }
@@ -800,10 +747,7 @@ impl Program {
     /// (`super::code::Code`).
     pub fn finish_code(self) -> super::code::Code {
         assert_eq!(self.depth, 0, "a program ends with the flag stack empty");
-        super::code::Code {
-            ins: self.ins,
-            loops: self.repeats,
-        }
+        super::code::Code { ins: self.ins, loops: self.repeats }
     }
 }
 
@@ -828,17 +772,7 @@ fn bf16(v: f32) -> u32 {
 }
 
 fn is_mad_unit(i: &Instruction) -> bool {
-    matches!(
-        i.def().mnemonic(),
-        "SFPMAD"
-            | "SFPMUL"
-            | "SFPADD"
-            | "SFPMULI"
-            | "SFPADDI"
-            | "SFPMUL24"
-            | "SFPLUT"
-            | "SFPLUTFP32"
-    )
+    matches!(i.def().mnemonic(), "SFPMAD" | "SFPMUL" | "SFPADD" | "SFPMULI" | "SFPADDI" | "SFPMUL24" | "SFPLUT" | "SFPLUTFP32")
 }
 
 /// `SETRWC` clearing the issuing thread's `Dst` row counter and nothing else.
@@ -896,12 +830,7 @@ mod tests {
         p.add(LReg::L0, LReg::L1, LReg::L2);
         p.push(encode::sfpiadd(0, 2, 2, 0).unwrap());
         let m = mnemonics(&p.finish());
-        let nops: Vec<usize> = m
-            .iter()
-            .enumerate()
-            .filter(|(_, x)| **x == "SFPNOP")
-            .map(|(i, _)| i)
-            .collect();
+        let nops: Vec<usize> = m.iter().enumerate().filter(|(_, x)| **x == "SFPNOP").map(|(i, _)| i).collect();
         assert_eq!(nops.len(), 1, "{m:?}");
         assert_eq!(m[nops[0] + 1], "SFPIADD");
         assert!(matches!(m[nops[0] - 1], "SFPMAD" | "SFPADD"));
@@ -916,22 +845,13 @@ mod tests {
         p.lut_fp32(LutTable::Fp16Three, false, LReg::L2);
         p.lut_fp32(LutTable::Fp32, true, LReg::L4);
         let ins = p.finish();
-        let i = ins
-            .iter()
-            .position(|i| i.def().mnemonic() == "SFPLUTFP32")
-            .unwrap();
+        let i = ins.iter().position(|i| i.def().mnemonic() == "SFPLUTFP32").unwrap();
         let loadi = ins[i - 1];
         assert_eq!(loadi.def().mnemonic(), "SFPLOADI");
-        assert_eq!(
-            (loadi.operand("VD"), loadi.operand("Imm16")),
-            (Some(7), Some(2))
-        );
+        assert_eq!((loadi.operand("VD"), loadi.operand("Imm16")), (Some(7), Some(2)));
         assert_eq!(ins[i].operand("Mod1"), Some(10));
         assert_eq!(ins[i].operand("Mod1Mirror"), Some(8));
-        let j = ins
-            .iter()
-            .rposition(|i| i.def().mnemonic() == "SFPLUTFP32")
-            .unwrap();
+        let j = ins.iter().rposition(|i| i.def().mnemonic() == "SFPLUTFP32").unwrap();
         assert_eq!(ins[j].operand("Mod1"), Some(4));
         assert_eq!(ins[j].operand("Mod1Mirror"), Some(0));
         assert_ne!(ins[j - 1].def().mnemonic(), "SFPLOADI");
@@ -962,24 +882,10 @@ mod tests {
         assert_eq!(p.loops(), &[LoopForm::Replayed { body: 4 }]);
         let ins = p.finish();
         let m = mnemonics(&ins);
-        assert_eq!(
-            m.iter().filter(|&&x| x == "REPLAY").count(),
-            32,
-            "one record, 31 replays"
-        );
-        let store = ins
-            .iter()
-            .find(|i| i.def().mnemonic() == "SFPSTORE")
-            .unwrap();
-        assert_eq!(
-            store.operand("AddrMod"),
-            Some(ROW_LOOP_ADDR_MOD),
-            "the last Dst access steps"
-        );
-        let load = ins
-            .iter()
-            .find(|i| i.def().mnemonic() == "SFPLOAD")
-            .unwrap();
+        assert_eq!(m.iter().filter(|&&x| x == "REPLAY").count(), 32, "one record, 31 replays");
+        let store = ins.iter().find(|i| i.def().mnemonic() == "SFPSTORE").unwrap();
+        assert_eq!(store.operand("AddrMod"), Some(ROW_LOOP_ADDR_MOD), "the last Dst access steps");
+        let load = ins.iter().find(|i| i.def().mnemonic() == "SFPLOAD").unwrap();
         assert_eq!(load.operand("AddrMod"), Some(0));
 
         let mut p = Program::new();
@@ -992,33 +898,14 @@ mod tests {
         // 32 over it (`super::code`), which expands to every iteration.
         assert_eq!(p.loops(), &[LoopForm::Repeated { body: 40 }]);
         let code = p.clone().finish_code();
-        assert_eq!(
-            code.ins.len(),
-            3 + 3 + 40 + 1,
-            "the prologue, the setup, the body once, the clear"
-        );
-        assert_eq!(
-            code.loops,
-            [super::code::Loop {
-                start: 6,
-                len: 40,
-                count: 32
-            }]
-        );
-        assert_eq!(
-            p.finish().len(),
-            3 + 3 + 32 * 40 + 1,
-            "expanded: every iteration"
-        );
+        assert_eq!(code.ins.len(), 3 + 3 + 40 + 1, "the prologue, the setup, the body once, the clear");
+        assert_eq!(code.loops, [super::code::Loop { start: 6, len: 40, count: 32 }]);
+        assert_eq!(p.finish().len(), 3 + 3 + 32 * 40 + 1, "expanded: every iteration");
 
         let mut p = Program::with_policy(LoopPolicy::Unrolled);
         p.for_each_row_group(4, |p, o| p.store(LReg::L0, Format::Fp32, o));
         let ins = p.finish();
-        let addrs: Vec<_> = ins
-            .iter()
-            .skip(3)
-            .map(|i| i.operand("Imm10").unwrap())
-            .collect();
+        let addrs: Vec<_> = ins.iter().skip(3).map(|i| i.operand("Imm10").unwrap()).collect();
         assert_eq!(addrs, [0, 2], "group 0, both halves");
     }
 }

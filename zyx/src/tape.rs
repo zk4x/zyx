@@ -270,9 +270,7 @@ impl Drop for Tape {
         let leafs: Vec<TensorId> = rt.graphs[graph_id]
             .leaf_classes
             .iter()
-            .map(|&cid| {
-                rt.graphs[graph_id].leaf_map.get(&cid).copied().expect("tape drop: leaf class has no leaf_map entry")
-            })
+            .map(|&cid| rt.graphs[graph_id].leaf_map.get(&cid).copied().expect("tape drop: leaf class has no leaf_map entry"))
             .collect();
         // A leaf that is already `Eager` was converted by `realize`'s output
         // eagerify — its graph affiliation (and the ref_count decrement) was

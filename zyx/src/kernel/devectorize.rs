@@ -18,7 +18,11 @@
 //! lane-parameterized accumulator indices, so the generic
 //! operand-substitution arm covers every op).
 
-use crate::{Map, Set, dtype::Constant, kernel::{Kernel, Op, OpId}};
+use crate::{
+    Map, Set,
+    dtype::Constant,
+    kernel::{Kernel, Op, OpId},
+};
 
 impl Kernel {
     /// Expand every lane-space reduce into the reduce chain over its lanes,
@@ -52,8 +56,7 @@ impl Kernel {
                 self.devectorize_reduce_one(found);
                 continue;
             }
-            let found =
-                self.iter_unordered().find_map(|(op, x)| matches!(x, Op::Unroll { .. }).then_some(op));
+            let found = self.iter_unordered().find_map(|(op, x)| matches!(x, Op::Unroll { .. }).then_some(op));
             let Some(unroll_id) = found else { break };
             // A refused node (none exist today) stays in place — stop
             // instead of looping on it forever.
@@ -89,7 +92,7 @@ impl Kernel {
         // expression, axis-ascending. The axis cone may only compose
         // unroll nodes with binary arithmetic and constants (e.g.
         // `unroll(axis0) * 4 + unroll(axis1)`); anything else is not a
-                    // lane space this pass reduces.
+        // lane space this pass reduces.
         let mut ordered: Vec<(OpId, u16, u32)> = Vec::new();
         {
             let mut stack = vec![reduce_axis];
@@ -166,8 +169,14 @@ impl Kernel {
                 continue;
             }
             match self.ops[walk_id].op.clone() {
-                Op::Storage { .. } | Op::Range { .. } | Op::Unroll { .. } | Op::Loop { .. } | Op::EndLoop
-                | Op::Barrier | Op::Param { .. } | Op::Const(_) => {}
+                Op::Storage { .. }
+                | Op::Range { .. }
+                | Op::Unroll { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop
+                | Op::Barrier
+                | Op::Param { .. }
+                | Op::Const(_) => {}
                 Op::Reduce { .. } => {
                     // Another reduce: independent of this lane space (neither
                     // naming its nodes nor consuming its clones) expands on
@@ -289,8 +298,14 @@ impl Kernel {
         while !walk_id.is_null() {
             let next = self.next_op(walk_id);
             match self.ops[walk_id].op.clone() {
-                Op::Storage { .. } | Op::Range { .. } | Op::Unroll { .. } | Op::Loop { .. } | Op::EndLoop
-                | Op::Barrier | Op::Param { .. } | Op::Const(_) => {}
+                Op::Storage { .. }
+                | Op::Range { .. }
+                | Op::Unroll { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop
+                | Op::Barrier
+                | Op::Param { .. }
+                | Op::Const(_) => {}
                 Op::Reduce { .. } => unreachable!("reduce not devectorized before the unroll pass"),
                 ref op => {
                     let mut elem_cond = false;
@@ -403,8 +418,7 @@ mod tests {
         let result = k.load(acc, 0i64);
         k.store(out, result, 0i64);
 
-        let split = split::OptSplit { configs: vec![(loop_id,
-            split::SplitMode::Unroll, 4)] };
+        let split = split::OptSplit { configs: vec![(loop_id, split::SplitMode::Unroll, 4)] };
         Optimization::apply(&split, &mut k, 0);
         k.devectorize();
 

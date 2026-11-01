@@ -18,8 +18,8 @@
 use tt_isa::backend::ConfigWords;
 use tt_isa::backend::ThreadConfigEntry;
 use tt_isa::cfg::generated::{alu, global, pack0, thcon, thread, unpack1};
-use tt_isa::isa::generated::{defs, encode};
 use tt_isa::isa::Instruction;
+use tt_isa::isa::generated::{defs, encode};
 use tt_isa::tile::{L1Format, TileDescriptor, TileImage};
 
 /// Where the input tile image is staged, and where the packer writes.
@@ -108,10 +108,7 @@ pub fn unpack_config(words: &mut ConfigWords, descriptor: TileDescriptor, l1_bas
         .unwrap()
         .set(thcon::THCON_SEC0_REG5_Tile_x_dim_cntx0, descriptor.x_dim())
         .unwrap()
-        .set(
-            thcon::THCON_SEC0_REG2_Out_data_format,
-            L1Format::Fp32.code().unwrap(),
-        )
+        .set(thcon::THCON_SEC0_REG2_Out_data_format, L1Format::Fp32.code().unwrap())
         .unwrap()
         .set(thcon::THCON_SEC0_REG2_Ovrd_data_format, 0)
         .unwrap()
@@ -146,12 +143,7 @@ pub fn unpack_config(words: &mut ConfigWords, descriptor: TileDescriptor, l1_bas
     // models words 0 and 1 of the span and refuses 2 and 3 (divergence row 29).
     for (i, word) in descriptor.words().iter().enumerate() {
         if i < 2 || *word != 0 {
-            words
-                .seed(
-                    thcon::THCON_SEC0_REG0_TileDescriptor.addr32() + i as u16,
-                    *word,
-                )
-                .unwrap();
+            words.seed(thcon::THCON_SEC0_REG0_TileDescriptor.addr32() + i as u16, *word).unwrap();
         }
     }
 }
@@ -200,13 +192,7 @@ pub fn src_thread_config() -> Vec<Instruction> {
 /// from `Tile_x_dim_cntx` (`UNPACR_Regular.md:73`), has no `Dest_cntx` term, and a
 /// single flat row needs no `Ystride`. `REG7_Offset_address` *is* read and cannot
 /// be written, so this relies on its reset value being zero.
-pub fn unpack_src_config(
-    words: &mut ConfigWords,
-    unpacker: Unpacker,
-    descriptor: TileDescriptor,
-    l1_base: u64,
-    out: u32,
-) {
+pub fn unpack_src_config(words: &mut ConfigWords, unpacker: Unpacker, descriptor: TileDescriptor, l1_base: u64, out: u32) {
     let base_units = tile_base_units(l1_base);
     let descriptor_span = match unpacker {
         Unpacker::SrcA => {
@@ -255,9 +241,7 @@ pub fn unpack_src_config(
     // Only the non-zero descriptor words: row 29.
     for (i, word) in descriptor.words().iter().enumerate() {
         if *word != 0 {
-            words
-                .seed(descriptor_span.addr32() + i as u16, *word)
-                .unwrap();
+            words.seed(descriptor_span.addr32() + i as u16, *word).unwrap();
         }
     }
 }
@@ -298,15 +282,9 @@ pub fn pack_config(words: &mut ConfigWords, l1_dest: u64) {
     words
         .set(thcon::THCON_SEC0_REG1_L1_Dest_addr, dest_units as u32)
         .unwrap()
-        .set(
-            thcon::THCON_SEC0_REG1_In_data_format,
-            L1Format::Fp32.code().unwrap(),
-        )
+        .set(thcon::THCON_SEC0_REG1_In_data_format, L1Format::Fp32.code().unwrap())
         .unwrap()
-        .set(
-            thcon::THCON_SEC0_REG1_Out_data_format,
-            L1Format::Fp32.code().unwrap(),
-        )
+        .set(thcon::THCON_SEC0_REG1_Out_data_format, L1Format::Fp32.code().unwrap())
         .unwrap()
         // Input comes from `Dst`, not from L1 (`Packers/InputAddressGenerator.md`:
         // `Source_interface_selection == 1` is the L1 path).
@@ -392,32 +370,18 @@ pub fn pack_config(words: &mut ConfigWords, l1_dest: u64) {
 }
 
 pub fn set_adc_x_unpack(first: u32, last: u32) -> Instruction {
-    encode::Setadcxx::ZERO
-        .u0(1)
-        .x0_val(first)
-        .x1_val(last)
-        .encode()
-        .unwrap()
+    encode::Setadcxx::ZERO.u0(1).x0_val(first).x1_val(last).encode().unwrap()
 }
 
 /// `SETADCXX` for the packer channels (`PK`), which set the `Dst` datum range.
 pub fn set_adc_x_pack(first: u32, last: u32) -> Instruction {
-    encode::Setadcxx::ZERO
-        .pk(1)
-        .x0_val(first)
-        .x1_val(last)
-        .encode()
-        .unwrap()
+    encode::Setadcxx::ZERO.pk(1).x0_val(first).x1_val(last).encode().unwrap()
 }
 
 pub fn unpack_instruction() -> Instruction {
     // Bit 0 is undocumented and ttsim refuses the instruction without it; see
     // `probe_unpack::unpacr_without_the_undocumented_last_bit_is_refused`.
-    let base = encode::UnpacrRegular::ZERO
-        .which_unpacker(0)
-        .multi_context_mode(1)
-        .encode()
-        .unwrap();
+    let base = encode::UnpacrRegular::ZERO.which_unpacker(0).multi_context_mode(1).encode().unwrap();
     Instruction::new(base.word() | UNPACR_LAST, &defs::UNPACR_Regular)
 }
 
@@ -454,12 +418,7 @@ pub fn pack_rows_items(rows: u32) -> Vec<super::loops::Item> {
         thread_entry(thread::ADDR_MOD_PACK_SEC1_YsrcIncr, 4),
         set_adc_x_pack(0, 15),
         // From row 0, whatever an earlier `pack_rows` on this thread left Y at.
-        encode::Setadcxy::ZERO
-            .pk(1)
-            .y0(1)
-            .y0_val(0)
-            .encode()
-            .unwrap(),
+        encode::Setadcxy::ZERO.pk(1).y0(1).y0_val(0).encode().unwrap(),
     ]
     .into_iter()
     .map(Item::I)
@@ -474,28 +433,17 @@ pub fn pack_rows_items(rows: u32) -> Vec<super::loops::Item> {
     };
     // Every group but the last is whole (rows are packed from row 0).
     if groups > 1 {
-        p.push(Item::Repeat {
-            times: groups - 1,
-            body: vec![Item::I(pacr(0b1111, false))],
-        });
+        p.push(Item::Repeat { times: groups - 1, body: vec![Item::I(pacr(0b1111, false))] });
     }
     let remaining = rows - 4 * (groups - 1);
-    let mask = if remaining >= 4 {
-        0b1111
-    } else {
-        (1 << remaining) - 1
-    };
+    let mask = if remaining >= 4 { 0b1111 } else { (1 << remaining) - 1 };
     p.push(Item::I(pacr(mask, true)));
     p
 }
 
 /// One `PACR` enabling `read_intf_sel` read interfaces.
 pub fn pack_instruction(read_intf_sel: u32, last: bool) -> Instruction {
-    encode::Pacr::ZERO
-        .read_intf_sel(read_intf_sel)
-        .last(u32::from(last))
-        .encode()
-        .unwrap()
+    encode::Pacr::ZERO.read_intf_sel(read_intf_sel).last(u32::from(last)).encode().unwrap()
 }
 
 /// Release every Tensix semaphore: `SEMINIT` each to `Value` 1, `Max` 2.
@@ -539,9 +487,7 @@ pub fn src_feeder() -> Vec<Instruction> {
     unpack_src_config(&mut words, Unpacker::SrcA, descriptor, STAGE, tf32);
     unpack_src_config(&mut words, Unpacker::SrcB, descriptor, STAGE, tf32);
     let mut buf = [Instruction::new(0, &defs::NOP); 96];
-    let n = words
-        .program(SCRATCH_GPR, &mut buf)
-        .expect("two unpackers' configuration fits");
+    let n = words.program(SCRATCH_GPR, &mut buf).expect("two unpackers' configuration fits");
     p.extend_from_slice(&buf[..n]);
     for u in [Unpacker::SrcA, Unpacker::SrcB] {
         for _bank in 0..2 {
@@ -568,54 +514,18 @@ pub fn src_feeder() -> Vec<Instruction> {
 /// **Silicon only.** ttsim refuses `SETC16` to some entries at any value
 /// (`SRCB_SET_Base`, divergence row 36), and has nothing to reset.
 pub fn thread_state_reset() -> Vec<Instruction> {
-    let entries: std::collections::BTreeSet<u16> = tt_isa::cfg::generated::ALL_THREAD_CONFIG_FIELDS
-        .iter()
-        .map(|(_, f)| f.addr32())
-        .collect();
+    let entries: std::collections::BTreeSet<u16> =
+        tt_isa::cfg::generated::ALL_THREAD_CONFIG_FIELDS.iter().map(|(_, f)| f.addr32()).collect();
     // `Config` first: it is shared, and tt-metal (or an earlier gate) may have
     // left any of it set (`backend::reset_config`).
     let mut p: Vec<Instruction> = tt_isa::backend::reset_config(SCRATCH_GPR).unwrap().to_vec();
-    p.extend(
-        entries
-            .into_iter()
-            .map(|addr32| ThreadConfigEntry::zeroed(addr32).encode().unwrap()),
-    );
+    p.extend(entries.into_iter().map(|addr32| ThreadConfigEntry::zeroed(addr32).encode().unwrap()));
     // RWCs: set each counter (and its carry register) to zero, and the fidelity
     // phase; no bank flips (`SETRWC.md`).
-    p.push(
-        encode::Setrwc::ZERO
-            .src_a(1)
-            .src_b(1)
-            .dst(1)
-            .fidelity(1)
-            .encode()
-            .unwrap(),
-    );
+    p.push(encode::Setrwc::ZERO.src_a(1).src_b(1).dst(1).fidelity(1).encode().unwrap());
     // ADCs: X, Y, Z, W of both channels, for both unpackers and the packers.
-    p.push(
-        encode::Setadcxy::ZERO
-            .u0(1)
-            .u1(1)
-            .pk(1)
-            .x0(1)
-            .y0(1)
-            .x1(1)
-            .y1(1)
-            .encode()
-            .unwrap(),
-    );
-    p.push(
-        encode::Setadczw::ZERO
-            .u0(1)
-            .u1(1)
-            .pk(1)
-            .z0(1)
-            .w0(1)
-            .z1(1)
-            .w1(1)
-            .encode()
-            .unwrap(),
-    );
+    p.push(encode::Setadcxy::ZERO.u0(1).u1(1).pk(1).x0(1).y0(1).x1(1).y1(1).encode().unwrap());
+    p.push(encode::Setadczw::ZERO.u0(1).u1(1).pk(1).z0(1).w0(1).z1(1).w1(1).encode().unwrap());
     p
 }
 
@@ -671,21 +581,13 @@ pub fn addr_mod_entry(entry: usize) -> AddrModEntry {
         ADDR_MOD_DST_SEC6_DestIncr,
         ADDR_MOD_DST_SEC7_DestIncr,
     ];
-    AddrModEntry {
-        src_a_incr: src_a[entry],
-        src_b_incr: src_b[entry],
-        dst_incr: dst[entry],
-    }
+    AddrModEntry { src_a_incr: src_a[entry], src_b_incr: src_b[entry], dst_incr: dst[entry] }
 }
 
 /// A `SETC16` giving one `ThreadConfig` field `value`, every other field of its
 /// word zero.
 pub fn thread_entry(field: tt_isa::cfg::ThreadConfigField, value: u16) -> Instruction {
-    ThreadConfigEntry::zeroed(field.addr32())
-        .set(field, value)
-        .unwrap()
-        .encode()
-        .unwrap()
+    ThreadConfigEntry::zeroed(field.addr32()).set(field, value).unwrap().encode().unwrap()
 }
 
 /// The instructions that write `words` into `Config`, sized to fit.
@@ -744,22 +646,8 @@ pub fn dst_round_trip_roles(
 /// zero, for the issuing thread (`SETADCXY`, `SETADCZW`).
 pub fn clear_unpacker0_adcs() -> [Instruction; 2] {
     [
-        encode::Setadcxy::ZERO
-            .u0(1)
-            .x0(1)
-            .y0(1)
-            .x1(1)
-            .y1(1)
-            .encode()
-            .unwrap(),
-        encode::Setadczw::ZERO
-            .u0(1)
-            .z0(1)
-            .w0(1)
-            .z1(1)
-            .w1(1)
-            .encode()
-            .unwrap(),
+        encode::Setadcxy::ZERO.u0(1).x0(1).y0(1).x1(1).y1(1).encode().unwrap(),
+        encode::Setadczw::ZERO.u0(1).z0(1).w0(1).z1(1).w1(1).encode().unwrap(),
     ]
 }
 
@@ -821,13 +709,7 @@ pub fn unpack_datums_to_dst(l1: u64, first: u32, count: u32, row: u32) -> Vec<In
         .set(thcon::THCON_SEC0_REG5_Dest_cntx0_address, dst_address(row))
         .unwrap();
     p.extend(config_program(&words));
-    p.push(
-        backend::stallwait(
-            backend::block::UNPACKER | backend::block::CONFIG,
-            backend::cond::CONFIG_BUSY,
-        )
-        .unwrap(),
-    );
+    p.push(backend::stallwait(backend::block::UNPACKER | backend::block::CONFIG, backend::cond::CONFIG_BUSY).unwrap());
     p.push(set_adc_x_unpack(0, count - 1));
     p.push(unpack_instruction());
     p
@@ -844,17 +726,9 @@ pub fn pack_tile_from_dst(l1_dest: u64, row: u32) -> Vec<Instruction> {
     let mut p = vec![backend::wait_for_packer(Before::CONFIG).unwrap()];
     let mut words = ConfigWords::new();
     pack_config(&mut words, l1_dest);
-    words
-        .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row)
-        .unwrap();
+    words.set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row).unwrap();
     p.extend(config_program(&words));
-    p.push(
-        backend::stallwait(
-            backend::block::PACKER | backend::block::CONFIG,
-            backend::cond::CONFIG_BUSY,
-        )
-        .unwrap(),
-    );
+    p.push(backend::stallwait(backend::block::PACKER | backend::block::CONFIG, backend::cond::CONFIG_BUSY).unwrap());
     p.extend(pack_rows(TILE_DST_ROWS));
     p
 }
@@ -908,18 +782,10 @@ pub fn pack_tile_from_dst_staged(
     let mut p = vec![backend::wait_for_packer(Before::CONFIG).unwrap()];
     let mut words = ConfigWords::new();
     pack_config(&mut words, l1_dest);
-    words
-        .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row)
-        .unwrap();
+    words.set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row).unwrap();
     stages.apply(&mut words)?;
     p.extend(config_program(&words));
-    p.push(
-        backend::stallwait(
-            backend::block::PACKER | backend::block::CONFIG,
-            backend::cond::CONFIG_BUSY,
-        )
-        .unwrap(),
-    );
+    p.push(backend::stallwait(backend::block::PACKER | backend::block::CONFIG, backend::cond::CONFIG_BUSY).unwrap());
     p.extend(pack_rows(TILE_DST_ROWS));
     Ok(p)
 }
@@ -962,15 +828,9 @@ pub fn staged_bf16_image(descriptor: TileDescriptor, patterns: &[u16]) -> Vec<u8
 /// the first eight of every sixteen `Dst16b` rows are visible through the
 /// firmware's FP32 dump (the 32-bit view pairs row `r` with `r + 8`).
 pub fn unpack_bf16_config(words: &mut ConfigWords, descriptor: TileDescriptor, l1_base: u64) {
-    assert_eq!(
-        descriptor.in_data_format_raw(),
-        bf16_code(),
-        "a BF16 descriptor"
-    );
+    assert_eq!(descriptor.in_data_format_raw(), bf16_code(), "a BF16 descriptor");
     unpack_config(words, descriptor, l1_base);
-    words
-        .set(thcon::THCON_SEC0_REG2_Out_data_format, bf16_code())
-        .unwrap();
+    words.set(thcon::THCON_SEC0_REG2_Out_data_format, bf16_code()).unwrap();
 }
 
 /// The packer reading `Dst16b` (BF16) and writing BF16 to `l1_dest`: [`pack_config`]
@@ -999,17 +859,9 @@ pub fn pack_bf16_tile_from_dst16(l1_dest: u64, row: u32) -> Vec<Instruction> {
     let mut p = vec![backend::wait_for_packer(Before::CONFIG).unwrap()];
     let mut words = ConfigWords::new();
     pack_bf16_dst16_config(&mut words, l1_dest);
-    words
-        .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row)
-        .unwrap();
+    words.set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row).unwrap();
     p.extend(config_program(&words));
-    p.push(
-        backend::stallwait(
-            backend::block::PACKER | backend::block::CONFIG,
-            backend::cond::CONFIG_BUSY,
-        )
-        .unwrap(),
-    );
+    p.push(backend::stallwait(backend::block::PACKER | backend::block::CONFIG, backend::cond::CONFIG_BUSY).unwrap());
     p.extend(pack_rows(TILE_DST_ROWS));
     p
 }

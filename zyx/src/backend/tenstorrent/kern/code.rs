@@ -45,10 +45,7 @@ impl std::fmt::Display for LoopError {
                 write!(f, "{n} block repeats, past the runner's {}", loops::MAX)
             }
             LoopError::Field(l) => write!(f, "block repeat {l:?} does not fit the runner's table"),
-            LoopError::Nesting(a, b) => write!(
-                f,
-                "block repeats {a:?} and {b:?} neither disjoint nor nested once"
-            ),
+            LoopError::Nesting(a, b) => write!(f, "block repeats {a:?} and {b:?} neither disjoint nor nested once"),
         }
     }
 }
@@ -65,10 +62,7 @@ pub struct Code {
 impl Code {
     /// The plain program: no loops.
     pub fn plain(ins: Vec<Instruction>) -> Self {
-        Code {
-            ins,
-            loops: Vec::new(),
-        }
+        Code { ins, loops: Vec::new() }
     }
 
     /// The stream the runner pushes: each loop's range `count` times, as
@@ -119,10 +113,8 @@ pub fn check(ls: &[Loop], len: u32) -> Result<(), LoopError> {
                 continue;
             }
             let disjoint = a.end() <= b.start || b.end() <= a.start;
-            let inside =
-                b.start <= a.start && a.end() <= b.end() && (a.start, a.len) != (b.start, b.len);
-            let around =
-                a.start <= b.start && b.end() <= a.end() && (a.start, a.len) != (b.start, b.len);
+            let inside = b.start <= a.start && a.end() <= b.end() && (a.start, a.len) != (b.start, b.len);
+            let around = a.start <= b.start && b.end() <= a.end() && (a.start, a.len) != (b.start, b.len);
             if !(disjoint || inside || around) {
                 return Err(LoopError::Nesting(a, b));
             }
@@ -170,77 +162,21 @@ mod tests {
 
     #[test]
     fn nested_loops_expand_as_the_runner_pushes() {
-        let c = Code {
-            ins: ins(8),
-            loops: vec![
-                Loop {
-                    start: 1,
-                    len: 5,
-                    count: 2,
-                },
-                Loop {
-                    start: 2,
-                    len: 2,
-                    count: 3,
-                },
-            ],
-        };
-        assert_eq!(
-            imm(&c.expand()),
-            [0, 1, 2, 3, 2, 3, 2, 3, 4, 5, 1, 2, 3, 2, 3, 2, 3, 4, 5, 6, 7]
-        );
+        let c = Code { ins: ins(8), loops: vec![Loop { start: 1, len: 5, count: 2 }, Loop { start: 2, len: 2, count: 3 }] };
+        assert_eq!(imm(&c.expand()), [0, 1, 2, 3, 2, 3, 2, 3, 4, 5, 1, 2, 3, 2, 3, 2, 3, 4, 5, 6, 7]);
         let (words, len) = c.stored().unwrap();
-        assert_eq!(
-            len,
-            11 | loops::LOOPED,
-            "two entries, their count, eight words"
-        );
+        assert_eq!(len, 11 | loops::LOOPED, "two entries, their count, eight words");
         assert_eq!(words[0], 2);
     }
 
     #[test]
     fn what_the_runner_would_refuse_is_refused() {
-        let over = Loop {
-            start: 2,
-            len: 4,
-            count: 2,
-        };
+        let over = Loop { start: 2, len: 4, count: 2 };
         let bad = [
-            vec![
-                Loop {
-                    start: 0,
-                    len: 3,
-                    count: 2,
-                },
-                Loop {
-                    start: 2,
-                    len: 3,
-                    count: 2,
-                },
-            ],
-            vec![Loop {
-                start: 0,
-                len: 9,
-                count: 2,
-            }],
-            vec![
-                Loop {
-                    start: 0,
-                    len: 6,
-                    count: 2,
-                },
-                over,
-                Loop {
-                    start: 3,
-                    len: 1,
-                    count: 2,
-                },
-            ],
-            vec![Loop {
-                start: 0,
-                len: 1,
-                count: 129,
-            }],
+            vec![Loop { start: 0, len: 3, count: 2 }, Loop { start: 2, len: 3, count: 2 }],
+            vec![Loop { start: 0, len: 9, count: 2 }],
+            vec![Loop { start: 0, len: 6, count: 2 }, over, Loop { start: 3, len: 1, count: 2 }],
+            vec![Loop { start: 0, len: 1, count: 129 }],
         ];
         for ls in bad {
             assert!(check(&ls, 8).is_err(), "{ls:?}");

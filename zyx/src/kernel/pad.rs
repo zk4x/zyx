@@ -389,10 +389,7 @@ mod tests {
         let result = k.load(acc, 0i64);
         k.store(out, result, 0i64);
 
-        let loop_id = k
-            .iter_unordered()
-            .find_map(|(id, op)| matches!(op, Op::Loop { .. }).then_some(id))
-            .expect("loop present");
+        let loop_id = k.iter_unordered().find_map(|(id, op)| matches!(op, Op::Loop { .. }).then_some(id)).expect("loop present");
         k.pad_to(loop_id, 8);
 
         // Every use of the loop variable must sit inside its body.

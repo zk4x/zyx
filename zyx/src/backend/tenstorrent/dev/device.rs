@@ -7,12 +7,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use tt_isa::noc::{niu, ChipId, NocCoord, NocId, TileType};
+use tt_isa::noc::{ChipId, NocCoord, NocId, TileType, niu};
 use tt_isa::tensix::{self, Core};
 
-use super::tlb::{
-    self, TlbConfig, WindowKind, KERNEL_RESERVED_WINDOW, NUM_2MIB_WINDOWS, NUM_WINDOWS,
-};
+use super::tlb::{self, KERNEL_RESERVED_WINDOW, NUM_2MIB_WINDOWS, NUM_WINDOWS, TlbConfig, WindowKind};
 use super::{Bar, Result, Transport, TransportError};
 
 mod fence;
@@ -38,10 +36,7 @@ pub struct Window {
 
 impl std::fmt::Debug for Window {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Window")
-            .field("index", &self.index)
-            .field("kind", &self.kind)
-            .finish()
+        f.debug_struct("Window").field("index", &self.index).field("kind", &self.kind).finish()
     }
 }
 
@@ -205,17 +200,11 @@ impl<T: Transport> Drop for Device<T> {
             return;
         }
         let Ok(w) = self.alloc_window(super::tlb::WindowKind::TwoMib) else {
-            eprintln!(
-                "tt-device: no TLB window to return chip {:?} to idle",
-                self.chip
-            );
+            eprintln!("tt-device: no TLB window to return chip {:?} to idle", self.chip);
             return;
         };
         if let Err(e) = self.set_busy(&w, false) {
-            eprintln!(
-                "tt-device: could not return chip {:?} to idle: {e}",
-                self.chip
-            );
+            eprintln!("tt-device: could not return chip {:?} to idle: {e}", self.chip);
         }
         self.free_window(w);
     }
@@ -236,9 +225,7 @@ impl<T: Transport> Drop for Device<T> {
 /// will need its own accessor when Phase 8 does.
 /// The bulk path is memory-only; see [`Device::l1_write`].
 fn refuse_non_l1<N: NocId>(coord: NocCoord<N>, address: u64, len: usize) -> Result<()> {
-    let in_l1 = address
-        .checked_add(len as u64)
-        .is_some_and(|end| end <= tensix::L1_SIZE);
+    let in_l1 = address.checked_add(len as u64).is_some_and(|end| end <= tensix::L1_SIZE);
     if !tt_isa::noc::grid::is_tensix_geometry(coord.x(), coord.y()) || !in_l1 {
         return Err(TransportError::Hazard {
             address,
@@ -289,9 +276,7 @@ impl<T: Transport> Device<T> {
         // Window 201 belongs to the kernel driver and must never be handed out --
         // honoured on the simulator too, where there is no driver to collide with,
         // so that allocation behaviour is identical on silicon.
-        let free: Vec<u16> = (0..NUM_WINDOWS)
-            .filter(|&i| i != KERNEL_RESERVED_WINDOW)
-            .collect();
+        let free: Vec<u16> = (0..NUM_WINDOWS).filter(|&i| i != KERNEL_RESERVED_WINDOW).collect();
 
         // Taken from the transport rather than assumed: a transport is one chip,
         // and it is the only thing that knows which. Asserting it here instead
@@ -301,10 +286,7 @@ impl<T: Transport> Device<T> {
         let mut dev = Device {
             transport,
             chip,
-            pool: Arc::new(Mutex::new(Pool {
-                free,
-                shadow: BTreeMap::new(),
-            })),
+            pool: Arc::new(Mutex::new(Pool { free, shadow: BTreeMap::new() })),
             released: HashMap::new(),
             busy: false,
             traffic: Traffic::default(),
@@ -355,69 +337,42 @@ impl<T: Transport> Device<T> {
         if Arc::ptr_eq(&window.pool, &self.pool) {
             Ok(())
         } else {
-            Err(TransportError::Hazard {
-                address: 0,
-                reason: "this window was allocated by a different Device",
-            })
+            Err(TransportError::Hazard { address: 0, reason: "this window was allocated by a different Device" })
         }
     }
 
     /// Reserve a window of the requested geometry.
     pub fn alloc_window(&mut self, kind: WindowKind) -> Result<Window> {
         let mut pool = self.pool();
-        let position = pool
-            .free
-            .iter()
-            .position(|&i| tlb::window_kind(i) == Some(kind));
+        let position = pool.free.iter().position(|&i| tlb::window_kind(i) == Some(kind));
         match position {
             Some(p) => {
                 let index = pool.free.remove(p);
                 drop(pool);
-                Ok(Window {
-                    index,
-                    kind,
-                    pool: Arc::clone(&self.pool),
-                })
+                Ok(Window { index, kind, pool: Arc::clone(&self.pool) })
             }
-            None => Err(TransportError::OutOfBounds {
-                bar: kind.bar(),
-                offset: 0,
-                len: 0,
-            }),
+            None => Err(TransportError::OutOfBounds { bar: kind.bar(), offset: 0, len: 0 }),
         }
     }
 
     /// Return a window to the pool now. Dropping it does the same; this is the
     /// spelling for a caller that wants the release to be visible.
     pub fn free_window(&mut self, window: Window) {
-        debug_assert!(
-            Arc::ptr_eq(&window.pool, &self.pool),
-            "freed a window allocated by a different Device"
-        );
+        debug_assert!(Arc::ptr_eq(&window.pool, &self.pool), "freed a window allocated by a different Device");
         drop(window);
     }
 
     /// Point a window at a device address in a tile, if it is not already there.
-    fn retarget<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        base_address: u64,
-    ) -> Result<()> {
+    fn retarget<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>, base_address: u64) -> Result<()> {
         self.check_owned(window)?;
         let config = TlbConfig::unicast(base_address, coord);
-        let words = config
-            .encode(window.kind)
-            .map_err(|_| TransportError::Misaligned {
-                bar: window.kind.bar(),
-                offset: base_address,
-                len: window.kind.size(),
-                reason: "device address is not window-aligned",
-            })?;
-        let shadow = Shadow {
-            words,
-            readable: config.is_readable(),
-        };
+        let words = config.encode(window.kind).map_err(|_| TransportError::Misaligned {
+            bar: window.kind.bar(),
+            offset: base_address,
+            len: window.kind.size(),
+            reason: "device address is not window-aligned",
+        })?;
+        let shadow = Shadow { words, readable: config.is_readable() };
 
         if self.pool().shadow.get(&window.index) == Some(&shadow) {
             return Ok(());
@@ -436,13 +391,7 @@ impl<T: Transport> Device<T> {
     /// retargeting the window as it goes.
     ///
     /// Refuses the local-data-RAM aperture; see [`Device::local_ram_write`].
-    pub fn write<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        address: u64,
-        data: &[u8],
-    ) -> Result<()> {
+    pub fn write<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>, address: u64, data: &[u8]) -> Result<()> {
         refuse_local_ram_aperture(address, data.len())?;
         self.write_unchecked(window, coord, address, data)
     }
@@ -456,17 +405,11 @@ impl<T: Transport> Device<T> {
         address: u64,
         data: &[u8],
     ) -> Result<()> {
-        self.transfer(
-            window,
-            coord,
-            address,
-            data.len(),
-            |dev, bar, off, range| {
-                dev.traffic.write_calls += 1;
-                dev.traffic.bytes_written += range.len() as u64;
-                dev.transport.bar_write(bar, off, &data[range])
-            },
-        )
+        self.transfer(window, coord, address, data.len(), |dev, bar, off, range| {
+            dev.traffic.write_calls += 1;
+            dev.traffic.bytes_written += range.len() as u64;
+            dev.transport.bar_write(bar, off, &data[range])
+        })
     }
 
     /// Write `data` into a Tensix tile's L1, by the fast path.
@@ -477,25 +420,13 @@ impl<T: Transport> Device<T> {
     /// L1, so no register -- all of which sit at `0xFF..` addresses, or on the
     /// ARC and PCIe tiles -- can be written this way. Use [`Device::write`] for
     /// anything else.
-    pub fn l1_write<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        address: u64,
-        data: &[u8],
-    ) -> Result<()> {
+    pub fn l1_write<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>, address: u64, data: &[u8]) -> Result<()> {
         refuse_non_l1(coord, address, data.len())?;
         self.write_memory(window, coord, address, data)
     }
 
     /// Read a Tensix tile's L1 by the fast path. See [`Device::l1_write`].
-    pub fn l1_read<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        address: u64,
-        out: &mut [u8],
-    ) -> Result<()> {
+    pub fn l1_read<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>, address: u64, out: &mut [u8]) -> Result<()> {
         refuse_non_l1(coord, address, out.len())?;
         self.read_memory(window, coord, address, out)
     }
@@ -508,17 +439,11 @@ impl<T: Transport> Device<T> {
         address: u64,
         data: &[u8],
     ) -> Result<()> {
-        self.transfer(
-            window,
-            coord,
-            address,
-            data.len(),
-            |dev, bar, off, range| {
-                dev.traffic.write_calls += 1;
-                dev.traffic.bytes_written += range.len() as u64;
-                dev.transport.bar_write_bulk(bar, off, &data[range])
-            },
-        )
+        self.transfer(window, coord, address, data.len(), |dev, bar, off, range| {
+            dev.traffic.write_calls += 1;
+            dev.traffic.bytes_written += range.len() as u64;
+            dev.transport.bar_write_bulk(bar, off, &data[range])
+        })
     }
 
     /// The bulk read. See [`Device::write_memory`].
@@ -533,15 +458,10 @@ impl<T: Transport> Device<T> {
         let mut done = 0usize;
         for chunk in self.plan(window, address, len)? {
             self.retarget(window, coord, chunk.window_base)?;
-            let bar_offset = tlb::window_bar_offset(window.index).expect("allocated window")
-                + chunk.offset_in_window;
+            let bar_offset = tlb::window_bar_offset(window.index).expect("allocated window") + chunk.offset_in_window;
             self.traffic.read_calls += 1;
             self.traffic.bytes_read += chunk.len as u64;
-            self.transport.bar_read_bulk(
-                window.kind.bar(),
-                bar_offset,
-                &mut out[done..done + chunk.len],
-            )?;
+            self.transport.bar_read_bulk(window.kind.bar(), bar_offset, &mut out[done..done + chunk.len])?;
             done += chunk.len;
         }
         Ok(())
@@ -550,13 +470,7 @@ impl<T: Transport> Device<T> {
     /// Read from `address` in the tile at `coord` into `out`, through `window`.
     ///
     /// Refuses the local-data-RAM aperture; see [`Device::local_ram_read`].
-    pub fn read<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        address: u64,
-        out: &mut [u8],
-    ) -> Result<()> {
+    pub fn read<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>, address: u64, out: &mut [u8]) -> Result<()> {
         refuse_local_ram_aperture(address, out.len())?;
         self.read_unchecked(window, coord, address, out)
     }
@@ -576,37 +490,24 @@ impl<T: Transport> Device<T> {
         let chunks = self.plan(window, address, len)?;
         for chunk in chunks {
             self.retarget(window, coord, chunk.window_base)?;
-            let bar_offset = tlb::window_bar_offset(window.index).expect("allocated window")
-                + chunk.offset_in_window;
+            let bar_offset = tlb::window_bar_offset(window.index).expect("allocated window") + chunk.offset_in_window;
             self.traffic.read_calls += 1;
             self.traffic.bytes_read += chunk.len as u64;
-            self.transport.bar_read(
-                window.kind.bar(),
-                bar_offset,
-                &mut out[done..done + chunk.len],
-            )?;
+            self.transport.bar_read(window.kind.bar(), bar_offset, &mut out[done..done + chunk.len])?;
             done += chunk.len;
         }
         debug_assert_eq!(done, len);
         Ok(())
     }
 
-    fn transfer<N: NocId, F>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        address: u64,
-        len: usize,
-        mut apply: F,
-    ) -> Result<()>
+    fn transfer<N: NocId, F>(&mut self, window: &Window, coord: NocCoord<N>, address: u64, len: usize, mut apply: F) -> Result<()>
     where
         F: FnMut(&mut Self, Bar, u64, std::ops::Range<usize>) -> Result<()>,
     {
         let mut done = 0usize;
         for chunk in self.plan(window, address, len)? {
             self.retarget(window, coord, chunk.window_base)?;
-            let bar_offset = tlb::window_bar_offset(window.index).expect("allocated window")
-                + chunk.offset_in_window;
+            let bar_offset = tlb::window_bar_offset(window.index).expect("allocated window") + chunk.offset_in_window;
             apply(self, window.kind.bar(), bar_offset, done..done + chunk.len)?;
             done += chunk.len;
         }
@@ -625,43 +526,26 @@ impl<T: Transport> Device<T> {
             let window_base = address & !(size - 1);
             let offset_in_window = address - window_base;
             let here = remaining.min(size - offset_in_window);
-            chunks.push(Chunk {
-                window_base,
-                offset_in_window,
-                len: here as usize,
-            });
-            address = address
-                .checked_add(here)
-                .ok_or(TransportError::OutOfBounds {
-                    bar: window.kind.bar(),
-                    offset: address,
-                    len: remaining,
-                })?;
+            chunks.push(Chunk { window_base, offset_in_window, len: here as usize });
+            address = address.checked_add(here).ok_or(TransportError::OutOfBounds {
+                bar: window.kind.bar(),
+                offset: address,
+                len: remaining,
+            })?;
             remaining -= here;
         }
         Ok(chunks)
     }
 
     /// Read one dword from a tile.
-    pub fn read32<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        address: u64,
-    ) -> Result<u32> {
+    pub fn read32<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>, address: u64) -> Result<u32> {
         let mut buf = [0u8; 4];
         self.read(window, coord, address, &mut buf)?;
         Ok(u32::from_le_bytes(buf))
     }
 
     /// Write one dword to a tile.
-    pub fn write32<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-        address: u64,
-        value: u32,
-    ) -> Result<()> {
+    pub fn write32<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>, address: u64, value: u32) -> Result<()> {
         self.write(window, coord, address, &value.to_le_bytes())
     }
 
@@ -669,11 +553,7 @@ impl<T: Transport> Device<T> {
     ///
     /// Reads `NOC_ENDPOINT_ID` and `NIU_CFG_0` through NoC #0's NIU, the same probe
     /// `ethdump.c:462-474` uses to walk the grid.
-    pub fn probe_tile<N: NocId>(
-        &mut self,
-        window: &Window,
-        coord: NocCoord<N>,
-    ) -> Result<Option<Tile<N>>> {
+    pub fn probe_tile<N: NocId>(&mut self, window: &Window, coord: NocCoord<N>) -> Result<Option<Tile<N>>> {
         let endpoint = self.read32(window, coord, niu::NOC0_BASE + niu::NOC_ENDPOINT_ID)?;
         if endpoint == 0 || endpoint == u32::MAX {
             return Ok(None);
@@ -726,8 +606,8 @@ pub const USABLE_2MIB_WINDOWS: u16 = NUM_2MIB_WINDOWS - 1;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{Bar, ConfigOffset};
+    use super::*;
     use tt_isa::noc::Noc0;
 
     /// A transport that models just enough of the chip to test windowing: it
@@ -775,10 +655,7 @@ mod tests {
     impl Transport for FakeTransport {
         fn bar_read(&mut self, bar: Bar, offset: u64, dst: &mut [u8]) -> Result<()> {
             self.reads.push((bar, offset, dst.len()));
-            assert!(
-                !Self::is_config(bar, offset),
-                "TLB config registers are write-only"
-            );
+            assert!(!Self::is_config(bar, offset), "TLB config registers are write-only");
             let (tile, addr) = self.translate(offset).expect("window is configured");
             self.log.push((false, addr, dst.len()));
             for (i, b) in dst.iter_mut().enumerate() {
@@ -793,8 +670,7 @@ mod tests {
                 let reg = (offset - tlb::CONFIG_BASE) / 4;
                 let (index, word) = ((reg / 3) as u16, (reg % 3) as usize);
                 assert_eq!(src.len(), 4, "config registers take dwords");
-                self.tlb_cfg.entry(index).or_default()[word] =
-                    u32::from_le_bytes(src.try_into().unwrap());
+                self.tlb_cfg.entry(index).or_default()[word] = u32::from_le_bytes(src.try_into().unwrap());
                 return Ok(());
             }
             if self.fail_data_writes {
@@ -832,20 +708,11 @@ mod tests {
 
     /// Data writes only; the three dwords of TLB configuration are filtered out.
     fn data_writes(d: &Device<FakeTransport>) -> Vec<(Bar, u64, usize)> {
-        d.transport
-            .writes
-            .iter()
-            .copied()
-            .filter(|(bar, off, _)| !(*bar == Bar::Bar0 && *off >= tlb::CONFIG_BASE))
-            .collect()
+        d.transport.writes.iter().copied().filter(|(bar, off, _)| !(*bar == Bar::Bar0 && *off >= tlb::CONFIG_BASE)).collect()
     }
 
     fn config_write_count(d: &Device<FakeTransport>) -> usize {
-        d.transport
-            .writes
-            .iter()
-            .filter(|(bar, off, _)| *bar == Bar::Bar0 && *off >= tlb::CONFIG_BASE)
-            .count()
+        d.transport.writes.iter().filter(|(bar, off, _)| *bar == Bar::Bar0 && *off >= tlb::CONFIG_BASE).count()
     }
 
     #[test]
@@ -857,15 +724,11 @@ mod tests {
         assert!(d.l1_write(&w, c(8, 0), 0x1000, &[0; 4]).is_err());
         assert!(d.l1_write(&w, c(0, 5), 0x1000, &[0; 4]).is_err());
         assert!(d.l1_write(&w, c(3, 4), 0xFFB1_21B0, &[0; 4]).is_err());
-        assert!(d
-            .l1_read(&w, c(3, 4), tensix::L1_SIZE - 2, &mut [0; 4])
-            .is_err());
+        assert!(d.l1_read(&w, c(3, 4), tensix::L1_SIZE - 2, &mut [0; 4]).is_err());
         assert_eq!(d.traffic(), before, "nothing may be sent");
-        d.l1_write(&w, c(3, 4), tensix::L1_SIZE - 4, &[1, 2, 3, 4])
-            .unwrap();
+        d.l1_write(&w, c(3, 4), tensix::L1_SIZE - 4, &[1, 2, 3, 4]).unwrap();
         let mut back = [0u8; 4];
-        d.l1_read(&w, c(3, 4), tensix::L1_SIZE - 4, &mut back)
-            .unwrap();
+        d.l1_read(&w, c(3, 4), tensix::L1_SIZE - 4, &mut back).unwrap();
         assert_eq!(back, [1, 2, 3, 4]);
     }
 
@@ -882,32 +745,20 @@ mod tests {
         assert_eq!(t.retargets, 2);
         assert_eq!(t.bytes_written, 16 + 2 * 12);
         assert_eq!(t.write_calls as usize, d.transport.writes.len());
-        assert_eq!(
-            t.bytes_written,
-            d.transport.writes.iter().map(|w| w.2 as u64).sum::<u64>()
-        );
+        assert_eq!(t.bytes_written, d.transport.writes.iter().map(|w| w.2 as u64).sum::<u64>());
 
         // A read in the window it is already pointed at: no retarget.
         let mut out = [0u8; 8];
         d.read(&w, c(1, 2), size, &mut out).unwrap();
         let delta = d.traffic() - t;
-        assert_eq!(
-            delta,
-            Traffic {
-                bytes_read: 8,
-                read_calls: 1,
-                ..Traffic::default()
-            }
-        );
+        assert_eq!(delta, Traffic { bytes_read: 8, read_calls: 1, ..Traffic::default() });
     }
 
     #[test]
     fn kernel_window_is_never_allocated() {
         let mut d = device();
         // Drain every 2 MiB window, holding them: a dropped window goes back.
-        let held: Vec<Window> = (0..USABLE_2MIB_WINDOWS)
-            .map(|_| d.alloc_window(WindowKind::TwoMib).unwrap())
-            .collect();
+        let held: Vec<Window> = (0..USABLE_2MIB_WINDOWS).map(|_| d.alloc_window(WindowKind::TwoMib).unwrap()).collect();
         let seen: Vec<u16> = held.iter().map(Window::index).collect();
         assert!(!seen.contains(&KERNEL_RESERVED_WINDOW));
         assert_eq!(seen.len(), 201);
@@ -927,19 +778,12 @@ mod tests {
         let index = w.index();
         d.free_window(w);
         let w2 = d.alloc_window(WindowKind::TwoMib).unwrap();
-        assert_eq!(
-            w2.index(),
-            index,
-            "lowest free window should come back first"
-        );
+        assert_eq!(w2.index(), index, "lowest free window should come back first");
 
         // The new holder must not inherit the old shadow, or it would skip the
         // reconfiguration it needs.
         d.write(&w2, c(1, 2), 0, &[0xAA; 4]).unwrap();
-        assert!(
-            config_write_count(&d) > before,
-            "reconfiguration must be repeated"
-        );
+        assert!(config_write_count(&d) > before, "reconfiguration must be repeated");
     }
 
     #[test]
@@ -948,9 +792,7 @@ mod tests {
         // Several passes over the whole pool, dropping each window rather than
         // freeing it. Before `Window` had a `Drop`, the second pass failed.
         for _ in 0..3 {
-            let held: Vec<Window> = (0..USABLE_2MIB_WINDOWS)
-                .map(|_| d.alloc_window(WindowKind::TwoMib).unwrap())
-                .collect();
+            let held: Vec<Window> = (0..USABLE_2MIB_WINDOWS).map(|_| d.alloc_window(WindowKind::TwoMib).unwrap()).collect();
             assert!(d.alloc_window(WindowKind::TwoMib).is_err());
             drop(held);
         }
@@ -961,10 +803,7 @@ mod tests {
         drop(w);
         let w = d.alloc_window(WindowKind::TwoMib).unwrap();
         d.write(&w, c(1, 2), 0, &[1; 4]).unwrap();
-        assert!(
-            config_write_count(&d) > before,
-            "reconfiguration must repeat"
-        );
+        assert!(config_write_count(&d) > before, "reconfiguration must repeat");
     }
 
     #[test]
@@ -994,11 +833,7 @@ mod tests {
         // Start four bytes before a window boundary, run eight bytes past it.
         d.write(&w, c(1, 2), size - 4, &[0x5A; 8]).unwrap();
         let writes = data_writes(&d);
-        assert_eq!(
-            writes.len(),
-            2,
-            "should have split into two accesses: {writes:?}"
-        );
+        assert_eq!(writes.len(), 2, "should have split into two accesses: {writes:?}");
         assert_eq!(writes[0].2, 4, "first piece runs to the window boundary");
         assert_eq!(writes[1].2, 4, "second piece starts the next window");
         // The second piece lands at the start of the window aperture, because the
@@ -1056,10 +891,7 @@ mod tests {
         d.write(&a, c(2, 3), 0x4000, &payload).unwrap();
         let mut back = vec![0u8; payload.len()];
         d.read(&b, c(2, 3), 0x4000, &mut back).unwrap();
-        assert_eq!(
-            back, payload,
-            "a second window must see the first window's writes"
-        );
+        assert_eq!(back, payload, "a second window must see the first window's writes");
     }
 
     #[test]
@@ -1089,19 +921,14 @@ mod tests {
             assert!(matches!(e, TransportError::Hazard { .. }), "{e}");
         }
         // A transfer that merely overlaps the aperture's first byte is caught too.
-        let e = dev
-            .write(&w, t, tensix::LOCAL_DATA_RAM_NOC_BASE - 2, &[0; 4])
-            .unwrap_err();
+        let e = dev.write(&w, t, tensix::LOCAL_DATA_RAM_NOC_BASE - 2, &[0; 4]).unwrap_err();
         assert!(matches!(e, TransportError::Hazard { .. }), "{e}");
         // And its neighbours are not: the debug registers and the NoC 0 NIU.
-        dev.write32(&w, t, tensix::LOCAL_DATA_RAM_NOC_BASE - 4, 0)
-            .unwrap();
+        dev.write32(&w, t, tensix::LOCAL_DATA_RAM_NOC_BASE - 4, 0).unwrap();
         dev.read32(&w, t, tensix::LOCAL_DATA_RAM_NOC_END).unwrap();
         assert!(dev.transport.writes.iter().all(|&(_, off, _)| {
             // Nothing that reached the transport landed in the aperture.
-            dev.transport
-                .translate(off)
-                .is_none_or(|(_, a)| !touches_local_ram_aperture(a, 1))
+            dev.transport.translate(off).is_none_or(|(_, a)| !touches_local_ram_aperture(a, 1))
         }));
     }
 
@@ -1112,15 +939,11 @@ mod tests {
         let t = gate_tile();
         dev.set_core_reset(&w, t, Core::T1, true).unwrap();
         let before = dev.transport.writes.len();
-        let e = dev
-            .local_ram_write(&w, t, Core::T1, 0, &[1, 2, 3, 4])
-            .unwrap_err();
+        let e = dev.local_ram_write(&w, t, Core::T1, 0, &[1, 2, 3, 4]).unwrap_err();
         assert!(matches!(e, TransportError::Hazard { .. }), "{e}");
         assert_eq!(dev.transport.writes.len(), before, "nothing may be sent");
         let mut buf = [0u8; 4];
-        let e = dev
-            .local_ram_read(&w, t, Core::T1, 0, &mut buf)
-            .unwrap_err();
+        let e = dev.local_ram_read(&w, t, Core::T1, 0, &mut buf).unwrap_err();
         assert!(matches!(e, TransportError::Hazard { .. }), "{e}");
     }
 
@@ -1132,8 +955,7 @@ mod tests {
         dev.set_core_reset(&w, t, Core::T1, true).unwrap();
         dev.park_core(&w, t, Core::T1, 0x4_0000).unwrap();
         assert!(!dev.is_core_in_reset(&w, t, Core::T1).unwrap());
-        dev.local_ram_write(&w, t, Core::T1, 16, &[9, 8, 7, 6])
-            .unwrap();
+        dev.local_ram_write(&w, t, Core::T1, 16, &[9, 8, 7, 6]).unwrap();
         let mut back = [0u8; 4];
         dev.local_ram_read(&w, t, Core::T1, 16, &mut back).unwrap();
         assert_eq!(back, [9, 8, 7, 6]);
@@ -1148,13 +970,10 @@ mod tests {
         let w = dev.alloc_window(WindowKind::TwoMib).unwrap();
         let t = gate_tile();
         let size = u64::from(Core::T0.local_data_ram_size());
-        let e = dev
-            .local_ram_write(&w, t, Core::T0, size - 4, &[0; 8])
-            .unwrap_err();
+        let e = dev.local_ram_write(&w, t, Core::T0, size - 4, &[0; 8]).unwrap_err();
         assert!(matches!(e, TransportError::Hazard { .. }), "{e}");
         // B's RAM is 8 KiB, so the same offset is fine there.
-        dev.local_ram_write(&w, t, Core::B, size - 4, &[0; 8])
-            .unwrap();
+        dev.local_ram_write(&w, t, Core::B, size - 4, &[0; 8]).unwrap();
     }
 
     // -- Power policy ----------------------------------------------------------
@@ -1166,8 +985,7 @@ mod tests {
         assert_eq!(PowerPolicy::default(), PowerPolicy::Busy);
         let dev = device();
         assert!(!dev.busy, "no ARC to message on a simulated transport");
-        let manual =
-            Device::open_with_power(FakeTransport::default(), PowerPolicy::Manual).unwrap();
+        let manual = Device::open_with_power(FakeTransport::default(), PowerPolicy::Manual).unwrap();
         assert!(!manual.busy);
     }
 }

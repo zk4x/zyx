@@ -997,9 +997,9 @@ impl Kernel {
                 // output tile is 64 DST rows: `fi` 0 accumulates rows 0..31,
                 // `MATH_AM_FI` moves the base on 32 rows for `fi` 1, so the
                 // accumulator is the tile's slot directly.
+                use crate::backend::tenstorrent::kern::matmul::{MATH_AM_FI, MATH_AM_GROUP, MATH_AM_HALF, MATH_AM_PHASE};
                 use tt_isa::backend::ThreadConfigEntry;
                 use tt_isa::cfg::generated::thread;
-                use crate::backend::tenstorrent::kern::matmul::{MATH_AM_FI, MATH_AM_GROUP, MATH_AM_HALF, MATH_AM_PHASE};
                 // `math_prelude`: one `SETC16` per single-field entry, and a
                 // whole-word `Setcfg` for SEC2..SEC4, which carry several
                 // fields of one word (`math_addr_mods`).
@@ -1010,10 +1010,7 @@ impl Kernel {
                 // accumulator one row per multiply).
                 let one = |f: tt_isa::cfg::ThreadConfigField, v: u16| -> TTOp {
                     let e = ThreadConfigEntry::zeroed(f.addr32()).set(f, v).expect("matmul thread entry is encodable");
-                    TTOp::Setc16 {
-                        field: u32::from(e.addr32()),
-                        value: e.value(),
-                    }
+                    TTOp::Setc16 { field: u32::from(e.addr32()), value: e.value() }
                 };
                 let word = |fields: &[(tt_isa::cfg::ThreadConfigField, u16)]| -> TTOp {
                     let mut e = ThreadConfigEntry::zeroed(fields[0].0.addr32());
@@ -1025,10 +1022,7 @@ impl Kernel {
                     // the same index in the `Config` space is a packer/unpacker
                     // register (writing address modifiers there is how the
                     // packer got its `PCK0_ADDR_CTRL_XY_REG_1` fields poked).
-                    TTOp::Setc16 {
-                        field: u32::from(e.addr32()),
-                        value: e.value(),
-                    }
+                    TTOp::Setc16 { field: u32::from(e.addr32()), value: e.value() }
                 };
                 let mut before = vec![
                     one(thread::ADDR_MOD_AB_SEC0_SrcAIncr, 0),
@@ -1164,9 +1158,7 @@ impl Kernel {
             return Some((self.dtype(id), cb));
         }
         match self.ops[id].op {
-            Op::TT(TTOp::Sfpu { slot, .. } | TTOp::ReduceTile { slot, .. }) => {
-                Some((self.dtype(id), slot))
-            }
+            Op::TT(TTOp::Sfpu { slot, .. } | TTOp::ReduceTile { slot, .. }) => Some((self.dtype(id), slot)),
             Op::TT(TTOp::Setrwc { dst }) => Some((self.dtype(id), dst)),
             Op::TT(TTOp::Copy { dst, .. }) => match self.ops[dst].op {
                 Op::Storage { dtype, scope: MemScope::Register, .. } => Some((dtype, dst)),
@@ -1612,10 +1604,7 @@ impl Kernel {
             }
         }
         let budget = if dst_wide == Some(true) { 8 } else { 16 };
-        assert!(
-            dst_count <= budget,
-            "tt_verify: {dst_count} DST register tiles exceed the {budget}-tile budget"
-        );
+        assert!(dst_count <= budget, "tt_verify: {dst_count} DST register tiles exceed the {budget}-tile budget");
         // The allocated form has no SSA left: no generic memory op (a load
         // turns an effect into a value, a store turns a value into an effect)
         // and no high-level compute may survive `tt_dataflow_select`. Anything that
@@ -1627,7 +1616,12 @@ impl Kernel {
                 }
                 Op::Asm { .. } => panic!("tt_verify: Op::Asm in a TT kernel at {id:?}"),
                 Op::Reduce { .. } => panic!("tt_verify: reduce {id:?} is not lowered"),
-                Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Bitcast { .. } | Op::Select { .. } | Op::Stack { .. } => {
+                Op::Unary { .. }
+                | Op::Binary { .. }
+                | Op::Cast { .. }
+                | Op::Bitcast { .. }
+                | Op::Select { .. }
+                | Op::Stack { .. } => {
                     // Index arithmetic is integer-typed and dead but harmless;
                     // any float value op means the lowering missed it.
                     if self.dtype(id).is_float() {
