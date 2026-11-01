@@ -297,8 +297,10 @@ pub struct TTNativeProgram {
 // ---------------------------------------------------------------------------
 
 /// DRAM interleaving granularity: bytes striped round-robin across the chip's
-/// channels before the next channel gets the next page.
-const STRIPE: u64 = 2048;
+/// channels before the next channel gets the next page. Tenstorrent interleaves
+/// a buffer in units of its page rounded to `DRAM_ALIGNMENT` (`64` on
+/// Blackhole) — 4 KB for an FP32 tile; 4 KB is the default here.
+const STRIPE: u64 = 4096;
 
 /// One allocation in the flat DRAM space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,7 +342,7 @@ pub struct TTMemoryPool {
     free_bytes: Dim,
     chunks: Slab<ChunkId, DramChunk>,
     free_set: Set<ChunkId>,
-    /// First flat address never handed out, 2 KB aligned.
+    /// First flat address never handed out, [`STRIPE`] aligned.
     bump: u64,
 }
 
@@ -435,29 +437,81 @@ impl TTMemoryPool {
     }
 
     /// Write `src` at byte `off` of chunk `id`.
+    ///
+    /// The bytes are gathered per channel and each channel's run goes out as
+    /// one range, so a tensor of any size costs at most one DRAM write and one
+    /// visibility barrier per channel (eight on a full chip), not one per page.
     pub fn write_at(&mut self, id: ChunkId, off: usize, src: &[u8]) -> Result<(), BackendError> {
         const STATUS: ErrorStatus = ErrorStatus::MemoryCopyH2P;
         let addr = self.chunks[id].addr;
         let off = u64::try_from(off).map_err(|_| io_error(STATUS, "DRAM write offset does not fit u64".into()))?;
         let len = src.len() as u64;
         self.check(id, off, len).map_err(|e| io_error(STATUS, e))?;
-        let segments = self.stripes(addr + off, len).map_err(|e| io_error(STATUS, e))?;
-        ttsim::dram_write(src.to_vec(), segments).map_err(|e| io_error(STATUS, e))
+        let stripes = self.stripes(addr + off, len).map_err(|e| io_error(STATUS, e))?;
+        let channel_count = usize::from(self.dram.channel_count());
+        let mut runs: Vec<(DramRange, Vec<u8>)> = Vec::with_capacity(channel_count);
+        let mut slot: Vec<Option<usize>> = vec![None; channel_count];
+        for (range, at) in stripes {
+            let channel = usize::from(range.channel().index());
+            let index = match slot[channel] {
+                Some(index) => index,
+                None => {
+                    slot[channel] = Some(runs.len());
+                    runs.push((range, Vec::with_capacity(range.len() as usize)));
+                    runs.len() - 1
+                }
+            };
+            let (run, bytes) = &mut runs[index];
+            let start = run.offset();
+            debug_assert_eq!(start + bytes.len() as u64, range.offset(), "a channel's pages are contiguous");
+            bytes.extend_from_slice(&src[at..at + range.len() as usize]);
+            let end = range.offset() + range.len();
+            *run = range.channel().range(start, end - start).ok_or_else(|| {
+                io_error(STATUS, format!("DRAM channel {} run {start}..{end} leaves the channel", range.channel().index()))
+            })?;
+        }
+        ttsim::dram_write(runs).map_err(|e| io_error(STATUS, e))
     }
 
-    /// Read byte `off` of chunk `id` into `dst`.
+    /// Read byte `off` of chunk `id` into `dst`. One DRAM read per channel; see
+    /// [`Self::write_at`].
     pub fn read_at(&mut self, id: ChunkId, off: usize, dst: &mut [u8]) -> Result<(), BackendError> {
         const STATUS: ErrorStatus = ErrorStatus::MemoryCopyP2H;
         let addr = self.chunks[id].addr;
         let off = u64::try_from(off).map_err(|_| io_error(STATUS, "DRAM read offset does not fit u64".into()))?;
         let len = dst.len() as u64;
         self.check(id, off, len).map_err(|e| io_error(STATUS, e))?;
-        let segments = self.stripes(addr + off, len).map_err(|e| io_error(STATUS, e))?;
-        let ranges: Vec<DramRange> = segments.iter().map(|(range, _)| *range).collect();
-        let parts = ttsim::dram_read(ranges).map_err(|e| io_error(STATUS, e))?;
-        for ((range, at), part) in segments.iter().zip(parts) {
-            debug_assert_eq!(part.len() as u64, range.len(), "DRAM read returned a different length than asked");
-            dst[*at..*at + part.len()].copy_from_slice(&part);
+        let stripes = self.stripes(addr + off, len).map_err(|e| io_error(STATUS, e))?;
+        let channel_count = usize::from(self.dram.channel_count());
+        let mut runs: Vec<DramRange> = Vec::with_capacity(channel_count);
+        let mut slot: Vec<Option<usize>> = vec![None; channel_count];
+        for (range, _) in &stripes {
+            let channel = usize::from(range.channel().index());
+            match slot[channel] {
+                Some(index) => {
+                    let run = runs[index];
+                    let start = run.offset();
+                    let end = range.offset() + range.len();
+                    runs[index] = run.channel().range(start, end - start).ok_or_else(|| {
+                        io_error(STATUS, format!("DRAM channel {} run {start}..{end} leaves the channel", channel))
+                    })?;
+                }
+                None => {
+                    slot[channel] = Some(runs.len());
+                    runs.push(*range);
+                }
+            }
+        }
+        let parts = ttsim::dram_read(runs).map_err(|e| io_error(STATUS, e))?;
+        // Each channel's bytes arrive as one run; walk the pages in flat order
+        // and take each page's slice from its channel's run.
+        let mut cursor: Vec<usize> = vec![0; channel_count];
+        for (range, at) in stripes {
+            let channel = usize::from(range.channel().index());
+            let index = slot[channel].expect("every striped channel has a run");
+            let n = range.len() as usize;
+            dst[at..at + n].copy_from_slice(&parts[index][cursor[channel]..cursor[channel] + n]);
+            cursor[channel] += n;
         }
         Ok(())
     }
@@ -474,9 +528,11 @@ impl TTMemoryPool {
     /// The per-channel DRAM ranges of chunk `id`'s bytes `off..off + len`, each
     /// paired with its byte offset inside that range.
     ///
-    /// One range per 2 KB page, so the range's bytes are contiguous in the L1
-    /// block that receives them: a mover entry carries one range and the same
-    /// offset into the block.
+    /// One range per [`STRIPE`]-byte page, so the range's bytes are contiguous
+    /// in the L1 block that receives them: a mover entry carries one range and
+    /// the same offset into the block. (Host transfers coalesce these back into
+    /// one run per channel; a mover entry cannot, because its L1 side is
+    /// contiguous only per page.)
     pub fn ranges(&self, id: ChunkId, off: usize, len: usize) -> Result<Vec<(DramRange, usize)>, String> {
         let chunk = self.chunks[id];
         let off = u64::try_from(off).map_err(|_| "DRAM access offset does not fit u64".to_string())?;

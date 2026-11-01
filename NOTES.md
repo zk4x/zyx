@@ -54,15 +54,15 @@ a host narrowing write. The DM cores were never involved.
 
 - `TTMemoryPool` (`backend/tenstorrent/mod.rs`) is a flat DRAM allocator:
   `DramChunk { addr, len }` in the chip's address space, `Slab` + `free_set`
-  + `free_bytes` + a 2 KB-aligned `bump`, best-fit reuse and `dispose` copied
+  + `free_bytes` + a 4 KB-aligned `bump`, best-fit reuse and `dispose` copied
   from `HostMemoryPool`. `total` is `min(detect_dram_bytes(), channels *
   CHANNEL_BYTES)`, so the flat space never needs a channel it does not have.
 - `host_to_pool`/`pool_to_host` (plus `read_at`/`write_at` for sub-chunk
   slices) translate the flat range into per-channel `DramRange`s and go
   through the owner thread: `ttsim::dram_write`/`dram_read` →
   `Device::dram_write`/`dram_read` on one held `TwoMib` window. Translation:
-  page `p = addr / 2048`, `channel = p % channels`, offset
-  `(p / channels) * 2048 + addr % 2048`; accesses are cut at page
+  page `p = addr / 4096`, `channel = p % channels`, offset
+  `(p / channels) * 4096 + addr % 4096`; accesses are cut at page
   boundaries. One command carries every segment of a transfer.
 - `Pool::TT` `buffer_ptr_mut` is `todo!("TT buffers have no staging
   pointer")` — it never existed for TT and must not come back.
@@ -78,6 +78,21 @@ a host narrowing write. The DM cores were never involved.
   harvested chip (a p100's seven channels) until the translated DRAM
   numbering lands.
 
+**Interleaving and host transfers (2026-11-01).** The flat space is striped in
+4 KB pages (`STRIPE`, round-robin over the chip's usable channels). tt-metal
+interleaves a buffer in units of *its* page rounded to `DRAM_ALIGNMENT` (64 on
+Blackhole) — 4 KB for an FP32 tile, 2 KB for BF16 — so 4 KB is the default here
+and a per-buffer page is a later change (it would need the page at
+`allocate` time). Host upload/readback coalesces: a channel's pages are
+contiguous in channel offset, so a transfer is gathered per channel and each
+run goes out as **one** `dram_write`/`dram_read` — at most `channel_count`
+commands and visibility barriers per tensor, instead of one per page. A 1 GB
+upload is ~512 host window retargets (2 MiB TLB window) rather than ~512 K
+command round trips. The gather costs one extra host pass over the bytes,
+which is where tt-metal instead pins host memory and lets the command queue
+DMA (`k_pin_write_threshold_bytes` = 32 MB); `dm::op::HOST_READ`/`HOST_WRITE`
+is the same idea for us and is not wired yet.
+
 **The boundary is the tile's data movers (2026-11-01).** No tensor byte crosses
 the host inside a launch:
 
@@ -91,7 +106,7 @@ the host inside a launch:
   writes as **one list** after they finish
   (`tt_isa::dm::op::LIST` → `dm::LIST` ring, `OP`, `LEN`, `SEQ`, then `DONE` /
   `ERROR`). Entries are `[op, channel, port, offset, l1, len, 0, 0]`, one per
-  2 KB page of the flat chunk — the page is the unit that is contiguous on both
+  4 KB page of the flat chunk — the page is the unit that is contiguous on both
   sides. Lists are cut at `dm::LIST_MAX` (512 entries, 1 MB of pages) and each
   is waited for.
 - The launch no longer stages L1 or reads DRAM: it only translates flat chunk
@@ -104,7 +119,7 @@ the host inside a launch:
   `write_at`, not mover entries.
 - Constraints this introduced: a `READ` entry needs
   `offset % 64 == l1 % 64`, a `WRITE` `offset % 16 == l1 % 16`
-  (`Descriptor::decode`). Chunks are 2 KB aligned and tile moves are 4 KB
+  (`Descriptor::decode`). Chunks are 4 KB aligned and tile moves are 4 KB
   aligned, so the gates fit; a violating move is refused loudly by the mover,
   never silently truncated.
 - Still host-issued, in order of what it costs: the three role images are
