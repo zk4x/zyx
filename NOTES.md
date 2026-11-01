@@ -78,6 +78,42 @@ a host narrowing write. The DM cores were never involved.
   harvested chip (a p100's seven channels) until the translated DRAM
   numbering lands.
 
+**The boundary is the tile's data movers (2026-11-01).** No tensor byte crosses
+the host inside a launch:
+
+- Each tile boots RISCV B (`tt_firmware_images::DM_B`) and RISCV NC (`DM_NC`,
+  through the stub at NC's reset PC) once, on its first launch
+  (`ttsim::boot_movers`). The mailbox is written first (`MY_X`/`MY_Y`,
+  `USABLE` = the DRAM grid's mask, `IN_FLIGHT_CAP`, and every word the host
+  owns zeroed), then the image starts and the host waits for `RUNNING` and
+  `CAPS`.
+- A launch hands B its reads as **one list** before the roles run and NC its
+  writes as **one list** after they finish
+  (`tt_isa::dm::op::LIST` → `dm::LIST` ring, `OP`, `LEN`, `SEQ`, then `DONE` /
+  `ERROR`). Entries are `[op, channel, port, offset, l1, len, 0, 0]`, one per
+  2 KB page of the flat chunk — the page is the unit that is contiguous on both
+  sides. Lists are cut at `dm::LIST_MAX` (512 entries, 1 MB of pages) and each
+  is waited for.
+- The launch no longer stages L1 or reads DRAM: it only translates flat chunk
+  ranges into `(DramRange, l1)` pairs (`TTMemoryPool::ranges`) and hands them
+  over. `TTDmMove` is still the *description* of a move; the mover is the
+  executor.
+- One exception stays on the host: a 16-bit output (BF16/F16) is read back and
+  narrowed there, because the packer's format conversion is refused by the
+  pinned ttsim (`pack_fmt_conv_mode=0x105`). Those moves are `read_back` and
+  `write_at`, not mover entries.
+- Constraints this introduced: a `READ` entry needs
+  `offset % 64 == l1 % 64`, a `WRITE` `offset % 16 == l1 % 16`
+  (`Descriptor::decode`). Chunks are 2 KB aligned and tile moves are 4 KB
+  aligned, so the gates fit; a violating move is refused loudly by the mover,
+  never silently truncated.
+- Still host-issued, in order of what it costs: the three role images are
+  re-loaded every launch (`runtime::run`), and a tensor's placement/readback is
+  still a per-page host DRAM copy. The first goes away with a resident
+  `dm::op::KERNEL` entry naming programs in the program cache (one list per
+  op, one host round trip — the shape the shim had); the second with
+  `dm::op::HOST_READ`/`HOST_WRITE`.
+
 Verification: the Rust ttsim wrapper's `dram_read`/`dram_write` **do work**.
 `23_tt_lowering`, each gate run alone: `transfer_roundtrip` 0/200, `matmul`
 0/120, `sigmoid` 0/2560, `sum` 0/10, `sum_sigmoid` 0/10. `matmul_sigmoid`
@@ -224,8 +260,11 @@ Since the 2026-10-30 handoff:
    codegen dispatch match is the only encoder; delete `Program` /
    `Instruction` / `Code` / `LoopForm` / `REPLAY` from the lowering; remove
    `Sfpu { kind }` and `ReduceTile`.
-3. **Reader/Writer DM blobs** once step 0 is real; the simulator may keep
-   the host-staged fallback, named as such.
+3. **Reader/Writer DM** — *done for the boundary itself* (2026-11-01): the
+   tile's B/NC movers execute every boundary move as one list per direction,
+   see §1. What remains of this step is folding the role run into the same
+   list (`dm::op::KERNEL` + resident programs), so an op is one host round
+   trip, and moving placement upload/readback onto `HOST_READ`/`HOST_WRITE`.
 4. **Loop lowering** (`REPLAY` / mailbox loop table, launch-time counts) for
    `softmax`; multi-tile per core.
 5. **Fixes**: `Kernel::dtype` for `TTOp::Setrwc` returns `dst`, not `IDX_T`
@@ -250,6 +289,10 @@ Since the 2026-10-30 handoff:
 - Loops are `REPLAY`/loop-table entries with launch-time counts; unrolling is
   a search decision before the device epilogue.
 - `Pool::TT` is device DRAM. Host staging is only upload/readback.
+- The DRAM↔L1 boundary belongs to the tile's data movers (RISCV B reads,
+  RISCV NC writes), never to the host. A launch hands the movers lists; no
+  tensor byte crosses the host between placement and readback. Only a 16-bit
+  output's narrowing is the host's, and only because the packer cannot do it.
 
 ## HISTORY (2026-10-30) — superseded by CURRENT STATE above
 

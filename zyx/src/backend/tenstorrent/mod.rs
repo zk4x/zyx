@@ -34,10 +34,12 @@
 // `TT_TTSIM_LIB` or `vendor/libttsim_bh.so`; only its wrapper lives here.
 //
 // A `Pool::TT` chunk is device DRAM (the card's GDDR6), not host memory: the
-// pool hands out flat byte ranges of the chip's DRAM and every boundary move
-// reaches them through `dram_read`/`dram_write` on the owner thread. There is
-// no CPU pointer to a TT chunk. The device side only ever sees L1
-// (`runtime::Kernel::stage` and `read_back`), so a kernel never round-trips
+// pool hands out flat byte ranges of the chip's DRAM, and the host touches them
+// only for placement and readback. Inside a launch the tile's data movers own
+// the boundary: RISCV B reads the operands DRAM->L1 before the roles run and
+// RISCV NC writes the results L1->DRAM after they finish (`tt_isa::dm`), so no
+// tensor byte crosses the host. The device side only ever sees L1
+// (`runtime::Kernel::stage` and `read_back`): a kernel never round-trips
 // through DRAM while its roles run.
 
 use self::ttsim::{NativeRun, run as run_native};
@@ -469,6 +471,20 @@ impl TTMemoryPool {
         Ok(())
     }
 
+    /// The per-channel DRAM ranges of chunk `id`'s bytes `off..off + len`, each
+    /// paired with its byte offset inside that range.
+    ///
+    /// One range per 2 KB page, so the range's bytes are contiguous in the L1
+    /// block that receives them: a mover entry carries one range and the same
+    /// offset into the block.
+    pub fn ranges(&self, id: ChunkId, off: usize, len: usize) -> Result<Vec<(DramRange, usize)>, String> {
+        let chunk = self.chunks[id];
+        let off = u64::try_from(off).map_err(|_| "DRAM access offset does not fit u64".to_string())?;
+        let len = u64::try_from(len).map_err(|_| "DRAM access length does not fit u64".to_string())?;
+        self.check(id, off, len)?;
+        self.stripes(chunk.addr + off, len)
+    }
+
     /// Split a flat DRAM range into the per-channel ranges it spans, each
     /// paired with its byte offset inside the caller's buffer.
     ///
@@ -886,10 +902,13 @@ impl TTDevice {
                 context: format!("tenstorrent grid of {} x {} has no cores", grid_dims[0], grid_dims[1]).into(),
             });
         }
-        // The boundary: reader moves copy the param's DRAM bytes into the CB's
-        // L1 address before any role starts; writer moves read them back after
-        // every role finished. Both stay outside the kernel, so no role ever
-        // touches DRAM.
+        // The boundary: reader moves bring the param's DRAM bytes into the CB's
+        // L1 address before any role starts; writer moves write them back out
+        // after every role finished. Both are the tile's data movers' lists
+        // (`ttsim`), not host copies, so no role touches DRAM and no tensor
+        // byte crosses the host inside a launch. A 16-bit output is the one
+        // exception: its narrowing is the host's (see the writer loop below),
+        // so that move is read back instead.
         //
         // Grid dispatch: one run per grid point, on that point's Tensix tile,
         // with each boundary move offset by the point's group indices. The
@@ -912,60 +931,66 @@ impl TTDevice {
                     status: ErrorStatus::KernelLaunch,
                     context: format!("tenstorrent grid point ({gidx0}, {gidx1}) is not a Tensix tile").into(),
                 })?;
-                let mut stage: Vec<(u64, Vec<u8>)> = Vec::with_capacity(prog.native.reader.len());
+                let mut reads: Vec<(DramRange, u32)> = Vec::new();
+                let mut writes: Vec<(DramRange, u32)> = Vec::new();
+                let mut narrows: Vec<(u32, ChunkId, usize, u64, usize, u8)> = Vec::new();
                 {
-                    let mut tpool = super::lock(self.memory_pool, tpool);
+                    let tpool = super::lock(self.memory_pool, tpool);
                     for mv in &prog.native.reader {
                         let chunk = chunks[mv.param as usize].ok_or_else(|| BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: format!("reader move names param {}, which has no buffer arg", mv.param).into(),
                         })?;
-                        let bytes = mv.bytes as usize;
-                        let off = tt_move_offset(mv, gidx0, gidx1);
-                        let len = tpool.chunk_len(chunk);
-                        let end = off.checked_add(bytes).unwrap_or(usize::MAX);
-                        if end > len {
-                            return Err(BackendError {
+                        let ranges = tpool.ranges(chunk, tt_move_offset(mv, gidx0, gidx1), mv.bytes as usize).map_err(|e| {
+                            BackendError {
                                 status: ErrorStatus::KernelLaunch,
-                                context: format!(
-                                    "reader move of {bytes} bytes at offset {off} from param {} exceeds its {len} byte buffer",
-                                    mv.param
-                                )
-                                .into(),
-                            });
+                                context: format!("reader move of param {}: {e}", mv.param).into(),
+                            }
+                        })?;
+                        for (range, at) in ranges {
+                            reads.push((range, mv.l1 + at as u32));
                         }
-                        let mut data = vec![0u8; bytes];
-                        tpool.read_at(chunk, off, &mut data)?;
-                        stage.push((u64::from(mv.l1), data));
+                    }
+                    for mv in &prog.native.writer {
+                        let chunk = chunks[mv.param as usize].ok_or_else(|| BackendError {
+                            status: ErrorStatus::KernelLaunch,
+                            context: format!("writer move names param {}, which has no buffer arg", mv.param).into(),
+                        })?;
+                        let off = tt_move_offset(mv, gidx0, gidx1);
+                        let ranges = tpool.ranges(chunk, off, mv.bytes as usize).map_err(|e| BackendError {
+                            status: ErrorStatus::KernelLaunch,
+                            context: format!("writer move of param {}: {e}", mv.param).into(),
+                        })?;
+                        if mv.narrow == TT_NARROW_NONE {
+                            for (range, at) in ranges {
+                                writes.push((range, mv.l1 + at as u32));
+                            }
+                        } else {
+                            // A narrowed output cannot be written by the mover:
+                            // the conversion is the host's (see below).
+                            narrows.push((mv.param, chunk, off, u64::from(mv.l1), mv.bytes as usize, mv.narrow));
+                        }
                     }
                 }
-                let mut spans: Vec<(u64, usize, u32, usize)> = Vec::with_capacity(prog.native.writer.len());
-                for mv in &prog.native.writer {
-                    spans.push((u64::from(mv.l1), mv.bytes as usize, mv.param, tt_move_offset(mv, gidx0, gidx1)));
-                }
-                let read_back: Vec<(u64, usize)> = spans.iter().map(|(l1, bytes, _, _)| (*l1, *bytes)).collect();
+                let read_back: Vec<(u64, usize)> = narrows.iter().map(|(_, _, _, l1, bytes, _)| (*l1, *bytes)).collect();
                 let run = NativeRun {
                     tile: (x, y),
                     roles: prog.roles.clone(),
                     loops: prog.loops.clone(),
-                    stage,
+                    reads,
+                    writes,
                     read_back,
                     sems: prog.sems.clone(),
                 };
                 let outcome = run_native(run)
                     .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: e.into_boxed_str() })?;
                 let mut tpool = super::lock(self.memory_pool, tpool);
-                for (idx, (_, bytes, param, off)) in spans.iter().enumerate() {
-                    let chunk = chunks[*param as usize].ok_or_else(|| BackendError {
-                        status: ErrorStatus::KernelLaunch,
-                        context: format!("writer move names param {param}, which has no buffer arg").into(),
-                    })?;
+                for (idx, (param, chunk, off, _, bytes, narrow)) in narrows.iter().enumerate() {
                     let out = &outcome.l1[idx];
                     // Writer-side narrowing happens on the host, on the read-back
                     // bytes: the packer cannot do it (F32 `Dst` -> BF16 L1 is
                     // `pack_fmt_conv_mode=0x105`, which the pinned ttsim refuses).
-                    let narrowed: Vec<u8> = match prog.native.writer[idx].narrow {
-                        TT_NARROW_NONE => out[..(*bytes).min(out.len())].to_vec(),
+                    let narrowed: Vec<u8> = match *narrow {
                         TT_NARROW_BF16 => {
                             debug_assert_eq!(out.len() % 4, 0, "narrowing a partial f32 datum");
                             let mut bytes_out = Vec::with_capacity(out.len() / 2);
@@ -984,20 +1009,11 @@ impl TTDevice {
                             }
                             bytes_out
                         }
-                        other => unreachable!("writer narrowing code {other} is not TT_NARROW_NONE/F16/BF16"),
+                        TT_NARROW_NONE => unreachable!("writer param {param} is 8-bit wide: nothing to narrow"),
+                        other => unreachable!("writer narrowing code {other} is not TT_NARROW_F16/BF16"),
                     };
-                    let len = tpool.chunk_len(chunk);
-                    if off + narrowed.len() > len {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelLaunch,
-                            context: format!(
-                                "writer move of {} bytes at offset {off} exceeds param {param}'s {len} byte buffer",
-                                narrowed.len()
-                            )
-                            .into(),
-                        });
-                    }
-                    tpool.write_at(chunk, *off, &narrowed)?;
+                    debug_assert_eq!(narrowed.len(), bytes / 2, "writer narrowing changed the datum count");
+                    tpool.write_at(*chunk, *off, &narrowed)?;
                 }
             }
         }
