@@ -1491,12 +1491,14 @@ impl Kernel {
                 self.ops[id].op = last;
                 return self.tt_materialize(id, dtype, slot, lower);
             }
-            // An integer `Add` is `SFPIADD`, never the float arm: `SFPMAD`
-            // would add the two words as F32 and drop the integer carry, which
-            // silently loses `tt_exp2`'s `bits(d) + (n << 23)` (every |x| >=
-            // 0.5 came out exactly half of 2^x). The pattern table keys on the
-            // `BOp` alone, so the dtype has to be checked here.
-            Op::Binary { x, y, bop: BOp::Add } if self.dtype(id) == DType::I32 => {
+            // An integer `Add`/`Sub` is `SFPIADD`, never the float arm:
+            // `SFPMAD` would add the two words as F32 and drop the integer
+            // carry, which silently loses `tt_exp2`'s `bits(d) + (n << 23)`
+            // (every |x| >= 0.5 came out exactly half of 2^x), and the float
+            // arm's unpack refuses an `I32` tile outright (`tt_log2`'s
+            // `e - 127`). The pattern table keys on the `BOp` alone, so the
+            // dtype has to be checked here.
+            Op::Binary { x, y, bop } if matches!(bop, BOp::Add | BOp::Sub) && self.dtype(id) == DType::I32 => {
                 // A scalar constant operand has no tile; fill one, as the
                 // float arms' `SfpuConst` emitter does.
                 let (dtype, a, b) = if matches!(self.ops[x].op, Op::Const(_)) {
@@ -1513,7 +1515,11 @@ impl Kernel {
                     (dtype, a, b)
                 };
                 let slot = self.tt_new_dst(dtype, lower.prologue);
-                let mut ops = self.tt_sfp_int_add(a, b, slot);
+                let mut ops = match bop {
+                    BOp::Add => self.tt_sfp_int_add(a, b, slot),
+                    BOp::Sub => self.tt_sfp_int_sub(a, b, slot),
+                    other => unreachable!("the arm collected {other:?}"),
+                };
                 let last = ops.pop().expect("the sequence is never empty");
                 for op in ops {
                     self.insert_before(id, op);
@@ -2406,6 +2412,29 @@ impl Kernel {
         ops
     }
 
+    /// Integer `Sub` on raw 32-bit words: `SFPIADD`'s two's-complement form
+    /// (`SFPIADD_MOD1_ARG_2SCOMP_LREG_DST`) computes `VD = VC - VD`, so the
+    /// copy of `b` into `L2` first makes it `L2 = a - b`. `Mod1 = 2 | 4`: the
+    /// two's-complement bit plus `CC_NONE`, which leaves the lane flags alone.
+    fn tt_sfp_int_sub(&mut self, a: OpId, b: OpId, slot: OpId) -> Vec<Op> {
+        use tt_isa::isa::generated::defs;
+        let (mov, isub) = (defs::SFPMOV.opcode(), defs::SFPIADD.opcode());
+        let mut ops: Vec<Op> = Vec::new();
+        // Lane-flag predication on, all lanes enabled: without `SFPENCC` the
+        // mask is whatever the previous program left, and a flagged-off lane
+        // would keep its stale word.
+        ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: defs::SFPENCC.opcode(), args: [3, 0, 10, 0, 0] })));
+        let body = self.tt_row_loop(|ops, o| {
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: INT32 }))));
+            ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [u16::from(L1), u16::from(L2), 0, 0, 0] })));
+            ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: isub, args: [0, u16::from(L0), u16::from(L2), 2 | 4, 0] })));
+            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
+        });
+        ops.extend(body);
+        ops
+    }
+
     /// `integer::body` ops 3..7 (`AND`/`OR`/`XOR`/`SHL`/`SHR`).
     fn tt_sfp_integer(&mut self, kind: u32, a: OpId, b: OpId, slot: OpId) -> Vec<Op> {
         use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
@@ -3100,6 +3129,155 @@ impl Kernel {
         }
     }
 
+    /// Fold a uniform constant tile back into its readers, before fusion.
+    ///
+    /// `tt_fill_const` materialises every scalar constant as a whole DST tile:
+    /// one `SfpConst` immediate plus 32 `SfpStore`s (rows 0, 2, .. 62 of the
+    /// 16-lane DST, the full 32x32 tile). Every reader then pays an `SfpLoad`
+    /// and the tile takes one of the eight. On `sigmoid` that is 22 tiles and
+    /// about 700 of the kernel's 734 DST stores: the constants, not the seams,
+    /// are the traffic. A uniform tile's read is row-invariant, so each
+    /// `SfpLoad` can become the very `SfpConst` the splat already used.
+    ///
+    /// Exact conditions: the slot is a `Register` storage whose only writer is
+    /// one splat (`SfpConst` followed by exactly the 32 stores, same register,
+    /// same format, ascending `at`), nothing else names it (no pack, no unpack,
+    /// no `Sfpu` result), and every reader is an `SfpLoad` with the splat's
+    /// format, so the lane word is bit-identical. The reads are rewritten in
+    /// place, each carrying its word-count change to the owning `Replay`'s
+    /// `len` (a `SfpConst` is two words unless its low half is zero), then the
+    /// splat and the tile go. Skipped, never forced: a tile that fails any of
+    /// these keeps its splat.
+    fn tt_sink_const_splats(&mut self) {
+        for _ in 0..250_000 {
+            let mut ops: Vec<OpId> = Vec::new();
+            let mut id = self.head;
+            for _ in 0..250_000 {
+                if id.is_null() {
+                    break;
+                }
+                ops.push(id);
+                id = self.next_op(id);
+            }
+            // Which `Replay` owns each body op, so a rewritten load can carry
+            // its word-count change to that marker's `len`.
+            let mut owner: Vec<Option<usize>> = vec![None; ops.len()];
+            let mut i = 0;
+            while i < ops.len() {
+                if let Op::TT(TTOp::Replay { len, .. }) = self.at(ops[i]) {
+                    let mut words = 0u32;
+                    let mut j = i + 1;
+                    while j < ops.len() && words < u32::from(*len) {
+                        words += tt_row_words(self.at(ops[j]));
+                        owner[j] = Some(i);
+                        j += 1;
+                    }
+                    i = j;
+                } else {
+                    i += 1;
+                }
+            }
+            // One splat: `SfpConst` + the 32 stores of a whole tile.
+            let mut found: Option<(usize, OpId, u32, u8)> = None;
+            for i in 0..ops.len() {
+                let Op::TT(TTOp::SfpConst(c)) = self.at(ops[i]) else {
+                    continue;
+                };
+                let (i_next, bits, reg) = (i + 1, c.bits, c.reg);
+                let i_end = i_next + 32;
+                if i_end > ops.len() || (i..i_end).any(|k| owner[k].is_some()) {
+                    continue;
+                }
+                let mut pair: Option<(OpId, u8)> = None;
+                let mut ok = true;
+                for (k, &op) in ops[i_next..i_end].iter().enumerate() {
+                    let Op::TT(TTOp::SfpStore(s)) = self.at(op) else {
+                        ok = false;
+                        break;
+                    };
+                    if s.reg != reg || s.at != (k as u16) * 2 {
+                        ok = false;
+                        break;
+                    }
+                    match pair {
+                        None => pair = Some((s.slot, s.fmt)),
+                        Some((slot, fmt)) => {
+                            if slot != s.slot || fmt != s.fmt {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if !ok {
+                    continue;
+                }
+                let Some((slot, fmt)) = pair else { continue };
+                // Only 32-bit formats: `FP32` and `INT32` both move the lane's
+                // raw word, which is what a `Bitcast` of the constant asks for;
+                // a 16-bit load would convert and is not bit-equal.
+                let raw = |f: u8| f == FP32 || f == INT32;
+                if !raw(fmt) {
+                    continue;
+                }
+                if !matches!(self.at(slot), Op::Storage { scope: MemScope::Register, .. }) {
+                    continue;
+                }
+                // Only splat stores, and loads of the same format, may name it.
+                let mut loads = 0;
+                let mut exclusive = true;
+                for (j, &op) in ops.iter().enumerate() {
+                    if (i_next..i_end).contains(&j) {
+                        continue;
+                    }
+                    if !self.at(op).parameters().any(|p| p == slot) {
+                        continue;
+                    }
+                    match self.at(op) {
+                        Op::TT(TTOp::SfpLoad(l)) if raw(l.fmt) => loads += 1,
+                        _ => {
+                            exclusive = false;
+                            break;
+                        }
+                    }
+                }
+                if exclusive && loads > 0 {
+                    found = Some((i, slot, bits, fmt));
+                    break;
+                }
+            }
+            let Some((i, slot, bits, _)) = found else {
+                return;
+            };
+            let run: Vec<OpId> = ops[i..i + 33].to_vec();
+            let new_words = if bits & 0xffff == 0 { 1i32 } else { 2i32 };
+            for (j, &op) in ops.iter().enumerate() {
+                let Op::TT(TTOp::SfpLoad(l)) = self.at(op) else {
+                    continue;
+                };
+                if l.slot != slot {
+                    continue;
+                }
+                let reg = l.reg;
+                self.ops[op].op = Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg, bits })));
+                let delta = new_words - 1;
+                if delta != 0 {
+                    let Some(m) = owner[j] else {
+                        panic!("tt_sink_const_splats: a load outside any row loop");
+                    };
+                    let Op::TT(TTOp::Replay { len, .. }) = &mut self.ops[ops[m]].op else {
+                        unreachable!("the owner of a body op is a `Replay`")
+                    };
+                    *len = (*len as i32 + delta) as u16;
+                }
+            }
+            for op in run {
+                self.remove_op(op);
+            }
+            self.remove_op(slot);
+        }
+    }
+
     /// Keep an intermediate in its lane register instead of writing it to its
     /// own tile and reading it back: `tt_sfpu_fusion`.
     ///
@@ -3134,6 +3312,10 @@ impl Kernel {
         if !self.device_info().tenstorrent {
             return;
         }
+        // Constant splats first: a whole-tile constant between two bodies is
+        // both traffic and a barrier to fusion (the pair is no longer
+        // adjacent), so sinking it into its readers is a precondition here.
+        self.tt_sink_const_splats();
         for _ in 0..250_000 {
             let mut ops: Vec<OpId> = Vec::new();
             let mut id = self.head;
@@ -3165,9 +3347,6 @@ impl Kernel {
             for u in 1..units.len() {
                 let (a_marker, a_end) = units[u - 1];
                 let (b_marker, b_end) = units[u];
-                if a_end != b_marker {
-                    continue;
-                }
                 if self.tt_fuse_pair(&ops, a_marker, a_end, b_marker, b_end) {
                     fused = true;
                     break;
@@ -3222,36 +3401,91 @@ impl Kernel {
         }
         // `B`'s sequence must leave the value alone: `rp` is only read, and
         // `A`'s result register is not overwritten before the last read.
+        //
+        // A rename is free but only sound while `rp` holds nothing but the
+        // loaded word: once `B` has written `A`'s result register, or writes
+        // `rp` itself, a `rp -> r` rewrite would move a live value. The pair
+        // is still fusable then -- `rp` remains a valid home for the word --
+        // so the load becomes `mov rp <- r`, one word, and `B`'s body is left
+        // exactly as it was.
         let (r, rp) = (store_reg, load_reg);
+        let mut rename = r != rp;
         let mut wrote_r = false;
         for &op in &ops[b_marker + 2..b_end] {
             let (reads, writes) = tt_row_regs(&self.at(op));
             if reads & (1u16 << rp) != 0 && wrote_r {
-                return false;
+                rename = false;
             }
             if writes & (1u16 << rp) != 0 && rp != r {
-                return false;
+                rename = false;
             }
             if writes & (1u16 << r) != 0 {
                 wrote_r = true;
             }
         }
-        let merged = u32::from(a_len) + u32::from(b_len) - tt_row_words(self.at(store_id)) - tt_row_words(self.at(load_id));
+        // The gap between the two bodies may hold only lane-register constants.
+        // Those are row-invariant, so in the merged body they run between `A`'s
+        // and `B`'s instructions -- one execution per row that writes the same
+        // word. An `SFPENCC` is not row state but a *scope* (it stays enabled
+        // until the matching disable), so moving it inside a loop would leave
+        // it armed across `A`'s next iteration; a `Copy` would move the value
+        // through another role. Either way the pair is left alone.
+        let mut gap_words = 0u32;
+        for &op in &ops[a_end..b_marker] {
+            match self.at(op) {
+                Op::TT(TTOp::SfpConst(_)) => {}
+                _ => return false,
+            }
+            // A hand-over by `mov` copies `A`'s result register after the gap
+            // has run: a gap const that writes it would hand over the wrong
+            // word.
+            if !rename && r != rp && tt_row_regs(self.at(op)).1 & (1u16 << r) != 0 {
+                return false;
+            }
+            gap_words += tt_row_words(self.at(op));
+        }
+        let move_words = u32::from(!rename && r != rp);
+        let merged = u32::from(a_len) + u32::from(b_len) + gap_words + move_words
+            - tt_row_words(self.at(store_id))
+            - tt_row_words(self.at(load_id));
         if merged == 0 {
             return false;
         }
+        // A body past the 32-word replay buffer becomes a block repeat, and the
+        // runner's program header holds at most `loops::MAX` of them: a merge
+        // must not need one more than the kernel already has.
+        let buffer = tt_isa::frontend::REPLAY_BUFFER;
+        let mut long = 0usize;
+        for &op in ops {
+            if let Op::TT(TTOp::Replay { len, .. }) = self.at(op) {
+                long += usize::from(u32::from(*len) > buffer);
+            }
+        }
+        long -= usize::from(u32::from(a_len) > buffer);
+        long -= usize::from(u32::from(b_len) > buffer);
+        long += usize::from(merged > buffer);
+        if long > tt_isa::mailbox::loops::MAX {
+            return false;
+        }
         // Splice: rename `B`'s reads of the loaded register to the result
-        // register, shrink `A`'s marker, and drop `B`'s marker plus the
-        // store/load pair.
-        if r != rp {
+        // register (or hand the word over with one `mov`), shrink `A`'s
+        // marker, and drop `B`'s marker plus the store/load pair.
+        if rename {
             for &op in &ops[b_marker + 2..b_end] {
                 tt_row_rename(&mut self.ops[op].op, rp, r);
             }
+        } else if r != rp {
+            self.ops[load_id].op = Op::TT(TTOp::Sfp(TTSfpInsn {
+                op: tt_isa::isa::generated::defs::SFPMOV.opcode(),
+                args: [u16::from(r), u16::from(rp), 0, 0, 0],
+            }));
         }
         self.ops[ops[a_marker]].op = Op::TT(TTOp::Replay { len: merged as u16, count: a_count });
         self.remove_op(ops[b_marker]);
         self.remove_op(store_id);
-        self.remove_op(load_id);
+        if rename || r == rp {
+            self.remove_op(load_id);
+        }
         true
     }
 

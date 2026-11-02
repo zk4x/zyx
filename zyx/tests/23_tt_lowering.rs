@@ -630,3 +630,27 @@ fn sin_cos() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn log2() -> Result<(), ZyxError> {
+    // `tt_unfold`'s `tt_log2`: exponent and mantissa by the bit form of
+    // `SFPEXEXP`/`SFPSETEXP`, `ln m` as `2 atanh(f/(2+f))`, times `log2 e`.
+    // It is the regression for the integer `Sub` that had no arm: `e - 127`
+    // reached the F32 pattern table and the SFPU unpack refused the `I32`
+    // tile. `x` spans about [0.01, 100], so every exponent in `[-7, 7]` and a
+    // mantissa above and below `sqrt 2` are covered.
+    let x = &Tensor::rand([10, 256], DType::F32)? * 100.0f32 + 0.01f32;
+    let z = x.to(Dev::TT(0))?.log2().to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(zv.len(), 10 * 256);
+    for i in 0..10 * 256 {
+        let want = xv[i].log2();
+        // Absolute near `x = 1` (where the result is 0), relative away from it.
+        let tolerance = 1e-5 * want.abs().max(1.0);
+        assert!((zv[i] - want).abs() <= tolerance, "log2 lane {i}: {} vs {want} (x {})", zv[i], xv[i]);
+    }
+
+    Ok(())
+}

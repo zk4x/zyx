@@ -22,12 +22,61 @@
 **State:** the tree is clean except for this session's work; the user commits.
 Run cargo from `zyx/`.
 
-**Gates — 16 green on ttsim (one at a time, `TT_TTSIM_LIB=…`):** `add`,
+**Gates — 18 green on ttsim (one at a time, `TT_TTSIM_LIB=…`):** `add`,
 `unary_math`, `neg_sub_mul`, `shared_input`, `tiling`, `transfer_roundtrip`,
 `matmul`, `sum`, `max`, `sum_scalar`, `max_scalar`, `sum_all`, `exp2`,
-`sigmoid`, `sum_sigmoid`, `sin_cos` (new). `cargo test --lib` = **78**.
-**Red:** `matmul_sigmoid` — `9 DST register tiles exceed the 8-tile budget`,
-pre-existing, the allocator peak (reclamation cannot help, its baseline is over).
+`sigmoid`, `sum_sigmoid`, `sin_cos`, `log2` (new), **`matmul_sigmoid` (now
+green)**. `cargo test --lib` = **78**. No red gates.
+
+**Added after the fifth-pass block (same day, sixth pass): `log2`, the integer
+`Sub` arm, the constant-splat sink, and two fusion extensions.**
+
+6. **Integer `Sub` has an arm** (`tt_sfp_int_sub`, `SFPIADD` with mod1 `2 | 4`
+   = `VD = VC − VD`, after a `mov b -> L2`), and the `tt_lower_value` arm now
+   covers `BOp::Add | BOp::Sub` for `I32` — the float arm's unpack refuses an
+   `I32` tile, which is what broke `tt_log2`'s `e − 127`. Gate: `log2`
+   (`x ∈ [0.01, 100]`, `1e-5 * max(|want|, 1)`), which also passes under
+   `ZYX_DEBUG=264`.
+7. **Constant splats are sunk into their readers** (`tt_sink_const_splats`,
+   called at the top of `tt_sfpu_fusion`). `tt_fill_const` materialises every
+   scalar constant as a whole DST tile: one `SfpConst` + 32 `SfpStore`s of the
+   32x32 tile. On `sigmoid` that was 22 tiles and ~700 of the kernel's 734 DST
+   stores, and it also *blocked* fusion (the splat sits between a producer's
+   store and the consumer's load). The sink replaces each load of such a tile
+   with the `SfpConst` it was filled from, adjusts the owning `Replay`'s `len`
+   (a `SfpConst` is 2 words unless its low half is zero), and deletes the splat
+   plus the tile. Conditions: the tile's only writer is one splat (`SfpConst` +
+   exactly the 32 stores, ascending `at`, same register/format); nothing else
+   names the slot (no pack/unpack, no `Sfpu` result); every reader is an
+   `SfpLoad` of a **32-bit** format (`FP32` or `INT32` — both move the raw lane
+   word, which is what a `Bitcast` of a constant asks for; a 16-bit load
+   converts and is refused). Result on `sigmoid`: **734 → 21 stores, 67 → 36
+   loads, 30 → 21 replay units**; `matmul_sigmoid`'s 9-tile peak is gone (it is
+   green).
+8. **`tt_fuse_pair` absorbs a gap of lane constants** and **hands a value over
+   with `mov`** when a rename is unsound:
+   - the gap between the two bodies may hold `SfpConst` ops; they are
+     row-invariant, so they run between `A`'s and `B`'s instructions inside the
+     merged body (`sin_cos`: 20 → 18 units). They must not write `A`'s result
+     register when the hand-over is a `mov`.
+   - **An `SFPENCC` in the gap is a hard barrier.** It is a *scope* (armed until
+     the matching disable), not row state: absorbing it into a loop left it
+     armed across `A`'s next iteration and `log2` came back with `-inf` in one
+     lane. Do not "fix" this by moving the enable before the merged marker
+     either.
+   - when `B` reads the loaded register after writing `A`'s result register (or
+     writes it itself), the rename would move a live value; instead the load
+     becomes `SFPMOV rp <- r`, one word. The old behaviour was to refuse the
+     pair.
+   - a merge may cross the 32-word replay buffer, but **not past `loops::MAX`
+     (4) block repeats** in the role: the count is taken over every `Replay`
+     marker before the merge, minus the two being joined, plus one if the merged
+     body is longer. Without that guard `sigmoid` produced 8 block repeats and
+     the backend refused the program.
+   Fusion does *not* reach a single load/store on `sigmoid` yet (21 units, one
+   store each): the remaining boundaries are `SFPENCC` scopes, CB round trips
+   for values with several readers, and units whose consumer is not the next
+   one in program order.
 
 **This session, in order**
 
@@ -82,20 +131,25 @@ pre-existing, the allocator peak (reclamation cannot help, its baseline is over)
 
 **What is left**
 
-1. `matmul_sigmoid`'s 9-tile peak (allocator; fusion and reclamation both
-   reduce live tiles but this one starts over).
-2. `tt_log2`'s `e − 127` is an **I32 `Sub`** and has the same dtype-blind bug
-   `Add` had; `tt_log2` also still fails to compile on
-   `native unpack ... needs an F32 DST tile, got I32`.
-3. `recip`/`div`/`sqrt`/`round` arms are program transcriptions that *could*
-   become IR like sin/cos, but each needs a seed IR cannot express
-   (`SFPARECIP`); `round` is pure bit games and probably can. The rest of the
+1. `sigmoid`'s fusion still stops at 21 units (one store each, 36 loads). The
+   boundaries left are `SFPENCC` scopes (see trap 8 above), CB round trips for
+   values with several readers, and units whose consumer is not the next unit in
+   program order (`adj=false` pairs with `accesses=1`). Getting to a single
+   load/store needs a multi-reader fusion (keep the value in the register across
+   several bodies), which the current "exactly two accesses" rule forbids.
+2. `recip`/`div`/`sqrt`/`round` arms are program transcriptions that *could*
+   become IR like sin/cos. `sqrt`'s seed is already integer magic
+   (`0x5f3759df - (bits >> 1)`); `recip`/`div` need `SFPARECIP` replaced by the
+   magic-constant seed (`0x7EF311C3 - bits`) plus one more Newton step. The user
+   said these are optional ("only if you find it really easy"). The rest of the
    `tt_sfp_*` arms are primitives and stay.
-4. The builder module (`kern/sfpu/ops.rs` 4882 lines + `interp.rs` 942) is the
+3. The builder module (`kern/sfpu/ops.rs` 4882 lines + `interp.rs` 942) is the
    A/B oracle and the source of `kind_sfpu`'s numbering; deleting it needs
    `kind_sfpu` moved to `kern/kind.rs` first (needs the user's OK).
-5. `Cast F32 → F32` (a no-op cast the graph leaves behind, e.g. in `relu`)
+4. `Cast F32 → F32` (a no-op cast the graph leaves behind, e.g. in `relu`)
    hits `todo!()`; folding it in `tt_lower_value` would be a one-liner.
+5. Once the DST picture is settled, the next milestone the user named is
+   **running llama on Tenstorrent** — that is the reason this polishing matters.
 
 **Traps from this session (do not re-learn)**
 
