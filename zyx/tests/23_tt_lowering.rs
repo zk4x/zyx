@@ -83,6 +83,40 @@ fn add() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn neg_sub_mul() -> Result<(), ZyxError> {
+    // Three row ops of one SFPU instruction each: `NEG` is `SFPMOV` with the
+    // negate modifier, `SUB` is `SFPMAD` with a negated addend, `MUL` is
+    // `SFPMAD` with the negated zero register. Each is exact in F32 apart from
+    // `MUL`'s one rounding, which is the host's too, so bit equality. `ABS` is
+    // not here: `Tensor::abs` is `relu(x) + relu(-x)`, so it never emits
+    // `UOp::Abs`. `INT_NOT` is not either: an I32 kernel stops earlier, at
+    // `native unpack ... needs an F32 DST tile, got I32`.
+    //
+    // The operands are already on the card, so each op runs as a kernel of its
+    // own; `[10, 256]` is the shape `add` uses, and the one `tt_tile` used to
+    // mis-tile for a bare unary (grid `[10, 1]`, one 4 KB page per row).
+    let x = Tensor::rand([10, 256], DType::F32)?;
+    let y = Tensor::rand([10, 256], DType::F32)?;
+    let xs = x.to(Dev::TT(0))?;
+    let ys = y.to(Dev::TT(0))?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let yv: Vec<f32> = y.try_into().unwrap();
+    assert_eq!(xv.len(), 10 * 256);
+
+    let neg: Vec<f32> = (-&xs).to(Dev::C)?.try_into().unwrap();
+    let sub: Vec<f32> = (&xs - &ys).to(Dev::C)?.try_into().unwrap();
+    let mul: Vec<f32> = (&xs * &ys).to(Dev::C)?.try_into().unwrap();
+    for i in 0..10 * 256 {
+        assert_eq!(neg[i].to_bits(), (-xv[i]).to_bits(), "neg lane {i}");
+        assert_eq!(sub[i].to_bits(), (xv[i] - yv[i]).to_bits(), "sub lane {i}");
+        assert_eq!(mul[i].to_bits(), (xv[i] * yv[i]).to_bits(), "mul lane {i}");
+    }
+
+    Ok(())
+}
+
+#[test]
 fn matmul() -> Result<(), ZyxError> {
     let x = Tensor::rand([10, 20], DType::F32)?;
     let y = Tensor::rand([20, 12], DType::F32)?;

@@ -218,7 +218,6 @@ impl Kernel {
         }
         self.default_epilogue();
         self.default_epilogue();
-
         // Gather loops, pad to 32, split unroll-32 FIRST: split's
         // loop arm allows exactly one acc store per body, so it must
         // run before coarsening replicates the body. pad_to pads
@@ -246,13 +245,43 @@ impl Kernel {
 
         self.default_epilogue();
         self.default_epilogue();
-
         // Gather group ranges, pad to 32, coarsen LAST: duplicate
         // the vectorized body, one lane per row. Anything else
         // (symbolic, indivisible) is skipped, never fatal. The device
         // grid is 2D: one group range is pre-split into two nested
         // groups below, two proceed as-is, more than two is a later
         // increment.
+        //
+        // The contract (NOTES, "Tiling: the search explores, `tt_tile`
+        // completes"): the search is free to tile, `opt_split` never splits
+        // past what the device can hold, and this pass **fills the remaining
+        // gaps** — it adds the tile axes the search did not, and touches
+        // nothing that is already tiled. An access's index rank is the number
+        // of tile axes already present.
+        let elementwise = !self.iter_unordered().any(|(_, op)| matches!(op, Op::Reduce { .. }));
+        let axes = self.device_info().tile.len();
+        // `Op::Reduce` is not a "reduce kernel": `linearize` turns a reduce
+        // into a `Loop` with a scalar accumulator, and a `Reduce` only exists
+        // here once `split` has unrolled such a loop into lanes. That case
+        // keeps its extra axes — the rank-3 cube is deliberate, and
+        // `tt_reindex` rewrites it for the movers — so it splits every group.
+        let rank = if elementwise {
+            self.iter_unordered().fold(0, |rank, (_, op)| {
+                let idx = match *op {
+                    Op::Load { src_idx, .. } => src_idx,
+                    Op::Store { dst_idx, .. } => dst_idx,
+                    Op::Copy { src_idx, .. } => src_idx,
+                    _ => return rank,
+                };
+                if idx.is_null() {
+                    rank
+                } else {
+                    rank.max(self.shape(idx).len())
+                }
+            })
+        } else {
+            0
+        };
         let mut pad_groups: Vec<OpId> = Vec::new();
         for (op, x) in self.iter_unordered() {
             if matches!(x, Op::Range { kind: RangeKind::Group(_), .. }) {
@@ -262,10 +291,16 @@ impl Kernel {
         if pad_groups.len() > 2 {
             todo!("tt_tile: more than two group ranges");
         }
-        if pad_groups.len() == 1 {
-            // One group range: split into two nested groups of roughly
-            // equal size (user spec, unconditional — no loop check, no
-            // length threshold), then pad and unroll each normally below.
+        if pad_groups.len() == 1 && rank == 0 {
+            // Only a **fully scalar** access needs a 2-D grid out of one group
+            // range: split it into two nested groups of roughly equal size
+            // (user spec — no loop check, no length threshold), then pad and
+            // split each normally below. An access that already carries a lane
+            // axis must not be pre-split: the group then is the *other*
+            // dimension, and pre-splitting it double-counts that dimension
+            // (`[32, 32]` unary: one 32-lane unroll over rows plus one group
+            // over columns; the pre-split made a second grid axis, then a
+            // rank-3 load `tt_dataflow_select` bails on).
             let g = pad_groups[0];
             self.pad_to(g, 32);
             let len = match self.ops[g].op {
@@ -308,40 +343,46 @@ impl Kernel {
                 }
             }
         }
-        // A vectorized kernel can arrive with a lane axis already (`x + y` is
-        // vectorized by the search; `sigmoid` is not). A tile access carries
-        // exactly as many axes as `DevInfo::tile` has, so a group split that
-        // would stack another lane axis on top is skipped here — this pass is
-        // the fixed step, the search decides the rest.
-        //
-        // `Op::Reduce` is not a "reduce kernel": `linearize` turns a reduce
-        // into a `Loop` with a scalar accumulator, and a `Reduce` only exists
-        // here once `split` has unrolled such a loop into lanes. That case
-        // keeps its extra axes — the rank-3 cube is deliberate, and
-        // `tt_reindex` rewrites it for the movers.
-        let elementwise = !self.iter_unordered().any(|(_, op)| matches!(op, Op::Reduce { .. }));
-        for g in pad_groups {
-            // The cap comes before padding: padding a group we are not going
-            // to split would leave a grid extent of 32 with nothing in it
-            // (the device has 14 columns, not 32).
-            if elementwise {
-                let axes = self.device_info().tile.len();
-                let mut full = false;
-                for (_, op) in self.iter_unordered() {
-                    let idx = match *op {
-                        Op::Load { src_idx, .. } => src_idx,
-                        Op::Store { dst_idx, .. } => dst_idx,
-                        Op::Copy { src_idx, .. } => src_idx,
-                        _ => continue,
-                    };
-                    if !idx.is_null() && self.shape(idx).len() >= axes {
-                        full = true;
-                        break;
+        // A group already counted in **tiles** is the one the search vectorized
+        // along: its term is `32 * g + lane`, with `lane` an `Unroll` of 32.
+        // That group is the dimension's grid axis and must be left as it is
+        // (padding 8 column tiles to 32 would turn them into a lane axis and
+        // leave the row group an element grid: `[10, 256]` unary, grid
+        // `[10, 1]`, one 4 KB page per row). The other group counts
+        // **elements**; it is the one padded to 32 and split into the axis
+        // being added. A bare `g * 32` is not the test — 32 is also a legal
+        // row stride (`[10, 32]`'s rows are `g * 32`), and what marks a
+        // vectorized dimension is the lane **added** to the scaled group.
+        let mut chunked: Vec<OpId> = Vec::new();
+        if elementwise {
+            for (_, op) in self.iter_unordered() {
+                let Op::Binary { x, y, bop: BOp::Add } = *op else { continue };
+                for (scaled, lane) in [(x, y), (y, x)] {
+                    if !matches!(self.ops[lane].op, Op::Unroll { .. }) {
+                        continue;
+                    }
+                    let Op::Binary { x: m, y: n, bop: BOp::Mul } = self.ops[scaled].op else { continue };
+                    for (g, c) in [(m, n), (n, m)] {
+                        if matches!(self.ops[g].op, Op::Range { kind: RangeKind::Group(_), .. })
+                            && self.resolve_const(c).and_then(Constant::as_dim) == Some(32)
+                        {
+                            chunked.push(g);
+                        }
                     }
                 }
-                if full {
-                    continue;
-                }
+            }
+        }
+        pad_groups.sort_by_key(|g| match self.ops[*g].op {
+            Op::Range { axis, .. } => axis,
+            _ => unreachable!("pad_groups holds group ranges"),
+        });
+        let mut need = if elementwise { axes.saturating_sub(rank) } else { pad_groups.len() };
+        for g in pad_groups {
+            if need == 0 {
+                break;
+            }
+            if chunked.contains(&g) {
+                continue;
             }
             self.pad_to(g, 32);
             let len = match self.ops[g].op {
@@ -350,13 +391,12 @@ impl Kernel {
             };
             if self.resolve_const(len).and_then(|c| c.as_dim()).is_some_and(|l| l % 32 == 0) {
                 self.split(g, SplitMode::Unroll, 32);
+                need -= 1;
             }
         }
 
         self.default_epilogue();
         self.default_epilogue();
-
-        self.verify();
     }
 
     /// General TT lowering + register allocation (matmul, reduce,
@@ -1049,6 +1089,69 @@ impl Kernel {
                     args: [LREG_ONE, u32::from(L0), u32::from(L1), u32::from(L2), 0],
                 }))));
                 ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: FP32 }))));
+            }
+        } else if kind == kind::SUB && !b.is_null() {
+            // `d = 1 * a - b`: `SFPMAD` with the constant-one register and a
+            // negated addend, the same words `Program::sub` emits.
+            let mad = tt_isa::isa::generated::defs::SFPMAD.opcode();
+            for o in (0..64u16).step_by(2) {
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
+                ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn {
+                    op: mad,
+                    args: [LREG_ONE, u32::from(L0), u32::from(L1), u32::from(L2), 2],
+                }))));
+                ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: FP32 }))));
+            }
+        } else if kind == kind::MUL && !b.is_null() {
+            // `SFPMAD` with the constant-zero register as the addend and that
+            // zero negated (`Program::mul`): a plain `SFPMUL` adds a `+0`,
+            // which turns a `-0` product into `+0`.
+            let mad = tt_isa::isa::generated::defs::SFPMAD.opcode();
+            for o in (0..64u16).step_by(2) {
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
+                ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn {
+                    op: mad,
+                    args: [u32::from(L0), u32::from(L1), LREG_ZERO, u32::from(L2), 2],
+                }))));
+                ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: FP32 }))));
+            }
+        } else if kind == sf::NEG && b.is_null() {
+            // `exact_program`'s `NEG`: a sign flip on the raw bits, so a NaN
+            // stays one (`SFPMOV` with `Mod1 = 1`). Loaded and stored as
+            // `Int32`: an FP32 store would flush a denormal.
+            let mov = tt_isa::isa::generated::defs::SFPMOV.opcode();
+            for o in (0..64u16).step_by(2) {
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
+                ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn {
+                    op: mov,
+                    args: [u32::from(L0), u32::from(L2), 1, 0, 0],
+                }))));
+                ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
+            }
+        } else if kind == sf::ABS && b.is_null() {
+            // `exact_program`'s `ABS`: the sign bit cleared, a negative NaN
+            // staying one (`SFPABS` with `Mod1 = 1`), raw bits both ways.
+            let abs = tt_isa::isa::generated::defs::SFPABS.opcode();
+            for o in (0..64u16).step_by(2) {
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
+                ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn {
+                    op: abs,
+                    args: [u32::from(L0), u32::from(L2), 1, 0, 0],
+                }))));
+                ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
+            }
+        } else if kind == sf::INT_NOT && b.is_null() {
+            // `integer::body`'s `NOT`: bitwise, raw bits.
+            let not = tt_isa::isa::generated::defs::SFPNOT.opcode();
+            for o in (0..64u16).step_by(2) {
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
+                ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn {
+                    op: not,
+                    args: [u32::from(L0), u32::from(L2), 0, 0, 0],
+                }))));
+                ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
             }
         } else if kind == sf::SIGMOID && b.is_null() {
             // `ops::sigmoid_program`: `abs`, `neg`, `exp_program`, `1 + e`,

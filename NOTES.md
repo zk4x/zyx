@@ -16,9 +16,13 @@
 
 ### Start here — session handoff (2026-11-02, end of session)
 
-**State at handoff:** HEAD `9db02ac1` "fused matmul sigmoid on tt" contains
-everything in this handoff block. If `git status` is not clean, the only
-difference should be this NOTES section itself. It contains:
+**State at handoff:** HEAD `b60c6a6a` "fused matmul sigmoid on tt". Its
+`NOTES.md` handoff is this block (the commit was the previous session's
+record). **Uncommitted now:** the first step of item 2 — the row-op arms for
+`NEG`, `ABS`, `SUB`, `MUL`, `INT_NOT` in `tt_sfp_sequence`, the gate
+`neg_sub_mul`, and this note. `git status` should be exactly
+`zyx/src/kernel/tenstorrent.rs`, `zyx/tests/23_tt_lowering.rs`, `NOTES.md`.
+It contains:
 - **`tt_reg_sync`** (see the SFPU-emission section): the only pass that emits
   `Semset`/`Wait`/`Post`, after `tt_dst_reuse`; the matmul's hand-spelled
   `ready`/`free` is gone; **`matmul_sigmoid` is green**.
@@ -45,8 +49,8 @@ touching `tt_reg_sync` or the matmul arm.
 
 **Green on ttsim, one test at a time** (the file cascades failures; shared RT):
 `add`, `transfer_roundtrip`, `matmul`, `sigmoid`, `sum`, `sum_sigmoid`,
-`max`, `sum_scalar`, `max_scalar`, `sum_all`, `matmul_sigmoid`;
-`cargo test --lib` = 70.
+`max`, `sum_scalar`, `max_scalar`, `sum_all`, `matmul_sigmoid`,
+`neg_sub_mul`; `cargo test --lib` = 70.
 
 ```
 cd zyx && TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
@@ -66,12 +70,19 @@ cd zyx && TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
 1. Confirm the tree before starting (`cargo build`, the eleven gates,
    `cargo test --lib`); the user writes commit messages, so commit only when
    asked.
-2. **Item 2 — finish the SFPU port**: the remaining kinds (`FLOOR`/`TRUNC`,
-   the comparisons, the integers, `EXP`/`LOG`/`RECIP`/`TANH`/`ERF`/`GELU`,
-   trig). None is gated, so each is transcribed from the builder's `Program`
-   body and checked against the builder's words first. Then
-   `Sfpu { kind }`/`tt_sfpu_program`/`tt_row_remap` and `kern/sfpu`'s
-   `Program`/`Code`/`LoopForm` half die.
+2. **Item 2 — finish the SFPU port** (started 2026-11-02: `NEG`, `ABS`,
+   `SUB`, `MUL`, `INT_NOT` are transcribed in one-instruction arms of
+   `tt_sfp_sequence`; gate `neg_sub_mul` covers `NEG`/`SUB`/`MUL` only —
+   `Tensor::abs` never emits `UOp::Abs` and an I32 kernel stops at
+   `native unpack ... needs an F32 DST tile, got I32`). Remaining reachable
+   kinds: `RECIP`, `SQRT`/`RSQRT`, `FLOOR`/`TRUNC`, `SIN`/`COS`, `DIV`,
+   `POW`, `REM`, `EQ`/`NE`/`GT`/`GE`/`LT`/`LE`, `INT_OR`/`AND`/`XOR`/
+   `SHL`/`SHR`. (`EXP`/`LOG`/`TANH`/`ERF`/`GELU`/trig beyond `SIN`/`COS` have
+   no `uop_kind`/`bop_kind` entry, so no table reaches them; they are the
+   builder's only.) `EXP` is on the sigmoid path, already inlined there.
+   Each is transcribed from the builder's `Program` body and checked against
+   its words first. Then `Sfpu { kind }`/`tt_sfpu_program`/`tt_row_remap` and
+   `kern/sfpu`'s `Program`/`Code`/`LoopForm` half die.
 3. **Item 4 — loop lowering for `softmax`** (`REPLAY` for bodies that fit its
    32-word buffer, `mailbox::loops` for longer; a `Param` trip count is a TT
    compile error).
@@ -111,6 +122,32 @@ cd zyx && TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
   differ there.
 - The codegen pack branch ends in `continue`, not `return Ok(())`: a pack is
   one op, not the section's end (two packs are now possible).
+- **A bare unary op on a tensor already on the card runs as one kernel** (there
+  is no implicit graph: `Tape` is the explicit graph API, and a host
+  expression that is only later moved to TT is evaluated on the **host** — a
+  gate built that way proves nothing about the lowering). The gate
+  `neg_sub_mul` uses `[10, 256]` and is the tiling regression test.
+- **`tt_tile` was rewritten to the contract** ("Tiling: the search explores,
+  `tt_tile` completes", below). Two defects it had: the "access is already a
+  tile" cap was re-read *per group*, so after the first split raised the index
+  rank every later group was skipped and iteration order decided the tiling
+  (`[10, 256]` unary: columns padded first, rows left a grid extent, grid
+  `[10, 1]`, one 4 KB page per row); and the one-group pre-split ran
+  unconditionally, so a `[32, 32]` unary (already one tile) got a second grid
+  axis and a rank-3 load. Both are fixed; a temporary probe over
+  `[10,256] [32,32] [32,256] [64,64] [64,256] [128,128] [10,32] [10,64]` ×
+  `neg`/`mul` now passes on the simulator. The search picks different variants
+  per run, so a shape passing once is not a proof for every variant — the gates
+  are the fixed regression, the probe was a one-off.
+- **`Tensor::abs` is `relu(x) + relu(-x)`**, not `UOp::Abs`: no frontend
+  reaches the native `ABS` kind, and `relu` has no `uop_kind` entry at all.
+  An I32 elementwise kernel dies later at `native unpack ... needs an F32
+  DST tile, got I32`, so `INT_NOT`/the integer kinds have no runnable gate.
+- **Verify an SFPU port is actually exercised**: a temporary `eprintln!` at
+  the top of `tt_sfp_sequence` printing `(kind, b.is_null())` shows which
+  arms a gate hits (`add`/`sigmoid` = one call each). Without it a gate can
+  pass on the *host* (a graph built from host tensors is evaluated on the
+  host before `.to(Dev::TT)`), which says nothing about the device lowering.
 
 ### 0. Memory model (the card, not the host)
 
@@ -452,6 +489,46 @@ performs over a launch-time count, and narrowing as an op.
 structures; `TTDmMove` becomes `Dm` ops; the launch becomes a walk that binds values
 and issues; and the `Kernel` does not survive compilation beyond debugging.
 
+### Tiling: the search explores, `tt_tile` completes (contract, 2026-11-02)
+
+- **The search is free to explore tilings; `tt_tile` is the guarantee.** The
+  search may vectorize any axis it likes, and `opt_split` is already bounded to
+  what the device can hold: on TT the only lane factor is 32
+  (`group_unroll`/`loop_factors` are `[32]`, `split.rs`), local factors are
+  capped by `max_local_work_dims` (`[1, 1024, 1]`), and a new lane axis is
+  refused once an access already has rank > 1 (`tile_access`). So the search
+  hands `tt_tile` zero, one or two 32-wide axes — never more.
+- **`tt_tile` fills the remaining gaps and re-tiles nothing.** An access that
+  already carries `DevInfo::tile.len()` (2) axes *is* a tile: the pass does
+  nothing to it. A partially tiled access gets its missing axes; a fully scalar
+  one gets all of them. It never replaces or reorders an axis the search chose.
+- **The axes present = the access index's rank.** One `Unroll` per axis. This
+  is read **once, at entry**, before any `pad_to`/`split` here adds an axis —
+  read per group it is wrong, because the first split raises the rank and every
+  later group then looks already tiled (that is how iteration order decided the
+  tiling before the rewrite).
+- **Which group completes an axis.** A group whose scaled form is
+  `32 * g + lane` is counted in **tiles**: it is that dimension's grid axis and
+  is left alone. The other group counts **elements** and is the one padded to 32
+  and split into an inner 32-lane `Unroll` — the axis being added. The test is
+  the lane **added** to the scaled group, not a bare `g * 32`: 32 is also a
+  legal row stride (`[10, 32]` has `rows = g * 32`, and the row group is exactly
+  the one that must be split).
+- **The one-group pre-split is for a fully scalar access only.** One group must
+  become a 2-D grid (split into two nested groups, each then padded and split).
+  If the access already has a lane axis (rank ≥ 1) that pre-split double-counts
+  the dimension: `[32, 32]` unary arrives as a 32-lane unroll over rows plus one
+  group over columns, and pre-splitting the group made a second grid axis, then
+  a rank-3 load `tt_dataflow_select` bails on.
+- **Reduces keep splitting every group.** `Op::Reduce` only exists here after
+  `split` unrolled a loop into lanes; that rank-3 cube is deliberate and
+  `tt_reindex` rewrites it for the movers.
+- **Why not let `tt_tile` choose?** Then there would be exactly one fixed
+  tiling for every kernel, and the best one differs (which axis is vectorized,
+  where the grid goes). Search explores; `tt_tile` normalizes.
+- **Order of the loop**: groups sorted by group axis, low first, so the axis
+  added is deterministic.
+
 ### Pipeline and pass names
 
 ```
@@ -625,12 +702,16 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   `SFPIADD`'s `[c, d]` = `d = c - d` order — one swapped pair of `LReg`s, a
   factor-of-two result. Compare the emitted words against the builder's before
   believing a structural diagnosis.
-- **Port order**: `BOOL_NOT`, `ADD`, `SIGMOID` (done, 2026-11-02; the reduce
-  came with them and deleted `ReduceTile`). Remaining: `ABS`, `NEG`,
-  `SQRT`/`RSQRT`, the comparisons (`EQ..LE` via `binary_body`), `DIV`/`REM`,
-  the integer ops, `FLOOR`/`TRUNC` (`round::body`), then the transcendentals
-  (`EXP`/`LOG`/`RECIP`/`TANH`/`ERF`/`GELU`/trig). `kern/sfpu/reduce.rs` is
-  orphaned and due for deletion.
+- **Port order**: `BOOL_NOT`, `ADD`, `SIGMOID` (2026-11-02; the reduce came
+  with them and deleted `ReduceTile`), then `NEG`, `ABS`, `SUB`, `MUL`,
+  `INT_NOT` (one-instruction arms, 2026-11-02; `kern/sfpu/reduce.rs` deleted
+  in the same session). Remaining reachable: `RECIP`, `SQRT`/`RSQRT`,
+  `FLOOR`/`TRUNC` (`round::body`), `SIN`/`COS` (`sin_cos_program`), `DIV`
+  (`divide` + `Program::recip`), `POW` (`log_program`/`exp_program`/
+  `pow_fix`), `REM` (`ops::rem`), the comparisons (`EQ..LE` via
+  `compare_body`), the integer ops (`integer::body`). `EXP`/`LOG` are
+  builder-only kinds (no table entry), and `EXP`'s body is already inlined in
+  the sigmoid arm.
 - **Acceptance** = the gates, plus `interp` (`kern/sfpu/interp.rs`) for the
   kinds no gate touches. Word parity is a debugging aid, not the criterion.
 - **Row ops own the lowered value.** The root of a ported kind is an
@@ -640,14 +721,12 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   `Kernel::shape` (`compute_dtypes_and_rcs` maps *and* the shape walker), and
   `verify`'s dtype map. Forgetting one shows up as "no entry found for key"
   in a verify, or as the store surviving into the compute section.
-- **A vectorized kernel is legal input to `tt_tile`.** The search may already
-  have added a lane axis (`add` has one, `sigmoid` does not). `tt_tile`'s own
-  group splits must stop once an access has `DevInfo::tile.len()` axes —
-  checked **before** `pad_to`, because padding a group that is not split
-  leaves a 32-wide grid on a 14-column device ("grid dim 1 32 exceeds device
-  max 14"). The predicate is not "is this a reduce kernel": `Op::Reduce` only
-  exists here after `split` unrolled a loop into lanes, and that case keeps
-  its rank-3 cube for `tt_reindex`.
+- **A vectorized kernel is legal input to `tt_tile`.** See "Tiling: the search
+  explores, `tt_tile` completes" for the contract: the access index's rank is
+  the number of tile axes already present, the pass adds only the missing ones,
+  and a group already counted in tiles is left alone. `sigmoid` arrives scalar
+  (rank 0), `add`/`mul` arrive rank 1, a reduce keeps its rank-3 cube for
+  `tt_reindex`.
 - **`SIGMOID` ported (2026-11-01)**, gate `0/2560`, worst `1.19e-7` — the
   same number the builder path gives. The ported kind is the **Precise**
   program (`ops::sigmoid_program`, kind `0x12b`), which is what the lowering's
