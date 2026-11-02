@@ -35,18 +35,14 @@ use crate::kernel::{
 };
 use crate::shape::Dim;
 
-/// The register hand-off's fixed semaphore set (`tt_reg_sync`). Every seam is
-/// a counting hand-off, not a lock: the producer posts when its unit drained,
-/// the consumer takes before it reads, and `UNPACKED`/`COMPUTED` name the two
-/// data directions. Indices are ours, not hardware: the Sync Unit has eight
-/// flat 4-bit counters and no idea what any of them means. The third index is
-/// reserved for the reuse direction, which is not emitted yet.
-const TT_SEM_UNPACKED: u8 = 0;
-const TT_SEM_COMPUTED: u8 = 1;
-/// The reuse direction's index: a reader that is done with a physical tile
-/// posts it, and the next writer of that tile waits for every such reader
-/// before it overwrites the rows (`tt_reg_sync`).
-const TT_SEM_FREE: u8 = 2;
+/// The register hand-off's semaphores (`tt_reg_sync`) are per *edge*, assigned
+/// in `tt_reg_sync` from the ordered `(producer role, consumer role)` pairs a
+/// kernel needs: one counter per edge, never one per direction. `SEMWAIT` is a
+/// level test, not a reservation, so two consumer roles on one counter both
+/// pass on a single post and the second `SEMGET` underflows (ttsim's
+/// `tensix_semget` message prints the *counter value*, `sem=0`, not the
+/// index). Indices are ours, not hardware: the Sync Unit has eight flat 4-bit
+/// counters and no idea what any of them means.
 /// `Before` codes, as codegen's `tt_before` numbering: the pipeline classes a
 /// `SEMWAIT` holds back until its semaphore was posted.
 const TT_BEFORE_UNPACKER: u8 = 0;
@@ -1367,6 +1363,36 @@ impl Kernel {
                     (DType::F32, DType::I32) => self.tt_sfp_cast_f32_i32(a, slot),
                     _ => todo!("cast {from:?} -> {dtype:?} has no native row-op program"),
                 };
+                let last = ops.pop().expect("the sequence is never empty");
+                for op in ops {
+                    self.insert_before(id, op);
+                }
+                self.ops[id].op = last;
+                return self.tt_materialize(id, dtype, slot, lower);
+            }
+            // An integer `Add` is `SFPIADD`, never the float arm: `SFPMAD`
+            // would add the two words as F32 and drop the integer carry, which
+            // silently loses `tt_exp2`'s `bits(d) + (n << 23)` (every |x| >=
+            // 0.5 came out exactly half of 2^x). The pattern table keys on the
+            // `BOp` alone, so the dtype has to be checked here.
+            Op::Binary { x, y, bop: BOp::Add } if self.dtype(id) == DType::I32 => {
+                // A scalar constant operand has no tile; fill one, as the
+                // float arms' `SfpuConst` emitter does.
+                let (dtype, a, b) = if matches!(self.ops[x].op, Op::Const(_)) {
+                    let (dtype, a) = self.tt_resolve_dst(y, id, lower)?;
+                    let (_, kb) = self.tt_fill_const(x, id, lower.prologue)?;
+                    (dtype, kb, a)
+                } else if matches!(self.ops[y].op, Op::Const(_)) {
+                    let (dtype, a) = self.tt_resolve_dst(x, id, lower)?;
+                    let (_, kb) = self.tt_fill_const(y, id, lower.prologue)?;
+                    (dtype, a, kb)
+                } else {
+                    let (dtype, a) = self.tt_resolve_dst(x, id, lower)?;
+                    let (_, b) = self.tt_resolve_dst(y, id, lower)?;
+                    (dtype, a, b)
+                };
+                let slot = self.tt_new_dst(dtype, lower.prologue);
+                let mut ops = self.tt_sfp_int_add(a, b, slot);
                 let last = ops.pop().expect("the sequence is never empty");
                 for op in ops {
                     self.insert_before(id, op);
@@ -2993,6 +3019,30 @@ impl Kernel {
         ops
     }
 
+    /// Integer `Add` on raw 32-bit words: `SFPIADD` adds the integer in `VC`
+    /// into `VD` (plus an immediate the form does not need here), so the copy
+    /// into `L2` first makes it `L2 = a + b`. `Mod1 = 4` leaves the lane flags
+    /// alone: with it clear the instruction rewrites them from the sum's sign,
+    /// which would predicate everything after it.
+    fn tt_sfp_int_add(&mut self, a: OpId, b: OpId, slot: OpId) -> Vec<Op> {
+        use tt_isa::isa::generated::defs;
+        let (mov, iadd) = (defs::SFPMOV.opcode(), defs::SFPIADD.opcode());
+        let mut ops: Vec<Op> = Vec::new();
+        // Lane-flag predication on, all lanes enabled: without `SFPENCC` the
+        // mask is whatever the previous program left, and a flagged-off lane
+        // would keep its stale word.
+        ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: defs::SFPENCC.opcode(), args: [3, 0, 10, 0, 0] })));
+        let body = self.tt_row_loop(|ops, o| {
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: INT32 }))));
+            ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [u16::from(L0), u16::from(L2), 0, 0, 0] })));
+            ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: iadd, args: [0, u16::from(L1), u16::from(L2), 4, 0] })));
+            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
+        });
+        ops.extend(body);
+        ops
+    }
+
     /// `integer::body` ops 3..7 (`AND`/`OR`/`XOR`/`SHL`/`SHR`).
     fn tt_sfp_integer(&mut self, kind: u32, a: OpId, b: OpId, slot: OpId) -> Vec<Op> {
         use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
@@ -3701,12 +3751,15 @@ impl Kernel {
     ///   read: the reader posts after its last read, the next writer takes
     ///   before its first write (`FREE`).
     ///
-    /// Both are counting hand-offs, so one semaphore serves every tile of a
-    /// direction: each role's stream is in order, so posts and takes pair up
-    /// FIFO. Reads by the role that wrote the tile need no seam — they are the
-    /// same stream — and a tile written once (every single-tile kernel) gets
-    /// no `FREE` seam at all. Initial values are zero: a producer always posts
-    /// before any take of its seam.
+    /// Both are counting hand-offs, so one semaphore serves one ordered
+    /// `(producer, consumer)` pair — every tile and epoch on that edge shares
+    /// it. Each role's stream is in order, so posts and takes pair up FIFO.
+    /// It cannot be one semaphore per *direction*: `SEMWAIT` is a level test,
+    /// so two consumers on one counter both clear on a single post and the
+    /// second `SEMGET` finds it empty. Reads by the role that wrote the tile
+    /// need no seam — they are the same stream — and a tile written once
+    /// (every single-tile kernel) gets no reuse seam at all. Initial values
+    /// are zero: a producer always posts before any take of its edge.
     ///
     /// A missing seam is a real race only because a kernel with any `Semset`
     /// runs the three roles concurrently (`Schedule::Concurrent`); without
@@ -3757,14 +3810,27 @@ impl Kernel {
                     touched.push((slot, 1, true));
                 }
                 Op::TT(TTOp::Copy { src, dst, .. }) => match self.tt_copy_kind(op) {
-                    TtCopy::Unpack => touched.push((dst, 0, true)),
-                    TtCopy::Pack => touched.push((src, 2, false)),
+                    // A `Dst` tile leaving for L1 and coming back is a
+                    // hand-off between the packer and the unpacker, and it is
+                    // *not* covered by the tile's own edge: the pack reads
+                    // one storage and the unpack writes another, with the CB
+                    // in between. Model the CB side too, or the unpack races
+                    // the pack and reads a stale tile (this was the
+                    // `sigmoid`/`exp2` constant-output bug).
+                    TtCopy::Unpack => {
+                        touched.push((dst, 0, true));
+                        touched.push((src, 0, false));
+                    }
+                    TtCopy::Pack => {
+                        touched.push((src, 2, false));
+                        touched.push((dst, 2, true));
+                    }
                     TtCopy::Publish | TtCopy::Drain => {}
                 },
                 _ => {}
             }
             for (tile, role, write) in touched {
-                if matches!(self.ops[tile].op, Op::Storage { scope: MemScope::Register, .. }) {
+                if matches!(self.ops[tile].op, Op::Storage { scope: MemScope::Register | MemScope::Circular, .. }) {
                     touches.entry(tile).or_default().push((i, role, write));
                 }
             }
@@ -3800,8 +3866,10 @@ impl Kernel {
             2 => TT_BEFORE_PACKER,
             _ => TT_BEFORE_ALL,
         };
-        let mut posts: Vec<(usize, TTOp)> = Vec::new();
-        let mut takes: Vec<(usize, TTOp)> = Vec::new();
+        // A seam names the ordered `(producer, consumer)` edge it carries; the
+        // semaphore index is assigned once all edges are known.
+        let mut posts: Vec<(usize, (u8, u8))> = Vec::new();
+        let mut takes: Vec<(usize, (u8, u8))> = Vec::new();
         for events in touches.values() {
             // One epoch per write: the data an epoch publishes is what the
             // reads that follow it (before the next write) consume.
@@ -3819,31 +3887,23 @@ impl Kernel {
                 }
             }
             for (n, ((writer, write_idx), readers)) in epochs.iter().enumerate() {
-                let sem = if *writer == 0 { TT_SEM_UNPACKED } else { TT_SEM_COMPUTED };
                 for &(reader, first, _) in readers {
-                    posts.push((after_replay(*write_idx), TTOp::Post { sem, role: *writer }));
-                    takes.push((before_replay(first), TTOp::Wait { sem, before: before(reader), role: reader }));
+                    posts.push((after_replay(*write_idx), (*writer, reader)));
+                    takes.push((before_replay(first), (*writer, reader)));
                 }
                 // The reuse edge: a tile written again in the next epoch must
                 // not be overwritten while a reader of this epoch still needs
-                // it. Every reader that is not the next writer posts `FREE`
-                // after its last access, and the next writer waits for each of
-                // them before its first write. A writer that was also this
-                // epoch's reader needs no edge: one thread's program order
-                // already orders it.
+                // it. Every reader that is not the next writer posts after its
+                // last access, and the next writer takes on that reader's edge
+                // before its first write. A writer that was also this epoch's
+                // reader needs no edge: one thread's program order already
+                // orders it.
                 if let Some(((next_writer, next_write), _)) = epochs.get(n + 1) {
-                    let mut waiting = 0;
                     for &(reader, _, last) in readers {
                         if reader != *next_writer {
-                            posts.push((after_replay(last), TTOp::Post { sem: TT_SEM_FREE, role: reader }));
-                            waiting += 1;
+                            posts.push((after_replay(last), (reader, *next_writer)));
+                            takes.push((before_replay(*next_write), (reader, *next_writer)));
                         }
-                    }
-                    for _ in 0..waiting {
-                        takes.push((
-                            before_replay(*next_write),
-                            TTOp::Wait { sem: TT_SEM_FREE, before: before(*next_writer), role: *next_writer },
-                        ));
                     }
                 }
             }
@@ -3851,17 +3911,24 @@ impl Kernel {
         if posts.is_empty() && takes.is_empty() {
             return;
         }
-        // `Semset` is not an instruction: codegen folds it into the run's
-        // semaphore table, and `tt_verify` requires it in the compute section.
-        let mut used: Vec<u8> = Vec::new();
-        for (_, op) in posts.iter().chain(takes.iter()) {
-            if let TTOp::Post { sem, .. } | TTOp::Wait { sem, .. } = op {
-                if !used.contains(sem) {
-                    used.push(*sem);
-                }
+        let mut edges: Vec<(u8, u8)> = Vec::new();
+        for &(_, edge) in posts.iter().chain(takes.iter()) {
+            if !edges.contains(&edge) {
+                edges.push(edge);
             }
         }
-        used.sort_unstable();
+        edges.sort_unstable();
+        assert!(
+            edges.len() <= tt_isa::sync::Semaphore::COUNT as usize,
+            "tt_reg_sync: {} role hand-off edges need more than the {} semaphores of the Sync Unit",
+            edges.len(),
+            tt_isa::sync::Semaphore::COUNT
+        );
+        let sem =
+            |edge: (u8, u8)| -> u8 { edges.iter().position(|e| *e == edge).expect("every seam's edge is in `edges`") as u8 };
+        // `Semset` is not an instruction: codegen folds it into the run's
+        // semaphore table, and `tt_verify` requires it in the compute section.
+        let used: Vec<u8> = (0..edges.len() as u8).collect();
         let mut scan = self.head;
         let mut end_reader = None;
         for _ in 0..250_000 {
@@ -3878,18 +3945,16 @@ impl Kernel {
         for &sem in &used {
             self.insert_after(end_reader, Op::TT(TTOp::Semset { sem, value: 0 }));
         }
-        for (idx, op) in takes {
-            self.insert_before(ops[idx], Op::TT(op));
+        for (idx, edge) in takes {
+            let (_, consumer) = edge;
+            self.insert_before(ops[idx], Op::TT(TTOp::Wait { sem: sem(edge), before: before(consumer), role: consumer }));
         }
-        for (idx, op) in posts {
-            let (sem, role) = match op {
-                TTOp::Post { sem, role } => (sem, role),
-                other => unreachable!("only posts are in `posts`, got {other:?}"),
-            };
+        for (idx, edge) in posts {
+            let (producer, _) = edge;
             // Back-pressure: the counter is four bits, so the producer must
             // not get more than fifteen ahead of the consumer.
-            let post = self.insert_after(ops[idx], Op::TT(TTOp::Post { sem, role }));
-            self.insert_before(post, Op::TT(TTOp::WaitBelowMax { sem, before: before(role), role }));
+            let post = self.insert_after(ops[idx], Op::TT(TTOp::Post { sem: sem(edge), role: producer }));
+            self.insert_before(post, Op::TT(TTOp::WaitBelowMax { sem: sem(edge), before: before(producer), role: producer }));
         }
     }
 
@@ -4740,6 +4805,18 @@ mod tt_lower_ops {
         let a = tile(11);
         let got = run(&encode(ops, &rows), &a, &[], &[]);
         let want: Vec<u32> = a.iter().map(|w| (f32::from_bits(*w) as i32) as u32).collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn int_add_wraps_like_the_host() {
+        // `SFPIADD`, not the float arm: the sum is the two words' two's
+        // complement integer sum, wrap included.
+        let (mut k, ids, rows) = tiles();
+        let ops = k.tt_sfp_int_add(ids[0], ids[1], ids[3]);
+        let (a, b) = (tile(23), tile(29));
+        let got = run(&encode(ops, &rows), &a, &b, &[]);
+        let want: Vec<u32> = a.iter().zip(b.iter()).map(|(x, y)| (*x as i32).wrapping_add(*y as i32) as u32).collect();
         assert_eq!(got, want);
     }
 

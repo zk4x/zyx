@@ -14,6 +14,98 @@
 
 ## CURRENT STATE (2026-11-02) — read this first
 
+### Start here — session handoff (2026-11-02, fourth pass)
+
+**Both bugs fixed; `exp2`, `sigmoid` and `sum_sigmoid` are green.**
+
+1. **The missing packer → unpacker seam (fixed).** `tt_reg_sync` only put
+   `Register` storages in `touches`, so a `tt_materialize` round trip
+   (DST → CB on the packer, CB → DST on the unpacker) had **no edge at all**:
+   the unpack raced the pack and read whatever the CB held before. Symptom: the
+   whole output tile was one constant that moved with the allocation
+   (`sigmoid` 0.2, `exp2` 4.0), and a probe with `full(-200)` returned the
+   answer for `+200` (the previous kernel's tile). Fix: the `Pack` arm records
+   the CB as a write by role 2 and the `Unpack` arm the CB as a read by role 0,
+   and the `touches` filter accepts `Register | Circular`; the existing epoch
+   logic then emits the T2 → T0 data seam and its reuse seam. It was a real
+   race, not a sim artifact — `y = x*2` used twice passed by luck (its unpack
+   happened to run after the pack), any longer chain lost.
+2. **Integer `Add` lowered through the F32 arm (fixed).**
+   `Op::Binary { bop: Add }` was dispatched by `bop` alone, so `tt_exp2`'s
+   `bits(d) + (n << 23)` became `SFPMAD`'s float add
+   (`0x3f800000 + 0x00800000` = `1.0 + 1.2e-38`, a no-op) and every lane with
+   `|x| >= 0.5` came out exactly half of `2^x` (507/1024 lanes). Fix:
+   `tt_sfp_int_add` (`SFPMOV` then `SFPIADD Imm12 = 0`, `Mod1 = 4` so the lane
+   flags are left alone, `SFPENCC` first like every other sequence), dispatched
+   from `tt_lower_value` when `self.dtype(id) == DType::I32`; a scalar-constant
+   operand is filled with `tt_fill_const` so it cannot fall back to the float
+   path. New unit test `int_add_wraps_like_the_host` (interp A/B, wrap
+   included).
+
+**Gates:** 15 green on ttsim, one at a time — `add`, `unary_math`,
+`neg_sub_mul`, `shared_input`, `tiling`, `transfer_roundtrip`, `matmul`, `sum`,
+`max`, `sum_scalar`, `max_scalar`, `sum_all`, `exp2` (un-ignored, now a real
+gate), `sigmoid` (0 bad / 2560, `worst 0` — bit-exact against the host),
+`sum_sigmoid`. `cargo test --lib` = **78**. **Red:** `matmul_sigmoid`, still
+`9 DST register tiles exceed the 8-tile budget` (allocator peak, unrelated to
+the two bugs; it also hits ttsim's `SRCA_SET_SetOvrdWithAddr=1` limitation).
+
+**Next:** `matmul_sigmoid` and the allocator peak; `tt_sfpu_fusion` (the seam
+and the math are now trustworthy, so its gates can point at fusion itself);
+then the integer `Sub` in `tt_log2`'s `e - 127` has the same dtype-blind
+problem as the `Add` (dyadic `DType::I32` dispatch is the pattern to follow),
+and `tt_log2` still fails to compile on
+`native unpack ... needs an F32 DST tile, got I32`.
+
+**How the hunt went (so it is not repeated):** `ZYX_DEBUG=264` gives the
+post-epilogue TT IR. What localized it: a temporary print of the role streams
+(`SFPLOAD`/`SFPSTORE` `AddrMod`/`Imm10`, `REPLAY` records) and of
+`tt_dst_reuse`'s `last_use` / `logical -> physical` map. `tt_exp2` was bisected
+by returning early at stages (clamp / clamp+round / Horner / full) under a
+temporary env var; that showed "compare+select fine, materialize + *select*
+consumer broken, materialize + *add* consumer fine", which pointed at the
+CB hand-off rather than the math. All instrumentation is gone; no
+`ZYX_TT_*`/`ZYX_EXP2_*` hooks remain in the passes.
+
+### Start here — session handoff (2026-11-02, third pass)
+
+**Landed since the block below:** `tt_reg_sync` now assigns **one semaphore per
+ordered `(producer role, consumer role)` edge**, not one per direction
+(`edges` collected after the epoch walk, sorted, `assert!(≤ 8)`, index via
+`sem(edge)`; a reuse seam is one post *and* one take per `(reader, next_writer)`
+pair, so the next writer takes once on each such edge).
+
+Why: `SEMWAIT` is a **level test, not a reservation**. One counter per direction
+put T0 and T1 both waiting on `FREE`, so a single T2 post released both, the
+first `SEMGET` took it and the second hit zero. ttsim's message
+`tensix_semget: sem=0 sem_max=15` prints the **counter value, not the index**
+(`tensix.cpp`, `TENSIX_EXECUTE_SEMGET`) — the whole previous hunt assumed the
+index, which made a balanced 6-post/6-take stream look impossible. That was the
+bug; the "take inside an unrolled fallback" theory is dead (a render-time scan
+of every `REPLAY` record's body span showed no `W`/`G`/`P` inside any body).
+
+Verified with the 12 green ttsim gates (still green, one at a time) and
+`cargo test --lib` = 77. `sigmoid`/`sum_sigmoid` **no longer abort** on the
+semaphore and now report plain wrong values.
+
+**New failure, not diagnosed (next session):** `sigmoid` and `sum_sigmoid` now
+return **one constant for every lane** — `0.20000006` (shape `[10, 256]`, so 80
+tiles). Disabling the per-CB unpack cache (`tt_resolve_dst`'s `unpacked` map)
+gives a *different* constant, `-1.1e-7`, so the value depends on the tiling but
+not on the data. `exp2` (`#[ignore]`) returns all zeros. Both are multi-stage
+kernels: DRAM→CB→DST, compute, DST→CB, unpack, compute, … The single-stage gates
+(`add`, `unary_math`, `neg_sub_mul`, `shared_input`) are exact, so the suspect is
+the **materialise→pack→unpack chain** (`tt_materialize`, `tt_copy`, the
+`unpacked` cache), not an SFPU arm (the arm A/B tests pass).
+
+Suspect worth checking first: the `unpacked` cache is keyed by the CB storage and
+stores the **physical DST row** from the first unpack; it is never invalidated,
+and `tt_dst_reuse` recycles rows, so a second use of the same CB (or any row
+reuse after the cache entry) can read a different value's tile.
+
+Also note: `ZYX_DEBUG=8` alone prints nothing on the autotune path; use
+`ZYX_DEBUG=264` (256 `NoSearch` + 8 IR) to get a post-epilogue TT dump.
+
 ### Start here — session handoff (2026-11-02, second session)
 
 **State:** HEAD is the user's last commit (the tree was committed twice during

@@ -579,10 +579,13 @@ fn shared_input() -> Result<(), ZyxError> {
 }
 
 #[test]
-#[ignore = "red: tt_reg_sync pairing under replayed sequences; see NOTES"]
 fn exp2() -> Result<(), ZyxError> {
-    // Smallest kernel that unpacks a multi-use value, replays several
-    // sequences and shows the seam failure: `tensix_semget: sem=0`.
+    // The smallest kernel that unpacks a multi-use value, replays several
+    // sequences and puts the result through a select. It is the regression
+    // for two bugs: the missing packer -> unpacker seam in `tt_reg_sync`
+    // (which made the whole tile one constant) and `tt_exp2`'s integer
+    // `Add` lowering through the F32 arm (which halved every lane with
+    // `|x| >= 0.5`).
     let x = Tensor::rand([32, 32], DType::F32)?;
     let z = x.to(Dev::TT(0))?.exp2().to(Dev::C)?;
 
