@@ -1207,7 +1207,81 @@ impl Kernel {
                 };
                 let (dtype, input) = self.tt_resolve_dst(m.op('t'), id, lower)?;
                 let slot = self.tt_new_dst(dtype, lower.prologue);
-                self.ops[id].op = Op::TT(TTOp::ReduceTile { rop, kind: dim, input, slot });
+                // `reduce.rs`'s sum over a tile row's columns, as row ops
+                // (`accumulate(Sum, Cols, first)` then `finish(Sum, Cols)`).
+                // Every other reduce (a max, the in-order sum over rows, the
+                // whole-tile scalar pass) still takes `ReduceTile`.
+                if rop == BOp::Add && dim == TileDim::Row {
+                    use tt_isa::isa::generated::defs;
+                    // `Dst` format code for an FP32 tile, and the lane
+                    // registers `reduce.rs` uses.
+                    const FP32: u8 = 3;
+                    const L0: u8 = 0;
+                    const L1: u8 = 1;
+                    const L2: u8 = 2;
+                    const LREG_ONE: u32 = 10;
+                    let (mad, mov, shft2, nop) =
+                        (defs::SFPMAD.opcode(), defs::SFPMOV.opcode(), defs::SFPSHFT2.opcode(), defs::SFPNOP.opcode());
+                    let mut ops: Vec<Op> = Vec::new();
+                    let sfp = |ops: &mut Vec<Op>, op: u8, args: [u32; 5]| {
+                        ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn { op, args }))));
+                    };
+                    let ld = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8| {
+                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot, at, reg, fmt: FP32 }))));
+                    };
+                    let st = |ops: &mut Vec<Op>, slot: OpId, at: u16| {
+                        ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at, reg: L0, fmt: FP32 }))));
+                    };
+                    // `into = other + into` (`SFPMAD` with the constant one).
+                    let add = |ops: &mut Vec<Op>, other: u8, into: u8| {
+                        sfp(
+                            ops,
+                            mad,
+                            [u32::from(LREG_ONE), u32::from(other), u32::from(into), u32::from(into), 0],
+                        );
+                    };
+                    // Accumulate: the first tile *is* the accumulator.
+                    for o in (0..64u16).step_by(2) {
+                        ld(&mut ops, input, o, L0);
+                        st(&mut ops, slot, o);
+                    }
+                    // Finish: each tile row's four faces lanewise, then the
+                    // eight lanes' seven rotations. The rotation reads `VD`
+                    // in a mode `SFPMAD`'s stall does not see, so every
+                    // rotation after an add needs an `SFPNOP` (`mod.rs`'s
+                    // `stalls_automatically_after_mad`).
+                    for lower in [0u16, 32] {
+                        for g in 0..4u16 {
+                            let (left, right) = (lower + 4 * g, lower + 16 + 4 * g);
+                            let at = [left, left | 2, right, right | 2];
+                            // The accumulator is always L0; the three other
+                            // faces are combined into it through L1.
+                            ld(&mut ops, slot, at[0], L0);
+                            for &a in &at[1..] {
+                                ld(&mut ops, slot, a, L1);
+                                add(&mut ops, L1, L0);
+                            }
+                            sfp(&mut ops, mov, [u32::from(L0), u32::from(L2), 0, 0, 0]);
+                            for i in 0..7 {
+                                if i > 0 {
+                                    sfp(&mut ops, nop, [0; 5]);
+                                }
+                                sfp(&mut ops, shft2, [0, u32::from(L2), u32::from(L2), 3, 0]);
+                                add(&mut ops, L2, L0);
+                            }
+                            for &a in &at {
+                                st(&mut ops, slot, a);
+                            }
+                        }
+                    }
+                    let last = ops.pop().expect("the reduce sequence is never empty");
+                    for op in ops {
+                        self.insert_before(id, op);
+                    }
+                    self.ops[id].op = last;
+                } else {
+                    self.ops[id].op = Op::TT(TTOp::ReduceTile { rop, kind: dim, input, slot });
+                }
                 self.tt_materialize(id, dtype, slot, lower)
             }
             TtEmit::Matmul => {

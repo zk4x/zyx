@@ -557,13 +557,31 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   (`isub_from`/`iadd`), `SFPSHFT`, `SFPARECIP`, `SFPSETSGN`, `SFPGT`/`SFPLE`/
   `SFPSETCC`, and the output tile as spill. One `SFPNOP` is required: after
   the two final Horner `SFPMAD`s, `SFPIADD` is a read the MAD stall misses.
-- **Next**: `sum` (`tt_reduce_program`/`reduce.rs`, scratch row, in-order
-  accumulator); then `FLOOR`/`TRUNC` (`round::body`), the comparisons and
-  integers — each transcribed from its `Program` body and verified by word
-  comparison first. `Sfpu { kind }`/`tt_sfpu_program`/`tt_row_remap` then die
-  (23 kinds still reach `program_for`). Matmul needs nothing: it is already
-  instruction-level ops (`Unpacr`/`Setadczw`/`Setrwc`/`Zeroacc`/`Mvmul`/
-  `Setc16`/`Setcfg`), and `kern::matmul` only supplies constants.
+- **`sum` ported (2026-11-01)**, gate `0/10`, worst `9.536743e-7` — the same
+  number as the builder path. The gated shape is `TileDim::Row`: `reduce.rs`'s
+  `accumulate(Sum, Cols, first)` (a tile copy — the first tile *is* the
+  accumulator) then `finish(Sum, Cols)` (four faces lanewise per tile row,
+  then the eight lanes' seven `SFPSHFT2` rotations). `tt_dataflow_select`'s
+  Reduce arm now emits that as row ops for `BOp::Add && TileDim::Row`; every
+  other reduce (`Max`, the in-order `Axis::Rows` sum, `TileDim::Scalar`'s
+  two-pass scratch) is still `ReduceTile` → `tt_reduce_program`. The in-order
+  accumulator is **not** gated (both `sum` gates reduce `dim = 1`), so port it
+  only with a gate or `interp` behind it.
+- **`SFPSHFT2` is a missed-stall reader too.** `rotate_row` is `Mod1 = 3`, one
+  of `stall_modes::SHFT2_MISSED`, so every rotation that follows an `SFPMAD`
+  needs an `SFPNOP` (the first one follows an `SFPMOV` and does not). The
+  builder's `push` does this implicitly; a straight transcription of
+  `finish()` drops six NOPs per group without changing the names, so compare
+  words or the gate will only show it on other data.
+- **Next**: the remaining SFPU kinds — `FLOOR`/`TRUNC` (`round::body`), the
+  comparisons, the integers — then `Max` and the scalar reduce (needs a
+  scratch tile: `TileDim::Scalar` stages through one, and no local-slot trick
+  works because the second pass reads the whole first-pass result). Each
+  transcribed from its `Program` body and verified by word comparison first.
+  `Sfpu { kind }`/`tt_sfpu_program`/`tt_row_remap` then die (23 kinds still
+  reach `program_for`). Matmul needs nothing: it is already instruction-level
+  ops (`Unpacr`/`Setadczw`/`Setrwc`/`Zeroacc`/`Mvmul`/`Setc16`/`Setcfg`), and
+  `kern::matmul` only supplies constants.
 
 ### Codegen IS the encoder; the backend is transport
 
@@ -617,7 +635,7 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
 | `transfer_roundtrip` | green, 0/200 |
 | `matmul` | green, 0/120 (0.0075 = TF32 in `Src`) |
 | `sigmoid` | green, 0/2560 (worst 1.2e-7) — on the row-op path as of 2026-11-01 (Precise program, `sigmoid_program`) |
-| `sum` | green, 0/10 (worst 9.5e-7) |
+| `sum` | green, 0/10 (worst 9.5e-7) — on the row-op path as of 2026-11-01 (sum over a tile row's columns) |
 | `sum_sigmoid` | green, 0/10 (exact) |
 | `add` | green, 0/2560 (exact) — first kind on the row-op path (`SFPMAD` + `LREG_ONE`) |
 | `matmul_sigmoid` | fails at `tt_verify`: DST register is I64 — the `Setrwc` dtype bug |
