@@ -1480,7 +1480,7 @@ impl Kernel {
         // `0`/`1` either way: `x ^ 1`, on raw bits.
         let xor = tt_isa::isa::generated::defs::SFPXOR.opcode();
         ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg: L3, bits: 1 }))));
-        let body = self.tt_row_loop(|ops, o| {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L2, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: xor, args: [u16::from(L3), u16::from(L2), 0, 0, 0] })));
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
@@ -1495,7 +1495,7 @@ impl Kernel {
         // `d = 1 * a + b` (`SFPMAD` with the constant-one register), the
         // same words `Program::add` emits.
         let mad = tt_isa::isa::generated::defs::SFPMAD.opcode();
-        self.tt_row_loop(|ops, o| {
+        self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: mad, args: [LREG_ONE, u16::from(L0), u16::from(L1), u16::from(L2), 0] })));
@@ -1509,7 +1509,7 @@ impl Kernel {
         // `d = 1 * a - b`: `SFPMAD` with the constant-one register and a
         // negated addend, the same words `Program::sub` emits.
         let mad = tt_isa::isa::generated::defs::SFPMAD.opcode();
-        self.tt_row_loop(|ops, o| {
+        self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: mad, args: [LREG_ONE, u16::from(L0), u16::from(L1), u16::from(L2), 2] })));
@@ -1525,7 +1525,7 @@ impl Kernel {
         // zero negated (`Program::mul`): a plain `SFPMUL` adds a `+0`,
         // which turns a `-0` product into `+0`.
         let mad = tt_isa::isa::generated::defs::SFPMAD.opcode();
-        self.tt_row_loop(|ops, o| {
+        self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: mad, args: [u16::from(L0), u16::from(L1), LREG_ZERO, u16::from(L2), 2] })));
@@ -1541,7 +1541,7 @@ impl Kernel {
         // stays one (`SFPMOV` with `Mod1 = 1`). Loaded and stored as
         // `Int32`: an FP32 store would flush a denormal.
         let mov = tt_isa::isa::generated::defs::SFPMOV.opcode();
-        self.tt_row_loop(|ops, o| {
+        self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [u16::from(L0), u16::from(L2), 1, 0, 0] })));
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
@@ -1557,7 +1557,7 @@ impl Kernel {
         let mut ops: Vec<Op> = Vec::new();
         let and = tt_isa::isa::generated::defs::SFPAND.opcode();
         ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg: L3, bits: 0x7fff_ffff }))));
-        let body = self.tt_row_loop(|ops, o| {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: and, args: [u16::from(L3), u16::from(L0), u16::from(L2), 1, 0] })));
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
@@ -1570,7 +1570,7 @@ impl Kernel {
     fn tt_sfp_int_not(&mut self, a: OpId, slot: OpId) -> Vec<Op> {
         // `integer::body`'s `NOT`: bitwise, raw bits.
         let not = tt_isa::isa::generated::defs::SFPNOT.opcode();
-        self.tt_row_loop(|ops, o| {
+        self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: not, args: [u16::from(L0), u16::from(L2), 0, 0, 0] })));
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
@@ -1609,7 +1609,7 @@ impl Kernel {
         // does: without `SFPENCC` every scope below is a no-op.
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
         let inverse = kind == sf::RSQRT;
-        for o in (0..64u16).step_by(2) {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             // `mov(x, y)` then `y >>= 31`, `y = c - y`.
             sfp(&mut ops, mov, [u16::from(L0), u16::from(L1), 0, 0, 0]);
@@ -1668,7 +1668,8 @@ impl Kernel {
             konst(&mut ops, L2, 0x7fc0_0000);
             sfp(&mut ops, popc, [0; 5]);
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: FP32 }))));
-        }
+        });
+        ops.extend(body);
         ops
     }
 
@@ -1700,7 +1701,7 @@ impl Kernel {
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
         // `max = L6` holds `f32::MAX` across the program.
         konst(&mut ops, L6, 0x7f7f_ffff);
-        for o in (0..64u16).step_by(2) {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             // `recip(x = L0, d = L2, t0 = L3, t1 = L4, max = L6)`.
             sfp(&mut ops, abs, [u16::from(L0), u16::from(L4), 1, 0, 0]);
@@ -1744,7 +1745,8 @@ impl Kernel {
             sfp(&mut ops, popc, [0; 5]);
             sfp(&mut ops, popc, [0; 5]);
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: FP32 }))));
-        }
+        });
+        ops.extend(body);
         ops
     }
 
@@ -1778,7 +1780,7 @@ impl Kernel {
         // does: without `SFPENCC` every scope below is a no-op.
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
         let floor = kind == sf::FLOOR;
-        for o in (0..64u16).step_by(2) {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             konst(&mut ops, L3, 0x7fff_ffff);
             sfp(&mut ops, and, [u16::from(L3), u16::from(L0), u16::from(L1), 1, 0]);
@@ -1822,7 +1824,8 @@ impl Kernel {
             sfp(&mut ops, popc, [0; 5]);
             sfp(&mut ops, popc, [0; 5]);
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
-        }
+        });
+        ops.extend(body);
         ops
     }
 
@@ -1854,7 +1857,7 @@ impl Kernel {
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
         konst(&mut ops, L6, 0x7f7f_ffff); // f32::MAX
         konst(&mut ops, L7, 0x7f80_0000); // +inf
-        for o in (0..64u16).step_by(2) {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
             // `scale_large_divisor(a, b, t = L3, c = L4)`.
@@ -1917,7 +1920,8 @@ impl Kernel {
             sfp(&mut ops, popc, [0; 5]);
             sfp(&mut ops, popc, [0; 5]);
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L5, fmt: FP32 }))));
-        }
+        });
+        ops.extend(body);
         ops
     }
 
@@ -1959,7 +1963,7 @@ impl Kernel {
         // the unit's `UseLaneFlagsForLaneEnable` is whatever the previous
         // kernel left, and `SFPSETCC` is a no-op (`SFPENCC.md`).
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        for o in (0..64u16).step_by(2) {
+        let body = self.tt_row_loop(|mut ops, o| {
             ld(&mut ops, a, o, L0, FP32);
             st(&mut ops, slot, o, L0, INT32); // spill x (raw bits)
             // `nz = -|x|` in L1.
@@ -2070,7 +2074,8 @@ impl Kernel {
             sfp(&mut ops, popc, [0; 5]);
             sfp(&mut ops, popc, [0; 5]);
             st(&mut ops, slot, o, L7, FP32);
-        }
+        });
+        ops.extend(body);
         ops
     }
 
@@ -2138,7 +2143,7 @@ impl Kernel {
         let phl = ph - phh;
         let mut ops: Vec<Op> = Vec::new();
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        for o in (0..64u16).step_by(2) {
+        let body = self.tt_row_loop(|mut ops, o| {
             // ---------------------------------------------------------------
             // `trig_reduce(p, spill)`: `q` and `|g|` from `x`'s bits.
             // ---------------------------------------------------------------
@@ -2348,7 +2353,8 @@ impl Kernel {
             konst(&mut ops, L7, 0x7fc0_0000);
             sfp(&mut ops, popc, [0; 5]);
             st(&mut ops, slot, o, L7, INT32);
-        }
+        });
+        ops.extend(body);
         ops
     }
 
@@ -2357,7 +2363,7 @@ impl Kernel {
     /// and no SFPU instruction: the copy gives the value its own storage and
     /// target dtype, and a later pass can coalesce it away.
     fn tt_sfp_bitcast(&mut self, a: OpId, slot: OpId) -> Vec<Op> {
-        self.tt_row_loop(|ops, o| {
+        self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L0, fmt: INT32 }))));
         })
@@ -2385,7 +2391,7 @@ impl Kernel {
         };
         let mut ops: Vec<Op> = Vec::new();
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        let body = self.tt_row_loop(|ops, o| {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             sfp(ops, mov, [u16::from(L0), u16::from(L1), 0, 0, 0]);
             sfp(ops, pushc, [0; 5]);
@@ -2435,7 +2441,7 @@ impl Kernel {
         };
         let mut ops: Vec<Op> = Vec::new();
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        for o in (0..64u16).step_by(2) {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             konst(&mut ops, L3, 0x7fff_ffff);
             sfp(&mut ops, and, [u16::from(L3), u16::from(L0), u16::from(L1), 1, 0]);
@@ -2468,7 +2474,8 @@ impl Kernel {
             sfp(&mut ops, popc, [0; 5]);
             sfp(&mut ops, popc, [0; 5]);
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
-        }
+        });
+        ops.extend(body);
         ops
     }
 
@@ -2485,7 +2492,7 @@ impl Kernel {
         };
         let mut ops: Vec<Op> = Vec::new();
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        let body = self.tt_row_loop(|ops, o| {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: cond, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: t, at: o, reg: L1, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: f, at: o, reg: L2, fmt: INT32 }))));
@@ -2535,7 +2542,7 @@ impl Kernel {
         };
         let mut ops: Vec<Op> = Vec::new();
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        for o in (0..64u16).step_by(2) {
+        let body = self.tt_row_loop(|mut ops, o| {
             // ---------------------------------------------------------------
             // `log_program(L0, L7)`: `|x|`, then `ln|x|` into `L7`.
             // ---------------------------------------------------------------
@@ -2814,7 +2821,8 @@ impl Kernel {
             sfp(&mut ops, mov, [LREG_ONE, u16::from(L7), 0, 0, 0]);
             sfp(&mut ops, popc, [0; 5]);
             st(&mut ops, slot, o, L7, INT32);
-        }
+        });
+        ops.extend(body);
         ops
     }
 
@@ -2892,7 +2900,7 @@ impl Kernel {
                 sfp(ops, popc, [0; 5]);
             }
         };
-        for o in (0..64u16).step_by(2) {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: INT32 }))));
             // `ax = x & mask`, `ay = y & mask`; a zero of either sign is
@@ -2918,7 +2926,8 @@ impl Kernel {
             sfp(&mut ops, popc, [0; 5]);
             sfp(&mut ops, popc, [0; 5]);
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
-        }
+        });
+        ops.extend(body);
         ops
     }
 
@@ -2953,7 +2962,7 @@ impl Kernel {
         // is a no-op.
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
         let op = kind - sf::INT_AND;
-        for o in (0..64u16).step_by(2) {
+        let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: INT32 }))));
             match op {
@@ -2989,7 +2998,8 @@ impl Kernel {
                 }
             }
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
-        }
+        });
+        ops.extend(body);
         ops
     }
 
