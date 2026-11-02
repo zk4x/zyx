@@ -62,13 +62,26 @@ zyx/src/backend/tenstorrent/kern/sfpu/ops.rs                    (one visibility)
   `kernel/tenstorrent.rs`): every ported kind's arm and its `ops::code2`
   builder program run through `kern/sfpu/interp.rs` on specials, bit-exact.
   `tt_sfp_encode` is `pub(crate)` and `ops::two_over_pi_limb` is `pub` for it.
+- **`Bitcast`, `Cast` and `Select` lower directly** (they are `Op`s, not
+  `UOp`/`BOp` kinds, so their arms are in `tt_lower_value` beside
+  `tt_lower_load`):
+  - `tt_sfp_bitcast`: a raw `INT32` copy, no instruction (the coalescing is
+    for a later pass);
+  - `tt_sfp_cast_i32_f32` (`ops::i32_to_float`: two's complement split, then
+    `SFPCAST` RNE) and `tt_sfp_cast_f32_i32` (`round::to_i32`: Rust's
+    saturating `as i32`, NaN to zero); other dtype pairs are `todo!()`;
+  - `tt_sfp_select`: `cond != 0` predicates a `mov` of the raw bits.
+  Tests: permanent `#[cfg(test)] mod tt_lower_ops`, each arm through `interp`
+  against the host (`as f32`, `as i32`, `if cond != 0`). They have no builder
+  program to A/B, and `Bool` cannot be packed for ttsim, so this is the only
+  coverage `Select` can have.
 
 **Green on ttsim, one test at a time** (the file cascades failures; shared RT:
 a full-file run reports 7 failures, 5 of them cascade — always isolate):
 `add`, `transfer_roundtrip`, `matmul`, `sigmoid`, `sum`, `sum_sigmoid`,
 `max`, `sum_scalar`, `max_scalar`, `sum_all`, `matmul_sigmoid`,
-`neg_sub_mul`, `tiling`, `unary_math`. `cargo test --lib` = **72** (70 + the
-two `sfp_row_ops` tests).
+`neg_sub_mul`, `tiling`, `unary_math`. `cargo test --lib` = **76** (70 + the
+two `sfp_row_ops` tests + the four `tt_lower_ops` tests).
 
 ```
 cd zyx && TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
@@ -100,7 +113,19 @@ port"; pass order in "Pipeline and pass names" and "Implementation order
 **Pick up here:**
 1. Confirm the tree (`cargo build`, the gates above, `cargo test --lib`). The
    user writes commit messages: commit only when asked.
-2. **Item 2 — finish it: `REM`.**
+2. **Next: `tt_unfold`** (the user's order: Bitcast/Cast/Select first, done;
+   now the pass). It lives in the TT branch of `device_epilogue` **after
+   `tt_tile`**, before `tt_dataflow_select`, and rewrites the leaf math
+   (`Sin`/`Cos`/`Pow`/`Exp2`/`Log2`) into ordinary `Op`s — the builder
+   instruction sequences expressed with `Bitcast`/shifts/masks/`Select`/
+   `mul`/`mad`. Same approach as `unfold_pows`; for `Pow` the dynamic-float
+   branch of `unfold_pows` has to skip TT so the pass sees it. It needs the
+   sigmoid chain's `Exp2` too. After it lands: delete `sigmoid_pat`,
+   `tt_sfp_sigmoid`, `tt_sfp_sin_cos`, `tt_sfp_pow`, eventually
+   `Sfpu{kind}`/`tt_sfpu_program`/`tt_row_remap`. Fusion is optimization
+   only (it keeps the chain in `L0..L7`), not correctness, and is NOT a
+   prerequisite.
+3. **Item 2 — finish it: `REM`.**
    - `POW` is **ported** (`tt_sfp_pow`: `log_program` + the multiply +
      `exp_program` + `pow_fix`) and in `sfp_row_ops`'s binary list. It is
      **not gateable on ttsim, and not reachable from the frontend**: `Tensor::

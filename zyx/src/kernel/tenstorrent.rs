@@ -998,6 +998,48 @@ impl Kernel {
             Op::TT(TTOp::Setrwc { dst }) => return Some((self.dtype(id), dst)),
             Op::Storage { dtype, .. } => return Some((dtype, id)),
             Op::Load { .. } => return self.tt_lower_load(id, lower),
+            // The three value-preserving/reinterpreting ops are `Op`s, not
+            // `UOp`/`BOp` kinds, so they lower here rather than through the
+            // kind-keyed pattern table.
+            Op::Bitcast { x, dtype } => {
+                let (_, a) = self.tt_resolve_dst(x, id, lower)?;
+                let slot = self.tt_new_dst(dtype, lower.prologue);
+                let mut ops = self.tt_sfp_bitcast(a, slot);
+                let last = ops.pop().expect("the sequence is never empty");
+                for op in ops {
+                    self.insert_before(id, op);
+                }
+                self.ops[id].op = last;
+                return self.tt_materialize(id, dtype, slot, lower);
+            }
+            Op::Cast { x, dtype } => {
+                let (from, a) = self.tt_resolve_dst(x, id, lower)?;
+                let slot = self.tt_new_dst(dtype, lower.prologue);
+                let mut ops = match (from, dtype) {
+                    (DType::I32, DType::F32) => self.tt_sfp_cast_i32_f32(a, slot),
+                    (DType::F32, DType::I32) => self.tt_sfp_cast_f32_i32(a, slot),
+                    _ => todo!("cast {from:?} -> {dtype:?} has no native row-op program"),
+                };
+                let last = ops.pop().expect("the sequence is never empty");
+                for op in ops {
+                    self.insert_before(id, op);
+                }
+                self.ops[id].op = last;
+                return self.tt_materialize(id, dtype, slot, lower);
+            }
+            Op::Select { cond, if_true, if_false } => {
+                let (_, c) = self.tt_resolve_dst(cond, id, lower)?;
+                let (dtype, t) = self.tt_resolve_dst(if_true, id, lower)?;
+                let (_, f) = self.tt_resolve_dst(if_false, id, lower)?;
+                let slot = self.tt_new_dst(dtype, lower.prologue);
+                let mut ops = self.tt_sfp_select(c, t, f, slot);
+                let last = ops.pop().expect("the sequence is never empty");
+                for op in ops {
+                    self.insert_before(id, op);
+                }
+                self.ops[id].op = last;
+                return self.tt_materialize(id, dtype, slot, lower);
+            }
             _ => {}
         }
         for i in 0..lower.pats.len() {
@@ -2015,6 +2057,154 @@ impl Kernel {
             konst(&mut ops, L7, 0x7fc0_0000);
             sfp(&mut ops, popc, [0; 5]);
             st(&mut ops, slot, o, L7, INT32);
+        }
+        ops
+    }
+
+    /// `Op::Bitcast`: the same 32 bits in a new tile. A lane register holds
+    /// one word whatever its type, so this is a raw copy, `INT32` in and out,
+    /// and no SFPU instruction: the copy gives the value its own storage and
+    /// target dtype, and a later pass can coalesce it away.
+    fn tt_sfp_bitcast(&mut self, a: OpId, slot: OpId) -> Vec<Op> {
+        let mut ops: Vec<Op> = Vec::new();
+        for o in (0..64u16).step_by(2) {
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
+            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L0, fmt: INT32 }))));
+        }
+        ops
+    }
+
+    /// `Op::Cast` from `I32` to `F32`: `ops::i32_to_float` — the two's
+    /// complement made sign-magnitude for `SFPCAST` (which rounds to nearest
+    /// even), the sign put back; `i32::MIN`, whose magnitude has no 31-bit
+    /// form, by name. `L0` in and out, `L1` and `L2` scratch.
+    fn tt_sfp_cast_i32_f32(&mut self, a: OpId, slot: OpId) -> Vec<Op> {
+        use tt_isa::isa::generated::defs;
+        let (mov, cast, xor, iadd, setcc) = (
+            defs::SFPMOV.opcode(),
+            defs::SFPCAST.opcode(),
+            defs::SFPXOR.opcode(),
+            defs::SFPIADD.opcode(),
+            defs::SFPSETCC.opcode(),
+        );
+        let (pushc, popc) = (defs::SFPPUSHC.opcode(), defs::SFPPOPC.opcode());
+        let sfp = |ops: &mut Vec<Op>, op: u8, args: [u32; 5]| {
+            ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn { op, args }))));
+        };
+        let konst = |ops: &mut Vec<Op>, reg: u8, bits: u32| {
+            ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg, bits }))));
+        };
+        let mut ops: Vec<Op> = Vec::new();
+        sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
+        for o in (0..64u16).step_by(2) {
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
+            sfp(&mut ops, mov, [u32::from(L0), u32::from(L1), 0, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L0), 0, 0, 0]);
+            sfp(&mut ops, iadd, [0, LREG_ZERO, u32::from(L1), 6, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, cast, [u32::from(L1), u32::from(L1), 0, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L0), 0, 0, 0]);
+            sfp(&mut ops, mov, [u32::from(L1), u32::from(L1), 1, 0, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            konst(&mut ops, L2, 0x8000_0000);
+            sfp(&mut ops, xor, [u32::from(L0), u32::from(L2), 0, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L2), 0, 6, 0]);
+            konst(&mut ops, L1, 0xcf00_0000); // -2^31
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, mov, [u32::from(L1), u32::from(L0), 0, 0, 0]);
+            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L0, fmt: FP32 }))));
+        }
+        ops
+    }
+
+    /// `Op::Cast` from `F32` to `I32`: `round::to_i32` — Rust's saturating
+    /// `as i32`, truncating toward zero, NaN to zero, infinities and
+    /// overflow clamped. `L0` in, `L2` out, `L1` and `L3` scratch.
+    fn tt_sfp_cast_f32_i32(&mut self, a: OpId, slot: OpId) -> Vec<Op> {
+        use tt_isa::isa::generated::defs;
+        let (and, mov, gt, le, setcc, pushc, popc, compc) = (
+            defs::SFPAND.opcode(),
+            defs::SFPMOV.opcode(),
+            defs::SFPGT.opcode(),
+            defs::SFPLE.opcode(),
+            defs::SFPSETCC.opcode(),
+            defs::SFPPUSHC.opcode(),
+            defs::SFPPOPC.opcode(),
+            defs::SFPCOMPC.opcode(),
+        );
+        let (exexp, exman, shft, iadd) =
+            (defs::SFPEXEXP.opcode(), defs::SFPEXMAN.opcode(), defs::SFPSHFT.opcode(), defs::SFPIADD.opcode());
+        let sfp = |ops: &mut Vec<Op>, op: u8, args: [u32; 5]| {
+            ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn { op, args }))));
+        };
+        let konst = |ops: &mut Vec<Op>, reg: u8, bits: u32| {
+            ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg, bits }))));
+        };
+        let mut ops: Vec<Op> = Vec::new();
+        sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
+        for o in (0..64u16).step_by(2) {
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
+            konst(&mut ops, L3, 0x7fff_ffff);
+            sfp(&mut ops, and, [u32::from(L3), u32::from(L0), u32::from(L1), 1, 0]);
+            sfp(&mut ops, mov, [LREG_ZERO, u32::from(L2), 0, 0, 0]);
+            konst(&mut ops, L3, 0x3f80_0000); // 1.0
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [u32::from(L1), u32::from(L3), 1, 0, 0]);
+            konst(&mut ops, L3, 0x4f00_0000); // 2^31
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L1), u32::from(L3), 1, 0, 0]);
+            sfp(&mut ops, exexp, [u32::from(L0), u32::from(L3), 0, 0, 0]);
+            sfp(&mut ops, iadd, [(-23i32) as u32 & 0xfff, u32::from(L3), u32::from(L3), 5, 0]);
+            sfp(&mut ops, exman, [u32::from(L0), u32::from(L2), 0, 0, 0]);
+            sfp(&mut ops, shft, [0, u32::from(L3), u32::from(L2), 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L0), 0, 0, 0]);
+            sfp(&mut ops, iadd, [0, LREG_ZERO, u32::from(L2), 6, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, compc, [0; 5]);
+            konst(&mut ops, L3, 0x7f80_0000); // +inf
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [u32::from(L3), u32::from(L1), 1, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L0), 0, 0, 0]);
+            konst(&mut ops, L2, 0x8000_0000);
+            sfp(&mut ops, compc, [0; 5]);
+            konst(&mut ops, L2, 0x7fff_ffff);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
+        }
+        ops
+    }
+
+    /// `Op::Select`: `cond != 0` picks `t`, else `f`, on the raw bits. The
+    /// condition is a comparison's `Bool` tile, which its arm stores as
+    /// `INT32` 0/1; `t` and `f` share a dtype, so the answer is a bitwise
+    /// choice. `L0` cond, `L1` true, `L2` false, `L3` the answer.
+    fn tt_sfp_select(&mut self, cond: OpId, t: OpId, f: OpId, slot: OpId) -> Vec<Op> {
+        use tt_isa::isa::generated::defs;
+        let (mov, setcc) = (defs::SFPMOV.opcode(), defs::SFPSETCC.opcode());
+        let (pushc, popc) = (defs::SFPPUSHC.opcode(), defs::SFPPOPC.opcode());
+        let sfp = |ops: &mut Vec<Op>, op: u8, args: [u32; 5]| {
+            ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn { op, args }))));
+        };
+        let mut ops: Vec<Op> = Vec::new();
+        sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
+        for o in (0..64u16).step_by(2) {
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: cond, at: o, reg: L0, fmt: INT32 }))));
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: t, at: o, reg: L1, fmt: INT32 }))));
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: f, at: o, reg: L2, fmt: INT32 }))));
+            sfp(&mut ops, mov, [u32::from(L2), u32::from(L3), 0, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L0), 0, 2, 0]);
+            sfp(&mut ops, mov, [u32::from(L1), u32::from(L3), 0, 0, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L3, fmt: INT32 }))));
         }
         ops
     }
@@ -3885,5 +4075,149 @@ mod sfp_row_ops {
         ] {
             compare(kind);
         }
+    }
+}
+
+/// Coverage for the three non-kind lowering arms (`Bitcast`, `Cast`,
+/// `Select`): each arm's instruction stream through `interp`, against the
+/// host's own semantics. They have no metalium builder program, so there is
+/// no builder to A/B; and a `Bool` condition cannot be packed for ttsim, so
+/// these are the only coverage a `Select` can have.
+#[cfg(test)]
+mod tt_lower_ops {
+    use super::*;
+    use crate::backend::tenstorrent::kern::sfpu::interp::Vector;
+    use crate::backend::tenstorrent::kern::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
+    use crate::kernel::Dev;
+    use std::collections::HashMap;
+    use tt_isa::isa::Instruction;
+    use tt_isa::sfpu as enc;
+
+    /// The scratch row the fourth tile takes (`A_ROW`/`B_ROW` are 0 and 64).
+    const C_ROW: u32 = 192;
+
+    /// Four `F32` `Register` tiles and their interpreter rows.
+    fn tiles() -> (Kernel, [OpId; 4], HashMap<u32, u32>) {
+        let mut k = Kernel::new(Dev::Auto);
+        let mut ids = [OpId::NULL; 4];
+        let mut rows = HashMap::new();
+        for (id, row) in ids.iter_mut().zip([A_ROW, B_ROW, C_ROW, OUT_ROW]) {
+            *id = k.push_back(Op::Storage { dtype: DType::F32, scope: MemScope::Register, len: 1024, id: 0 });
+            rows.insert(id.0, row);
+        }
+        (k, ids, rows)
+    }
+
+    /// The arm's ops as ISA instructions, rows from `rows`.
+    fn encode(ops: Vec<Op>, rows: &HashMap<u32, u32>) -> Vec<Instruction> {
+        let mut out = Vec::new();
+        for op in ops {
+            match op {
+                Op::TT(TTOp::SfpLoad(s)) => {
+                    out.push(enc::load(u32::from(s.reg), u32::from(s.fmt), 0, rows[&s.slot.0] + u32::from(s.at)).unwrap())
+                }
+                Op::TT(TTOp::SfpStore(s)) => {
+                    out.push(enc::store(u32::from(s.reg), u32::from(s.fmt), 0, rows[&s.slot.0] + u32::from(s.at)).unwrap())
+                }
+                Op::TT(TTOp::SfpConst(c)) => {
+                    if c.bits & 0xffff == 0 {
+                        out.push(enc::loadi(u32::from(c.reg), enc::loadi_mode::FLOATB, c.bits >> 16).unwrap());
+                    } else {
+                        out.extend(enc::load_f32(u32::from(c.reg), c.bits).unwrap());
+                    }
+                }
+                Op::TT(TTOp::Sfp(i)) => out.push(crate::codegen::tenstorrent::tt_sfp_encode(&i).unwrap()),
+                other => panic!("unexpected op {other:?}"),
+            }
+        }
+        out
+    }
+
+    fn run(program: &[Instruction], a: &[u32], b: &[u32], c: &[u32]) -> Vec<u32> {
+        let mut v = Vector::new();
+        for (row, data) in [(A_ROW, a), (B_ROW, b), (C_ROW, c)] {
+            if !data.is_empty() {
+                v.put_tile(row as usize, data);
+            }
+        }
+        v.run(program).unwrap();
+        v.tile(OUT_ROW as usize)
+    }
+
+    /// Specials mixed with a deterministic word stream.
+    fn tile(seed: u32) -> Vec<u32> {
+        let specials = [
+            0x0000_0000,
+            0x8000_0000,
+            0x7f80_0000,
+            0xff80_0000,
+            0x7fc0_0000,
+            0xffc0_0000,
+            0x4f00_0000,
+            0xcf00_0000,
+            0x3f80_0000,
+            0xbf80_0000,
+            0x7f7f_ffff,
+            0xff7f_ffff,
+            0x0080_0000,
+            0x0000_0001,
+            0x4b00_0000,
+            0xcb00_0000,
+        ];
+        (0..1024)
+            .map(|i| {
+                if i % 3 == 0 {
+                    specials[(i as u32 + seed) as usize % specials.len()]
+                } else {
+                    (i as u32).wrapping_mul(0x9e37_79b9).wrapping_add(seed)
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bitcast_copies_the_raw_bits() {
+        let (mut k, ids, rows) = tiles();
+        let ops = k.tt_sfp_bitcast(ids[0], ids[3]);
+        let a = tile(5);
+        let got = run(&encode(ops, &rows), &a, &[], &[]);
+        assert_eq!(got, a);
+    }
+
+    #[test]
+    fn cast_i32_to_f32_matches_the_host() {
+        let (mut k, ids, rows) = tiles();
+        let ops = k.tt_sfp_cast_i32_f32(ids[0], ids[3]);
+        let a = tile(7);
+        let got = run(&encode(ops, &rows), &a, &[], &[]);
+        let want: Vec<u32> = a.iter().map(|w| (*w as i32 as f32).to_bits()).collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn cast_f32_to_i32_matches_the_host() {
+        let (mut k, ids, rows) = tiles();
+        let ops = k.tt_sfp_cast_f32_i32(ids[0], ids[3]);
+        let a = tile(11);
+        let got = run(&encode(ops, &rows), &a, &[], &[]);
+        let want: Vec<u32> = a.iter().map(|w| (f32::from_bits(*w) as i32) as u32).collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn select_picks_on_a_nonzero_condition() {
+        let (mut k, ids, rows) = tiles();
+        let ops = k.tt_sfp_select(ids[0], ids[1], ids[2], ids[3]);
+        let cond: Vec<u32> = (0..1024)
+            .map(|i| match i % 5 {
+                0 => 0,
+                1 => 1,
+                _ => (i as u32).wrapping_mul(0x9e37_79b9),
+            })
+            .collect();
+        let (t, f) = (tile(13), tile(17));
+        let got = run(&encode(ops, &rows), &cond, &t, &f);
+        let want: Vec<u32> = (0..1024).map(|i| if cond[i] != 0 { t[i] } else { f[i] }).collect();
+        assert_eq!(got, want);
     }
 }
