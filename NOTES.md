@@ -12,7 +12,7 @@
 > Verbosity that helps the next session is welcome; presentation is not the
 > point. The user's own record is the commit history and their messages.
 
-## CURRENT STATE (2026-11-01) — read this first
+## CURRENT STATE (2026-11-02) — read this first
 
 ### 0. Memory model (the card, not the host)
 
@@ -422,9 +422,9 @@ SfpConst { reg: u8, bits: u32 }
 ```
 
 plus the existing ISA ops (`Unpacr`, `Setadczw`, `Setadcx`, `Setrwc`,
-`Zeroacc`, `Mvmul`, `Setc16`, `Setcfg`, `Post`, `Wait`, `ReduceTile` until
-item 5) and the non-ISA placement/run/boundary ops (`Copy`, `Semset`, `Dm*`,
-`EndReader`, `EndCompute`, `TensixGrid`).
+`Zeroacc`, `Mvmul`, `Setc16`, `Setcfg`, `Post`, `Wait` — `ReduceTile` was
+here until 2026-11-02, now deleted) and the non-ISA placement/run/boundary ops
+(`Copy`, `Semset`, `Dm*`, `EndReader`, `EndCompute`, `TensixGrid`).
 
 - `a`/`b`/`c` are source LREGs (`L0..L7` writable; `L8..L15` read-only
   constants/config), `d` is the destination for forms that write one,
@@ -449,8 +449,8 @@ item 5) and the non-ISA placement/run/boundary ops (`Copy`, `Semset`, `Dm*`,
   in `tt_dataflow_select`: `exp2(x) = exp(x * ln2)`, `log2(x) =
   log(x) * log2e`, `reciprocal` = `SFPARECIP` + Newton. The zyx UOp surface
   has only `Exp2`/`Log2`/`Reciprocal`; `exp`, `log`, `sigmoid` are frontend
-  compositions, not backend ops. `ReduceTile` stays until item 5 (its
-  algorithm is still the open part; the `sum` gates are the compass).
+  compositions, not backend ops. (`ReduceTile` was the last structured
+  compute op; it is deleted as of 2026-11-02 — a reduce is row ops now.)
 - `kern/sfpu`'s `Program` / `Instruction` / `Code` / `LoopForm` / `REPLAY`
   bookkeeping is to be **deleted** from the lowering path. The macro bodies
   remain as instruction-selection functions that emit typed ops;
@@ -522,10 +522,12 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   `SFPIADD`'s `[c, d]` = `d = c - d` order — one swapped pair of `LReg`s, a
   factor-of-two result. Compare the emitted words against the builder's before
   believing a structural diagnosis.
-- **Port order**: `BOOL_NOT`, `ABS`, `NEG`, `SQRT`/`RSQRT`, the comparisons
-  (`EQ..LE` via `binary_body`), `DIV`/`REM`, the integer ops, `FLOOR`/`TRUNC`
-  (`round::body`), then the approx kinds — `SIGMOID` first because it is the
-  only gated one. `ReduceTile`/`reduce.rs` untouched (item 5).
+- **Port order**: `BOOL_NOT`, `ADD`, `SIGMOID` (done, 2026-11-02; the reduce
+  came with them and deleted `ReduceTile`). Remaining: `ABS`, `NEG`,
+  `SQRT`/`RSQRT`, the comparisons (`EQ..LE` via `binary_body`), `DIV`/`REM`,
+  the integer ops, `FLOOR`/`TRUNC` (`round::body`), then the transcendentals
+  (`EXP`/`LOG`/`RECIP`/`TANH`/`ERF`/`GELU`/trig). `kern/sfpu/reduce.rs` is
+  orphaned and due for deletion.
 - **Acceptance** = the gates, plus `interp` (`kern/sfpu/interp.rs`) for the
   kinds no gate touches. Word parity is a debugging aid, not the criterion.
 - **Row ops own the lowered value.** The root of a ported kind is an
@@ -611,10 +613,20 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   kernel. The `sum_all` gate is bit-identical to `sum_scalar`, which is the
   evidence. `Op::Reduce` carries a single `reduce_axis`, so no IR can fold
   both axes of one tile — `Scalar` is structurally unreachable, not merely
-  unused. The lowering therefore no longer produces `ReduceTile` at all, and
-  `tt_reduce_program`/`reduce.rs`'s builder is dead on that path — deleting
-  it is a separate step (the `Scalar` arm of the port stays transcribed and
-  unexercised).
+  unused. `TileDim::Scalar`'s arm in the emitter therefore stays transcribed
+  and unexercised — do not read a green reduce gate as covering it.
+- **`TTOp::ReduceTile` is deleted (2026-11-02).** With every pattern ported,
+  nothing produced it, so the variant, `tt_reduce_program`, `tt_dst_copy`,
+  the codegen unit test that called them, and all ~20 match arms
+  (`ops`/`mod`/`cost`/`verify`/`instr_sched`/`debug`/`tenstorrent`/`codegen`)
+  are gone. The reduce arm now ends with `todo!("reduce {rop:?}/{dim:?} has no
+  native row-op program")` for an unported combination instead of falling back
+  to a structured op. `TileDim` stays (patterns + emitter + the public
+  `kernel::TileDim`); `Op::Reduce` stays (the pattern input).
+  **`kern/sfpu/reduce.rs` is now entirely orphaned** — its only importer was
+  `tt_reduce_program` — and its module doc says so; deleting the file is the
+  next cleanup, and until then it is *not* the source of truth for a reduce
+  program (the emitter in `kernel/tenstorrent.rs` is).
 - **The scalar reduce's scratch is an IR storage now.** It used to be
   `sec.fresh_slot() * 64` inside codegen, a row outside the declared register
   file that no op named. `SfpLoad`/`SfpStore` have to name a `Storage`, so the
@@ -630,18 +642,17 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   builder's `push` does this implicitly; a straight transcription of
   `finish()` drops six NOPs per group without changing the names, so compare
   words or the gate will only show it on other data.
-- **Next**: the remaining SFPU kinds — `FLOOR`/`TRUNC` (`round::body`), the
-  comparisons, the integers — each transcribed from its `Program` body and
-  verified by word comparison first. Retiring `ReduceTile` is blocked
-  *upstream*, not in the emitter: max and the scalar reduce have to become
-  tile reduces (or the lane reduce has to be expanded on TT) before the
-  ported arms run at all. `max`, `sum_scalar`, `max_scalar` and `softmax`
-  are the four gates standing on that one gap; when they go green, the
-  reduce emitter's untested branches become the thing to check, and then
-  `ReduceTile`/`tt_reduce_program` can be deleted.
-  `Sfpu { kind }`/`tt_sfpu_program`/`tt_row_remap` then die (23 kinds still
-  reach `program_for`). Matmul needs nothing: it is already instruction-level
-  ops (`Unpacr`/`Setadczw`/`Setrwc`/`Zeroacc`/`Mvmul`/`Setc16`/`Setcfg`), and
+- **Next** (matching "Implementation order"): **item 2 — finish the port.**
+  (a) delete `kern/sfpu/reduce.rs` (orphaned, see above); (b) the remaining
+  kinds — `FLOOR`/`TRUNC` (`round::body`), the comparisons, the integers, then
+  `EXP`/`LOG`/`RECIP`/`TANH`/`ERF`/`GELU`/trig — each transcribed from its
+  `Program` body and checked against the builder's words first (23 kinds still
+  reach `program_for`); then `Sfpu { kind }`/`tt_sfpu_program`/`tt_row_remap`
+  die with the `kern/sfpu` builder half. **Item 5's `Setrwc` dtype fix is the
+  one gated thing available meanwhile** (`matmul_sigmoid`), and **item 4
+  (loops → `softmax`)** is the next real feature. Matmul needs
+  nothing: it is already instruction-level ops
+  (`Unpacr`/`Setadczw`/`Setrwc`/`Zeroacc`/`Mvmul`/`Setc16`/`Setcfg`), and
   `kern::matmul` only supplies constants.
 
 ### Codegen IS the encoder; the backend is transport
@@ -689,7 +700,7 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
 - Unrolling is a search/cost decision *before* the device epilogue, never a
   backend choice.
 
-### Status (2026-11-01)
+### Status (2026-11-02)
 
 | test | state |
 | --- | --- |
@@ -757,10 +768,15 @@ Since the 2026-10-30 handoff:
      `Program` / `Instruction` / `Code` / `LoopForm` go as the
      encoder-side layer; codegen calls `tt_isa`'s encoders directly.
    - **`Sfpu { kind }` is deleted in this cut**, together with the
-     `TtEmit::Sfpu` route.
-   - **`ReduceTile` stays until item 5.** The representation is clear but
-     the reduce *algorithm* is not (the `reduce_axis` selection bug), so the
-     `sum`/`sum_sigmoid` gates stay as the compass there.
+     `TtEmit::Sfpu` route — i.e. when the last kind ports. It is still the
+     fallback for the ~23 kinds that have not (2026-11-02).
+   - ~~**`ReduceTile` stays until item 5.**~~ **Superseded 2026-11-02: it is
+     deleted.** The reduce is row ops in this pass, keyed on *shape*
+     (`[32,32]→[32]` = `Row`, `[32]→[]` = `Col`, `[32,32]→[]` = `Scalar`, the
+     last unreachable), not on `reduce_axis`. Every reduce gate is green
+     (`sum`, `sum_sigmoid`, `max`, `sum_scalar`, `max_scalar`, `sum_all`);
+     see the SFPU-emission section for the two gotchas (`TileDim` names the
+     result; a rank-1 value is a tile *column*).
    - **Acceptance is the tests**, not word parity: identical words where the
      old builder already unrolled, interpreter-equal (`kern/sfpu/interp.rs`,
      which stays as the oracle) otherwise. The interpreter is the only check
@@ -769,10 +785,26 @@ Since the 2026-10-30 handoff:
      numerous; `REPLAY` is an encoder/peephole decision on that stream.
    - `Op::Source` stays for C/CUDA/SPIR-V/PTX — render just stops emitting it
      on the TT path.
-   *Started 2026-11-01:* the storage model (`Op::Storage::id`, see the decision
+   *Done 2026-11-01:* the storage model (`Op::Storage::id`, see the decision
    below) — the allocator stamps the physical index and codegen reads it, so the
-   DST file is IR rather than a codegen side map. Next: the `Sfp*` opset and the
-   port of the 24 reachable kinds.
+   DST file is IR rather than a codegen side map; the `Sfp*` opset and encoder.
+   *Done 2026-11-02:*
+   - Kinds on the row-op path: `BOOL_NOT` (raw-bit XOR), `ADD` (`SFPMAD` +
+     `LREG_ONE`, bit-exact), `SIGMOID` (`ops::sigmoid_program`, the Precise
+     body; gate `0/2560` at `1.2e-7`). `tt_sfp_sequence` carries the emitter
+     pieces: `SFPENCC` once, `SfpConst` staging, nested `if_`/`if_else`,
+     `abs`/`neg`/`mov`/`mad`/`nmad`/`mul`/`sub`/`and`/`iadd`/`isub_from`/
+     `shl`/`approx_recip`/`setsgn`/`SFPGT`/`SFPLE`/`SFPSETCC`, and the
+     NOP-after-MAD rule.
+   - The **reduce** moved off the builder entirely and `TTOp::ReduceTile`
+     is deleted (`tt_reduce_program`, `tt_dst_copy` and its unit test with
+     it). `kern/sfpu/reduce.rs` is now orphaned — **delete that file next**;
+     it must not be read as the source of truth.
+   - *Still to come in this item:* the ~23 kinds still reaching `program_for`
+     (`FLOOR`/`TRUNC`, the comparisons, the integers, `EXP`/`LOG`/`RECIP`/
+     `TANH`/`ERF`/`GELU`, trig), then `Sfpu { kind }`/`TtEmit::Sfpu`,
+     `tt_sfpu_program` and `tt_row_remap` go, and `kern/sfpu`'s
+     `Program`/`Code`/`LoopForm` half with them.
 3. **The `Dm` instruction stream (§2).** Flat `TTOp` variants, one per mover op —
    `DmRead`/`DmReadTransposed`/`DmReadBroadcastCol`/`DmWrite`/`DmFill`/
    `DmCopyWords`/`DmIndexPick`, `DmKernel` (no program payload) / `DmWait` —
@@ -828,13 +860,25 @@ Since the 2026-10-30 handoff:
 4. **Loop lowering** (`REPLAY` for bodies that fit its 32-word buffer, the
    `mailbox::loops` header only for longer ones) for `softmax`; multi-tile per
    core. A trip count that does not fold to `Const` is a TT compile error (§2).
-5. **Fixes**: `Kernel::dtype` for `TTOp::Setrwc` returns `dst`, not `IDX_T`
-   (the `matmul_sigmoid` I64); `tt_tile`'s grouped index math (32 tiles per
-   step where one is meant); the reduce kind keyed on `reduce_axis`; and the
-   tile state `matmul` leaves behind, which makes every later SFPU kernel in the
-   same process read zeros from DST (`sigmoid` → 0.5) while copies still work
-   — proven not to be the memory path (host-shadow A/B), so it is device/tile
-   state from the Matrix Unit program.
+5. **Fixes** (the no-gate-needed list):
+   - **`Setrwc` dtype** — `Kernel::dtype` returns `IDX_T` for it
+     (`kernel/mod.rs:712`) while `compute_dtypes_and_rcs` already gives it
+     `dst`'s dtype, so `tt_lowered_storage`/`tt_lower_value`
+     (`kernel/tenstorrent.rs:921`, `:1659`) hand the consumer `I64` and its
+     DST slot is declared `I64` → `tt_verify: DST register … is I64`. Fix:
+     the accumulator storage's dtype. That is the whole `matmul_sigmoid` red,
+     and it is the first thing to take after this item (it is gated, and the
+     kernel is a matmul plus an SFPU chain in one program).
+   - ~~the reduce kind keyed on `reduce_axis`~~ — **superseded 2026-11-02**:
+     the patterns key on shape, and `Row`/`Col` cover both live cases.
+   - **`tt_tile`'s grouped index math** (32 tiles per step where one is
+     meant) — the single-tile reduces are green, but no gate runs a
+     *multi-tile* grid, so treat this as still open until one does.
+   - **the tile state `matmul` leaves behind**, which makes a later SFPU
+     kernel in the same process read zeros from DST (`sigmoid` → 0.5) while
+     copies still work — proven not to be the memory path (host-shadow A/B),
+     so it is device/tile state from the Matrix Unit program. `matmul_sigmoid`
+     is one kernel, so this is about *separate* kernels in one process.
 6. **L1 spills** in `tt_dst_reuse` (needs the scheduling story: a mid-T1
    spill needs T0/T2 and the roles currently run in order).
 7. **Async CB pipeline (deferred; last).** CBs become multi-tile rings with

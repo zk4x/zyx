@@ -95,10 +95,11 @@ fn sync_cbs_wraps_cb_traffic() {
     assert_eq!(pos(wd) + 1, pos(drain), "wait sits immediately before the drain copy");
 }
 
-/// Pure-SSA `ReduceTile`: `x = load CB` then `r = reduce_tile(x)` with
-/// no acc/scaler operands. Accumulation is explicit SSA (store the
-/// result, reload it); scale, when needed, is a separate mul over the
-/// result, lowered with its scaler CB by `tt_dataflow_select`.
+/// Pure-SSA tile reduce: `x = load CB` then `r = reduce_tile(x)` with no
+/// acc/scaler operands. Accumulation is explicit SSA (store the result,
+/// reload it); scale, when needed, is a separate mul over the result.
+/// `tt_dataflow_select` now lowers a `Reduce` to row ops directly, so this
+/// test covers the pass plumbing that runs before that, not a lowered op.
 #[test]
 fn pure_reduce_tile_threading() {
     let mut k = Kernel::new(Dev::Auto);

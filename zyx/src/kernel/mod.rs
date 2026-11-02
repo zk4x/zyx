@@ -545,21 +545,6 @@ impl Kernel {
                         }
                     }
                 }
-                Op::TT(TTOp::ReduceTile { input, slot, kind, .. }) => {
-                    // Lowered reduce: result takes the DST input's dtype; the
-                    // shape drops the trailing dim (Row/Col) or everything
-                    // (Scalar), like `Kernel::shape`.
-                    let (dtype, _) = dtypes[&input].clone();
-                    let shape = if matches!(kind, TileDim::Scalar) {
-                        Vec::new()
-                    } else {
-                        vec![32]
-                    };
-                    dtypes.insert(op_id, (dtype, shape));
-                    for &f in &[input, slot] {
-                        *rcs.entry(f).or_insert(0) += 1;
-                    }
-                }
                 Op::TT(TTOp::Unpacr { src, .. }) => {
                     // Native unpack: the source CB's dtype, one tile out.
                     let (dtype, _) = dtypes[&src].clone();
@@ -723,7 +708,6 @@ impl Kernel {
                     }
                     op_id = ops[0]
                 }
-                Op::TT(TTOp::ReduceTile { input, .. }) => op_id = input,
                 Op::TT(TTOp::Unpacr { .. }) => return IDX_T,
                 Op::TT(TTOp::Setrwc { .. }) => return IDX_T,
                 Op::TT(TTOp::Sfpu { a, .. }) => op_id = a,
@@ -1535,7 +1519,7 @@ impl Kernel {
                 // Lowered calls report no shape ids: no buffer is ever
                 // sized from them (writer CBs are pre-sized). `shape`
                 // and the dtype map carry their tile shapes.
-                Op::TT(TTOp::Unpacr { .. }) | Op::TT(TTOp::ReduceTile { .. }) | Op::TT(TTOp::Sfpu { .. }) => {
+                Op::TT(TTOp::Unpacr { .. }) | Op::TT(TTOp::Sfpu { .. }) => {
                     visited.insert(op_id, Vec::new());
                 }
                 Op::Asm { ref ops, .. } => {
@@ -1894,17 +1878,6 @@ impl Kernel {
                         };
                     }
                     visited.insert(id, dims);
-                }
-                // A reduce over a 32-tile yields one [32] row (Row/Col)
-                // or a scalar (Scalar): kind-constant, since the
-                // slot-indexed feeder load itself shapes scalar.
-                // A matmul yields one [32, 32] tile: kind-constant.
-                Op::TT(TTOp::ReduceTile { kind, .. }) => {
-                    let mut out = [0; 8];
-                    if !matches!(kind, TileDim::Scalar) {
-                        out[0] = 32;
-                    }
-                    visited.insert(id, out);
                 }
                 Op::TT(TTOp::Unpacr { .. }) => {
                     visited.insert(id, [32, 32, 0, 0, 0, 0, 0, 0]);

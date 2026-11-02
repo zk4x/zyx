@@ -96,8 +96,8 @@ fn bop_kind(bop: BOp) -> Option<u32> {
         BOp::Cmplt => sf::LT,
         BOp::Cmpgt => sf::GT,
         BOp::Cmpge => sf::GE,
-        // Tensor-tensor max has no direct SFPU kind; reduce Max is a
-        // structural `ReduceTile`, not an elementwise op.
+        // Tensor-tensor max has no direct SFPU kind. A reduce by max is not
+        // an elementwise op at all: it is the `TileDim` pattern's fold.
         BOp::Max => return None,
         BOp::Or | BOp::BitOr => sf::INT_OR,
         BOp::And | BOp::BitAnd => sf::INT_AND,
@@ -915,7 +915,7 @@ impl Kernel {
         match self.ops[id].op {
             // A lowered accumulator (`Setrwc`) carries its tile in `dst`:
             // the matmul's value is the DST storage the Matrix Unit filled.
-            Op::TT(TTOp::Sfpu { slot, .. } | TTOp::ReduceTile { slot, .. }) => {
+            Op::TT(TTOp::Sfpu { slot, .. }) => {
                 return Some((self.dtype(id), slot));
             }
             Op::TT(TTOp::Setrwc { dst }) => return Some((self.dtype(id), dst)),
@@ -1232,12 +1232,11 @@ impl Kernel {
                 let (dtype, input) = self.tt_resolve_dst(m.op('t'), id, lower)?;
                 let slot = self.tt_new_dst(dtype, lower.prologue);
                 // `reduce.rs`'s programs as row ops: a tile-row reduce is
-                // `accumulate(op, Cols, first)` then `finish(op, Cols)`; a
-                // whole-tile one runs the same pass, then a second over rows
+                // `accumulate(op, Cols, first)` then `finish(op, Cols)`; one
+                // over the tile's columns is the in-order/transpose fold; a
+                // whole-tile one runs the first pass, then a second over rows
                 // through a scratch tile, and copies the scalar back.
-                // `TileDim::Col` has no producer (the pattern table emits
-                // `Row` and `Scalar` only), so it keeps `ReduceTile`.
-                let ported = matches!(
+                if !matches!(
                     (rop, dim),
                     (BOp::Add, TileDim::Row)
                         | (BOp::Max, TileDim::Row)
@@ -1245,19 +1244,21 @@ impl Kernel {
                         | (BOp::Max, TileDim::Col)
                         | (BOp::Add, TileDim::Scalar)
                         | (BOp::Max, TileDim::Scalar)
-                );
+                ) {
+                    todo!("reduce {rop:?}/{dim:?} has no native row-op program");
+                }
                 // The scalar reduce's second pass reads the first pass's whole
                 // result, so it needs a tile of its own. Declaring it here (and
                 // not in codegen, as `fresh_slot` did) makes it a register the
                 // allocator numbers and can place; liveness keeps it off the
                 // accumulator's row, which `accumulate_in_order` requires (it
                 // zeroes its output before reading its input).
-                let scratch = if ported && dim == TileDim::Scalar {
+                let scratch = if dim == TileDim::Scalar {
                     Some(self.tt_new_dst(dtype, lower.prologue))
                 } else {
                     None
                 };
-                if ported {
+                {
                     use tt_isa::isa::generated::defs;
                     // `Dst` format codes: `reduce.rs` reduces a sum in FP32 and
                     // a max over the raw bits.
@@ -1445,8 +1446,6 @@ impl Kernel {
                         self.insert_before(id, op);
                     }
                     self.ops[id].op = last;
-                } else {
-                    self.ops[id].op = Op::TT(TTOp::ReduceTile { rop, kind: dim, input, slot });
                 }
                 self.tt_materialize(id, dtype, slot, lower)
             }
@@ -1655,7 +1654,7 @@ impl Kernel {
             return Some((self.dtype(id), cb));
         }
         match self.ops[id].op {
-            Op::TT(TTOp::Sfpu { slot, .. } | TTOp::ReduceTile { slot, .. }) => Some((self.dtype(id), slot)),
+            Op::TT(TTOp::Sfpu { slot, .. }) => Some((self.dtype(id), slot)),
             Op::TT(TTOp::SfpStore(ref store)) => Some((self.dtype(id), store.slot)),
             Op::TT(TTOp::Setrwc { dst }) => Some((self.dtype(id), dst)),
             Op::TT(TTOp::Copy { dst, .. }) => match self.ops[dst].op {
@@ -1815,7 +1814,7 @@ impl Kernel {
     /// before allocating this row.
     fn tt_register_output(&self, op: &Op) -> Option<OpId> {
         match op {
-            Op::TT(TTOp::Sfpu { slot, .. } | TTOp::ReduceTile { slot, .. }) => Some(*slot),
+            Op::TT(TTOp::Sfpu { slot, .. }) => Some(*slot),
             // A row-level store is where a ported SFPU sequence writes its
             // result tile, so it is that tile's output as far as the
             // allocator is concerned.
@@ -2045,7 +2044,6 @@ impl Kernel {
                     section = 2;
                 }
                 Op::TT(TTOp::Sfpu { .. })
-                | Op::TT(TTOp::ReduceTile { .. })
                 | Op::TT(TTOp::Unpacr { .. })
                 | Op::TT(TTOp::Setrwc { .. })
                 | Op::TT(TTOp::Setadczw { .. })
@@ -2204,7 +2202,7 @@ impl Kernel {
             Op::Load { src, .. } | Op::Copy { src, .. } => self.tt_storage_of(*src),
             Op::Store { dst, .. } => self.tt_storage_of(*dst),
             Op::Storage { .. } | Op::Param { .. } => op_id,
-            Op::TT(TTOp::ReduceTile { slot, .. }) | Op::TT(TTOp::Sfpu { slot, .. }) => *slot,
+            Op::TT(TTOp::Sfpu { slot, .. }) => *slot,
             other => panic!("tt_storage_of: {op_id:?} is not a Load/Store/Copy, got {other:?}"),
         }
     }

@@ -718,21 +718,6 @@ pub enum TTOp {
     Math(Box<[u32]>),
     /// The compute core's T2 program. See [`TTOp::Unpack`].
     Pack(Box<[u32]>),
-    /// Lowered reduce program: a tile `Reduce` after lowering resolved
-    /// its DST input and DST accumulator. Carries the structured
-    /// `(rop, kind)` so codegen can build the native reduce program
-    /// directly. Effect-only: a DCE root, pinned by LICM, never
-    /// deduplicated.
-    ReduceTile {
-        /// Reduce op (Max reduces a MAX pool, Add a SUM).
-        rop: BOp,
-        /// Reduce dimension.
-        kind: TileDim,
-        /// Input (Register) storage, already unpacked into DST.
-        input: OpId,
-        /// Accumulator (Register) storage.
-        slot: OpId,
-    },
     /// TT copy: DRAM<->CB traffic, CB->DRAM drain, and the CB->DST
     /// unpack. Both indices are lane-invariant bases (unrolls stripped
     /// at lowering); the size carries the transfer, never the index
@@ -1559,7 +1544,6 @@ impl Op {
             // src_idx is NEVER null: every load names its element.
             &Op::Load { src, src_idx } => vec![src, src_idx],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
-            &Op::TT(TTOp::ReduceTile { input, slot, .. }) => vec![input, slot],
             &Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
             &Op::TT(TTOp::Unpacr { src, .. }) => vec![src],
             &Op::TT(TTOp::Setrwc { dst }) => vec![dst],
@@ -1681,7 +1665,6 @@ impl Op {
                 vec![]
             }
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
-            Op::TT(TTOp::ReduceTile { input, slot, .. }) => vec![input, slot],
             Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
             Op::TT(TTOp::Unpacr { src, .. }) => vec![src],
             Op::TT(TTOp::Setrwc { dst }) => vec![dst],

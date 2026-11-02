@@ -1,3 +1,11 @@
+//! **Dead code (2026-11-02). Delete me.** The reduce programs now live in
+//! `kernel/tenstorrent.rs` (`TtEmit::Reduce`) as unrolled row ops, and
+//! `TTOp::ReduceTile` is gone; nothing outside this file references anything
+//! here (the `#[cfg(any())]` test module below included). It is kept only so
+//! this change stayed a pure "the variant is gone" diff. **`reduce.rs` is no
+//! longer the source of truth for a reduce program** — read the emitter in
+//! `kernel/tenstorrent.rs` and `NOTES.md`, not this file.
+//!
 //! Reductions over one dimension on the SFPU (`hardware-coverage.md` R1).
 //!
 //! A `[rows, cols]` tensor reduced over its columns (`Axis::Cols`, Burn's

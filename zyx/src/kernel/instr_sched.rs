@@ -140,8 +140,7 @@ impl Kernel {
                 // program-ordered like a barrier for placement (never
                 // crosses one), but not a barrier itself.
                 Op::Asm { .. } => structural[i] = true,
-                Op::TT(TTOp::ReduceTile { .. })
-                | Op::TT(TTOp::Sfpu { .. })
+                Op::TT(TTOp::Sfpu { .. })
                 | Op::TT(TTOp::SfpLoad(_))
                 | Op::TT(TTOp::SfpStore(_))
                 | Op::TT(TTOp::SfpConst(_))
@@ -294,10 +293,6 @@ impl Kernel {
                         add_param!(p);
                     }
                 }
-                Op::TT(TTOp::ReduceTile { input, slot, .. }) => {
-                    add_param!(input);
-                    add_param!(slot);
-                }
                 Op::TT(TTOp::Unpacr { src, .. }) => {
                     add_param!(*src);
                 }
@@ -348,11 +343,6 @@ impl Kernel {
                 Op::TT(TTOp::Copy { src, dst, .. }) => {
                     by_memory_target.entry(*src).or_default().push(i);
                     by_memory_target.entry(*dst).or_default().push(i);
-                }
-                Op::TT(TTOp::ReduceTile { input, slot, .. }) => {
-                    for &f in [input, slot] {
-                        by_memory_target.entry(f).or_default().push(i);
-                    }
                 }
                 Op::TT(TTOp::Unpacr { src, .. }) => {
                     by_memory_target.entry(*src).or_default().push(i);

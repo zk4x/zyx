@@ -71,14 +71,6 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::TT(TTOp::ReduceTile { input, slot, .. }) => {
-                        // Lowered reduce: same rule over its DST input.
-                        let (dtype, shape) = dtypes[&input].clone();
-                        dtypes.insert(op_id, (dtype, shape));
-                        for &f in &[input, slot] {
-                            *rcs.entry(f).or_insert(0) += 1;
-                        }
-                    }
                     Op::TT(TTOp::Unpacr { src, .. }) => {
                         // Unpack: the source CB's dtype and shape, one use.
                         let (dtype, shape) = dtypes[&src].clone();
@@ -210,12 +202,6 @@ impl Kernel {
                         }
                     }
                     Op::TT(ref ttop) => match ttop {
-                        TTOp::ReduceTile { input, slot, .. } => {
-                            dtypes.insert(op_id, dtypes[input].clone());
-                            for f in [input, slot] {
-                                *rcs.entry(*f).or_insert(0) += 1;
-                            }
-                        }
                         TTOp::Unpacr { src, .. } => {
                             dtypes.insert(op_id, dtypes[src].clone());
                             *rcs.entry(*src).or_insert(0) += 1;

@@ -311,19 +311,6 @@ impl Kernel {
                     check(op_id, reduce_axis, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
-                Op::TT(TTOp::ReduceTile { input, slot, .. }) => {
-                    // Native reduce: DST input and DST accumulator. Result
-                    // takes the input's dtype.
-                    for &f in &[input, slot] {
-                        check(op_id, f, &stack);
-                        if !matches!(self.at(f), Op::Storage { scope: MemScope::Register, .. }) {
-                            println!("tt reduce tile op={op_id} operand {f} is not a Register storage");
-                            self.debug();
-                            panic!();
-                        }
-                    }
-                    dtypes.insert(op_id, dtypes[&input]);
-                }
                 Op::TT(TTOp::Unpacr { src, .. }) => {
                     // Native unpack: a CB in, a Src bank out.
                     check(op_id, src, &stack);
@@ -811,20 +798,6 @@ impl Kernel {
                     let mut r = None;
                     for x in ops.iter() {
                         if let Some(&(xl, xu)) = bounds.get(x) {
-                            r = Some(match r {
-                                Some((l, u)) => (xl.min(l), xu.max(u)),
-                                None => (xl, xu),
-                            });
-                        }
-                    }
-                    if let Some((xl, xu)) = r {
-                        bounds.insert(op_id, (xl, xu));
-                    }
-                }
-                Op::TT(TTOp::ReduceTile { input, slot, .. }) => {
-                    let mut r = None;
-                    for f in [input, slot] {
-                        if let Some(&(xl, xu)) = bounds.get(&f) {
                             r = Some(match r {
                                 Some((l, u)) => (xl.min(l), xu.max(u)),
                                 None => (xl, xu),

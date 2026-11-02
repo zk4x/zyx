@@ -23,13 +23,12 @@ use crate::DType;
 use crate::Map;
 use crate::Set;
 use crate::backend::tenstorrent::kern::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
-use crate::backend::tenstorrent::kern::sfpu::reduce::{Axis, ReduceOp, accumulate, finish};
 use crate::backend::tenstorrent::{TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE, TTDmMove, TTSemaphoreInit};
 use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{
-    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmWrite, TTOp, TTSfpInsn, TileDim,
+    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmWrite, TTOp, TTSfpInsn,
     UOp,
 };
 use crate::scalar::{bf16, f16};
@@ -422,73 +421,6 @@ fn tt_sfpu_program(kind: u32, a_row: u32, b_row: Option<u32>, slot_row: u32) -> 
         }
     }
     Ok(tt_row_remap(code, a_row, b_row, slot_row))
-}
-
-/// A bit-preserving DST -> DST copy of one tile (64 rows).
-fn tt_dst_copy(src: u32, dst: u32) -> Vec<Instruction> {
-    use crate::backend::tenstorrent::kern::sfpu::{Format, LReg, Program};
-    let mut p = Program::new();
-    for o in 0..64 {
-        p.load(LReg::L0, Format::Int32, src + o);
-        p.store(LReg::L0, Format::Int32, dst + o);
-    }
-    p.finish()
-}
-
-/// The native reduce program for one tile, reading `input_row` and writing
-/// `slot_row`. `scratch` is needed for a whole-tile scalar reduce (two
-/// passes) and for a sum over columns, whose in-order accumulator zeroes
-/// its output before reading the input.
-fn tt_reduce_program(
-    rop: BOp,
-    kind: TileDim,
-    input_row: u32,
-    slot_row: u32,
-    scratch: Option<u32>,
-) -> Result<Vec<Instruction>, BackendError> {
-    let op = match rop {
-        BOp::Add => ReduceOp::Sum,
-        BOp::Max => ReduceOp::Max,
-        _ => return Err(tt_err(format!("tenstorrent: reduce op {rop:?} has no native reduce program"))),
-    };
-    let mut code = Vec::new();
-    match kind {
-        TileDim::Row => {
-            let mut c = accumulate(op, Axis::Cols, true, None);
-            c.extend(finish(op, Axis::Cols));
-            code.extend(tt_row_remap(c, input_row, None, slot_row));
-        }
-        TileDim::Col => {
-            // `accumulate_in_order` (sum over rows) zeroes its output
-            // before reading the input, so an in-place reduce would erase
-            // the data. Always stage that one through the scratch row.
-            if op == ReduceOp::Sum {
-                let scratch =
-                    scratch.ok_or_else(|| tt_err("tenstorrent: sum-over-columns reduce needs a DST scratch row".to_string()))?;
-                let mut c = accumulate(op, Axis::Rows, true, None);
-                c.extend(finish(op, Axis::Rows));
-                code.extend(tt_row_remap(c, input_row, None, scratch));
-                code.extend(tt_dst_copy(scratch, slot_row));
-            } else {
-                let mut c = accumulate(op, Axis::Rows, true, None);
-                c.extend(finish(op, Axis::Rows));
-                code.extend(tt_row_remap(c, input_row, None, slot_row));
-            }
-        }
-        TileDim::Scalar => {
-            let scratch = scratch.ok_or_else(|| tt_err("tenstorrent: scalar reduce needs a DST scratch row".to_string()))?;
-            // First reduce columns into `slot`, then rows from `slot` into
-            // the scratch, then move the scalar back into `slot`.
-            let mut c = accumulate(op, Axis::Cols, true, None);
-            c.extend(finish(op, Axis::Cols));
-            code.extend(tt_row_remap(c, input_row, None, slot_row));
-            let mut c = accumulate(op, Axis::Rows, true, None);
-            c.extend(finish(op, Axis::Rows));
-            code.extend(tt_row_remap(c, slot_row, None, scratch));
-            code.extend(tt_dst_copy(scratch, slot_row));
-        }
-    }
-    Ok(code)
 }
 
 /// Section-local emission state. Sections are separate programs: SSA
@@ -956,22 +888,6 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 let ops_vec: Vec<OpId> = ops.iter().copied().collect();
                 let text = sec.substitute(asm.as_str(), &ops_vec)?;
                 sec.out.push_str(&format!("{}{text}\n", sec.indent));
-            }
-            Op::TT(TTOp::ReduceTile { rop, kind, input, slot, .. }) => {
-                // Native reduce: the metalium reduce math program reads the
-                // input DST row and writes the accumulator DST row. There is
-                // no LLK `reduce_tile` and no CB operand here.
-                let input_row = sec.dst_row(*input)?;
-                let slot_row = sec.dst_row(*slot)?;
-                let slot_idx = sec.reg_slot(*slot)?;
-                sec.slots.insert(id, slot_idx);
-                let needs_scratch = *kind == TileDim::Scalar || (*kind == TileDim::Col && *rop == BOp::Add);
-                let scratch = if needs_scratch { Some(sec.fresh_slot()? * 64) } else { None };
-                let code = tt_reduce_program(*rop, *kind, input_row, slot_row, scratch)?;
-                for insn in code {
-                    sec.native.push(insn.word());
-                }
-                sec.compute_ops += 1;
             }
             Op::TT(TTOp::Unpacr { src, unit, count, flip }) => {
                 use crate::backend::tenstorrent::kern::datapath::{Unpacker, config_program, set_adc_x, tile_base_units};
@@ -2230,25 +2146,4 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn reduce_program_targets_the_given_dst_rows() {
-        let input = 128;
-        let slot = 192;
-        let code = tt_reduce_program(BOp::Add, TileDim::Row, input, slot, None).unwrap();
-        let mut rows = Vec::new();
-        for insn in code {
-            let def = insn.def();
-            if def.mnemonic() == "SFPLOAD" || def.mnemonic() == "SFPSTORE" {
-                rows.push(def.field("Imm10").unwrap().extract(insn.word()));
-            }
-        }
-        assert!(!rows.is_empty());
-        for row in rows {
-            assert!(
-                (input..input + 64).contains(&row) || (slot..slot + 64).contains(&row),
-                "row {row} is not in the input or output DST range"
-            );
-        }
-    }
 }

@@ -211,19 +211,6 @@ impl Kernel {
                 Op::TT(TTOp::EndCompute) => {
                     writeln!(f, "{indent}{blue}end_compute{reset}").unwrap();
                 }
-                Op::TT(TTOp::ReduceTile { rop, kind, input, slot }) => {
-                    let dtype = dtypes.get(&input).copied().unwrap_or(DType::U8);
-                    dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id, &shapes);
-                    let map = |o: OpId| id_map.get(&o).copied().unwrap_or(OpId::NULL);
-                    writeln!(
-                        f,
-                        "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}reduce_tile_{rop:?}_{kind:?}{reset} r{}, r{}",
-                        map(input),
-                        map(slot),
-                    )
-                    .unwrap();
-                }
                 Op::TT(TTOp::Unpacr { src, unit, count, .. }) => {
                     let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
